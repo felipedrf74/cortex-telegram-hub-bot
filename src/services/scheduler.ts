@@ -36,26 +36,56 @@ export function startScheduler(bot: Bot): void {
     }
   });
 
-  // Proactive task reminders — check every 15 minutes for tasks due within 1 hour
-  cron.schedule('*/15 * * * *', async () => {
+  // End-of-day task summary at 21:00 — due today recap + overdue
+  cron.schedule('0 21 * * *', async () => {
     if (!msTodo.isOutlookTodoConfigured()) return;
 
     try {
-      const result = await msTodo.getTasksDueSoon(1); // due within 1 hour
-      if (!result.success || result.data.length === 0) return;
+      const pendingResult = await msTodo.getAllPendingTasks();
+      if (!pendingResult.success) return;
 
-      for (const task of result.data) {
-        const msg = `⏰ <b>Task due soon:</b> ${task.title}\n📋 List: ${task.listName}\n📅 Due: ${formatDateTime(task.dueDateTime!)}`;
-        for (const userId of config.telegram.allowedUserIds) {
-          try {
-            await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-          } catch (err) {
-            logger.error({ err, userId }, 'Failed to send task reminder');
-          }
+      const tasks = pendingResult.data;
+      const nowDate = new Date();
+      const todayStart = new Date(startOfDay()).getTime();
+      const todayEnd = new Date(endOfDay()).getTime();
+
+      const dueToday = tasks.filter((t) => {
+        if (!t.dueDateTime) return false;
+        const due = new Date(t.dueDateTime).getTime();
+        return due >= todayStart && due <= todayEnd;
+      });
+
+      const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
+
+      if (dueToday.length === 0 && overdue.length === 0) return;
+
+      let msg = `🌙 <b>End-of-Day Task Summary</b>\n\n`;
+
+      if (dueToday.length > 0) {
+        msg += `📅 <b>Due today (${dueToday.length}):</b>\n`;
+        for (const t of dueToday) {
+          msg += `• ${t.title} <i>[${t.listName}]</i>\n`;
+        }
+        msg += '\n';
+      }
+
+      if (overdue.length > 0) {
+        msg += `⚠️ <b>Overdue (${overdue.length}):</b>\n`;
+        for (const t of overdue) {
+          const daysLate = Math.ceil((nowDate.getTime() - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+          msg += `• ${t.title} — ${daysLate}d late <i>[${t.listName}]</i>\n`;
+        }
+      }
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send end-of-day summary');
         }
       }
     } catch (err) {
-      logger.error({ err }, 'Task reminder check failed');
+      logger.error({ err }, 'End-of-day task summary failed');
     }
   }, { timezone: config.app.timezone });
 
@@ -176,7 +206,7 @@ export function startScheduler(bot: Bot): void {
   }, { timezone: config.app.timezone });
 
   logger.info(
-    `Scheduler started: reminders (every min), task alerts (every 15 min), daily briefing (${config.todo.digestTime}), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43)`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43)`
   );
 }
 

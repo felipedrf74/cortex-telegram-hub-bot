@@ -4,6 +4,16 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.2.1] — 2026-03-06
+
+### Replace 15-min Task Alerts with End-of-Day Summary
+
+- Removed the every-15-minute "task due soon" proactive alerts (too noisy)
+- Added end-of-day task summary at 21:00 — shows tasks due today + overdue with days late
+- Task due date info now only sent twice a day: morning briefing (06:00) and end-of-day summary (21:00)
+
+---
+
 ## [1.2.0] — 2026-03-06
 
 ### Remove Qlik Sense & AWS Domains
