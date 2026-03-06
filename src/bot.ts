@@ -6,8 +6,6 @@ import { DomainName } from './domains/types';
 import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
-import { handleQlikSense } from './domains/qliksense';
-import { handleAws } from './domains/aws-expert';
 import { getActiveReminders } from './state/reminders';
 import { clearConversation, clearAllConversations } from './state/conversation';
 import {
@@ -45,8 +43,6 @@ const DOMAIN_HANDLERS: Record<DomainName, (message: string) => Promise<{ text: s
   secretary: handleSecretary,
   triathlon: handleTriathlon,
   content: handleContent,
-  qliksense: handleQlikSense,
-  aws: handleAws,
 };
 
 // ─── Processing Queue (sequential per user) ─────────────────────────
@@ -134,14 +130,14 @@ export function createBot(): Bot {
 
   bot.command('clear', async (ctx) => {
     const domain = ctx.match?.trim();
-    if (domain && ['secretary', 'triathlon', 'content', 'qliksense', 'aws'].includes(domain)) {
+    if (domain && ['secretary', 'triathlon', 'content'].includes(domain)) {
       clearConversation(domain as DomainName);
       await ctx.reply(`🗑 Cleared conversation history for <b>${domain}</b>.`, { parse_mode: 'HTML' });
     } else if (domain === 'all') {
       clearAllConversations();
       await ctx.reply('🗑 Cleared all conversation histories.', { parse_mode: 'HTML' });
     } else {
-      await ctx.reply('Usage: /clear [secretary|triathlon|content|qliksense|aws|all]');
+      await ctx.reply('Usage: /clear [secretary|triathlon|content|all]');
     }
   });
 
@@ -1426,17 +1422,6 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /script [topic] — Write a script
 /reel [topic] — Reel concepts
 /caption [type] — Write caption
-
-<b>📊 QLIK SENSE</b>
-/set [desc] — Build Set Analysis
-/expression [calc] — Create expression
-/datamodel [desc] — Design data model
-
-<b>☁️ AWS / DEVOPS</b>
-/aws [question] — AWS help
-/terraform [resource] — Terraform code
-/docker [app] — Docker setup
-/pipeline [tool] — CI/CD pipeline
 
 <b>🔧 SYSTEM</b>
 /help — This menu

@@ -1,4 +1,4 @@
-export type DomainName = 'secretary' | 'triathlon' | 'content' | 'qliksense' | 'aws';
+export type DomainName = 'secretary' | 'triathlon' | 'content';
 
 export interface DomainContext {
   domain: DomainName;

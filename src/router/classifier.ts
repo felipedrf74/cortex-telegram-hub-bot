@@ -16,13 +16,6 @@ const DOMAIN_PATTERNS: Record<DomainName, RegExp[]> = {
   content: [
     /^\/(content|video|reel|script|caption|thumbnail|trend)\b/i,
   ],
-  qliksense: [
-    /^\/(qlik|set|expression|datamodel|reload|calendar\s+qlik)\b/i,
-    /^\/(script\s+qlik)\b/i,
-  ],
-  aws: [
-    /^\/(aws|terraform|docker|dockerfile|pipeline|iam|vpc|k8s|lambda|architecture|troubleshoot)\b/i,
-  ],
 };
 
 export function patternMatch(message: string): DomainName | null {
@@ -43,8 +36,6 @@ const NL_KEYWORD_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
   // Domain-specific unique keywords (checked first for specificity)
   { domain: 'triathlon', pattern: /\b(workout|gym\s+session|running\s+plan|cycling\s+plan|sets?\s*[x×]\s*\d|protein|carnivore|training\s+plan|macros|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery\s+day|muscle|hypertrophy|endurance)\b/i },
   { domain: 'content', pattern: /\b(youtube|instagram|reels?|thumbnail|video\s+(?:idea|script)|content\s+(?:strategy|calendar|idea)|caption|hashtag|subscribers?|audience|viral|hook|CTA|engagement)\b/i },
-  { domain: 'qliksense', pattern: /\b(qlik|qvs|set\s+analysis|data\s+model|nprinting|qmc|load\s+script|master\s+item|section\s+access|star\s+schema)\b/i },
-  { domain: 'aws', pattern: /\b(aws|terraform|docker(?:file)?|kubernetes|k8s|lambda|ec2|s3\s+bucket|iam\s+(?:role|policy)|vpc|cloud(?:watch|front|formation)|ecs|eks|fargate|route\s*53|CDK|serverless)\b/i },
   // Secretary catch-all (common task/scheduling language)
   { domain: 'secretary', pattern: /\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\s+)?calendar|schedule|meetings?|appointments?|(?:my\s+)?emails?|inbox|overdue|due\s+(?:today|tomorrow|this\s+week)|planning|digest|unread|mark\s+(?:as\s+)?(?:done|complete)|pending|priority|deadline)\b/i },
 ];

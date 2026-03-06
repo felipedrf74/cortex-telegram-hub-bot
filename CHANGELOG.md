@@ -4,6 +4,21 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.2.0] — 2026-03-06
+
+### Remove Qlik Sense & AWS Domains
+
+Streamlined the bot to focus on the three active domains: Secretary, Triathlon, and Content.
+
+- Removed `qliksense` and `aws` from `DomainName` type
+- Deleted `src/domains/qliksense.ts` and `src/domains/aws-expert.ts` handler files
+- Removed Qlik Sense and AWS sections from `/help` text
+- Removed from DOMAIN_HANDLERS map, classifier patterns, keyword routes, and classifier prompt
+- Updated secretary system prompt (removed Tech/Qlik/AWS/DevOps mentions)
+- Updated `/clear` command to only list active domains
+
+---
+
 ## [1.1.0] — 2026-03-06
 
 ### Daily Content Discovery
