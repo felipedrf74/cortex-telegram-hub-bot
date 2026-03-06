@@ -1,0 +1,170 @@
+import Anthropic from '@anthropic-ai/sdk';
+import fs from 'fs';
+import path from 'path';
+import { config } from '../config';
+import { now } from '../utils/date-parser';
+import { logger } from '../utils/logger';
+
+const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+// Felipe's content niches — edit these to change search focus
+const CONTENT_NICHES = [
+  'fitness strength training gym trends',
+  'running cycling endurance sports',
+  'politics news trending debates',
+  'viral reaction content YouTube trends',
+  'self development motivational content',
+];
+
+const DISCOVERY_SYSTEM_PROMPT = `You are Felipe's content discovery engine. Your job: find TODAY's freshest trending topics and turn them into irresistible content ideas tailored to his audience.
+
+Felipe's profile:
+- YouTube & Instagram creator
+- Based in Portugal, content primarily in PT-BR (Brazilian Portuguese)
+- Style: authentic, conversational, motivational — shares life experiences and world observations to offer a different perspective on personal growth
+- Formats: YouTube videos (motivational, trending topic conversations, idea discussions, self-development), YouTube Shorts/Reels (30-60s), Instagram carousels/stories
+- Content pillars: Fitness/gym, running, cycling, politics & news reactions, self-development, trending topic commentary
+
+TARGET AUDIENCE:
+- Name archetype: Lucas, 20 years old, from São Paulo, Brazil
+- Loves: learning new things, understanding what's happening around him
+- Dislikes: laziness
+- Desires: personal growth
+- Video preferences: motivational content, conversations about trending topics, discussions about ideas and self-development
+- How videos help him: real life experiences + world observations → different perspective on how to develop himself
+- Value proposition: "learn from my mistakes and if you see yourself a bit in me, this will help understand better how you see the world"
+
+SEARCH STRATEGY:
+1. Search for trending/viral topics in EACH niche (use 3-5 searches total to stay efficient)
+2. Look for: breaking news, viral social media debates, political hot takes, fitness trends, sports moments, motivational stories, cultural phenomena in Brazil/globally
+3. Cross-reference niches for unique angles (e.g., "what this political debate teaches about discipline" or "running lessons that apply to life growth")
+
+OUTPUT FORMAT — Return EXACTLY this structure:
+
+# Content Ideas — [today's date]
+
+## Idea 1: [Catchy Title in PT-BR]
+**Niche:** [which niche]
+**Why now:** [what makes this trending TODAY — cite source]
+**Format:** [YouTube / Reel / Carousel / Short]
+**Hook (first 3s):** [the exact opening line/visual in PT-BR]
+**Angle:** [what makes Felipe's take unique]
+**Key points:** [3-5 bullet points for the content]
+**Title options:** [3 SEO-friendly title variations in PT-BR]
+**Estimated virality:** [Low / Medium / High — and why]
+
+[Repeat for each idea — aim for 8-10 ideas across all niches]
+
+## Quick-Fire Shorts (bonus)
+[3-5 one-liner Short/Reel ideas that can be filmed in <5 minutes]
+
+## Cross-Niche Mashup
+[1-2 ideas that combine multiple niches in a creative way]
+
+RULES:
+- Every idea must be tied to something CURRENT — no evergreen filler
+- Be specific: "Lula's new economic policy reaction" not "politics in Brazil"
+- Hooks must be scroll-stopping — think pattern interrupt, curiosity gap, bold claim
+- Prioritize ideas with HIGH shareability and comment potential among young Brazilian men (18-25)
+- Include at least 2 ideas per major niche (fitness, news/politics, self-development)
+- Flag if any topic is time-sensitive (will expire in 24-48h)
+- ALL titles and hooks should be in PT-BR (Brazilian Portuguese) — the audience speaks Portuguese
+- Think about what would make Lucas (20, São Paulo) stop scrolling and watch`;
+
+export interface ContentDiscoveryResult {
+  ideas: string[];       // just the titles/headers
+  fullContent: string;   // the complete detailed output
+  filePath: string;      // where it was saved
+  searchCount: number;   // how many web searches were used
+}
+
+export async function runContentDiscovery(): Promise<ContentDiscoveryResult> {
+  const today = now();
+  const dateStr = today.toFormat('yyyy-MM-dd');
+  const dayName = today.toFormat('cccc');
+
+  const userMessage = `Today is ${dayName}, ${today.toFormat('LLLL dd, yyyy')}.
+
+Search for what's trending RIGHT NOW in these niches and generate content ideas:
+${CONTENT_NICHES.map((n, i) => `${i + 1}. ${n}`).join('\n')}
+
+Focus on what happened TODAY or in the last 24-48 hours. I need ideas I can film/create THIS WEEK.
+Remember: my audience is young Brazilian men (18-25) who want growth and hate laziness. Titles and hooks in PT-BR.`;
+
+  logger.info('Starting daily content discovery with web search...');
+
+  const response = await client.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 4096,
+    system: DISCOVERY_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userMessage }],
+    tools: [
+      {
+        type: 'web_search_20250305' as any,
+        name: 'web_search',
+        max_uses: 5,
+      } as any,
+    ],
+  });
+
+  // Handle pause_turn — Claude may need to continue after a long search session
+  let finalResponse = response;
+  if (response.stop_reason === 'pause_turn') {
+    logger.info('Content discovery paused, continuing...');
+    finalResponse = await client.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 4096,
+      system: DISCOVERY_SYSTEM_PROMPT,
+      messages: [
+        { role: 'user', content: userMessage },
+        { role: 'assistant', content: response.content as any },
+      ],
+      tools: [
+        {
+          type: 'web_search_20250305' as any,
+          name: 'web_search',
+          max_uses: 5,
+        } as any,
+      ],
+    });
+  }
+
+  // Extract text content (skip search result blocks)
+  const fullContent = finalResponse.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n\n');
+
+  // Count web searches used
+  const searchCount = (finalResponse.usage as any)?.server_tool_use?.web_search_requests || 0;
+
+  // Extract idea titles (lines starting with "## Idea" or "### Ideia" — model may use either format or language)
+  const ideas = fullContent
+    .split('\n')
+    .filter((line) => /^#{2,3}\s+\**(?:Idea|Ideia|Id[eé]ia)\s+\d+/i.test(line))
+    .map((line) => line.replace(/^#{2,3}\s+\**(?:Idea|Ideia|Id[eé]ia)\s+\d+:\s*/i, '').replace(/\*+$/g, '').trim());
+
+  // Also grab Quick-Fire Shorts section titles
+  const shortMatches = fullContent.match(/^[-•]\s+.+$/gm);
+  const quickShorts = shortMatches
+    ? shortMatches.slice(-5).map((s) => s.replace(/^[-•]\s+/, '').trim())
+    : [];
+
+  // Save to file
+  const dir = path.resolve(config.app.databasePath, '../content-ideas');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const filePath = path.join(dir, `${dateStr}.md`);
+  const fileContent = `# Daily Content Ideas — ${dayName}, ${today.toFormat('LLLL dd, yyyy')}\n\n_Generated at ${today.toFormat('HH:mm')} | ${searchCount} web searches used_\n\n${fullContent}`;
+  fs.writeFileSync(filePath, fileContent, 'utf-8');
+
+  logger.info({ searchCount, ideaCount: ideas.length, filePath }, 'Content discovery complete');
+
+  return {
+    ideas: [...ideas, ...quickShorts],
+    fullContent,
+    filePath,
+    searchCount,
+  };
+}
