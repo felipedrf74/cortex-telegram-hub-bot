@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  telegram-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file: ../.env
+    volumes:
+      - bot-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot-data:

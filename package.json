@@ -1,0 +1,34 @@
+{
+  "name": "telegram-hub-bot",
+  "version": "1.0.0",
+  "description": "Telegram personal command center bot with multi-domain AI routing",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@azure/msal-node": "^5.0.6",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "better-sqlite3": "^12.6.2",
+    "dotenv": "^17.3.1",
+    "googleapis": "^171.4.0",
+    "grammy": "^1.41.1",
+    "luxon": "^3.7.2",
+    "node-cron": "^4.2.1",
+    "pino": "^10.3.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/luxon": "^3.7.1",
+    "@types/node": "^25.3.3",
+    "typescript": "^5.9.3"
+  }
+}
