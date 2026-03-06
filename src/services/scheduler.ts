@@ -8,6 +8,7 @@ import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount } from './outlook-mail';
 import { formatDailyBriefing, DailyBriefingData } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
+import { runContentDiscovery } from './content-discovery';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -141,8 +142,41 @@ export function startScheduler(bot: Bot): void {
     logger.info('Cleared self-created task cache');
   }, { timezone: config.app.timezone });
 
+  // Daily content discovery at 16:43 (runs ~2min, delivers by 16:45)
+  cron.schedule('43 16 * * *', async () => {
+    try {
+      const result = await runContentDiscovery();
+
+      let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
+      if (result.ideas.length > 0) {
+        for (let i = 0; i < result.ideas.length; i++) {
+          msg += `${i + 1}. ${result.ideas[i]}\n`;
+        }
+      } else {
+        msg += `Ideas generated but couldn't parse titles — check the file.\n`;
+      }
+      msg += `\n📁 <code>${result.filePath}</code>`;
+      msg += `\n🔍 ${result.searchCount} web searches used`;
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send content discovery notification');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Daily content discovery failed');
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, '⚠️ Daily content discovery failed. Check logs.', { parse_mode: 'HTML' });
+        } catch {}
+      }
+    }
+  }, { timezone: config.app.timezone });
+
   logger.info(
-    `Scheduler started: reminders (every min), task alerts (every 15 min), daily briefing (${config.todo.digestTime}), weekly review (Fri 17:00), shared list check (every 5 min)`
+    `Scheduler started: reminders (every min), task alerts (every 15 min), daily briefing (${config.todo.digestTime}), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43)`
   );
 }
 

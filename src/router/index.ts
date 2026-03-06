@@ -10,7 +10,7 @@ export interface RouteResult {
 }
 
 // System commands that don't route to a domain
-const SYSTEM_COMMANDS = ['/help', '/status', '/clear', '/start'];
+const SYSTEM_COMMANDS = ['/help', '/status', '/clear', '/start', '/discover'];
 
 export function isSystemCommand(message: string): string | null {
   const lower = message.trim().toLowerCase();

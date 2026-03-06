@@ -20,6 +20,7 @@ import { getEvents, isAnyCalendarConfigured } from './services/unified-calendar'
 import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from './services/outlook-mail';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDateTime } from './utils/date-parser';
 import { extractImageContent } from './services/anthropic';
+import { runContentDiscovery } from './services/content-discovery';
 
 // ─── Rate Limiter ────────────────────────────────────────────────────
 
@@ -828,6 +829,33 @@ export function createBot(): Bot {
     await handleWeekOverview(ctx);
   });
 
+  // ── Content Discovery ──
+  bot.command('discover', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      await ctx.reply('🔍 Running content discovery… this takes ~2 minutes.', { parse_mode: 'HTML' });
+      try {
+        const result = await runContentDiscovery();
+        let msg = `🎬 <b>Content Ideas Ready</b>\n\n`;
+        if (result.ideas.length > 0) {
+          for (let i = 0; i < result.ideas.length; i++) {
+            msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
+          }
+        } else {
+          msg += `Ideas generated but couldn't parse titles — check the file.\n`;
+        }
+        msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
+        msg += `\n🔍 ${result.searchCount} web searches used`;
+        for (const chunk of splitMessage(msg)) {
+          await ctx.reply(chunk, { parse_mode: 'HTML' });
+        }
+      } catch (err: any) {
+        logger.error({ err }, 'Content discovery failed (manual)');
+        await ctx.reply(`❌ Content discovery failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
   // ── Inline Keyboard Callback Handlers ──
   bot.callbackQuery(/^td:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
@@ -1393,6 +1421,7 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /meal — Carnivore meal plan
 
 <b>📹 CONTENT</b>
+/discover — Run daily content discovery (trending topics)
 /video [topic] — Video ideas
 /script [topic] — Write a script
 /reel [topic] — Reel concepts

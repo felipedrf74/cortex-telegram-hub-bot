@@ -4,6 +4,44 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.1.0] — 2026-03-06
+
+### Daily Content Discovery
+
+Automated trending topic discovery using Claude web search, delivering daily content ideas for YouTube/Instagram.
+
+#### New Feature: Content Discovery Engine (`src/services/content-discovery.ts`)
+- Uses Claude Sonnet with web search tool (5 searches per run) to find trending topics across content niches
+- Content niches: Fitness/gym, running/cycling, politics/news, viral reaction content, self-development
+- Target audience: Young Brazilian men (18-25), all output in PT-BR (Brazilian Portuguese)
+- Audience archetype: Lucas, 20yo from São Paulo — loves learning, hates laziness, wants personal growth
+- Generates 8-10 structured content ideas with hooks, key points, title options, and virality estimates
+- Includes Quick-Fire Shorts section and Cross-Niche Mashup ideas
+- Handles Claude `pause_turn` for long search sessions
+- Saves full detailed output to `data/content-ideas/YYYY-MM-DD.md`
+- Returns parsed idea titles + file path for notification
+
+#### New Scheduled Job
+- **Daily at 16:43**: Runs content discovery (~2min), sends Telegram notification with idea headers and file location by 16:45
+
+#### New Slash Command
+- `/discover` — Manual trigger for content discovery (same output as scheduled job)
+- Added to SYSTEM_COMMANDS in router to prevent classifier routing
+
+#### Updated Content Domain Prompt
+- Enriched with Lucas audience profile, PT-BR focus, content pillars (fitness, running, cycling, politics, self-development)
+- Aligned with content-creation skill and discovery engine
+
+#### Files Changed
+- `src/services/content-discovery.ts` — NEW: core discovery module
+- `src/services/scheduler.ts` — Added 16:43 daily cron job
+- `src/bot.ts` — Added `/discover` command handler + updated HELP_TEXT
+- `src/router/index.ts` — Added `/discover` to SYSTEM_COMMANDS
+- `src/services/anthropic.ts` — Updated content domain system prompt
+- `scripts/test-discovery.ts` — Test script for content discovery
+
+---
+
 ## [1.0.0] — 2026-03-06
 
 ### Initial Release
