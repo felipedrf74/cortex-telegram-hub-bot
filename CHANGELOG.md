@@ -4,6 +4,55 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.4.0] — 2026-03-07
+
+### 12 Feature Improvements
+
+#### New Features
+- **Cross-domain shared memory** — SQLite key-value store with optional TTL; facts set by one domain (e.g. race dates, rest days) are visible in all domains' state context. Tools: `shared_memory_set`, `shared_memory_remove`
+- **Content discovery feedback loop** — After `/discover`, inline 💾 buttons let you save individual ideas; `/ideas saved` shows all saved ideas
+- **`/ideas [date]` command** — View content ideas by date from `data/content-ideas/`; lists available dates if requested date not found
+- **Photo routing to active domain** — Photos with captions are routed via keyword matching → last active domain fallback → secretary default (previously all photos went to task creation)
+- **Proactive conflict detection** — Cron at 19:30 checks tomorrow's calendar for overlapping events and sends a Telegram alert
+- **Unsupported media handlers** — Voice, video, document, and sticker messages get a friendly "not supported" reply instead of being silently ignored
+
+#### Improvements
+- **6 missing MS Todo tools exposed** — `ms_todo_move_task`, `ms_todo_get_checklist`, `ms_todo_add_checklist_item`, `ms_todo_get_lists`, `ms_todo_create_list`, `ms_todo_delete_list` (executors existed but Claude couldn't use them)
+- **PT-BR keyword patterns** — Classifier now matches Portuguese keywords for all domains (e.g. treino, corrida, tarefa, lembrete)
+- **Typing indicators** — Added to `/status`, `/day`, `/week` commands; periodic 4s typing for `/discover` (~2 min operation)
+- **Inline edit flow fixed** — `td:ef` callback now stores pending edit state (2-min TTL); next text message is captured as the edit value instead of routing to domains
+- **Tool reasoning in history** — Conversation history now stores `[Tools: tool1, tool2]` prefix so future turns have context about what actions were taken
+
+#### New Files
+- `migrations/002_shared_memory.sql`, `migrations/003_saved_ideas.sql`
+- `src/state/shared-memory.ts`, `src/state/saved-ideas.ts`
+
+#### Modified Files
+- `src/bot.ts`, `src/domains/secretary.ts`, `src/domains/domain-handler.ts`
+- `src/services/anthropic.ts`, `src/services/scheduler.ts`, `src/services/tool-executor.ts`
+- `src/router/classifier.ts`
+
+---
+
+## [1.3.0] — 2026-03-07
+
+### Performance & Cost Optimization
+
+20 fixes targeting API cost reduction and runtime performance.
+
+- Server-side OData filtering for MS Todo (reduced payload ~70%)
+- Per-domain conversation history limits (secretary: 10, others: 6)
+- Per-domain model selection (Sonnet for secretary, Haiku for triathlon/content)
+- Per-domain max_tokens (secretary: 2048, others: 1024)
+- Prompt caching on system prompts and tool arrays
+- State context cache (30s TTL) to avoid redundant API calls on rapid messages
+- Memoized tool array (computed once at startup, guarantees cache hits)
+- Tool result truncation at 2000 chars
+- Slim mutation results (~80% token reduction)
+- Shared domain handler for triathlon/content (eliminated code duplication)
+
+---
+
 ## [1.2.1] — 2026-03-06
 
 ### Replace 15-min Task Alerts with End-of-Day Summary
