@@ -21,7 +21,8 @@ Priority: Hard deadlines > Revenue work > Strategic/growth > Maintenance > Well-
 Routines: Mon AM=Planning, Weekday AM=Deep Work (no meetings), 2-3x/week=Content, Daily=Training, Fri PM=Review.
 
 Use ms_todo_* tools for task management. Parse dates as Europe/Lisbon, convert to ISO 8601. Importance: low/normal/high. Status: notStarted/inProgress/completed/waitingOnOthers/deferred.
-EFFICIENCY: List IDs are in [Current State] — use them directly, do NOT call ms_todo_get_lists. Batch all possible tool calls in parallel. For "mark as done" requests, use ms_todo_complete_task immediately once you have the task IDs. Use ms_todo_search_tasks to find tasks by name.`,
+EFFICIENCY: List IDs are in [Current State] — use them directly, do NOT call ms_todo_get_lists. Batch all possible tool calls in parallel. For "mark as done" requests, use ms_todo_complete_task immediately once you have the task IDs. Use ms_todo_search_tasks to find tasks by name.
+CROSS-DOMAIN: Use shared_memory_set to store facts relevant across domains (training schedule, filming days, race dates, rest days). These appear in all domains' context. Use snake_case keys. Set expires_at for time-limited facts.`,
 
   triathlon: `You are Felipe's sports coach, nutritionist, and performance advisor. Direct, practical, no fluff.
 
@@ -92,6 +93,12 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'ms_todo_delete_task', description: 'Delete a task', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['list_id', 'task_id'] } },
   { name: 'ms_todo_search_tasks', description: 'Search tasks by keyword across all lists', input_schema: { type: 'object' as const, properties: { query: { type: 'string' } }, required: ['query'] } },
   { name: 'ms_todo_get_due_tasks', description: 'Get tasks due in a date range', input_schema: { type: 'object' as const, properties: { start_date: { type: 'string', description: 'ISO 8601' }, end_date: { type: 'string', description: 'ISO 8601' } }, required: ['start_date', 'end_date'] } },
+  { name: 'ms_todo_move_task', description: 'Move a task to a different list (creates copy, deletes original)', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' }, task_id: { type: 'string' }, target_list_id: { type: 'string' }, target_list_name: { type: 'string' } }, required: ['list_id', 'task_id', 'target_list_id', 'target_list_name'] } },
+  { name: 'ms_todo_get_checklist', description: 'Get checklist items (subtasks/steps) of a task', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' }, task_id: { type: 'string' } }, required: ['list_id', 'task_id'] } },
+  { name: 'ms_todo_add_checklist_item', description: 'Add a checklist item (step) to a task', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' }, task_id: { type: 'string' }, title: { type: 'string' } }, required: ['list_id', 'task_id', 'title'] } },
+  { name: 'ms_todo_get_lists', description: 'Get all task lists with their IDs', input_schema: { type: 'object' as const, properties: {} } },
+  { name: 'ms_todo_create_list', description: 'Create a new task list', input_schema: { type: 'object' as const, properties: { name: { type: 'string' } }, required: ['name'] } },
+  { name: 'ms_todo_delete_list', description: 'Delete a task list', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' } }, required: ['list_id'] } },
   // ── Calendar tools ──
   { name: 'get_calendar_events', description: 'Get calendar events for a date range', input_schema: { type: 'object' as const, properties: { start_date: { type: 'string', description: 'ISO 8601' }, end_date: { type: 'string', description: 'ISO 8601' } }, required: ['start_date', 'end_date'] } },
   { name: 'create_calendar_event', description: 'Create a calendar event', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' } }, required: ['title', 'start', 'end'] } },
@@ -107,6 +114,9 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'send_outlook_email', description: 'Send an email', input_schema: { type: 'object' as const, properties: { to: { type: 'string' }, subject: { type: 'string' }, body: { type: 'string' }, cc: { type: 'string' } }, required: ['to', 'subject', 'body'] } },
   { name: 'reply_outlook_email', description: 'Reply to an email', input_schema: { type: 'object' as const, properties: { message_id: { type: 'string' }, body: { type: 'string' } }, required: ['message_id', 'body'] } },
   { name: 'get_outlook_unread', description: 'Get unread emails', input_schema: { type: 'object' as const, properties: { max_results: { type: 'number' } } } },
+  // ── Shared memory tools (cross-domain context) ──
+  { name: 'shared_memory_set', description: 'Store a cross-domain fact visible to all domains (e.g. "marathon_date: March 15"). Use for info relevant across secretary/triathlon/content.', input_schema: { type: 'object' as const, properties: { key: { type: 'string', description: 'Short snake_case identifier' }, value: { type: 'string' }, expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' } }, required: ['key', 'value'] } },
+  { name: 'shared_memory_remove', description: 'Remove a cross-domain fact by key', input_schema: { type: 'object' as const, properties: { key: { type: 'string' } }, required: ['key'] } },
 ];
 
 // ─── Image Extraction (uses Haiku — cheap vision) ────────────────────

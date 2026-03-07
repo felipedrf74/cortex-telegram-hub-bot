@@ -7,6 +7,7 @@ import { isOutlookMailConfigured, getUnreadCount } from '../services/outlook-mai
 import { isOutlookTodoConfigured, getAllPendingTasks } from '../services/microsoft-todo';
 import { now, startOfDay, endOfDay, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
+import { getSharedMemorySummary } from '../state/shared-memory';
 import { logger } from '../utils/logger';
 import Anthropic from '@anthropic-ai/sdk';
 
@@ -83,6 +84,10 @@ async function buildStateContext(): Promise<string> {
     parts.push(`\nOutlook: ${unreadResult} unread`);
   }
 
+  // Cross-domain shared context
+  const sharedCtx = getSharedMemorySummary();
+  if (sharedCtx) parts.push(sharedCtx);
+
   const result = parts.join('\n');
   _stateContextCache = { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL };
   return result;
@@ -97,6 +102,7 @@ export async function handleSecretary(message: string): Promise<DomainResponse> 
 
   // Accumulate full tool conversation chain across iterations
   const toolConversation: Anthropic.MessageParam[] = [];
+  const toolsUsed: string[] = [];
 
   let iterations = 0;
   while (result.toolCalls.length > 0 && iterations < 4) {
@@ -110,6 +116,7 @@ export async function handleSecretary(message: string): Promise<DomainResponse> 
     }
     for (const tc of result.toolCalls) {
       assistantContent.push(tc);
+      toolsUsed.push(tc.name);
     }
 
     // Execute all tool calls in parallel, truncate large results
@@ -145,9 +152,12 @@ export async function handleSecretary(message: string): Promise<DomainResponse> 
     finalText = '⚠️ I processed your request but encountered some issues. Some actions may have completed partially. Please check your task list and try again if needed.';
   }
 
-  // Store conversation
+  // Store conversation — include tool summary so future turns have context
   addToConversation(DOMAIN, 'user', message);
-  addToConversation(DOMAIN, 'assistant', finalText);
+  const storedText = toolsUsed.length > 0
+    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+    : finalText;
+  addToConversation(DOMAIN, 'assistant', storedText);
 
   return { text: finalText, domain: DOMAIN };
 }

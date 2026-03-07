@@ -1,5 +1,6 @@
 import { saveNote, searchNotes } from '../state/notes';
 import { setReminder } from '../state/reminders';
+import { setSharedMemory, removeSharedMemory } from '../state/shared-memory';
 import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
@@ -254,6 +255,17 @@ export async function executeToolCall(
         ]);
         const unread = recentEmails.filter((e) => !e.isRead);
         return { unread_count: unreadCount, recent_unread: unread };
+      }
+
+      // ── Shared memory tools (cross-domain context) ──
+      case 'shared_memory_set': {
+        const entry = setSharedMemory(input.key, input.value, 'secretary', input.expires_at);
+        return { success: true, key: entry.key, value: entry.value };
+      }
+
+      case 'shared_memory_remove': {
+        const removed = removeSharedMemory(input.key);
+        return { success: removed, key: input.key };
       }
 
       default:

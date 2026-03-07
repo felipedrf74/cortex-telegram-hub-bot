@@ -2,6 +2,7 @@ import { DomainName, DomainResponse } from './types';
 import { callDomain, continueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
 import { listTodos } from '../state/todos';
+import { getSharedMemorySummary } from '../state/shared-memory';
 import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import Anthropic from '@anthropic-ai/sdk';
@@ -25,6 +26,10 @@ export async function buildSimpleStateContext(domain: DomainName): Promise<strin
     }
   }
 
+  // Cross-domain shared context
+  const sharedCtx = getSharedMemorySummary();
+  if (sharedCtx) parts.push(sharedCtx);
+
   return parts.join('\n');
 }
 
@@ -44,6 +49,7 @@ export async function handleSimpleDomain(
   let finalText = result.text;
 
   const toolConversation: Anthropic.MessageParam[] = [];
+  const toolsUsed: string[] = [];
   let iterations = 0;
   while (result.toolCalls.length > 0 && iterations < maxIterations) {
     iterations++;
@@ -51,6 +57,7 @@ export async function handleSimpleDomain(
     if (result.text) assistantContent.push({ type: 'text', text: result.text } as Anthropic.ContentBlock);
     for (const tc of result.toolCalls) {
       assistantContent.push(tc);
+      toolsUsed.push(tc.name);
     }
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc) => ({
@@ -68,7 +75,10 @@ export async function handleSimpleDomain(
   }
 
   addToConversation(domain, 'user', message);
-  addToConversation(domain, 'assistant', finalText);
+  const storedText = toolsUsed.length > 0
+    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+    : finalText;
+  addToConversation(domain, 'assistant', storedText);
 
   return { text: finalText, domain };
 }

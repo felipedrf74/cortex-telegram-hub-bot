@@ -210,8 +210,56 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Proactive conflict detection — check tomorrow's calendar at 19:30 for overlapping events
+  cron.schedule('30 19 * * *', async () => {
+    if (!isAnyCalendarConfigured()) return;
+
+    try {
+      const tomorrow = now().plus({ days: 1 });
+      const events = await getEvents(
+        tomorrow.startOf('day').toISO()!,
+        tomorrow.endOf('day').toISO()!
+      );
+
+      if (events.length < 2) return;
+
+      // Sort by start time and check for overlaps
+      const sorted = [...events].sort((a, b) =>
+        new Date(a.start).getTime() - new Date(b.start).getTime()
+      );
+
+      const conflicts: { a: typeof sorted[0]; b: typeof sorted[0] }[] = [];
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const endA = new Date(sorted[i].end).getTime();
+        const startB = new Date(sorted[i + 1].start).getTime();
+        if (endA > startB) {
+          conflicts.push({ a: sorted[i], b: sorted[i + 1] });
+        }
+      }
+
+      if (conflicts.length === 0) return;
+
+      let msg = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
+      for (const { a, b } of conflicts) {
+        msg += `🔴 <b>${a.summary}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
+        msg += `   overlaps with <b>${b.summary}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
+      }
+      msg += 'Consider rescheduling one of these events.';
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send conflict alert');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Conflict detection failed');
+    }
+  }, { timezone: config.app.timezone });
+
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43)`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), conflict detection (19:30)`
   );
 }
 

@@ -16,9 +16,12 @@ import {
 import * as msTodo from './services/microsoft-todo';
 import { getEvents, isAnyCalendarConfigured } from './services/unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from './services/outlook-mail';
-import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDateTime } from './utils/date-parser';
+import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDateTime, parseNaturalDate } from './utils/date-parser';
 import { extractImageContent } from './services/anthropic';
 import { runContentDiscovery } from './services/content-discovery';
+import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
+import fs from 'fs';
+import path from 'path';
 
 // ─── Rate Limiter ────────────────────────────────────────────────────
 
@@ -88,6 +91,23 @@ function getCallback(ref: string): any | null {
   return entry.data;
 }
 
+// ─── Pending Edit State (per user) ──────────────────────────────────
+
+interface PendingEdit {
+  listId: string;
+  taskId: string;
+  title: string;
+  listName: string;
+  field: string;
+  expires: number;
+}
+
+const pendingEdits = new Map<number, PendingEdit>();
+
+// ─── Last Active Domain (per user) ──────────────────────────────────
+
+const lastActiveDomain = new Map<number, DomainName>();
+
 // ─── Bot Setup ───────────────────────────────────────────────────────
 
 export function createBot(): Bot {
@@ -125,7 +145,10 @@ export function createBot(): Bot {
   });
 
   bot.command('status', async (ctx) => {
-    await handleStatus(ctx);
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      await handleStatus(ctx);
+    });
   });
 
   bot.command('clear', async (ctx) => {
@@ -818,11 +841,17 @@ export function createBot(): Bot {
 
   // ── Day/Week Quick Commands ──
   bot.command('day', async (ctx) => {
-    await handleDayOverview(ctx);
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      await handleDayOverview(ctx);
+    });
   });
 
   bot.command('week', async (ctx) => {
-    await handleWeekOverview(ctx);
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      await handleWeekOverview(ctx);
+    });
   });
 
   // ── Content Discovery ──
@@ -830,8 +859,14 @@ export function createBot(): Bot {
     enqueue(ctx.from!.id, async () => {
       await ctx.replyWithChatAction('typing');
       await ctx.reply('🔍 Running content discovery… this takes ~2 minutes.', { parse_mode: 'HTML' });
+      // Keep typing indicator alive during the long-running discovery
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction('typing').catch(() => {});
+      }, 4000);
       try {
         const result = await runContentDiscovery();
+        clearInterval(typingInterval);
+        const dateStr = now().toFormat('yyyy-MM-dd');
         let msg = `🎬 <b>Content Ideas Ready</b>\n\n`;
         if (result.ideas.length > 0) {
           for (let i = 0; i < result.ideas.length; i++) {
@@ -845,9 +880,76 @@ export function createBot(): Bot {
         for (const chunk of splitMessage(msg)) {
           await ctx.reply(chunk, { parse_mode: 'HTML' });
         }
+        // Inline save buttons for each idea
+        if (result.ideas.length > 0) {
+          const keyboard = new InlineKeyboard();
+          for (let i = 0; i < Math.min(result.ideas.length, 10); i++) {
+            const ref = storeCallback({ title: result.ideas[i], date: dateStr });
+            keyboard.text(`💾 ${i + 1}`, `ci:save:${ref}`);
+            if ((i + 1) % 5 === 0) keyboard.row();
+          }
+          await ctx.reply('Tap to save ideas you want to pursue:', { reply_markup: keyboard });
+        }
       } catch (err: any) {
+        clearInterval(typingInterval);
         logger.error({ err }, 'Content discovery failed (manual)');
         await ctx.reply(`❌ Content discovery failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('ideas', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const dateArg = ctx.match?.trim();
+
+      // /ideas saved — show saved content ideas
+      if (dateArg === 'saved') {
+        const saved = getSavedIdeas();
+        if (saved.length === 0) {
+          await ctx.reply('📭 No saved ideas. Use /discover and tap 💾 to save ideas.');
+          return;
+        }
+        let msg = `💾 <b>Saved Ideas</b> (${saved.length})\n\n`;
+        for (const idea of saved) {
+          msg += `• ${escapeHtml(idea.title)} <i>(${idea.source_date})</i>\n`;
+        }
+        await ctx.reply(msg, { parse_mode: 'HTML' });
+        return;
+      }
+
+      const dateStr = dateArg || now().toFormat('yyyy-MM-dd');
+
+      const dir = path.resolve(config.app.databasePath, '../content-ideas');
+      const filePath = path.join(dir, `${dateStr}.md`);
+
+      if (!fs.existsSync(filePath)) {
+        const available: string[] = [];
+        if (fs.existsSync(dir)) {
+          available.push(
+            ...fs.readdirSync(dir)
+              .filter((f) => f.endsWith('.md'))
+              .map((f) => f.replace('.md', ''))
+              .sort()
+              .slice(-5)
+          );
+        }
+        let msg = `📭 No content ideas found for <b>${escapeHtml(dateStr)}</b>.`;
+        if (available.length > 0) {
+          msg += `\n\nAvailable dates:\n${available.map((d) => `• /ideas ${d}`).join('\n')}`;
+        } else {
+          msg += '\n\nRun /discover to generate ideas first.';
+        }
+        await ctx.reply(msg, { parse_mode: 'HTML' });
+        return;
+      }
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      for (const chunk of splitMessage(content)) {
+        try {
+          await ctx.reply(chunk, { parse_mode: 'HTML' });
+        } catch {
+          await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+        }
       }
     });
   });
@@ -948,7 +1050,7 @@ export function createBot(): Bot {
       }
 
       case 'ef': {
-        // Edit field — prompt user to type
+        // Edit field — prompt user to type, then capture next message
         const field = cbData.field;
         const fieldLabels: Record<string, string> = {
           title: 'new title',
@@ -956,6 +1058,17 @@ export function createBot(): Bot {
           reminder: 'reminder time (e.g., "today 2pm")',
           priority: 'priority (low, normal, or high)',
         };
+        const userId = ctx.from?.id;
+        if (userId) {
+          pendingEdits.set(userId, {
+            listId: cbData.listId,
+            taskId: cbData.taskId,
+            title: cbData.title,
+            listName: cbData.listName,
+            field,
+            expires: Date.now() + 120_000, // 2 min TTL
+          });
+        }
         await ctx.editMessageText(
           `📝 Send me the ${fieldLabels[field] || field} for "<b>${escapeHtml(cbData.title)}</b>":`,
           { parse_mode: 'HTML' }
@@ -1003,6 +1116,31 @@ export function createBot(): Bot {
     }
   });
 
+  // ── Content Idea Callback Handler ──
+  bot.callbackQuery(/^ci:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1];
+    const ref = parts[2];
+
+    try {
+      await ctx.answerCallbackQuery();
+    } catch {
+      // Ignore if callback query is too old
+    }
+
+    const cbData = getCallback(ref);
+    if (!cbData) {
+      await ctx.answerCallbackQuery({ text: '⚠️ Expired. Run /discover again.' });
+      return;
+    }
+
+    if (action === 'save') {
+      saveIdea(cbData.title, cbData.date);
+      await ctx.answerCallbackQuery({ text: `💾 Saved: ${cbData.title.slice(0, 40)}` });
+    }
+  });
+
   // ── Photo handler: Vision → Task creation ──
   bot.on('message:photo', async (ctx) => {
     enqueue(ctx.from.id, async () => {
@@ -1010,12 +1148,38 @@ export function createBot(): Bot {
     });
   });
 
+  // ── Unsupported media types ──
+  bot.on('message:voice', async (ctx) => {
+    await ctx.reply('🎤 Voice messages are not supported yet. Please type your message instead.');
+  });
+  bot.on('message:video', async (ctx) => {
+    await ctx.reply('🎥 Video messages are not supported yet. You can send a photo or type a description.');
+  });
+  bot.on('message:document', async (ctx) => {
+    await ctx.reply('📎 File attachments are not supported yet. Please describe what you need in text.');
+  });
+  bot.on('message:sticker', async (ctx) => {
+    await ctx.reply('😄 Stickers are fun, but I can only process text and photos!');
+  });
+
   // ── Catch-all: Route to domain ──
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     if (!text) return;
 
-    enqueue(ctx.from.id, async () => {
+    // Check for pending inline edit (td:ef flow)
+    const userId = ctx.from.id;
+    const pending = pendingEdits.get(userId);
+    if (pending && Date.now() < pending.expires) {
+      pendingEdits.delete(userId);
+      enqueue(userId, async () => {
+        await handlePendingEdit(ctx, pending, text);
+      });
+      return;
+    }
+    pendingEdits.delete(userId); // clean up expired
+
+    enqueue(userId, async () => {
       await handleDomainMessage(ctx, text);
     });
   });
@@ -1069,6 +1233,9 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     const route = await routeMessage(text);
     logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
 
+    // Track last active domain for photo routing
+    if (ctx.from?.id) lastActiveDomain.set(ctx.from.id, route.domain);
+
     const handler = DOMAIN_HANDLERS[route.domain];
     const response = await handler(route.strippedMessage);
 
@@ -1088,15 +1255,43 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
 }
 
 async function handlePhotoMessage(ctx: Context): Promise<void> {
-  if (!msTodo.isOutlookTodoConfigured()) {
-    await ctx.reply('📷 Photo received, but Microsoft To Do is not configured.');
-    return;
-  }
-
   try {
     await ctx.replyWithChatAction('typing');
     const photos = ctx.message?.photo;
     if (!photos || photos.length === 0) return;
+
+    const caption = ctx.message?.caption || '';
+    const userId = ctx.from?.id;
+
+    // Route photo to active domain if caption suggests it
+    if (caption) {
+      const { keywordMatch } = require('./router/classifier');
+      const domainFromCaption = keywordMatch(caption) as DomainName | null;
+      const activeDomain = domainFromCaption || (userId ? lastActiveDomain.get(userId) : null);
+
+      if (activeDomain && activeDomain !== 'secretary') {
+        // Route to non-secretary domain with photo context
+        const handler = DOMAIN_HANDLERS[activeDomain];
+        const photoContext = `[Photo attached] ${caption}`;
+        const response = await handler(photoContext);
+        if (userId) lastActiveDomain.set(userId, activeDomain);
+        const parts = splitMessage(response.text);
+        for (const part of parts) {
+          try {
+            await ctx.reply(part, { parse_mode: 'HTML' });
+          } catch {
+            await ctx.reply(part.replace(/<[^>]*>/g, ''));
+          }
+        }
+        return;
+      }
+    }
+
+    // Default behavior: extract task from image via vision
+    if (!msTodo.isOutlookTodoConfigured()) {
+      await ctx.reply('📷 Photo received, but Microsoft To Do is not configured.');
+      return;
+    }
 
     // Get largest photo (last in array)
     const photo = photos[photos.length - 1];
@@ -1110,7 +1305,6 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
     const ext = file.file_path?.split('.').pop()?.toLowerCase() || 'jpg';
     const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
 
-    const caption = ctx.message?.caption || '';
     logger.info({ caption, fileSize: buffer.length }, 'Processing photo for task extraction');
 
     // Use Haiku vision to extract task info (cheap!)
@@ -1215,6 +1409,72 @@ async function handleDeleteTask(ctx: Context, query: string): Promise<void> {
     parse_mode: 'HTML',
     reply_markup: keyboard,
   });
+}
+
+async function handlePendingEdit(ctx: Context, pending: PendingEdit, value: string): Promise<void> {
+  try {
+    await ctx.replyWithChatAction('typing');
+    const { listId, taskId, title, listName, field } = pending;
+
+    switch (field) {
+      case 'title': {
+        const result = await msTodo.updateTask(listId, taskId, { title: value });
+        if (result.success) {
+          await ctx.reply(`📝 Renamed: "${escapeHtml(title)}" → "<b>${escapeHtml(value)}</b>" [${escapeHtml(listName)}]`, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(`⚠️ Failed to rename: ${result.error}`);
+        }
+        break;
+      }
+      case 'due': {
+        const parsed = parseNaturalDate(value);
+        if (!parsed) {
+          await ctx.reply(`⚠️ Couldn't parse date: "${escapeHtml(value)}". Try "tomorrow 5pm" or "2026-03-15".`);
+          return;
+        }
+        const result = await msTodo.updateTask(listId, taskId, { dueDateTime: parsed });
+        if (result.success) {
+          await ctx.reply(`📅 Due date set for "<b>${escapeHtml(title)}</b>": ${formatDateTime(parsed)}`, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(`⚠️ Failed to set due date: ${result.error}`);
+        }
+        break;
+      }
+      case 'reminder': {
+        const parsed = parseNaturalDate(value);
+        if (!parsed) {
+          await ctx.reply(`⚠️ Couldn't parse time: "${escapeHtml(value)}". Try "today 2pm" or "2026-03-15T14:00".`);
+          return;
+        }
+        const result = await msTodo.updateTask(listId, taskId, { reminderDateTime: parsed });
+        if (result.success) {
+          await ctx.reply(`⏰ Reminder set for "<b>${escapeHtml(title)}</b>": ${formatDateTime(parsed)}`, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(`⚠️ Failed to set reminder: ${result.error}`);
+        }
+        break;
+      }
+      case 'priority': {
+        const level = value.toLowerCase().trim();
+        if (!['low', 'normal', 'high'].includes(level)) {
+          await ctx.reply('⚠️ Priority must be: low, normal, or high');
+          return;
+        }
+        const result = await msTodo.updateTask(listId, taskId, { importance: level as 'low' | 'normal' | 'high' });
+        if (result.success) {
+          await ctx.reply(`⚡ Priority set to <b>${level}</b> for "${escapeHtml(title)}"`, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(`⚠️ Failed to update priority: ${result.error}`);
+        }
+        break;
+      }
+      default:
+        await ctx.reply('⚠️ Unknown edit field.');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to handle pending edit');
+    await ctx.reply('⚠️ Failed to apply the edit. Please try again.');
+  }
 }
 
 async function handleTodoSummary(ctx: Context): Promise<void> {
@@ -1424,6 +1684,8 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 
 <b>📹 CONTENT</b>
 /discover — Run daily content discovery (trending topics)
+/ideas [date] — View ideas by date (default: today)
+/ideas saved — View saved ideas from discovery
 /video [topic] — Video ideas
 /script [topic] — Write a script
 /reel [topic] — Reel concepts
