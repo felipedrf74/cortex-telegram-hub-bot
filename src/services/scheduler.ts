@@ -112,10 +112,15 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
-  // Shared list task notifications — every 5 minutes
+  // Shared list task notifications — every 5 min during day, every 15 min overnight (22:00-07:00)
   // First run: seed known IDs (no notifications). Subsequent runs: notify on new tasks.
   cron.schedule('*/5 * * * *', async () => {
     if (!msTodo.isOutlookTodoConfigured()) return;
+
+    // Reduce polling overnight: skip non-15-minute marks between 22:00-07:00
+    const currentHour = new Date().getHours();
+    const currentMinute = new Date().getMinutes();
+    if ((currentHour >= 22 || currentHour < 7) && currentMinute % 15 !== 0) return;
 
     try {
       const result = await msTodo.getSharedListPendingTasks();
@@ -278,14 +283,19 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
           })
           .map((t) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
 
-        // Overdue (all — no cap!)
-        data.overdueTasks = tasks
+        // Overdue — capped at 20 to avoid exceeding Telegram's 4096 char limit
+        const MAX_OVERDUE_DISPLAY = 20;
+        const allOverdue = tasks
           .filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate)
           .map((t) => {
             const daysLate = Math.ceil((nowDate.getTime() - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
             return { title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance, daysLate };
           })
           .sort((a, b) => a.daysLate - b.daysLate);
+        data.overdueTasks = allOverdue.slice(0, MAX_OVERDUE_DISPLAY);
+        if (allOverdue.length > MAX_OVERDUE_DISPLAY) {
+          data.overdueExtra = allOverdue.length - MAX_OVERDUE_DISPLAY;
+        }
       }
 
       if (yesterdayResult.success) {
@@ -327,44 +337,45 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
   let msg = `<b>📊 Week in Review</b>\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
-  // Microsoft To Do stats
-  if (msTodo.isOutlookTodoConfigured()) {
-    try {
-      // Completed this week
-      const completedResult = await msTodo.getCompletedTasksInRange(startOfWeek(), endOfWeek());
-      const completedCount = completedResult.success ? completedResult.data.length : 0;
-      msg += `✅ Completed: ${completedCount} tasks\n`;
+  // Fetch all data in parallel
+  const [todoData, calendarEvents] = await Promise.all([
+    msTodo.isOutlookTodoConfigured()
+      ? Promise.all([
+          msTodo.getCompletedTasksInRange(startOfWeek(), endOfWeek()),
+          msTodo.getAllPendingTasks(),
+        ]).catch((err) => { logger.error({ err }, 'Failed to fetch MS Todo data for weekly review'); return null; })
+      : Promise.resolve(null),
+    isAnyCalendarConfigured()
+      ? getEvents(startOfWeek(), endOfWeek()).catch(() => [] as any[])
+      : Promise.resolve([] as any[]),
+  ]);
 
-      // Pending
-      const pendingResult = await msTodo.getAllPendingTasks();
-      if (pendingResult.success) {
-        msg += `📋 Still pending: ${pendingResult.data.length} tasks\n`;
+  if (todoData) {
+    const [completedResult, pendingResult] = todoData;
+    const completedCount = completedResult.success ? completedResult.data.length : 0;
+    msg += `✅ Completed: ${completedCount} tasks\n`;
 
-        const nowDate = new Date();
-        const overdue = pendingResult.data.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
-        if (overdue.length > 0) {
-          msg += `\n⚠️ Overdue tasks (${overdue.length}):\n`;
-          for (const t of overdue) {
-            msg += `- ${t.title}`;
-            if (t.dueDateTime) msg += ` (was due: ${formatDateTime(t.dueDateTime)})`;
-            msg += '\n';
-          }
-          msg += '\nWant to reschedule or drop these?';
+    if (pendingResult.success) {
+      msg += `📋 Still pending: ${pendingResult.data.length} tasks\n`;
+
+      const nowDate = new Date();
+      const overdue = pendingResult.data.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
+      if (overdue.length > 0) {
+        msg += `\n⚠️ Overdue tasks (${overdue.length}):\n`;
+        for (const t of overdue) {
+          msg += `- ${t.title}`;
+          if (t.dueDateTime) msg += ` (was due: ${formatDateTime(t.dueDateTime)})`;
+          msg += '\n';
         }
+        msg += '\nWant to reschedule or drop these?';
       }
-    } catch (err) {
-      logger.error({ err }, 'Failed to fetch MS Todo data for weekly review');
-      msg += '📋 Tasks: unable to fetch\n';
     }
+  } else if (msTodo.isOutlookTodoConfigured()) {
+    msg += '📋 Tasks: unable to fetch\n';
   }
 
-  if (isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfWeek(), endOfWeek());
-      msg += `\n📅 Meetings this week: ${events.length}\n`;
-    } catch {
-      // skip
-    }
+  if (calendarEvents.length > 0) {
+    msg += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
   }
 
   for (const userId of config.telegram.allowedUserIds) {

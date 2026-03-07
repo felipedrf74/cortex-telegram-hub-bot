@@ -25,7 +25,7 @@ export const config = {
     apiKey: required('ANTHROPIC_API_KEY'),
     model: 'claude-sonnet-4-5-20250929' as const,
     classifierModel: 'claude-haiku-4-5-20251001' as const,
-    maxTokens: 2048,
+    maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
     secretaryMaxTokens: 2048,   // needs headroom for parallel tool calls
   },
   google: {

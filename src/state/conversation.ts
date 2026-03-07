@@ -1,17 +1,24 @@
 import { getDb } from '../services/database';
 import { DomainMessage, DomainName } from '../domains/types';
 
-const MAX_HISTORY_MESSAGES = 10;
+// Per-domain limits: secretary needs deep history for multi-step tasks,
+// triathlon/content produce verbose responses (training plans, scripts)
+// so fewer messages avoids bloating the context window.
+const HISTORY_LIMITS: Record<DomainName, number> = {
+  secretary: 10,
+  triathlon: 6,
+  content: 6,
+};
 
 export function getConversationHistory(domain: DomainName): DomainMessage[] {
   const db = getDb();
-  // Only keep last N messages to control token usage
+  const limit = HISTORY_LIMITS[domain] ?? 8;
   const rows = db.prepare(`
     SELECT role, content FROM conversations
     WHERE domain = ?
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(domain, MAX_HISTORY_MESSAGES) as DomainMessage[];
+  `).all(domain, limit) as DomainMessage[];
   return rows.reverse();
 }
 

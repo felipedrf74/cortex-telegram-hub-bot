@@ -65,15 +65,15 @@ interface CallbackEntry {
 const callbackStore = new Map<string, CallbackEntry>();
 let callbackCounter = 0;
 
-function storeCallback(data: any): string {
-  // Cleanup expired entries periodically
-  if (callbackCounter % 50 === 0) {
-    const now = Date.now();
-    for (const [key, entry] of callbackStore) {
-      if (entry.expires < now) callbackStore.delete(key);
-    }
+// Time-based cleanup every 10 minutes (more reliable than counter-based)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of callbackStore) {
+    if (entry.expires < now) callbackStore.delete(key);
   }
+}, 10 * 60 * 1000);
 
+function storeCallback(data: any): string {
   const ref = `${++callbackCounter}`;
   callbackStore.set(ref, { data, expires: Date.now() + 300_000 }); // 5 min TTL
   return ref;
@@ -1151,13 +1151,13 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
       return;
     }
 
-    // Add subtasks as checklist items
+    // Add subtasks as checklist items (parallel)
     let addedSubtasks = 0;
     if (extracted.subtasks.length > 0) {
-      for (const sub of extracted.subtasks) {
-        const subResult = await msTodo.addChecklistItem(targetList.id, taskResult.data.id, sub);
-        if (subResult.success) addedSubtasks++;
-      }
+      const subResults = await Promise.all(
+        extracted.subtasks.map((sub) => msTodo.addChecklistItem(targetList.id, taskResult.data.id, sub))
+      );
+      addedSubtasks = subResults.filter((r) => r.success).length;
     }
 
     // Format response
@@ -1226,11 +1226,17 @@ async function handleTodoSummary(ctx: Context): Promise<void> {
 
   const pending = pendingResult.data;
   const nowDate = new Date();
+  const todayStart = new Date(startOfDay()).getTime();
+  const todayEnd = new Date(endOfDay()).getTime();
+
   const overdue = pending.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
   const highPriority = pending.filter((t) => t.importance === 'high');
-
-  const dueTodayResult = await msTodo.getTasksDueInRange(startOfDay(), endOfDay());
-  const dueToday = dueTodayResult.success ? dueTodayResult.data : [];
+  // Derive due-today from pending data — no second API call needed
+  const dueToday = pending.filter((t) => {
+    if (!t.dueDateTime) return false;
+    const due = new Date(t.dueDateTime).getTime();
+    return due >= todayStart && due <= todayEnd;
+  });
 
   const msg = formatMsTodoSummary({
     pendingCount: pending.length,

@@ -93,10 +93,15 @@ Remember: my audience is young Brazilian men (18-25) who want growth and hate la
 
   logger.info('Starting daily content discovery with web search...');
 
+  // Prompt caching: system prompt cached for reuse in pause_turn continuations
+  const cachedSystem: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: DISCOVERY_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+  ];
+
   const response = await client.messages.create({
-    model: config.anthropic.model,
+    model: config.anthropic.classifierModel, // Haiku — structured templated output doesn't need Sonnet
     max_tokens: 4096,
-    system: DISCOVERY_SYSTEM_PROMPT,
+    system: cachedSystem,
     messages: [{ role: 'user', content: userMessage }],
     tools: [
       {
@@ -112,9 +117,9 @@ Remember: my audience is young Brazilian men (18-25) who want growth and hate la
   if (response.stop_reason === 'pause_turn') {
     logger.info('Content discovery paused, continuing...');
     finalResponse = await client.messages.create({
-      model: config.anthropic.model,
+      model: config.anthropic.classifierModel,
       max_tokens: 4096,
-      system: DISCOVERY_SYSTEM_PROMPT,
+      system: cachedSystem,
       messages: [
         { role: 'user', content: userMessage },
         { role: 'assistant', content: response.content as any },

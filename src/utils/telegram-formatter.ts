@@ -97,6 +97,7 @@ export interface DailyBriefingData {
   highPriorityTasks: BriefingTask[];
   dueTodayTasks: BriefingTask[];
   overdueTasks: (BriefingTask & { daysLate: number })[];
+  overdueExtra?: number; // count of overdue tasks beyond the display cap
   reminders: { message: string; time: string }[];
   unreadEmails: number;
   yesterdayCompleted: number;
@@ -139,11 +140,15 @@ export function formatDailyBriefing(data: DailyBriefingData): string {
     }
   }
 
-  // ── Overdue (all, with days late) ──
+  // ── Overdue (capped, with days late) ──
   if (data.overdueTasks.length > 0) {
-    msg += `\n⚠️ <b>Overdue</b> (${data.overdueTasks.length})\n`;
+    const totalOverdue = data.overdueTasks.length + (data.overdueExtra || 0);
+    msg += `\n⚠️ <b>Overdue</b> (${totalOverdue})\n`;
     for (const t of data.overdueTasks) {
       msg += `  • ${escapeHtml(t.title)} — ${t.daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
+    }
+    if (data.overdueExtra) {
+      msg += `  <i>...and ${data.overdueExtra} more</i>\n`;
     }
   }
 

@@ -149,36 +149,37 @@ export async function extractImageContent(
   }
 }
 
-// ─── Dynamic Tool Filtering ──────────────────────────────────────────
+// ─── Dynamic Tool Filtering (computed once at startup) ───────────────
 
-function getFilteredTools(): Anthropic.Tool[] {
-  const tools = [...TOOLS];
+function buildFilteredTools(): Anthropic.Tool[] {
+  const { isOutlookMailConfigured } = require('./outlook-mail');
+  const { isAnyCalendarConfigured } = require('./unified-calendar');
+  const mailConfigured = isOutlookMailConfigured();
+  const calConfigured = isAnyCalendarConfigured();
+
   const filtered: Anthropic.Tool[] = [];
-
-  for (const tool of tools) {
-    // Skip email tools if Outlook not configured
+  for (const tool of TOOLS) {
     if (tool.name.startsWith('search_outlook') || tool.name.startsWith('read_outlook') ||
         tool.name.startsWith('send_outlook') || tool.name.startsWith('reply_outlook') ||
         tool.name.startsWith('get_outlook')) {
-      const { isOutlookMailConfigured } = require('./outlook-mail');
-      if (!isOutlookMailConfigured()) continue;
+      if (!mailConfigured) continue;
     }
-    // Skip calendar tools if no calendar configured
     if (tool.name.includes('calendar')) {
-      const { isAnyCalendarConfigured } = require('./unified-calendar');
-      if (!isAnyCalendarConfigured()) continue;
+      if (!calConfigured) continue;
     }
     filtered.push(tool);
   }
-
   return filtered;
 }
 
+// Memoized at module level — config doesn't change at runtime, guarantees prompt cache hits
+let _cachedToolsArray: Anthropic.Tool[] | null = null;
+
 // ─── Model selection helpers ─────────────────────────────────────────
 
-function getModelForDomain(_domain: DomainName): string {
-  // Sonnet for all domains — Haiku can't handle multi-step tool-use reliably
-  return config.anthropic.model;
+function getModelForDomain(domain: DomainName): string {
+  // Sonnet for secretary (multi-step tool-use) — Haiku for conversational domains
+  return domain === 'secretary' ? config.anthropic.model : config.anthropic.classifierModel;
 }
 
 function getMaxTokensForDomain(domain: DomainName): number {
@@ -223,14 +224,16 @@ export interface CallDomainResult {
 }
 
 // Build cached tools array (cache_control on last tool for prefix caching)
-// Uses dynamic filtering to skip tools for unconfigured services
+// Memoized: computed once, reused for all API calls to guarantee cache hits
 function getCachedTools(): Anthropic.Tool[] {
-  const tools = getFilteredTools();
-  return tools.map((t, i) =>
+  if (_cachedToolsArray) return _cachedToolsArray;
+  const tools = buildFilteredTools();
+  _cachedToolsArray = tools.map((t, i) =>
     i === tools.length - 1
       ? { ...t, cache_control: { type: 'ephemeral' as const } }
       : t
   );
+  return _cachedToolsArray;
 }
 
 export async function callDomain(
@@ -297,12 +300,13 @@ export async function continueWithToolResults(
     ...toolConversation,
   ];
 
+  const useTools = domain === 'secretary';
   const response = await client.messages.create({
     model: getModelForDomain(domain),
     max_tokens: getMaxTokensForDomain(domain),
     system,
     messages,
-    tools: getCachedTools(),
+    ...(useTools ? { tools: getCachedTools() } : {}),
   });
 
   const textBlocks = response.content

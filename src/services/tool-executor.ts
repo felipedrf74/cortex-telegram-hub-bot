@@ -70,7 +70,7 @@ export async function executeToolCall(
           status: input.status,
           dueDateTime: input.due_date_time,
           reminderDateTime: input.reminder_date_time,
-        });
+        }, input.list_name);
         return updateRes.success
           ? { success: true, title: updateRes.data?.title || 'updated' }
           : { success: false, error: updateRes.error };
@@ -244,14 +244,17 @@ export async function executeToolCall(
         });
         return { success: true, message: 'Reply sent' };
 
-      case 'get_outlook_unread':
+      case 'get_outlook_unread': {
         if (!outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        const unreadCount = await outlookMail.getUnreadCount();
-        const recentEmails = await outlookMail.getRecentEmails(input.max_results || 10);
+        const [unreadCount, recentEmails] = await Promise.all([
+          outlookMail.getUnreadCount(),
+          outlookMail.getRecentEmails(input.max_results || 10),
+        ]);
         const unread = recentEmails.filter((e) => !e.isRead);
         return { unread_count: unreadCount, recent_unread: unread };
+      }
 
       default:
         logger.warn({ tool: toolName }, 'Unknown tool called');

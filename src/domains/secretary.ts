@@ -12,7 +12,15 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const DOMAIN: DomainName = 'secretary';
 
+// Short-lived cache for state context — avoids redundant API calls on rapid messages
+let _stateContextCache: { value: string; expiresAt: number } | null = null;
+const STATE_CONTEXT_TTL = 30_000; // 30 seconds
+
 async function buildStateContext(): Promise<string> {
+  if (_stateContextCache && Date.now() < _stateContextCache.expiresAt) {
+    return _stateContextCache.value;
+  }
+
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
@@ -75,7 +83,9 @@ async function buildStateContext(): Promise<string> {
     parts.push(`\nOutlook: ${unreadResult} unread`);
   }
 
-  return parts.join('\n');
+  const result = parts.join('\n');
+  _stateContextCache = { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL };
+  return result;
 }
 
 export async function handleSecretary(message: string): Promise<DomainResponse> {

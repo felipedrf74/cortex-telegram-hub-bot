@@ -369,7 +369,8 @@ export async function updateTask(
     status?: string;
     dueDateTime?: string | null;
     reminderDateTime?: string | null;
-  }
+  },
+  listName?: string
 ): Promise<ServiceResult<TodoTask>> {
   try {
     const client = getGraphClient();
@@ -403,23 +404,22 @@ export async function updateTask(
       client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).patch(patch)
     );
 
-    // Fetch list name for response
-    const listResult = await getLists();
-    const listName = listResult.data.find((l) => l.id === listId)?.displayName || '';
+    // Use provided listName, or fall back to cache lookup
+    const resolvedName = listName || (await getLists()).data.find((l) => l.id === listId)?.displayName || '';
 
-    return { success: true, data: parseTask(response, listId, listName) };
+    return { success: true, data: parseTask(response, listId, resolvedName) };
   } catch (err) {
     logger.error({ err, listId, taskId }, 'Failed to update To Do task');
     return { success: false, data: null as any, error: (err as Error).message };
   }
 }
 
-export async function completeTask(listId: string, taskId: string): Promise<ServiceResult<TodoTask>> {
-  return updateTask(listId, taskId, { status: 'completed' });
+export async function completeTask(listId: string, taskId: string, listName?: string): Promise<ServiceResult<TodoTask>> {
+  return updateTask(listId, taskId, { status: 'completed' }, listName);
 }
 
-export async function uncompleteTask(listId: string, taskId: string): Promise<ServiceResult<TodoTask>> {
-  return updateTask(listId, taskId, { status: 'notStarted' });
+export async function uncompleteTask(listId: string, taskId: string, listName?: string): Promise<ServiceResult<TodoTask>> {
+  return updateTask(listId, taskId, { status: 'notStarted' }, listName);
 }
 
 export async function deleteTask(listId: string, taskId: string): Promise<ServiceResult<void>> {
@@ -439,6 +439,7 @@ export async function deleteTask(listId: string, taskId: string): Promise<Servic
 
 /**
  * Search tasks across all lists by title keyword.
+ * Uses server-side $filter to reduce data transfer.
  */
 export async function searchTasks(query: string): Promise<ServiceResult<TodoTask[]>> {
   try {
@@ -447,23 +448,26 @@ export async function searchTasks(query: string): Promise<ServiceResult<TodoTask
       return { success: false, data: [], error: listsResult.error };
     }
 
-    const lower = query.toLowerCase();
+    const client = getGraphClient();
+    // Escape single quotes for OData filter
+    const escaped = query.replace(/'/g, "''");
 
     const results = await Promise.all(
-      listsResult.data.map((list) => getTasks(list.id, list.displayName))
+      listsResult.data.map(async (list) => {
+        try {
+          const response = await withRetry(() =>
+            client.api(`/me/todo/lists/${list.id}/tasks`)
+              .query({ $filter: `contains(title,'${escaped}')`, $top: '50' })
+              .get()
+          );
+          return (response.value || []).map((t: any) => parseTask(t, list.id, list.displayName));
+        } catch {
+          return [] as TodoTask[];
+        }
+      })
     );
 
-    const allMatches: TodoTask[] = [];
-    for (const tasksResult of results) {
-      if (tasksResult.success) {
-        const matches = tasksResult.data.filter((t) =>
-          t.title.toLowerCase().includes(lower) ||
-          (t.body && t.body.toLowerCase().includes(lower))
-        );
-        allMatches.push(...matches);
-      }
-    }
-
+    const allMatches: TodoTask[] = results.flat();
     return { success: true, data: allMatches };
   } catch (err) {
     logger.error({ err }, 'Failed to search To Do tasks');
@@ -558,6 +562,7 @@ export async function getAllPendingTasks(): Promise<ServiceResult<TodoTask[]>> {
 
 /**
  * Get tasks completed within a date range (for weekly review).
+ * Uses server-side $filter to avoid fetching entire completion history.
  */
 export async function getCompletedTasksInRange(
   startISO: string,
@@ -569,28 +574,26 @@ export async function getCompletedTasksInRange(
       return { success: false, data: [], error: listsResult.error };
     }
 
-    const start = new Date(startISO).getTime();
-    const end = new Date(endISO).getTime();
+    const client = getGraphClient();
+    // OData filter: completed tasks with completedDateTime in range
+    const filter = `status eq 'completed' and completedDateTime/dateTime ge '${startISO}' and completedDateTime/dateTime le '${endISO}'`;
 
     const results = await Promise.all(
-      listsResult.data.map((list) => getTasks(list.id, list.displayName, { status: 'completed' }))
+      listsResult.data.map(async (list) => {
+        try {
+          const response = await withRetry(() =>
+            client.api(`/me/todo/lists/${list.id}/tasks`)
+              .query({ $filter: filter, $top: '100' })
+              .get()
+          );
+          return (response.value || []).map((t: any) => parseTask(t, list.id, list.displayName));
+        } catch {
+          return [] as TodoTask[];
+        }
+      })
     );
 
-    const completed: TodoTask[] = [];
-    for (const tasksResult of results) {
-      if (tasksResult.success) {
-        for (const task of tasksResult.data) {
-          if (task.completedDateTime) {
-            const doneAt = new Date(task.completedDateTime).getTime();
-            if (doneAt >= start && doneAt <= end) {
-              completed.push(task);
-            }
-          }
-        }
-      }
-    }
-
-    return { success: true, data: completed };
+    return { success: true, data: results.flat() };
   } catch (err) {
     logger.error({ err }, 'Failed to get completed tasks');
     return { success: false, data: [], error: (err as Error).message };
