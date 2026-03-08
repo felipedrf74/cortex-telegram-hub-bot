@@ -229,9 +229,13 @@ export async function getAttachments(
       }));
 
     // Apply content type filter if specified (e.g. 'application/pdf')
+    // Also match by file extension — many senders tag PDFs as 'application/octet-stream'
     if (contentTypeFilter) {
+      const filterLower = contentTypeFilter.toLowerCase();
+      const ext = filterLower === 'application/pdf' ? '.pdf' : null;
       return attachments.filter((a: OutlookAttachment) =>
-        a.contentType.toLowerCase().includes(contentTypeFilter.toLowerCase()),
+        a.contentType.toLowerCase().includes(filterLower) ||
+        (ext && a.name.toLowerCase().endsWith(ext)),
       );
     }
     return attachments;
@@ -273,15 +277,14 @@ export async function downloadAttachment(
 /**
  * Search emails using OData $filter (precise queries, unlike $search which is full-text).
  *
- * OData filter supports:
- *   - from/emailAddress/address eq 'sender@example.com'
- *   - receivedDateTime ge 2026-01-01T00:00:00Z
- *   - hasAttachments eq true
- *   - contains(subject, 'fatura')
+ * IMPORTANT: Personal Outlook/Hotmail accounts have limited $filter support:
+ *   ✅ receivedDateTime ge/lt (date range)
+ *   ✅ hasAttachments eq true
+ *   ✅ from/emailAddress/address eq 'exact@email.com'
+ *   ❌ contains() / startsWith() — NOT supported on personal accounts
+ *   ❌ $filter + $orderby on different fields — may fail on personal accounts
  *
- * Example: searchEmailsByFilter(
- *   "from/emailAddress/address eq 'fatura@viaverde.pt' and receivedDateTime ge 2026-02-01T00:00:00Z and receivedDateTime lt 2026-03-01T00:00:00Z and hasAttachments eq true"
- * )
+ * For sender domain matching, use client-side filtering after fetching by date range.
  */
 export async function searchEmailsByFilter(
   filter: string,
@@ -289,29 +292,52 @@ export async function searchEmailsByFilter(
 ): Promise<OutlookEmail[]> {
   try {
     const client = getGraphClient();
-    const response = await client
-      .api('/me/messages')
-      .filter(filter)
-      .top(maxResults)
-      .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments')
-      .orderby('receivedDateTime DESC')
-      .get();
 
-    return (response.value || []).map((msg: any) => ({
-      id: msg.id || '',
-      conversationId: msg.conversationId || '',
-      from: msg.from?.emailAddress?.address || '',
-      to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
-      subject: msg.subject || '(No subject)',
-      snippet: msg.bodyPreview || '',
-      date: msg.receivedDateTime || '',
-      isRead: msg.isRead || false,
-      importance: msg.importance || 'normal',
-    }));
+    // Try with $orderby first (works on most accounts)
+    try {
+      const response = await client
+        .api('/me/messages')
+        .filter(filter)
+        .top(maxResults)
+        .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments')
+        .orderby('receivedDateTime DESC')
+        .get();
+
+      return mapEmailResponse(response);
+    } catch (orderErr: any) {
+      // If $orderby + $filter fails, retry without $orderby (personal account fallback)
+      if (orderErr?.statusCode === 400) {
+        logger.warn('$filter + $orderby failed, retrying without $orderby (personal account fallback)');
+        const response = await client
+          .api('/me/messages')
+          .filter(filter)
+          .top(maxResults)
+          .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments')
+          .get();
+
+        return mapEmailResponse(response);
+      }
+      throw orderErr;
+    }
   } catch (err) {
     logger.error({ err, filter }, 'Failed to search Outlook emails by filter');
     throw err;
   }
+}
+
+/** Shared mapper for Graph API email responses. */
+function mapEmailResponse(response: any): OutlookEmail[] {
+  return (response.value || []).map((msg: any) => ({
+    id: msg.id || '',
+    conversationId: msg.conversationId || '',
+    from: msg.from?.emailAddress?.address || '',
+    to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
+    subject: msg.subject || '(No subject)',
+    snippet: msg.bodyPreview || '',
+    date: msg.receivedDateTime || '',
+    isRead: msg.isRead || false,
+    importance: msg.importance || 'normal',
+  }));
 }
 
 export async function getRecentEmails(maxResults = 10): Promise<OutlookEmail[]> {

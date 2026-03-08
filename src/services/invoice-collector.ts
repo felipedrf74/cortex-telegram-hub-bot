@@ -32,12 +32,12 @@ const BUILTIN_VENDORS: VendorConfig[] = [
   {
     name: 'ViaVerde',
     senderPatterns: ['viaverde.pt'],
-    subjectPatterns: ['fatura', 'extrato'],
+    subjectPatterns: ['fatura', 'extrato', 'extracto'],  // both PT spellings
     builtin: true,
   },
   {
     name: 'Aegon Santander',
-    senderPatterns: ['aegon.pt', 'aegonsantander.pt'],
+    senderPatterns: ['aegon.pt', 'aegonsantander.pt', 'aegon-santander.pt'],
     subjectPatterns: ['seguro', 'fatura', 'recibo'],
     builtin: true,
   },
@@ -144,40 +144,48 @@ function extractDateFromSubject(subject: string, fallbackYear: number, fallbackM
   return `${fallbackYear}-${fallbackMonth.toString().padStart(2, '0')}-15`;
 }
 
-// ─── OData Filter Builder ───────────────────────────────────────────
+// ─── Client-Side Sender Matching ────────────────────────────────────
 
 /**
- * Build an OData $filter string for a vendor in a given date range.
+ * Check if an email's sender matches any of a vendor's sender patterns.
+ * Supports both domain-level ("viaverde.pt") and exact address ("noreply@viaverde.pt") matching.
  *
- * For vendors with domain-level sender patterns (e.g. "viaverde.pt"),
- * we use `contains()` on the sender address. For exact addresses, we use `eq`.
+ * Personal Outlook/Hotmail accounts do NOT support `contains()` in OData $filter,
+ * so we fetch all emails with attachments in the month and filter sender client-side.
  *
- * We also filter by `hasAttachments eq true` to skip notification-only emails.
+ * Domain matching extracts the registrable domain from the sender's email and compares
+ * against the pattern. E.g. "noreply@docs.santanderconsumer.pt" → matches "santanderconsumer.pt"
+ * but NOT "santander.pt" (which would be a different registrable domain).
  */
-function buildVendorFilter(
-  vendor: VendorConfig,
-  startDate: string,   // ISO e.g. "2026-02-01T00:00:00Z"
-  endDate: string,     // ISO e.g. "2026-03-01T00:00:00Z"
-): string[] {
-  // One filter per sender pattern (Graph API doesn't support OR in $filter for different fields)
-  return vendor.senderPatterns.map((sender) => {
-    const senderFilter = sender.includes('@')
-      ? `from/emailAddress/address eq '${sender}'`
-      : `contains(from/emailAddress/address, '${sender}')`;
+function senderMatchesVendor(email: OutlookEmail, vendor: VendorConfig): boolean {
+  const emailFrom = email.from.toLowerCase();
+  // Extract the domain part after @
+  const atIdx = emailFrom.indexOf('@');
+  if (atIdx === -1) return false;
+  const emailDomain = emailFrom.slice(atIdx + 1); // e.g. "docs.aegon-santander.pt"
 
-    return `${senderFilter} and receivedDateTime ge ${startDate} and receivedDateTime lt ${endDate} and hasAttachments eq true`;
+  return vendor.senderPatterns.some((pattern) => {
+    const p = pattern.toLowerCase();
+    // Exact address match (pattern contains @)
+    if (p.includes('@')) return emailFrom === p;
+    // Domain match: the sender's domain must be exactly the pattern OR a subdomain of it
+    // e.g. "docs.viaverde.pt" matches "viaverde.pt", but "aegon-santander.pt" does NOT match "santander.pt"
+    return emailDomain === p || emailDomain.endsWith(`.${p}`);
   });
 }
 
 // ─── Core Collection Logic ──────────────────────────────────────────
 
 /**
- * Collect and file invoices for a single vendor in a date range.
+ * Collect and file invoices for a single vendor from pre-fetched emails.
+ *
+ * The caller fetches ALL emails-with-attachments for the month in one Graph API
+ * call, then passes them here for client-side sender + subject filtering.
+ * This avoids the `contains()` OData limitation on personal Outlook accounts.
  */
 async function collectForVendor(
   vendor: VendorConfig,
-  startDate: string,
-  endDate: string,
+  allEmails: OutlookEmail[],
   targetYear: number,
   targetMonth: number,
 ): Promise<VendorCollectionResult> {
@@ -189,122 +197,116 @@ async function collectForVendor(
     details: [],
   };
 
-  const filters = buildVendorFilter(vendor, startDate, endDate);
+  // Client-side: filter emails matching this vendor's sender patterns
+  const vendorEmails = allEmails.filter((e) => senderMatchesVendor(e, vendor));
 
-  for (const filter of filters) {
-    let emails: OutlookEmail[];
-    try {
-      emails = await searchEmailsByFilter(filter);
-    } catch (err) {
-      logger.error({ err, vendor: vendor.name, filter }, 'Failed to search emails for vendor');
-      result.errors++;
-      result.details.push(`⚠️ Erro ao pesquisar emails: ${err instanceof Error ? err.message : 'unknown'}`);
+  logger.info(
+    { vendor: vendor.name, matched: vendorEmails.length, total: allEmails.length },
+    'Filtered emails for vendor',
+  );
+
+  for (const email of vendorEmails) {
+    // Check if we've already processed this email
+    if (isEmailAlreadyFiled(email.id)) {
+      result.duplicates++;
+      result.details.push(`⏭ Duplicado: ${email.subject}`);
       continue;
     }
 
-    for (const email of emails) {
-      // Check if we've already processed this email
-      if (isEmailAlreadyFiled(email.id)) {
-        result.duplicates++;
-        result.details.push(`⏭ Duplicado: ${email.subject}`);
-        continue;
-      }
-
-      // Check subject matches vendor patterns (email may be from same sender but not an invoice)
-      const subjectLower = email.subject.toLowerCase();
-      const hasSubjectMatch = vendor.subjectPatterns.some((p) =>
-        subjectLower.includes(p.toLowerCase()),
+    // Check subject matches vendor patterns (email may be from same sender but not an invoice)
+    const subjectLower = email.subject.toLowerCase();
+    const hasSubjectMatch = vendor.subjectPatterns.some((p) =>
+      subjectLower.includes(p.toLowerCase()),
+    );
+    if (!hasSubjectMatch) {
+      logger.debug(
+        { subject: email.subject, vendor: vendor.name },
+        'Email subject does not match vendor patterns, skipping',
       );
-      if (!hasSubjectMatch) {
-        logger.debug(
-          { subject: email.subject, vendor: vendor.name },
-          'Email subject does not match vendor patterns, skipping',
-        );
+      continue;
+    }
+
+    // Get PDF attachments
+    let pdfAttachments;
+    try {
+      pdfAttachments = await getAttachments(email.id, 'application/pdf');
+    } catch (err) {
+      logger.error({ err, emailId: email.id }, 'Failed to list attachments');
+      result.errors++;
+      result.details.push(`⚠️ Erro ao ler anexos: ${email.subject}`);
+      continue;
+    }
+
+    if (pdfAttachments.length === 0) {
+      logger.debug({ subject: email.subject }, 'No PDF attachments found');
+      continue;
+    }
+
+    // Process each PDF attachment
+    for (const att of pdfAttachments) {
+      // Extract metadata from email subject
+      const invoiceNumber = extractInvoiceNumber(email.subject);
+      const documentDate = extractDateFromSubject(email.subject, targetYear, targetMonth);
+
+      // Check for duplicate by invoice number
+      if (isDuplicate(vendor.name, invoiceNumber)) {
+        result.duplicates++;
+        result.details.push(`⏭ Duplicado: ${att.name} (${invoiceNumber})`);
+        recordFiling({
+          vendor: vendor.name,
+          invoice_number: invoiceNumber,
+          source: 'email',
+          source_ref: email.id,
+          status: 'duplicate',
+        });
         continue;
       }
 
-      // Get PDF attachments
-      let pdfAttachments;
+      // Download and file the PDF
       try {
-        pdfAttachments = await getAttachments(email.id, 'application/pdf');
-      } catch (err) {
-        logger.error({ err, emailId: email.id }, 'Failed to list attachments');
-        result.errors++;
-        result.details.push(`⚠️ Erro ao ler anexos: ${email.subject}`);
-        continue;
-      }
+        const download = await downloadAttachment(email.id, att.id);
+        const filingResult = await filePdf(
+          download.buffer,
+          vendor.name,
+          documentDate,
+          invoiceNumber,
+          att.name,
+        );
 
-      if (pdfAttachments.length === 0) {
-        logger.debug({ subject: email.subject }, 'No PDF attachments found');
-        continue;
-      }
-
-      // Process each PDF attachment
-      for (const att of pdfAttachments) {
-        // Extract metadata from email subject
-        const invoiceNumber = extractInvoiceNumber(email.subject);
-        const documentDate = extractDateFromSubject(email.subject, targetYear, targetMonth);
-
-        // Check for duplicate by invoice number
-        if (isDuplicate(vendor.name, invoiceNumber)) {
-          result.duplicates++;
-          result.details.push(`⏭ Duplicado: ${att.name} (${invoiceNumber})`);
+        if (filingResult.success) {
+          result.filed++;
+          result.details.push(`✅ ${att.name} → ${filingResult.folderPath}/${filingResult.filename}`);
           recordFiling({
             vendor: vendor.name,
+            amount: null,  // Could extract from PDF in Phase 2
+            document_date: documentDate,
             invoice_number: invoiceNumber,
             source: 'email',
             source_ref: email.id,
-            status: 'duplicate',
+            remote_path: filingResult.filePath,
+            folder_path: filingResult.folderPath,
+            filename: filingResult.filename,
+            file_size_bytes: download.buffer.length,
+            status: 'filed',
           });
-          continue;
-        }
-
-        // Download and file the PDF
-        try {
-          const download = await downloadAttachment(email.id, att.id);
-          const filingResult = await filePdf(
-            download.buffer,
-            vendor.name,
-            documentDate,
-            invoiceNumber,
-            att.name,
-          );
-
-          if (filingResult.success) {
-            result.filed++;
-            result.details.push(`✅ ${att.name} → ${filingResult.folderPath}/${filingResult.filename}`);
-            recordFiling({
-              vendor: vendor.name,
-              amount: null,  // Could extract from PDF in Phase 2
-              document_date: documentDate,
-              invoice_number: invoiceNumber,
-              source: 'email',
-              source_ref: email.id,
-              remote_path: filingResult.filePath,
-              folder_path: filingResult.folderPath,
-              filename: filingResult.filename,
-              file_size_bytes: download.buffer.length,
-              status: 'filed',
-            });
-          } else {
-            result.errors++;
-            result.details.push(`⚠️ Falha: ${att.name} — ${filingResult.error}`);
-            recordFiling({
-              vendor: vendor.name,
-              document_date: documentDate,
-              invoice_number: invoiceNumber,
-              source: 'email',
-              source_ref: email.id,
-              status: 'failed',
-              error_message: filingResult.error,
-            });
-          }
-        } catch (err) {
+        } else {
           result.errors++;
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          result.details.push(`⚠️ Erro: ${att.name} — ${message}`);
-          logger.error({ err, emailId: email.id, attachmentId: att.id }, 'Failed to download/file attachment');
+          result.details.push(`⚠️ Falha: ${att.name} — ${filingResult.error}`);
+          recordFiling({
+            vendor: vendor.name,
+            document_date: documentDate,
+            invoice_number: invoiceNumber,
+            source: 'email',
+            source_ref: email.id,
+            status: 'failed',
+            error_message: filingResult.error,
+          });
         }
+      } catch (err) {
+        result.errors++;
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        result.details.push(`⚠️ Erro: ${att.name} — ${message}`);
+        logger.error({ err, emailId: email.id, attachmentId: att.id }, 'Failed to download/file attachment');
       }
     }
   }
@@ -346,12 +348,33 @@ export async function collectMonthlyInvoices(
   const startDate = startDt.toISO()!;
   const endDate = endDt.toISO()!;
 
+  // Fetch ALL emails with attachments in the month in a single Graph API call.
+  // Personal Outlook/Hotmail accounts don't support `contains()` in $filter,
+  // so we use a simple date range + hasAttachments filter and match senders client-side.
+  let allEmails: OutlookEmail[];
+  try {
+    const filter = `receivedDateTime ge ${startDate} and receivedDateTime lt ${endDate} and hasAttachments eq true`;
+    allEmails = await searchEmailsByFilter(filter, 250);
+    logger.info(
+      { year, month, emailCount: allEmails.length },
+      'Fetched emails with attachments for month',
+    );
+  } catch (err) {
+    logger.error({ err, year, month }, 'Failed to fetch monthly emails');
+    return {
+      year, month, monthLabel: monthFolder,
+      vendors: [],
+      totalFiled: 0, totalDuplicates: 0, totalErrors: 1,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
   const vendors = getAllVendors();
   const vendorResults: VendorCollectionResult[] = [];
 
   for (const vendor of vendors) {
     try {
-      const vResult = await collectForVendor(vendor, startDate, endDate, year, month);
+      const vResult = await collectForVendor(vendor, allEmails, year, month);
       vendorResults.push(vResult);
       logger.info(
         { vendor: vendor.name, filed: vResult.filed, duplicates: vResult.duplicates, errors: vResult.errors },
