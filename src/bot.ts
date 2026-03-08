@@ -101,12 +101,14 @@ function getCallback(ref: string): any | null {
 
 // ─── Caption → Outlook Calendar Category ────────────────────────────
 
-function parseCaptionCategory(caption: string): string[] | undefined {
-  if (!caption) return undefined;
-  const upper = caption.toUpperCase().trim();
-  if (upper.includes('SMS')) return ['Blue Category'];
-  if (upper.includes('EC')) return ['Green Category'];
-  return undefined;
+function parseCaptionCategory(caption: string): string[] {
+  if (caption) {
+    const upper = caption.toUpperCase().trim();
+    if (upper.includes('SMS')) return ['Blue Category'];
+    if (upper.includes('EC')) return ['Green Category'];
+  }
+  // Default: Red Category when no SMS/EC specified
+  return ['Red Category'];
 }
 
 // ─── Pending Edit State (per user) ──────────────────────────────────
