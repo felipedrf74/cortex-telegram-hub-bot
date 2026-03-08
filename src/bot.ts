@@ -101,14 +101,19 @@ function getCallback(ref: string): any | null {
 
 // ─── Caption → Outlook Calendar Category ────────────────────────────
 
-function parseCaptionCategory(caption: string): string[] {
+interface CalendarCaptionInfo {
+  categories: string[];
+  prefix: string;     // "SMS - ", "EC - ", or ""
+  label: string;      // "SMS", "EC", or "Pessoal"
+}
+
+function parseCaptionInfo(caption: string): CalendarCaptionInfo {
   if (caption) {
     const upper = caption.toUpperCase().trim();
-    if (upper.includes('SMS')) return ['Blue Category'];
-    if (upper.includes('EC')) return ['Green Category'];
+    if (upper.includes('SMS')) return { categories: ['Blue Category'], prefix: 'SMS - ', label: 'SMS' };
+    if (upper.includes('EC')) return { categories: ['Green Category'], prefix: 'EC - ', label: 'EC' };
   }
-  // Default: Red Category when no SMS/EC specified
-  return ['Red Category'];
+  return { categories: ['Red Category'], prefix: '', label: 'Pessoal' };
 }
 
 // ─── Pending Edit State (per user) ──────────────────────────────────
@@ -1398,7 +1403,7 @@ export function createBot(): Bot {
     }
   });
 
-  // ── Calendar Correction Callback Handler ──
+  // ── Calendar Callback Handler (create / cancel / undo) ──
   bot.callbackQuery(/^cal:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
     const parts = data.split(':');
@@ -1407,22 +1412,67 @@ export function createBot(): Bot {
 
     try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
 
-    if (action === 'undo') {
-      const cbData = getCallback(ref);
-      if (!cbData) {
-        await ctx.editMessageText('⚠️ Ação expirada. Envie a foto novamente.');
+    const cbData = getCallback(ref);
+    if (!cbData) {
+      await ctx.editMessageText('⚠️ Ação expirada. Envie a foto novamente.');
+      return;
+    }
+
+    if (action === 'create') {
+      // ── Create the confirmed calendar events ──
+      await ctx.editMessageText('⏳ Criando eventos no calendário...');
+
+      const events = cbData.events as { title: string; start: string; end: string; description?: string }[];
+      const categories = cbData.categories as string[];
+      let successCount = 0;
+      const createdTitles: string[] = [];
+
+      for (const event of events) {
+        try {
+          const created = await createCalendarEvent({
+            title: event.title,
+            start: event.start,
+            end: event.end,
+            description: event.description,
+            categories,
+          });
+          successCount++;
+          createdTitles.push(created.summary);
+        } catch (err) {
+          logger.error({ err, eventTitle: event.title }, 'Failed to create calendar event from image');
+        }
+      }
+
+      if (successCount === 0) {
+        await ctx.editMessageText('⚠️ Falha ao criar os eventos. Tente novamente.');
         return;
       }
+
+      let msg = `📅✅ <b>${successCount} evento${successCount > 1 ? 's' : ''} criado${successCount > 1 ? 's' : ''}:</b>\n`;
+      for (const title of createdTitles) {
+        msg += `\n  📌 ${escapeHtml(title)}`;
+      }
+      msg += `\n\n🏷️ ${escapeHtml(categories[0])}`;
+
+      try {
+        await ctx.editMessageText(msg, { parse_mode: 'HTML' });
+      } catch {
+        await ctx.editMessageText(msg.replace(/<[^>]*>/g, ''));
+      }
+
+    } else if (action === 'cancel') {
+      await ctx.editMessageText('❌ Criação de eventos cancelada.');
+
+    } else if (action === 'undo') {
+      // ── Reprocess as task instead ──
       await ctx.editMessageText('🔄 Reprocessando como tarefa...');
-      // Re-classify with task hint
       const reClassified = await classifyAndExtractImage(cbData.base64, cbData.mediaType, (cbData.caption || '') + ' [TASK LIST]');
       if (reClassified.type === 'task') {
         await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '', cbData.base64, cbData.mediaType);
       } else {
-        // Force any result into task format
-        const events = reClassified.type === 'calendar' ? reClassified.events.map(e => e.title) : [];
+        const evtTitles = reClassified.type === 'calendar' ? reClassified.events.map(e => e.title) : [];
         await handleTaskExtraction(ctx as any,
-          { type: 'task', title: events.length > 0 ? 'Items from image' : 'Photo', subtasks: events },
+          { type: 'task', title: evtTitles.length > 0 ? 'Items from image' : 'Photo', subtasks: evtTitles },
           cbData.caption || '', cbData.base64, cbData.mediaType);
       }
     }
@@ -1715,43 +1765,96 @@ async function handleCalendarExtraction(
     return;
   }
 
-  const categories = parseCaptionCategory(caption);
-  let successCount = 0;
-  const createdEvents: string[] = [];
+  const info = parseCaptionInfo(caption);
 
-  for (const event of result.events) {
-    try {
-      const created = await createCalendarEvent({
-        title: event.title,
-        start: event.start,
-        end: event.end,
-        description: event.description,
-        categories,
-      });
-      successCount++;
-      createdEvents.push(created.summary);
-    } catch (err) {
-      logger.error({ err, eventTitle: event.title }, 'Failed to create calendar event from image');
+  // ── Apply prefix to event titles (SMS - / EC - ) ──
+  const prefixedEvents = result.events.map((e) => ({
+    ...e,
+    title: info.prefix ? `${info.prefix}${e.title}` : e.title,
+  }));
+
+  // ── Fetch existing calendar events to detect conflicts ──
+  const starts = prefixedEvents.map((e) => new Date(e.start).getTime());
+  const ends = prefixedEvents.map((e) => new Date(e.end).getTime());
+  const rangeStart = new Date(Math.min(...starts));
+  const rangeEnd = new Date(Math.max(...ends));
+  // Add 1 day buffer at end
+  rangeEnd.setDate(rangeEnd.getDate() + 1);
+
+  let existingEvents: { summary: string; start: string; end: string }[] = [];
+  try {
+    existingEvents = await getEvents(rangeStart.toISOString(), rangeEnd.toISOString());
+  } catch (err) {
+    logger.warn({ err }, 'Failed to fetch existing calendar events for conflict check');
+  }
+
+  // ── Detect conflicts (overlapping time slots) ──
+  interface Conflict {
+    newEvent: string;
+    newTime: string;
+    existingEvent: string;
+    existingTime: string;
+  }
+  const conflicts: Conflict[] = [];
+
+  for (const newEvt of prefixedEvents) {
+    const nStart = new Date(newEvt.start).getTime();
+    const nEnd = new Date(newEvt.end).getTime();
+
+    for (const existing of existingEvents) {
+      const eStart = new Date(existing.start).getTime();
+      const eEnd = new Date(existing.end).getTime();
+
+      // Two events overlap if one starts before the other ends
+      if (nStart < eEnd && nEnd > eStart) {
+        conflicts.push({
+          newEvent: newEvt.title,
+          newTime: `${formatTime(newEvt.start)}-${formatTime(newEvt.end)}`,
+          existingEvent: existing.summary,
+          existingTime: `${formatTime(existing.start)}-${formatTime(existing.end)}`,
+        });
+      }
     }
   }
 
-  if (successCount === 0) {
-    await ctx.reply('⚠️ Falha ao criar os eventos do calendário. Tente novamente.');
-    return;
+  // ── Build preview message ──
+  let msg = `📅 <b>${prefixedEvents.length} evento${prefixedEvents.length > 1 ? 's' : ''} detectado${prefixedEvents.length > 1 ? 's' : ''} (${escapeHtml(info.label)}):</b>\n`;
+  for (const evt of prefixedEvents) {
+    const day = new Date(evt.start).toLocaleDateString('pt-PT', { weekday: 'short', day: 'numeric' });
+    msg += `\n  📌 ${escapeHtml(evt.title)} — ${day} ${formatTime(evt.start)}-${formatTime(evt.end)}`;
   }
 
-  let msg = `📅✅ <b>${successCount} evento${successCount > 1 ? 's' : ''} criado${successCount > 1 ? 's' : ''} no calendário:</b>\n`;
-  for (const title of createdEvents) {
-    msg += `\n  📌 ${escapeHtml(title)}`;
-  }
-  if (categories) {
-    msg += `\n\n🏷️ Categoria: <b>${escapeHtml(categories[0])}</b>`;
+  msg += `\n\n🏷️ Categoria: <b>${escapeHtml(info.categories[0])}</b>`;
+
+  if (conflicts.length > 0) {
+    msg += `\n\n⚠️ <b>${conflicts.length} conflito${conflicts.length > 1 ? 's' : ''} com eventos existentes:</b>`;
+    // Deduplicate and limit display
+    const shown = new Set<string>();
+    for (const c of conflicts) {
+      const key = `${c.newEvent}|${c.existingEvent}`;
+      if (shown.has(key)) continue;
+      shown.add(key);
+      msg += `\n  🔴 <b>${escapeHtml(c.newEvent)}</b> (${c.newTime}) ↔ <b>${escapeHtml(c.existingEvent)}</b> (${c.existingTime})`;
+      if (shown.size >= 15) { msg += '\n  ...'; break; }
+    }
+  } else {
+    msg += '\n\n✅ Sem conflitos com eventos existentes.';
   }
 
-  // Correction button: "Not a calendar → reprocess as task"
-  const ref = storeCallback({ base64, mediaType, caption });
+  // ── Store pending events and show confirmation buttons ──
+  const ref = storeCallback({
+    events: prefixedEvents,
+    categories: info.categories,
+    base64,
+    mediaType,
+    caption,
+  });
+
   const keyboard = new InlineKeyboard()
-    .text('❌ Não é calendário', `cal:undo:${ref}`);
+    .text(`✅ Criar ${prefixedEvents.length} evento${prefixedEvents.length > 1 ? 's' : ''}`, `cal:create:${ref}`)
+    .text('❌ Cancelar', `cal:cancel:${ref}`)
+    .row()
+    .text('🔄 Não é calendário', `cal:undo:${ref}`);
 
   await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
 }
