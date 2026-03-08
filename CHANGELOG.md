@@ -4,20 +4,41 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.5.1] — 2026-03-08
+
+### Invoice Filing: SSH/SCP → Local Filesystem
+
+Replaced SSH/SCP transfer to Mac with direct local filesystem writes to iCloud Drive FUSE mount on Linux.
+
+#### Simplified Architecture
+- **Local writes instead of SSH/SCP** — `fs.mkdirSync` + `fs.writeFileSync` replace `execSync` SSH/SCP commands
+- **Removed 4 dependencies**: `child_process`, `os`, SSH key management, reverse tunnel infrastructure
+- **Config reduced from 7 to 3 settings**: `INVOICE_FILING_ENABLED`, `INVOICE_LOCAL_PATH`, `INVOICE_MIN_CONFIDENCE`
+- **Removed autossh reverse tunnel**: No longer need Mac ← Server SSH bridge
+
+#### What's Unchanged
+- Haiku vision invoice detection + metadata extraction
+- Year/month folder structure with Portuguese month names
+- Smart filenames + collision prevention
+- Confidence threshold + correction flow ("Não é nota fiscal")
+- Graceful degradation when unconfigured
+
+---
+
 ## [1.5.0] — 2026-03-07
 
 ### Invoice/Receipt Photo Filing to iCloud
 
-Automatic invoice detection and filing from Telegram photos to iCloud Drive via SSH/SCP.
+Automatic invoice detection and filing from Telegram photos to iCloud Drive.
 
 #### New Feature: Invoice Filing Engine (`src/services/invoice-filer.ts`)
 - **Haiku vision analysis** — Single API call detects invoices AND extracts metadata (vendor, date, amount, invoice number) at ~$0.001/call
-- **iCloud filing via SSH/SCP** — Files transferred from Linux server to Mac's iCloud Drive folder, synced automatically by macOS
+- **iCloud filing** — Files written directly to iCloud Drive folder, synced automatically
 - **Year/month folder structure** — Auto-creates `2026/Mar-2026/` directories with Portuguese month names (Jan, Fev, Mar, Abr, Mai, Jun, Jul, Ago, Set, Out, Nov, Dez)
 - **Smart filenames** — `YYYY-MM-DD_Vendor_Amount_InvoiceNumber_SUFFIX.jpg` format with filesystem-safe sanitization
 - **Confidence threshold** — Only files images with ≥70% invoice confidence (configurable via `INVOICE_MIN_CONFIDENCE`)
 - **Correction flow** — Inline "Não é nota fiscal" button re-routes misclassified images to task extraction
-- **Graceful degradation** — Feature auto-disables when SSH is unconfigured; SSH failures fall through to existing task extraction
+- **Graceful degradation** — Feature auto-disables when path is unconfigured; errors fall through to existing task extraction
 
 #### Photo Handler Refactored (`src/bot.ts`)
 - Extracted `handlePhotoTaskExtraction()` for reuse from both direct photo flow and correction callback
@@ -25,9 +46,8 @@ Automatic invoice detection and filing from Telegram photos to iCloud Drive via 
 - New `nf:` callback namespace for invoice correction with 5-min TTL callbackStore
 
 #### Configuration (`src/config.ts`)
-- New `invoices` config section: `INVOICE_FILING_ENABLED`, `INVOICE_SSH_HOST`, `INVOICE_SSH_PORT`, `INVOICE_SSH_USER`, `INVOICE_SSH_KEY`, `INVOICE_REMOTE_PATH`, `INVOICE_MIN_CONFIDENCE`
-- `isInvoiceFilingConfigured()` guard checks enabled + SSH host + remote path
-- Configurable SSH port for reverse tunnel support (default: 22)
+- New `invoices` config section: `INVOICE_FILING_ENABLED`, `INVOICE_LOCAL_PATH`, `INVOICE_MIN_CONFIDENCE`
+- `isInvoiceFilingConfigured()` guard checks enabled + local path
 
 #### New Files
 - `src/services/invoice-filer.ts`
