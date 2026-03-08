@@ -87,6 +87,29 @@ export function getFilingsForMonth(year: number, month: number): InvoiceFiling[]
   `).all(startDate, endDate) as InvoiceFiling[];
 }
 
+/**
+ * Delete all Amazon filings for a specific year/month.
+ * Used by the /amazon --force flag to re-collect invoices after a bad run.
+ * Returns the number of records deleted.
+ */
+export function deleteAmazonFilings(year: number, month: number): number {
+  const db = getDb();
+  const monthStr = month.toString().padStart(2, '0');
+  const startDate = `${year}-${monthStr}-01`;
+  const endDate = month === 12
+    ? `${year + 1}-01-01`
+    : `${year}-${(month + 1).toString().padStart(2, '0')}-01`;
+
+  const result = db.prepare(`
+    DELETE FROM invoice_filings
+    WHERE vendor = 'Amazon.es'
+      AND source = 'amazon'
+      AND document_date >= ? AND document_date < ?
+  `).run(startDate, endDate);
+
+  return result.changes;
+}
+
 /** Get recent filings for the /invoices-log display. */
 export function getRecentFilings(limit: number = 20): InvoiceFiling[] {
   const db = getDb();

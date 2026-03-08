@@ -1,4 +1,4 @@
-import { Bot, Context, GrammyError, HttpError, InlineKeyboard } from 'grammy';
+import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config';
 import { logger } from './utils/logger';
 import { routeMessage, isSystemCommand } from './router';
@@ -22,8 +22,12 @@ import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
 import { analyzeInvoiceImage, fileInvoice, isInvoiceFilingConfigured, PT_MONTHS } from './services/invoice-filer';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
-import { recordFiling } from './state/invoice-filings';
+import { recordFiling, deleteAmazonFilings } from './state/invoice-filings';
 import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
+import {
+  collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured,
+  resolveReply, registerReplyWaiter,
+} from './services/amazon-collector';
 import fs from 'fs';
 import path from 'path';
 
@@ -1081,6 +1085,79 @@ export function createBot(): Bot {
     });
   });
 
+  // /amazon [YYYY-MM] [--force] — Manual trigger for Amazon.es invoice collection (with 2FA support)
+  // --force: clears previous filing records for the target month and re-downloads all invoices
+  bot.command('amazon', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isAmazonConfigured()) {
+        await ctx.reply(
+          '⚠️ Amazon não configurado.\n' +
+          'Defina <code>AMAZON_EMAIL</code>, <code>AMAZON_PASSWORD</code> e <code>AMAZON_COLLECTION_ENABLED=true</code> no .env',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const rawArg = ctx.match?.trim() || '';
+      const force = /--force/i.test(rawArg);
+      const arg = rawArg.replace(/--force/gi, '').trim();
+
+      let year: number, month: number;
+
+      if (arg && /^\d{4}-\d{2}$/.test(arg)) {
+        const [y, m] = arg.split('-').map(Number);
+        year = y;
+        month = m;
+      } else {
+        // Default: current month (Amazon invoices are available immediately)
+        const current = now();
+        year = current.year;
+        month = current.month;
+      }
+
+      const monthLabel = `${PT_MONTHS[month]}-${year}`;
+
+      // If --force, delete stale filing records for this month first
+      if (force) {
+        const deleted = deleteAmazonFilings(year, month);
+        if (deleted > 0) {
+          await ctx.reply(
+            `🗑 <b>--force</b>: ${deleted} registo(s) anterior(es) removido(s) para ${monthLabel}.`,
+            { parse_mode: 'HTML' },
+          );
+        }
+      }
+
+      await ctx.reply(`🛒 A recolher faturas Amazon.es para <b>${monthLabel}</b>...`, { parse_mode: 'HTML' });
+
+      try {
+        // Interactive Telegram callbacks for 2FA
+        const chatId = ctx.chat.id;
+        const sendMessage = async (text: string) => {
+          await ctx.reply(text, { parse_mode: 'HTML' });
+        };
+        const sendScreenshot = async (buffer: Buffer) => {
+          await ctx.replyWithPhoto(new InputFile(buffer, 'amazon-2fa.jpg'));
+        };
+        const waitForReply = (timeoutMs: number) => registerReplyWaiter(chatId, timeoutMs);
+
+        const result = await collectAmazonInvoices(year, month, sendMessage, sendScreenshot, waitForReply);
+        const notification = formatAmazonNotification(result);
+
+        for (const chunk of splitMessage(notification)) {
+          try {
+            await ctx.reply(chunk, { parse_mode: 'HTML' });
+          } catch {
+            await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Manual Amazon invoice collection failed');
+        await ctx.reply('⚠️ Recolha Amazon falhou. Verificar logs.');
+      }
+    });
+  });
+
   // ── Inline Keyboard Callback Handlers ──
   bot.callbackQuery(/^td:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
@@ -1313,6 +1390,9 @@ export function createBot(): Bot {
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     if (!text) return;
+
+    // Check for pending Amazon 2FA reply (OTP code or CAPTCHA answer)
+    if (resolveReply(ctx.chat.id, text)) return;
 
     // Check for pending inline edit (td:ef flow)
     const userId = ctx.from.id;

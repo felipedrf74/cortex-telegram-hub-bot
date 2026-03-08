@@ -11,6 +11,7 @@ import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDa
 import { runContentDiscovery } from './content-discovery';
 import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
 import { isInvoiceFilingConfigured } from './invoice-filer';
+import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -239,6 +240,42 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Monthly Amazon.es invoice collection — 1st of each month at 09:15
+  // Runs 15 min after email vendor collection. No interactive 2FA in cron mode.
+  cron.schedule('15 9 1 * *', async () => {
+    if (!config.invoices.amazonEnabled || !isAmazonConfigured() || !isInvoiceFilingConfigured()) return;
+
+    try {
+      const prev = now().minus({ months: 1 });
+
+      // Cron mode: no Telegram callbacks for 2FA
+      const result = await collectAmazonInvoices(prev.year, prev.month);
+
+      let notification: string;
+      if (result.twoFactorRequired && result.totalFiled === 0) {
+        // Session expired + couldn't complete 2FA automatically
+        notification = formatAmazonNotification(result);
+      } else {
+        notification = formatAmazonNotification(result);
+      }
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send Amazon collection notification');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Monthly Amazon invoice collection failed');
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, '⚠️ Recolha mensal Amazon falhou. Verificar logs.');
+        } catch {}
+      }
+    }
+  }, { timezone: config.app.timezone });
+
   // Proactive conflict detection — check tomorrow's calendar at 19:30 for overlapping events
   cron.schedule('30 19 * * *', async () => {
     if (!isAnyCalendarConfigured()) return;
@@ -288,7 +325,7 @@ export function startScheduler(bot: Bot): void {
   }, { timezone: config.app.timezone });
 
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st of month 09:00), conflict detection (19:30)`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), conflict detection (19:30)`
   );
 }
 

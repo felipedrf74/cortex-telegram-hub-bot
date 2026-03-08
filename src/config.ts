@@ -61,6 +61,12 @@ export const config = {
     compressionEnabled: (process.env.INVOICE_COMPRESSION_ENABLED || 'true') === 'true',
     jpegQuality: parseInt(process.env.INVOICE_JPEG_QUALITY || '80', 10),
     monthlyCollectionEnabled: (process.env.INVOICE_MONTHLY_COLLECTION || 'true') === 'true',
+    // Amazon.es invoice collection (browser automation via Playwright)
+    amazonEnabled: (process.env.AMAZON_COLLECTION_ENABLED || 'false') === 'true',
+    amazonEmail: process.env.AMAZON_EMAIL || '',
+    amazonPassword: process.env.AMAZON_PASSWORD || '',
+    amazonSessionPath: process.env.AMAZON_SESSION_PATH || './data/amazon-session.json',
+    amazonHeadless: (process.env.AMAZON_HEADLESS || 'true') === 'true',
   },
   rateLimit: {
     maxMessagesPerMinute: 30,
