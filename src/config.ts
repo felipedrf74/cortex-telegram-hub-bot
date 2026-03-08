@@ -49,6 +49,15 @@ export const config = {
     digestEnabled: (process.env.TODO_DIGEST_ENABLED || 'true') === 'true',
     digestTime: process.env.TODO_DIGEST_TIME || '08:00',
   },
+  // ── Invoice/Receipt Filing ──────────────────────────────────────────
+  invoices: {
+    enabled: (process.env.INVOICE_FILING_ENABLED || 'true') === 'true',
+    sshHost: process.env.INVOICE_SSH_HOST || '',
+    sshUser: process.env.INVOICE_SSH_USER || '',
+    sshKeyPath: process.env.INVOICE_SSH_KEY || '',
+    remotePath: process.env.INVOICE_REMOTE_PATH || '',
+    minConfidence: parseFloat(process.env.INVOICE_MIN_CONFIDENCE || '0.70'),
+  },
   rateLimit: {
     maxMessagesPerMinute: 30,
   },

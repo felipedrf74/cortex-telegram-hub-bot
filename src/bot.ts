@@ -20,6 +20,7 @@ import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDa
 import { extractImageContent } from './services/anthropic';
 import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
+import { analyzeInvoiceImage, fileInvoice, isInvoiceFilingConfigured } from './services/invoice-filer';
 import fs from 'fs';
 import path from 'path';
 
@@ -1141,6 +1142,26 @@ export function createBot(): Bot {
     }
   });
 
+  // ── Invoice Correction Callback Handler ──
+  bot.callbackQuery(/^nf:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1];
+    const ref = parts[2];
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    if (action === 'undo') {
+      const cbData = getCallback(ref);
+      if (!cbData) {
+        await ctx.editMessageText('⚠️ Ação expirada. Envie a foto novamente.');
+        return;
+      }
+      await ctx.editMessageText('🔄 Reprocessando como tarefa...');
+      await handlePhotoTaskExtraction(ctx as any, cbData.base64, cbData.mediaType, cbData.caption || '');
+    }
+  });
+
   // ── Photo handler: Vision → Task creation ──
   bot.on('message:photo', async (ctx) => {
     enqueue(ctx.from.id, async () => {
@@ -1263,14 +1284,13 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
     const caption = ctx.message?.caption || '';
     const userId = ctx.from?.id;
 
-    // Route photo to active domain if caption suggests it
+    // ── Branch 1: Caption-based non-secretary domain routing (unchanged) ──
     if (caption) {
       const { keywordMatch } = require('./router/classifier');
       const domainFromCaption = keywordMatch(caption) as DomainName | null;
       const activeDomain = domainFromCaption || (userId ? lastActiveDomain.get(userId) : null);
 
       if (activeDomain && activeDomain !== 'secretary') {
-        // Route to non-secretary domain with photo context
         const handler = DOMAIN_HANDLERS[activeDomain];
         const photoContext = `[Photo attached] ${caption}`;
         const response = await handler(photoContext);
@@ -1287,87 +1307,126 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
       }
     }
 
-    // Default behavior: extract task from image via vision
-    if (!msTodo.isOutlookTodoConfigured()) {
-      await ctx.reply('📷 Photo received, but Microsoft To Do is not configured.');
-      return;
-    }
-
-    // Get largest photo (last in array)
+    // ── Download image (needed for both invoice filing and task extraction) ──
     const photo = photos[photos.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
 
-    // Download image as buffer
     const response = await fetch(fileUrl);
     const buffer = Buffer.from(await response.arrayBuffer());
     const base64 = buffer.toString('base64');
     const ext = file.file_path?.split('.').pop()?.toLowerCase() || 'jpg';
-    const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+    const mediaType = (
+      ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+    ) as 'image/jpeg' | 'image/png' | 'image/webp';
 
-    logger.info({ caption, fileSize: buffer.length }, 'Processing photo for task extraction');
+    // ── Branch 2: Invoice detection & filing ──
+    if (isInvoiceFilingConfigured()) {
+      const analysis = await analyzeInvoiceImage(base64, mediaType, caption || undefined);
 
-    // Use Haiku vision to extract task info (cheap!)
-    const extracted = await extractImageContent(base64, mediaType as any, caption || undefined);
+      if (analysis.isInvoice && analysis.confidence >= config.invoices.minConfidence) {
+        logger.info(
+          { vendor: analysis.vendor, date: analysis.documentDate, confidence: analysis.confidence },
+          'Invoice detected — filing via SCP'
+        );
 
-    if (!extracted.title) {
-      await ctx.reply('📷 I couldn\'t extract any tasks from this image. Try adding a caption describing what to create.');
-      return;
-    }
+        const filingResult = await fileInvoice(buffer, mediaType, analysis);
 
-    // Determine which list to use
-    let targetList: msTodo.TodoList | null = null;
-    if (extracted.listHint) {
-      targetList = await msTodo.findListByName(extracted.listHint);
-    }
-    if (!targetList) {
-      targetList = await msTodo.getDefaultList();
-    }
-    if (!targetList) {
-      const lists = await msTodo.getLists();
-      if (lists.success && lists.data.length > 0) {
-        targetList = lists.data[0];
+        if (filingResult.success) {
+          let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
+          if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
+          if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
+          if (analysis.totalAmount) msg += `💰 ${escapeHtml(analysis.totalAmount)}\n`;
+          if (analysis.invoiceNumber) msg += `🔢 ${escapeHtml(analysis.invoiceNumber)}\n`;
+          msg += `\n📁 <code>${escapeHtml(filingResult.folderPath!)}</code>`;
+          msg += `\n📄 <code>${escapeHtml(filingResult.filename!)}</code>`;
+
+          // Correction button in case Claude misclassified
+          const ref = storeCallback({ base64, mediaType, caption });
+          const keyboard = new InlineKeyboard()
+            .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
+
+          await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
+          return;
+        }
+
+        // Filing failed — log error but fall through to task extraction
+        logger.error({ error: filingResult.error }, 'Invoice filing failed');
+        await ctx.reply(
+          `⚠️ Nota fiscal detectada mas falhou ao arquivar: ${escapeHtml(filingResult.error || 'Erro desconhecido')}\nProcessando como tarefa...`,
+          { parse_mode: 'HTML' }
+        );
       }
+      // Not an invoice or low confidence — fall through to task extraction
     }
 
-    if (!targetList) {
-      await ctx.reply('⚠️ No task list found. Please create a list first.');
-      return;
-    }
-
-    // Create the main task
-    const taskResult = await msTodo.createTask(targetList.id, targetList.displayName, {
-      title: extracted.title,
-    });
-
-    if (!taskResult.success) {
-      await ctx.reply(`⚠️ Failed to create task: ${taskResult.error}`);
-      return;
-    }
-
-    // Add subtasks as checklist items (parallel)
-    let addedSubtasks = 0;
-    if (extracted.subtasks.length > 0) {
-      const subResults = await Promise.all(
-        extracted.subtasks.map((sub) => msTodo.addChecklistItem(targetList.id, taskResult.data.id, sub))
-      );
-      addedSubtasks = subResults.filter((r) => r.success).length;
-    }
-
-    // Format response
-    let msg = `📷✅ Task created from image:\n\n<b>${escapeHtml(extracted.title)}</b>\n📋 List: ${escapeHtml(targetList.displayName)}`;
-    if (addedSubtasks > 0) {
-      msg += `\n\n📝 ${addedSubtasks} subtask${addedSubtasks > 1 ? 's' : ''} added:`;
-      for (const sub of extracted.subtasks.slice(0, addedSubtasks)) {
-        msg += `\n  ⬜ ${escapeHtml(sub)}`;
-      }
-    }
-
-    await ctx.reply(msg, { parse_mode: 'HTML' });
+    // ── Branch 3: Task extraction (existing behavior) ──
+    await handlePhotoTaskExtraction(ctx, base64, mediaType, caption);
   } catch (err) {
     logger.error({ err }, 'Failed to process photo message');
-    await ctx.reply('⚠️ Failed to process the image. Please try again.');
+    await ctx.reply('⚠️ Falha ao processar a imagem. Tente novamente.');
   }
+}
+
+/**
+ * Existing photo → task extraction logic, refactored out of handlePhotoMessage
+ * to allow reuse after failed invoice filing or correction callback.
+ */
+async function handlePhotoTaskExtraction(
+  ctx: Context,
+  base64: string,
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
+  caption: string
+): Promise<void> {
+  if (!msTodo.isOutlookTodoConfigured()) {
+    await ctx.reply('📷 Foto recebida, mas o Microsoft To Do não está configurado.');
+    return;
+  }
+
+  logger.info({ caption }, 'Processing photo for task extraction');
+  const extracted = await extractImageContent(base64, mediaType as any, caption || undefined);
+
+  if (!extracted.title) {
+    await ctx.reply('📷 Não foi possível extrair tarefas desta imagem. Tente adicionar uma legenda.');
+    return;
+  }
+
+  let targetList: msTodo.TodoList | null = null;
+  if (extracted.listHint) targetList = await msTodo.findListByName(extracted.listHint);
+  if (!targetList) targetList = await msTodo.getDefaultList();
+  if (!targetList) {
+    const lists = await msTodo.getLists();
+    if (lists.success && lists.data.length > 0) targetList = lists.data[0];
+  }
+  if (!targetList) {
+    await ctx.reply('⚠️ Nenhuma lista de tarefas encontrada.');
+    return;
+  }
+
+  const taskResult = await msTodo.createTask(targetList.id, targetList.displayName, {
+    title: extracted.title,
+  });
+  if (!taskResult.success) {
+    await ctx.reply(`⚠️ Falha ao criar tarefa: ${taskResult.error}`);
+    return;
+  }
+
+  let addedSubtasks = 0;
+  if (extracted.subtasks.length > 0) {
+    const subResults = await Promise.all(
+      extracted.subtasks.map((sub) => msTodo.addChecklistItem(targetList!.id, taskResult.data.id, sub))
+    );
+    addedSubtasks = subResults.filter((r) => r.success).length;
+  }
+
+  let msg = `📷✅ Tarefa criada da imagem:\n\n<b>${escapeHtml(extracted.title)}</b>\n📋 ${escapeHtml(targetList.displayName)}`;
+  if (addedSubtasks > 0) {
+    msg += `\n\n📝 ${addedSubtasks} subtarefa${addedSubtasks > 1 ? 's' : ''}:`;
+    for (const sub of extracted.subtasks.slice(0, addedSubtasks)) {
+      msg += `\n  ⬜ ${escapeHtml(sub)}`;
+    }
+  }
+  await ctx.reply(msg, { parse_mode: 'HTML' });
 }
 
 async function handleUndone(ctx: Context, query: string): Promise<void> {

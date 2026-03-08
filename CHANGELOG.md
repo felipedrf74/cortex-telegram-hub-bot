@@ -4,6 +4,38 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.5.0] — 2026-03-07
+
+### Invoice/Receipt Photo Filing to iCloud
+
+Automatic invoice detection and filing from Telegram photos to iCloud Drive via SSH/SCP.
+
+#### New Feature: Invoice Filing Engine (`src/services/invoice-filer.ts`)
+- **Haiku vision analysis** — Single API call detects invoices AND extracts metadata (vendor, date, amount, invoice number) at ~$0.001/call
+- **iCloud filing via SSH/SCP** — Files transferred from Linux server to Mac's iCloud Drive folder, synced automatically by macOS
+- **Year/month folder structure** — Auto-creates `2026/Mar-2026/` directories with Portuguese month names (Jan, Fev, Mar, Abr, Mai, Jun, Jul, Ago, Set, Out, Nov, Dez)
+- **Smart filenames** — `YYYY-MM-DD_Vendor_Amount_InvoiceNumber_SUFFIX.jpg` format with filesystem-safe sanitization
+- **Confidence threshold** — Only files images with ≥70% invoice confidence (configurable via `INVOICE_MIN_CONFIDENCE`)
+- **Correction flow** — Inline "Não é nota fiscal" button re-routes misclassified images to task extraction
+- **Graceful degradation** — Feature auto-disables when SSH is unconfigured; SSH failures fall through to existing task extraction
+
+#### Photo Handler Refactored (`src/bot.ts`)
+- Extracted `handlePhotoTaskExtraction()` for reuse from both direct photo flow and correction callback
+- Three-branch routing: caption domain routing → invoice detection → task extraction fallback
+- New `nf:` callback namespace for invoice correction with 5-min TTL callbackStore
+
+#### Configuration (`src/config.ts`)
+- New `invoices` config section: `INVOICE_FILING_ENABLED`, `INVOICE_SSH_HOST`, `INVOICE_SSH_USER`, `INVOICE_SSH_KEY`, `INVOICE_REMOTE_PATH`, `INVOICE_MIN_CONFIDENCE`
+- `isInvoiceFilingConfigured()` guard checks enabled + SSH host + remote path
+
+#### New Files
+- `src/services/invoice-filer.ts`
+
+#### Modified Files
+- `src/bot.ts`, `src/config.ts`
+
+---
+
 ## [1.4.0] — 2026-03-07
 
 ### 12 Feature Improvements
