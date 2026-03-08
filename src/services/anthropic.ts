@@ -171,7 +171,7 @@ export async function classifyAndExtractImage(
 
   const response = await client.messages.create({
     model: config.anthropic.classifierModel, // Haiku — cheap vision
-    max_tokens: 1024,
+    max_tokens: 4096,
     system: `You classify images into exactly ONE of three categories and extract structured data. Return ONLY valid JSON.
 
 CATEGORY 1 — INVOICE / RECEIPT:
@@ -192,7 +192,8 @@ Return:
 - If no end time, assume 1h duration.
 - If all-day event, use 00:00:00 to 23:59:59.
 - If week shown already passed this year, assume next year.
-- Keep titles concise. Use description for extra details.
+- Keep titles concise (max 60 chars). Skip description unless essential.
+- OMIT Lunch events. Focus on meetings and work events.
 
 CATEGORY 3 — TASK LIST / CHECKLIST:
 Indicators: action items, to-dos, bullet points, checklists, shopping lists, numbered steps, reminders without specific time slots.
@@ -213,6 +214,8 @@ When uncertain between calendar and task, prefer "task".`,
     }],
   });
 
+  const stopReason = response.stop_reason;
+
   let text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
@@ -227,11 +230,65 @@ When uncertain between calendar and task, prefer "task".`,
     if (!parsed.type) {
       return { type: 'task', title: parsed.title || '', subtasks: parsed.subtasks || [], listHint: parsed.listHint };
     }
-    logger.info({ imageType: parsed.type, confidence: parsed.confidence }, 'Image classified');
+    logger.info({ imageType: parsed.type, eventCount: parsed.events?.length, confidence: parsed.confidence }, 'Image classified');
     return parsed as ImageClassificationResult;
   } catch (err) {
-    logger.warn({ err, text }, 'Failed to parse image classification JSON, defaulting to task');
+    // If the model was cut off by max_tokens, try to repair truncated calendar JSON
+    if (stopReason === 'max_tokens' && text.includes('"type"') && text.includes('"calendar"')) {
+      const repaired = repairTruncatedCalendarJson(text);
+      if (repaired) {
+        logger.info({ eventCount: repaired.events.length }, 'Repaired truncated calendar JSON');
+        return repaired;
+      }
+    }
+    logger.warn({ err, stopReason, textLength: text.length }, 'Failed to parse image classification JSON, defaulting to task');
     return { type: 'task', title: text.slice(0, 100), subtasks: [] };
+  }
+}
+
+/**
+ * Attempt to repair a truncated calendar JSON response.
+ * When max_tokens cuts off the output, we get a valid JSON prefix like:
+ *   {"type":"calendar","events":[{...},{...},{...
+ * We find the last complete event object and close the array/object.
+ */
+function repairTruncatedCalendarJson(text: string): ImageCalendarResult | null {
+  try {
+    // Find all complete event objects: match balanced { ... } inside the events array
+    const eventsStart = text.indexOf('"events"');
+    if (eventsStart === -1) return null;
+
+    const arrayStart = text.indexOf('[', eventsStart);
+    if (arrayStart === -1) return null;
+
+    // Collect complete event objects by finding matching braces
+    const events: ExtractedCalendarEvent[] = [];
+    let depth = 0;
+    let objStart = -1;
+
+    for (let i = arrayStart + 1; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (depth === 0) objStart = i;
+        depth++;
+      } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          try {
+            const eventObj = JSON.parse(text.substring(objStart, i + 1));
+            if (eventObj.title && eventObj.start && eventObj.end) {
+              events.push(eventObj);
+            }
+          } catch {
+            // Incomplete event object, skip
+          }
+          objStart = -1;
+        }
+      }
+    }
+
+    return events.length > 0 ? { type: 'calendar', events } : null;
+  } catch {
+    return null;
   }
 }
 
