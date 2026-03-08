@@ -208,7 +208,9 @@ export function startScheduler(bot: Bot): void {
       for (const userId of config.telegram.allowedUserIds) {
         try {
           await bot.api.sendMessage(userId, '⚠️ Daily content discovery failed. Check logs.', { parse_mode: 'HTML' });
-        } catch {}
+        } catch (sendErr) {
+          logger.error({ err: sendErr, userId }, 'Failed to send content discovery failure alert');
+        }
       }
     }
   }, { timezone: config.app.timezone });
@@ -235,7 +237,9 @@ export function startScheduler(bot: Bot): void {
       for (const userId of config.telegram.allowedUserIds) {
         try {
           await bot.api.sendMessage(userId, '⚠️ Recolha mensal de faturas falhou. Verificar logs.');
-        } catch {}
+        } catch (sendErr) {
+          logger.error({ err: sendErr, userId }, 'Failed to send invoice collection failure alert');
+        }
       }
     }
   }, { timezone: config.app.timezone });
@@ -271,7 +275,9 @@ export function startScheduler(bot: Bot): void {
       for (const userId of config.telegram.allowedUserIds) {
         try {
           await bot.api.sendMessage(userId, '⚠️ Recolha mensal Amazon falhou. Verificar logs.');
-        } catch {}
+        } catch (sendErr) {
+          logger.error({ err: sendErr, userId }, 'Failed to send Amazon collection failure alert');
+        }
       }
     }
   }, { timezone: config.app.timezone });
@@ -431,8 +437,8 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
   if (isOutlookMailConfigured()) {
     try {
       data.unreadEmails = await getUnreadCount();
-    } catch {
-      // skip
+    } catch (err) {
+      logger.warn({ err }, 'Daily briefing: failed to fetch Outlook unread count');
     }
   }
 
@@ -460,7 +466,7 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
         ]).catch((err) => { logger.error({ err }, 'Failed to fetch MS Todo data for weekly review'); return null; })
       : Promise.resolve(null),
     isAnyCalendarConfigured()
-      ? getEvents(startOfWeek(), endOfWeek()).catch(() => [] as any[])
+      ? getEvents(startOfWeek(), endOfWeek()).catch((err) => { logger.warn({ err }, 'Weekly review: failed to fetch calendar events'); return [] as any[]; })
       : Promise.resolve([] as any[]),
   ]);
 

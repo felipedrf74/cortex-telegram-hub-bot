@@ -91,10 +91,11 @@ export async function createEvent(data: {
   start: string;
   end: string;
   description?: string;
+  categories?: string[];
 }): Promise<CalendarEvent> {
   try {
     const client = getGraphClient();
-    const response = await client.api('/me/events').post({
+    const postBody: any = {
       subject: data.title,
       start: {
         dateTime: data.start,
@@ -104,10 +105,14 @@ export async function createEvent(data: {
         dateTime: data.end,
         timeZone: config.app.timezone,
       },
-      body: data.description
-        ? { contentType: 'Text', content: data.description }
-        : undefined,
-    });
+    };
+    if (data.description) {
+      postBody.body = { contentType: 'Text', content: data.description };
+    }
+    if (data.categories && data.categories.length > 0) {
+      postBody.categories = data.categories;
+    }
+    const response = await client.api('/me/events').post(postBody);
 
     return {
       id: response.id || '',

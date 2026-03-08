@@ -84,7 +84,7 @@ export async function executeToolCall(
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot complete a task without its ID.' };
         }
-        const completeRes = await msTodo.completeTask(input.list_id, input.task_id);
+        const completeRes = await msTodo.completeTask(input.list_id, input.task_id, input.list_name);
         // Slim response: only return success + title (save tokens in tool conversation)
         return completeRes.success
           ? { success: true, title: completeRes.data?.title || 'done' }
@@ -98,7 +98,7 @@ export async function executeToolCall(
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot uncomplete a task without its ID.' };
         }
-        const uncompleteRes = await msTodo.uncompleteTask(input.list_id, input.task_id);
+        const uncompleteRes = await msTodo.uncompleteTask(input.list_id, input.task_id, input.list_name);
         return uncompleteRes.success
           ? { success: true, title: uncompleteRes.data?.title || 'reopened' }
           : { success: false, error: uncompleteRes.error };
@@ -163,6 +163,7 @@ export async function executeToolCall(
           start: input.start,
           end: input.end,
           description: input.description,
+          categories: input.categories,
         }, input.calendar_source);
 
       case 'update_calendar_event': {
@@ -249,12 +250,8 @@ export async function executeToolCall(
         if (!outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        const [unreadCount, recentEmails] = await Promise.all([
-          outlookMail.getUnreadCount(),
-          outlookMail.getRecentEmails(input.max_results || 10),
-        ]);
-        const unread = recentEmails.filter((e) => !e.isRead);
-        return { unread_count: unreadCount, recent_unread: unread };
+        const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmails(input.max_results || 10);
+        return { unread_count: unreadCount, recent_unread: unreadEmails };
       }
 
       // ── Shared memory tools (cross-domain context) ──

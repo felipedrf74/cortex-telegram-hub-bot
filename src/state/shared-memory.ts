@@ -30,11 +30,19 @@ export function setSharedMemory(
   return db.prepare('SELECT * FROM shared_memory WHERE key = ?').get(key) as SharedMemoryEntry;
 }
 
+// Rate-limit expired entry cleanup — at most once per 5 minutes
+let lastCleanup = 0;
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+
 /** Get all active (non-expired) shared memory entries, or a single key. */
 export function getSharedMemory(key?: string): SharedMemoryEntry[] {
   const db = getDb();
-  // Clean up expired entries first
-  db.prepare(`DELETE FROM shared_memory WHERE expires_at IS NOT NULL AND expires_at < datetime('now')`).run();
+  // Clean up expired entries (rate-limited to avoid unnecessary writes on every read)
+  const now = Date.now();
+  if (now - lastCleanup > CLEANUP_INTERVAL_MS) {
+    db.prepare(`DELETE FROM shared_memory WHERE expires_at IS NOT NULL AND expires_at < datetime('now')`).run();
+    lastCleanup = now;
+  }
 
   if (key) {
     const row = db.prepare('SELECT * FROM shared_memory WHERE key = ?').get(key);

@@ -285,6 +285,7 @@ export async function getTasks(
     const query: Record<string, string> = {
       $orderby: 'createdDateTime DESC',
       $top: String(filter?.top || 50),
+      $select: 'id,title,body,importance,status,dueDateTime,reminderDateTime,isReminderOn,createdDateTime,completedDateTime',
     };
 
     if (filter?.status) {
@@ -461,7 +462,8 @@ export async function searchTasks(query: string): Promise<ServiceResult<TodoTask
               .get()
           );
           return (response.value || []).map((t: any) => parseTask(t, list.id, list.displayName));
-        } catch {
+        } catch (err) {
+          logger.warn({ err, listId: list.id }, 'searchTasks: failed to search list');
           return [] as TodoTask[];
         }
       })
@@ -587,7 +589,8 @@ export async function getCompletedTasksInRange(
               .get()
           );
           return (response.value || []).map((t: any) => parseTask(t, list.id, list.displayName));
-        } catch {
+        } catch (err) {
+          logger.warn({ err, listId: list.id }, 'getCompletedTasksInRange: failed to query list');
           return [] as TodoTask[];
         }
       })
@@ -699,10 +702,17 @@ export async function moveTask(
       client.api(`/me/todo/lists/${toListId}/tasks`).post(newTaskBody)
     );
 
-    // 3. Delete from old list
-    await withRetry(() =>
-      client.api(`/me/todo/lists/${fromListId}/tasks/${taskId}`).delete()
-    );
+    // 3. Delete from old list — if this fails, log the duplicate but still return success
+    try {
+      await withRetry(() =>
+        client.api(`/me/todo/lists/${fromListId}/tasks/${taskId}`).delete()
+      );
+    } catch (deleteErr) {
+      logger.error(
+        { err: deleteErr, fromListId, taskId, newTaskId: created.id, toListId },
+        'moveTask: created in new list but failed to delete from old — duplicate exists',
+      );
+    }
 
     return { success: true, data: parseTask(created, toListId, toListName) };
   } catch (err) {

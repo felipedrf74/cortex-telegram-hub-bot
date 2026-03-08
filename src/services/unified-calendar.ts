@@ -66,7 +66,7 @@ export async function getEvents(startDate: string, endDate: string): Promise<Uni
 }
 
 export async function createEvent(
-  data: { title: string; start: string; end: string; description?: string },
+  data: { title: string; start: string; end: string; description?: string; categories?: string[] },
   target?: CalendarSource
 ): Promise<UnifiedCalendarEvent> {
   // Default to outlook if configured, else google

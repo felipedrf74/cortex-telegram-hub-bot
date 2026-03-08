@@ -368,3 +368,37 @@ export async function getRecentEmails(maxResults = 10): Promise<OutlookEmail[]> 
     throw err;
   }
 }
+
+export async function getUnreadEmails(maxResults = 10): Promise<{ count: number; emails: OutlookEmail[] }> {
+  try {
+    const client = getGraphClient();
+    const [folderResp, emailsResp] = await Promise.all([
+      client.api('/me/mailFolders/inbox').select('unreadItemCount').get(),
+      client.api('/me/messages')
+        .query({
+          $filter: 'isRead eq false',
+          $top: maxResults,
+          $select: 'id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance',
+          $orderby: 'receivedDateTime DESC',
+        })
+        .get(),
+    ]);
+
+    const emails: OutlookEmail[] = (emailsResp.value || []).map((msg: any) => ({
+      id: msg.id || '',
+      conversationId: msg.conversationId || '',
+      from: msg.from?.emailAddress?.address || '',
+      to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
+      subject: msg.subject || '(No subject)',
+      snippet: msg.bodyPreview || '',
+      date: msg.receivedDateTime || '',
+      isRead: false,
+      importance: msg.importance || 'normal',
+    }));
+
+    return { count: folderResp.unreadItemCount || 0, emails };
+  } catch (err) {
+    logger.error({ err }, 'Failed to get unread Outlook emails');
+    throw err;
+  }
+}

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config';
 import { logger } from './utils/logger';
@@ -14,13 +15,13 @@ import {
   formatChecklistItems, formatAllTasks, formatCompletedTasks,
 } from './utils/telegram-formatter';
 import * as msTodo from './services/microsoft-todo';
-import { getEvents, isAnyCalendarConfigured } from './services/unified-calendar';
+import { getEvents, createEvent as createCalendarEvent, isAnyCalendarConfigured } from './services/unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from './services/outlook-mail';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDateTime, parseNaturalDate } from './utils/date-parser';
-import { extractImageContent } from './services/anthropic';
+import { classifyAndExtractImage, ImageInvoiceResult, ImageCalendarResult, ImageTaskResult } from './services/anthropic';
 import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
-import { analyzeInvoiceImage, fileInvoice, isInvoiceFilingConfigured, PT_MONTHS } from './services/invoice-filer';
+import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, PT_MONTHS } from './services/invoice-filer';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
 import { recordFiling, deleteAmazonFilings } from './state/invoice-filings';
 import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
@@ -62,7 +63,7 @@ const processingQueue = new Map<number, Promise<void>>();
 
 function enqueue(userId: number, fn: () => Promise<void>): void {
   const prev = processingQueue.get(userId) || Promise.resolve();
-  const next = prev.then(fn).catch(() => {});
+  const next = prev.then(fn).catch((err) => { logger.error({ err, userId }, 'Queued handler failed'); });
   processingQueue.set(userId, next);
 }
 
@@ -74,7 +75,6 @@ interface CallbackEntry {
 }
 
 const callbackStore = new Map<string, CallbackEntry>();
-let callbackCounter = 0;
 
 // Time-based cleanup every 10 minutes (more reliable than counter-based)
 setInterval(() => {
@@ -85,7 +85,7 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 function storeCallback(data: any): string {
-  const ref = `${++callbackCounter}`;
+  const ref = crypto.randomUUID().slice(0, 8);
   callbackStore.set(ref, { data, expires: Date.now() + 300_000 }); // 5 min TTL
   return ref;
 }
@@ -97,6 +97,16 @@ function getCallback(ref: string): any | null {
     return null;
   }
   return entry.data;
+}
+
+// ─── Caption → Outlook Calendar Category ────────────────────────────
+
+function parseCaptionCategory(caption: string): string[] | undefined {
+  if (!caption) return undefined;
+  const upper = caption.toUpperCase().trim();
+  if (upper.includes('SMS')) return ['Blue Category'];
+  if (upper.includes('EC')) return ['Green Category'];
+  return undefined;
 }
 
 // ─── Pending Edit State (per user) ──────────────────────────────────
@@ -977,6 +987,10 @@ export function createBot(): Bot {
 
       if (arg && /^\d{4}-\d{2}$/.test(arg)) {
         const [y, m] = arg.split('-').map(Number);
+        if (m < 1 || m > 12) {
+          await ctx.reply('⚠️ Mês inválido. Use formato YYYY-MM (ex: 2026-02).');
+          return;
+        }
         year = y;
         month = m;
       } else {
@@ -1106,6 +1120,10 @@ export function createBot(): Bot {
 
       if (arg && /^\d{4}-\d{2}$/.test(arg)) {
         const [y, m] = arg.split('-').map(Number);
+        if (m < 1 || m > 12) {
+          await ctx.reply('⚠️ Mês inválido. Use formato YYYY-MM (ex: 2026-02).');
+          return;
+        }
         year = y;
         month = m;
       } else {
@@ -1361,11 +1379,54 @@ export function createBot(): Bot {
         return;
       }
       await ctx.editMessageText('🔄 Reprocessando como tarefa...');
-      await handlePhotoTaskExtraction(ctx as any, cbData.base64, cbData.mediaType, cbData.caption || '');
+      // Re-classify with task hint — if still not task, force conversion
+      const reClassified = await classifyAndExtractImage(cbData.base64, cbData.mediaType, (cbData.caption || '') + ' [TASK LIST]');
+      if (reClassified.type === 'task') {
+        await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '', cbData.base64, cbData.mediaType);
+      } else if (reClassified.type === 'calendar') {
+        // Force calendar events into task format
+        await handleTaskExtraction(ctx as any,
+          { type: 'task', title: 'Items from image', subtasks: reClassified.events.map(e => e.title) },
+          cbData.caption || '', cbData.base64, cbData.mediaType);
+      } else {
+        await handleTaskExtraction(ctx as any,
+          { type: 'task', title: reClassified.vendor || 'Document', subtasks: [] },
+          cbData.caption || '', cbData.base64, cbData.mediaType);
+      }
     }
   });
 
-  // ── Photo handler: Vision → Task creation ──
+  // ── Calendar Correction Callback Handler ──
+  bot.callbackQuery(/^cal:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1];
+    const ref = parts[2];
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    if (action === 'undo') {
+      const cbData = getCallback(ref);
+      if (!cbData) {
+        await ctx.editMessageText('⚠️ Ação expirada. Envie a foto novamente.');
+        return;
+      }
+      await ctx.editMessageText('🔄 Reprocessando como tarefa...');
+      // Re-classify with task hint
+      const reClassified = await classifyAndExtractImage(cbData.base64, cbData.mediaType, (cbData.caption || '') + ' [TASK LIST]');
+      if (reClassified.type === 'task') {
+        await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '', cbData.base64, cbData.mediaType);
+      } else {
+        // Force any result into task format
+        const events = reClassified.type === 'calendar' ? reClassified.events.map(e => e.title) : [];
+        await handleTaskExtraction(ctx as any,
+          { type: 'task', title: events.length > 0 ? 'Items from image' : 'Photo', subtasks: events },
+          cbData.caption || '', cbData.base64, cbData.mediaType);
+      }
+    }
+  });
+
+  // ── Photo handler: Vision → Unified classification (invoice / calendar / task) ──
   bot.on('message:photo', async (ctx) => {
     enqueue(ctx.from.id, async () => {
       await handlePhotoMessage(ctx);
@@ -1517,6 +1578,7 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
     const photo = photos[photos.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+    logger.debug({ filePath: file.file_path }, 'Downloading Telegram file');
 
     const response = await fetch(fileUrl);
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -1526,70 +1588,25 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
       ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
     ) as 'image/jpeg' | 'image/png' | 'image/webp';
 
-    // ── Branch 2: Invoice detection & filing ──
-    if (isInvoiceFilingConfigured()) {
-      const analysis = await analyzeInvoiceImage(base64, mediaType, caption || undefined);
+    // ── Branch 2: Unified image classification (invoice / calendar / task) ──
+    const classification = await classifyAndExtractImage(base64, mediaType as any, caption || undefined);
 
-      if (analysis.isInvoice && analysis.confidence >= config.invoices.minConfidence) {
-        logger.info(
-          { vendor: analysis.vendor, date: analysis.documentDate, confidence: analysis.confidence },
-          'Invoice detected — filing via SCP'
-        );
+    switch (classification.type) {
+      case 'invoice':
+        await handleInvoiceFiling(ctx, buffer, mediaType, classification, base64, caption);
+        break;
 
-        const filingResult = await fileInvoice(buffer, mediaType, analysis);
+      case 'calendar':
+        await handleCalendarExtraction(ctx, classification, caption, base64, mediaType);
+        break;
 
-        if (filingResult.success) {
-          // Record in filing log for audit trail
-          recordFiling({
-            vendor: analysis.vendor || 'Unknown',
-            amount: analysis.totalAmount,
-            document_date: analysis.documentDate,
-            invoice_number: analysis.invoiceNumber,
-            source: 'photo',
-            source_ref: 'telegram_photo',
-            remote_path: filingResult.filePath,
-            folder_path: filingResult.folderPath,
-            filename: filingResult.filename,
-            file_size_bytes: filingResult.originalSizeKB ? filingResult.originalSizeKB * 1024 : null,
-            compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
-            status: 'filed',
-          });
+      case 'task':
+        await handleTaskExtraction(ctx, classification, caption, base64, mediaType);
+        break;
 
-          let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
-          if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
-          if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
-          if (analysis.totalAmount) msg += `💰 ${escapeHtml(analysis.totalAmount)}\n`;
-          if (analysis.invoiceNumber) msg += `🔢 ${escapeHtml(analysis.invoiceNumber)}\n`;
-          msg += `\n📁 <code>${escapeHtml(filingResult.folderPath!)}</code>`;
-          msg += `\n📄 <code>${escapeHtml(filingResult.filename!)}</code>`;
-
-          // Show compression savings if applicable
-          if (filingResult.originalSizeKB && filingResult.compressedSizeKB && filingResult.originalSizeKB !== filingResult.compressedSizeKB) {
-            const savings = Math.round((1 - filingResult.compressedSizeKB / filingResult.originalSizeKB) * 100);
-            msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
-          }
-
-          // Correction button in case Claude misclassified
-          const ref = storeCallback({ base64, mediaType, caption });
-          const keyboard = new InlineKeyboard()
-            .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
-
-          await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
-          return;
-        }
-
-        // Filing failed — log error but fall through to task extraction
-        logger.error({ error: filingResult.error }, 'Invoice filing failed');
-        await ctx.reply(
-          `⚠️ Nota fiscal detectada mas falhou ao arquivar: ${escapeHtml(filingResult.error || 'Erro desconhecido')}\nProcessando como tarefa...`,
-          { parse_mode: 'HTML' }
-        );
-      }
-      // Not an invoice or low confidence — fall through to task extraction
+      default:
+        await ctx.reply('📷 Não foi possível classificar esta imagem. Tente adicionar uma legenda.');
     }
-
-    // ── Branch 3: Task extraction (existing behavior) ──
-    await handlePhotoTaskExtraction(ctx, base64, mediaType, caption);
   } catch (err) {
     logger.error({ err }, 'Failed to process photo message');
     await ctx.reply('⚠️ Falha ao processar a imagem. Tente novamente.');
@@ -1597,22 +1614,161 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
 }
 
 /**
- * Existing photo → task extraction logic, refactored out of handlePhotoMessage
- * to allow reuse after failed invoice filing or correction callback.
+ * Handle invoice filing when unified classifier detects an invoice.
  */
-async function handlePhotoTaskExtraction(
+async function handleInvoiceFiling(
   ctx: Context,
-  base64: string,
+  buffer: Buffer,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
+  analysis: ImageInvoiceResult,
+  base64: string,
   caption: string
+): Promise<void> {
+  if (!isInvoiceFilingConfigured() || analysis.confidence < config.invoices.minConfidence) {
+    logger.info({ confidence: analysis.confidence }, 'Invoice detected but low confidence or filing not configured');
+    // Fall through to task extraction as fallback
+    await handleTaskExtraction(ctx, { type: 'task', title: analysis.vendor || 'Document', subtasks: [] }, caption, base64, mediaType);
+    return;
+  }
+
+  logger.info(
+    { vendor: analysis.vendor, date: analysis.documentDate, confidence: analysis.confidence },
+    'Invoice detected — filing via SCP'
+  );
+
+  // Map unified result to InvoiceAnalysis format expected by fileInvoice
+  const invoiceAnalysis: InvoiceAnalysis = {
+    isInvoice: true,
+    confidence: analysis.confidence,
+    documentDate: analysis.documentDate,
+    documentDateRaw: analysis.documentDateRaw,
+    vendor: analysis.vendor,
+    totalAmount: analysis.totalAmount,
+    invoiceNumber: analysis.invoiceNumber,
+  };
+
+  const filingResult = await fileInvoice(buffer, mediaType, invoiceAnalysis);
+
+  if (filingResult.success) {
+    recordFiling({
+      vendor: analysis.vendor || 'Unknown',
+      amount: analysis.totalAmount,
+      document_date: analysis.documentDate,
+      invoice_number: analysis.invoiceNumber,
+      source: 'photo',
+      source_ref: 'telegram_photo',
+      remote_path: filingResult.filePath,
+      folder_path: filingResult.folderPath,
+      filename: filingResult.filename,
+      file_size_bytes: filingResult.originalSizeKB ? filingResult.originalSizeKB * 1024 : null,
+      compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
+      status: 'filed',
+    });
+
+    let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
+    if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
+    if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
+    if (analysis.totalAmount) msg += `💰 ${escapeHtml(analysis.totalAmount)}\n`;
+    if (analysis.invoiceNumber) msg += `🔢 ${escapeHtml(analysis.invoiceNumber)}\n`;
+    msg += `\n📁 <code>${escapeHtml(filingResult.folderPath!)}</code>`;
+    msg += `\n📄 <code>${escapeHtml(filingResult.filename!)}</code>`;
+
+    if (filingResult.originalSizeKB && filingResult.compressedSizeKB && filingResult.originalSizeKB !== filingResult.compressedSizeKB) {
+      const savings = Math.round((1 - filingResult.compressedSizeKB / filingResult.originalSizeKB) * 100);
+      msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
+    }
+
+    const ref = storeCallback({ base64, mediaType, caption });
+    const keyboard = new InlineKeyboard()
+      .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
+
+    await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
+    return;
+  }
+
+  logger.error({ error: filingResult.error }, 'Invoice filing failed');
+  await ctx.reply(
+    `⚠️ Nota fiscal detectada mas falhou ao arquivar: ${escapeHtml(filingResult.error || 'Erro desconhecido')}`,
+    { parse_mode: 'HTML' }
+  );
+}
+
+/**
+ * Handle calendar event creation when unified classifier detects a schedule/timetable.
+ */
+async function handleCalendarExtraction(
+  ctx: Context,
+  result: ImageCalendarResult,
+  caption: string,
+  base64: string,
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
+): Promise<void> {
+  if (!isAnyCalendarConfigured()) {
+    await ctx.reply('📅 Conteúdo de calendário detectado, mas nenhum calendário está configurado.');
+    return;
+  }
+
+  if (!result.events || result.events.length === 0) {
+    await ctx.reply('📅 Parece ser um calendário, mas não foi possível extrair eventos. Tente com uma imagem mais clara.');
+    return;
+  }
+
+  const categories = parseCaptionCategory(caption);
+  let successCount = 0;
+  const createdEvents: string[] = [];
+
+  for (const event of result.events) {
+    try {
+      const created = await createCalendarEvent({
+        title: event.title,
+        start: event.start,
+        end: event.end,
+        description: event.description,
+        categories,
+      });
+      successCount++;
+      createdEvents.push(created.summary);
+    } catch (err) {
+      logger.error({ err, eventTitle: event.title }, 'Failed to create calendar event from image');
+    }
+  }
+
+  if (successCount === 0) {
+    await ctx.reply('⚠️ Falha ao criar os eventos do calendário. Tente novamente.');
+    return;
+  }
+
+  let msg = `📅✅ <b>${successCount} evento${successCount > 1 ? 's' : ''} criado${successCount > 1 ? 's' : ''} no calendário:</b>\n`;
+  for (const title of createdEvents) {
+    msg += `\n  📌 ${escapeHtml(title)}`;
+  }
+  if (categories) {
+    msg += `\n\n🏷️ Categoria: <b>${escapeHtml(categories[0])}</b>`;
+  }
+
+  // Correction button: "Not a calendar → reprocess as task"
+  const ref = storeCallback({ base64, mediaType, caption });
+  const keyboard = new InlineKeyboard()
+    .text('❌ Não é calendário', `cal:undo:${ref}`);
+
+  await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
+}
+
+/**
+ * Handle task creation when unified classifier detects a task/checklist.
+ * Preserved from the original handlePhotoTaskExtraction logic.
+ */
+async function handleTaskExtraction(
+  ctx: Context,
+  extracted: ImageTaskResult,
+  caption: string,
+  base64: string,
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
 ): Promise<void> {
   if (!msTodo.isOutlookTodoConfigured()) {
     await ctx.reply('📷 Foto recebida, mas o Microsoft To Do não está configurado.');
     return;
   }
-
-  logger.info({ caption }, 'Processing photo for task extraction');
-  const extracted = await extractImageContent(base64, mediaType as any, caption || undefined);
 
   if (!extracted.title) {
     await ctx.reply('📷 Não foi possível extrair tarefas desta imagem. Tente adicionar uma legenda.');
@@ -1811,7 +1967,8 @@ async function handleStatus(ctx: Context): Promise<void> {
           msg += `🔴 High priority: ${highPriority.length}\n`;
         }
       }
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Status: failed to fetch MS Todo tasks');
       msg += '📋 Microsoft To Do: unavailable\n';
     }
   } else {
@@ -1825,7 +1982,8 @@ async function handleStatus(ctx: Context): Promise<void> {
     try {
       const events = await getEvents(startOfDay(), endOfDay());
       msg += `📅 Events today: ${events.length}\n`;
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Status: failed to fetch calendar events');
       msg += '📅 Calendar: unavailable\n';
     }
   } else {
@@ -1836,7 +1994,8 @@ async function handleStatus(ctx: Context): Promise<void> {
     try {
       const unread = await getOutlookUnread();
       msg += `📧 Outlook unread: ${unread}\n`;
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Status: failed to fetch Outlook unread');
       msg += '📧 Outlook: unavailable\n';
     }
   }
@@ -1858,7 +2017,8 @@ async function handleDayOverview(ctx: Context): Promise<void> {
           msg += `${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
         }
       }
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Day overview: failed to fetch calendar events');
       msg += 'Calendar unavailable.\n';
     }
   } else {
@@ -1875,8 +2035,8 @@ async function handleDayOverview(ctx: Context): Promise<void> {
           msg += `- ${escapeHtml(t.title)} [${escapeHtml(t.listName)}]\n`;
         }
       }
-    } catch {
-      // skip
+    } catch (err) {
+      logger.warn({ err }, 'Day overview: failed to fetch due tasks');
     }
   }
 
@@ -1904,7 +2064,8 @@ async function handleWeekOverview(ctx: Context): Promise<void> {
           msg += `  ${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
         }
       }
-    } catch {
+    } catch (err) {
+      logger.warn({ err }, 'Week overview: failed to fetch calendar events');
       msg += 'Calendar unavailable.\n';
     }
   } else {
@@ -1918,8 +2079,8 @@ async function handleWeekOverview(ctx: Context): Promise<void> {
       if (pendingResult.success && pendingResult.data.length > 0) {
         msg += `\n📋 Pending tasks: ${pendingResult.data.length}\n`;
       }
-    } catch {
-      // skip
+    } catch (err) {
+      logger.warn({ err }, 'Week overview: failed to fetch pending tasks');
     }
   }
 

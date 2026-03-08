@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { DateTime } from 'luxon';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import fs from 'fs';
 import path from 'path';
@@ -46,7 +46,7 @@ export interface FilingResult {
 
 /** Builds the base SSH command prefix with key, port, and options. */
 function sshPrefix(): string {
-  const parts = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'BatchMode=yes'];
+  const parts = ['ssh', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
   if (config.invoices.sshKeyPath) parts.push('-i', config.invoices.sshKeyPath);
   if (config.invoices.sshPort !== '22') parts.push('-p', config.invoices.sshPort);
   return parts.join(' ');
@@ -253,17 +253,20 @@ async function compressImage(
  * no single quotes around the remote path (they'd become literal chars).
  */
 function scpUpload(localPath: string, remoteDir: string, remotePath: string): void {
-  // SSH: create remote year/month directory on Mac
-  // Single quotes around path protect spaces in remote shell
-  const mkdirCmd = `${sshPrefix()} ${sshTarget()} "mkdir -p '${remoteDir}'"`;
-  execSync(mkdirCmd, { timeout: 15_000, stdio: 'pipe' });
+  // SSH: create remote year/month directory on Mac (uses execFileSync to avoid shell injection)
+  const sshArgs = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
+  if (config.invoices.sshKeyPath) sshArgs.push('-i', config.invoices.sshKeyPath);
+  if (config.invoices.sshPort !== '22') sshArgs.push('-p', config.invoices.sshPort);
+  sshArgs.push(sshTarget(), `mkdir -p '${remoteDir}'`);
+  execFileSync('ssh', sshArgs, { timeout: 15_000, stdio: 'pipe' });
   logger.debug({ remoteDir }, 'Remote directory ensured via SSH');
 
-  // SCP: copy file to Mac's iCloud Drive
-  const keyFlag = config.invoices.sshKeyPath ? `-i ${config.invoices.sshKeyPath}` : '';
-  const portFlag = scpPortFlag();
-  const scpCmd = `scp ${keyFlag} ${portFlag} -o StrictHostKeyChecking=no -o BatchMode=yes "${localPath}" "${sshTarget()}:${remotePath}"`;
-  execSync(scpCmd, { timeout: 30_000, stdio: 'pipe' });
+  // SCP: copy file to Mac's iCloud Drive (uses execFileSync to avoid shell injection)
+  const scpArgs = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
+  if (config.invoices.sshKeyPath) scpArgs.push('-i', config.invoices.sshKeyPath);
+  if (config.invoices.sshPort !== '22') scpArgs.push('-P', config.invoices.sshPort);
+  scpArgs.push(localPath, `${sshTarget()}:${remotePath}`);
+  execFileSync('scp', scpArgs, { timeout: 30_000, stdio: 'pipe' });
 }
 
 // ─── SSH/SCP Filing (Images) ────────────────────────────────────────

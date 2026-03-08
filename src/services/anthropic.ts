@@ -101,7 +101,7 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'ms_todo_delete_list', description: 'Delete a task list', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' } }, required: ['list_id'] } },
   // ── Calendar tools ──
   { name: 'get_calendar_events', description: 'Get calendar events for a date range', input_schema: { type: 'object' as const, properties: { start_date: { type: 'string', description: 'ISO 8601' }, end_date: { type: 'string', description: 'ISO 8601' } }, required: ['start_date', 'end_date'] } },
-  { name: 'create_calendar_event', description: 'Create a calendar event', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' } }, required: ['title', 'start', 'end'] } },
+  { name: 'create_calendar_event', description: 'Create a calendar event', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' }, categories: { type: 'array', items: { type: 'string' }, description: 'Outlook categories e.g. ["Blue Category"]' } }, required: ['title', 'start', 'end'] } },
   { name: 'update_calendar_event', description: 'Update a calendar event', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, new_start: { type: 'string' }, new_end: { type: 'string' }, new_title: { type: 'string' } }, required: ['event_id'] } },
   { name: 'delete_calendar_event', description: 'Delete a calendar event', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' } }, required: ['event_id'] } },
   // ── Reminder & notes tools ──
@@ -119,21 +119,91 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'shared_memory_remove', description: 'Remove a cross-domain fact by key', input_schema: { type: 'object' as const, properties: { key: { type: 'string' } }, required: ['key'] } },
 ];
 
-// ─── Image Extraction (uses Haiku — cheap vision) ────────────────────
+// ─── Unified Image Classification & Extraction (uses Haiku — cheap vision) ──
 
-export async function extractImageContent(
+export interface ExtractedCalendarEvent {
+  title: string;
+  start: string;   // ISO 8601 "YYYY-MM-DDTHH:MM:SS"
+  end: string;
+  description?: string;
+}
+
+export interface ImageInvoiceResult {
+  type: 'invoice';
+  confidence: number;
+  documentDate: string | null;
+  documentDateRaw: string | null;
+  vendor: string | null;
+  totalAmount: string | null;
+  invoiceNumber: string | null;
+}
+
+export interface ImageCalendarResult {
+  type: 'calendar';
+  events: ExtractedCalendarEvent[];
+}
+
+export interface ImageTaskResult {
+  type: 'task';
+  title: string;
+  subtasks: string[];
+  listHint?: string;
+}
+
+export type ImageClassificationResult = ImageInvoiceResult | ImageCalendarResult | ImageTaskResult;
+
+/**
+ * Unified image classifier: determines whether the image is an invoice, calendar, or task list,
+ * and extracts the relevant structured data in a single Haiku vision call.
+ */
+export async function classifyAndExtractImage(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
   caption?: string
-): Promise<{ title: string; subtasks: string[]; listHint?: string }> {
+): Promise<ImageClassificationResult> {
+  const today = new Date().toISOString().split('T')[0];
+  const currentYear = new Date().getFullYear();
+  const tz = config.app.timezone || 'Europe/Lisbon';
+
   const prompt = caption
-    ? `The user sent this image with caption: "${caption}"\n\nExtract a task title and any subtasks/items visible in the image. If the caption mentions a list name, include it as listHint.`
-    : `Extract a task title and any subtasks/items visible in this image.`;
+    ? `The user sent this image with caption: "${caption}"\n\nClassify and extract the content.`
+    : `Classify and extract the content of this image.`;
 
   const response = await client.messages.create({
-    model: config.anthropic.classifierModel, // Haiku — 3x cheaper than Sonnet
-    max_tokens: 512,
-    system: `You extract task information from images. Return ONLY valid JSON: {"title": "main task", "subtasks": ["item1", "item2"], "listHint": "optional list name from caption"}. If no subtasks are visible, return an empty array. Keep titles concise.`,
+    model: config.anthropic.classifierModel, // Haiku — cheap vision
+    max_tokens: 1024,
+    system: `You classify images into exactly ONE of three categories and extract structured data. Return ONLY valid JSON.
+
+CATEGORY 1 — INVOICE / RECEIPT:
+Indicators: nota fiscal, recibo, fatura, comprovante de pagamento, NF-e, NFS-e, receipt, invoice, bill, payment proof, ticket de compra, cupom fiscal, line items with prices, tax totals, business letterhead with amounts.
+Return:
+{"type":"invoice","confidence":0.95,"documentDate":"YYYY-MM-DD","documentDateRaw":"as shown","vendor":"business name","totalAmount":"€ 45,90","invoiceNumber":"NF-12345"}
+- confidence: 0.0-1.0. Set high (>0.8) for clear invoices, low for uncertain.
+- Use null for any field not found.
+- For dates: look for "Data:", "Emissão:", "Date:", etc. Convert to ISO 8601.
+- For amounts: look for "Total:", "Valor:", "Total a pagar:", "Amount:".
+
+CATEGORY 2 — CALENDAR / SCHEDULE / TIMETABLE:
+Indicators: dates with time ranges (09:00-10:30), weekday headers (Mon/Tue/Wed, Seg/Ter/Qua), agenda grids, weekly/monthly views, class schedules, shift schedules, appointment lists with specific times, timetables.
+Return:
+{"type":"calendar","events":[{"title":"Meeting","start":"YYYY-MM-DDTHH:MM:SS","end":"YYYY-MM-DDTHH:MM:SS","description":"optional"}]}
+- Today is ${today}. Timezone: ${tz}. Current year: ${currentYear}.
+- Use 24h format, ISO 8601, NO timezone suffix (system handles tz).
+- If no end time, assume 1h duration.
+- If all-day event, use 00:00:00 to 23:59:59.
+- If week shown already passed this year, assume next year.
+- Keep titles concise. Use description for extra details.
+
+CATEGORY 3 — TASK LIST / CHECKLIST:
+Indicators: action items, to-dos, bullet points, checklists, shopping lists, numbered steps, reminders without specific time slots.
+Return:
+{"type":"task","title":"main task","subtasks":["item1","item2"],"listHint":"optional list name from caption"}
+- If no subtasks, return empty array.
+- If caption mentions a list name, include as listHint.
+
+NOT a document: personal photos, selfies, food photos, memes, screenshots of chat messages → return {"type":"task","title":"Photo","subtasks":[]}.
+
+When uncertain between calendar and task, prefer "task".`,
     messages: [{
       role: 'user',
       content: [
@@ -152,10 +222,16 @@ export async function extractImageContent(
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
   try {
-    return JSON.parse(text);
-  } catch {
-    // Fallback: use the raw text as title
-    return { title: text.slice(0, 100), subtasks: [] };
+    const parsed = JSON.parse(text);
+    // Backwards compat: if no type field, treat as task
+    if (!parsed.type) {
+      return { type: 'task', title: parsed.title || '', subtasks: parsed.subtasks || [], listHint: parsed.listHint };
+    }
+    logger.info({ imageType: parsed.type, confidence: parsed.confidence }, 'Image classified');
+    return parsed as ImageClassificationResult;
+  } catch (err) {
+    logger.warn({ err, text }, 'Failed to parse image classification JSON, defaulting to task');
+    return { type: 'task', title: text.slice(0, 100), subtasks: [] };
   }
 }
 
@@ -267,13 +343,19 @@ export async function callDomain(
     { role: 'user' as const, content: `${contextPrefix}${currentMessage}` },
   ];
 
-  const response = await client.messages.create({
-    model: getModelForDomain(domain),
-    max_tokens: getMaxTokensForDomain(domain),
-    system,
-    messages,
-    ...(useTools ? { tools: getCachedTools() } : {}),
-  });
+  let response: Anthropic.Message;
+  try {
+    response = await client.messages.create({
+      model: getModelForDomain(domain),
+      max_tokens: getMaxTokensForDomain(domain),
+      system,
+      messages,
+      ...(useTools ? { tools: getCachedTools() } : {}),
+    });
+  } catch (err) {
+    logger.error({ err, domain }, 'Anthropic API call failed in callDomain');
+    throw err;
+  }
 
   const textBlocks = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -311,13 +393,19 @@ export async function continueWithToolResults(
   ];
 
   const useTools = domain === 'secretary';
-  const response = await client.messages.create({
-    model: getModelForDomain(domain),
-    max_tokens: getMaxTokensForDomain(domain),
-    system,
-    messages,
-    ...(useTools ? { tools: getCachedTools() } : {}),
-  });
+  let response: Anthropic.Message;
+  try {
+    response = await client.messages.create({
+      model: getModelForDomain(domain),
+      max_tokens: getMaxTokensForDomain(domain),
+      system,
+      messages,
+      ...(useTools ? { tools: getCachedTools() } : {}),
+    });
+  } catch (err) {
+    logger.error({ err, domain }, 'Anthropic API call failed in continueWithToolResults');
+    throw err;
+  }
 
   const textBlocks = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')

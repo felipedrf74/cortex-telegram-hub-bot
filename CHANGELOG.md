@@ -4,6 +4,83 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.9.0] — 2026-03-08
+
+### Unified Image Classifier: Invoice / Calendar / Task
+
+Single Haiku vision call replaces two sequential calls, adding calendar-image support and saving one API call on invoice photos.
+
+#### New Feature: Calendar Event Creation from Photos (`src/bot.ts`)
+- **Calendar image detection** — Photos of schedules, shift rosters, agendas, and timetables are now recognized and create Outlook Calendar events instead of To Do tasks
+- **SMS / EC categories** — Caption containing "SMS" → Blue Category, "EC" → Green Category on created events
+- **Correction button** — "❌ Não é calendário" inline button reclassifies as task (mirrors existing invoice correction flow)
+- **Multi-event support** — A single schedule image can produce multiple calendar events
+
+#### Unified Classifier (`src/services/anthropic.ts`)
+- **Single API call** — New `classifyAndExtractImage()` replaces both `analyzeInvoiceImage()` + `extractImageContent()` in the photo handler
+- **Discriminated union** — `ImageClassificationResult` type with `type: 'invoice' | 'calendar' | 'task'` for clean TypeScript narrowing
+- **Exported types** — `ImageInvoiceResult`, `ImageCalendarResult`, `ImageTaskResult`, `ExtractedCalendarEvent`
+- **Combined prompt** — Invoice indicators (nota fiscal, recibo, fatura), calendar indicators (date+time grids, shift schedules), task indicators (checklists, bullet points)
+
+#### Outlook Calendar Categories (`src/services/outlook-calendar.ts`)
+- `categories?: string[]` added to `createEvent()` — passed through Graph API POST body
+- Propagated through `unified-calendar.ts` → `tool-executor.ts` → tool schema
+
+#### Refactored Photo Handler (`src/bot.ts`)
+- Extracted `handleInvoiceFiling()` from inline code
+- New `handleCalendarExtraction()` with event loop, category support, correction callback
+- Renamed `handlePhotoTaskExtraction()` → `handleTaskExtraction()` with typed `ImageTaskResult`
+- New `parseCaptionCategory()` helper
+- New `cal:undo` callback handler (mirrors `nf:undo` pattern)
+
+#### Modified Files
+- `src/bot.ts`, `src/services/anthropic.ts`, `src/services/outlook-calendar.ts`
+- `src/services/unified-calendar.ts`, `src/services/tool-executor.ts`
+
+---
+
+## [1.8.1] — 2026-03-08
+
+### Security Hardening & Reliability Fixes
+
+21 fixes from code review — security, cost optimization, error handling, and reliability improvements.
+
+#### Security
+- **Shell injection prevention** — `execFileSync` with argument arrays replaces `execSync` string interpolation in `invoice-filer.ts`
+- **SSH host key policy** — `StrictHostKeyChecking=accept-new` (TOFU) replaces unconditional `=no`
+- **Session file permissions** — Amazon session cookies written with `chmod 0o600`
+- **Cryptographic callback IDs** — `crypto.randomUUID()` replaces sequential counters for callback references
+- **Bot token redaction** — Debug log uses webhook URL path instead of exposing token
+
+#### Cost Optimization
+- **Graph API `$select`** — `getTasks()` now fetches only needed fields (~60% payload reduction)
+- **Consolidated unread query** — New `getUnreadEmails()` replaces separate count + list calls
+
+#### Error Handling
+- **13 silent catches fixed** — `scheduler.ts` (5), `amazon-collector.ts` (3), `microsoft-todo.ts` (2), `bot.ts` (3) — all now log with `logger.warn`/`logger.error`
+- **Month validation** — Invoice filer validates month index 0-11 before PT_MONTHS lookup
+
+#### Reliability
+- **Amazon overall timeout** — 5-minute hard cap prevents runaway Playwright sessions
+- **Playwright resource blocking** — Aborts images/fonts/CSS/media during scraping (faster page loads)
+- **Shared memory cleanup throttle** — Rate-limited to once per 5 minutes instead of every read
+- **Browser close logging** — `browser.close()` failures logged instead of silently swallowed
+- **Reply waiter dedup** — `registerReplyWaiter` resolves existing waiter before replacing
+
+#### Database
+- **`migrations/005_indexes.sql`** — Indexes on `invoice_filings(vendor, source_ref)` and `invoice_filings(document_date)`
+
+#### Modified Files
+- `src/bot.ts`, `src/services/amazon-collector.ts`, `src/services/anthropic.ts`
+- `src/services/invoice-filer.ts`, `src/services/microsoft-todo.ts`
+- `src/services/outlook-mail.ts`, `src/services/scheduler.ts`
+- `src/services/tool-executor.ts`, `src/state/shared-memory.ts`
+
+#### New Files
+- `migrations/005_indexes.sql`
+
+---
+
 ## [1.8.0] — 2026-03-08
 
 ### Amazon.es Invoice Collection via Playwright

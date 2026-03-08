@@ -50,11 +50,13 @@ const pendingReplies = new Map<number, PendingReply>();
  * Used during interactive 2FA: bot sends screenshot, waits for OTP.
  */
 export function registerReplyWaiter(chatId: number, timeoutMs: number): Promise<string> {
-  // Cancel any existing waiter for this chat
+  // Reject any existing waiter for this chat so the previous caller gets an error
   const existing = pendingReplies.get(chatId);
   if (existing) {
     clearTimeout(existing.timer);
+    existing.resolve('__CANCELLED__'); // resolve (not reject) to avoid unhandled rejection noise
     pendingReplies.delete(chatId);
+    logger.warn({ chatId }, 'Replaced existing reply waiter');
   }
 
   return new Promise<string>((resolve, reject) => {
@@ -131,6 +133,8 @@ async function saveSession(context: BrowserContext): Promise<void> {
     }
 
     await context.storageState({ path: sessionPath });
+    // Restrict session file permissions (contains auth cookies)
+    try { fs.chmodSync(sessionPath, 0o600); } catch { /* non-critical */ }
     logger.info({ sessionPath }, 'Amazon session saved');
   } catch (err) {
     logger.warn({ err }, 'Failed to save Amazon session');
@@ -905,6 +909,7 @@ export async function collectAmazonInvoices(
   waitForReply?: (timeoutMs: number) => Promise<string>,
 ): Promise<AmazonCollectionResult> {
   const startTime = Date.now();
+  const OVERALL_TIMEOUT_MS = 5 * 60 * 1000; // 5-minute hard limit
   const monthFolder = `${PT_MONTHS[month]}-${year}`;
 
   const result: AmazonCollectionResult = {
@@ -937,7 +942,15 @@ export async function collectAmazonInvoices(
 
     const context = await loadOrCreateContext(browser);
     const page = await context.newPage();
-    // Viewport is set via CONTEXT_OPTIONS — no need to set again
+
+    // Block unnecessary resources to speed up scraping and reduce bandwidth
+    await page.route('**/*', (route) => {
+      const type = route.request().resourceType();
+      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+        return route.abort();
+      }
+      return route.continue();
+    });
 
     // Check if we're already logged in
     await page.goto('https://www.amazon.es/gp/css/order-history', {
@@ -992,6 +1005,12 @@ export async function collectAmazonInvoices(
         total: order.total,
         status: 'error',
       };
+
+      // Overall timeout guard — stop processing further orders if we're past the limit
+      if (Date.now() - startTime > OVERALL_TIMEOUT_MS) {
+        logger.warn({ elapsed: Date.now() - startTime, ordersProcessed: result.orders.length }, 'Amazon collection timed out');
+        break;
+      }
 
       try {
         // Check for duplicates (use orderId as the base reference)
@@ -1122,7 +1141,7 @@ export async function collectAmazonInvoices(
     result.totalErrors++;
   } finally {
     if (browser) {
-      try { await browser.close(); } catch { /* ignore */ }
+      try { await browser.close(); } catch (err) { logger.warn({ err }, 'Failed to close browser'); }
     }
   }
 
