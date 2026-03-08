@@ -4,6 +4,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import fs from 'fs';
 import path from 'path';
+import sharp from 'sharp';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
@@ -13,7 +14,7 @@ const client = new Anthropic({
 });
 
 // Portuguese month abbreviations for folder naming
-const PT_MONTHS: Record<number, string> = {
+export const PT_MONTHS: Record<number, string> = {
   1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
   7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez',
 };
@@ -36,6 +37,8 @@ export interface FilingResult {
   folderPath?: string;     // Year/month folder name
   filename?: string;
   analysis?: InvoiceAnalysis;
+  originalSizeKB?: number;
+  compressedSizeKB?: number;
   error?: string;
 }
 
@@ -186,21 +189,88 @@ export function buildFilename(
   return `${parts.join('_')}.${ext}`;
 }
 
-// ─── SSH/SCP Filing ─────────────────────────────────────────────────
+// ─── Image Compression ──────────────────────────────────────────────
 
 /**
- * Files an invoice image to iCloud Drive on the Mac via SSH/SCP.
- *
- * Flow:
- *   1. Write image buffer to a temp file on the server
- *   2. SSH mkdir -p to create year/month folder on Mac
- *   3. SCP the temp file to the Mac's iCloud Drive folder
- *   4. macOS syncs the folder to iCloud automatically
+ * Compress an image buffer using sharp.
+ * Only uses compressed result if it's actually smaller than the original.
+ * Returns { buffer, compressed } where compressed indicates if compression helped.
+ */
+async function compressImage(
+  imageBuffer: Buffer,
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
+): Promise<{ buffer: Buffer; compressed: boolean; originalKB: number; compressedKB: number }> {
+  if (!config.invoices.compressionEnabled) {
+    const kb = Math.round(imageBuffer.length / 1024);
+    return { buffer: imageBuffer, compressed: false, originalKB: kb, compressedKB: kb };
+  }
+
+  const originalKB = Math.round(imageBuffer.length / 1024);
+
+  try {
+    let pipeline = sharp(imageBuffer);
+    switch (mediaType) {
+      case 'image/jpeg':
+        pipeline = pipeline.jpeg({ quality: config.invoices.jpegQuality, mozjpeg: true });
+        break;
+      case 'image/png':
+        pipeline = pipeline.png({ compressionLevel: 8 });
+        break;
+      case 'image/webp':
+        pipeline = pipeline.webp({ quality: config.invoices.jpegQuality });
+        break;
+    }
+
+    const compressedBuffer = await pipeline.toBuffer();
+    const compressedKB = Math.round(compressedBuffer.length / 1024);
+
+    // Only use compressed version if it's actually smaller
+    if (compressedBuffer.length < imageBuffer.length) {
+      const savings = Math.round((1 - compressedBuffer.length / imageBuffer.length) * 100);
+      logger.info(
+        { originalKB, compressedKB, savings: `${savings}%`, mediaType },
+        'Image compressed successfully',
+      );
+      return { buffer: compressedBuffer, compressed: true, originalKB, compressedKB };
+    }
+
+    logger.debug({ originalKB, compressedKB }, 'Compression skipped (would increase size)');
+    return { buffer: imageBuffer, compressed: false, originalKB, compressedKB: originalKB };
+  } catch (err) {
+    logger.warn({ err }, 'Image compression failed, using original');
+    return { buffer: imageBuffer, compressed: false, originalKB, compressedKB: originalKB };
+  }
+}
+
+// ─── SSH/SCP Core ───────────────────────────────────────────────────
+
+/**
+ * Core SCP upload: ensures remote directory exists, then copies a local file.
  *
  * SCP quoting note: Modern OpenSSH (9+) uses SFTP internally for SCP,
  * so the remote path is NOT passed through a remote shell. We wrap the
  * entire "user@host:path" in double quotes for the local shell only —
  * no single quotes around the remote path (they'd become literal chars).
+ */
+function scpUpload(localPath: string, remoteDir: string, remotePath: string): void {
+  // SSH: create remote year/month directory on Mac
+  // Single quotes around path protect spaces in remote shell
+  const mkdirCmd = `${sshPrefix()} ${sshTarget()} "mkdir -p '${remoteDir}'"`;
+  execSync(mkdirCmd, { timeout: 15_000, stdio: 'pipe' });
+  logger.debug({ remoteDir }, 'Remote directory ensured via SSH');
+
+  // SCP: copy file to Mac's iCloud Drive
+  const keyFlag = config.invoices.sshKeyPath ? `-i ${config.invoices.sshKeyPath}` : '';
+  const portFlag = scpPortFlag();
+  const scpCmd = `scp ${keyFlag} ${portFlag} -o StrictHostKeyChecking=no -o BatchMode=yes "${localPath}" "${sshTarget()}:${remotePath}"`;
+  execSync(scpCmd, { timeout: 30_000, stdio: 'pipe' });
+}
+
+// ─── SSH/SCP Filing (Images) ────────────────────────────────────────
+
+/**
+ * Files an invoice image to iCloud Drive on the Mac via SSH/SCP.
+ * Compresses the image with sharp before upload (if enabled).
  */
 export async function fileInvoice(
   imageBuffer: Buffer,
@@ -215,30 +285,20 @@ export async function fileInvoice(
   const filename = buildFilename(analysis, mediaType, effectiveDate);
   const remotePath = `${remoteDir}/${filename}`;
 
-  // Write to temp file on the server
   const ext = mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : 'jpg';
   const tmpPath = path.join(tmpdir(), `invoice_${Date.now()}.${ext}`);
 
   try {
-    fs.writeFileSync(tmpPath, imageBuffer);
+    // Compress image before writing to temp file
+    const { buffer: finalBuffer, originalKB, compressedKB } =
+      await compressImage(imageBuffer, mediaType);
 
-    // SSH: create remote year/month directory on Mac
-    // Single quotes around path protect spaces in remote shell
-    const mkdirCmd = `${sshPrefix()} ${sshTarget()} "mkdir -p '${remoteDir}'"`;
-    execSync(mkdirCmd, { timeout: 15_000, stdio: 'pipe' });
-    logger.debug({ remoteDir }, 'Remote directory ensured via SSH');
-
-    // SCP: copy file to Mac's iCloud Drive
-    // Double quotes wrap the whole "user@host:path" for the local shell.
-    // NO single quotes — modern SCP/SFTP treats them as literal characters.
-    const keyFlag = config.invoices.sshKeyPath ? `-i ${config.invoices.sshKeyPath}` : '';
-    const portFlag = scpPortFlag();
-    const scpCmd = `scp ${keyFlag} ${portFlag} -o StrictHostKeyChecking=no -o BatchMode=yes "${tmpPath}" "${sshTarget()}:${remotePath}"`;
-    execSync(scpCmd, { timeout: 30_000, stdio: 'pipe' });
+    fs.writeFileSync(tmpPath, finalBuffer);
+    scpUpload(tmpPath, remoteDir, remotePath);
 
     logger.info(
-      { remotePath, vendor: analysis.vendor, date: analysis.documentDate },
-      'Invoice filed to iCloud Drive via SCP'
+      { remotePath, vendor: analysis.vendor, date: analysis.documentDate, originalKB, compressedKB },
+      'Invoice image filed to iCloud Drive via SCP',
     );
 
     return {
@@ -247,13 +307,89 @@ export async function fileInvoice(
       folderPath: `${effectiveDate.year}/${monthFolder}`,
       filename,
       analysis,
+      originalSizeKB: originalKB,
+      compressedSizeKB: compressedKB,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.error({ err, remotePath }, 'Failed to file invoice via SSH/SCP');
+    logger.error({ err, remotePath }, 'Failed to file invoice image via SSH/SCP');
     return { success: false, error: message, analysis };
   } finally {
-    // Always clean up temp file
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+}
+
+// ─── SSH/SCP Filing (PDFs from email) ───────────────────────────────
+
+/** Builds a filesystem-safe PDF filename for email-sourced invoices. */
+export function buildPdfFilename(
+  vendor: string,
+  effectiveDate: DateTime,
+  invoiceNumber?: string | null,
+  originalName?: string | null,
+): string {
+  const sanitize = (s: string) =>
+    s.replace(/[^a-zA-Z0-9€.,\-_àáãâéêíóôõúçÀÁÃÂÉÊÍÓÔÕÚÇ]/g, '_').slice(0, 40);
+
+  const parts: string[] = [effectiveDate.toFormat('yyyy-MM-dd')];
+  parts.push(sanitize(vendor));
+  if (invoiceNumber) parts.push(sanitize(invoiceNumber));
+
+  // Use original filename as hint if no invoice number
+  if (!invoiceNumber && originalName) {
+    const nameWithoutExt = originalName.replace(/\.pdf$/i, '');
+    parts.push(sanitize(nameWithoutExt));
+  }
+
+  const suffix = Date.now().toString().slice(-6);
+  parts.push(suffix);
+
+  return `${parts.join('_')}.pdf`;
+}
+
+/**
+ * Files a PDF invoice (from email) to iCloud Drive on the Mac via SSH/SCP.
+ * Follows the same year/Portuguese-month folder structure as photo invoices.
+ */
+export async function filePdf(
+  pdfBuffer: Buffer,
+  vendor: string,
+  documentDate: string | null,
+  invoiceNumber?: string | null,
+  originalName?: string | null,
+): Promise<FilingResult> {
+  if (!isInvoiceFilingConfigured()) {
+    return { success: false, error: 'Invoice filing is not configured.' };
+  }
+
+  const { remoteDir, monthFolder, effectiveDate } = resolveTargetDirectory(documentDate);
+  const filename = buildPdfFilename(vendor, effectiveDate, invoiceNumber, originalName);
+  const remotePath = `${remoteDir}/${filename}`;
+
+  const tmpPath = path.join(tmpdir(), `invoice_${Date.now()}.pdf`);
+
+  try {
+    fs.writeFileSync(tmpPath, pdfBuffer);
+    scpUpload(tmpPath, remoteDir, remotePath);
+
+    const sizeKB = Math.round(pdfBuffer.length / 1024);
+    logger.info(
+      { remotePath, vendor, documentDate, sizeKB },
+      'PDF invoice filed to iCloud Drive via SCP',
+    );
+
+    return {
+      success: true,
+      filePath: remotePath,
+      folderPath: `${effectiveDate.year}/${monthFolder}`,
+      filename,
+      originalSizeKB: sizeKB,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logger.error({ err, remotePath, vendor }, 'Failed to file PDF invoice via SSH/SCP');
+    return { success: false, error: message };
+  } finally {
     try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
   }
 }

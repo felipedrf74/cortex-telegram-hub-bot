@@ -9,6 +9,8 @@ import { isOutlookMailConfigured, getUnreadCount } from './outlook-mail';
 import { formatDailyBriefing, DailyBriefingData } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 import { runContentDiscovery } from './content-discovery';
+import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
+import { isInvoiceFilingConfigured } from './invoice-filer';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -210,6 +212,33 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Monthly invoice collection — 1st of each month at 09:00
+  // Collects previous month's email invoices from configured vendors
+  cron.schedule('0 9 1 * *', async () => {
+    if (!config.invoices.monthlyCollectionEnabled || !isInvoiceFilingConfigured()) return;
+
+    try {
+      const prev = now().minus({ months: 1 });
+      const result = await collectMonthlyInvoices(prev.year, prev.month);
+      const notification = formatCollectionNotification(result);
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, notification, { parse_mode: 'Markdown' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send invoice collection notification');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Monthly invoice collection failed');
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, '⚠️ Recolha mensal de faturas falhou. Verificar logs.');
+        } catch {}
+      }
+    }
+  }, { timezone: config.app.timezone });
+
   // Proactive conflict detection — check tomorrow's calendar at 19:30 for overlapping events
   cron.schedule('30 19 * * *', async () => {
     if (!isAnyCalendarConfigured()) return;
@@ -259,7 +288,7 @@ export function startScheduler(bot: Bot): void {
   }, { timezone: config.app.timezone });
 
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), conflict detection (19:30)`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st of month 09:00), conflict detection (19:30)`
   );
 }
 

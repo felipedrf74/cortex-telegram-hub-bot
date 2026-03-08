@@ -185,6 +185,135 @@ export async function getUnreadCount(): Promise<number> {
   }
 }
 
+// ── Attachment Types ─────────────────────────────────────────────────
+
+export interface OutlookAttachment {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  isInline: boolean;
+}
+
+export interface AttachmentDownload {
+  buffer: Buffer;
+  name: string;
+  contentType: string;
+}
+
+// ── Attachment Functions (for invoice collection) ────────────────────
+
+/**
+ * List non-inline attachments for an email.
+ * Filters to PDF by default but accepts a custom content type filter.
+ */
+export async function getAttachments(
+  messageId: string,
+  contentTypeFilter?: string,
+): Promise<OutlookAttachment[]> {
+  try {
+    const client = getGraphClient();
+    const response = await client
+      .api(`/me/messages/${messageId}/attachments`)
+      .select('id,name,contentType,size,isInline')
+      .get();
+
+    const attachments = (response.value || [])
+      .filter((att: any) => !att.isInline)  // Skip inline images (signatures, etc.)
+      .map((att: any) => ({
+        id: att.id || '',
+        name: att.name || 'attachment',
+        contentType: att.contentType || 'application/octet-stream',
+        size: att.size || 0,
+        isInline: att.isInline || false,
+      }));
+
+    // Apply content type filter if specified (e.g. 'application/pdf')
+    if (contentTypeFilter) {
+      return attachments.filter((a: OutlookAttachment) =>
+        a.contentType.toLowerCase().includes(contentTypeFilter.toLowerCase()),
+      );
+    }
+    return attachments;
+  } catch (err) {
+    logger.error({ err, messageId }, 'Failed to list Outlook attachments');
+    throw err;
+  }
+}
+
+/**
+ * Download a specific attachment as a Buffer.
+ * Microsoft Graph returns base64-encoded contentBytes for file attachments.
+ */
+export async function downloadAttachment(
+  messageId: string,
+  attachmentId: string,
+): Promise<AttachmentDownload> {
+  try {
+    const client = getGraphClient();
+    const att = await client
+      .api(`/me/messages/${messageId}/attachments/${attachmentId}`)
+      .get();
+
+    if (!att.contentBytes) {
+      throw new Error(`Attachment ${attachmentId} has no contentBytes (may be a reference attachment)`);
+    }
+
+    return {
+      buffer: Buffer.from(att.contentBytes, 'base64'),
+      name: att.name || 'attachment',
+      contentType: att.contentType || 'application/octet-stream',
+    };
+  } catch (err) {
+    logger.error({ err, messageId, attachmentId }, 'Failed to download Outlook attachment');
+    throw err;
+  }
+}
+
+/**
+ * Search emails using OData $filter (precise queries, unlike $search which is full-text).
+ *
+ * OData filter supports:
+ *   - from/emailAddress/address eq 'sender@example.com'
+ *   - receivedDateTime ge 2026-01-01T00:00:00Z
+ *   - hasAttachments eq true
+ *   - contains(subject, 'fatura')
+ *
+ * Example: searchEmailsByFilter(
+ *   "from/emailAddress/address eq 'fatura@viaverde.pt' and receivedDateTime ge 2026-02-01T00:00:00Z and receivedDateTime lt 2026-03-01T00:00:00Z and hasAttachments eq true"
+ * )
+ */
+export async function searchEmailsByFilter(
+  filter: string,
+  maxResults = 50,
+): Promise<OutlookEmail[]> {
+  try {
+    const client = getGraphClient();
+    const response = await client
+      .api('/me/messages')
+      .filter(filter)
+      .top(maxResults)
+      .select('id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead,importance,hasAttachments')
+      .orderby('receivedDateTime DESC')
+      .get();
+
+    return (response.value || []).map((msg: any) => ({
+      id: msg.id || '',
+      conversationId: msg.conversationId || '',
+      from: msg.from?.emailAddress?.address || '',
+      to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
+      subject: msg.subject || '(No subject)',
+      snippet: msg.bodyPreview || '',
+      date: msg.receivedDateTime || '',
+      isRead: msg.isRead || false,
+      importance: msg.importance || 'normal',
+    }));
+  } catch (err) {
+    logger.error({ err, filter }, 'Failed to search Outlook emails by filter');
+    throw err;
+  }
+}
+
 export async function getRecentEmails(maxResults = 10): Promise<OutlookEmail[]> {
   try {
     const client = getGraphClient();

@@ -53,3 +53,32 @@ export interface Reminder {
   status: string;
   created_at: string;
 }
+
+// ── Invoice Filing ──────────────────────────────────────────────────
+
+export interface InvoiceFiling {
+  id: number;
+  vendor: string;
+  amount: string | null;
+  document_date: string | null;
+  invoice_number: string | null;
+  source: 'photo' | 'email' | 'amazon';
+  source_ref: string | null;
+  remote_path: string | null;
+  folder_path: string | null;
+  filename: string | null;
+  file_size_bytes: number | null;
+  compressed_size_bytes: number | null;
+  status: 'filed' | 'failed' | 'duplicate';
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface InvoiceVendor {
+  id: number;
+  name: string;
+  sender_pattern: string;
+  subject_patterns: string | null;
+  enabled: number;       // SQLite boolean: 1 = active, 0 = disabled
+  created_at: string;
+}

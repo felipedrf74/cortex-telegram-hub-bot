@@ -58,6 +58,9 @@ export const config = {
     sshKeyPath: process.env.INVOICE_SSH_KEY || '',
     remotePath: process.env.INVOICE_REMOTE_PATH || '',
     minConfidence: parseFloat(process.env.INVOICE_MIN_CONFIDENCE || '0.70'),
+    compressionEnabled: (process.env.INVOICE_COMPRESSION_ENABLED || 'true') === 'true',
+    jpegQuality: parseInt(process.env.INVOICE_JPEG_QUALITY || '80', 10),
+    monthlyCollectionEnabled: (process.env.INVOICE_MONTHLY_COLLECTION || 'true') === 'true',
   },
   rateLimit: {
     maxMessagesPerMinute: 30,

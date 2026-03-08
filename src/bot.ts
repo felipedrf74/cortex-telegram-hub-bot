@@ -20,7 +20,10 @@ import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDa
 import { extractImageContent } from './services/anthropic';
 import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
-import { analyzeInvoiceImage, fileInvoice, isInvoiceFilingConfigured } from './services/invoice-filer';
+import { analyzeInvoiceImage, fileInvoice, isInvoiceFilingConfigured, PT_MONTHS } from './services/invoice-filer';
+import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
+import { recordFiling } from './state/invoice-filings';
+import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
 import fs from 'fs';
 import path from 'path';
 
@@ -955,6 +958,129 @@ export function createBot(): Bot {
     });
   });
 
+  // ── Invoice Collection Commands ──
+
+  // /invoices [YYYY-MM] — Manual trigger for monthly invoice collection
+  bot.command('invoices', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isInvoiceFilingConfigured()) {
+        await ctx.reply('⚠️ Arquivamento de faturas não configurado.');
+        return;
+      }
+
+      const arg = ctx.match?.trim();
+      let year: number, month: number;
+
+      if (arg && /^\d{4}-\d{2}$/.test(arg)) {
+        const [y, m] = arg.split('-').map(Number);
+        year = y;
+        month = m;
+      } else {
+        // Default: previous month
+        const prev = now().minus({ months: 1 });
+        year = prev.year;
+        month = prev.month;
+      }
+
+      const monthLabel = `${PT_MONTHS[month]}-${year}`;
+      await ctx.reply(`📊 A recolher faturas de <b>${monthLabel}</b>...`, { parse_mode: 'HTML' });
+
+      try {
+        const result = await collectMonthlyInvoices(year, month);
+        const notification = formatCollectionNotification(result);
+
+        for (const chunk of splitMessage(notification)) {
+          try {
+            await ctx.reply(chunk, { parse_mode: 'Markdown' });
+          } catch {
+            await ctx.reply(chunk.replace(/[*_`]/g, ''));
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Manual invoice collection failed');
+        await ctx.reply('⚠️ Recolha de faturas falhou. Verificar logs.');
+      }
+    });
+  });
+
+  // /addfatura <name> | <sender> — Register a new invoice vendor
+  bot.command('addfatura', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const arg = ctx.match?.trim();
+      if (!arg || !arg.includes('|')) {
+        await ctx.reply(
+          '📝 <b>Uso:</b> <code>/addfatura Nome | sender@domain.pt</code>\n\n' +
+          'Exemplo: <code>/addfatura MEO | meo.pt</code>\n' +
+          'Exemplo: <code>/addfatura Vodafone | vodafone.pt</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const [namePart, senderPart] = arg.split('|').map((s) => s.trim());
+      if (!namePart || !senderPart) {
+        await ctx.reply('⚠️ Nome e sender são obrigatórios. Exemplo: <code>/addfatura MEO | meo.pt</code>', { parse_mode: 'HTML' });
+        return;
+      }
+
+      try {
+        const vendor = addVendor(namePart, senderPart);
+        await ctx.reply(
+          `✅ <b>${escapeHtml(vendor.name)}</b> adicionado.\n` +
+          `📧 Emails de <code>${escapeHtml(vendor.sender_pattern)}</code> serão recolhidos no próximo mês.`,
+          { parse_mode: 'HTML' },
+        );
+      } catch (err) {
+        logger.error({ err, name: namePart, sender: senderPart }, 'Failed to add vendor');
+        await ctx.reply('⚠️ Erro ao adicionar fornecedor.');
+      }
+    });
+  });
+
+  // /rmfatura <name> — Remove/disable a custom vendor
+  bot.command('rmfatura', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const name = ctx.match?.trim();
+      if (!name) {
+        await ctx.reply('📝 <b>Uso:</b> <code>/rmfatura Nome</code>', { parse_mode: 'HTML' });
+        return;
+      }
+
+      const removed = removeVendorByName(name);
+      if (removed) {
+        await ctx.reply(`🗑 <b>${escapeHtml(name)}</b> desativado. Não será recolhido nos próximos meses.`, { parse_mode: 'HTML' });
+      } else {
+        await ctx.reply(`⚠️ Fornecedor "${escapeHtml(name)}" não encontrado. Usa /faturas para ver a lista.`, { parse_mode: 'HTML' });
+      }
+    });
+  });
+
+  // /faturas — List all configured vendors (builtin + custom)
+  bot.command('faturas', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const builtins = getBuiltinVendors();
+      const customs = getCustomVendors();
+
+      let msg = `📋 <b>Fornecedores de Faturas</b>\n\n`;
+      msg += `<b>📌 Fixos:</b>\n`;
+      for (const v of builtins) {
+        msg += `• ${escapeHtml(v.name)} — <code>${v.senderPatterns.join(', ')}</code>\n`;
+      }
+
+      if (customs.length > 0) {
+        msg += `\n<b>👤 Personalizados:</b>\n`;
+        for (const v of customs) {
+          msg += `• ${escapeHtml(v.name)} — <code>${escapeHtml(v.sender_pattern)}</code>\n`;
+        }
+        msg += `\n<i>Remover com:</i> <code>/rmfatura Nome</code>`;
+      } else {
+        msg += `\n<i>Nenhum fornecedor personalizado. Adicionar com:</i>\n<code>/addfatura Nome | sender@domain.pt</code>`;
+      }
+
+      await ctx.reply(msg, { parse_mode: 'HTML' });
+    });
+  });
+
   // ── Inline Keyboard Callback Handlers ──
   bot.callbackQuery(/^td:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
@@ -1333,6 +1459,22 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
         const filingResult = await fileInvoice(buffer, mediaType, analysis);
 
         if (filingResult.success) {
+          // Record in filing log for audit trail
+          recordFiling({
+            vendor: analysis.vendor || 'Unknown',
+            amount: analysis.totalAmount,
+            document_date: analysis.documentDate,
+            invoice_number: analysis.invoiceNumber,
+            source: 'photo',
+            source_ref: 'telegram_photo',
+            remote_path: filingResult.filePath,
+            folder_path: filingResult.folderPath,
+            filename: filingResult.filename,
+            file_size_bytes: filingResult.originalSizeKB ? filingResult.originalSizeKB * 1024 : null,
+            compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
+            status: 'filed',
+          });
+
           let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
           if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
           if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
@@ -1340,6 +1482,12 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
           if (analysis.invoiceNumber) msg += `🔢 ${escapeHtml(analysis.invoiceNumber)}\n`;
           msg += `\n📁 <code>${escapeHtml(filingResult.folderPath!)}</code>`;
           msg += `\n📄 <code>${escapeHtml(filingResult.filename!)}</code>`;
+
+          // Show compression savings if applicable
+          if (filingResult.originalSizeKB && filingResult.compressedSizeKB && filingResult.originalSizeKB !== filingResult.compressedSizeKB) {
+            const savings = Math.round((1 - filingResult.compressedSizeKB / filingResult.originalSizeKB) * 100);
+            msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
+          }
 
           // Correction button in case Claude misclassified
           const ref = storeCallback({ base64, mediaType, caption });
