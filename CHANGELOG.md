@@ -4,6 +4,99 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [1.8.0] — 2026-03-08
+
+### Amazon.es Invoice Collection via Playwright
+
+Browser-automated invoice download from Amazon.es with interactive 2FA support through Telegram.
+
+#### New Feature: Amazon Collector (`src/services/amazon-collector.ts`)
+- **Playwright browser automation** — Logs into Amazon.es, navigates order history, downloads real tax invoices (not order summaries)
+- **Interactive 2FA** — OTP codes and CAPTCHAs handled via Telegram: bot sends screenshot, user replies with code
+- **Session persistence** — Saves browser cookies to `data/amazon-session.json` to avoid repeated logins
+- **Configurable** — `AMAZON_EMAIL`, `AMAZON_PASSWORD`, `AMAZON_COLLECTION_ENABLED`, `AMAZON_HEADLESS`
+
+#### `/amazon` Command (`src/bot.ts`)
+- `/amazon` — Collect invoices for current month (default)
+- `/amazon 2026-02` — Collect invoices for specific month
+- `/amazon --force` — Clear previous filing records and re-download (fixes bad runs)
+- 2FA reply interception — Text messages during Amazon collection are captured as OTP/CAPTCHA responses
+
+#### Scheduled Collection (`src/services/scheduler.ts`)
+- **Monthly cron at 09:15 (1st of month)** — Runs 15 min after email vendor collection; no interactive 2FA in cron mode
+
+#### `--force` Re-collection (`src/state/invoice-filings.ts`)
+- `deleteAmazonFilings(year, month)` — Removes all Amazon filing records for a given month, allowing full re-download
+
+#### New Files
+- `src/services/amazon-collector.ts` (1197 lines)
+
+#### Modified Files
+- `src/bot.ts`, `src/config.ts`, `src/services/scheduler.ts`, `src/state/invoice-filings.ts`
+- `package.json` (added `playwright` dependency)
+
+---
+
+## [1.7.0] — 2026-03-08
+
+### Automated Monthly Invoice Collection + Image Compression
+
+Email-based invoice collection from configured vendors, with audit logging and photo compression.
+
+#### New Feature: Invoice Collector (`src/services/invoice-collector.ts`)
+- **Monthly cron job (1st at 09:00)** — Searches Hotmail for PDF invoices from configured vendors (Santander, ViaVerde, Aegon, NOS)
+- **Dynamic vendor learning** — `/addfatura` (add), `/rmfatura` (remove), `/faturas` (list); two-tier system with hardcoded builtins + user-added DB vendors
+- **Filing audit log** — `invoice_filings` SQLite table tracks all filed invoices (vendor, amount, date, source, compression stats)
+- **`/invoices [YYYY-MM]`** — Manual trigger for on-demand collection
+
+#### Image Compression (`src/services/invoice-filer.ts`)
+- **Sharp JPEG compression** — mozjpeg quality 80; only applies if compressed size < original
+- Configurable via `INVOICE_COMPRESSION_ENABLED` and `INVOICE_JPEG_QUALITY`
+
+#### Outlook Mail Extensions (`src/services/outlook-mail.ts`)
+- `getAttachments()`, `downloadAttachment()`, `searchEmailsByFilter()` (OData `$filter`)
+
+#### New Files
+- `src/services/invoice-collector.ts`, `src/state/invoice-filings.ts`, `src/state/invoice-vendors.ts`
+- `migrations/004_invoice_filings.sql`
+
+#### Modified Files
+- `src/bot.ts`, `src/config.ts`, `src/services/invoice-filer.ts`, `src/services/outlook-mail.ts`, `src/services/scheduler.ts`
+
+---
+
+## [1.6.1] — 2026-03-08
+
+### Fix Invoice Collection for Personal Outlook Accounts
+
+Three bug fixes for Hotmail/personal account compatibility.
+
+- **Client-side sender matching** — Replace OData `contains()` filter (unsupported on personal accounts) with post-fetch domain matching
+- **PDF extension matching** — Detect PDFs sent as `application/octet-stream` by checking `.pdf` file extension
+- **Vendor pattern fixes** — Fix Aegon hyphen (`aegon-santander.pt`), add ViaVerde `extracto` subject pattern
+- **Anti-false-positive** — Domain matching prevents cross-vendor misattribution
+- **`$orderby` fallback** — Personal account compatibility for email sorting
+
+#### Modified Files
+- `src/services/invoice-collector.ts`, `src/services/outlook-mail.ts`
+
+---
+
+## [1.6.0] — 2026-03-08
+
+### Revert to SSH/SCP Invoice Filing
+
+Apple's SRP-6a auth protocol changes broke all pyicloud-based tools, making iCloud FUSE mounts on Linux impossible.
+
+- **Restored SSH/SCP filing** — Reverted from local filesystem writes back to SSH/SCP via reverse tunnel
+- **Restored SSH config** — `sshHost`, `sshPort`, `sshUser`, `sshKeyPath`, `remotePath`
+- **Re-enabled autossh** — Reverse tunnel on Mac via launchd plist
+
+#### Modified Files
+- `src/config.ts`, `src/services/invoice-filer.ts`
+
+---
+
 ## [1.5.1] — 2026-03-08
 
 ### Invoice Filing: SSH/SCP → Local Filesystem
