@@ -56,6 +56,85 @@ export function isOutlookCalendarConfigured(): boolean {
   return !!(config.outlook.clientId && config.outlook.refreshToken);
 }
 
+// ── Master Categories (color ↔ displayName mapping) ─────────────────
+
+/**
+ * Microsoft Graph preset colors → human color names.
+ * See: https://learn.microsoft.com/en-us/graph/api/resources/outlookcategory
+ */
+const PRESET_COLOR_MAP: Record<string, string> = {
+  preset0: 'red', preset1: 'orange', preset2: 'brown',
+  preset3: 'yellow', preset4: 'green', preset5: 'teal',
+  preset6: 'olive', preset7: 'blue', preset8: 'purple',
+  preset9: 'cranberry', preset10: 'steel', preset11: 'darkSteel',
+  preset12: 'gray', preset13: 'darkGray', preset14: 'black',
+  preset15: 'darkRed', preset16: 'darkOrange', preset17: 'darkBrown',
+  preset18: 'darkYellow', preset19: 'darkGreen', preset20: 'darkTeal',
+  preset21: 'darkOlive', preset22: 'darkBlue', preset23: 'darkPurple',
+  preset24: 'darkCranberry',
+};
+
+interface MasterCategory {
+  displayName: string;
+  color: string; // e.g. "preset7"
+}
+
+let masterCategoriesCache: MasterCategory[] | null = null;
+
+/**
+ * Fetches the user's Outlook master categories (cached after first call).
+ */
+export async function getMasterCategories(): Promise<MasterCategory[]> {
+  if (masterCategoriesCache) return masterCategoriesCache;
+
+  try {
+    const client = getGraphClient();
+    const response = await client.api('/me/outlook/masterCategories').get();
+    const cats: MasterCategory[] = (response.value || []).map((c: any) => ({
+      displayName: c.displayName,
+      color: c.color,
+    }));
+    masterCategoriesCache = cats;
+    logger.info(
+      { categories: cats.map((c) => `${c.displayName} (${PRESET_COLOR_MAP[c.color] || c.color})`) },
+      'Loaded Outlook master categories'
+    );
+    return cats;
+  } catch (err) {
+    logger.error({ err }, 'Failed to fetch master categories');
+    return [];
+  }
+}
+
+/**
+ * Finds the exact category displayName for a given human color (blue, green, red).
+ * Falls back to "Blue Category" etc. if master categories cannot be fetched.
+ */
+export async function getCategoryNameForColor(color: 'blue' | 'green' | 'red'): Promise<string> {
+  const presetMap: Record<string, string> = { blue: 'preset7', green: 'preset4', red: 'preset0' };
+  const fallbackMap: Record<string, string> = { blue: 'Blue Category', green: 'Green Category', red: 'Red Category' };
+
+  const categories = await getMasterCategories();
+  const preset = presetMap[color];
+  const match = categories.find((c) => c.color === preset);
+
+  if (match) {
+    return match.displayName;
+  }
+
+  // No match for exact preset — try name-based fuzzy match
+  const colorLower = color.toLowerCase();
+  const fuzzy = categories.find((c) =>
+    c.displayName.toLowerCase().includes(colorLower) ||
+    c.displayName.toLowerCase().includes(
+      colorLower === 'blue' ? 'azul' : colorLower === 'green' ? 'verde' : 'vermelh'
+    )
+  );
+  if (fuzzy) return fuzzy.displayName;
+
+  return fallbackMap[color];
+}
+
 export async function getEvents(startDate: string, endDate: string): Promise<CalendarEvent[]> {
   try {
     const client = getGraphClient();
@@ -112,6 +191,7 @@ export async function createEvent(data: {
     if (data.categories && data.categories.length > 0) {
       postBody.categories = data.categories;
     }
+    logger.info({ subject: postBody.subject, categories: postBody.categories }, 'Creating Outlook calendar event');
     const response = await client.api('/me/events').post(postBody);
 
     return {

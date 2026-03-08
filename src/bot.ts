@@ -16,6 +16,7 @@ import {
 } from './utils/telegram-formatter';
 import * as msTodo from './services/microsoft-todo';
 import { getEvents, createEvent as createCalendarEvent, isAnyCalendarConfigured } from './services/unified-calendar';
+import { getCategoryNameForColor, getMasterCategories } from './services/outlook-calendar';
 import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from './services/outlook-mail';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDateTime, parseNaturalDate } from './utils/date-parser';
 import { classifyAndExtractImage, ImageInvoiceResult, ImageCalendarResult, ImageTaskResult } from './services/anthropic';
@@ -107,13 +108,25 @@ interface CalendarCaptionInfo {
   label: string;      // "SMS", "EC", or "Pessoal"
 }
 
-function parseCaptionInfo(caption: string): CalendarCaptionInfo {
+/**
+ * Resolves caption keywords to Outlook category names by querying
+ * the user's master categories (cached after first fetch).
+ * SMS → blue preset, EC → green preset, default → red preset.
+ */
+async function parseCaptionInfo(caption: string): Promise<CalendarCaptionInfo> {
   if (caption) {
     const upper = caption.toUpperCase().trim();
-    if (upper.includes('SMS')) return { categories: ['Blue Category'], prefix: 'SMS - ', label: 'SMS' };
-    if (upper.includes('EC')) return { categories: ['Green Category'], prefix: 'EC - ', label: 'EC' };
+    if (upper.includes('SMS')) {
+      const cat = await getCategoryNameForColor('blue');
+      return { categories: [cat], prefix: 'SMS - ', label: 'SMS' };
+    }
+    if (upper.includes('EC')) {
+      const cat = await getCategoryNameForColor('green');
+      return { categories: [cat], prefix: 'EC - ', label: 'EC' };
+    }
   }
-  return { categories: ['Red Category'], prefix: '', label: 'Pessoal' };
+  const cat = await getCategoryNameForColor('red');
+  return { categories: [cat], prefix: '', label: 'Pessoal' };
 }
 
 // ─── Pending Edit State (per user) ──────────────────────────────────
@@ -1538,6 +1551,11 @@ export function createBot(): Bot {
     ctx.reply('⚠️ Something went wrong. Please try again.').catch(() => {});
   });
 
+  // ── Pre-load Outlook master categories (for calendar event colors) ──
+  if (isAnyCalendarConfigured()) {
+    getMasterCategories().catch((err) => logger.warn({ err }, 'Failed to pre-load master categories'));
+  }
+
   return bot;
 }
 
@@ -1765,7 +1783,7 @@ async function handleCalendarExtraction(
     return;
   }
 
-  const info = parseCaptionInfo(caption);
+  const info = await parseCaptionInfo(caption);
 
   // ── Apply prefix to event titles (SMS - / EC - ) ──
   const prefixedEvents = result.events.map((e) => ({
