@@ -169,14 +169,20 @@ export function buildFilename(
 // ─── SSH/SCP Filing ─────────────────────────────────────────────────
 
 /**
- * Builds the SSH command prefix with key and host.
+ * Builds the SSH command prefix with key, port, and host.
  * Paths with spaces are handled via shell quoting.
  */
 function sshPrefix(): string {
-  const { sshHost, sshUser, sshKeyPath } = config.invoices;
+  const { sshHost, sshPort, sshUser, sshKeyPath } = config.invoices;
   const keyFlag = sshKeyPath ? `-i "${sshKeyPath}"` : '';
+  const portFlag = sshPort !== 22 ? `-p ${sshPort}` : '';
   const userHost = sshUser ? `${sshUser}@${sshHost}` : sshHost;
-  return `${keyFlag} ${userHost}`;
+  return `${keyFlag} ${portFlag} ${userHost}`.replace(/\s+/g, ' ').trim();
+}
+
+/** Returns the SCP port flag (-P for SCP, different from SSH's -p). */
+function scpPortFlag(): string {
+  return config.invoices.sshPort !== 22 ? `-P ${config.invoices.sshPort}` : '';
 }
 
 /**
@@ -210,8 +216,11 @@ export async function fileInvoice(
     logger.debug({ cmd: mkdirCmd }, 'Creating remote directory');
     execSync(mkdirCmd, { timeout: 10_000, stdio: 'pipe' });
 
-    // SCP the file to Mac
-    const scpCmd = `scp ${config.invoices.sshKeyPath ? `-i "${config.invoices.sshKeyPath}"` : ''} "${tmpFile}" ${config.invoices.sshUser ? `${config.invoices.sshUser}@` : ''}${config.invoices.sshHost}:"'${remotePath}'"`;
+    // SCP the file to Mac (-P flag for SCP port, different from SSH's -p)
+    // Modern SCP uses SFTP internally — no remote shell, so no shell quoting.
+    // Wrap the entire user@host:path in double quotes to handle local spaces.
+    const scpDest = `${config.invoices.sshUser ? `${config.invoices.sshUser}@` : ''}${config.invoices.sshHost}:${remotePath}`;
+    const scpCmd = `scp ${scpPortFlag()} ${config.invoices.sshKeyPath ? `-i "${config.invoices.sshKeyPath}"` : ''} "${tmpFile}" "${scpDest}"`;
     logger.debug({ cmd: scpCmd }, 'SCP file to Mac');
     execSync(scpCmd, { timeout: 30_000, stdio: 'pipe' });
 

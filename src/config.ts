@@ -53,6 +53,7 @@ export const config = {
   invoices: {
     enabled: (process.env.INVOICE_FILING_ENABLED || 'true') === 'true',
     sshHost: process.env.INVOICE_SSH_HOST || '',
+    sshPort: parseInt(process.env.INVOICE_SSH_PORT || '22', 10),
     sshUser: process.env.INVOICE_SSH_USER || '',
     sshKeyPath: process.env.INVOICE_SSH_KEY || '',
     remotePath: process.env.INVOICE_REMOTE_PATH || '',

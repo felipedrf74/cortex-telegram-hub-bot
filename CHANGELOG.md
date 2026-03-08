@@ -25,8 +25,9 @@ Automatic invoice detection and filing from Telegram photos to iCloud Drive via 
 - New `nf:` callback namespace for invoice correction with 5-min TTL callbackStore
 
 #### Configuration (`src/config.ts`)
-- New `invoices` config section: `INVOICE_FILING_ENABLED`, `INVOICE_SSH_HOST`, `INVOICE_SSH_USER`, `INVOICE_SSH_KEY`, `INVOICE_REMOTE_PATH`, `INVOICE_MIN_CONFIDENCE`
+- New `invoices` config section: `INVOICE_FILING_ENABLED`, `INVOICE_SSH_HOST`, `INVOICE_SSH_PORT`, `INVOICE_SSH_USER`, `INVOICE_SSH_KEY`, `INVOICE_REMOTE_PATH`, `INVOICE_MIN_CONFIDENCE`
 - `isInvoiceFilingConfigured()` guard checks enabled + SSH host + remote path
+- Configurable SSH port for reverse tunnel support (default: 22)
 
 #### New Files
 - `src/services/invoice-filer.ts`
