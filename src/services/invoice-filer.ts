@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { DateTime } from 'luxon';
+import { execSync } from 'child_process';
+import { tmpdir } from 'os';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
@@ -30,11 +32,31 @@ export interface InvoiceAnalysis {
 
 export interface FilingResult {
   success: boolean;
-  filePath?: string;       // Full local path where file was written
+  filePath?: string;       // Remote path on Mac
   folderPath?: string;     // Year/month folder name
   filename?: string;
   analysis?: InvoiceAnalysis;
   error?: string;
+}
+
+// ─── SSH/SCP Helpers ────────────────────────────────────────────────
+
+/** Builds the base SSH command prefix with key, port, and options. */
+function sshPrefix(): string {
+  const parts = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'BatchMode=yes'];
+  if (config.invoices.sshKeyPath) parts.push('-i', config.invoices.sshKeyPath);
+  if (config.invoices.sshPort !== '22') parts.push('-p', config.invoices.sshPort);
+  return parts.join(' ');
+}
+
+/** SCP uses uppercase -P for port (vs SSH's lowercase -p). */
+function scpPortFlag(): string {
+  return config.invoices.sshPort !== '22' ? `-P ${config.invoices.sshPort}` : '';
+}
+
+/** Returns user@host string for SSH/SCP commands. */
+function sshTarget(): string {
+  return `${config.invoices.sshUser}@${config.invoices.sshHost}`;
 }
 
 // ─── Configuration Guard ────────────────────────────────────────────
@@ -42,7 +64,8 @@ export interface FilingResult {
 export function isInvoiceFilingConfigured(): boolean {
   return (
     config.invoices.enabled &&
-    config.invoices.localPath !== ''
+    config.invoices.sshHost !== '' &&
+    config.invoices.remotePath !== ''
   );
 }
 
@@ -120,9 +143,9 @@ export function getPortugueseMonthFolder(date: DateTime): string {
   return `${PT_MONTHS[date.month]}-${date.year}`;
 }
 
-/** Resolves the target directory path on the local filesystem. */
+/** Resolves the remote target directory on the Mac's iCloud Drive. */
 export function resolveTargetDirectory(documentDate: string | null): {
-  targetDir: string;
+  remoteDir: string;
   year: number;
   monthFolder: string;
   effectiveDate: DateTime;
@@ -137,9 +160,9 @@ export function resolveTargetDirectory(documentDate: string | null): {
 
   const year = effectiveDate.year;
   const monthFolder = getPortugueseMonthFolder(effectiveDate);
-  const targetDir = path.join(config.invoices.localPath, String(year), monthFolder);
+  const remoteDir = `${config.invoices.remotePath}/${year}/${monthFolder}`;
 
-  return { targetDir, year, monthFolder, effectiveDate };
+  return { remoteDir, year, monthFolder, effectiveDate };
 }
 
 /** Builds a filesystem-safe, descriptive filename. */
@@ -163,11 +186,21 @@ export function buildFilename(
   return `${parts.join('_')}.${ext}`;
 }
 
-// ─── Local Filesystem Filing ────────────────────────────────────────
+// ─── SSH/SCP Filing ─────────────────────────────────────────────────
 
 /**
- * Files an invoice image directly to the local iCloud Drive mount.
- * Creates year/month directories if they don't exist, then writes the file.
+ * Files an invoice image to iCloud Drive on the Mac via SSH/SCP.
+ *
+ * Flow:
+ *   1. Write image buffer to a temp file on the server
+ *   2. SSH mkdir -p to create year/month folder on Mac
+ *   3. SCP the temp file to the Mac's iCloud Drive folder
+ *   4. macOS syncs the folder to iCloud automatically
+ *
+ * SCP quoting note: Modern OpenSSH (9+) uses SFTP internally for SCP,
+ * so the remote path is NOT passed through a remote shell. We wrap the
+ * entire "user@host:path" in double quotes for the local shell only —
+ * no single quotes around the remote path (they'd become literal chars).
  */
 export async function fileInvoice(
   imageBuffer: Buffer,
@@ -178,33 +211,49 @@ export async function fileInvoice(
     return { success: false, error: 'Invoice filing is not configured.' };
   }
 
-  const { targetDir, monthFolder, effectiveDate } = resolveTargetDirectory(analysis.documentDate);
+  const { remoteDir, monthFolder, effectiveDate } = resolveTargetDirectory(analysis.documentDate);
   const filename = buildFilename(analysis, mediaType, effectiveDate);
-  const filePath = path.join(targetDir, filename);
+  const remotePath = `${remoteDir}/${filename}`;
+
+  // Write to temp file on the server
+  const ext = mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : 'jpg';
+  const tmpPath = path.join(tmpdir(), `invoice_${Date.now()}.${ext}`);
 
   try {
-    // Create year/month directory (recursive, idempotent)
-    fs.mkdirSync(targetDir, { recursive: true });
-    logger.debug({ targetDir }, 'Ensured target directory exists');
+    fs.writeFileSync(tmpPath, imageBuffer);
 
-    // Write the image file directly
-    fs.writeFileSync(filePath, imageBuffer);
+    // SSH: create remote year/month directory on Mac
+    // Single quotes around path protect spaces in remote shell
+    const mkdirCmd = `${sshPrefix()} ${sshTarget()} "mkdir -p '${remoteDir}'"`;
+    execSync(mkdirCmd, { timeout: 15_000, stdio: 'pipe' });
+    logger.debug({ remoteDir }, 'Remote directory ensured via SSH');
+
+    // SCP: copy file to Mac's iCloud Drive
+    // Double quotes wrap the whole "user@host:path" for the local shell.
+    // NO single quotes — modern SCP/SFTP treats them as literal characters.
+    const keyFlag = config.invoices.sshKeyPath ? `-i ${config.invoices.sshKeyPath}` : '';
+    const portFlag = scpPortFlag();
+    const scpCmd = `scp ${keyFlag} ${portFlag} -o StrictHostKeyChecking=no -o BatchMode=yes "${tmpPath}" "${sshTarget()}:${remotePath}"`;
+    execSync(scpCmd, { timeout: 30_000, stdio: 'pipe' });
 
     logger.info(
-      { filePath, vendor: analysis.vendor, date: analysis.documentDate },
-      'Invoice filed to iCloud Drive'
+      { remotePath, vendor: analysis.vendor, date: analysis.documentDate },
+      'Invoice filed to iCloud Drive via SCP'
     );
 
     return {
       success: true,
-      filePath,
+      filePath: remotePath,
       folderPath: `${effectiveDate.year}/${monthFolder}`,
       filename,
       analysis,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    logger.error({ err, filePath }, 'Failed to file invoice');
+    logger.error({ err, remotePath }, 'Failed to file invoice via SSH/SCP');
     return { success: false, error: message, analysis };
+  } finally {
+    // Always clean up temp file
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
   }
 }

@@ -49,10 +49,14 @@ export const config = {
     digestEnabled: (process.env.TODO_DIGEST_ENABLED || 'true') === 'true',
     digestTime: process.env.TODO_DIGEST_TIME || '08:00',
   },
-  // ── Invoice/Receipt Filing ──────────────────────────────────────────
+  // ── Invoice/Receipt Filing (via SSH/SCP to Mac → iCloud Drive) ─────
   invoices: {
     enabled: (process.env.INVOICE_FILING_ENABLED || 'true') === 'true',
-    localPath: process.env.INVOICE_LOCAL_PATH || '',
+    sshHost: process.env.INVOICE_SSH_HOST || '',
+    sshPort: process.env.INVOICE_SSH_PORT || '22',
+    sshUser: process.env.INVOICE_SSH_USER || '',
+    sshKeyPath: process.env.INVOICE_SSH_KEY || '',
+    remotePath: process.env.INVOICE_REMOTE_PATH || '',
     minConfidence: parseFloat(process.env.INVOICE_MIN_CONFIDENCE || '0.70'),
   },
   rateLimit: {
