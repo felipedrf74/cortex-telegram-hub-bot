@@ -19,6 +19,7 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
+    "garmin-connect": "^1.6.2",
     "googleapis": "^171.4.0",
     "grammy": "^1.41.1",
     "luxon": "^3.7.2",

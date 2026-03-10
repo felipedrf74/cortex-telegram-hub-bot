@@ -6,13 +6,15 @@ import { getDueReminders, markReminderFired, getRemindersForToday } from '../sta
 import * as msTodo from './microsoft-todo';
 import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount } from './outlook-mail';
-import { formatDailyBriefing, DailyBriefingData, escapeHtml } from '../utils/telegram-formatter';
+import { formatDailyBriefing, DailyBriefingData, escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 import { runContentDiscovery } from './content-discovery';
 import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
+import { generateCoachBriefing } from './garmin-coach';
+import { isGarminConfigured } from './garmin';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -363,8 +365,54 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Garmin Daily Coach briefing — configurable time (default: 21:00 Lisbon)
+  if (config.garmin.coachEnabled && isGarminConfigured()) {
+    const [coachHour, coachMinute] = config.garmin.coachTime.split(':').map(Number);
+    const coachCron = `${coachMinute || 0} ${coachHour || 21} * * *`;
+
+    cron.schedule(coachCron, async () => {
+      try {
+        logger.info('Daily coach briefing starting');
+        const result = await generateCoachBriefing();
+
+        if (result.errors.length > 0) {
+          logger.warn({ errors: result.errors }, 'Coach briefing completed with data gaps');
+        }
+
+        const chunks = splitMessage(result.message);
+        for (const userId of config.telegram.allowedUserIds) {
+          try {
+            for (const chunk of chunks) {
+              await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+            }
+          } catch (err) {
+            logger.error({ err, userId }, 'Failed to send coach briefing');
+          }
+        }
+
+        logger.info(
+          { dataMs: result.dataCollectionMs, analysisMs: result.analysisMs, errors: result.errors.length },
+          'Daily coach briefing completed'
+        );
+      } catch (err) {
+        logger.error({ err }, 'Daily coach briefing failed');
+        for (const userId of config.telegram.allowedUserIds) {
+          try {
+            await bot.api.sendMessage(userId, '⚠️ <b>Coach briefing failed</b>\n\nCheck logs or try /coach manually.', { parse_mode: 'HTML' });
+          } catch (sendErr) {
+            logger.error({ err: sendErr, userId }, 'Failed to send coach failure alert');
+          }
+        }
+      }
+    }, { timezone: config.app.timezone });
+  }
+
+  const coachStatus = config.garmin.coachEnabled && isGarminConfigured()
+    ? `Garmin coach (${config.garmin.coachTime})`
+    : 'Garmin coach (disabled)';
+
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30)`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30), ${coachStatus}`
   );
 }
 

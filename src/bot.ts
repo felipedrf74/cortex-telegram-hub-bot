@@ -34,6 +34,8 @@ import {
   collectUberInvoices, formatUberNotification, isUberConfigured,
   resolveReply as resolveUberReply, registerReplyWaiter as registerUberReplyWaiter,
 } from './services/uber-collector';
+import { generateCoachBriefing } from './services/garmin-coach';
+import { isGarminConfigured } from './services/garmin';
 import fs from 'fs';
 import path from 'path';
 
@@ -1307,6 +1309,44 @@ export function createBot(): Bot {
       } catch (err) {
         logger.error({ err }, 'Manual Uber invoice collection failed');
         await ctx.reply('⚠️ Recolha Uber falhou. Verificar logs.');
+      }
+    });
+  });
+
+  // ── Garmin Daily Coach ──
+  bot.command('coach', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isGarminConfigured()) {
+        await ctx.reply('⚠️ Garmin not configured. Set GARMIN_EMAIL and GARMIN_PASSWORD.');
+        return;
+      }
+
+      await ctx.replyWithChatAction('typing');
+      await ctx.reply('🏋️ Running coach analysis… collecting Garmin data + Claude analysis (~30s).', { parse_mode: 'HTML' });
+
+      // Keep typing indicator alive during the long-running analysis
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction('typing').catch(() => {});
+      }, 4000);
+
+      try {
+        const result = await generateCoachBriefing();
+        clearInterval(typingInterval);
+
+        const chunks = splitMessage(result.message);
+        for (const chunk of chunks) {
+          try {
+            await ctx.reply(chunk, { parse_mode: 'HTML' });
+          } catch (err) {
+            // If HTML parsing fails, send without formatting
+            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+            else throw err;
+          }
+        }
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Coach briefing failed (manual)');
+        await ctx.reply(`⚠️ Coach briefing failed: ${escapeHtml(err.message || 'Unknown error')}`, { parse_mode: 'HTML' });
       }
     });
   });

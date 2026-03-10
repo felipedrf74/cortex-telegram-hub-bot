@@ -76,6 +76,14 @@ export const config = {
     uberRidesEnabled: (process.env.UBER_RIDES_ENABLED || 'true') === 'true',
     uberEatsEnabled: (process.env.UBER_EATS_ENABLED || 'true') === 'true',
   },
+  // ── Garmin Connect (Daily Coach) ────────────────────────────────────
+  garmin: {
+    email: process.env.GARMIN_EMAIL || '',
+    password: process.env.GARMIN_PASSWORD || '',
+    tokenPath: process.env.GARMIN_TOKEN_PATH || './data/garmin-tokens',
+    coachEnabled: (process.env.GARMIN_COACH_ENABLED || 'false') === 'true',
+    coachTime: process.env.GARMIN_COACH_TIME || '21:00',
+  },
   rateLimit: {
     maxMessagesPerMinute: 30,
   },
