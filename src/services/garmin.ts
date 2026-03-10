@@ -87,17 +87,25 @@ export interface GarminActivity {
   [key: string]: unknown;
 }
 
+/** Pre-extracted body battery summary (derived from events endpoint) */
+export interface BodyBatterySummary {
+  current: number | null;
+  highest: number | null;
+  lowest: number | null;
+  charged: number | null;   // from dailySummary if available
+  drained: number | null;   // from dailySummary if available
+}
+
 export interface GarminCoachData {
   date: string;
   summary: GarminDailySummary | null;
-  sleep: unknown;
-  stress: unknown;
-  heartRate: unknown;
-  hrv: unknown;
+  sleepSummary: Record<string, unknown> | null;
+  stressSummary: Record<string, unknown> | null;
+  heartRateSummary: Record<string, unknown> | null;
+  hrvSummary: Record<string, unknown> | null;
   trainingReadiness: unknown;
   trainingStatus: unknown;
-  bodyBattery: unknown;
-  rhr: unknown;
+  bodyBatterySummary: BodyBatterySummary;
   activities: GarminActivity[];
   activityDetails: Map<number, unknown>;
   tomorrowWorkouts: unknown[];
@@ -161,26 +169,68 @@ async function getClient(): Promise<InstanceType<typeof GarminConnect>> {
   }
 }
 
-/** Force re-authentication (call when tokens expire mid-session) */
-async function reauthenticate(): Promise<InstanceType<typeof GarminConnect>> {
-  _authenticated = false;
-  _client = null;
-  return getClient();
+/**
+ * Save current tokens to disk (call after successful API calls to persist
+ * any tokens that the garmin-connect interceptor may have refreshed).
+ */
+function persistTokens(): void {
+  try {
+    if (_client) {
+      const tokenDir = config.garmin.tokenPath;
+      if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+      _client.exportTokenToFile(tokenDir);
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Garmin: failed to persist refreshed tokens');
+  }
 }
 
 /**
- * Safe GET — retries once with re-auth if the first attempt fails with 401/403.
+ * Safe GET — the garmin-connect library internally retries 401s via its
+ * axios interceptor (refreshOauth2Token). We catch persistent failures,
+ * reload tokens from disk (in case another parallel call refreshed them),
+ * retry once, then give up. We never call login() because MFA makes it
+ * impossible to re-authenticate programmatically.
  */
+/**
+ * Extract HTTP status from garmin-connect errors.
+ * The library throws plain Errors with messages like "ERROR: (403), Forbidden, {...}"
+ * instead of attaching a .response property, so we parse the message string.
+ */
+function extractErrorStatus(err: unknown): number | null {
+  // Try standard axios-style first
+  const axiosStatus = (err as { response?: { status?: number } })?.response?.status;
+  if (axiosStatus) return axiosStatus;
+  // Parse garmin-connect formatted error: "ERROR: (403), Forbidden, ..."
+  const msg = (err as Error)?.message ?? '';
+  const match = msg.match(/\((\d{3})\)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
 async function safeGet<T = unknown>(url: string): Promise<T> {
   const client = await getClient();
   try {
-    return await client.get(url) as T;
+    const result = await client.get(url) as T;
+    // After success, persist tokens (the interceptor may have refreshed them)
+    persistTokens();
+    return result;
   } catch (err: unknown) {
-    const status = (err as { response?: { status?: number } })?.response?.status;
+    const status = extractErrorStatus(err);
     if (status === 401 || status === 403) {
-      logger.warn('Garmin: auth expired mid-session, re-authenticating');
-      const freshClient = await reauthenticate();
-      return await freshClient.get(url) as T;
+      logger.warn({ status, url: url.split('?')[0] }, 'Garmin: auth error, reloading tokens and retrying');
+      // Reload tokens from disk (another concurrent call may have refreshed them)
+      const tokenDir = config.garmin.tokenPath;
+      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+        client.loadTokenByFile(tokenDir);
+        try {
+          const result = await client.get(url) as T;
+          persistTokens();
+          return result;
+        } catch (retryErr) {
+          logger.error({ err: retryErr }, 'Garmin: retry after token reload also failed');
+          throw retryErr;
+        }
+      }
     }
     throw err;
   }
@@ -369,17 +419,22 @@ export async function fetchDailyCoachData(): Promise<GarminCoachData> {
     return r.value;
   }));
 
+  // Pre-extract / summarize data (raw blobs are 200KB+ and blow the payload budget)
+  const bodyBatterySummaryData = extractBodyBatterySummary(
+    bodyBattery,
+    summary as GarminDailySummary | null,
+  );
+
   return {
     date: today,
     summary: summary as GarminDailySummary | null,
-    sleep,
-    stress,
-    heartRate,
-    hrv,
+    sleepSummary: summarizeSleep(sleep),
+    stressSummary: summarizeStress(stress),
+    heartRateSummary: summarizeHeartRate(heartRate),
+    hrvSummary: summarizeHrv(hrv),
     trainingReadiness,
     trainingStatus,
-    bodyBattery,
-    rhr,
+    bodyBatterySummary: bodyBatterySummaryData,
     activities: activityList,
     activityDetails,
     tomorrowWorkouts: (tomorrowWorkouts as unknown[]) ?? [],
@@ -400,4 +455,213 @@ function isStrength(activity: GarminActivity): boolean {
 function isRunning(activity: GarminActivity): boolean {
   const key = activity.activityType?.typeKey?.toLowerCase() ?? '';
   return key.includes('running') || key.includes('trail') || key.includes('treadmill');
+}
+
+// ─── Data summarization (reduce 200KB+ blobs to ~500 bytes) ──────────
+
+/**
+ * Summarize sleep data to key metrics only (raw is ~200KB of interval data).
+ */
+function summarizeSleep(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  // dailySleepDTO has the summary; sleepLevels/wellnessEpochSPO2DataDTOList are the big arrays
+  const dto = (s.dailySleepDTO ?? s) as Record<string, unknown>;
+  return {
+    sleepTimeSeconds: dto.sleepTimeSeconds,
+    deepSleepSeconds: dto.deepSleepSeconds,
+    lightSleepSeconds: dto.lightSleepSeconds,
+    remSleepSeconds: dto.remSleepSeconds,
+    awakeSleepSeconds: dto.awakeSleepSeconds,
+    sleepScores: dto.sleepScores,
+    sleepQualityTypePK: dto.sleepQualityTypePK,
+    averageSpO2Value: dto.averageSpO2Value,
+    lowestSpO2Value: dto.lowestSpO2Value,
+    averageRespirationValue: dto.averageRespirationValue,
+    averageStress: dto.averageStress,
+    bodyBatteryChange: dto.bodyBatteryChange,
+    restlessMomentsCount: dto.restlessMomentsCount,
+    sleepStartTimestampLocal: dto.sleepStartTimestampLocal,
+    sleepEndTimestampLocal: dto.sleepEndTimestampLocal,
+  };
+}
+
+/**
+ * Summarize stress data (raw is ~23KB of interval values).
+ */
+function summarizeStress(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  return {
+    overallStressLevel: s.overallStressLevel,
+    restStressDuration: s.restStressDuration,
+    activityStressDuration: s.activityStressDuration,
+    lowStressDuration: s.lowStressDuration,
+    mediumStressDuration: s.mediumStressDuration,
+    highStressDuration: s.highStressDuration,
+    stressQualifier: s.stressQualifier,
+    maxStressLevel: s.maxStressLevel,
+    averageStressLevel: s.averageStressLevel,
+  };
+}
+
+/**
+ * Summarize heart rate data (raw is ~11KB of interval values).
+ */
+function summarizeHeartRate(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  return {
+    restingHeartRate: s.restingHeartRate,
+    maxHeartRate: s.maxHeartRate,
+    minHeartRate: s.minHeartRate,
+    lastSevenDaysAvgRestingHeartRate: s.lastSevenDaysAvgRestingHeartRate,
+    // heartRateValues is the big array — skip it
+  };
+}
+
+/**
+ * Summarize HRV data (raw is ~12KB).
+ */
+function summarizeHrv(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  // The summary is typically in hrvSummary or at top level
+  const summary = (s.hrvSummary ?? s) as Record<string, unknown>;
+  return {
+    weeklyAvg: summary.weeklyAvg,
+    lastNight: summary.lastNight,
+    lastNightAvg: summary.lastNightAvg,
+    lastNight5MinHigh: summary.lastNight5MinHigh,
+    baseline: summary.baseline,
+    status: summary.status,
+    startTimestampLocal: summary.startTimestampLocal,
+  };
+}
+
+/**
+ * Extract a simple body battery summary from the events endpoint data.
+ * The bodyBatteryValuesArray entries are: [timestamp, status, bbValue, ...]
+ * Also merges values from dailySummary if available.
+ */
+function extractBodyBatterySummary(
+  eventsData: unknown,
+  summary: GarminDailySummary | null,
+): BodyBatterySummary {
+  const result: BodyBatterySummary = {
+    current: null,
+    highest: null,
+    lowest: null,
+    charged: summary?.bodyBatteryChargedValue ?? null,
+    drained: summary?.bodyBatteryDrainedValue ?? null,
+  };
+
+  // Try to get values from dailySummary first (most reliable when available)
+  if (summary) {
+    result.highest = summary.bodyBatteryHighestValue ?? null;
+    result.lowest = summary.bodyBatteryLowestValue ?? null;
+    // Some summaries have a "most recent" field
+    const mostRecent = (summary as Record<string, unknown>).bodyBatteryMostRecentValue;
+    if (typeof mostRecent === 'number') result.current = mostRecent;
+  }
+
+  // Extract from events data (fallback or supplement)
+  if (Array.isArray(eventsData)) {
+    const allValues: number[] = [];
+    for (const event of eventsData) {
+      const bbArray = (event as Record<string, unknown>)?.bodyBatteryValuesArray;
+      if (Array.isArray(bbArray)) {
+        for (const entry of bbArray) {
+          if (Array.isArray(entry) && typeof entry[2] === 'number') {
+            allValues.push(entry[2]);
+          }
+        }
+      }
+    }
+    if (allValues.length > 0) {
+      result.current = result.current ?? allValues[allValues.length - 1];
+      result.highest = result.highest ?? Math.max(...allValues);
+      result.lowest = result.lowest ?? Math.min(...allValues);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Summarize activity details to essential coaching metrics only.
+ * Raw activityDetails can be 20–30KB per activity (exercise sets, split intervals, etc.).
+ * We extract just what the coach needs: training effect, key stats, and set summaries.
+ */
+export function summarizeActivityDetails(
+  detailsMap: Map<number, unknown>,
+): Record<number, unknown> {
+  const result: Record<number, unknown> = {};
+  for (const [id, raw] of detailsMap) {
+    if (!raw || typeof raw !== 'object') {
+      result[id] = null;
+      continue;
+    }
+    const detail = raw as Record<string, unknown>;
+
+    // Always keep training effect (small object)
+    const trainingEffect = detail.trainingEffect;
+
+    // Summarize the "extra" (exercise sets, splits, or running dynamics)
+    const extra = detail.extra;
+    let extraSummary: unknown = null;
+
+    if (extra && typeof extra === 'object') {
+      const e = extra as Record<string, unknown>;
+
+      // Strength training: exerciseSets — just count sets/reps/exercises
+      if (Array.isArray(e.exerciseSets)) {
+        const sets = e.exerciseSets as Record<string, unknown>[];
+        const exercises = new Map<string, { sets: number; totalReps: number; maxWeight: number }>();
+        for (const set of sets) {
+          const name = String(set.exerciseName ?? set.category ?? 'unknown');
+          const reps = Number(set.repetitionCount ?? set.reps ?? 0);
+          const weight = Number(set.weight ?? 0);
+          const existing = exercises.get(name) ?? { sets: 0, totalReps: 0, maxWeight: 0 };
+          existing.sets++;
+          existing.totalReps += reps;
+          existing.maxWeight = Math.max(existing.maxWeight, weight);
+          exercises.set(name, existing);
+        }
+        extraSummary = {
+          type: 'strength',
+          totalSets: sets.length,
+          totalReps: sets.reduce((sum, s) => sum + Number((s as Record<string, unknown>).repetitionCount ?? 0), 0),
+          exercises: Object.fromEntries(exercises),
+        };
+      }
+      // Running: summarize splits/dynamics
+      else if (Array.isArray(e.lapDTOs) || e.summaryDTO) {
+        const summary = e.summaryDTO as Record<string, unknown> | undefined;
+        extraSummary = {
+          type: 'running',
+          avgPace: summary?.averageSpeed,
+          maxPace: summary?.maxSpeed,
+          avgCadence: summary?.averageRunCadence,
+          avgHeartRate: summary?.averageHR,
+          maxHeartRate: summary?.maxHR,
+          totalAscent: summary?.elevationGain,
+          groundContactTime: summary?.avgGroundContactTime,
+          verticalOscillation: summary?.avgVerticalOscillation,
+          lapCount: Array.isArray(e.lapDTOs) ? (e.lapDTOs as unknown[]).length : undefined,
+        };
+      }
+      // Splits (cycling, etc.): summarize lap count
+      else if (Array.isArray(e.lapDTOs || e.splitSummaries)) {
+        const laps = (e.lapDTOs ?? e.splitSummaries) as unknown[];
+        extraSummary = {
+          type: 'splits',
+          lapCount: laps.length,
+        };
+      }
+    }
+
+    result[id] = { trainingEffect, extra: extraSummary };
+  }
+  return result;
 }

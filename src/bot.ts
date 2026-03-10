@@ -15,7 +15,7 @@ import {
   formatChecklistItems, formatAllTasks, formatCompletedTasks,
 } from './utils/telegram-formatter';
 import * as msTodo from './services/microsoft-todo';
-import { getEvents, createEvent as createCalendarEvent, isAnyCalendarConfigured } from './services/unified-calendar';
+import { getEvents, createEvent as createCalendarEvent, updateEvent as updateCalendarEvent, deleteEvent as deleteCalendarEvent, isAnyCalendarConfigured, CalendarSource } from './services/unified-calendar';
 import { getCategoryNameForColor, getMasterCategories } from './services/outlook-calendar';
 import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from './services/outlook-mail';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDateTime, parseNaturalDate } from './utils/date-parser';
@@ -34,7 +34,7 @@ import {
   collectUberInvoices, formatUberNotification, isUberConfigured,
   resolveReply as resolveUberReply, registerReplyWaiter as registerUberReplyWaiter,
 } from './services/uber-collector';
-import { generateCoachBriefing } from './services/garmin-coach';
+import { generateCoachBriefing, CoachRecommendation } from './services/garmin-coach';
 import { isGarminConfigured } from './services/garmin';
 import fs from 'fs';
 import path from 'path';
@@ -138,6 +138,42 @@ function isHtmlParseError(err: unknown): boolean {
     return msg.includes("can't parse entities") || msg.includes('parse entities');
   }
   return false;
+}
+
+// ─── Coach Recommendation → Calendar Update ────────────────────────
+
+/**
+ * Apply a single coach recommendation to the calendar.
+ * - MODIFY / SWAP → updateEvent with new title/times
+ * - REST → updateEvent with cancelled title (keeps the slot visible but marked)
+ * - KEEP → no-op (shouldn't be called for KEEP)
+ */
+async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void> {
+  if (rec.action === 'KEEP') return; // No change needed
+
+  if (rec.action === 'REST') {
+    // Mark the event as cancelled (don't delete — athlete sees it on calendar)
+    await updateCalendarEvent(
+      {
+        event_id: rec.eventId,
+        new_title: rec.newTitle || `❌ CANCELLED — ${rec.originalTitle}`,
+      },
+      rec.source,
+    );
+    return;
+  }
+
+  // MODIFY or SWAP — update title and optionally times
+  const updateData: { event_id: string; new_title?: string; new_start?: string; new_end?: string } = {
+    event_id: rec.eventId,
+  };
+  if (rec.newTitle && rec.newTitle !== rec.originalTitle) {
+    updateData.new_title = rec.newTitle;
+  }
+  if (rec.newStart) updateData.new_start = rec.newStart;
+  if (rec.newEnd) updateData.new_end = rec.newEnd;
+
+  await updateCalendarEvent(updateData, rec.source);
 }
 
 // ─── Caption → Outlook Calendar Category ────────────────────────────
@@ -1333,6 +1369,7 @@ export function createBot(): Bot {
         const result = await generateCoachBriefing();
         clearInterval(typingInterval);
 
+        // Send the human-readable briefing
         const chunks = splitMessage(result.message);
         for (const chunk of chunks) {
           try {
@@ -1342,6 +1379,32 @@ export function createBot(): Bot {
             if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
             else throw err;
           }
+        }
+
+        // Send interactive recommendation buttons (if any non-KEEP recommendations exist)
+        const actionableRecs = result.recommendations.filter((r) => r.action !== 'KEEP');
+        if (actionableRecs.length > 0) {
+          const keyboard = new InlineKeyboard();
+          const recRefs: string[] = [];
+          for (const rec of actionableRecs) {
+            const ref = storeCallback({ recommendation: rec });
+            recRefs.push(ref);
+            const emoji = rec.action === 'MODIFY' ? '⚠️' : rec.action === 'SWAP' ? '🔄' : '❌';
+            const label = `${emoji} ${rec.summary}`.substring(0, 60);
+            keyboard.text(label, `coach:apply:${ref}`).row();
+          }
+          // Add "Apply all" if more than one
+          if (actionableRecs.length > 1) {
+            const allRef = storeCallback({ recommendations: actionableRecs });
+            keyboard.text('✅ Aplicar todas as alterações', `coach:all:${allRef}`).row();
+          }
+          // Add dismiss button
+          keyboard.text('👍 Manter tudo como está', `coach:dismiss`);
+
+          await ctx.reply(
+            '🏋️ <b>Ações do Coach:</b>\n\nQueres aplicar alguma destas alterações ao calendário de amanhã?',
+            { parse_mode: 'HTML', reply_markup: keyboard },
+          );
         }
       } catch (err: any) {
         clearInterval(typingInterval);
@@ -1648,6 +1711,83 @@ export function createBot(): Bot {
           { type: 'task', title: evtTitles.length > 0 ? 'Items from image' : 'Photo', subtasks: evtTitles },
           cbData.caption || '');
       }
+    }
+  });
+
+  // ── Coach Recommendation Callback Handler (apply / all / dismiss) ──
+  bot.callbackQuery(/^coach:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1]; // 'apply' | 'all' | 'dismiss'
+    const ref = parts[2];
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    if (action === 'dismiss') {
+      await ctx.editMessageText('👍 <b>Calendário mantido como está.</b> Bom treino amanhã!', { parse_mode: 'HTML' });
+      return;
+    }
+
+    if (action === 'apply') {
+      // Apply a single recommendation
+      const cbData = getCallback(ref);
+      if (!cbData?.recommendation) {
+        await ctx.editMessageText('⚠️ Ação expirada. Usa /coach novamente.');
+        return;
+      }
+      const rec = cbData.recommendation as CoachRecommendation;
+      await ctx.editMessageText(`⏳ Aplicando: ${escapeHtml(rec.summary)}...`, { parse_mode: 'HTML' });
+      try {
+        await applyCoachRecommendation(rec);
+        await ctx.editMessageText(
+          `✅ <b>Alteração aplicada:</b>\n${escapeHtml(rec.summary)}\n\n📅 O evento <b>${escapeHtml(rec.originalTitle)}</b> foi atualizado no calendário.`,
+          { parse_mode: 'HTML' },
+        );
+      } catch (err) {
+        logger.error({ err, rec }, 'Coach: failed to apply recommendation');
+        await ctx.editMessageText(`⚠️ Falha ao aplicar: ${escapeHtml((err as Error).message)}`, { parse_mode: 'HTML' });
+      }
+      return;
+    }
+
+    if (action === 'all') {
+      // Apply all actionable recommendations
+      const cbData = getCallback(ref);
+      if (!cbData?.recommendations) {
+        await ctx.editMessageText('⚠️ Ação expirada. Usa /coach novamente.');
+        return;
+      }
+      const recs = cbData.recommendations as CoachRecommendation[];
+      await ctx.editMessageText(`⏳ Aplicando ${recs.length} alterações ao calendário...`, { parse_mode: 'HTML' });
+
+      let successCount = 0;
+      const appliedSummaries: string[] = [];
+      for (const rec of recs) {
+        try {
+          await applyCoachRecommendation(rec);
+          successCount++;
+          appliedSummaries.push(rec.summary);
+        } catch (err) {
+          logger.error({ err, rec }, 'Coach: failed to apply recommendation (batch)');
+        }
+      }
+
+      if (successCount === 0) {
+        await ctx.editMessageText('⚠️ Nenhuma alteração aplicada. Verifica o calendário.', { parse_mode: 'HTML' });
+      } else {
+        let msg = `✅ <b>${successCount}/${recs.length} alterações aplicadas:</b>\n`;
+        for (const s of appliedSummaries) {
+          msg += `\n  • ${escapeHtml(s)}`;
+        }
+        msg += '\n\n📅 Calendário de amanhã atualizado.';
+        try {
+          await ctx.editMessageText(msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          if (isHtmlParseError(err)) await ctx.editMessageText(msg.replace(/<[^>]*>/g, ''));
+          else throw err;
+        }
+      }
+      return;
     }
   });
 

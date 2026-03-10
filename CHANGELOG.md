@@ -4,6 +4,55 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [2.0.0] — 2026-03-10
+
+### Garmin Coach v2: Interactive Calendar Recommendations
+
+Complete overhaul of the `/coach` Garmin Daily Coach feature — now with data-driven training recommendations that can edit Outlook/Google Calendar events via inline buttons.
+
+#### Interactive Recommendations (`src/bot.ts`)
+- **Inline action buttons** — After the briefing, actionable recommendations (MODIFY/SWAP/REST) appear as Telegram buttons the athlete can tap to apply directly to tomorrow's calendar
+- **Apply individually or all at once** — Each recommendation has its own button, plus "Aplicar todas" for batch apply
+- **`coach:` callback handler** — Processes `coach:apply:`, `coach:all:`, and `coach:dismiss` actions
+- **`applyCoachRecommendation()`** — Routes MODIFY/SWAP → `updateCalendarEvent()` with new title/times; REST → marks event as "❌ CANCELLED"
+
+#### Structured LLM Output (`src/services/garmin-coach.ts`)
+- **`CoachRecommendation` interface** — Typed recommendations with `eventId`, `source` (outlook/google), `action` (KEEP/MODIFY/SWAP/REST), `newTitle`, `newStart/End`, `summary`
+- **`<!-- COACH_RECS_START -->` JSON block** — Claude outputs machine-parseable JSON after the human-readable briefing; Telegram's HTML renderer ignores HTML comments
+- **`extractRecommendations()` parser** — Extracts and validates the JSON block with graceful fallback
+- **Calendar event IDs in payload** — Tomorrow's calendar events now include `id` and `source` fields so Claude can reference specific events
+
+#### Payload Truncation Fix (`src/services/garmin-coach.ts`)
+- **Root cause**: `activityDetails` was 24KB of raw exercise set data, pushing calendar events past the 12K char truncation point — Claude never saw tomorrow's training plan
+- **`summarizeActivityDetails()`** — New function in `garmin.ts` compresses raw activity data (exercise sets, splits, running dynamics) from ~24KB → ~1KB of coaching-relevant metrics
+- **Payload reordering** — Critical data (recovery metrics → tomorrow's calendar → activities) now comes first to survive any truncation
+- **Truncation limit raised** — 12K → 40K chars (Claude handles 200K context; 12K was leaving 95% unused)
+- **Result**: Payload shrank from 44K → 20K with zero truncation; all data visible to Claude
+
+#### Data Summarization (`src/services/garmin.ts`)
+- **`summarizeSleep()`** — Extracts key sleep metrics from ~200KB raw blob (~500 bytes)
+- **`summarizeStress()`** — Overall stress level, duration by category (~200 bytes)
+- **`summarizeHeartRate()`** — RHR, max/min HR, 7-day avg (~150 bytes)
+- **`summarizeHrv()`** — Weekly avg, last night, baseline, status (~200 bytes)
+- **`extractBodyBatterySummary()`** — Current/highest/lowest/charged/drained from events data
+- **`summarizeActivityDetails()`** — Per-activity: training effect + exercise summary (set counts, exercise names, key metrics)
+- **`extractErrorStatus()`** — Parses garmin-connect's string-formatted errors (`"ERROR: (403), Forbidden"`) via regex for proper 401/403 detection and token refresh
+
+#### Garmin MFA Bootstrap (`scripts/garmin-mfa-bootstrap.js`)
+- New script for one-time Garmin login with MFA — generates OAuth1/OAuth2 token files that the bot loads on subsequent runs
+
+#### Diagnostic Logging
+- **Data collection summary** — Logs calendar counts, training event names, activity names after fetch
+- **Payload stats** — Logs raw payload length, truncation status, calendar event count in payload
+
+#### Modified Files
+- `src/bot.ts`, `src/services/garmin-coach.ts`, `src/services/garmin.ts`, `.env.example`
+
+#### New Files
+- `scripts/garmin-mfa-bootstrap.js`
+
+---
+
 ## [1.9.0] — 2026-03-08
 
 ### Unified Image Classifier: Invoice / Calendar / Task
