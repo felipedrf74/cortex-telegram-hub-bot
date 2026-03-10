@@ -34,9 +34,10 @@ export function parseNaturalDate(text: string): string | null {
   const lower = text.toLowerCase().trim();
   const current = now();
 
-  if (lower === 'today') return current.toISO()!;
-  if (lower === 'tomorrow') return current.plus({ days: 1 }).toISO()!;
-  if (lower === 'next week') return current.plus({ weeks: 1 }).startOf('week').toISO()!;
+  // Use end-of-day so tasks/reminders due "today" don't appear overdue immediately
+  if (lower === 'today') return current.endOf('day').toISO()!;
+  if (lower === 'tomorrow') return current.plus({ days: 1 }).endOf('day').toISO()!;
+  if (lower === 'next week') return current.plus({ weeks: 1 }).startOf('week').endOf('day').toISO()!;
 
   const dayNames: Record<string, number> = {
     monday: 1, tuesday: 2, wednesday: 3, thursday: 4,

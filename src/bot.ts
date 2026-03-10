@@ -24,12 +24,16 @@ import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
 import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, PT_MONTHS } from './services/invoice-filer';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
-import { recordFiling, deleteAmazonFilings } from './state/invoice-filings';
+import { recordFiling, deleteAmazonFilings, deleteUberFilings } from './state/invoice-filings';
 import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
 import {
   collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured,
-  resolveReply, registerReplyWaiter,
+  resolveReply as resolveAmazonReply, registerReplyWaiter as registerAmazonReplyWaiter,
 } from './services/amazon-collector';
+import {
+  collectUberInvoices, formatUberNotification, isUberConfigured,
+  resolveReply as resolveUberReply, registerReplyWaiter as registerUberReplyWaiter,
+} from './services/uber-collector';
 import fs from 'fs';
 import path from 'path';
 
@@ -64,7 +68,13 @@ const processingQueue = new Map<number, Promise<void>>();
 
 function enqueue(userId: number, fn: () => Promise<void>): void {
   const prev = processingQueue.get(userId) || Promise.resolve();
-  const next = prev.then(fn).catch((err) => { logger.error({ err, userId }, 'Queued handler failed'); });
+  const next = prev
+    .then(fn)
+    .catch((err) => { logger.error({ err, userId }, 'Queued handler failed'); })
+    .finally(() => {
+      // Clean up Map entry when the chain settles (only if still the latest)
+      if (processingQueue.get(userId) === next) processingQueue.delete(userId);
+    });
   processingQueue.set(userId, next);
 }
 
@@ -98,6 +108,34 @@ function getCallback(ref: string): any | null {
     return null;
   }
   return entry.data;
+}
+
+// ─── Telegram File Re-download Helper ────────────────────────────────
+
+/** Re-download a photo from Telegram by file_id. Returns { base64, mediaType }. */
+async function downloadTelegramFile(bot: Bot, fileId: string): Promise<{ base64: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }> {
+  const file = await bot.api.getFile(fileId);
+  const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+  const response = await fetch(fileUrl);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const ext = file.file_path?.split('.').pop()?.toLowerCase() || 'jpg';
+  const mediaType = (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp';
+  return { base64: buffer.toString('base64'), mediaType };
+}
+
+// ─── HTML Parse Error Guard ──────────────────────────────────────────
+
+/**
+ * Checks whether a Telegram API error is specifically an HTML parse failure.
+ * grammY wraps these as GrammyError with description "Bad Request: can't parse entities…"
+ * Only these should trigger a plaintext fallback; other errors (network, rate-limit) must propagate.
+ */
+function isHtmlParseError(err: unknown): boolean {
+  if (err && typeof err === 'object') {
+    const msg = ((err as any).message || (err as any).description || '').toLowerCase();
+    return msg.includes("can't parse entities") || msg.includes('parse entities');
+  }
+  return false;
 }
 
 // ─── Caption → Outlook Calendar Category ────────────────────────────
@@ -985,8 +1023,9 @@ export function createBot(): Bot {
       for (const chunk of splitMessage(content)) {
         try {
           await ctx.reply(chunk, { parse_mode: 'HTML' });
-        } catch {
-          await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+        } catch (err) {
+          if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+          else throw err;
         }
       }
     });
@@ -1030,8 +1069,9 @@ export function createBot(): Bot {
         for (const chunk of splitMessage(notification)) {
           try {
             await ctx.reply(chunk, { parse_mode: 'Markdown' });
-          } catch {
-            await ctx.reply(chunk.replace(/[*_`]/g, ''));
+          } catch (err) {
+            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/[*_`]/g, ''));
+            else throw err;
           }
         }
       } catch (err) {
@@ -1177,7 +1217,7 @@ export function createBot(): Bot {
         const sendScreenshot = async (buffer: Buffer) => {
           await ctx.replyWithPhoto(new InputFile(buffer, 'amazon-2fa.jpg'));
         };
-        const waitForReply = (timeoutMs: number) => registerReplyWaiter(chatId, timeoutMs);
+        const waitForReply = (timeoutMs: number) => registerAmazonReplyWaiter(chatId, timeoutMs);
 
         const result = await collectAmazonInvoices(year, month, sendMessage, sendScreenshot, waitForReply);
         const notification = formatAmazonNotification(result);
@@ -1185,13 +1225,88 @@ export function createBot(): Bot {
         for (const chunk of splitMessage(notification)) {
           try {
             await ctx.reply(chunk, { parse_mode: 'HTML' });
-          } catch {
-            await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+          } catch (err) {
+            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+            else throw err;
           }
         }
       } catch (err) {
         logger.error({ err }, 'Manual Amazon invoice collection failed');
         await ctx.reply('⚠️ Recolha Amazon falhou. Verificar logs.');
+      }
+    });
+  });
+
+  // /uber [YYYY-MM] [--force] — Manual Uber invoice collection (rides + eats, with 2FA support)
+  bot.command('uber', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isUberConfigured()) {
+        await ctx.reply(
+          '⚠️ Uber não configurado.\n' +
+          'Defina <code>UBER_EMAIL</code>, <code>UBER_PASSWORD</code> e <code>UBER_COLLECTION_ENABLED=true</code> no .env',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const rawArg = ctx.match?.trim() || '';
+      const force = /--force/i.test(rawArg);
+      const arg = rawArg.replace(/--force/gi, '').trim();
+
+      let year: number, month: number;
+
+      if (arg && /^\d{4}-\d{2}$/.test(arg)) {
+        const [y, m] = arg.split('-').map(Number);
+        if (m < 1 || m > 12) {
+          await ctx.reply('⚠️ Mês inválido. Use formato YYYY-MM (ex: 2026-02).');
+          return;
+        }
+        year = y;
+        month = m;
+      } else {
+        const current = now();
+        year = current.year;
+        month = current.month;
+      }
+
+      const monthLabel = `${PT_MONTHS[month]}-${year}`;
+
+      if (force) {
+        const deleted = deleteUberFilings(year, month);
+        if (deleted > 0) {
+          await ctx.reply(
+            `🗑 <b>--force</b>: ${deleted} registo(s) anterior(es) removido(s) para ${monthLabel}.`,
+            { parse_mode: 'HTML' },
+          );
+        }
+      }
+
+      await ctx.reply(`🚗 A recolher faturas Uber para <b>${monthLabel}</b>...`, { parse_mode: 'HTML' });
+
+      try {
+        const chatId = ctx.chat.id;
+        const sendMessage = async (text: string) => {
+          await ctx.reply(text, { parse_mode: 'HTML' });
+        };
+        const sendScreenshot = async (buffer: Buffer) => {
+          await ctx.replyWithPhoto(new InputFile(buffer, 'uber-2fa.jpg'));
+        };
+        const waitForReply = (timeoutMs: number) => registerUberReplyWaiter(chatId, timeoutMs);
+
+        const result = await collectUberInvoices(year, month, sendMessage, sendScreenshot, waitForReply);
+        const notification = formatUberNotification(result);
+
+        for (const chunk of splitMessage(notification)) {
+          try {
+            await ctx.reply(chunk, { parse_mode: 'HTML' });
+          } catch (err) {
+            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+            else throw err;
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Manual Uber invoice collection failed');
+        await ctx.reply('⚠️ Recolha Uber falhou. Verificar logs.');
       }
     });
   });
@@ -1399,19 +1514,21 @@ export function createBot(): Bot {
         return;
       }
       await ctx.editMessageText('🔄 Reprocessando como tarefa...');
+      // Re-download image from Telegram (stored fileId instead of base64 to save memory)
+      const { base64: reBase64, mediaType: reMT } = await downloadTelegramFile(bot, cbData.fileId);
       // Re-classify with task hint — if still not task, force conversion
-      const reClassified = await classifyAndExtractImage(cbData.base64, cbData.mediaType, (cbData.caption || '') + ' [TASK LIST]');
+      const reClassified = await classifyAndExtractImage(reBase64, reMT, (cbData.caption || '') + ' [TASK LIST]');
       if (reClassified.type === 'task') {
-        await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '', cbData.base64, cbData.mediaType);
+        await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '');
       } else if (reClassified.type === 'calendar') {
         // Force calendar events into task format
         await handleTaskExtraction(ctx as any,
           { type: 'task', title: 'Items from image', subtasks: reClassified.events.map(e => e.title) },
-          cbData.caption || '', cbData.base64, cbData.mediaType);
+          cbData.caption || '');
       } else {
         await handleTaskExtraction(ctx as any,
           { type: 'task', title: reClassified.vendor || 'Document', subtasks: [] },
-          cbData.caption || '', cbData.base64, cbData.mediaType);
+          cbData.caption || '');
       }
     }
   });
@@ -1469,8 +1586,9 @@ export function createBot(): Bot {
 
       try {
         await ctx.editMessageText(msg, { parse_mode: 'HTML' });
-      } catch {
-        await ctx.editMessageText(msg.replace(/<[^>]*>/g, ''));
+      } catch (err) {
+        if (isHtmlParseError(err)) await ctx.editMessageText(msg.replace(/<[^>]*>/g, ''));
+        else throw err;
       }
 
     } else if (action === 'cancel') {
@@ -1479,14 +1597,16 @@ export function createBot(): Bot {
     } else if (action === 'undo') {
       // ── Reprocess as task instead ──
       await ctx.editMessageText('🔄 Reprocessando como tarefa...');
-      const reClassified = await classifyAndExtractImage(cbData.base64, cbData.mediaType, (cbData.caption || '') + ' [TASK LIST]');
+      // Re-download image from Telegram (stored fileId instead of base64 to save memory)
+      const { base64: reBase64, mediaType: reMT } = await downloadTelegramFile(bot, cbData.fileId);
+      const reClassified = await classifyAndExtractImage(reBase64, reMT, (cbData.caption || '') + ' [TASK LIST]');
       if (reClassified.type === 'task') {
-        await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '', cbData.base64, cbData.mediaType);
+        await handleTaskExtraction(ctx as any, reClassified, cbData.caption || '');
       } else {
         const evtTitles = reClassified.type === 'calendar' ? reClassified.events.map(e => e.title) : [];
         await handleTaskExtraction(ctx as any,
           { type: 'task', title: evtTitles.length > 0 ? 'Items from image' : 'Photo', subtasks: evtTitles },
-          cbData.caption || '', cbData.base64, cbData.mediaType);
+          cbData.caption || '');
       }
     }
   });
@@ -1517,8 +1637,9 @@ export function createBot(): Bot {
     const text = ctx.message.text;
     if (!text) return;
 
-    // Check for pending Amazon 2FA reply (OTP code or CAPTCHA answer)
-    if (resolveReply(ctx.chat.id, text)) return;
+    // Check for pending scraper 2FA reply (OTP code or CAPTCHA answer)
+    if (resolveAmazonReply(ctx.chat.id, text)) return;
+    if (resolveUberReply(ctx.chat.id, text)) return;
 
     // Check for pending inline edit (td:ef flow)
     const userId = ctx.from.id;
@@ -1601,9 +1722,9 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     for (const part of parts) {
       try {
         await ctx.reply(part, { parse_mode: 'HTML' });
-      } catch {
-        // Fallback: send without HTML if formatting fails
-        await ctx.reply(part.replace(/<[^>]*>/g, ''));
+      } catch (err) {
+        if (isHtmlParseError(err)) await ctx.reply(part.replace(/<[^>]*>/g, ''));
+        else throw err;
       }
     }
   } catch (err) {
@@ -1636,8 +1757,9 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
         for (const part of parts) {
           try {
             await ctx.reply(part, { parse_mode: 'HTML' });
-          } catch {
-            await ctx.reply(part.replace(/<[^>]*>/g, ''));
+          } catch (err) {
+            if (isHtmlParseError(err)) await ctx.reply(part.replace(/<[^>]*>/g, ''));
+            else throw err;
           }
         }
         return;
@@ -1647,6 +1769,7 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
     // ── Download image (needed for both invoice filing and task extraction) ──
     const photo = photos[photos.length - 1];
     const file = await ctx.api.getFile(photo.file_id);
+    // SECURITY: fileUrl contains bot token — never log this variable
     const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
     logger.debug({ filePath: file.file_path }, 'Downloading Telegram file');
 
@@ -1663,15 +1786,15 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
 
     switch (classification.type) {
       case 'invoice':
-        await handleInvoiceFiling(ctx, buffer, mediaType, classification, base64, caption);
+        await handleInvoiceFiling(ctx, buffer, mediaType, classification, photo.file_id, caption);
         break;
 
       case 'calendar':
-        await handleCalendarExtraction(ctx, classification, caption, base64, mediaType);
+        await handleCalendarExtraction(ctx, classification, caption, photo.file_id, mediaType);
         break;
 
       case 'task':
-        await handleTaskExtraction(ctx, classification, caption, base64, mediaType);
+        await handleTaskExtraction(ctx, classification, caption);
         break;
 
       default:
@@ -1691,13 +1814,13 @@ async function handleInvoiceFiling(
   buffer: Buffer,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
   analysis: ImageInvoiceResult,
-  base64: string,
+  fileId: string,
   caption: string
 ): Promise<void> {
   if (!isInvoiceFilingConfigured() || analysis.confidence < config.invoices.minConfidence) {
     logger.info({ confidence: analysis.confidence }, 'Invoice detected but low confidence or filing not configured');
     // Fall through to task extraction as fallback
-    await handleTaskExtraction(ctx, { type: 'task', title: analysis.vendor || 'Document', subtasks: [] }, caption, base64, mediaType);
+    await handleTaskExtraction(ctx, { type: 'task', title: analysis.vendor || 'Document', subtasks: [] }, caption);
     return;
   }
 
@@ -1748,7 +1871,8 @@ async function handleInvoiceFiling(
       msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
     }
 
-    const ref = storeCallback({ base64, mediaType, caption });
+    // Store fileId instead of base64 to reduce memory (~500KB-2MB per entry)
+    const ref = storeCallback({ fileId, caption });
     const keyboard = new InlineKeyboard()
       .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
 
@@ -1770,7 +1894,7 @@ async function handleCalendarExtraction(
   ctx: Context,
   result: ImageCalendarResult,
   caption: string,
-  base64: string,
+  fileId: string,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
 ): Promise<void> {
   if (!isAnyCalendarConfigured()) {
@@ -1860,11 +1984,11 @@ async function handleCalendarExtraction(
   }
 
   // ── Store pending events and show confirmation buttons ──
+  // Store fileId instead of base64 to reduce memory (~500KB-2MB per entry)
   const ref = storeCallback({
     events: prefixedEvents,
     categories: info.categories,
-    base64,
-    mediaType,
+    fileId,
     caption,
   });
 
@@ -1885,8 +2009,6 @@ async function handleTaskExtraction(
   ctx: Context,
   extracted: ImageTaskResult,
   caption: string,
-  base64: string,
-  mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
 ): Promise<void> {
   if (!msTodo.isOutlookTodoConfigured()) {
     await ctx.reply('📷 Foto recebida, mas o Microsoft To Do não está configurado.');
@@ -2261,6 +2383,10 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /script [topic] — Write a script
 /reel [topic] — Reel concepts
 /caption [type] — Write caption
+
+<b>📄 FATURAS</b>
+/amazon [YYYY-MM] [--force] — Recolher faturas Amazon
+/uber [YYYY-MM] [--force] — Recolher faturas Uber (viagens + Eats)
 
 <b>🔧 SYSTEM</b>
 /help — This menu

@@ -67,6 +67,14 @@ export const config = {
     amazonPassword: process.env.AMAZON_PASSWORD || '',
     amazonSessionPath: process.env.AMAZON_SESSION_PATH || './data/amazon-session.json',
     amazonHeadless: (process.env.AMAZON_HEADLESS || 'true') === 'true',
+    // Uber/Uber Eats invoice collection (browser automation via Playwright)
+    uberEnabled: (process.env.UBER_COLLECTION_ENABLED || 'false') === 'true',
+    uberEmail: process.env.UBER_EMAIL || '',
+    uberPassword: process.env.UBER_PASSWORD || '',
+    uberSessionPath: process.env.UBER_SESSION_PATH || './data/uber-session.json',
+    uberHeadless: (process.env.UBER_HEADLESS || 'true') === 'true',
+    uberRidesEnabled: (process.env.UBER_RIDES_ENABLED || 'true') === 'true',
+    uberEatsEnabled: (process.env.UBER_EATS_ENABLED || 'true') === 'true',
   },
   rateLimit: {
     maxMessagesPerMinute: 30,

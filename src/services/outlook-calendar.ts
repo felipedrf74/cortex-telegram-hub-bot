@@ -1,59 +1,10 @@
-import { Client } from '@microsoft/microsoft-graph-client';
-import { PublicClientApplication } from '@azure/msal-node';
+import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { CalendarEvent } from './google-calendar';
 
-let graphClient: Client | null = null;
-let msalClient: PublicClientApplication | null = null;
-
-function getMsalClient(): PublicClientApplication {
-  if (msalClient) return msalClient;
-
-  msalClient = new PublicClientApplication({
-    auth: {
-      clientId: config.outlook.clientId,
-      authority: `https://login.microsoftonline.com/${config.outlook.tenantId}`,
-    },
-  });
-
-  return msalClient;
-}
-
-async function getAccessToken(): Promise<string> {
-  const msal = getMsalClient();
-
-  const result = await msal.acquireTokenByRefreshToken({
-    refreshToken: config.outlook.refreshToken,
-    scopes: ['https://graph.microsoft.com/Calendars.ReadWrite', 'https://graph.microsoft.com/Mail.ReadWrite', 'https://graph.microsoft.com/Mail.Send', 'https://graph.microsoft.com/User.Read'],
-  });
-
-  if (!result?.accessToken) {
-    throw new Error('Failed to acquire Outlook access token');
-  }
-
-  return result.accessToken;
-}
-
-function getGraphClient(): Client {
-  if (graphClient) return graphClient;
-
-  graphClient = Client.init({
-    authProvider: async (done) => {
-      try {
-        const token = await getAccessToken();
-        done(null, token);
-      } catch (err) {
-        done(err as Error, null);
-      }
-    },
-  });
-
-  return graphClient;
-}
-
 export function isOutlookCalendarConfigured(): boolean {
-  return !!(config.outlook.clientId && config.outlook.refreshToken);
+  return isMicrosoftConfigured();
 }
 
 // ── Master Categories (color ↔ displayName mapping) ─────────────────

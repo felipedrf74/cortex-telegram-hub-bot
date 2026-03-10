@@ -1,5 +1,4 @@
-import { Client } from '@microsoft/microsoft-graph-client';
-import { PublicClientApplication } from '@azure/msal-node';
+import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
@@ -39,61 +38,10 @@ export interface ServiceResult<T = any> {
   error?: string;
 }
 
-// ─── Auth (reuses existing MSAL pattern) ────────────────────────────
-
-let graphClient: Client | null = null;
-let msalClient: PublicClientApplication | null = null;
-
-function getMsalClient(): PublicClientApplication {
-  if (msalClient) return msalClient;
-
-  msalClient = new PublicClientApplication({
-    auth: {
-      clientId: config.outlook.clientId,
-      authority: `https://login.microsoftonline.com/${config.outlook.tenantId}`,
-    },
-  });
-
-  return msalClient;
-}
-
-async function getAccessToken(): Promise<string> {
-  const msal = getMsalClient();
-
-  const result = await msal.acquireTokenByRefreshToken({
-    refreshToken: config.outlook.refreshToken,
-    scopes: [
-      'https://graph.microsoft.com/Tasks.ReadWrite',
-      'https://graph.microsoft.com/User.Read',
-    ],
-  });
-
-  if (!result?.accessToken) {
-    throw new Error('Failed to acquire access token for Microsoft To Do');
-  }
-
-  return result.accessToken;
-}
-
-function getGraphClient(): Client {
-  if (graphClient) return graphClient;
-
-  graphClient = Client.init({
-    authProvider: async (done) => {
-      try {
-        const token = await getAccessToken();
-        done(null, token);
-      } catch (err) {
-        done(err as Error, null);
-      }
-    },
-  });
-
-  return graphClient;
-}
+// Auth is handled by shared microsoft-auth.ts module
 
 export function isOutlookTodoConfigured(): boolean {
-  return !!(config.outlook.clientId && config.outlook.refreshToken);
+  return isMicrosoftConfigured();
 }
 
 // ─── Retry Helper ───────────────────────────────────────────────────
@@ -282,10 +230,12 @@ export async function getTasks(
     const client = getGraphClient();
     let request = client.api(`/me/todo/lists/${listId}/tasks`);
 
+    // NOTE: Do NOT add $select here — Microsoft Graph's OData parser chokes on
+    // "title" in $select (RequestBroker--ParseUri / 400 Invalid request).
+    // Omitting $select returns all standard fields anyway; the overhead is negligible.
     const query: Record<string, string> = {
       $orderby: 'createdDateTime DESC',
       $top: String(filter?.top || 50),
-      $select: 'id,title,body,importance,status,dueDateTime,reminderDateTime,isReminderOn,createdDateTime,completedDateTime',
     };
 
     if (filter?.status) {

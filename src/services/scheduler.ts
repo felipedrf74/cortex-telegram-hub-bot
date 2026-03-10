@@ -6,12 +6,13 @@ import { getDueReminders, markReminderFired, getRemindersForToday } from '../sta
 import * as msTodo from './microsoft-todo';
 import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount } from './outlook-mail';
-import { formatDailyBriefing, DailyBriefingData } from '../utils/telegram-formatter';
+import { formatDailyBriefing, DailyBriefingData, escapeHtml } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 import { runContentDiscovery } from './content-discovery';
 import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
+import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -25,7 +26,7 @@ export function startScheduler(bot: Bot): void {
       for (const reminder of dueReminders) {
         for (const userId of config.telegram.allowedUserIds) {
           try {
-            let msg = `⏰ <b>Reminder:</b> ${reminder.message}`;
+            let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
             if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
             await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
           } catch (err) {
@@ -58,7 +59,8 @@ export function startScheduler(bot: Bot): void {
         return due >= todayStart && due <= todayEnd;
       });
 
-      const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
+      // Overdue = due BEFORE today (not just before "now"), to avoid overlap with dueToday
+      const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
 
       if (dueToday.length === 0 && overdue.length === 0) return;
 
@@ -67,7 +69,7 @@ export function startScheduler(bot: Bot): void {
       if (dueToday.length > 0) {
         msg += `📅 <b>Due today (${dueToday.length}):</b>\n`;
         for (const t of dueToday) {
-          msg += `• ${t.title} <i>[${t.listName}]</i>\n`;
+          msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
         }
         msg += '\n';
       }
@@ -75,8 +77,8 @@ export function startScheduler(bot: Bot): void {
       if (overdue.length > 0) {
         msg += `⚠️ <b>Overdue (${overdue.length}):</b>\n`;
         for (const t of overdue) {
-          const daysLate = Math.ceil((nowDate.getTime() - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
-          msg += `• ${t.title} — ${daysLate}d late <i>[${t.listName}]</i>\n`;
+          const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+          msg += `• ${escapeHtml(t.title)} — ${daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
         }
       }
 
@@ -121,8 +123,8 @@ export function startScheduler(bot: Bot): void {
     if (!msTodo.isOutlookTodoConfigured()) return;
 
     // Reduce polling overnight: skip non-15-minute marks between 22:00-07:00
-    const currentHour = new Date().getHours();
-    const currentMinute = new Date().getMinutes();
+    // Use Luxon now() which respects config.app.timezone (not system UTC)
+    const { hour: currentHour, minute: currentMinute } = now();
     if ((currentHour >= 22 || currentHour < 7) && currentMinute % 15 !== 0) return;
 
     try {
@@ -158,7 +160,7 @@ export function startScheduler(bot: Bot): void {
 
       let msg = `👥 <b>New tasks from others</b>\n\n`;
       for (const t of newTasks.slice(0, 10)) {
-        msg += `• ${t.title} <i>[${t.listName}]</i>\n`;
+        msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
       }
       if (newTasks.length > 10) msg += `\n... and ${newTasks.length - 10} more`;
 
@@ -188,7 +190,7 @@ export function startScheduler(bot: Bot): void {
       let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
       if (result.ideas.length > 0) {
         for (let i = 0; i < result.ideas.length; i++) {
-          msg += `${i + 1}. ${result.ideas[i]}\n`;
+          msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
         }
       } else {
         msg += `Ideas generated but couldn't parse titles — check the file.\n`;
@@ -282,6 +284,37 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Monthly Uber invoice collection — 1st of each month at 09:30
+  // Runs 15 min after Amazon collection. No interactive 2FA in cron mode.
+  cron.schedule('30 9 1 * *', async () => {
+    if (!config.invoices.uberEnabled || !isUberConfigured() || !isInvoiceFilingConfigured()) return;
+
+    try {
+      const prev = now().minus({ months: 1 });
+
+      // Cron mode: no Telegram callbacks for 2FA
+      const result = await collectUberInvoices(prev.year, prev.month);
+      const notification = formatUberNotification(result);
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send Uber collection notification');
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Monthly Uber invoice collection failed');
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, '⚠️ Recolha mensal Uber falhou. Verificar logs.');
+        } catch (sendErr) {
+          logger.error({ err: sendErr, userId }, 'Failed to send Uber collection failure alert');
+        }
+      }
+    }
+  }, { timezone: config.app.timezone });
+
   // Proactive conflict detection — check tomorrow's calendar at 19:30 for overlapping events
   cron.schedule('30 19 * * *', async () => {
     if (!isAnyCalendarConfigured()) return;
@@ -313,8 +346,8 @@ export function startScheduler(bot: Bot): void {
 
       let msg = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
       for (const { a, b } of conflicts) {
-        msg += `🔴 <b>${a.summary}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
-        msg += `   overlaps with <b>${b.summary}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
+        msg += `🔴 <b>${escapeHtml(a.summary)}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
+        msg += `   overlaps with <b>${escapeHtml(b.summary)}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
       }
       msg += 'Consider rescheduling one of these events.';
 
@@ -331,7 +364,7 @@ export function startScheduler(bot: Bot): void {
   }, { timezone: config.app.timezone });
 
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), conflict detection (19:30)`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30)`
   );
 }
 
@@ -340,7 +373,6 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
   const data: DailyBriefingData = {
     date: today.toFormat('cccc, LLLL dd'),
     events: [],
-    pendingTodos: 0,
     highPriorityTasks: [],
     dueTodayTasks: [],
     overdueTasks: [],
@@ -383,7 +415,6 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
 
       if (pendingResult.success) {
         const tasks = pendingResult.data;
-        data.pendingTodos = tasks.length;
 
         const nowDate = new Date();
         const todayStart = new Date(startOfDay()).getTime();
@@ -403,12 +434,12 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
           })
           .map((t) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
 
-        // Overdue — capped at 20 to avoid exceeding Telegram's 4096 char limit
+        // Overdue = due BEFORE today (not just before "now"), to avoid overlap with dueTodayTasks
         const MAX_OVERDUE_DISPLAY = 20;
         const allOverdue = tasks
-          .filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate)
+          .filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart)
           .map((t) => {
-            const daysLate = Math.ceil((nowDate.getTime() - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+            const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
             return { title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance, daysLate };
           })
           .sort((a, b) => a.daysLate - b.daysLate);
@@ -483,7 +514,7 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
       if (overdue.length > 0) {
         msg += `\n⚠️ Overdue tasks (${overdue.length}):\n`;
         for (const t of overdue) {
-          msg += `- ${t.title}`;
+          msg += `- ${escapeHtml(t.title)}`;
           if (t.dueDateTime) msg += ` (was due: ${formatDateTime(t.dueDateTime)})`;
           msg += '\n';
         }

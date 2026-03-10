@@ -300,6 +300,10 @@ async function loginToAmazon(
 
         try {
           const otp = await waitForReply!(300_000);
+          if (otp === '__CANCELLED__') {
+            logger.info('Amazon 2FA cancelled by new collection request');
+            return { success: false, twoFactorRequired: true };
+          }
           const cleanOtp = otp.trim().replace(/\s+/g, '');
           await otpInput.first().fill(cleanOtp);
 
@@ -343,6 +347,10 @@ async function loginToAmazon(
 
         try {
           const answer = await waitForReply!(300_000);
+          if (answer === '__CANCELLED__') {
+            logger.info('Amazon CAPTCHA cancelled by new collection request');
+            return { success: false, twoFactorRequired: true };
+          }
           await captchaInput.fill(answer.trim());
           await page.keyboard.press('Enter');
           await page.waitForLoadState('domcontentloaded');
@@ -361,6 +369,10 @@ async function loginToAmazon(
         await sendScreenshot!(screenshot);
         try {
           const hint = await waitForReply!(300_000);
+          if (hint === '__CANCELLED__') {
+            logger.info('Amazon challenge cancelled by new collection request');
+            return { success: false, twoFactorRequired: true };
+          }
           // Try typing the hint into any visible input
           const anyInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible');
           if (await anyInput.first().isVisible({ timeout: 1000 }).catch(() => false)) {

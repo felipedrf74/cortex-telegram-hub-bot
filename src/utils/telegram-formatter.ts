@@ -93,7 +93,6 @@ export interface DailyBriefingData {
   date: string;
   events: BriefingEvent[];
   training?: string;
-  pendingTodos: number;
   highPriorityTasks: BriefingTask[];
   dueTodayTasks: BriefingTask[];
   overdueTasks: (BriefingTask & { daysLate: number })[];
@@ -119,8 +118,19 @@ export function formatDailyBriefing(data: DailyBriefingData): string {
   // ── Training ──
   if (data.training) msg += `🏋️ ${data.training}\n`;
 
-  // ── Tasks summary ──
-  msg += `\n📋 ${data.pendingTodos} tasks pending`;
+  // ── Tasks summary (only today-relevant: due today + overdue + high priority) ──
+  const totalOverdue = data.overdueTasks.length + (data.overdueExtra || 0);
+  const todayTaskCount = data.dueTodayTasks.length + totalOverdue;
+
+  if (todayTaskCount > 0 || data.highPriorityTasks.length > 0) {
+    const parts: string[] = [];
+    if (data.dueTodayTasks.length > 0) parts.push(`${data.dueTodayTasks.length} due today`);
+    if (totalOverdue > 0) parts.push(`${totalOverdue} overdue`);
+    if (data.highPriorityTasks.length > 0) parts.push(`${data.highPriorityTasks.length} high priority`);
+    msg += `\n📋 <b>Tasks:</b> ${parts.join('  ·  ')}`;
+  } else {
+    msg += `\n📋 No tasks due today`;
+  }
   if (data.yesterdayCompleted > 0) msg += `  ·  ✅ ${data.yesterdayCompleted} done yesterday`;
   msg += '\n';
 
@@ -142,7 +152,6 @@ export function formatDailyBriefing(data: DailyBriefingData): string {
 
   // ── Overdue (capped, with days late) ──
   if (data.overdueTasks.length > 0) {
-    const totalOverdue = data.overdueTasks.length + (data.overdueExtra || 0);
     msg += `\n⚠️ <b>Overdue</b> (${totalOverdue})\n`;
     for (const t of data.overdueTasks) {
       msg += `  • ${escapeHtml(t.title)} — ${t.daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
@@ -161,7 +170,9 @@ export function formatDailyBriefing(data: DailyBriefingData): string {
   }
 
   // ── Email ──
-  if (data.unreadEmails > 0) {
+  if (data.unreadEmails < 0) {
+    msg += `\n📧 ⚠️ Could not check emails\n`;
+  } else if (data.unreadEmails > 0) {
     msg += `\n📧 ${data.unreadEmails} unread emails\n`;
   }
 

@@ -47,6 +47,12 @@ const BUILTIN_VENDORS: VendorConfig[] = [
     subjectPatterns: ['fatura', 'NOS'],
     builtin: true,
   },
+  {
+    name: 'Cofidis',
+    senderPatterns: ['cofidis.pt'],
+    subjectPatterns: ['fatura'],
+    builtin: true,
+  },
 ];
 
 /** Merge hardcoded + user-added vendors from DB. */

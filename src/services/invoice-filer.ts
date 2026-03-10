@@ -254,10 +254,12 @@ async function compressImage(
  */
 function scpUpload(localPath: string, remoteDir: string, remotePath: string): void {
   // SSH: create remote year/month directory on Mac (uses execFileSync to avoid shell injection)
+  // Escape single quotes for the remote shell: ' → '\'' (end quote, escaped quote, restart quote)
+  const safeRemoteDir = remoteDir.replace(/'/g, "'\\''");
   const sshArgs = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
   if (config.invoices.sshKeyPath) sshArgs.push('-i', config.invoices.sshKeyPath);
   if (config.invoices.sshPort !== '22') sshArgs.push('-p', config.invoices.sshPort);
-  sshArgs.push(sshTarget(), `mkdir -p '${remoteDir}'`);
+  sshArgs.push(sshTarget(), `mkdir -p '${safeRemoteDir}'`);
   execFileSync('ssh', sshArgs, { timeout: 15_000, stdio: 'pipe' });
   logger.debug({ remoteDir }, 'Remote directory ensured via SSH');
 

@@ -62,7 +62,7 @@ export interface InvoiceFiling {
   amount: string | null;
   document_date: string | null;
   invoice_number: string | null;
-  source: 'photo' | 'email' | 'amazon';
+  source: 'photo' | 'email' | 'amazon' | 'uber';
   source_ref: string | null;
   remote_path: string | null;
   folder_path: string | null;

@@ -2,7 +2,7 @@ module.exports = {
   apps: [{
     name: 'telegram-hub-bot',
     script: 'dist/index.js',
-    cwd: '/Users/felipedominguez/Desktop/Custom Connectors/Cortex/telegram-hub-bot',
+    cwd: __dirname,  // resolves to wherever this file lives (Mac or server)
     exec_mode: 'fork',
     autorestart: true,
     watch: false,

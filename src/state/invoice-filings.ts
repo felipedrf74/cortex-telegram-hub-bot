@@ -7,7 +7,7 @@ export function recordFiling(data: {
   amount?: string | null;
   document_date?: string | null;
   invoice_number?: string | null;
-  source: 'photo' | 'email' | 'amazon';
+  source: 'photo' | 'email' | 'amazon' | 'uber';
   source_ref?: string | null;
   remote_path?: string | null;
   folder_path?: string | null;
@@ -104,6 +104,28 @@ export function deleteAmazonFilings(year: number, month: number): number {
     DELETE FROM invoice_filings
     WHERE vendor = 'Amazon.es'
       AND source = 'amazon'
+      AND document_date >= ? AND document_date < ?
+  `).run(startDate, endDate);
+
+  return result.changes;
+}
+
+/**
+ * Delete all Uber filings for a specific year/month.
+ * Used by the /uber --force flag to re-collect invoices after a bad run.
+ */
+export function deleteUberFilings(year: number, month: number): number {
+  const db = getDb();
+  const monthStr = month.toString().padStart(2, '0');
+  const startDate = `${year}-${monthStr}-01`;
+  const endDate = month === 12
+    ? `${year + 1}-01-01`
+    : `${year}-${(month + 1).toString().padStart(2, '0')}-01`;
+
+  const result = db.prepare(`
+    DELETE FROM invoice_filings
+    WHERE vendor = 'Uber'
+      AND source = 'uber'
       AND document_date >= ? AND document_date < ?
   `).run(startDate, endDate);
 

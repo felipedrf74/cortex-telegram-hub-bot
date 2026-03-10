@@ -1,5 +1,8 @@
 import { getDb } from '../services/database';
 import { Reminder } from '../domains/types';
+import { DateTime } from 'luxon';
+import { now } from '../utils/date-parser';
+import { config } from '../config';
 
 export function setReminder(data: {
   message: string;
@@ -23,12 +26,14 @@ export function getActiveReminders(): Reminder[] {
 
 export function getDueReminders(): Reminder[] {
   const db = getDb();
+  // Compare in JS using Luxon (timezone-aware) instead of SQLite's datetime('now') which is always UTC
+  const currentISO = now().toISO()!;
   return db.prepare(`
     SELECT * FROM reminders
     WHERE status = 'active'
-    AND remind_at <= datetime('now')
+    AND remind_at <= ?
     ORDER BY remind_at ASC
-  `).all() as Reminder[];
+  `).all(currentISO) as Reminder[];
 }
 
 export function markReminderFired(id: number): void {
@@ -37,19 +42,19 @@ export function markReminderFired(id: number): void {
   if (!reminder) return;
 
   if (reminder.recurring) {
-    // For recurring reminders, update the next fire time
-    let nextTime: string;
-    const current = new Date(reminder.remind_at);
+    // Use Luxon for DST-safe date arithmetic (naive Date.setDate drifts across DST transitions)
+    const current = DateTime.fromISO(reminder.remind_at, { zone: config.app.timezone });
+    let next: DateTime;
 
     switch (reminder.recurring) {
       case 'daily':
-        current.setDate(current.getDate() + 1);
+        next = current.plus({ days: 1 });
         break;
       case 'weekly':
-        current.setDate(current.getDate() + 7);
+        next = current.plus({ weeks: 1 });
         break;
       case 'monthly':
-        current.setMonth(current.getMonth() + 1);
+        next = current.plus({ months: 1 });
         break;
       default:
         // For cron or unknown, just mark as fired
@@ -57,8 +62,7 @@ export function markReminderFired(id: number): void {
         return;
     }
 
-    nextTime = current.toISOString();
-    db.prepare('UPDATE reminders SET remind_at = ? WHERE id = ?').run(nextTime, id);
+    db.prepare('UPDATE reminders SET remind_at = ? WHERE id = ?').run(next.toISO()!, id);
   } else {
     db.prepare("UPDATE reminders SET status = 'fired' WHERE id = ?").run(id);
   }
@@ -72,10 +76,12 @@ export function cancelReminder(id: number): boolean {
 
 export function getRemindersForToday(): Reminder[] {
   const db = getDb();
+  // Use Luxon for timezone-aware "today" comparison instead of SQLite's date('now') (UTC)
+  const todayDate = now().toFormat('yyyy-MM-dd');
   return db.prepare(`
     SELECT * FROM reminders
     WHERE status = 'active'
-    AND date(remind_at) = date('now')
+    AND date(remind_at) = ?
     ORDER BY remind_at ASC
-  `).all() as Reminder[];
+  `).all(todayDate) as Reminder[];
 }
