@@ -321,12 +321,16 @@ let _cachedToolsArray: Anthropic.Tool[] | null = null;
 // ─── Model selection helpers ─────────────────────────────────────────
 
 function getModelForDomain(domain: DomainName): string {
-  // Sonnet for secretary (multi-step tool-use) — Haiku for conversational domains
-  return domain === 'secretary' ? config.anthropic.model : config.anthropic.classifierModel;
+  // Sonnet for secretary (multi-step tool-use) — Haiku for triathlon/content (tool-use + conversational)
+  if (domain === 'secretary') return config.anthropic.model;
+  if (domain === 'triathlon') return config.anthropic.classifierModel; // Haiku — good enough for tool calls
+  return config.anthropic.classifierModel;
 }
 
 function getMaxTokensForDomain(domain: DomainName): number {
-  return domain === 'secretary' ? config.anthropic.secretaryMaxTokens : config.anthropic.maxTokens;
+  if (domain === 'secretary') return config.anthropic.secretaryMaxTokens;
+  if (domain === 'triathlon') return 2048; // needs headroom for calendar tool calls + response
+  return config.anthropic.maxTokens;
 }
 
 // ─── API Call Functions ──────────────────────────────────────────────
@@ -386,7 +390,7 @@ export async function callDomain(
   stateContext: string
 ): Promise<CallDomainResult> {
   const systemPrompt = DOMAIN_SYSTEM_PROMPTS[domain];
-  const useTools = domain === 'secretary';
+  const useTools = domain === 'secretary' || domain === 'triathlon';
 
   // Prompt caching: static system prompt cached, dynamic state in user message
   const system: Anthropic.TextBlockParam[] = [
@@ -449,7 +453,7 @@ export async function continueWithToolResults(
     ...toolConversation,
   ];
 
-  const useTools = domain === 'secretary';
+  const useTools = domain === 'secretary' || domain === 'triathlon';
   let response: Anthropic.Message;
   try {
     response = await client.messages.create({

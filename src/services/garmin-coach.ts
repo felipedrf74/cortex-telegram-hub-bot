@@ -27,7 +27,10 @@ RULES:
 - Be direct, data-driven, no fluff — talk like a coach who knows this athlete
 - Every recommendation MUST cite specific data points
 - Carnivore diet framework: never suggest plant-based nutrition
-- Use HTML formatting for Telegram (bold: <b>, italic: <i>, code: <code>)
+- Use ONLY Telegram HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
+- NEVER use markdown syntax: no triple-backtick code fences, no | tables |, no --- dividers, no # headers, no ** bold **, no * italic *
+- For tables/structured data, use aligned plain text with spaces or bullet points instead
+- For code/exercise blocks, use <code> tags or plain indented text, NOT triple backticks
 - Keep the HUMAN-READABLE part under 3800 characters (Telegram limit is 4096)
 - All times in Europe/Lisbon timezone
 
@@ -304,11 +307,14 @@ ${payloadStr}
     // Extract structured recommendations JSON from the response
     const { humanMessage, recommendations } = extractRecommendations(rawText);
 
+    // Sanitize any markdown that Claude may have output despite HTML instructions
+    const cleanMessage = sanitizeMarkdownForTelegram(humanMessage);
+
     // Append data collection info as a footer
     const footer = `\n\n<i>📊 Data: ${(dataCollectionMs / 1000).toFixed(1)}s | Analysis: ${(analysisMs / 1000).toFixed(1)}s${errors.length > 0 ? ` | ⚠️ ${errors.length} data gap(s)` : ''}</i>`;
 
     return {
-      message: humanMessage + footer,
+      message: cleanMessage + footer,
       recommendations,
       errors,
       dataCollectionMs,
@@ -378,6 +384,34 @@ function extractRecommendations(text: string): {
     logger.warn({ err, jsonStr: jsonStr.substring(0, 200) }, 'Coach: failed to parse COACH_RECS JSON');
     return { humanMessage, recommendations: [] };
   }
+}
+
+/**
+ * Convert markdown artifacts to Telegram-safe HTML/plain text.
+ * Claude sometimes outputs markdown despite HTML instructions.
+ */
+function sanitizeMarkdownForTelegram(text: string): string {
+  let s = text;
+  // Remove code fences (```lang ... ```)  →  keep inner content
+  s = s.replace(/```[\w]*\n?([\s\S]*?)```/g, '$1');
+  // Convert markdown bold **text** → <b>text</b>  (avoid double-wrapping if already HTML)
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  // Convert markdown italic *text* → <i>text</i>  (single asterisk, not inside bold)
+  s = s.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<i>$1</i>');
+  // Convert markdown headers ### Text → <b>Text</b>
+  s = s.replace(/^#{1,4}\s+(.+)$/gm, '<b>$1</b>');
+  // Remove horizontal rules ---  or ___
+  s = s.replace(/^[-_]{3,}\s*$/gm, '');
+  // Convert markdown tables: | col | col | → space-aligned plain text
+  // Remove header separator rows like |---|---|
+  s = s.replace(/^\|[-\s|:]+\|\s*$/gm, '');
+  // Convert table rows | a | b | c | → "a  •  b  •  c"
+  s = s.replace(/^\|(.+)\|\s*$/gm, (_match, inner: string) => {
+    return inner.split('|').map((c: string) => c.trim()).filter(Boolean).join('  •  ');
+  });
+  // Collapse triple+ newlines to double
+  s = s.replace(/\n{3,}/g, '\n\n');
+  return s.trim();
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   resolveReply as resolveUberReply, registerReplyWaiter as registerUberReplyWaiter,
 } from './services/uber-collector';
 import { generateCoachBriefing, CoachRecommendation } from './services/garmin-coach';
+import { setLastCoachState } from './domains/domain-handler';
 import {
   deepSearch, getSources, getHotNews, isContentEngineConfigured,
   formatDeepSearch, formatSources, formatHotNews,
@@ -111,7 +112,7 @@ function isRateLimited(userId: number): boolean {
 
 // ─── Domain Handler Map ──────────────────────────────────────────────
 
-const DOMAIN_HANDLERS: Record<DomainName, (message: string) => Promise<{ text: string; domain: DomainName }>> = {
+const DOMAIN_HANDLERS: Record<DomainName, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> = {
   secretary: handleSecretary,
   triathlon: handleTriathlon,
   content: handleContent,
@@ -1788,6 +1789,11 @@ export function createBot(): Bot {
         const result = await generateCoachBriefing();
         clearInterval(typingInterval);
 
+        // Store recommendations so triathlon domain can reference them in follow-up chat
+        if (result.recommendations.length > 0) {
+          setLastCoachState(ctx.from!.id, result.recommendations, result.message.substring(0, 500));
+        }
+
         // Send the human-readable briefing
         const chunks = splitMessage(result.message);
         for (const chunk of chunks) {
@@ -2315,7 +2321,7 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     if (ctx.from?.id) lastActiveDomain.set(ctx.from.id, route.domain);
 
     const handler = DOMAIN_HANDLERS[route.domain];
-    const response = await handler(route.strippedMessage);
+    const response = await handler(route.strippedMessage, ctx.from?.id);
 
     const parts = splitMessage(response.text);
     for (const part of parts) {
@@ -2349,7 +2355,7 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
       if (activeDomain && activeDomain !== 'secretary') {
         const handler = DOMAIN_HANDLERS[activeDomain];
         const photoContext = `[Photo attached] ${caption}`;
-        const response = await handler(photoContext);
+        const response = await handler(photoContext, userId);
         if (userId) lastActiveDomain.set(userId, activeDomain);
         const parts = splitMessage(response.text);
         for (const part of parts) {
