@@ -1,0 +1,78 @@
+"""
+Reddit search via public JSON API (no auth needed).
+
+Appending `.json` to any Reddit URL returns structured JSON.
+No rate limit issues at modest volumes (< 60 req/min).
+
+Subreddits are pre-configured per niche for targeted discovery.
+"""
+
+import logging
+from datetime import datetime, timezone
+
+import httpx
+
+from config import cfg
+from models.research import SearchResult
+
+logger = logging.getLogger("content-engine.reddit")
+
+# Niche-specific subreddits for targeted research
+NICHE_SUBREDDITS = {
+    "fitness": ["fitness", "running", "cycling", "triathlon", "carnivore", "AdvancedRunning"],
+    "commentary": ["brasil", "brasilivre", "desabafos", "futebol"],
+}
+ALL_SUBREDDITS = [s for subs in NICHE_SUBREDDITS.values() for s in subs]
+
+REDDIT_SEARCH_URL = "https://www.reddit.com/search.json"
+REDDIT_HEADERS = {"User-Agent": "CortexBot/1.0 (content research)"}
+
+
+class RedditSearcher:
+    name = "reddit"
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        params = {
+            "q": query,
+            "sort": "relevance",
+            "t": "week",          # last 7 days
+            "limit": max_results,
+            "type": "link",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=cfg.searcher_timeout, headers=REDDIT_HEADERS) as client:
+                resp = await client.get(REDDIT_SEARCH_URL, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning("Reddit search failed: %s", exc)
+            return []
+
+        results: list[SearchResult] = []
+        for child in data.get("data", {}).get("children", [])[:max_results]:
+            post = child.get("data", {})
+            created_utc = post.get("created_utc")
+            published = datetime.fromtimestamp(created_utc, tz=timezone.utc) if created_utc else None
+
+            score = post.get("score", 0)
+            num_comments = post.get("num_comments", 0)
+
+            results.append(SearchResult(
+                title=post.get("title", ""),
+                url=f"https://reddit.com{post.get('permalink', '')}",
+                snippet=(post.get("selftext", "") or "")[:300],
+                source=self.name,
+                published_at=published,
+                thumbnail_url=post.get("thumbnail") if post.get("thumbnail", "").startswith("http") else None,
+                metadata={
+                    "subreddit": post.get("subreddit", ""),
+                    "score": score,
+                    "num_comments": num_comments,
+                    "upvote_ratio": post.get("upvote_ratio", 0),
+                    "is_hot": score > 500 or num_comments > 200,
+                },
+            ))
+
+        logger.info("Reddit returned %d results for '%s'", len(results), query[:60])
+        return results

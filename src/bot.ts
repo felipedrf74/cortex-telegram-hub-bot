@@ -35,9 +35,57 @@ import {
   resolveReply as resolveUberReply, registerReplyWaiter as registerUberReplyWaiter,
 } from './services/uber-collector';
 import { generateCoachBriefing, CoachRecommendation } from './services/garmin-coach';
+import {
+  deepSearch, getSources, getHotNews, isContentEngineConfigured,
+  formatDeepSearch, formatSources, formatHotNews,
+  getTrending, getReaction, getHooks, getScript, getTitles,
+  getThumbnail, getCaption, getCompetitor, getGaps, getSeo,
+  getRepurpose, logFeedback, getReport,
+  formatTrending, formatReaction, formatHooks, formatScript, formatTitles,
+  formatThumbnail, formatCaption, formatCompetitor, formatGaps, formatSeo,
+  formatRepurpose, formatFeedback, formatReport,
+  maybeSaveToFile,
+} from './services/content-engine';
 import { isGarminConfigured } from './services/garmin';
 import fs from 'fs';
 import path from 'path';
+
+// ─── Content Engine: send inline OR save to file ─────────────────────
+
+/**
+ * If the formatted message is too long, save full output to ~/Desktop/IDEAS
+ * and send a short summary + file path in Telegram. Otherwise send inline.
+ *
+ * @param forceFile - commands like genscript/competitor always save a file
+ */
+async function sendOrSave(
+  ctx: Context,
+  msg: string,
+  command: string,
+  topic: string,
+  forceFile = false,
+): Promise<void> {
+  const saved = maybeSaveToFile(msg, command, topic, forceFile);
+  if (saved) {
+    // Send a short summary (first ~2500 chars) + file notice
+    const preview = msg.slice(0, 2500);
+    const truncated = msg.length > 2500;
+    const footer = truncated
+      ? `\n\n✂️ <i>Output truncated — full version saved.</i>\n📁 <code>${escapeHtml(saved)}</code>`
+      : `\n\n📁 <i>Full output saved:</i>\n<code>${escapeHtml(saved)}</code>`;
+    const finalMsg = preview + footer;
+    for (const chunk of splitMessage(finalMsg)) {
+      try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
+      catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+    }
+  } else {
+    // Short enough — send inline as before
+    for (const chunk of splitMessage(msg)) {
+      try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
+      catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+    }
+  }
+}
 
 // ─── Rate Limiter ────────────────────────────────────────────────────
 
@@ -1071,6 +1119,371 @@ export function createBot(): Bot {
           if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
           else throw err;
         }
+      }
+    });
+  });
+
+  // ── Content Engine Commands (Python microservice) ──
+
+  bot.command('deepsearch', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) {
+        await ctx.reply('⚠️ Content Engine not enabled. Set CONTENT_ENGINE_ENABLED=true and start the Python service.');
+        return;
+      }
+      const query = ctx.match?.trim();
+      if (!query) {
+        await ctx.reply('Usage: /deepsearch <topic>\nExample: /deepsearch Lula economia reação');
+        return;
+      }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await deepSearch(query);
+        clearInterval(typingInterval);
+        const msg = formatDeepSearch(result);
+        await sendOrSave(ctx, msg, 'deepsearch', query);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Deep search failed');
+        await ctx.reply(`❌ Deep search failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('sources', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) {
+        await ctx.reply('⚠️ Content Engine not enabled.');
+        return;
+      }
+      const query = ctx.match?.trim();
+      if (!query) {
+        await ctx.reply('Usage: /sources <topic>\nExample: /sources fitness trends 2026');
+        return;
+      }
+      await ctx.replyWithChatAction('typing');
+      try {
+        const result = await getSources(query);
+        const msg = formatSources(result);
+        for (const chunk of splitMessage(msg)) {
+          try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
+          catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+        }
+      } catch (err: any) {
+        logger.error({ err }, 'Sources fetch failed');
+        await ctx.reply(`❌ Sources failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('hotnews', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) {
+        await ctx.reply('⚠️ Content Engine not enabled.');
+        return;
+      }
+      await ctx.replyWithChatAction('typing');
+      try {
+        const result = await getHotNews();
+        const msg = formatHotNews(result);
+        for (const chunk of splitMessage(msg)) {
+          try { await ctx.reply(chunk, { parse_mode: 'HTML' }); }
+          catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+        }
+      } catch (err: any) {
+        logger.error({ err }, 'Hot news failed');
+        await ctx.reply(`❌ Hot news failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ── Phase 2: Visual + Social ──
+
+  bot.command('trending', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const niche = ctx.match?.trim() || undefined;
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getTrending(niche);
+        clearInterval(typingInterval);
+        const msg = formatTrending(result);
+        for (const chunk of splitMessage(msg)) {
+          try { await ctx.reply(chunk, { parse_mode: 'HTML' }); }
+          catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+        }
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Trending failed');
+        await ctx.reply(`❌ Trending failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('reaction', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /reaction <topic>\nExample: /reaction Lula cortou verbas'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getReaction(topic);
+        clearInterval(typingInterval);
+        const msg = formatReaction(result);
+        await sendOrSave(ctx, msg, 'reaction', topic);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Reaction search failed');
+        await ctx.reply(`❌ Reaction search failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ── Phase 3: Creative Intelligence ──
+
+  bot.command('hooks', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /hooks <topic>\nExample: /hooks corrida 5k iniciante'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getHooks(topic);
+        clearInterval(typingInterval);
+        const msg = formatHooks(result);
+        await sendOrSave(ctx, msg, 'hooks', topic);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Hooks generation failed');
+        await ctx.reply(`❌ Hooks failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('genscript', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /genscript <topic>\nExample: /genscript dieta carnívora 30 dias resultados'); return; }
+      await ctx.reply('📝 Generating script… this takes 30-60s (research + writing).', { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getScript(topic);
+        clearInterval(typingInterval);
+        const msg = formatScript(result);
+        await sendOrSave(ctx, msg, 'genscript', topic, true); // always save scripts
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Script generation failed');
+        await ctx.reply(`❌ Script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('titles', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /titles <topic>\nExample: /titles como perder gordura sem cardio'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getTitles(topic);
+        clearInterval(typingInterval);
+        const msg = formatTitles(result);
+        await sendOrSave(ctx, msg, 'titles', topic);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Titles generation failed');
+        await ctx.reply(`❌ Titles failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('genthumbnail', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const title = ctx.match?.trim();
+      if (!title) { await ctx.reply('Usage: /genthumbnail <video title>\nExample: /genthumbnail PERDI 10KG EM 30 DIAS'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getThumbnail(title);
+        clearInterval(typingInterval);
+        const msg = formatThumbnail(result);
+        await sendOrSave(ctx, msg, 'genthumbnail', title);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Thumbnail generation failed');
+        await ctx.reply(`❌ Thumbnail failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('gencaption', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /gencaption <topic>\nExample: /gencaption treino de peito e tríceps'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getCaption(topic);
+        clearInterval(typingInterval);
+        const msg = formatCaption(result);
+        await sendOrSave(ctx, msg, 'gencaption', topic);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Caption generation failed');
+        await ctx.reply(`❌ Caption failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ── Phase 4: Strategic Intelligence ──
+
+  bot.command('competitor', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const channel = ctx.match?.trim();
+      if (!channel) { await ctx.reply('Usage: /competitor <channel URL or handle>\nExample: /competitor @RenatoCariani'); return; }
+      await ctx.reply('🔎 Analyzing competitor… this may take 30-60s.', { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getCompetitor(channel);
+        clearInterval(typingInterval);
+        const msg = formatCompetitor(result);
+        await sendOrSave(ctx, msg, 'competitor', channel, true); // always save
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Competitor analysis failed');
+        await ctx.reply(`❌ Competitor analysis failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('gaps', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const niche = ctx.match?.trim() || 'fitness';
+      await ctx.reply(`🔍 Finding content gaps for <b>${escapeHtml(niche)}</b>…`, { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getGaps(niche);
+        clearInterval(typingInterval);
+        const msg = formatGaps(result);
+        await sendOrSave(ctx, msg, 'gaps', niche);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Gap analysis failed');
+        await ctx.reply(`❌ Gap analysis failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('seo', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /seo <topic>\nExample: /seo dieta carnívora'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getSeo(topic);
+        clearInterval(typingInterval);
+        const msg = formatSeo(result);
+        await sendOrSave(ctx, msg, 'seo', topic);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'SEO analysis failed');
+        await ctx.reply(`❌ SEO failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('repurpose', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.trim();
+      if (!topic) { await ctx.reply('Usage: /repurpose <topic>\nExample: /repurpose meu vídeo sobre corrida 5k'); return; }
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getRepurpose(topic);
+        clearInterval(typingInterval);
+        const msg = formatRepurpose(result);
+        await sendOrSave(ctx, msg, 'repurpose', topic, true); // always save
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Repurpose failed');
+        await ctx.reply(`❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ── Phase 5: Learning System ──
+
+  bot.command('feedback', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const args = ctx.match?.trim();
+      if (!args) {
+        await ctx.reply(
+          'Usage: /feedback <url> <views> <retention%> [likes] [comments] [subs]\n' +
+          'Example: /feedback https://youtu.be/abc 15000 45.2 800 120 50',
+        );
+        return;
+      }
+      const parts = args.split(/\s+/);
+      if (parts.length < 3) {
+        await ctx.reply('❌ Need at least: URL, views, retention%. See /feedback for usage.');
+        return;
+      }
+      const [videoUrl, viewsStr, retStr, likesStr, commentsStr, subsStr] = parts;
+      const views = parseInt(viewsStr, 10);
+      const retention = parseFloat(retStr);
+      if (isNaN(views) || isNaN(retention)) {
+        await ctx.reply('❌ Views and retention must be numbers.');
+        return;
+      }
+      await ctx.replyWithChatAction('typing');
+      try {
+        const result = await logFeedback({
+          video_url: videoUrl,
+          views,
+          retention_pct: retention,
+          likes: likesStr ? parseInt(likesStr, 10) || 0 : 0,
+          comments: commentsStr ? parseInt(commentsStr, 10) || 0 : 0,
+          subs_gained: subsStr ? parseInt(subsStr, 10) || 0 : 0,
+        });
+        const msg = formatFeedback(result);
+        await sendOrSave(ctx, msg, 'feedback', videoUrl);
+      } catch (err: any) {
+        logger.error({ err }, 'Feedback logging failed');
+        await ctx.reply(`❌ Feedback failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('report', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const period = ctx.match?.trim() || 'week';
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getReport(period);
+        clearInterval(typingInterval);
+        const msg = formatReport(result);
+        await sendOrSave(ctx, msg, 'report', period, true); // always save
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Report generation failed');
+        await ctx.reply(`❌ Report failed: ${escapeHtml(err.message || 'Unknown error')}`);
       }
     });
   });
@@ -2565,9 +2978,25 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /ideas [date] — View ideas by date (default: today)
 /ideas saved — View saved ideas from discovery
 /video [topic] — Video ideas
-/script [topic] — Write a script
 /reel [topic] — Reel concepts
-/caption [type] — Write caption
+
+<b>🔬 CONTENT ENGINE</b>
+/deepsearch [topic] — Full research pipeline
+/sources [topic] — Curated source list
+/hotnews — What's trending now
+/trending [niche] — Cross-platform trends
+/reaction [topic] — Find reaction-worthy content
+/hooks [topic] — Generate scroll-stopping hooks
+/genscript [topic] — Full video script with research
+/titles [topic] — A/B title variants
+/genthumbnail [title] — Thumbnail concepts
+/gencaption [topic] — Instagram caption + hashtags
+/competitor [channel] — Reverse-engineer a channel
+/gaps [niche] — Find content gaps
+/seo [topic] — Keyword analysis
+/repurpose [topic] — 1 video → full ecosystem
+/feedback [url] [views] [ret%] — Log performance
+/report [week|month] — Content performance report
 
 <b>📄 FATURAS</b>
 /amazon [YYYY-MM] [--force] — Recolher faturas Amazon

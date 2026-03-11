@@ -14,7 +14,9 @@ const DOMAIN_PATTERNS: Record<DomainName, RegExp[]> = {
     /^\/(train|gym|run|bike|checkin|meal|macros|deload|pain|running|cycling)\b/i,
   ],
   content: [
-    /^\/(content|video|reel|script|caption|thumbnail|trend|ideas|discover)\b/i,
+    /^\/(content|video|reel|script|caption|thumbnail|trend|ideas|discover|deepsearch|sources|hotnews)\b/i,
+    /^\/(trending|reaction|hooks|genscript|titles|genthumbnail|gencaption)\b/i,
+    /^\/(competitor|gaps|seo|repurpose|feedback|report)\b/i,
   ],
 };
 

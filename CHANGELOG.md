@@ -4,6 +4,51 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.0.0] — 2026-03-11
+
+### Content Creation Engine (Phases 1–5)
+
+Full-stack AI-powered content creation pipeline — Python FastAPI microservice on port 8100, wired into the TS bot via 16 new Telegram commands.
+
+#### Python Content Engine (`content-engine/`)
+- **FastAPI microservice** — 16 endpoints under `/api/v1/`, running as a separate pm2 process
+- **Phase 1 — Research Core**: `/deepsearch` (SerpAPI + scraping), `/sources` (cached research), `/hotnews` (NewsAPI aggregation)
+- **Phase 2 — Trend Analysis**: `/trending` (YouTube Data API), `/reaction` (reaction-worthy video finder)
+- **Phase 3 — Creative Modules**: `/hooks` (hook generator), `/script` (full video scripts), `/titles` (CTR-optimized titles), `/thumbnail` (concept ideas), `/caption` (social captions + hashtags)
+- **Phase 4 — Intelligence**: `/competitor` (channel analysis), `/gaps` (content gap finder), `/seo` (keyword clustering), `/repurpose` (cross-platform suggestions)
+- **Phase 5 — Feedback Loop**: `/feedback` (metric storage), `/report` (performance reports)
+- **Claude client** (`services/claude_client.py`) — httpx-based, no SDK dependency; Haiku 4.5 for structured JSON, Sonnet 4.6 for long-form scripts
+- **Config singleton** (`config.py`) — reads from parent `.env` via `python-dotenv` with `override=True`
+
+#### TypeScript Bot Integration (`src/services/content-engine.ts`)
+- **12 response interfaces** — typed for all Phase 2–5 responses
+- **13 API client functions** — with phase-appropriate timeouts (30s default, 120s for scripts)
+- **13 Telegram HTML formatters** — null-safe, with `escapeHtml()` and `splitMessage()` for large responses
+- **AbortController timeout pattern** — custom per-endpoint timeouts
+- **HTML parse error fallback** — `isHtmlParseError()` → strip tags and retry as plaintext
+
+#### Command Handlers (`src/bot.ts`)
+- **13 new `bot.command()` handlers**: `/trending`, `/reaction`, `/hooks`, `/genscript`, `/titles`, `/genthumbnail`, `/gencaption`, `/competitor`, `/gaps`, `/seo`, `/repurpose`, `/feedback`, `/report`
+- **`gen*` prefix convention** — `/genscript`, `/genthumbnail`, `/gencaption` avoid collision with existing domain-routed commands
+- **Typing indicator keep-alive** — `setInterval` every 4s for long Claude calls
+- **Updated `/help`** — new "CONTENT ENGINE" section with all 16 commands
+
+#### Router Updates
+- **`classifier.ts`** — 2 new regex patterns for content domain routing
+- **`router/index.ts`** — 13 commands added to `SYSTEM_COMMANDS` array to bypass domain classifier
+
+#### Model Upgrades
+- **Sonnet 4 → Sonnet 4.6** (`claude-sonnet-4-6`) — both Python engine and TS bot conversational AI
+- **Haiku 3.5 → Haiku 4.5** (`claude-haiku-4-5-20251001`) — Python engine structured generation (3x cheaper than Sonnet)
+
+#### Infrastructure
+- **`python-dotenv`** with `override=True` — loads parent `.env` before any config import
+- **pm2 ecosystem** — content-engine runs as separate pm2 process alongside telegram-hub-bot
+- **Migration 006** — `content_engine` table for feedback storage
+- **`.gitignore`** — added `content-engine/data/`
+
+---
+
 ## [2.0.0] — 2026-03-10
 
 ### Garmin Coach v2: Interactive Calendar Recommendations

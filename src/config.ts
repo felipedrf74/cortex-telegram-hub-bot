@@ -23,7 +23,7 @@ export const config = {
   },
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
-    model: 'claude-sonnet-4-5-20250929' as const,
+    model: 'claude-sonnet-4-6' as const,
     classifierModel: 'claude-haiku-4-5-20251001' as const,
     maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
     secretaryMaxTokens: 2048,   // needs headroom for parallel tool calls
@@ -83,6 +83,11 @@ export const config = {
     tokenPath: process.env.GARMIN_TOKEN_PATH || './data/garmin-tokens',
     coachEnabled: (process.env.GARMIN_COACH_ENABLED || 'false') === 'true',
     coachTime: process.env.GARMIN_COACH_TIME || '21:00',
+  },
+  // ── Content Engine (Python microservice) ────────────────────────────
+  contentEngine: {
+    enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
+    port: parseInt(process.env.CONTENT_ENGINE_PORT || '8100', 10),
   },
   rateLimit: {
     maxMessagesPerMinute: 30,

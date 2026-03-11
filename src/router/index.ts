@@ -12,7 +12,11 @@ export interface RouteResult {
 }
 
 // System commands that don't route to a domain
-const SYSTEM_COMMANDS = ['/help', '/status', '/clear', '/start', '/discover'];
+const SYSTEM_COMMANDS = [
+  '/help', '/status', '/clear', '/start', '/discover', '/deepsearch', '/sources', '/hotnews',
+  '/trending', '/reaction', '/hooks', '/genscript', '/titles', '/genthumbnail', '/gencaption',
+  '/competitor', '/gaps', '/seo', '/repurpose', '/feedback', '/report',
+];
 
 export function isSystemCommand(message: string): string | null {
   const lower = message.trim().toLowerCase();
