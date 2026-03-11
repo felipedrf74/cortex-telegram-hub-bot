@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { filePdf, PT_MONTHS } from './invoice-filer';
+import { filePdf, PT_MONTHS, isInvoiceFilingConfigured } from './invoice-filer';
 import { recordFiling, isDuplicate, isEmailAlreadyFiled } from '../state/invoice-filings';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -940,6 +940,12 @@ export async function collectAmazonInvoices(
 
   if (!isAmazonConfigured()) {
     logger.warn('Amazon collection not configured');
+    result.durationMs = Date.now() - startTime;
+    return result;
+  }
+
+  if (!isInvoiceFilingConfigured()) {
+    logger.error('Amazon: invoice filing not configured — missing SSH config');
     result.durationMs = Date.now() - startTime;
     return result;
   }

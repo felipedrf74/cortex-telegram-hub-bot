@@ -156,7 +156,7 @@ Remember: my audience is young Brazilian men (18-25) who want growth and hate la
     : [];
 
   // Save to file
-  const dir = path.resolve(config.app.databasePath, '../content-ideas');
+  const dir = path.join(path.dirname(config.app.databasePath), 'content-ideas');
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }

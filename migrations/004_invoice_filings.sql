@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS invoice_filings (
     amount TEXT,
     document_date TEXT,
     invoice_number TEXT,
-    source TEXT NOT NULL,              -- 'photo' | 'email' | 'amazon'
+    source TEXT NOT NULL,              -- 'photo' | 'email' | 'amazon' | 'uber'
     source_ref TEXT,                   -- email message ID or 'telegram_photo'
     remote_path TEXT,
     folder_path TEXT,

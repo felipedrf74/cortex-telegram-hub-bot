@@ -44,19 +44,6 @@ export interface FilingResult {
 
 // ─── SSH/SCP Helpers ────────────────────────────────────────────────
 
-/** Builds the base SSH command prefix with key, port, and options. */
-function sshPrefix(): string {
-  const parts = ['ssh', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes'];
-  if (config.invoices.sshKeyPath) parts.push('-i', config.invoices.sshKeyPath);
-  if (config.invoices.sshPort !== '22') parts.push('-p', config.invoices.sshPort);
-  return parts.join(' ');
-}
-
-/** SCP uses uppercase -P for port (vs SSH's lowercase -p). */
-function scpPortFlag(): string {
-  return config.invoices.sshPort !== '22' ? `-P ${config.invoices.sshPort}` : '';
-}
-
 /** Returns user@host string for SSH/SCP commands. */
 function sshTarget(): string {
   return `${config.invoices.sshUser}@${config.invoices.sshHost}`;
@@ -68,6 +55,7 @@ export function isInvoiceFilingConfigured(): boolean {
   return (
     config.invoices.enabled &&
     config.invoices.sshHost !== '' &&
+    config.invoices.sshUser !== '' &&
     config.invoices.remotePath !== ''
   );
 }
