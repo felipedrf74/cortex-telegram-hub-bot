@@ -54,12 +54,28 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
   if (domain === 'triathlon' && userId) {
     const coachState = getLastCoachState(userId);
     if (coachState && coachState.recommendations.length > 0) {
-      parts.push(`\n[LAST COACH BRIEFING — ${new Date(coachState.timestamp).toISOString()}]`);
-      parts.push('The athlete received these coach recommendations. They can ask to apply them via calendar tools:');
+      parts.push(`\n[COACH RECOMMENDATIONS — ${new Date(coachState.timestamp).toISOString()}]`);
+      parts.push('CRITICAL: These are recommendations for EXISTING calendar events. When the athlete asks to apply them:');
+      parts.push('- NEVER use create_calendar_event — the events ALREADY EXIST on the calendar');
+      parts.push('- For KEEP/MODIFY/SWAP: use update_calendar_event with the exact event_id and calendar_source below');
+      parts.push('- For REST/cancel: use delete_calendar_event with the exact event_id and calendar_source below');
+      parts.push('- Always include calendar_source in your tool call\n');
       for (const rec of coachState.recommendations) {
-        parts.push(`- ${rec.action}: "${rec.originalTitle}" (eventId: ${rec.eventId}, source: ${rec.source})${rec.newTitle ? ` → "${rec.newTitle}"` : ''}${rec.newStart ? ` time: ${rec.newStart}–${rec.newEnd}` : ''} | ${rec.summary}`);
+        const details = [
+          `action: ${rec.action}`,
+          `event_id: "${rec.eventId}"`,
+          `calendar_source: "${rec.source}"`,
+          `current_title: "${rec.originalTitle}"`,
+        ];
+        if (rec.newTitle && rec.action !== 'KEEP') details.push(`new_title: "${rec.newTitle}"`);
+        if (rec.newStart) details.push(`new_start: "${rec.newStart}"`);
+        if (rec.newEnd) details.push(`new_end: "${rec.newEnd}"`);
+        details.push(`summary: ${rec.summary}`);
+        parts.push(`  ${details.join(' | ')}`);
       }
-      parts.push('When the athlete asks to apply a recommendation, use the update_calendar_event tool with the eventId above. For REST actions, update the title to the cancelled version.');
+      parts.push('\nCorrect tool usage examples:');
+      parts.push('- MODIFY/SWAP → update_calendar_event(event_id="...", calendar_source="outlook", new_title="...", new_start="...", new_end="...")');
+      parts.push('- REST/cancel → delete_calendar_event(event_id="...", calendar_source="outlook")');
     }
   }
 
