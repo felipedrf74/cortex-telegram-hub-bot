@@ -417,8 +417,9 @@ export async function collectMonthlyInvoices(
 
 /** Format collection results as a Portuguese Telegram notification. */
 export function formatCollectionNotification(result: MonthlyCollectionResult): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const lines: string[] = [
-    `📊 *Recolha de Faturas — ${result.monthLabel}*`,
+    `📊 <b>Recolha de Faturas — ${esc(result.monthLabel)}</b>`,
     '',
   ];
 
@@ -429,27 +430,27 @@ export function formatCollectionNotification(result: MonthlyCollectionResult): s
 
   for (const v of result.vendors) {
     if (v.filed === 0 && v.duplicates === 0 && v.errors === 0) {
-      lines.push(`📭 *${v.vendor}*: Sem faturas encontradas`);
+      lines.push(`📭 <b>${esc(v.vendor)}</b>: Sem faturas encontradas`);
     } else {
       const parts: string[] = [];
       if (v.filed > 0) parts.push(`✅ ${v.filed} arquivada(s)`);
       if (v.duplicates > 0) parts.push(`⏭ ${v.duplicates} duplicada(s)`);
       if (v.errors > 0) parts.push(`⚠️ ${v.errors} erro(s)`);
-      lines.push(`*${v.vendor}*: ${parts.join(' · ')}`);
+      lines.push(`<b>${esc(v.vendor)}</b>: ${parts.join(' · ')}`);
 
       // Show filed details (truncate if too many)
       const filedDetails = v.details.filter((d) => d.startsWith('✅'));
       for (const detail of filedDetails.slice(0, 3)) {
-        lines.push(`  ${detail}`);
+        lines.push(`  ${esc(detail)}`);
       }
       if (filedDetails.length > 3) {
-        lines.push(`  _...e mais ${filedDetails.length - 3}_`);
+        lines.push(`  <i>...e mais ${filedDetails.length - 3}</i>`);
       }
     }
   }
 
   lines.push('');
-  lines.push(`📈 *Total*: ${result.totalFiled} arquivada(s) · ${result.totalDuplicates} duplicada(s) · ${result.totalErrors} erro(s)`);
+  lines.push(`📈 <b>Total</b>: ${result.totalFiled} arquivada(s) · ${result.totalDuplicates} duplicada(s) · ${result.totalErrors} erro(s)`);
   lines.push(`⏱ ${Math.round(result.durationMs / 1000)}s`);
 
   return lines.join('\n');

@@ -27,6 +27,14 @@ export function addToConversation(domain: DomainName, role: 'user' | 'assistant'
   db.prepare(`
     INSERT INTO conversations (domain, role, content) VALUES (?, ?, ?)
   `).run(domain, role, content);
+
+  // Prune old rows beyond 2× the read limit to keep the table bounded
+  const maxKeep = (HISTORY_LIMITS[domain] ?? 8) * 2;
+  db.prepare(`
+    DELETE FROM conversations WHERE domain = ? AND id NOT IN (
+      SELECT id FROM conversations WHERE domain = ? ORDER BY created_at DESC LIMIT ?
+    )
+  `).run(domain, domain, maxKeep);
 }
 
 export function clearConversation(domain: DomainName): void {

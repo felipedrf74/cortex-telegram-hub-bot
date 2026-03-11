@@ -88,3 +88,8 @@ export const config = {
     maxMessagesPerMinute: 30,
   },
 } as const;
+
+// Fail-fast: empty allowedUserIds would silently reject all messages
+if (config.telegram.allowedUserIds.length === 0) {
+  throw new Error('TELEGRAM_ALLOWED_USER_IDS parsed to empty list — check env var format (comma-separated numeric IDs)');
+}

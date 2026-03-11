@@ -2,9 +2,11 @@ import { DomainName } from '../domains/types';
 import { patternMatch, keywordMatch, classifyWithClaude } from './classifier';
 import { logger } from '../utils/logger';
 
+export { keywordMatch };
+
 export interface RouteResult {
   domain: DomainName;
-  method: 'pattern' | 'classifier';
+  method: 'pattern' | 'keyword' | 'classifier';
   confidence: number;
   strippedMessage: string;
 }
@@ -41,7 +43,7 @@ export async function routeMessage(message: string): Promise<RouteResult> {
     logger.debug({ domain: kwDomain, method: 'keyword' }, 'Routed by keyword');
     return {
       domain: kwDomain,
-      method: 'pattern',
+      method: 'keyword',
       confidence: 0.9,
       strippedMessage: message,
     };

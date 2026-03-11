@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config';
 import { logger } from './utils/logger';
-import { routeMessage, isSystemCommand } from './router';
+import { routeMessage, isSystemCommand, keywordMatch } from './router';
 import { DomainName } from './domains/types';
 import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
@@ -50,10 +50,15 @@ function isRateLimited(userId: number): boolean {
 
   let timestamps = rateLimitMap.get(userId) || [];
   timestamps = timestamps.filter((t) => ts - t < window);
+
+  if (timestamps.length >= max) {
+    rateLimitMap.set(userId, timestamps); // update pruned list, but don't record blocked msg
+    return true;
+  }
+
   timestamps.push(ts);
   rateLimitMap.set(userId, timestamps);
-
-  return timestamps.length > max;
+  return false;
 }
 
 // ─── Domain Handler Map ──────────────────────────────────────────────
@@ -231,6 +236,7 @@ export function createBot(): Bot {
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!userId || !config.telegram.allowedUserIds.includes(userId)) {
+      logger.warn({ userId, username: ctx.from?.username }, 'Unauthorized access attempt');
       return;
     }
     await next();
@@ -1106,9 +1112,9 @@ export function createBot(): Bot {
 
         for (const chunk of splitMessage(notification)) {
           try {
-            await ctx.reply(chunk, { parse_mode: 'Markdown' });
+            await ctx.reply(chunk, { parse_mode: 'HTML' });
           } catch (err) {
-            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/[*_`]/g, ''));
+            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]+>/g, ''));
             else throw err;
           }
         }
@@ -1924,7 +1930,6 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
 
     // ── Branch 1: Caption-based non-secretary domain routing (unchanged) ──
     if (caption) {
-      const { keywordMatch } = require('./router/classifier');
       const domainFromCaption = keywordMatch(caption) as DomainName | null;
       const activeDomain = domainFromCaption || (userId ? lastActiveDomain.get(userId) : null);
 
