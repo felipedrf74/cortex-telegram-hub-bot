@@ -527,8 +527,12 @@ export async function getCompletedTasksInRange(
     }
 
     const client = getGraphClient();
+    // Strip timezone offset — Graph's completedDateTime/dateTime is a bare local datetime
+    const stripOffset = (iso: string) => iso.replace(/[+-]\d{2}:\d{2}$/, '').replace(/Z$/, '');
+    const startBare = stripOffset(startISO);
+    const endBare = stripOffset(endISO);
     // OData filter: completed tasks with completedDateTime in range
-    const filter = `status eq 'completed' and completedDateTime/dateTime ge '${startISO}' and completedDateTime/dateTime le '${endISO}'`;
+    const filter = `status eq 'completed' and completedDateTime/dateTime ge '${startBare}' and completedDateTime/dateTime le '${endBare}'`;
 
     const results = await Promise.all(
       listsResult.data.map(async (list) => {

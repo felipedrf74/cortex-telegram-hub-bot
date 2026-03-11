@@ -116,7 +116,7 @@ export function formatDailyBriefing(data: DailyBriefingData): string {
   }
 
   // ── Training ──
-  if (data.training) msg += `🏋️ ${data.training}\n`;
+  if (data.training) msg += `🏋️ ${escapeHtml(data.training)}\n`;
 
   // ── Tasks summary (only today-relevant: due today + overdue + high priority) ──
   const totalOverdue = data.overdueTasks.length + (data.overdueExtra || 0);

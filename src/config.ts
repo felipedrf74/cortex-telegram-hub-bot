@@ -47,7 +47,7 @@ export const config = {
   todo: {
     defaultList: process.env.TODO_DEFAULT_LIST || 'Tasks',
     digestEnabled: (process.env.TODO_DIGEST_ENABLED || 'true') === 'true',
-    digestTime: process.env.TODO_DIGEST_TIME || '08:00',
+    digestTime: process.env.TODO_DIGEST_TIME || '06:00',
   },
   // ── Invoice/Receipt Filing (via SSH/SCP to Mac → iCloud Drive) ─────
   invoices: {

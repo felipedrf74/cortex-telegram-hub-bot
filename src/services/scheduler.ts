@@ -98,7 +98,7 @@ export function startScheduler(bot: Bot): void {
 
   // Daily briefing at configurable time (default: 08:00 Lisbon time)
   const [digestHour, digestMinute] = config.todo.digestTime.split(':').map(Number);
-  const dailyCron = `${digestMinute || 0} ${digestHour || 8} * * *`;
+  const dailyCron = `${digestMinute ?? 0} ${digestHour ?? 8} * * *`;
 
   cron.schedule(dailyCron, async () => {
     if (!config.todo.digestEnabled) return;
@@ -197,7 +197,7 @@ export function startScheduler(bot: Bot): void {
       } else {
         msg += `Ideas generated but couldn't parse titles — check the file.\n`;
       }
-      msg += `\n📁 <code>${result.filePath}</code>`;
+      msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
       msg += `\n🔍 ${result.searchCount} web searches used`;
 
       for (const userId of config.telegram.allowedUserIds) {
@@ -231,7 +231,7 @@ export function startScheduler(bot: Bot): void {
 
       for (const userId of config.telegram.allowedUserIds) {
         try {
-          await bot.api.sendMessage(userId, notification, { parse_mode: 'Markdown' });
+          await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send invoice collection notification');
         }
@@ -368,7 +368,7 @@ export function startScheduler(bot: Bot): void {
   // Garmin Daily Coach briefing — configurable time (default: 21:00 Lisbon)
   if (config.garmin.coachEnabled && isGarminConfigured()) {
     const [coachHour, coachMinute] = config.garmin.coachTime.split(':').map(Number);
-    const coachCron = `${coachMinute || 0} ${coachHour || 21} * * *`;
+    const coachCron = `${coachMinute ?? 0} ${coachHour ?? 21} * * *`;
 
     cron.schedule(coachCron, async () => {
       try {
@@ -522,10 +522,13 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
   }
 
   const msg = formatDailyBriefing(data);
+  const chunks = splitMessage(msg);
 
   for (const userId of config.telegram.allowedUserIds) {
     try {
-      await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+      for (const chunk of chunks) {
+        await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+      }
     } catch (err) {
       logger.error({ err, userId }, 'Failed to send daily briefing');
     }
