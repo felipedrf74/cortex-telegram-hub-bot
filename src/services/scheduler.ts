@@ -5,7 +5,7 @@ import { logger } from '../utils/logger';
 import { getDueReminders, markReminderFired, getRemindersForToday } from '../state/reminders';
 import * as msTodo from './microsoft-todo';
 import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
-import { isOutlookMailConfigured, getUnreadCount } from './outlook-mail';
+import { isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
 import { formatDailyBriefing, DailyBriefingData, escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 import { runContentDiscovery } from './content-discovery';
@@ -19,6 +19,10 @@ import { isGarminConfigured } from './garmin';
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
 let sharedListSeeded = false; // first run seeds without notifying
+
+// Track automated notifications for the morning briefing (cleared daily at midnight)
+const todayNotifications: string[] = [];
+export function getTodayNotifications(): string[] { return todayNotifications; }
 
 export function startScheduler(bot: Bot): void {
   // Check reminders every minute
@@ -178,10 +182,11 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
-  // Clear self-created task cache daily at midnight
+  // Clear self-created task cache and daily notifications at midnight
   cron.schedule('0 0 * * *', () => {
     msTodo.clearSelfCreatedTasks();
-    logger.info('Cleared self-created task cache');
+    todayNotifications.length = 0;
+    logger.info('Cleared self-created task cache and daily notifications');
   }, { timezone: config.app.timezone });
 
   // Daily content discovery at 16:43 (runs ~2min, delivers by 16:45)
@@ -317,6 +322,54 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Bi-weekly fossa séptica email — every Monday at 07:30, sends on even weeks from March 23 2026
+  const fossaTo = process.env.FOSSA_EMAIL_TO || 'smas.fossas@mun-montijo.pt';
+  if (isOutlookMailConfigured()) {
+    cron.schedule('30 7 * * 1', async () => {
+      // Check if this Monday is a "send week" (bi-weekly from reference date March 23, 2026)
+      const today = now();
+      const refDate = today.set({ year: 2026, month: 3, day: 23, hour: 0, minute: 0, second: 0, millisecond: 0 });
+      const daysDiff = Math.round(today.diff(refDate, 'days').days);
+      const weeksDiff = Math.floor(daysDiff / 7);
+      if (weeksDiff % 2 !== 0) {
+        logger.info({ weeksDiff }, 'Fossa email: skipping — not a send week');
+        return;
+      }
+
+      try {
+        await sendEmail({
+          to: fossaTo,
+          subject: 'Limpeza Fossa Septica',
+          body: `Exmos. Senhores,\nVenho por este meio solicitar a limpeza da fossa séptica do seguinte imóvel:\n\nMorada: Rua José Quendera Miranda L4, 2870-684 Alto-Estanqueiro/Jardia\nNome: Felipe Dominguez Rodriguez Ferreira\nNúmero de Cliente: 3895417\nTelefone: 912 874 680\n\nAgradeço, por favor, que me informem sobre a disponibilidade para a realização do serviço.\n\nCom os melhores cumprimentos,\nFelipe Dominguez`,
+        });
+
+        todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);
+        logger.info({ to: fossaTo }, 'Fossa email sent successfully');
+
+        for (const userId of config.telegram.allowedUserIds) {
+          try {
+            await bot.api.sendMessage(userId,
+              `📧 <b>Email automático enviado</b>\n\n<b>Para:</b> ${fossaTo}\n<b>Assunto:</b> Limpeza Fossa Septica\n\n<i>Próximo envio em 2 semanas.</i>`,
+              { parse_mode: 'HTML' });
+          } catch (err) {
+            logger.error({ err, userId }, 'Failed to send fossa email notification');
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to send fossa email');
+        for (const userId of config.telegram.allowedUserIds) {
+          try {
+            await bot.api.sendMessage(userId,
+              '⚠️ <b>Falha no envio automático</b> — Email "Limpeza Fossa Séptica" não enviado. Verificar logs.',
+              { parse_mode: 'HTML' });
+          } catch (sendErr) {
+            logger.error({ err: sendErr, userId }, 'Failed to send fossa failure alert');
+          }
+        }
+      }
+    }, { timezone: config.app.timezone });
+  }
+
   // Proactive conflict detection — check tomorrow's calendar at 19:30 for overlapping events
   cron.schedule('30 19 * * *', async () => {
     if (!isAnyCalendarConfigured()) return;
@@ -412,7 +465,7 @@ export function startScheduler(bot: Bot): void {
     : 'Garmin coach (disabled)';
 
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30), ${coachStatus}`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30), fossa email (bi-weekly Mon 07:30), ${coachStatus}`
   );
 }
 
@@ -519,6 +572,11 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
     } catch (err) {
       logger.warn({ err }, 'Daily briefing: failed to fetch Outlook unread count');
     }
+  }
+
+  // Include automated notifications (e.g. fossa email sent earlier today)
+  if (todayNotifications.length > 0) {
+    data.automatedNotifications = [...todayNotifications];
   }
 
   const msg = formatDailyBriefing(data);

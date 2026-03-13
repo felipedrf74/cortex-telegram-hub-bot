@@ -100,6 +100,7 @@ export interface DailyBriefingData {
   reminders: { message: string; time: string }[];
   unreadEmails: number;
   yesterdayCompleted: number;
+  automatedNotifications?: string[]; // e.g. fossa email, other scheduled emails
 }
 
 export function formatDailyBriefing(data: DailyBriefingData): string {
@@ -174,6 +175,14 @@ export function formatDailyBriefing(data: DailyBriefingData): string {
     msg += `\n📧 ⚠️ Could not check emails\n`;
   } else if (data.unreadEmails > 0) {
     msg += `\n📧 ${data.unreadEmails} unread emails\n`;
+  }
+
+  // ── Automated notifications (fossa email, etc.) ──
+  if (data.automatedNotifications && data.automatedNotifications.length > 0) {
+    msg += `\n🤖 <b>Automações de hoje</b>\n`;
+    for (const n of data.automatedNotifications) {
+      msg += `  ${escapeHtml(n)}\n`;
+    }
   }
 
   // ── Quick actions ──
