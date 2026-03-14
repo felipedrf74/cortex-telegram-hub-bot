@@ -4,6 +4,47 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.2.0] — 2026-03-14
+
+### Garmin Session Keep-Alive & Resilience
+
+Prevents Garmin API sessions from dying silently by proactively refreshing OAuth2 tokens and adding multi-layer recovery to all API calls.
+
+#### Proactive Token Refresh (`src/services/garmin.ts`)
+- **`keepAlive()` export** — Proactively refreshes OAuth2 using the OAuth1 token, validates with a lightweight API call, falls back to full re-login if refresh fails
+- **`refreshOAuth2()`** — Directly calls `garmin-connect`'s `refreshOauth2Token()` on the underlying `HttpClient`, bypassing the library's 401-only interceptor
+- **`attemptReLogin()`** — Credentials-based re-login as last resort when token refresh is exhausted
+
+#### 3-Step Error Recovery (`src/services/garmin.ts`)
+- **`safeGet()` rewritten** — On 401/403 errors, now attempts three recovery steps in order:
+  1. OAuth2 token refresh (fixes 403 errors the library's interceptor misses — it only handles 401)
+  2. Token reload from disk (handles concurrent refresh by other calls)
+  3. Full re-login with credentials (last resort)
+- **Root cause**: `garmin-connect` library's axios interceptor only triggers `refreshOauth2Token()` on HTTP 401, but Garmin frequently returns 403 Forbidden for expired tokens — leaving the refresh mechanism dead
+
+#### Scheduled Keep-Alive (`src/services/scheduler.ts`)
+- **Every 30 minutes cron** — Calls `garminKeepAlive()` to refresh tokens before they expire, with error logging if all attempts fail
+- Logged in scheduler startup summary
+
+#### Bot Startup Retry Logic (`src/index.ts`)
+- **409 Conflict handling** — Retries `bot.start()` up to 5 times with 40s delay when Telegram returns 409 (previous polling instance still active after pm2 restart)
+- Prevents crash loops during deployments
+
+#### Coach Report HTML Fix (`src/services/garmin-coach.ts`)
+- **Stray `<` escaping** — Regex escapes `<` characters that aren't valid Telegram HTML tags (e.g., `<5h58m`, `<100 bpm`) to `&lt;`, preventing parse failures
+
+#### Manual Report Trigger (`src/trigger-reports.ts`)
+- **New script** — `npx tsx src/trigger-reports.ts [content] [coach] [evening]` to manually fire any report on demand
+- Useful for recovering missed scheduled reports
+
+#### Modified Files
+- `src/services/garmin.ts`, `src/services/scheduler.ts`, `src/services/garmin-coach.ts`, `src/index.ts`
+
+#### New Files
+- `src/trigger-reports.ts`
+
+---
+
 ## [3.0.0] — 2026-03-11
 
 ### Content Creation Engine (Phases 1–5)

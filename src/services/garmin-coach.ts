@@ -409,6 +409,9 @@ function sanitizeMarkdownForTelegram(text: string): string {
   s = s.replace(/^\|(.+)\|\s*$/gm, (_match, inner: string) => {
     return inner.split('|').map((c: string) => c.trim()).filter(Boolean).join('  •  ');
   });
+  // Escape stray '<' that aren't valid HTML tags (e.g. "<5h58m", "<100 bpm")
+  // Valid Telegram HTML tags: b, i, u, s, a, code, pre, em, strong, del, ins, span, tg-spoiler, tg-emoji, blockquote
+  s = s.replace(/<(?!\/?(?:b|i|u|s|a|code|pre|em|strong|del|ins|span|tg-spoiler|tg-emoji|blockquote)[\s>\/])/gi, '&lt;');
   // Collapse triple+ newlines to double
   s = s.replace(/\n{3,}/g, '\n\n');
   return s.trim();

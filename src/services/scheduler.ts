@@ -14,7 +14,7 @@ import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
-import { isGarminConfigured } from './garmin';
+import { isGarminConfigured, keepAlive as garminKeepAlive } from './garmin';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -418,6 +418,20 @@ export function startScheduler(bot: Bot): void {
     }
   }, { timezone: config.app.timezone });
 
+  // Garmin token keep-alive — refresh OAuth2 every 30 min to prevent expiry
+  if (isGarminConfigured()) {
+    cron.schedule('*/30 * * * *', async () => {
+      try {
+        const ok = await garminKeepAlive();
+        if (!ok) {
+          logger.error('Garmin keep-alive: all refresh attempts failed — session may be dead');
+        }
+      } catch (err) {
+        logger.error({ err }, 'Garmin keep-alive cron failed');
+      }
+    }, { timezone: config.app.timezone });
+  }
+
   // Garmin Daily Coach briefing — configurable time (default: 21:00 Lisbon)
   if (config.garmin.coachEnabled && isGarminConfigured()) {
     const [coachHour, coachMinute] = config.garmin.coachTime.split(':').map(Number);
@@ -460,12 +474,13 @@ export function startScheduler(bot: Bot): void {
     }, { timezone: config.app.timezone });
   }
 
+  const garminKeepAliveStatus = isGarminConfigured() ? 'Garmin keep-alive (every 30min)' : 'Garmin keep-alive (disabled)';
   const coachStatus = config.garmin.coachEnabled && isGarminConfigured()
     ? `Garmin coach (${config.garmin.coachTime})`
     : 'Garmin coach (disabled)';
 
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30), fossa email (bi-weekly Mon 07:30), ${coachStatus}`
+    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30), fossa email (bi-weekly Mon 07:30), ${garminKeepAliveStatus}, ${coachStatus}`
   );
 }
 
