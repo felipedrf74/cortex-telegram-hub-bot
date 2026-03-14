@@ -15,6 +15,7 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from './garmin';
+import { registerJob, wrapJob, recordGarminRefresh } from '../portal/telemetry';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -25,308 +26,241 @@ const todayNotifications: string[] = [];
 export function getTodayNotifications(): string[] { return todayNotifications; }
 
 export function startScheduler(bot: Bot): void {
-  // Check reminders every minute
-  cron.schedule('* * * * *', async () => {
-    try {
-      const dueReminders = getDueReminders();
-      for (const reminder of dueReminders) {
-        for (const userId of config.telegram.allowedUserIds) {
-          try {
-            let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
-            if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-            await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-          } catch (err) {
-            logger.error({ err, userId }, 'Failed to send reminder');
-          }
-        }
-        markReminderFired(reminder.id);
-      }
-    } catch (err) {
-      logger.error({ err }, 'Reminder check failed');
-    }
-  });
+  const tz = config.app.timezone;
+  const dailyCron = (() => {
+    const [h, m] = config.todo.digestTime.split(':').map(Number);
+    return `${m ?? 0} ${h ?? 8} * * *`;
+  })();
+  const coachCron = (() => {
+    const [h, m] = config.garmin.coachTime.split(':').map(Number);
+    return `${m ?? 0} ${h ?? 21} * * *`;
+  })();
 
-  // End-of-day task summary at 21:00 — due today recap + overdue
-  cron.schedule('0 21 * * *', async () => {
-    if (!msTodo.isOutlookTodoConfigured()) return;
+  // ── Register all jobs for portal tracking ──────────────────────────
+  registerJob('reminders',          'Reminders',             '* * * * *');
+  registerJob('end_of_day',         'End-of-Day Summary',    '0 21 * * *');
+  registerJob('daily_briefing',     'Morning Briefing',      dailyCron);
+  registerJob('weekly_review',      'Weekly Review',         '0 17 * * 5');
+  registerJob('shared_list',        'Shared List Check',     '*/5 * * * *');
+  registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *');
+  registerJob('content_discovery',  'Content Discovery',     '43 16 * * *');
+  registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *');
+  registerJob('amazon_collection',  'Amazon Collection',     '15 9 1 * *');
+  registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *');
+  registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1');
+  registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *');
+  registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *');
+  registerJob('garmin_coach',       'Garmin Coach',          coachCron);
 
-    try {
-      const pendingResult = await msTodo.getAllPendingTasks();
-      if (!pendingResult.success) return;
-
-      const tasks = pendingResult.data;
-      const nowDate = new Date();
-      const todayStart = new Date(startOfDay()).getTime();
-      const todayEnd = new Date(endOfDay()).getTime();
-
-      const dueToday = tasks.filter((t) => {
-        if (!t.dueDateTime) return false;
-        const due = new Date(t.dueDateTime).getTime();
-        return due >= todayStart && due <= todayEnd;
-      });
-
-      // Overdue = due BEFORE today (not just before "now"), to avoid overlap with dueToday
-      const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
-
-      if (dueToday.length === 0 && overdue.length === 0) return;
-
-      let msg = `🌙 <b>End-of-Day Task Summary</b>\n\n`;
-
-      if (dueToday.length > 0) {
-        msg += `📅 <b>Due today (${dueToday.length}):</b>\n`;
-        for (const t of dueToday) {
-          msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
-        }
-        msg += '\n';
-      }
-
-      if (overdue.length > 0) {
-        msg += `⚠️ <b>Overdue (${overdue.length}):</b>\n`;
-        for (const t of overdue) {
-          const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
-          msg += `• ${escapeHtml(t.title)} — ${daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
-        }
-      }
-
+  // ── Reminder checker (every minute) ────────────────────────────────
+  cron.schedule('* * * * *', wrapJob('reminders', async () => {
+    const dueReminders = getDueReminders();
+    for (const reminder of dueReminders) {
       for (const userId of config.telegram.allowedUserIds) {
         try {
-          await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+          let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
+          if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
+          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send end-of-day summary');
+          logger.error({ err, userId }, 'Failed to send reminder');
         }
       }
-    } catch (err) {
-      logger.error({ err }, 'End-of-day task summary failed');
+      markReminderFired(reminder.id);
     }
-  }, { timezone: config.app.timezone });
+  }));
 
-  // Daily briefing at configurable time (default: 08:00 Lisbon time)
-  const [digestHour, digestMinute] = config.todo.digestTime.split(':').map(Number);
-  const dailyCron = `${digestMinute ?? 0} ${digestHour ?? 8} * * *`;
-
-  cron.schedule(dailyCron, async () => {
-    if (!config.todo.digestEnabled) return;
-
-    try {
-      await sendDailyBriefing(bot);
-    } catch (err) {
-      logger.error({ err }, 'Daily briefing failed');
-    }
-  }, { timezone: config.app.timezone });
-
-  // Weekly review on Friday at 17:00
-  cron.schedule('0 17 * * 5', async () => {
-    try {
-      await sendWeeklyReview(bot);
-    } catch (err) {
-      logger.error({ err }, 'Weekly review failed');
-    }
-  }, { timezone: config.app.timezone });
-
-  // Shared list task notifications — every 5 min during day, every 15 min overnight (22:00-07:00)
-  // First run: seed known IDs (no notifications). Subsequent runs: notify on new tasks.
-  cron.schedule('*/5 * * * *', async () => {
+  // ── End-of-day task summary (21:00) ────────────────────────────────
+  cron.schedule('0 21 * * *', wrapJob('end_of_day', async () => {
     if (!msTodo.isOutlookTodoConfigured()) return;
 
-    // Reduce polling overnight: skip non-15-minute marks between 22:00-07:00
-    // Use Luxon now() which respects config.app.timezone (not system UTC)
+    const pendingResult = await msTodo.getAllPendingTasks();
+    if (!pendingResult.success) return;
+
+    const tasks = pendingResult.data;
+    const todayStart = new Date(startOfDay()).getTime();
+    const todayEnd = new Date(endOfDay()).getTime();
+
+    const dueToday = tasks.filter((t) => {
+      if (!t.dueDateTime) return false;
+      const due = new Date(t.dueDateTime).getTime();
+      return due >= todayStart && due <= todayEnd;
+    });
+
+    const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
+
+    if (dueToday.length === 0 && overdue.length === 0) return;
+
+    let msg = `🌙 <b>End-of-Day Task Summary</b>\n\n`;
+
+    if (dueToday.length > 0) {
+      msg += `📅 <b>Due today (${dueToday.length}):</b>\n`;
+      for (const t of dueToday) {
+        msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+      }
+      msg += '\n';
+    }
+
+    if (overdue.length > 0) {
+      msg += `⚠️ <b>Overdue (${overdue.length}):</b>\n`;
+      for (const t of overdue) {
+        const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+        msg += `• ${escapeHtml(t.title)} — ${daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
+      }
+    }
+
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send end-of-day summary');
+      }
+    }
+  }), { timezone: tz });
+
+  // ── Daily briefing (configurable time) ─────────────────────────────
+  cron.schedule(dailyCron, wrapJob('daily_briefing', async () => {
+    if (!config.todo.digestEnabled) return;
+    await sendDailyBriefing(bot);
+  }), { timezone: tz });
+
+  // ── Weekly review (Friday 17:00) ───────────────────────────────────
+  cron.schedule('0 17 * * 5', wrapJob('weekly_review', async () => {
+    await sendWeeklyReview(bot);
+  }), { timezone: tz });
+
+  // ── Shared list task notifications (every 5 min) ───────────────────
+  cron.schedule('*/5 * * * *', wrapJob('shared_list', async () => {
+    if (!msTodo.isOutlookTodoConfigured()) return;
+
     const { hour: currentHour, minute: currentMinute } = now();
     if ((currentHour >= 22 || currentHour < 7) && currentMinute % 15 !== 0) return;
 
-    try {
-      const result = await msTodo.getSharedListPendingTasks();
-      if (!result.success) return;
+    const result = await msTodo.getSharedListPendingTasks();
+    if (!result.success) return;
 
-      const currentIds = new Set(result.data.map((t) => t.id));
+    const currentIds = new Set(result.data.map((t) => t.id));
 
-      // First run after startup: learn existing tasks, don't notify
-      if (!sharedListSeeded) {
-        for (const id of currentIds) knownSharedTaskIds.add(id);
-        sharedListSeeded = true;
-        logger.info({ seededCount: currentIds.size }, 'Shared list checker seeded');
-        return;
-      }
-
-      // Find genuinely new tasks (not known, not self-created)
-      const newTasks = result.data.filter((t) => {
-        if (knownSharedTaskIds.has(t.id)) return false;
-        if (msTodo.isSelfCreatedTask(t.id)) return false;
-        return true;
-      });
-
-      // Add all current IDs to known set (including self-created)
+    if (!sharedListSeeded) {
       for (const id of currentIds) knownSharedTaskIds.add(id);
-
-      // Also remove IDs no longer present (completed/deleted) to keep Set bounded
-      for (const id of knownSharedTaskIds) {
-        if (!currentIds.has(id)) knownSharedTaskIds.delete(id);
-      }
-
-      if (newTasks.length === 0) return;
-
-      let msg = `👥 <b>New tasks from others</b>\n\n`;
-      for (const t of newTasks.slice(0, 10)) {
-        msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
-      }
-      if (newTasks.length > 10) msg += `\n... and ${newTasks.length - 10} more`;
-
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send shared list notification');
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Shared list task check failed');
+      sharedListSeeded = true;
+      logger.info({ seededCount: currentIds.size }, 'Shared list checker seeded');
+      return;
     }
-  }, { timezone: config.app.timezone });
 
-  // Clear self-created task cache and daily notifications at midnight
-  cron.schedule('0 0 * * *', () => {
+    const newTasks = result.data.filter((t) => {
+      if (knownSharedTaskIds.has(t.id)) return false;
+      if (msTodo.isSelfCreatedTask(t.id)) return false;
+      return true;
+    });
+
+    for (const id of currentIds) knownSharedTaskIds.add(id);
+    for (const id of knownSharedTaskIds) {
+      if (!currentIds.has(id)) knownSharedTaskIds.delete(id);
+    }
+
+    if (newTasks.length === 0) return;
+
+    let msg = `👥 <b>New tasks from others</b>\n\n`;
+    for (const t of newTasks.slice(0, 10)) {
+      msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    }
+    if (newTasks.length > 10) msg += `\n... and ${newTasks.length - 10} more`;
+
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send shared list notification');
+      }
+    }
+  }), { timezone: tz });
+
+  // ── Midnight cleanup ───────────────────────────────────────────────
+  cron.schedule('0 0 * * *', wrapJob('midnight_cleanup', async () => {
     msTodo.clearSelfCreatedTasks();
     todayNotifications.length = 0;
     logger.info('Cleared self-created task cache and daily notifications');
-  }, { timezone: config.app.timezone });
+  }), { timezone: tz });
 
-  // Daily content discovery at 16:43 (runs ~2min, delivers by 16:45)
-  cron.schedule('43 16 * * *', async () => {
-    try {
-      const result = await runContentDiscovery();
+  // ── Content discovery (16:43) ──────────────────────────────────────
+  cron.schedule('43 16 * * *', wrapJob('content_discovery', async () => {
+    const result = await runContentDiscovery();
 
-      let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
-      if (result.ideas.length > 0) {
-        for (let i = 0; i < result.ideas.length; i++) {
-          msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
-        }
-      } else {
-        msg += `Ideas generated but couldn't parse titles — check the file.\n`;
+    let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
+    if (result.ideas.length > 0) {
+      for (let i = 0; i < result.ideas.length; i++) {
+        msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
       }
-      msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
-      msg += `\n🔍 ${result.searchCount} web searches used`;
+    } else {
+      msg += `Ideas generated but couldn't parse titles — check the file.\n`;
+    }
+    msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
+    msg += `\n🔍 ${result.searchCount} web searches used`;
 
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send content discovery notification');
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Daily content discovery failed');
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, '⚠️ Daily content discovery failed. Check logs.', { parse_mode: 'HTML' });
-        } catch (sendErr) {
-          logger.error({ err: sendErr, userId }, 'Failed to send content discovery failure alert');
-        }
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send content discovery notification');
       }
     }
-  }, { timezone: config.app.timezone });
+  }), { timezone: tz });
 
-  // Monthly invoice collection — 1st of each month at 09:00
-  // Collects previous month's email invoices from configured vendors
-  cron.schedule('0 9 1 * *', async () => {
+  // ── Monthly invoice collection (1st at 09:00) ─────────────────────
+  cron.schedule('0 9 1 * *', wrapJob('invoice_collection', async () => {
     if (!config.invoices.monthlyCollectionEnabled || !isInvoiceFilingConfigured()) return;
 
-    try {
-      const prev = now().minus({ months: 1 });
-      const result = await collectMonthlyInvoices(prev.year, prev.month);
-      const notification = formatCollectionNotification(result);
+    const prev = now().minus({ months: 1 });
+    const result = await collectMonthlyInvoices(prev.year, prev.month);
+    const notification = formatCollectionNotification(result);
 
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send invoice collection notification');
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Monthly invoice collection failed');
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, '⚠️ Recolha mensal de faturas falhou. Verificar logs.');
-        } catch (sendErr) {
-          logger.error({ err: sendErr, userId }, 'Failed to send invoice collection failure alert');
-        }
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send invoice collection notification');
       }
     }
-  }, { timezone: config.app.timezone });
+  }), { timezone: tz });
 
-  // Monthly Amazon.es invoice collection — 1st of each month at 09:15
-  // Runs 15 min after email vendor collection. No interactive 2FA in cron mode.
-  cron.schedule('15 9 1 * *', async () => {
+  // ── Amazon collection (1st at 09:15) ──────────────────────────────
+  cron.schedule('15 9 1 * *', wrapJob('amazon_collection', async () => {
     if (!config.invoices.amazonEnabled || !isAmazonConfigured() || !isInvoiceFilingConfigured()) return;
 
-    try {
-      const prev = now().minus({ months: 1 });
+    const prev = now().minus({ months: 1 });
+    const result = await collectAmazonInvoices(prev.year, prev.month);
+    const notification = formatAmazonNotification(result);
 
-      // Cron mode: no Telegram callbacks for 2FA
-      const result = await collectAmazonInvoices(prev.year, prev.month);
-
-      let notification: string;
-      if (result.twoFactorRequired && result.totalFiled === 0) {
-        // Session expired + couldn't complete 2FA automatically
-        notification = formatAmazonNotification(result);
-      } else {
-        notification = formatAmazonNotification(result);
-      }
-
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send Amazon collection notification');
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Monthly Amazon invoice collection failed');
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, '⚠️ Recolha mensal Amazon falhou. Verificar logs.');
-        } catch (sendErr) {
-          logger.error({ err: sendErr, userId }, 'Failed to send Amazon collection failure alert');
-        }
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send Amazon collection notification');
       }
     }
-  }, { timezone: config.app.timezone });
+  }), { timezone: tz });
 
-  // Monthly Uber invoice collection — 1st of each month at 09:30
-  // Runs 15 min after Amazon collection. No interactive 2FA in cron mode.
-  cron.schedule('30 9 1 * *', async () => {
+  // ── Uber collection (1st at 09:30) ────────────────────────────────
+  cron.schedule('30 9 1 * *', wrapJob('uber_collection', async () => {
     if (!config.invoices.uberEnabled || !isUberConfigured() || !isInvoiceFilingConfigured()) return;
 
-    try {
-      const prev = now().minus({ months: 1 });
+    const prev = now().minus({ months: 1 });
+    const result = await collectUberInvoices(prev.year, prev.month);
+    const notification = formatUberNotification(result);
 
-      // Cron mode: no Telegram callbacks for 2FA
-      const result = await collectUberInvoices(prev.year, prev.month);
-      const notification = formatUberNotification(result);
-
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send Uber collection notification');
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Monthly Uber invoice collection failed');
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          await bot.api.sendMessage(userId, '⚠️ Recolha mensal Uber falhou. Verificar logs.');
-        } catch (sendErr) {
-          logger.error({ err: sendErr, userId }, 'Failed to send Uber collection failure alert');
-        }
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send Uber collection notification');
       }
     }
-  }, { timezone: config.app.timezone });
+  }), { timezone: tz });
 
-  // Bi-weekly fossa séptica email — every Monday at 07:30, sends on even weeks from March 23 2026
+  // ── Bi-weekly fossa email (Monday 07:30) ───────────────────────────
   const fossaTo = process.env.FOSSA_EMAIL_TO || 'smas.fossas@mun-montijo.pt';
   if (isOutlookMailConfigured()) {
-    cron.schedule('30 7 * * 1', async () => {
-      // Check if this Monday is a "send week" (bi-weekly from reference date March 23, 2026)
+    cron.schedule('30 7 * * 1', wrapJob('fossa_email', async () => {
       const today = now();
       const refDate = today.set({ year: 2026, month: 3, day: 23, hour: 0, minute: 0, second: 0, millisecond: 0 });
       const daysDiff = Math.round(today.diff(refDate, 'days').days);
@@ -336,155 +270,117 @@ export function startScheduler(bot: Bot): void {
         return;
       }
 
-      try {
-        await sendEmail({
-          to: fossaTo,
-          subject: 'Limpeza Fossa Septica',
-          body: `Exmos. Senhores,\nVenho por este meio solicitar a limpeza da fossa séptica do seguinte imóvel:\n\nMorada: Rua José Quendera Miranda L4, 2870-684 Alto-Estanqueiro/Jardia\nNome: Felipe Dominguez Rodriguez Ferreira\nNúmero de Cliente: 3895417\nTelefone: 912 874 680\n\nAgradeço, por favor, que me informem sobre a disponibilidade para a realização do serviço.\n\nCom os melhores cumprimentos,\nFelipe Dominguez`,
-        });
+      await sendEmail({
+        to: fossaTo,
+        subject: 'Limpeza Fossa Septica',
+        body: `Exmos. Senhores,\nVenho por este meio solicitar a limpeza da fossa séptica do seguinte imóvel:\n\nMorada: Rua José Quendera Miranda L4, 2870-684 Alto-Estanqueiro/Jardia\nNome: Felipe Dominguez Rodriguez Ferreira\nNúmero de Cliente: 3895417\nTelefone: 912 874 680\n\nAgradeço, por favor, que me informem sobre a disponibilidade para a realização do serviço.\n\nCom os melhores cumprimentos,\nFelipe Dominguez`,
+      });
 
-        todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);
-        logger.info({ to: fossaTo }, 'Fossa email sent successfully');
-
-        for (const userId of config.telegram.allowedUserIds) {
-          try {
-            await bot.api.sendMessage(userId,
-              `📧 <b>Email automático enviado</b>\n\n<b>Para:</b> ${fossaTo}\n<b>Assunto:</b> Limpeza Fossa Septica\n\n<i>Próximo envio em 2 semanas.</i>`,
-              { parse_mode: 'HTML' });
-          } catch (err) {
-            logger.error({ err, userId }, 'Failed to send fossa email notification');
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, 'Failed to send fossa email');
-        for (const userId of config.telegram.allowedUserIds) {
-          try {
-            await bot.api.sendMessage(userId,
-              '⚠️ <b>Falha no envio automático</b> — Email "Limpeza Fossa Séptica" não enviado. Verificar logs.',
-              { parse_mode: 'HTML' });
-          } catch (sendErr) {
-            logger.error({ err: sendErr, userId }, 'Failed to send fossa failure alert');
-          }
-        }
-      }
-    }, { timezone: config.app.timezone });
-  }
-
-  // Proactive conflict detection — check tomorrow's calendar at 19:30 for overlapping events
-  cron.schedule('30 19 * * *', async () => {
-    if (!isAnyCalendarConfigured()) return;
-
-    try {
-      const tomorrow = now().plus({ days: 1 });
-      const events = await getEvents(
-        tomorrow.startOf('day').toISO()!,
-        tomorrow.endOf('day').toISO()!
-      );
-
-      if (events.length < 2) return;
-
-      // Sort by start time and check for overlaps
-      const sorted = [...events].sort((a, b) =>
-        new Date(a.start).getTime() - new Date(b.start).getTime()
-      );
-
-      const conflicts: { a: typeof sorted[0]; b: typeof sorted[0] }[] = [];
-      for (let i = 0; i < sorted.length - 1; i++) {
-        const endA = new Date(sorted[i].end).getTime();
-        const startB = new Date(sorted[i + 1].start).getTime();
-        if (endA > startB) {
-          conflicts.push({ a: sorted[i], b: sorted[i + 1] });
-        }
-      }
-
-      if (conflicts.length === 0) return;
-
-      let msg = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
-      for (const { a, b } of conflicts) {
-        msg += `🔴 <b>${escapeHtml(a.summary)}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
-        msg += `   overlaps with <b>${escapeHtml(b.summary)}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
-      }
-      msg += 'Consider rescheduling one of these events.';
+      todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);
+      logger.info({ to: fossaTo }, 'Fossa email sent successfully');
 
       for (const userId of config.telegram.allowedUserIds) {
         try {
-          await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+          await bot.api.sendMessage(userId,
+            `📧 <b>Email automático enviado</b>\n\n<b>Para:</b> ${fossaTo}\n<b>Assunto:</b> Limpeza Fossa Septica\n\n<i>Próximo envio em 2 semanas.</i>`,
+            { parse_mode: 'HTML' });
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send conflict alert');
+          logger.error({ err, userId }, 'Failed to send fossa email notification');
         }
       }
-    } catch (err) {
-      logger.error({ err }, 'Conflict detection failed');
+    }), { timezone: tz });
+  }
+
+  // ── Conflict detection (19:30) ─────────────────────────────────────
+  cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
+    if (!isAnyCalendarConfigured()) return;
+
+    const tomorrow = now().plus({ days: 1 });
+    const events = await getEvents(
+      tomorrow.startOf('day').toISO()!,
+      tomorrow.endOf('day').toISO()!
+    );
+
+    if (events.length < 2) return;
+
+    const sorted = [...events].sort((a, b) =>
+      new Date(a.start).getTime() - new Date(b.start).getTime()
+    );
+
+    const conflicts: { a: typeof sorted[0]; b: typeof sorted[0] }[] = [];
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const endA = new Date(sorted[i].end).getTime();
+      const startB = new Date(sorted[i + 1].start).getTime();
+      if (endA > startB) {
+        conflicts.push({ a: sorted[i], b: sorted[i + 1] });
+      }
     }
-  }, { timezone: config.app.timezone });
 
-  // Garmin token keep-alive — refresh OAuth2 every 30 min to prevent expiry
+    if (conflicts.length === 0) return;
+
+    let msg = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
+    for (const { a, b } of conflicts) {
+      msg += `🔴 <b>${escapeHtml(a.summary)}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
+      msg += `   overlaps with <b>${escapeHtml(b.summary)}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
+    }
+    msg += 'Consider rescheduling one of these events.';
+
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send conflict alert');
+      }
+    }
+  }), { timezone: tz });
+
+  // ── Garmin keep-alive (every 30 min) ───────────────────────────────
   if (isGarminConfigured()) {
-    cron.schedule('*/30 * * * *', async () => {
-      try {
-        const ok = await garminKeepAlive();
-        if (!ok) {
-          logger.error('Garmin keep-alive: all refresh attempts failed — session may be dead');
-        }
-      } catch (err) {
-        logger.error({ err }, 'Garmin keep-alive cron failed');
+    cron.schedule('*/30 * * * *', wrapJob('garmin_keepalive', async () => {
+      const ok = await garminKeepAlive();
+      recordGarminRefresh(ok);
+      if (!ok) {
+        throw new Error('All refresh attempts failed — session may be dead');
       }
-    }, { timezone: config.app.timezone });
+    }), { timezone: tz });
   }
 
-  // Garmin Daily Coach briefing — configurable time (default: 21:00 Lisbon)
+  // ── Garmin coach briefing (configurable time) ──────────────────────
   if (config.garmin.coachEnabled && isGarminConfigured()) {
-    const [coachHour, coachMinute] = config.garmin.coachTime.split(':').map(Number);
-    const coachCron = `${coachMinute ?? 0} ${coachHour ?? 21} * * *`;
+    cron.schedule(coachCron, wrapJob('garmin_coach', async () => {
+      logger.info('Daily coach briefing starting');
+      const result = await generateCoachBriefing();
 
-    cron.schedule(coachCron, async () => {
-      try {
-        logger.info('Daily coach briefing starting');
-        const result = await generateCoachBriefing();
+      if (result.errors.length > 0) {
+        logger.warn({ errors: result.errors }, 'Coach briefing completed with data gaps');
+      }
 
-        if (result.errors.length > 0) {
-          logger.warn({ errors: result.errors }, 'Coach briefing completed with data gaps');
-        }
-
-        const chunks = splitMessage(result.message);
-        for (const userId of config.telegram.allowedUserIds) {
-          try {
-            for (const chunk of chunks) {
-              await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
-            }
-          } catch (err) {
-            logger.error({ err, userId }, 'Failed to send coach briefing');
+      const chunks = splitMessage(result.message);
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          for (const chunk of chunks) {
+            await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
           }
-        }
-
-        logger.info(
-          { dataMs: result.dataCollectionMs, analysisMs: result.analysisMs, errors: result.errors.length },
-          'Daily coach briefing completed'
-        );
-      } catch (err) {
-        logger.error({ err }, 'Daily coach briefing failed');
-        for (const userId of config.telegram.allowedUserIds) {
-          try {
-            await bot.api.sendMessage(userId, '⚠️ <b>Coach briefing failed</b>\n\nCheck logs or try /coach manually.', { parse_mode: 'HTML' });
-          } catch (sendErr) {
-            logger.error({ err: sendErr, userId }, 'Failed to send coach failure alert');
-          }
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send coach briefing');
         }
       }
-    }, { timezone: config.app.timezone });
-  }
 
-  const garminKeepAliveStatus = isGarminConfigured() ? 'Garmin keep-alive (every 30min)' : 'Garmin keep-alive (disabled)';
-  const coachStatus = config.garmin.coachEnabled && isGarminConfigured()
-    ? `Garmin coach (${config.garmin.coachTime})`
-    : 'Garmin coach (disabled)';
+      logger.info(
+        { dataMs: result.dataCollectionMs, analysisMs: result.analysisMs, errors: result.errors.length },
+        'Daily coach briefing completed'
+      );
+    }), { timezone: tz });
+  }
 
   logger.info(
-    `Scheduler started: reminders (every min), daily briefing (${config.todo.digestTime}), end-of-day summary (21:00), weekly review (Fri 17:00), shared list check (every 5 min), content discovery (16:43), invoice collection (1st 09:00), Amazon collection (1st 09:15), Uber collection (1st 09:30), conflict detection (19:30), fossa email (bi-weekly Mon 07:30), ${garminKeepAliveStatus}, ${coachStatus}`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime})`
   );
 }
 
-async function sendDailyBriefing(bot: Bot): Promise<void> {
+// ── Exported for portal quick actions ─────────────────────────────────
+
+export async function sendDailyBriefing(bot: Bot): Promise<void> {
   const today = now();
   const data: DailyBriefingData = {
     date: today.toFormat('cccc, LLLL dd'),
@@ -497,7 +393,7 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
     yesterdayCompleted: 0,
   };
 
-  // Calendar events — full details
+  // Calendar events
   if (isAnyCalendarConfigured()) {
     try {
       const events = await getEvents(startOfDay(), endOfDay());
@@ -506,7 +402,6 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
         start: e.start,
         end: e.end,
       }));
-      // Check for training events
       const training = events.find((e) =>
         /gym|train|run|bike|cycling|workout|strength/i.test(e.summary)
       );
@@ -518,7 +413,7 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
     }
   }
 
-  // Microsoft To Do tasks — fetch ONCE, derive all views
+  // Microsoft To Do tasks
   if (msTodo.isOutlookTodoConfigured()) {
     try {
       const [pendingResult, yesterdayResult] = await Promise.all([
@@ -531,17 +426,13 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
 
       if (pendingResult.success) {
         const tasks = pendingResult.data;
-
-        const nowDate = new Date();
         const todayStart = new Date(startOfDay()).getTime();
         const todayEnd = new Date(endOfDay()).getTime();
 
-        // High priority
         data.highPriorityTasks = tasks
           .filter((t) => t.importance === 'high')
           .map((t) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
 
-        // Due today
         data.dueTodayTasks = tasks
           .filter((t) => {
             if (!t.dueDateTime) return false;
@@ -550,7 +441,6 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
           })
           .map((t) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
 
-        // Overdue = due BEFORE today (not just before "now"), to avoid overlap with dueTodayTasks
         const MAX_OVERDUE_DISPLAY = 20;
         const allOverdue = tasks
           .filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart)
@@ -573,14 +463,12 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
     }
   }
 
-  // Reminders — with details
   const reminders = getRemindersForToday();
   data.reminders = reminders.map((r) => ({
     message: r.message,
     time: formatTime(r.remind_at),
   }));
 
-  // Unread emails
   if (isOutlookMailConfigured()) {
     try {
       data.unreadEmails = await getUnreadCount();
@@ -589,7 +477,6 @@ async function sendDailyBriefing(bot: Bot): Promise<void> {
     }
   }
 
-  // Include automated notifications (e.g. fossa email sent earlier today)
   if (todayNotifications.length > 0) {
     data.automatedNotifications = [...todayNotifications];
   }
@@ -612,7 +499,6 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
   let msg = `<b>📊 Week in Review</b>\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
-  // Fetch all data in parallel
   const [todoData, calendarEvents] = await Promise.all([
     msTodo.isOutlookTodoConfigured()
       ? Promise.all([

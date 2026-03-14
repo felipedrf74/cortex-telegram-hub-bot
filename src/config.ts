@@ -89,6 +89,13 @@ export const config = {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
     port: parseInt(process.env.CONTENT_ENGINE_PORT || '8100', 10),
   },
+  // ── Status Portal ──────────────────────────────────────────────────
+  portal: {
+    enabled: (process.env.PORTAL_ENABLED || 'true') === 'true',
+    port: parseInt(process.env.PORTAL_PORT || '8200', 10),
+    bind: process.env.PORTAL_BIND || '0.0.0.0',
+    token: process.env.PORTAL_TOKEN || '',
+  },
   rateLimit: {
     maxMessagesPerMinute: 30,
   },

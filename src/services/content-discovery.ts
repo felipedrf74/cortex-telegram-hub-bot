@@ -4,6 +4,7 @@ import path from 'path';
 import { config } from '../config';
 import { now } from '../utils/date-parser';
 import { logger } from '../utils/logger';
+import { trackedCreate } from '../portal/anthropic-hook';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -98,7 +99,7 @@ Remember: my audience is young Brazilian men (18-25) who want growth and hate la
     { type: 'text', text: DISCOVERY_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
   ];
 
-  const response = await client.messages.create({
+  const response = await trackedCreate(client, {
     model: config.anthropic.classifierModel, // Haiku — structured templated output doesn't need Sonnet
     max_tokens: 4096,
     system: cachedSystem,
@@ -110,13 +111,13 @@ Remember: my audience is young Brazilian men (18-25) who want growth and hate la
         max_uses: 5,
       } as any,
     ],
-  });
+  } as any, 'content_discovery');
 
   // Handle pause_turn — Claude may need to continue after a long search session
   let finalResponse = response;
   if (response.stop_reason === 'pause_turn') {
     logger.info('Content discovery paused, continuing...');
-    finalResponse = await client.messages.create({
+    finalResponse = await trackedCreate(client, {
       model: config.anthropic.classifierModel,
       max_tokens: 4096,
       system: cachedSystem,
@@ -131,7 +132,7 @@ Remember: my audience is young Brazilian men (18-25) who want growth and hate la
           max_uses: 5,
         } as any,
       ],
-    });
+    } as any, 'content_discovery_continuation');
   }
 
   // Extract text content (skip search result blocks)

@@ -48,6 +48,7 @@ import {
   maybeSaveToFile,
 } from './services/content-engine';
 import { isGarminConfigured } from './services/garmin';
+import { recordMessageProcessed } from './portal/telemetry';
 import fs from 'fs';
 import path from 'path';
 
@@ -298,6 +299,12 @@ export function createBot(): Bot {
       await ctx.reply('⚠️ Slow down! Max 30 messages per minute.');
       return;
     }
+    await next();
+  });
+
+  // ── Telemetry Middleware ──
+  bot.use(async (ctx, next) => {
+    recordMessageProcessed();
     await next();
   });
 

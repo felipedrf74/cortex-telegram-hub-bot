@@ -7,6 +7,7 @@ import path from 'path';
 import sharp from 'sharp';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { trackedCreate } from '../portal/anthropic-hook';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -73,7 +74,7 @@ export async function analyzeInvoiceImage(
 ): Promise<InvoiceAnalysis> {
   const captionCtx = caption ? `\nCaption from user: "${caption}"` : '';
 
-  const response = await client.messages.create({
+  const response = await trackedCreate(client, {
     model: config.anthropic.classifierModel,
     max_tokens: 400,
     system: `You analyze images to determine if they are invoices, receipts, or payment documents.
@@ -100,7 +101,7 @@ For amounts: look for "Total:", "Valor:", "Total a pagar:", "Amount:".`,
         { type: 'text', text: `Analyze this image.${captionCtx}` },
       ],
     }],
-  });
+  }, 'invoice_filing');
 
   let text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')

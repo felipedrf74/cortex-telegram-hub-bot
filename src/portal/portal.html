@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cortex Status Portal</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242834;
+    --border: #2d3140;
+    --text: #e4e6eb;
+    --text2: #8b8fa3;
+    --accent: #6c5ce7;
+    --green: #00b894;
+    --red: #e17055;
+    --yellow: #fdcb6e;
+    --blue: #74b9ff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text2);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+  }
+
+  .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .dot-yellow { background: var(--yellow); }
+
+  .container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  .card-full { grid-column: 1 / -1; }
+
+  .card h2 {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text2);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ── Stats Grid ────────────────────────── */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+  }
+
+  .stat-box {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 4px;
+  }
+
+  /* ── Tables ────────────────────────────── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    color: var(--text2);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .badge-success { background: rgba(0,184,148,.15); color: var(--green); }
+  .badge-failed { background: rgba(225,112,85,.15); color: var(--red); }
+  .badge-running { background: rgba(116,185,255,.15); color: var(--blue); }
+  .badge-never { background: rgba(139,143,163,.15); color: var(--text2); }
+  .badge-configured { background: rgba(0,184,148,.15); color: var(--green); }
+  .badge-not-configured { background: rgba(139,143,163,.15); color: var(--text2); }
+
+  /* ── Action Buttons ────────────────────── */
+  .actions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+  }
+
+  .action-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: inherit;
+  }
+
+  .action-btn:hover { border-color: var(--accent); background: rgba(108,92,231,.1); }
+  .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .action-btn .icon { font-size: 16px; }
+
+  /* ── Activity Log ──────────────────────── */
+  .activity-list {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .event-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(45,49,64,.5);
+    font-size: 13px;
+  }
+
+  .event-row:last-child { border-bottom: none; }
+
+  .event-time {
+    color: var(--text2);
+    font-size: 11px;
+    white-space: nowrap;
+    min-width: 60px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .event-type {
+    font-size: 14px;
+    min-width: 20px;
+    text-align: center;
+  }
+
+  .event-summary {
+    flex: 1;
+    word-break: break-word;
+  }
+
+  /* ── Toast ─────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 13px;
+    z-index: 200;
+    transition: opacity 0.3s;
+    max-width: 400px;
+  }
+
+  .toast.ok { border-color: var(--green); }
+  .toast.err { border-color: var(--red); }
+
+  /* ── Responsive ────────────────────────── */
+  @media (max-width: 900px) {
+    .container { grid-template-columns: 1fr; }
+  }
+
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+  .text-green { color: var(--green); }
+  .text-red { color: var(--red); }
+  .text-yellow { color: var(--yellow); }
+  .text-muted { color: var(--text2); }
+  .text-right { text-align: right; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🧠 Cortex Status Portal</h1>
+  <div class="header-right">
+    <span id="uptime"></span>
+    <span id="poll-status"><span class="status-dot dot-yellow"></span> connecting…</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- ── Bot & System ──────────────────────── -->
+  <div class="card">
+    <h2>🤖 Bot Status</h2>
+    <div class="stats-grid" id="bot-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="bot-polling">—</div>
+        <div class="stat-label">Polling</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="bot-last-msg">—</div>
+        <div class="stat-label">Last Message</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="bot-uptime">—</div>
+        <div class="stat-label">Uptime</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── API Usage ─────────────────────────── -->
+  <div class="card">
+    <h2>📊 API Usage</h2>
+    <div class="stats-grid" id="api-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="api-today-cost">—</div>
+        <div class="stat-label">Today Cost</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="api-today-calls">—</div>
+        <div class="stat-label">Today Calls</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="api-7d-cost">—</div>
+        <div class="stat-label">7-Day Cost</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="api-30d-cost">—</div>
+        <div class="stat-label">30-Day Cost</div>
+      </div>
+    </div>
+    <table style="margin-top:12px" id="api-categories">
+      <thead><tr><th>Category (7d)</th><th class="text-right">Calls</th><th class="text-right">Cost</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Integrations ──────────────────────── -->
+  <div class="card">
+    <h2>🔗 Integrations</h2>
+    <table id="integrations-table">
+      <thead><tr><th>Service</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Invoices ──────────────────────────── -->
+  <div class="card">
+    <h2>🧾 Invoices</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value" id="inv-this-month">—</div>
+        <div class="stat-label">This Month</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="inv-last-month">—</div>
+        <div class="stat-label">Last Month</div>
+      </div>
+    </div>
+    <table id="invoices-table">
+      <thead><tr><th>Vendor</th><th>Date</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Scheduled Jobs ────────────────────── -->
+  <div class="card card-full">
+    <h2>⏱️ Scheduled Jobs</h2>
+    <table id="jobs-table">
+      <thead><tr><th>Job</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>Error</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Quick Actions ─────────────────────── -->
+  <div class="card card-full">
+    <h2>⚡ Quick Actions</h2>
+    <div class="actions-grid">
+      <button class="action-btn" onclick="doAction('refresh-garmin')"><span class="icon">🏃</span> Refresh Garmin</button>
+      <button class="action-btn" onclick="doAction('trigger-briefing')"><span class="icon">🌅</span> Morning Briefing</button>
+      <button class="action-btn" onclick="doAction('trigger-coach')"><span class="icon">🏋️</span> Coach Report</button>
+      <button class="action-btn" onclick="doAction('trigger-content')"><span class="icon">🎬</span> Content Discovery</button>
+      <button class="action-btn" onclick="doAction('clear-history')"><span class="icon">🗑️</span> Clear History</button>
+      <button class="action-btn" onclick="doAction('test-ssh')"><span class="icon">🔑</span> Test SSH</button>
+      <button class="action-btn" onclick="doAction('test-graph')"><span class="icon">📧</span> Test Graph</button>
+      <button class="action-btn" onclick="if(confirm('Restart bot polling?')) doAction('restart-polling')"><span class="icon">🔄</span> Restart Polling</button>
+    </div>
+  </div>
+
+  <!-- ── Activity Log ──────────────────────── -->
+  <div class="card card-full">
+    <h2>📋 Activity Log <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="event-count"></span></h2>
+    <div class="activity-list" id="activity-log"></div>
+  </div>
+
+</div>
+
+<!-- Toast container -->
+<div id="toast" class="toast" style="display:none"></div>
+
+<script>
+(function() {
+  const TOKEN = localStorage.getItem('portal_token') || '';
+  const POLL_MS = 10_000;
+  let pollTimer = null;
+
+  // ── Auth prompt ────────────────────────────
+  function ensureToken() {
+    if (TOKEN) return;
+    const t = prompt('Enter portal token:');
+    if (t) {
+      localStorage.setItem('portal_token', t);
+      location.reload();
+    }
+  }
+
+  // ── Fetch with auth ────────────────────────
+  async function apiFetch(url, opts = {}) {
+    const headers = { ...opts.headers };
+    if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+    const res = await fetch(url, { ...opts, headers });
+    if (res.status === 401) {
+      localStorage.removeItem('portal_token');
+      ensureToken();
+      throw new Error('Unauthorized');
+    }
+    return res;
+  }
+
+  // ── Event type icons ───────────────────────
+  const TYPE_ICONS = {
+    message: '💬',
+    tool_call: '🔧',
+    error: '❌',
+    job: '⏱️',
+    api_call: '🤖',
+    auth: '🔑',
+  };
+
+  // ── Time formatting ────────────────────────
+  function shortTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function relativeTime(iso) {
+    if (!iso) return '—';
+    const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec/3600)}h ago`;
+    return `${Math.floor(sec/86400)}d ago`;
+  }
+
+  // ── Render snapshot ────────────────────────
+  function render(snap) {
+    // Header
+    document.getElementById('uptime').textContent = `Up ${snap.uptime.human}`;
+    const pollEl = document.getElementById('poll-status');
+    if (snap.bot.polling) {
+      pollEl.innerHTML = '<span class="status-dot dot-green"></span> polling';
+    } else if (snap.bot.restarting) {
+      pollEl.innerHTML = '<span class="status-dot dot-yellow"></span> restarting…';
+    } else {
+      pollEl.innerHTML = '<span class="status-dot dot-red"></span> stopped';
+    }
+
+    // Bot stats
+    document.getElementById('bot-polling').textContent = snap.bot.polling ? '✓' : snap.bot.restarting ? '⟳' : '✗';
+    document.getElementById('bot-polling').className = 'stat-value ' + (snap.bot.polling ? 'text-green' : 'text-red');
+    document.getElementById('bot-last-msg').textContent = relativeTime(snap.bot.lastMessageAt);
+    document.getElementById('bot-uptime').textContent = snap.uptime.human;
+
+    // API usage
+    document.getElementById('api-today-cost').textContent = '$' + snap.apiUsage.today.cost.toFixed(3);
+    document.getElementById('api-today-calls').textContent = snap.apiUsage.today.calls;
+    document.getElementById('api-7d-cost').textContent = '$' + snap.apiUsage.last7d.cost.toFixed(2);
+    document.getElementById('api-30d-cost').textContent = '$' + snap.apiUsage.last30d.cost.toFixed(2);
+
+    // API categories table
+    const catBody = document.querySelector('#api-categories tbody');
+    catBody.innerHTML = snap.apiUsage.byCategory.map(c =>
+      `<tr><td class="mono">${esc(c.category)}</td><td class="text-right">${c.calls}</td><td class="text-right mono">$${c.cost.toFixed(3)}</td></tr>`
+    ).join('');
+
+    // Integrations
+    const intBody = document.querySelector('#integrations-table tbody');
+    intBody.innerHTML = snap.integrations.map(i => {
+      const cls = i.configured ? 'badge-configured' : 'badge-not-configured';
+      const statusText = i.status || (i.configured ? 'OK' : 'not configured');
+      return `<tr><td>${esc(i.name)}</td><td><span class="badge ${cls}">${esc(statusText)}</span></td></tr>`;
+    }).join('');
+
+    // Invoices
+    document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;
+    document.getElementById('inv-last-month').textContent = snap.invoices.lastMonth;
+    const invBody = document.querySelector('#invoices-table tbody');
+    invBody.innerHTML = snap.invoices.recentFilings.map(f => {
+      const cls = f.status === 'filed' ? 'badge-success' : f.status === 'failed' ? 'badge-failed' : 'badge-never';
+      return `<tr><td>${esc(f.vendor)}</td><td class="mono">${esc(f.date)}</td><td>${esc(f.amount || '—')}</td><td><span class="badge ${cls}">${f.status}</span></td></tr>`;
+    }).join('') || '<tr><td colspan="4" class="text-muted">No filings yet</td></tr>';
+
+    // Jobs
+    const jobBody = document.querySelector('#jobs-table tbody');
+    jobBody.innerHTML = snap.jobs.map(j => {
+      const cls = j.lastResult === 'success' ? 'badge-success' : j.lastResult === 'failed' ? 'badge-failed' : j.lastResult === 'running' ? 'badge-running' : 'badge-never';
+      const dur = j.lastDurationMs != null ? (j.lastDurationMs < 1000 ? `${j.lastDurationMs}ms` : `${(j.lastDurationMs/1000).toFixed(1)}s`) : '—';
+      const err = j.lastError ? `<span class="text-red" title="${esc(j.lastError)}">${esc(j.lastError.slice(0,50))}</span>` : '—';
+      return `<tr>
+        <td>${esc(j.label)}</td>
+        <td class="mono text-muted">${esc(j.cronExpression)}</td>
+        <td>${j.lastRunAt ? relativeTime(j.lastRunAt) : '—'}</td>
+        <td class="mono">${dur}</td>
+        <td><span class="badge ${cls}">${j.lastResult}</span></td>
+        <td>${err}</td>
+      </tr>`;
+    }).join('');
+
+    // Activity log
+    const logEl = document.getElementById('activity-log');
+    const events = snap.recentEvents.slice(0, 50);
+    document.getElementById('event-count').textContent = `(${snap.recentEvents.length} events in buffer)`;
+    logEl.innerHTML = events.map(e =>
+      `<div class="event-row">
+        <span class="event-time">${shortTime(e.ts)}</span>
+        <span class="event-type">${TYPE_ICONS[e.type] || '•'}</span>
+        <span class="event-summary">${esc(e.summary)}</span>
+      </div>`
+    ).join('') || '<div class="text-muted" style="padding:12px">No events yet</div>';
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    const el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+  }
+
+  // ── Polling ────────────────────────────────
+  async function poll() {
+    try {
+      const res = await apiFetch('/api/snapshot');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const snap = await res.json();
+      render(snap);
+    } catch (err) {
+      console.error('Poll failed:', err);
+      const pollEl = document.getElementById('poll-status');
+      pollEl.innerHTML = '<span class="status-dot dot-red"></span> disconnected';
+    }
+  }
+
+  // ── Actions ────────────────────────────────
+  window.doAction = async function(name) {
+    const btns = document.querySelectorAll('.action-btn');
+    btns.forEach(b => b.disabled = true);
+    showToast('Running…', false);
+
+    try {
+      const res = await apiFetch(`/api/action/${name}`, { method: 'POST' });
+      const data = await res.json();
+      showToast(data.message, data.ok);
+      // Refresh immediately
+      await poll();
+    } catch (err) {
+      showToast(`Error: ${err.message}`, false);
+    } finally {
+      setTimeout(() => btns.forEach(b => b.disabled = false), 2000);
+    }
+  };
+
+  function showToast(msg, ok) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast ' + (ok ? 'ok' : 'err');
+    el.style.display = 'block';
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => el.style.display = 'none', 4000);
+  }
+
+  // ── Init ───────────────────────────────────
+  ensureToken();
+  poll();
+  pollTimer = setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

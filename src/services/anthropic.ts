@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { DomainMessage, DomainName } from '../domains/types';
+import { trackedCreate } from '../portal/anthropic-hook';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -169,7 +170,7 @@ export async function classifyAndExtractImage(
     ? `The user sent this image with caption: "${caption}"\n\nClassify and extract the content.`
     : `Classify and extract the content of this image.`;
 
-  const response = await client.messages.create({
+  const response = await trackedCreate(client, {
     model: config.anthropic.classifierModel, // Haiku — cheap vision
     max_tokens: 4096,
     system: `You classify images into exactly ONE of three categories and extract structured data. Return ONLY valid JSON.
@@ -212,7 +213,7 @@ When uncertain between calendar and task, prefer "task".`,
         { type: 'text', text: prompt },
       ],
     }],
-  });
+  }, 'classify_image');
 
   const stopReason = response.stop_reason;
 
@@ -337,12 +338,12 @@ function getMaxTokensForDomain(domain: DomainName): number {
 
 export async function classifyMessage(message: string): Promise<{ domain: DomainName; confidence: number }> {
   try {
-    const response = await client.messages.create({
+    const response = await trackedCreate(client, {
       model: config.anthropic.classifierModel,
       max_tokens: 100,
       system: CLASSIFIER_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: message }],
-    });
+    }, 'classify_message');
 
     let text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -406,13 +407,13 @@ export async function callDomain(
 
   let response: Anthropic.Message;
   try {
-    response = await client.messages.create({
+    response = await trackedCreate(client, {
       model: getModelForDomain(domain),
       max_tokens: getMaxTokensForDomain(domain),
       system,
       messages,
       ...(useTools ? { tools: getCachedTools() } : {}),
-    });
+    }, `domain_${domain}`);
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in callDomain');
     throw err;
@@ -456,13 +457,13 @@ export async function continueWithToolResults(
   const useTools = domain === 'secretary' || domain === 'triathlon';
   let response: Anthropic.Message;
   try {
-    response = await client.messages.create({
+    response = await trackedCreate(client, {
       model: getModelForDomain(domain),
       max_tokens: getMaxTokensForDomain(domain),
       system,
       messages,
       ...(useTools ? { tools: getCachedTools() } : {}),
-    });
+    }, 'tool_continuation');
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in continueWithToolResults');
     throw err;

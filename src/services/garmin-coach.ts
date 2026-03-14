@@ -13,6 +13,7 @@ import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActivityDetails } from './garmin';
 import { getEvents, isAnyCalendarConfigured, CalendarSource } from './unified-calendar';
 import { DOMAIN_SYSTEM_PROMPTS } from './anthropic';
+import { trackedCreate } from '../portal/anthropic-hook';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -252,7 +253,7 @@ export async function generateCoachBriefing(): Promise<CoachBriefingResult> {
   const analysisStart = Date.now();
   try {
     const today = now().toFormat('cccc, LLLL dd yyyy');
-    const response = await client.messages.create({
+    const response = await trackedCreate(client, {
       model: config.anthropic.model,
       max_tokens: 2500,
       system: [
@@ -286,7 +287,7 @@ ${payloadStr}
 9. At the END, include the structured COACH_RECS JSON block for calendar actions`,
         },
       ],
-    });
+    }, 'coach_analysis');
 
     const analysisMs = Date.now() - analysisStart;
     const rawText = response.content

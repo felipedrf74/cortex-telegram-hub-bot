@@ -4,7 +4,7 @@
   "description": "Telegram personal command center bot with multi-domain AI routing",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "clean": "rm -rf dist"
@@ -19,6 +19,7 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
+    "express": "^5.2.1",
     "garmin-connect": "^1.6.2",
     "googleapis": "^171.4.0",
     "grammy": "^1.41.1",
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
     "@types/luxon": "^3.7.1",
     "@types/node": "^25.3.3",
     "@types/sharp": "^0.31.1",

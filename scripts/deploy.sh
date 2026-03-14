@@ -94,6 +94,7 @@ echo ""
 echo "🏥 Health check..."
 sleep 3
 ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null && echo ' ✅ Content engine OK' || echo ' ❌ Content engine FAIL'"
+ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding (may need PORTAL_TOKEN)'"
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 list | grep -E 'online|stopped'"
 
 echo ""

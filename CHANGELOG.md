@@ -4,6 +4,39 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.3.0] — 2026-03-14
+
+### Cortex Status Portal — Self-Hosted Web Dashboard
+
+Real-time monitoring dashboard for all bot subsystems, accessible at `http://server:8200`. Single-page app with 10-second auto-refresh, Bearer token auth, and 8 quick actions.
+
+#### Dashboard Sections
+- **Bot Status** — Polling state, last message timestamp, process uptime
+- **API Usage** — Today/7d/30d cost and call counts by category
+- **Integrations** — Live status for Telegram, Microsoft Graph, Garmin, SSH, Anthropic
+- **Scheduled Jobs** — All 14 cron jobs with last run time, duration, result, errors
+- **Invoices** — Monthly filing counts and 10 most recent filings
+- **Quick Actions** — 8 buttons (Garmin refresh, trigger reports, clear history, restart polling, test SSH/Graph)
+- **Activity Log** — Ring buffer of 200 most recent events
+
+#### Architecture
+- Express on port 8200 inside the same pm2 process
+- Single snapshot endpoint (`GET /api/snapshot`) with 3s cache
+- Bearer token auth via `PORTAL_TOKEN` env var
+- Transparent Anthropic API hook records all Claude calls to SQLite `api_usage` table
+- In-memory telemetry singleton with job tracking wrappers
+
+#### New Files
+- `src/portal/server.ts`, `src/portal/telemetry.ts`, `src/portal/anthropic-hook.ts`, `src/portal/portal.html`
+- `migrations/007_api_usage.sql`
+
+#### Modified Files
+- `src/index.ts`, `src/config.ts`, `src/bot.ts`, `src/services/scheduler.ts`
+- `src/services/anthropic.ts`, `src/services/invoice-filer.ts`, `src/services/garmin-coach.ts`, `src/services/content-discovery.ts`
+- `scripts/deploy.sh`, `.env.example`, `package.json`
+
+---
+
 ## [3.2.0] — 2026-03-14
 
 ### Garmin Session Keep-Alive & Resilience

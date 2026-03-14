@@ -3,6 +3,9 @@ import { logger } from './utils/logger';
 import { initDatabase, closeDatabase } from './services/database';
 import { createBot } from './bot';
 import { startScheduler } from './services/scheduler';
+import { setBotRef, setBotPollingActive } from './portal/telemetry';
+import { createPortalServer } from './portal/server';
+import type http from 'http';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY_MS = 40_000; // 40s — enough for Telegram to release the polling lock
@@ -16,13 +19,25 @@ async function main(): Promise<void> {
   // Create bot
   const bot = createBot();
 
+  // Store bot reference for portal restart action
+  setBotRef(bot);
+
   // Start scheduler (reminders, daily briefing, weekly review)
   startScheduler(bot);
+
+  // Start status portal (Express on :8200)
+  let portalServer: http.Server | undefined;
+  if (config.portal.enabled) {
+    portalServer = createPortalServer(bot);
+  }
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
     bot.stop();
+    if (portalServer) {
+      portalServer.close();
+    }
     closeDatabase();
     process.exit(0);
   };
@@ -37,6 +52,7 @@ async function main(): Promise<void> {
       await bot.start({
         onStart: () => {
           logger.info('Bot is running!');
+          setBotPollingActive(true);
           console.log('🤖 Telegram Hub Bot is online!');
         },
       });
