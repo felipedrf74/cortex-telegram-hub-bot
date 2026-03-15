@@ -72,10 +72,20 @@ export function registerJob(name: string, label: string, cronExpression: string)
   });
 }
 
+// ─── Failure Notification Callback ────────────────────────────────────
+
+type FailureNotifier = (jobLabel: string, errorMessage: string) => Promise<void>;
+let _failureNotifier: FailureNotifier | null = null;
+
+/** Register a callback to send Telegram alerts when jobs fail. */
+export function setJobFailureNotifier(fn: FailureNotifier): void {
+  _failureNotifier = fn;
+}
+
 /**
  * Wraps an async job callback with timing and success/failure tracking.
- * The wrapped function still propagates errors so existing logger.error
- * calls in the scheduler continue to work.
+ * On failure, sends a Telegram notification (if notifier is registered)
+ * and re-throws so existing logger.error calls continue to work.
  */
 export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<void> {
   return async () => {
@@ -98,6 +108,7 @@ export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<vo
         summary: `${status.label}: success (${status.lastDurationMs}ms)`,
         durationMs: status.lastDurationMs,
       });
+      persistJobRun(name, 'success', status.lastDurationMs);
     } catch (err: any) {
       status.lastResult = 'failed';
       status.lastDurationMs = Date.now() - start;
@@ -108,6 +119,11 @@ export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<vo
         summary: `${status.label}: failed — ${(status.lastError ?? '').slice(0, 80)}`,
         durationMs: status.lastDurationMs,
       });
+      persistJobRun(name, 'failed', status.lastDurationMs, status.lastError);
+      // Notify user via Telegram (swallow notification errors to avoid masking the original)
+      if (_failureNotifier) {
+        _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
+      }
       throw err; // re-throw so existing catch blocks in scheduler still fire
     }
   };
@@ -171,4 +187,27 @@ export function recordGarminRefresh(ok: boolean): void {
 
 export function getGarminRefreshStatus(): { at: string | null; ok: boolean } {
   return { at: _lastGarminRefreshAt, ok: _lastGarminRefreshOk };
+}
+
+// ─── Database Provider (lazy, avoids circular imports) ───────────────
+
+type DbProvider = () => { prepare(sql: string): { run(...args: any[]): void } };
+let _getDb: DbProvider | null = null;
+
+/** Set the database provider once the DB is initialized. */
+export function setDbProvider(fn: DbProvider): void {
+  _getDb = fn;
+}
+
+/** Persist a job run to the job_history table (non-critical). */
+function persistJobRun(jobName: string, result: string, durationMs: number | null, errorMessage?: string | null): void {
+  if (!_getDb) return;
+  try {
+    _getDb().prepare(`
+      INSERT INTO job_history (job_name, result, duration_ms, error_message)
+      VALUES (?, ?, ?, ?)
+    `).run(jobName, result, durationMs, errorMessage ?? null);
+  } catch {
+    // table may not exist yet — swallow
+  }
 }

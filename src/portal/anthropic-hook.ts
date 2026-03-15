@@ -17,13 +17,22 @@ const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number;
   'claude-haiku-4-5-20251001': { in: 0.80, out:  4.00, cacheRead: 0.08, cacheWrite: 1.00 },
 };
 
+const warnedModels = new Set<string>();
+
 function computeCost(model: string, usage: Anthropic.Usage): number {
-  const rates = COST_PER_MTK[model] ?? COST_PER_MTK['claude-sonnet-4-6'];
+  const rates = COST_PER_MTK[model];
+  if (!rates) {
+    if (!warnedModels.has(model)) {
+      warnedModels.add(model);
+      logger.warn({ model }, 'Unknown model for cost calculation — falling back to Sonnet pricing');
+    }
+  }
+  const r = rates ?? COST_PER_MTK['claude-sonnet-4-6'];
   return (
-    (usage.input_tokens / 1_000_000) * rates.in +
-    (usage.output_tokens / 1_000_000) * rates.out +
-    (((usage as any).cache_read_input_tokens ?? 0) / 1_000_000) * rates.cacheRead +
-    (((usage as any).cache_creation_input_tokens ?? 0) / 1_000_000) * rates.cacheWrite
+    (usage.input_tokens / 1_000_000) * r.in +
+    (usage.output_tokens / 1_000_000) * r.out +
+    ((usage.cache_read_input_tokens ?? 0) / 1_000_000) * r.cacheRead +
+    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) * r.cacheWrite
   );
 }
 
@@ -59,8 +68,8 @@ export async function trackedCreate(
       params.model,
       usage.input_tokens,
       usage.output_tokens,
-      (usage as any).cache_read_input_tokens ?? 0,
-      (usage as any).cache_creation_input_tokens ?? 0,
+      usage.cache_read_input_tokens ?? 0,
+      usage.cache_creation_input_tokens ?? 0,
       cost,
       durationMs,
     );

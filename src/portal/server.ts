@@ -37,6 +37,7 @@ import { sendDailyBriefing } from '../services/scheduler';
 import { generateCoachBriefing } from '../services/garmin-coach';
 import { runContentDiscovery } from '../services/content-discovery';
 import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
+import { CronExpressionParser } from 'cron-parser';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -55,6 +56,8 @@ interface SnapshotResponse {
     lastCheck?: string;
   }[];
   jobs: ReturnType<typeof getJobStatuses>;
+  jobHistory: Record<string, { result: string; ts: string }[]>;
+  nextRuns: { label: string; cronExpression: string; nextFireAt: string; humanDelta: string }[];
   apiUsage: {
     today: { calls: number; cost: number; tokens: number };
     last7d: { calls: number; cost: number; tokens: number };
@@ -67,6 +70,18 @@ interface SnapshotResponse {
     lastMonth: number;
     recentFilings: { vendor: string; date: string; amount: string | null; status: string }[];
   };
+  emailLog: {
+    todaySent: number;
+    todayFailed: number;
+    recentEmails: { recipient: string; subject: string; status: string; source: string | null; ts: string; error_message: string | null }[];
+  };
+  healthSummary: {
+    jobsOk: number;
+    jobsTotal: number;
+    emailsSentToday: number;
+    apiCostToday: number;
+    invoicesThisMonth: number;
+  };
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -75,6 +90,11 @@ let cachedSnapshot: { data: SnapshotResponse; at: number } | null = null;
 const CACHE_TTL_MS = 3_000;
 
 // ─── Rate Limiter (per-action, 30s cooldown) ────────────────────────
+
+const VALID_ACTIONS = new Set([
+  'refresh-garmin', 'trigger-briefing', 'trigger-coach', 'trigger-content',
+  'clear-history', 'test-ssh', 'test-graph', 'restart-polling',
+]);
 
 const actionCooldowns = new Map<string, number>();
 const ACTION_COOLDOWN_MS = 30_000;
@@ -101,6 +121,67 @@ function humanUptime(seconds: number): string {
   if (h > 0) parts.push(`${h}h`);
   parts.push(`${m}m`);
   return parts.join(' ');
+}
+
+function humanDelta(seconds: number): string {
+  if (seconds < 60) return 'in <1m';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `in ${d}d ${h}h`;
+  if (h > 0) return `in ${h}h ${m}m`;
+  return `in ${m}m`;
+}
+
+// ─── Prepared Statements (lazily cached) ─────────────────────────────
+
+import type BetterSqlite3 from 'better-sqlite3';
+
+let _stmts: Record<string, BetterSqlite3.Statement> | null = null;
+
+function getStmts(): Record<string, BetterSqlite3.Statement> {
+  if (_stmts) return _stmts;
+  const db = getDb();
+  _stmts = {
+    todayUsage: db.prepare(`
+      SELECT COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost,
+             COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+      FROM api_usage WHERE ts >= date('now')`),
+    weekUsage: db.prepare(`
+      SELECT COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost,
+             COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+      FROM api_usage WHERE ts >= date('now', '-7 days')`),
+    monthUsage: db.prepare(`
+      SELECT COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost,
+             COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+      FROM api_usage WHERE ts >= date('now', '-30 days')`),
+    byCategory: db.prepare(`
+      SELECT category, COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost
+      FROM api_usage WHERE ts >= date('now', '-7 days')
+      GROUP BY category ORDER BY cost DESC`),
+    thisMonthInvoices: db.prepare(`
+      SELECT COUNT(*) as c FROM invoice_filings
+      WHERE document_date >= date('now', 'start of month') AND status = 'filed'`),
+    lastMonthInvoices: db.prepare(`
+      SELECT COUNT(*) as c FROM invoice_filings
+      WHERE document_date >= date('now', 'start of month', '-1 month')
+        AND document_date < date('now', 'start of month')
+        AND status = 'filed'`),
+    recentFilings: db.prepare(`
+      SELECT vendor, document_date, amount, status
+      FROM invoice_filings ORDER BY created_at DESC LIMIT 10`),
+    emailTodaySent: db.prepare(`
+      SELECT COUNT(*) as c FROM email_log WHERE ts >= date('now') AND status = 'sent'`),
+    emailTodayFailed: db.prepare(`
+      SELECT COUNT(*) as c FROM email_log WHERE ts >= date('now') AND status = 'failed'`),
+    recentEmailLog: db.prepare(`
+      SELECT recipient, subject, status, source, ts, error_message
+      FROM email_log ORDER BY ts DESC LIMIT 20`),
+    jobHistoryRecent: db.prepare(`
+      SELECT job_name, result, ts
+      FROM job_history ORDER BY ts DESC LIMIT 200`),
+  };
+  return _stmts;
 }
 
 // ─── Snapshot Builder ───────────────────────────────────────────────
@@ -142,32 +223,13 @@ function buildSnapshot(): SnapshotResponse {
   ];
 
   // ── API usage from SQLite ──────────────────────────────────────
-  const db = getDb();
   let apiUsage: SnapshotResponse['apiUsage'];
   try {
-    const todayRow = db.prepare(`
-      SELECT COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost,
-             COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
-      FROM api_usage WHERE ts >= date('now')
-    `).get() as any;
-
-    const week = db.prepare(`
-      SELECT COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost,
-             COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
-      FROM api_usage WHERE ts >= date('now', '-7 days')
-    `).get() as any;
-
-    const month = db.prepare(`
-      SELECT COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost,
-             COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
-      FROM api_usage WHERE ts >= date('now', '-30 days')
-    `).get() as any;
-
-    const byCategory = db.prepare(`
-      SELECT category, COUNT(*) as calls, COALESCE(SUM(cost_usd), 0) as cost
-      FROM api_usage WHERE ts >= date('now', '-7 days')
-      GROUP BY category ORDER BY cost DESC
-    `).all() as any[];
+    const stmts = getStmts();
+    const todayRow = stmts.todayUsage.get() as any;
+    const week = stmts.weekUsage.get() as any;
+    const month = stmts.monthUsage.get() as any;
+    const byCategory = stmts.byCategory.all() as any[];
 
     apiUsage = {
       today: { calls: todayRow.calls, cost: todayRow.cost, tokens: todayRow.tokens },
@@ -188,22 +250,10 @@ function buildSnapshot(): SnapshotResponse {
   // ── Invoice filings from SQLite ────────────────────────────────
   let invoices: SnapshotResponse['invoices'];
   try {
-    const thisMonth = db.prepare(`
-      SELECT COUNT(*) as c FROM invoice_filings
-      WHERE document_date >= date('now', 'start of month') AND status = 'filed'
-    `).get() as any;
-
-    const lastMonth = db.prepare(`
-      SELECT COUNT(*) as c FROM invoice_filings
-      WHERE document_date >= date('now', 'start of month', '-1 month')
-        AND document_date < date('now', 'start of month')
-        AND status = 'filed'
-    `).get() as any;
-
-    const recent = db.prepare(`
-      SELECT vendor, document_date, amount, status
-      FROM invoice_filings ORDER BY created_at DESC LIMIT 10
-    `).all() as any[];
+    const stmts = getStmts();
+    const thisMonth = stmts.thisMonthInvoices.get() as any;
+    const lastMonth = stmts.lastMonthInvoices.get() as any;
+    const recent = stmts.recentFilings.all() as any[];
 
     invoices = {
       thisMonth: thisMonth.c,
@@ -220,6 +270,77 @@ function buildSnapshot(): SnapshotResponse {
     invoices = { thisMonth: 0, lastMonth: 0, recentFilings: [] };
   }
 
+  // ── Email log from SQLite ───────────────────────────────────────
+  let emailLog: SnapshotResponse['emailLog'];
+  try {
+    const stmts = getStmts();
+    const sent = stmts.emailTodaySent.get() as any;
+    const failed = stmts.emailTodayFailed.get() as any;
+    const recent = stmts.recentEmailLog.all() as any[];
+    emailLog = {
+      todaySent: sent.c,
+      todayFailed: failed.c,
+      recentEmails: recent.map((r: any) => ({
+        recipient: r.recipient,
+        subject: r.subject,
+        status: r.status,
+        source: r.source,
+        ts: r.ts,
+        error_message: r.error_message,
+      })),
+    };
+  } catch {
+    emailLog = { todaySent: 0, todayFailed: 0, recentEmails: [] };
+  }
+
+  // ── Job history (last 10 runs per job for sparklines) ──────────
+  let jobHistory: Record<string, { result: string; ts: string }[]> = {};
+  try {
+    const stmts = getStmts();
+    const rows = stmts.jobHistoryRecent.all() as any[];
+    const grouped: Record<string, { result: string; ts: string }[]> = {};
+    for (const r of rows) {
+      if (!grouped[r.job_name]) grouped[r.job_name] = [];
+      if (grouped[r.job_name].length < 10) {
+        grouped[r.job_name].push({ result: r.result, ts: r.ts });
+      }
+    }
+    jobHistory = grouped;
+  } catch {
+    jobHistory = {};
+  }
+
+  // ── Next runs (computed from cron expressions) ─────────────────
+  const jobs = getJobStatuses();
+  const nextRuns: SnapshotResponse['nextRuns'] = [];
+  const tz = config.app.timezone;
+  for (const job of jobs) {
+    try {
+      const interval = CronExpressionParser.parse(job.cronExpression, { tz });
+      const next = interval.next().toDate();
+      const deltaSec = Math.floor((next.getTime() - Date.now()) / 1000);
+      nextRuns.push({
+        label: job.label,
+        cronExpression: job.cronExpression,
+        nextFireAt: next.toISOString(),
+        humanDelta: humanDelta(deltaSec),
+      });
+    } catch {
+      // skip unparseable expressions
+    }
+  }
+  nextRuns.sort((a, b) => new Date(a.nextFireAt).getTime() - new Date(b.nextFireAt).getTime());
+
+  // ── Health summary ─────────────────────────────────────────────
+  const jobsWithRuns = jobs.filter(j => j.lastResult !== 'never');
+  const healthSummary: SnapshotResponse['healthSummary'] = {
+    jobsOk: jobsWithRuns.filter(j => j.lastResult === 'success').length,
+    jobsTotal: jobsWithRuns.length,
+    emailsSentToday: emailLog.todaySent,
+    apiCostToday: apiUsage.today.cost,
+    invoicesThisMonth: invoices.thisMonth,
+  };
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -229,10 +350,14 @@ function buildSnapshot(): SnapshotResponse {
       lastMessageAt: getLastMessageAt(),
     },
     integrations,
-    jobs: getJobStatuses(),
+    jobs,
+    jobHistory,
+    nextRuns,
     apiUsage,
     recentEvents: getRecentEvents(),
     invoices,
+    emailLog,
+    healthSummary,
   };
 }
 
@@ -441,14 +566,19 @@ export function createPortalServer(bot: Bot): http.Server {
   app.post('/api/action/:name', async (req: Request, res: Response) => {
     const name = String(req.params.name);
 
+    if (!VALID_ACTIONS.has(name)) {
+      res.status(400).json({ ok: false, message: `Unknown action: ${name}` });
+      return;
+    }
+
     if (isRateLimited(name)) {
       res.status(429).json({ ok: false, message: 'Too many requests — wait 30s' });
       return;
     }
 
     try {
-      recordAction(name);
       const result = await handleAction(name, bot);
+      recordAction(name);
       // Invalidate snapshot cache so next poll reflects the change
       cachedSnapshot = null;
       res.json(result);
@@ -465,6 +595,9 @@ export function createPortalServer(bot: Bot): http.Server {
 
   server.listen(port, bind, () => {
     logger.info({ port, bind }, `Cortex Status Portal running at http://${bind}:${port}`);
+    if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {
+      logger.warn('Portal is listening on a non-loopback address without PORTAL_TOKEN — API is unauthenticated!');
+    }
   });
 
   return server;

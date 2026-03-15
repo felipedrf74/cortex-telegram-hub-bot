@@ -4,6 +4,50 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.4.0] — 2026-03-15
+
+### Portal Dashboard Enhancements — Timeline, Email Log, Job History
+
+Five new visual features for the Cortex Status Portal, plus email delivery tracking and persistent job history.
+
+#### 1. Daily Timeline View
+- Horizontal 24h timeline at the top of the dashboard showing today's activity
+- Color-coded blocks: blue (calendar), purple (cron jobs), orange (emails), green/red (completed/failed)
+- Red "NOW" marker for current time, auto-refreshes every 10s
+
+#### 2. Email Delivery Log
+- New `email_log` SQLite table tracks every `sendEmail()` call (recipient, subject, status, source, error)
+- Portal card: "Email Automations" with today's sent/failed counts + full delivery history table
+- Fossa email and any future automated emails are automatically tracked
+
+#### 3. Next Scheduled Runs Panel
+- Computes next fire time for all 14 cron jobs using `cron-parser` with timezone support
+- Shows countdown ("in 2h 15m"), sorted by next-to-fire
+- Answers the question "what's happening next?"
+
+#### 4. Job History Sparklines
+- New `job_history` SQLite table persists every job execution (result, duration, timestamp)
+- Mini bar charts (last 10 runs) inline in the Scheduled Jobs table
+- Green bars = success, red bars = failure — instant visual health check
+
+#### 5. System Health Summary Bar
+- Compact sticky bar under the header with at-a-glance status
+- Shows: jobs OK/total, emails sent today, API cost, invoices this month, uptime
+
+#### New Files
+- `migrations/008_email_log.sql`, `migrations/009_job_history.sql`
+
+#### Modified Files
+- `src/portal/portal.html` — all 5 new dashboard features
+- `src/portal/server.ts` — snapshot builder: email log, job history, next runs, health summary
+- `src/portal/telemetry.ts` — job history persistence to SQLite via DB provider
+- `src/services/outlook-mail.ts` — email delivery tracking on sendEmail()
+- `src/services/scheduler.ts` — fossa email source tag
+- `src/index.ts` — wire up DB provider for telemetry
+- `package.json` — added `cron-parser` dependency
+
+---
+
 ## [3.3.0] — 2026-03-14
 
 ### Cortex Status Portal — Self-Hosted Web Dashboard

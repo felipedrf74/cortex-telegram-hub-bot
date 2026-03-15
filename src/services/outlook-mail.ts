@@ -1,5 +1,21 @@
 import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { logger } from '../utils/logger';
+import { pushEvent } from '../portal/telemetry';
+
+// ─── Email Delivery Logging ──────────────────────────────────────────
+
+/** Log an email send attempt to SQLite (non-critical — swallow errors). */
+function logEmailSend(recipient: string, subject: string, status: 'sent' | 'failed', source?: string, errorMessage?: string): void {
+  try {
+    const { getDb } = require('./database');
+    getDb().prepare(`
+      INSERT INTO email_log (recipient, subject, status, source, error_message)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(recipient, subject, status, source ?? null, errorMessage ?? null);
+  } catch {
+    // table may not exist yet — swallow
+  }
+}
 
 export function isOutlookMailConfigured(): boolean {
   return isMicrosoftConfigured();
@@ -79,6 +95,7 @@ export async function sendEmail(data: {
   subject: string;
   body: string;
   cc?: string;
+  source?: string;  // job name for tracking (e.g. 'fossa_email')
 }): Promise<void> {
   try {
     const client = getGraphClient();
@@ -100,7 +117,11 @@ export async function sendEmail(data: {
         ccRecipients,
       },
     });
+
+    logEmailSend(data.to, data.subject, 'sent', data.source);
+    pushEvent({ ts: new Date().toISOString(), type: 'job', summary: `Email sent: "${data.subject}" → ${data.to.split(',')[0]}` });
   } catch (err) {
+    logEmailSend(data.to, data.subject, 'failed', data.source, (err as Error)?.message);
     logger.error({ err }, 'Failed to send Outlook email');
     throw err;
   }

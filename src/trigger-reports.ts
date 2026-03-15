@@ -1,7 +1,7 @@
 /**
  * One-off script to manually trigger reports.
  * Usage: npx tsx src/trigger-reports.ts [content] [coach] [evening] [briefing]
- * If no args, triggers all three: content, coach, evening.
+ * If no args, triggers all four: content, coach, evening, briefing.
  */
 import 'dotenv/config';
 import { Bot } from 'grammy';
@@ -17,6 +17,7 @@ import { getRemindersForToday } from './state/reminders';
 import { initDatabase } from './services/database';
 import { escapeHtml, splitMessage, formatDailyBriefing, DailyBriefingData } from './utils/telegram-formatter';
 import { now, startOfDay, endOfDay, formatTime, formatDateTime } from './utils/date-parser';
+import { sendDailyBriefing } from './services/scheduler';
 
 const bot = new Bot(config.telegram.botToken);
 const userIds = config.telegram.allowedUserIds;
@@ -115,6 +116,11 @@ async function main() {
   if (all || args.includes('content')) await triggerContent();
   if (all || args.includes('coach')) await triggerCoach();
   if (all || args.includes('evening')) await triggerEvening();
+  if (all || args.includes('briefing')) {
+    console.log('🌅 Running morning briefing...');
+    await sendDailyBriefing(bot);
+    console.log('✅ Morning briefing sent');
+  }
 
   console.log('Done.');
   process.exit(0);

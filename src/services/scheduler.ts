@@ -15,7 +15,7 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from './garmin';
-import { registerJob, wrapJob, recordGarminRefresh } from '../portal/telemetry';
+import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier } from '../portal/telemetry';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -26,6 +26,20 @@ const todayNotifications: string[] = [];
 export function getTodayNotifications(): string[] { return todayNotifications; }
 
 export function startScheduler(bot: Bot): void {
+  // Register failure notifier so wrapJob sends Telegram alerts on job failures
+  setJobFailureNotifier(async (jobLabel, errorMessage) => {
+    const short = errorMessage.slice(0, 120);
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId,
+          `⚠️ <b>${escapeHtml(jobLabel)} failed</b>\n\n<code>${escapeHtml(short)}</code>\n\n<i>Check logs for details.</i>`,
+          { parse_mode: 'HTML' });
+      } catch {
+        // swallow — avoid cascading failures
+      }
+    }
+  });
+
   const tz = config.app.timezone;
   const dailyCron = (() => {
     const [h, m] = config.todo.digestTime.split(':').map(Number);
@@ -274,6 +288,7 @@ export function startScheduler(bot: Bot): void {
         to: fossaTo,
         subject: 'Limpeza Fossa Septica',
         body: `Exmos. Senhores,\nVenho por este meio solicitar a limpeza da fossa séptica do seguinte imóvel:\n\nMorada: Rua José Quendera Miranda L4, 2870-684 Alto-Estanqueiro/Jardia\nNome: Felipe Dominguez Rodriguez Ferreira\nNúmero de Cliente: 3895417\nTelefone: 912 874 680\n\nAgradeço, por favor, que me informem sobre a disponibilidade para a realização do serviço.\n\nCom os melhores cumprimentos,\nFelipe Dominguez`,
+        source: 'fossa_email',
       });
 
       todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);

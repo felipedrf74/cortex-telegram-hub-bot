@@ -1,9 +1,9 @@
 import { config } from './config';
 import { logger } from './utils/logger';
-import { initDatabase, closeDatabase } from './services/database';
+import { initDatabase, closeDatabase, getDb } from './services/database';
 import { createBot } from './bot';
 import { startScheduler } from './services/scheduler';
-import { setBotRef, setBotPollingActive } from './portal/telemetry';
+import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
 import { createPortalServer } from './portal/server';
 import type http from 'http';
 
@@ -15,6 +15,9 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase();
+
+  // Wire up DB provider for telemetry job history persistence
+  setDbProvider(() => getDb());
 
   // Create bot
   const bot = createBot();

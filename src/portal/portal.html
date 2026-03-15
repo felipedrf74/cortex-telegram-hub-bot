@@ -17,6 +17,7 @@
     --red: #e17055;
     --yellow: #fdcb6e;
     --blue: #74b9ff;
+    --orange: #e17055;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -68,6 +69,36 @@
   .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
   .dot-yellow { background: var(--yellow); }
+
+  /* ── Health Summary Bar ───────────────── */
+  .health-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font-size: 13px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .health-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text2);
+  }
+
+  .health-item .val {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .health-sep {
+    color: var(--border);
+    font-size: 16px;
+  }
 
   .container {
     max-width: 1400px;
@@ -161,12 +192,105 @@
     font-weight: 600;
   }
 
-  .badge-success { background: rgba(0,184,148,.15); color: var(--green); }
+  .badge-success, .badge-sent { background: rgba(0,184,148,.15); color: var(--green); }
   .badge-failed { background: rgba(225,112,85,.15); color: var(--red); }
   .badge-running { background: rgba(116,185,255,.15); color: var(--blue); }
   .badge-never { background: rgba(139,143,163,.15); color: var(--text2); }
   .badge-configured { background: rgba(0,184,148,.15); color: var(--green); }
   .badge-not-configured { background: rgba(139,143,163,.15); color: var(--text2); }
+
+  /* ── Daily Timeline ─────────────────────── */
+  .timeline-wrap {
+    position: relative;
+    height: 80px;
+    background: var(--surface2);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+
+  .timeline-track {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+  }
+
+  .timeline-hour-marks {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+
+  .timeline-hour-mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(45,49,64,.8);
+  }
+
+  .timeline-hour-label {
+    position: absolute;
+    bottom: 2px;
+    font-size: 9px;
+    color: var(--text2);
+    transform: translateX(-50%);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .timeline-block {
+    position: absolute;
+    top: 6px;
+    height: 24px;
+    border-radius: 4px;
+    font-size: 10px;
+    color: #fff;
+    padding: 3px 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+    min-width: 6px;
+  }
+
+  .timeline-block.job { top: 36px; }
+
+  .timeline-now {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--red);
+    z-index: 10;
+  }
+
+  .timeline-now::after {
+    content: 'NOW';
+    position: absolute;
+    top: -1px;
+    left: 4px;
+    font-size: 8px;
+    color: var(--red);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Sparkline ──────────────────────────── */
+  .sparkline {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 16px;
+    vertical-align: middle;
+  }
+
+  .spark-bar {
+    width: 4px;
+    border-radius: 1px;
+    min-height: 3px;
+  }
+
+  .spark-bar.ok { background: var(--green); }
+  .spark-bar.fail { background: var(--red); }
 
   /* ── Action Buttons ────────────────────── */
   .actions-grid {
@@ -251,6 +375,7 @@
   /* ── Responsive ────────────────────────── */
   @media (max-width: 900px) {
     .container { grid-template-columns: 1fr; }
+    .health-bar { flex-wrap: wrap; gap: 12px; }
   }
 
   .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
@@ -276,7 +401,35 @@
   </div>
 </div>
 
+<!-- ── Feature #5: Health Summary Bar ──────── -->
+<div class="health-bar" id="health-bar">
+  <div class="health-item">⏱️ Jobs: <span class="val" id="hb-jobs">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">📧 Emails today: <span class="val" id="hb-emails">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">💰 API cost: <span class="val" id="hb-api">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">🧾 Invoices: <span class="val" id="hb-invoices">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
+</div>
+
 <div class="container">
+
+  <!-- ── Feature #2: Daily Timeline ──────────── -->
+  <div class="card card-full">
+    <h2>📅 Today's Timeline</h2>
+    <div class="timeline-wrap" id="timeline">
+      <div class="timeline-hour-marks" id="timeline-hours"></div>
+      <div class="timeline-track" id="timeline-track"></div>
+    </div>
+    <div style="display:flex;gap:16px;font-size:11px;color:var(--text2);margin-top:4px">
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--blue);vertical-align:middle"></span> Calendar</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);vertical-align:middle"></span> Cron Jobs</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--orange);vertical-align:middle"></span> Emails</span>
+      <span><span style="display:inline-block;width:2px;height:10px;background:var(--red);vertical-align:middle"></span> Now</span>
+    </div>
+  </div>
 
   <!-- ── Bot & System ──────────────────────── -->
   <div class="card">
@@ -324,6 +477,34 @@
     </table>
   </div>
 
+  <!-- ── Feature #3: Next Runs Panel ─────────── -->
+  <div class="card">
+    <h2>🚀 Next Scheduled Runs</h2>
+    <table id="next-runs-table">
+      <thead><tr><th>Job</th><th>Fires</th><th>Countdown</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Feature #1: Email Automations ────────── -->
+  <div class="card">
+    <h2>📧 Email Automations</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value text-green" id="email-sent-today">—</div>
+        <div class="stat-label">Sent Today</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value text-red" id="email-failed-today">—</div>
+        <div class="stat-label">Failed Today</div>
+      </div>
+    </div>
+    <table id="email-log-table">
+      <thead><tr><th>Recipient</th><th>Subject</th><th>Status</th><th>Time</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- ── Integrations ──────────────────────── -->
   <div class="card">
     <h2>🔗 Integrations</h2>
@@ -352,11 +533,11 @@
     </table>
   </div>
 
-  <!-- ── Scheduled Jobs ────────────────────── -->
+  <!-- ── Scheduled Jobs (with sparklines) ───── -->
   <div class="card card-full">
     <h2>⏱️ Scheduled Jobs</h2>
     <table id="jobs-table">
-      <thead><tr><th>Job</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>Error</th></tr></thead>
+      <thead><tr><th>Job</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>History</th><th>Error</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -433,6 +614,15 @@
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   }
 
+  function shortDateTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const today = new Date();
+    const isToday = d.toDateString() === today.toDateString();
+    if (isToday) return shortTime(iso);
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ' ' + shortTime(iso);
+  }
+
   function relativeTime(iso) {
     if (!iso) return '—';
     const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -440,6 +630,88 @@
     if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
     if (sec < 86400) return `${Math.floor(sec/3600)}h ago`;
     return `${Math.floor(sec/86400)}d ago`;
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    const el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+  }
+
+  // ── Timeline rendering ─────────────────────
+  function renderTimeline(snap) {
+    const track = document.getElementById('timeline-track');
+    const hoursEl = document.getElementById('timeline-hours');
+
+    // Render hour marks (every 3h)
+    let hoursHtml = '';
+    for (let h = 0; h <= 24; h += 3) {
+      const pct = (h / 24) * 100;
+      hoursHtml += `<div class="timeline-hour-mark" style="left:${pct}%"></div>`;
+      if (h < 24) hoursHtml += `<span class="timeline-hour-label" style="left:${pct}%">${String(h).padStart(2,'0')}:00</span>`;
+    }
+    hoursEl.innerHTML = hoursHtml;
+
+    let blocksHtml = '';
+
+    // Now marker
+    const now = new Date();
+    const nowPct = ((now.getHours() * 60 + now.getMinutes()) / 1440) * 100;
+    blocksHtml += `<div class="timeline-now" style="left:${nowPct}%"></div>`;
+
+    // Calendar events (from today's briefing data if available in jobs/events)
+    // We use nextRuns to show cron job fire times
+    const todayStr = now.toISOString().slice(0, 10);
+
+    // Cron job next runs that fire today
+    if (snap.nextRuns) {
+      for (const nr of snap.nextRuns) {
+        const fireDate = new Date(nr.nextFireAt);
+        if (fireDate.toISOString().slice(0, 10) !== todayStr) continue;
+        const fireMin = fireDate.getHours() * 60 + fireDate.getMinutes();
+        const pct = (fireMin / 1440) * 100;
+        blocksHtml += `<div class="timeline-block job" style="left:${pct}%;width:max(20px,2%);background:var(--accent)" title="${esc(nr.label)} at ${shortTime(nr.nextFireAt)}">${esc(nr.label.slice(0,12))}</div>`;
+      }
+    }
+
+    // Show completed jobs from today (from recentEvents of type 'job')
+    if (snap.recentEvents) {
+      for (const ev of snap.recentEvents) {
+        if (ev.type !== 'job' && ev.type !== 'error') continue;
+        const evDate = new Date(ev.ts);
+        if (evDate.toISOString().slice(0, 10) !== todayStr) continue;
+        const evMin = evDate.getHours() * 60 + evDate.getMinutes();
+        const pct = (evMin / 1440) * 100;
+        const isErr = ev.type === 'error';
+        const color = isErr ? 'var(--red)' : 'var(--green)';
+        blocksHtml += `<div class="timeline-block" style="left:${pct}%;width:max(16px,1.5%);background:${color};opacity:0.7;top:6px" title="${esc(ev.summary)} at ${shortTime(ev.ts)}"></div>`;
+      }
+    }
+
+    // Email events from email log
+    if (snap.emailLog && snap.emailLog.recentEmails) {
+      for (const em of snap.emailLog.recentEmails) {
+        const emDate = new Date(em.ts);
+        if (emDate.toISOString().slice(0, 10) !== todayStr) continue;
+        const emMin = emDate.getHours() * 60 + emDate.getMinutes();
+        const pct = (emMin / 1440) * 100;
+        const color = em.status === 'sent' ? 'var(--orange)' : 'var(--red)';
+        blocksHtml += `<div class="timeline-block" style="left:${pct}%;width:max(20px,2%);background:${color};top:6px" title="Email: ${esc(em.subject)} (${em.status})">${esc(em.subject.slice(0,10))}</div>`;
+      }
+    }
+
+    track.innerHTML = blocksHtml;
+  }
+
+  // ── Sparkline rendering ────────────────────
+  function sparkline(runs) {
+    if (!runs || runs.length === 0) return '<span class="text-muted">—</span>';
+    // runs are newest-first, reverse to show left=oldest
+    const reversed = [...runs].reverse();
+    return '<span class="sparkline">' + reversed.map(r =>
+      `<span class="spark-bar ${r.result === 'success' ? 'ok' : 'fail'}" style="height:${r.result === 'success' ? '16' : '8'}px" title="${r.result} at ${shortTime(r.ts)}"></span>`
+    ).join('') + '</span>';
   }
 
   // ── Render snapshot ────────────────────────
@@ -453,6 +725,17 @@
       pollEl.innerHTML = '<span class="status-dot dot-yellow"></span> restarting…';
     } else {
       pollEl.innerHTML = '<span class="status-dot dot-red"></span> stopped';
+    }
+
+    // Health summary bar
+    if (snap.healthSummary) {
+      const hs = snap.healthSummary;
+      const jobColor = hs.jobsOk === hs.jobsTotal ? 'text-green' : 'text-yellow';
+      document.getElementById('hb-jobs').innerHTML = `<span class="${jobColor}">${hs.jobsOk}/${hs.jobsTotal} OK</span>`;
+      document.getElementById('hb-emails').textContent = hs.emailsSentToday;
+      document.getElementById('hb-api').textContent = '$' + hs.apiCostToday.toFixed(3);
+      document.getElementById('hb-invoices').textContent = hs.invoicesThisMonth;
+      document.getElementById('hb-uptime').textContent = snap.uptime.human;
     }
 
     // Bot stats
@@ -473,6 +756,41 @@
       `<tr><td class="mono">${esc(c.category)}</td><td class="text-right">${c.calls}</td><td class="text-right mono">$${c.cost.toFixed(3)}</td></tr>`
     ).join('');
 
+    // Next runs
+    if (snap.nextRuns) {
+      const nrBody = document.querySelector('#next-runs-table tbody');
+      nrBody.innerHTML = snap.nextRuns.slice(0, 10).map(nr => {
+        const fireDate = new Date(nr.nextFireAt);
+        const today = new Date();
+        const isToday = fireDate.toDateString() === today.toDateString();
+        const timeStr = isToday
+          ? shortTime(nr.nextFireAt)
+          : fireDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + shortTime(nr.nextFireAt);
+        return `<tr>
+          <td>${esc(nr.label)}</td>
+          <td class="mono">${esc(timeStr)}</td>
+          <td class="text-muted">${esc(nr.humanDelta)}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="3" class="text-muted">No upcoming jobs</td></tr>';
+    }
+
+    // Email log
+    if (snap.emailLog) {
+      document.getElementById('email-sent-today').textContent = snap.emailLog.todaySent;
+      document.getElementById('email-failed-today').textContent = snap.emailLog.todayFailed;
+      const emailBody = document.querySelector('#email-log-table tbody');
+      emailBody.innerHTML = snap.emailLog.recentEmails.map(e => {
+        const cls = e.status === 'sent' ? 'badge-sent' : 'badge-failed';
+        const errorTip = e.error_message ? ` title="${esc(e.error_message)}"` : '';
+        return `<tr>
+          <td class="mono" style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(e.recipient)}</td>
+          <td>${esc(e.subject)}</td>
+          <td><span class="badge ${cls}"${errorTip}>${e.status}</span></td>
+          <td class="text-muted">${shortDateTime(e.ts)}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="4" class="text-muted">No emails sent yet</td></tr>';
+    }
+
     // Integrations
     const intBody = document.querySelector('#integrations-table tbody');
     intBody.innerHTML = snap.integrations.map(i => {
@@ -490,21 +808,26 @@
       return `<tr><td>${esc(f.vendor)}</td><td class="mono">${esc(f.date)}</td><td>${esc(f.amount || '—')}</td><td><span class="badge ${cls}">${f.status}</span></td></tr>`;
     }).join('') || '<tr><td colspan="4" class="text-muted">No filings yet</td></tr>';
 
-    // Jobs
+    // Jobs (with sparklines)
     const jobBody = document.querySelector('#jobs-table tbody');
     jobBody.innerHTML = snap.jobs.map(j => {
       const cls = j.lastResult === 'success' ? 'badge-success' : j.lastResult === 'failed' ? 'badge-failed' : j.lastResult === 'running' ? 'badge-running' : 'badge-never';
       const dur = j.lastDurationMs != null ? (j.lastDurationMs < 1000 ? `${j.lastDurationMs}ms` : `${(j.lastDurationMs/1000).toFixed(1)}s`) : '—';
       const err = j.lastError ? `<span class="text-red" title="${esc(j.lastError)}">${esc(j.lastError.slice(0,50))}</span>` : '—';
+      const history = snap.jobHistory ? sparkline(snap.jobHistory[j.name]) : '—';
       return `<tr>
         <td>${esc(j.label)}</td>
         <td class="mono text-muted">${esc(j.cronExpression)}</td>
         <td>${j.lastRunAt ? relativeTime(j.lastRunAt) : '—'}</td>
         <td class="mono">${dur}</td>
         <td><span class="badge ${cls}">${j.lastResult}</span></td>
+        <td>${history}</td>
         <td>${err}</td>
       </tr>`;
     }).join('');
+
+    // Daily timeline
+    renderTimeline(snap);
 
     // Activity log
     const logEl = document.getElementById('activity-log');
@@ -517,13 +840,6 @@
         <span class="event-summary">${esc(e.summary)}</span>
       </div>`
     ).join('') || '<div class="text-muted" style="padding:12px">No events yet</div>';
-  }
-
-  function esc(s) {
-    if (!s) return '';
-    const el = document.createElement('span');
-    el.textContent = s;
-    return el.innerHTML;
   }
 
   // ── Polling ────────────────────────────────
