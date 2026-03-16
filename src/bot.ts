@@ -22,7 +22,8 @@ import { startOfDay, endOfDay, startOfWeek, endOfWeek, now, formatTime, formatDa
 import { classifyAndExtractImage, ImageInvoiceResult, ImageCalendarResult, ImageTaskResult } from './services/anthropic';
 import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
-import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, PT_MONTHS } from './services/invoice-filer';
+import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, testSshConnection, PT_MONTHS } from './services/invoice-filer';
+import { enqueueInvoice, getPendingCount } from './services/invoice-queue';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
 import { recordFiling, deleteAmazonFilings, deleteUberFilings } from './state/invoice-filings';
 import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
@@ -47,7 +48,7 @@ import {
   formatRepurpose, formatFeedback, formatReport,
   maybeSaveToFile,
 } from './services/content-engine';
-import { isGarminConfigured } from './services/garmin';
+import { isGarminConfigured, setMfaNotifier, isMfaPending, submitMfaCode } from './services/garmin';
 import { recordMessageProcessed } from './portal/telemetry';
 import fs from 'fs';
 import path from 'path';
@@ -306,6 +307,17 @@ export function createBot(): Bot {
   bot.use(async (ctx, next) => {
     recordMessageProcessed();
     await next();
+  });
+
+  // ── Register Garmin MFA notifier (sends Telegram message when MFA needed) ──
+  setMfaNotifier(async (message: string) => {
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send Garmin MFA notification');
+      }
+    }
   });
 
   // ── System Commands ──
@@ -1776,6 +1788,25 @@ export function createBot(): Bot {
     });
   });
 
+  // ── Garmin MFA Code Submission ──
+  bot.command('garminmfa', async (ctx) => {
+    const code = ctx.message?.text?.replace(/^\/garminmfa\s*/, '').trim();
+    if (!code || !/^\d{4,8}$/.test(code)) {
+      await ctx.reply('⚠️ Usage: <code>/garminmfa 123456</code>\n\nProvide the numeric code from your email.', { parse_mode: 'HTML' });
+      return;
+    }
+    if (!isMfaPending()) {
+      await ctx.reply('ℹ️ No MFA challenge pending. Garmin may not need a code right now.');
+      return;
+    }
+    const accepted = submitMfaCode(code);
+    if (accepted) {
+      await ctx.reply('✅ MFA code submitted — Garmin login completing…');
+    } else {
+      await ctx.reply('⚠️ MFA code was not accepted — the challenge may have expired.');
+    }
+  });
+
   // ── Garmin Daily Coach ──
   bot.command('coach', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
@@ -2491,6 +2522,42 @@ async function handleInvoiceFiling(
     return;
   }
 
+  // Filing failed — check if it's an SSH/connectivity issue and queue for retry
+  const isSshError = filingResult.error && (
+    filingResult.error.includes('Connection') ||
+    filingResult.error.includes('timed out') ||
+    filingResult.error.includes('No route') ||
+    filingResult.error.includes('Connection refused') ||
+    filingResult.error.includes('Host is down') ||
+    filingResult.error.includes('Permission denied') ||
+    filingResult.error.includes('ssh') ||
+    filingResult.error.includes('scp')
+  );
+
+  if (isSshError) {
+    logger.warn({ error: filingResult.error }, 'Invoice filing failed (SSH) — queuing for retry');
+    const queueId = enqueueInvoice(
+      buffer,
+      'image',
+      mediaType,
+      JSON.stringify(invoiceAnalysis),
+      'photo',
+    );
+    const pendingCount = getPendingCount();
+
+    let msg = `📥 <b>Nota fiscal na fila de envio</b>\n\n`;
+    msg += `O Mac parece estar indisponível (a dormir ou sem túnel SSH).\n`;
+    msg += `A fatura foi guardada localmente e será enviada automaticamente quando a ligação voltar.\n\n`;
+    if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
+    if (analysis.totalAmount) msg += `💰 ${escapeHtml(analysis.totalAmount)}\n`;
+    if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
+    msg += `\n🔄 Fila: ${pendingCount} fatura${pendingCount > 1 ? 's' : ''} pendente${pendingCount > 1 ? 's' : ''}`;
+    msg += `\n⏱️ Tentativa automática a cada 15 minutos`;
+
+    await ctx.reply(msg, { parse_mode: 'HTML' });
+    return;
+  }
+
   logger.error({ error: filingResult.error }, 'Invoice filing failed');
   await ctx.reply(
     `⚠️ Nota fiscal detectada mas falhou ao arquivar: ${escapeHtml(filingResult.error || 'Erro desconhecido')}`,
@@ -2976,17 +3043,24 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /dueweek — Tasks due this week
 /completed [list] — Recently completed tasks
 
-<b>📅 SCHEDULE</b>
+<b>📅 SCHEDULE &amp; SECRETARY</b>
 /day — Today's schedule
 /week — Week overview
+/plan — Tomorrow's plan
+/review — Weekly review
 
-<b>🏋️ TRIATHLON</b>
+<b>🏋️ TRIATHLON &amp; COACH</b>
+/coach — Daily training analysis (Garmin data + calendar)
 /checkin — How I feel today
 /gym — Gym program
 /run — Running plan
+/bike — Cycling plan
 /meal — Carnivore meal plan
+/macros — Macros tracking
+/deload — Deload recommendations
+/pain — Pain/injury report
 
-<b>📹 CONTENT</b>
+<b>📹 CONTENT CREATION</b>
 /discover — Run daily content discovery (trending topics)
 /ideas [date] — View ideas by date (default: today)
 /ideas saved — View saved ideas from discovery
@@ -3014,10 +3088,13 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 <b>📄 FATURAS</b>
 /amazon [YYYY-MM] [--force] — Recolher faturas Amazon
 /uber [YYYY-MM] [--force] — Recolher faturas Uber (viagens + Eats)
+📸 Send photo of invoice → Auto-files via SSH (or queues if Mac offline)
 
 <b>🔧 SYSTEM</b>
 /help — This menu
 /status — Current state overview
 /clear [domain] — Clear conversation history
+/garminmfa [code] — Submit Garmin MFA verification code
 
-💡 You can also just type naturally — I'll route to the right domain.`;
+💡 You can also just type naturally — I'll route to the right domain.
+🌐 Portal: http://your-server:8200`;

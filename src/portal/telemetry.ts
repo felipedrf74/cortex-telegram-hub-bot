@@ -48,10 +48,13 @@ export function getRecentEvents(): ActivityEvent[] {
 
 // ─── Scheduled Job Tracking ──────────────────────────────────────────
 
+export type JobDomain = 'secretary' | 'triathlon' | 'content' | 'invoices' | 'system';
+
 export interface JobStatus {
   name: string;
   label: string;           // human-readable name
   cronExpression: string;
+  domain: JobDomain;
   lastRunAt: string | null;
   lastResult: 'success' | 'failed' | 'running' | 'never';
   lastDurationMs: number | null;
@@ -60,11 +63,12 @@ export interface JobStatus {
 
 const jobMap = new Map<string, JobStatus>();
 
-export function registerJob(name: string, label: string, cronExpression: string): void {
+export function registerJob(name: string, label: string, cronExpression: string, domain: JobDomain = 'system'): void {
   jobMap.set(name, {
     name,
     label,
     cronExpression,
+    domain,
     lastRunAt: null,
     lastResult: 'never',
     lastDurationMs: null,

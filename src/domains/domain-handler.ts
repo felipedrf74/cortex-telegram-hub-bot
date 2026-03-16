@@ -55,11 +55,16 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
     const coachState = getLastCoachState(userId);
     if (coachState && coachState.recommendations.length > 0) {
       parts.push(`\n[COACH RECOMMENDATIONS — ${new Date(coachState.timestamp).toISOString()}]`);
-      parts.push('CRITICAL: These are recommendations for EXISTING calendar events. When the athlete asks to apply them:');
+      parts.push('CRITICAL: These are recommendations for EXISTING calendar events based on Garmin data already analyzed (sleep, HRV, body battery, stress, training readiness).');
+      parts.push('When the athlete asks to "apply recommendations" or "apply changes" or similar:');
+      parts.push('- IMMEDIATELY apply the recommendations below using tool calls — do NOT ask for additional information');
+      parts.push('- The analysis was already done with real Garmin biometric data — all decisions are already made');
       parts.push('- NEVER use create_calendar_event — the events ALREADY EXIST on the calendar');
-      parts.push('- For KEEP/MODIFY/SWAP: use update_calendar_event with the exact event_id and calendar_source below');
+      parts.push('- For KEEP: do nothing (no tool call needed)');
+      parts.push('- For MODIFY/SWAP: use update_calendar_event with the exact event_id and calendar_source below');
       parts.push('- For REST/cancel: use delete_calendar_event with the exact event_id and calendar_source below');
-      parts.push('- Always include calendar_source in your tool call\n');
+      parts.push('- Always include calendar_source in your tool call');
+      parts.push('- After applying, confirm what was changed in a brief summary\n');
       for (const rec of coachState.recommendations) {
         const details = [
           `action: ${rec.action}`,

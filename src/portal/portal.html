@@ -199,6 +199,24 @@
   .badge-configured { background: rgba(0,184,148,.15); color: var(--green); }
   .badge-not-configured { background: rgba(139,143,163,.15); color: var(--text2); }
 
+  /* ── Domain Tags ───────────────────────── */
+  .domain-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    vertical-align: middle;
+  }
+
+  .domain-secretary  { background: rgba(116,185,255,.15); color: #74b9ff; }
+  .domain-triathlon  { background: rgba(0,184,148,.15);   color: #00b894; }
+  .domain-content    { background: rgba(253,203,110,.15); color: #fdcb6e; }
+  .domain-invoices   { background: rgba(162,155,254,.15); color: #a29bfe; }
+  .domain-system     { background: rgba(139,143,163,.1);  color: var(--text2); }
+
   /* ── Daily Timeline ─────────────────────── */
   .timeline-wrap {
     position: relative;
@@ -272,6 +290,146 @@
     color: var(--red);
     font-weight: 700;
     letter-spacing: 0.5px;
+  }
+
+  /* ── Monthly Calendar View ─────────────────── */
+  .cal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .cal-header h3 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .cal-nav {
+    display: flex;
+    gap: 6px;
+  }
+
+  .cal-nav button {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .cal-nav button:hover { border-color: var(--accent); }
+  .cal-nav button.active { background: var(--accent); border-color: var(--accent); }
+
+  .cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .cal-dow {
+    background: var(--surface2);
+    padding: 6px 4px;
+    text-align: center;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cal-day {
+    min-height: 90px;
+    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    padding: 4px;
+    background: var(--surface);
+    position: relative;
+  }
+
+  .cal-day:nth-child(7n) { border-right: none; }
+  .cal-day.outside { background: var(--bg); opacity: 0.4; }
+  .cal-day.today { background: rgba(108,92,231,.06); }
+
+  .cal-day-num {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text2);
+    padding: 2px 4px;
+    margin-bottom: 2px;
+  }
+
+  .cal-day.today .cal-day-num {
+    background: var(--red);
+    color: #fff;
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .cal-event {
+    display: block;
+    padding: 1px 4px;
+    margin-bottom: 1px;
+    border-radius: 3px;
+    font-size: 9px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+    line-height: 1.4;
+    border-left: 3px solid;
+  }
+
+  .cal-event.success { background: rgba(0,184,148,.1); border-color: var(--green); color: var(--green); }
+  .cal-event.failed  { background: rgba(225,112,85,.1); border-color: var(--red); color: var(--red); }
+  .cal-event.scheduled { background: rgba(139,143,163,.08); border-color: var(--text2); color: var(--text2); }
+
+  .cal-event.domain-secretary  { border-color: #74b9ff; }
+  .cal-event.domain-triathlon  { border-color: #00b894; }
+  .cal-event.domain-content    { border-color: #fdcb6e; }
+  .cal-event.domain-invoices   { border-color: #a29bfe; }
+  .cal-event.domain-system     { border-color: var(--text2); }
+
+  .cal-more {
+    font-size: 9px;
+    color: var(--accent);
+    padding: 0 4px;
+    cursor: default;
+  }
+
+  .cal-legend {
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+
+  .cal-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .cal-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
   }
 
   /* ── Sparkline ──────────────────────────── */
@@ -411,6 +569,8 @@
   <span class="health-sep">|</span>
   <div class="health-item">🧾 Invoices: <span class="val" id="hb-invoices">—</span></div>
   <span class="health-sep">|</span>
+  <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
+  <span class="health-sep" id="hb-queue-sep" style="display:none">|</span>
   <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
 </div>
 
@@ -423,11 +583,37 @@
       <div class="timeline-hour-marks" id="timeline-hours"></div>
       <div class="timeline-track" id="timeline-track"></div>
     </div>
-    <div style="display:flex;gap:16px;font-size:11px;color:var(--text2);margin-top:4px">
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--blue);vertical-align:middle"></span> Calendar</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);vertical-align:middle"></span> Cron Jobs</span>
+    <div style="display:flex;gap:14px;font-size:11px;color:var(--text2);margin-top:4px;flex-wrap:wrap">
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#74b9ff;vertical-align:middle"></span> Secretary</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00b894;vertical-align:middle"></span> Triathlon</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#fdcb6e;vertical-align:middle"></span> Content</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#a29bfe;vertical-align:middle"></span> Invoices</span>
+      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#8b8fa3;vertical-align:middle"></span> System</span>
       <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--orange);vertical-align:middle"></span> Emails</span>
       <span><span style="display:inline-block;width:2px;height:10px;background:var(--red);vertical-align:middle"></span> Now</span>
+    </div>
+  </div>
+
+  <!-- ── Monthly Calendar View ─────────────── -->
+  <div class="card card-full">
+    <h2>🗓️ Job Calendar</h2>
+    <div class="cal-header">
+      <h3 id="cal-title">March 2026</h3>
+      <div class="cal-nav">
+        <button onclick="calNavigate(-1)">&lt;</button>
+        <button onclick="calNavigate(0)" class="active">Today</button>
+        <button onclick="calNavigate(1)">&gt;</button>
+      </div>
+    </div>
+    <div class="cal-grid" id="cal-grid"></div>
+    <div class="cal-legend">
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(0,184,148,.3)"></span> Success</span>
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(225,112,85,.3)"></span> Failed</span>
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(139,143,163,.2)"></span> Scheduled</span>
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #74b9ff;width:7px"></span> Secretary</span>
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #00b894;width:7px"></span> Triathlon</span>
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #fdcb6e;width:7px"></span> Content</span>
+      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #a29bfe;width:7px"></span> Invoices</span>
     </div>
   </div>
 
@@ -481,7 +667,7 @@
   <div class="card">
     <h2>🚀 Next Scheduled Runs</h2>
     <table id="next-runs-table">
-      <thead><tr><th>Job</th><th>Fires</th><th>Countdown</th></tr></thead>
+      <thead><tr><th>Job</th><th>Domain</th><th>Fires</th><th>Countdown</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -537,7 +723,7 @@
   <div class="card card-full">
     <h2>⏱️ Scheduled Jobs</h2>
     <table id="jobs-table">
-      <thead><tr><th>Job</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>History</th><th>Error</th></tr></thead>
+      <thead><tr><th>Job</th><th>Domain</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>History</th><th>Error</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -664,14 +850,15 @@
     // We use nextRuns to show cron job fire times
     const todayStr = now.toISOString().slice(0, 10);
 
-    // Cron job next runs that fire today
+    // Cron job next runs that fire today (colored by domain)
     if (snap.nextRuns) {
       for (const nr of snap.nextRuns) {
         const fireDate = new Date(nr.nextFireAt);
         if (fireDate.toISOString().slice(0, 10) !== todayStr) continue;
         const fireMin = fireDate.getHours() * 60 + fireDate.getMinutes();
         const pct = (fireMin / 1440) * 100;
-        blocksHtml += `<div class="timeline-block job" style="left:${pct}%;width:max(20px,2%);background:var(--accent)" title="${esc(nr.label)} at ${shortTime(nr.nextFireAt)}">${esc(nr.label.slice(0,12))}</div>`;
+        const color = DOMAIN_COLORS[nr.domain] || 'var(--accent)';
+        blocksHtml += `<div class="timeline-block job" style="left:${pct}%;width:max(20px,2%);background:${color}" title="${esc(nr.label)} at ${shortTime(nr.nextFireAt)}">${esc(nr.label.slice(0,12))}</div>`;
       }
     }
 
@@ -714,6 +901,154 @@
     ).join('') + '</span>';
   }
 
+  // ── Domain color helper ─────────────────────
+  const DOMAIN_COLORS = {
+    secretary: '#74b9ff',
+    triathlon: '#00b894',
+    content: '#fdcb6e',
+    invoices: '#a29bfe',
+    system: '#8b8fa3',
+  };
+
+  // ── Domain tag helper ────────────────────────
+  const DOMAIN_LABELS = {
+    secretary: 'Secretary',
+    triathlon: 'Triathlon',
+    content: 'Content',
+    invoices: 'Invoices',
+    system: 'System',
+  };
+
+  function domainTag(domain) {
+    if (!domain) return '';
+    return `<span class="domain-tag domain-${domain}">${DOMAIN_LABELS[domain] || domain}</span>`;
+  }
+
+  // ── Monthly Calendar rendering ──────────────
+  let calOffset = 0; // 0 = current month, -1 = prev, +1 = next
+  let lastSnap = null;
+
+  window.calNavigate = function(dir) {
+    if (dir === 0) calOffset = 0;
+    else calOffset += dir;
+    if (lastSnap) renderCalendar(lastSnap);
+  };
+
+  function renderCalendar(snap) {
+    lastSnap = snap;
+    const grid = document.getElementById('cal-grid');
+    const titleEl = document.getElementById('cal-title');
+
+    if (!snap.calendarData || !snap.calendarData.jobs.length) {
+      grid.innerHTML = '<div class="text-muted" style="padding:12px;grid-column:1/-1">No job data available yet</div>';
+      return;
+    }
+
+    const now = new Date();
+    const viewDate = new Date(now.getFullYear(), now.getMonth() + calOffset, 1);
+    const year = viewDate.getFullYear();
+    const month = viewDate.getMonth();
+
+    const monthNames = ['January','February','March','April','May','June',
+                        'July','August','September','October','November','December'];
+    titleEl.textContent = `${monthNames[month]} ${year}`;
+
+    // Build day-of-week headers (Mon-Sun)
+    const dows = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    let html = dows.map(d => `<div class="cal-dow">${d}</div>`).join('');
+
+    // Find first Monday on or before the 1st of the month
+    const firstDay = new Date(year, month, 1);
+    let startDow = firstDay.getDay(); // 0=Sun
+    startDow = startDow === 0 ? 6 : startDow - 1; // Convert to Mon=0
+
+    const startDate = new Date(firstDay);
+    startDate.setDate(startDate.getDate() - startDow);
+
+    // Build lookup of runs by day
+    const runsByDay = {};
+    for (const job of snap.calendarData.jobs) {
+      for (const run of job.runs) {
+        const key = run.day;
+        if (!runsByDay[key]) runsByDay[key] = [];
+        runsByDay[key].push({ ...run, label: job.label, domain: job.domain });
+      }
+    }
+
+    // Build lookup of scheduled by day
+    const schedByDay = {};
+    for (const job of snap.calendarData.jobs) {
+      for (const s of job.scheduled) {
+        const key = s.day;
+        if (!schedByDay[key]) schedByDay[key] = [];
+        schedByDay[key].push({ ...s, label: job.label, domain: job.domain });
+      }
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    // Render 6 weeks (42 cells)
+    for (let i = 0; i < 42; i++) {
+      const cellDate = new Date(startDate);
+      cellDate.setDate(startDate.getDate() + i);
+      const cellStr = cellDate.toISOString().slice(0, 10);
+      const isOutside = cellDate.getMonth() !== month;
+      const isToday = cellStr === todayStr;
+      const dayNum = cellDate.getDate();
+
+      let cls = 'cal-day';
+      if (isOutside) cls += ' outside';
+      if (isToday) cls += ' today';
+
+      let inner = `<div class="cal-day-num">${dayNum}</div>`;
+
+      // Actual runs
+      const runs = runsByDay[cellStr] || [];
+      // Scheduled (future only, skip if already ran at that hour)
+      const scheds = schedByDay[cellStr] || [];
+
+      // Merge and sort by time
+      const events = [];
+      for (const r of runs) {
+        const timeStr = r.ts.slice(11, 16);
+        events.push({
+          time: timeStr,
+          label: r.label,
+          domain: r.domain,
+          status: r.result === 'success' ? 'success' : 'failed',
+          title: `${r.result} at ${timeStr}${r.durationMs != null ? ' (' + (r.durationMs < 1000 ? r.durationMs + 'ms' : (r.durationMs/1000).toFixed(1) + 's') + ')' : ''}`,
+        });
+      }
+      const ranKeys = new Set(runs.map(r => r.label + ':' + r.hour));
+      for (const s of scheds) {
+        if (ranKeys.has(s.label + ':' + s.hour)) continue;
+        const hStr = String(s.hour).padStart(2, '0') + ':00';
+        events.push({
+          time: hStr,
+          label: s.label,
+          domain: s.domain,
+          status: 'scheduled',
+          title: `Scheduled ${hStr}`,
+        });
+      }
+
+      events.sort((a, b) => a.time.localeCompare(b.time));
+
+      const MAX_VISIBLE = 4;
+      const visible = events.slice(0, MAX_VISIBLE);
+      for (const ev of visible) {
+        inner += `<div class="cal-event ${ev.status} domain-${ev.domain || 'system'}" title="${esc(ev.label)}: ${esc(ev.title)}">${ev.time} ${esc(ev.label)}</div>`;
+      }
+      if (events.length > MAX_VISIBLE) {
+        inner += `<div class="cal-more">+${events.length - MAX_VISIBLE} more</div>`;
+      }
+
+      html += `<div class="${cls}">${inner}</div>`;
+    }
+
+    grid.innerHTML = html;
+  }
+
   // ── Render snapshot ────────────────────────
   function render(snap) {
     // Header
@@ -735,6 +1070,11 @@
       document.getElementById('hb-emails').textContent = hs.emailsSentToday;
       document.getElementById('hb-api').textContent = '$' + hs.apiCostToday.toFixed(3);
       document.getElementById('hb-invoices').textContent = hs.invoicesThisMonth;
+      // Invoice queue indicator (only visible when queue has pending items)
+      const queueCount = hs.invoiceQueuePending || 0;
+      document.getElementById('hb-queue-wrap').style.display = queueCount > 0 ? '' : 'none';
+      document.getElementById('hb-queue-sep').style.display = queueCount > 0 ? '' : 'none';
+      document.getElementById('hb-queue').textContent = queueCount;
       document.getElementById('hb-uptime').textContent = snap.uptime.human;
     }
 
@@ -768,10 +1108,11 @@
           : fireDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + shortTime(nr.nextFireAt);
         return `<tr>
           <td>${esc(nr.label)}</td>
+          <td>${domainTag(nr.domain)}</td>
           <td class="mono">${esc(timeStr)}</td>
           <td class="text-muted">${esc(nr.humanDelta)}</td>
         </tr>`;
-      }).join('') || '<tr><td colspan="3" class="text-muted">No upcoming jobs</td></tr>';
+      }).join('') || '<tr><td colspan="4" class="text-muted">No upcoming jobs</td></tr>';
     }
 
     // Email log
@@ -817,6 +1158,7 @@
       const history = snap.jobHistory ? sparkline(snap.jobHistory[j.name]) : '—';
       return `<tr>
         <td>${esc(j.label)}</td>
+        <td>${domainTag(j.domain)}</td>
         <td class="mono text-muted">${esc(j.cronExpression)}</td>
         <td>${j.lastRunAt ? relativeTime(j.lastRunAt) : '—'}</td>
         <td class="mono">${dur}</td>
@@ -828,6 +1170,9 @@
 
     // Daily timeline
     renderTimeline(snap);
+
+    // Monthly calendar view
+    renderCalendar(snap);
 
     // Activity log
     const logEl = document.getElementById('activity-log');

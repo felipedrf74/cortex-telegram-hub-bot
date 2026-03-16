@@ -5,8 +5,14 @@
  * Uses token persistence (OAuth1 + OAuth2 files in data/garmin-tokens/)
  * so we only need to login with credentials once. Subsequent runs load
  * saved tokens and refresh as needed.
+ *
+ * MFA support: When Garmin requires a verification code, we detect the
+ * MFA challenge HTML, ask the user via Telegram for the code, submit it
+ * to complete the login, and persist the resulting tokens.
  */
 import { GarminConnect } from 'garmin-connect';
+import axios from 'axios';
+import qs from 'qs';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
@@ -115,6 +121,381 @@ export interface GarminCoachData {
   errors: string[];
 }
 
+// ─── MFA Support ─────────────────────────────────────────────────────
+
+/**
+ * Pending MFA state: when Garmin requires a verification code,
+ * we store the state here so the user can provide the code via Telegram.
+ */
+interface MfaPendingState {
+  resolve: (code: string) => void;
+  reject: (err: Error) => void;
+  expiresAt: number;
+}
+
+let _mfaPending: MfaPendingState | null = null;
+let _mfaNotifier: ((message: string) => Promise<void>) | null = null;
+
+// ─── Rate-limit backoff (persisted to disk to survive restarts) ──────
+const RATE_LIMIT_FILE = `${config.garmin.tokenPath}/rate_limit_until.txt`;
+
+function _loadRateLimitedUntil(): number {
+  try {
+    if (fs.existsSync(RATE_LIMIT_FILE)) {
+      const ts = parseInt(fs.readFileSync(RATE_LIMIT_FILE, 'utf-8').trim(), 10);
+      if (!isNaN(ts) && ts > Date.now()) return ts;
+    }
+  } catch { /* ignore */ }
+  return 0;
+}
+
+let _rateLimitedUntil = _loadRateLimitedUntil();
+
+function isRateLimited(): boolean {
+  return Date.now() < _rateLimitedUntil;
+}
+
+function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
+  _rateLimitedUntil = Date.now() + durationMs;
+  try {
+    const dir = config.garmin.tokenPath;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(RATE_LIMIT_FILE, String(_rateLimitedUntil));
+  } catch { /* best-effort */ }
+  logger.warn({ backoffMinutes: durationMs / 60000, until: new Date(_rateLimitedUntil).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
+}
+
+function checkForRateLimit(html: string, status?: number): void {
+  if (status === 429 || /Error\s*1015|rate.?limit|banned.*temporarily/i.test(html)) {
+    setRateLimited();
+    throw new Error('Garmin SSO rate-limited by Cloudflare — backing off 2 hours');
+  }
+}
+
+/** Detect rate-limit errors from library-thrown exceptions (garmin-connect throws
+ * the full HTML body in the error message when SSO returns 429/1015). */
+function checkErrorForRateLimit(err: unknown): void {
+  const msg = (err as Error)?.message ?? '';
+  if (/429|Error\s*1015|rate.?limit|banned.*temporarily/i.test(msg)) {
+    setRateLimited();
+  }
+}
+
+/** Register a callback to notify the user when MFA is needed (called from bot.ts) */
+export function setMfaNotifier(notifier: (message: string) => Promise<void>): void {
+  _mfaNotifier = notifier;
+}
+
+/** Check if there's a pending MFA challenge */
+export function isMfaPending(): boolean {
+  return _mfaPending !== null && Date.now() < _mfaPending.expiresAt;
+}
+
+/** Submit an MFA code from the user (called from bot command handler) */
+export function submitMfaCode(code: string): boolean {
+  if (!_mfaPending || Date.now() >= _mfaPending.expiresAt) {
+    return false;
+  }
+  _mfaPending.resolve(code);
+  _mfaPending = null;
+  return true;
+}
+
+/** Wait for the user to provide an MFA code via Telegram */
+function waitForMfaCode(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timeoutMs = 5 * 60 * 1000; // 5 minutes
+    _mfaPending = { resolve, reject, expiresAt: Date.now() + timeoutMs };
+
+    // Auto-reject after timeout
+    setTimeout(() => {
+      if (_mfaPending?.resolve === resolve) {
+        _mfaPending = null;
+        reject(new Error('MFA code timeout — no code provided within 5 minutes'));
+      }
+    }, timeoutMs);
+  });
+}
+
+/**
+ * Create a fresh axios instance with manual cookie handling for SSO flow.
+ * The garmin-connect library's httpClient has no cookie jar and its request
+ * interceptor adds stale Bearer tokens to SSO requests, breaking login.
+ */
+function createSsoClient(): { http: ReturnType<typeof axios.create>; getCookies: () => string } {
+  const cookieJar: Record<string, string> = {};
+  const http = axios.create({
+    maxRedirects: 5,
+    validateStatus: () => true, // Accept ALL statuses — we handle errors ourselves
+  });
+
+  // Response interceptor: collect Set-Cookie headers
+  http.interceptors.response.use((response) => {
+    const setCookies = response.headers['set-cookie'];
+    if (setCookies) {
+      for (const raw of setCookies) {
+        const parts = raw.split(';')[0].split('=');
+        if (parts.length >= 2) {
+          cookieJar[parts[0].trim()] = parts.slice(1).join('=').trim();
+        }
+      }
+    }
+    return response;
+  });
+
+  // Request interceptor: send collected cookies
+  http.interceptors.request.use((cfg) => {
+    const cookies = Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; ');
+    if (cookies) cfg.headers.Cookie = cookies;
+    return cfg;
+  });
+
+  return { http, getCookies: () => Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; ') };
+}
+
+/**
+ * Custom MFA-aware login flow.
+ * Uses a FRESH axios instance with cookie handling (not the library's httpClient)
+ * to avoid stale Bearer tokens and missing cookies that break the SSO flow.
+ * After getting the ticket, hands off to the library's OAuth1/OAuth2 exchange.
+ */
+async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise<void> {
+  if (isRateLimited()) {
+    throw new Error(`Garmin SSO rate-limited — retry after ${new Date(_rateLimitedUntil).toISOString()}`);
+  }
+
+  const httpClient = client.client as any;
+
+  // Clear stale tokens that would interfere with the library's OAuth exchange
+  httpClient.oauth2Token = undefined;
+  httpClient.oauth1Token = undefined;
+
+  // Step 1: Fetch OAuth consumer credentials (needed for post-ticket OAuth1 exchange)
+  await httpClient.fetchOauthConsumer();
+
+  const SSO_EMBED = httpClient.url.GARMIN_SSO_EMBED;
+  const SIGNIN_URL = httpClient.url.SIGNIN_URL;
+  const SSO_ORIGIN = httpClient.url.GARMIN_SSO_ORIGIN;
+  const GC_MODERN = httpClient.url.GC_MODERN;
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+  // Create a fresh HTTP client with cookie handling for the SSO flow
+  const { http } = createSsoClient();
+
+  // Step 2: Get SSO page + CSRF token (two requests to establish session cookies)
+  const step1Params = { clientId: 'GarminConnect', locale: 'en', service: GC_MODERN };
+  await http.get(`${SSO_EMBED}?${qs.stringify(step1Params)}`, {
+    headers: { 'User-Agent': UA },
+  });
+
+  const step2Params = { id: 'gauth-widget', embedWidget: true, locale: 'en', gauthHost: SSO_EMBED };
+  const step2Res = await http.get(`${SIGNIN_URL}?${qs.stringify(step2Params)}`, {
+    headers: { 'User-Agent': UA },
+  });
+  const step2Html = typeof step2Res.data === 'string' ? step2Res.data : String(step2Res.data);
+  const csrfMatch = /name="_csrf"\s+value="(.+?)"/.exec(step2Html);
+  if (!csrfMatch) throw new Error('Garmin MFA login: CSRF token not found');
+  const csrf = csrfMatch[1];
+  logger.info('Garmin MFA: CSRF token obtained');
+
+  // Step 3: Submit credentials
+  const signinParams = {
+    id: 'gauth-widget', embedWidget: true, clientId: 'GarminConnect',
+    locale: 'en', gauthHost: SSO_EMBED, service: SSO_EMBED,
+    source: SSO_EMBED, redirectAfterAccountLoginUrl: SSO_EMBED,
+    redirectAfterAccountCreationUrl: SSO_EMBED,
+  };
+  const step3Url = `${SIGNIN_URL}?${qs.stringify(signinParams)}`;
+  const formBody = qs.stringify({
+    username: config.garmin.email,
+    password: config.garmin.password,
+    embed: 'true',
+    _csrf: csrf,
+  });
+
+  const step3Res = await http.post(step3Url, formBody, {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Dnt: '1',
+      Origin: SSO_ORIGIN,
+      Referer: SIGNIN_URL,
+      'User-Agent': UA,
+    },
+  });
+  const step3Html = typeof step3Res.data === 'string' ? step3Res.data : String(step3Res.data);
+
+  // Check for Cloudflare rate limiting
+  checkForRateLimit(step3Html, step3Res.status);
+
+  // Capture the final URL after any redirects (for MFA form submission)
+  const step3FinalUrl: string = step3Res.request?.res?.responseUrl ?? step3Res.config?.url ?? step3Url;
+
+  logger.info({ step3Status: step3Res.status, step3FinalUrl, step3OrigUrl: step3Url }, 'Garmin MFA: step3 response status');
+
+  // Check if we got the ticket directly (no MFA)
+  let ticketMatch = /ticket=([^"]+)"/.exec(step3Html);
+  if (ticketMatch) {
+    logger.info('Garmin MFA: got ticket directly (no MFA needed)');
+    await finishLogin(httpClient, ticketMatch[1]);
+    return;
+  }
+
+  // Log response details for debugging
+  const formActions = [...step3Html.matchAll(/action="([^"]+)"/g)].map(m => m[1]);
+  const inputNames = [...step3Html.matchAll(/<input[^>]+name="([^"]+)"/g)].map(m => m[1]);
+  const titleMatch = /<title>([^<]*)<\/title>/.exec(step3Html);
+  logger.info({
+    htmlLength: step3Html.length,
+    title: titleMatch?.[1] || 'unknown',
+    formActions,
+    inputNames: inputNames.slice(0, 15),
+    hasTicket: false,
+  }, 'Garmin MFA: step3 response analysis');
+
+  // Check for error conditions
+  if (/account.*locked/i.test(step3Html)) {
+    throw new Error('Garmin account is locked — unlock via connect.garmin.com');
+  }
+  if (/incorrect|invalid.*password|wrong.*password|login.*failed/i.test(step3Html)) {
+    throw new Error('Garmin login failed — incorrect credentials');
+  }
+
+  // Detect MFA challenge: look for specific MFA form elements
+  // Garmin MFA pages have forms with mfa-code/verificationCode/passcode inputs
+  const hasMfaInput = /name="(mfa-code|mfa.?code|verificationCode|verification-code|passcode|code)"/i.test(step3Html);
+  const hasMfaUrl = /verifyMFA|verify-mfa|challengeMFA|enterMfa/i.test(step3Html);
+  const hasMfaTitle = /verify|mfa|two.?factor|security.?check|passcode|enter.*code/i.test(titleMatch?.[1] ?? '');
+
+  // If no explicit MFA form found, check if this is the login page being re-shown
+  // (which happens when credentials are accepted but MFA is needed, and the MFA
+  // page is loaded via client-side redirect that our server-side flow doesn't follow)
+  const isLoginPage = inputNames.includes('username') && inputNames.includes('password');
+
+  if (!hasMfaInput && !hasMfaUrl && !hasMfaTitle) {
+    if (isLoginPage) {
+      // The login page was returned — credentials may have been accepted but MFA
+      // challenge is triggered server-side. Try hitting the MFA endpoint directly.
+      logger.info('Garmin MFA: login page re-shown, probing MFA endpoint directly');
+    } else {
+      // Save HTML for debugging
+      try { fs.writeFileSync('/tmp/garmin-step3-debug.html', step3Html); } catch { /* ignore */ }
+      throw new Error('Garmin login failed — no ticket and no MFA challenge detected. Debug HTML saved to /tmp/garmin-step3-debug.html');
+    }
+  }
+
+  logger.info({ hasMfaInput, hasMfaUrl, hasMfaTitle, isLoginPage }, 'Garmin MFA: challenge detected, requesting code from user');
+
+  // Notify user via Telegram
+  if (_mfaNotifier) {
+    await _mfaNotifier(
+      '🔐 <b>Garmin MFA Required</b>\n\n' +
+      'Garmin is asking for a verification code.\n' +
+      'Check your email for the code and reply with:\n\n' +
+      '<code>/garminmfa 123456</code>\n\n' +
+      '<i>You have 5 minutes to respond.</i>'
+    );
+  }
+
+  // Wait for user to provide the code
+  const mfaCode = await waitForMfaCode();
+  logger.info('Garmin MFA: code received, submitting');
+
+  // Determine MFA submission URL and field name from the page
+  let mfaSubmitUrl: string;
+  let codeFieldName: string;
+  const mfaCsrfMatch = /name="_csrf"\s+value="(.+?)"/.exec(step3Html);
+  const mfaCsrf = mfaCsrfMatch ? mfaCsrfMatch[1] : csrf;
+
+  if (hasMfaInput || hasMfaUrl || hasMfaTitle) {
+    // Extract form action from MFA page
+    const actionMatch = /action="([^"]+)"/i.exec(step3Html);
+    if (actionMatch) {
+      const action = actionMatch[1];
+      mfaSubmitUrl = action.startsWith('http') ? action : `https://sso.garmin.com${action}`;
+    } else {
+      // No action attribute = form submits to the current URL (after redirects)
+      // This is the actual Garmin MFA behavior — the form POSTs back to the same page
+      mfaSubmitUrl = step3FinalUrl;
+    }
+    // Extract code field name dynamically — Garmin uses "mfa-code" currently
+    const codeMatch = /name="(mfa-code|mfa.?code|verificationCode|verification-code|passcode|code)"/i.exec(step3Html);
+    codeFieldName = codeMatch ? codeMatch[1] : 'mfa-code';
+  } else {
+    // Login page re-shown — probe the known MFA endpoint
+    mfaSubmitUrl = step3FinalUrl;
+    codeFieldName = 'mfa-code';
+  }
+
+  // Extract all hidden input values from the MFA form to include in submission
+  const hiddenInputs: Record<string, string> = {};
+  const hiddenMatches = step3Html.matchAll(/<input[^>]+type="hidden"[^>]*>/gi);
+  for (const match of hiddenMatches) {
+    const nameM = /name="([^"]+)"/.exec(match[0]);
+    const valueM = /value="([^"]*)"/.exec(match[0]);
+    if (nameM) hiddenInputs[nameM[1]] = valueM?.[1] ?? '';
+  }
+
+  logger.info({ mfaSubmitUrl, codeFieldName, hiddenInputs }, 'Garmin MFA: submitting code');
+
+  const mfaBody = qs.stringify({
+    ...hiddenInputs,       // include embed, _csrf, fromPage from the form
+    [codeFieldName]: mfaCode,
+  });
+
+  const mfaRes = await http.post(mfaSubmitUrl, mfaBody, {
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Dnt: '1',
+      Origin: SSO_ORIGIN,
+      Referer: mfaSubmitUrl,
+      'User-Agent': UA,
+    },
+  });
+  const mfaHtml = typeof mfaRes.data === 'string' ? mfaRes.data : String(mfaRes.data);
+  checkForRateLimit(mfaHtml, mfaRes.status);
+  const mfaFinalUrl: string = mfaRes.request?.res?.responseUrl ?? mfaRes.config?.url ?? mfaSubmitUrl;
+  logger.info({
+    mfaStatus: mfaRes.status,
+    mfaHtmlLength: mfaHtml.length,
+    mfaFinalUrl,
+    hasTicket: /ticket=/.test(mfaHtml),
+    mfaFormActions: [...mfaHtml.matchAll(/action="([^"]+)"/g)].map(m => m[1]).slice(0, 5),
+    mfaTitle: (/<title>([^<]*)<\/title>/.exec(mfaHtml))?.[1] || 'unknown',
+    mfaInputNames: [...mfaHtml.matchAll(/<input[^>]+name="([^"]+)"/g)].map(m => m[1]).slice(0, 10),
+  }, 'Garmin MFA: code submission response');
+
+  // Check for ticket in the response (could be in HTML or a redirect URL)
+  ticketMatch = /ticket=([^"&\s]+)/.exec(mfaHtml);
+
+  // Also check if the final URL contains a ticket (Garmin may redirect with ticket in URL)
+  if (!ticketMatch && mfaFinalUrl) {
+    ticketMatch = /ticket=([^"&\s]+)/.exec(mfaFinalUrl);
+  }
+
+  if (!ticketMatch) {
+    // Save for debugging
+    try { fs.writeFileSync('/tmp/garmin-mfa-debug.html', mfaHtml); } catch { /* ignore */ }
+    const errDetail = mfaRes.status >= 400
+      ? `HTTP ${mfaRes.status} — code may be wrong or session expired`
+      : 'no ticket in response';
+    throw new Error(`Garmin MFA failed — ${errDetail}. Debug HTML saved to /tmp/garmin-mfa-debug.html`);
+  }
+
+  const ticket = ticketMatch[1];
+  logger.info('Garmin MFA: ticket obtained after MFA verification');
+  await finishLogin(httpClient, ticket);
+}
+
+/**
+ * Complete the OAuth flow after getting the login ticket.
+ * Mirrors the garmin-connect library's post-ticket flow.
+ */
+async function finishLogin(httpClient: any, ticket: string): Promise<void> {
+  const oauth1 = await httpClient.getOauth1Token(ticket);
+  await httpClient.exchange(oauth1);
+  logger.info('Garmin: MFA login completed, OAuth tokens obtained');
+}
+
 // ─── Client singleton ─────────────────────────────────────────────────
 
 let _client: InstanceType<typeof GarminConnect> | null = null;
@@ -152,16 +533,15 @@ async function getClient(): Promise<InstanceType<typeof GarminConnect>> {
     logger.warn({ err }, 'Garmin: saved tokens expired or invalid, re-authenticating');
   }
 
-  // Fresh login
+  // Fresh login — go directly to our MFA-aware flow (avoids the library's
+  // own login() which makes an unprotected SSO request that can trigger Cloudflare)
+  if (isRateLimited()) throw new Error('Garmin SSO rate-limited — skipping login');
   try {
-    await _client.login();
-    // Ensure token directory exists
-    if (!fs.existsSync(tokenDir)) {
-      fs.mkdirSync(tokenDir, { recursive: true });
-    }
+    await loginWithMfa(_client);
+    if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
     _client.exportTokenToFile(tokenDir);
     _authenticated = true;
-    logger.info('Garmin: fresh login successful, tokens saved');
+    logger.info('Garmin: login successful (MFA-aware flow), tokens saved');
     return _client;
   } catch (err) {
     _authenticated = false;
@@ -208,6 +588,10 @@ async function refreshOAuth2(): Promise<boolean> {
  * This works when MFA is not enabled or when Garmin doesn't prompt for it.
  */
 async function attemptReLogin(): Promise<boolean> {
+  if (isRateLimited()) {
+    logger.info('Garmin: skipping re-login, SSO rate-limited');
+    return false;
+  }
   try {
     if (!_client) {
       _client = new GarminConnect({
@@ -216,15 +600,17 @@ async function attemptReLogin(): Promise<boolean> {
       });
     }
     _authenticated = false;
-    await _client.login();
+
+    // Go directly to our MFA-aware flow (avoids the library's unprotected SSO request)
+    await loginWithMfa(_client);
     const tokenDir = config.garmin.tokenPath;
     if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
     _client.exportTokenToFile(tokenDir);
     _authenticated = true;
-    logger.info('Garmin: re-login successful, tokens saved');
+    logger.info('Garmin: re-login successful (MFA-aware flow), tokens saved');
     return true;
   } catch (err) {
-    logger.error({ err }, 'Garmin: re-login failed (may require MFA or manual intervention)');
+    logger.error({ err }, 'Garmin: re-login failed (MFA timeout or credentials invalid)');
     _authenticated = false;
     return false;
   }
@@ -236,8 +622,16 @@ async function attemptReLogin(): Promise<boolean> {
  */
 export async function keepAlive(): Promise<boolean> {
   if (!isGarminConfigured()) return false;
+  if (isRateLimited()) {
+    logger.info('Garmin: skipping keep-alive, SSO rate-limited');
+    return false;
+  }
+  if (isMfaPending()) {
+    logger.info('Garmin: skipping keep-alive, MFA pending');
+    return false;
+  }
 
-  // Step 1: Try proactive OAuth2 refresh
+  // Step 1: Try proactive OAuth2 refresh (no SSO login needed)
   if (await refreshOAuth2()) {
     // Validate with a lightweight call
     try {
@@ -249,7 +643,10 @@ export async function keepAlive(): Promise<boolean> {
     }
   }
 
-  // Step 2: Try full re-login
+  // Check rate limit again (refreshOAuth2 → getClient may have set it)
+  if (isRateLimited() || isMfaPending()) return false;
+
+  // Step 2: Try full re-login (only once — may trigger MFA)
   return attemptReLogin();
 }
 

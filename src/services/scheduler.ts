@@ -16,6 +16,8 @@ import { collectUberInvoices, formatUberNotification, isUberConfigured } from '.
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier } from '../portal/telemetry';
+import { flushQueue, getPendingCount } from './invoice-queue';
+import { setLastCoachState } from '../domains/domain-handler';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -51,20 +53,21 @@ export function startScheduler(bot: Bot): void {
   })();
 
   // ── Register all jobs for portal tracking ──────────────────────────
-  registerJob('reminders',          'Reminders',             '* * * * *');
-  registerJob('end_of_day',         'End-of-Day Summary',    '0 21 * * *');
-  registerJob('daily_briefing',     'Morning Briefing',      dailyCron);
-  registerJob('weekly_review',      'Weekly Review',         '0 17 * * 5');
-  registerJob('shared_list',        'Shared List Check',     '*/5 * * * *');
-  registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *');
-  registerJob('content_discovery',  'Content Discovery',     '43 16 * * *');
-  registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *');
-  registerJob('amazon_collection',  'Amazon Collection',     '15 9 1 * *');
-  registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *');
-  registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1');
-  registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *');
-  registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *');
-  registerJob('garmin_coach',       'Garmin Coach',          coachCron);
+  registerJob('reminders',          'Reminders',             '* * * * *',       'secretary');
+  registerJob('end_of_day',         'End-of-Day Summary',    '0 21 * * *',      'secretary');
+  registerJob('daily_briefing',     'Morning Briefing',      dailyCron,         'secretary');
+  registerJob('weekly_review',      'Weekly Review',         '0 17 * * 5',      'secretary');
+  registerJob('shared_list',        'Shared List Check',     '*/5 * * * *',     'secretary');
+  registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *',       'system');
+  registerJob('content_discovery',  'Content Discovery',     '43 16 * * *',     'content');
+  registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *',       'invoices');
+  registerJob('amazon_collection',  'Amazon Collection',     '15 9 1 * *',      'invoices');
+  registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *',      'invoices');
+  registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1',      'secretary');
+  registerJob('conflict_detection', 'Conflict Detection',    '30 19 * * *',     'secretary');
+  registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
+  registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
+  registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
 
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -370,6 +373,13 @@ export function startScheduler(bot: Bot): void {
         logger.warn({ errors: result.errors }, 'Coach briefing completed with data gaps');
       }
 
+      // Store recommendations so triathlon domain can reference them in follow-up chat
+      if (result.recommendations.length > 0) {
+        for (const userId of config.telegram.allowedUserIds) {
+          setLastCoachState(userId, result.recommendations, result.message.substring(0, 500));
+        }
+      }
+
       const chunks = splitMessage(result.message);
       for (const userId of config.telegram.allowedUserIds) {
         try {
@@ -388,8 +398,33 @@ export function startScheduler(bot: Bot): void {
     }), { timezone: tz });
   }
 
+  // ── Invoice queue flush (every 15 min) ──────────────────────────────
+  cron.schedule('*/15 * * * *', wrapJob('invoice_queue', async () => {
+    const pending = getPendingCount();
+    if (pending === 0) return; // nothing to flush — skip silently
+
+    const result = await flushQueue();
+
+    if (result.flushed > 0) {
+      // Notify user that queued invoices were filed
+      let msg = `📤 <b>Fila de faturas processada!</b>\n\n`;
+      msg += `✅ ${result.flushed} fatura${result.flushed > 1 ? 's' : ''} arquivada${result.flushed > 1 ? 's' : ''} com sucesso`;
+      if (result.failed > 0) msg += `\n❌ ${result.failed} falharam permanentemente`;
+      if (result.remaining > 0) msg += `\n🔄 ${result.remaining} ainda na fila`;
+      msg += `\n\n<i>O Mac voltou a estar disponível.</i>`;
+
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send invoice queue flush notification');
+        }
+      }
+    }
+  }), { timezone: tz });
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime})`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15)`
   );
 }
 

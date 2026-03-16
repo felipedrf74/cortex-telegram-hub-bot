@@ -231,6 +231,26 @@ async function compressImage(
   }
 }
 
+// ─── SSH Connectivity Check ─────────────────────────────────────────
+
+/**
+ * Quick SSH connectivity test (5s timeout).
+ * Returns true if the tunnel is up and the Mac is reachable.
+ */
+export function testSshConnection(): boolean {
+  if (!isInvoiceFilingConfigured()) return false;
+  try {
+    const args = ['-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5'];
+    if (config.invoices.sshKeyPath) args.push('-i', config.invoices.sshKeyPath);
+    if (config.invoices.sshPort !== '22') args.push('-p', config.invoices.sshPort);
+    args.push(sshTarget(), 'echo ok');
+    execFileSync('ssh', args, { timeout: 8_000, stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── SSH/SCP Core ───────────────────────────────────────────────────
 
 /**

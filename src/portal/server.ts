@@ -33,6 +33,7 @@ import { clearAllConversations } from '../state/conversation';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from '../services/garmin';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
+import { getPendingCount as getInvoiceQueuePending } from '../services/invoice-queue';
 import { sendDailyBriefing } from '../services/scheduler';
 import { generateCoachBriefing } from '../services/garmin-coach';
 import { runContentDiscovery } from '../services/content-discovery';
@@ -57,7 +58,7 @@ interface SnapshotResponse {
   }[];
   jobs: ReturnType<typeof getJobStatuses>;
   jobHistory: Record<string, { result: string; ts: string }[]>;
-  nextRuns: { label: string; cronExpression: string; nextFireAt: string; humanDelta: string }[];
+  nextRuns: { label: string; cronExpression: string; nextFireAt: string; humanDelta: string; domain: string }[];
   apiUsage: {
     today: { calls: number; cost: number; tokens: number };
     last7d: { calls: number; cost: number; tokens: number };
@@ -81,6 +82,18 @@ interface SnapshotResponse {
     emailsSentToday: number;
     apiCostToday: number;
     invoicesThisMonth: number;
+    invoiceQueuePending: number;
+  };
+  calendarData: {
+    days: string[];  // ISO date strings for the 7-day range
+    jobs: {
+      name: string;
+      label: string;
+      cronExpression: string;
+      domain: string;
+      runs: { day: string; hour: number; result: string; ts: string; durationMs: number | null }[];
+      scheduled: { day: string; hour: number }[];
+    }[];
   };
 }
 
@@ -180,6 +193,14 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
     jobHistoryRecent: db.prepare(`
       SELECT job_name, result, ts
       FROM job_history ORDER BY ts DESC LIMIT 200`),
+    jobHistory7d: db.prepare(`
+      SELECT job_name, result, ts, duration_ms
+      FROM job_history WHERE ts >= date('now', '-7 days')
+      ORDER BY ts ASC`),
+    jobHistoryMonth: db.prepare(`
+      SELECT job_name, result, ts, duration_ms
+      FROM job_history WHERE ts >= date('now', '-45 days')
+      ORDER BY ts ASC`),
   };
   return _stmts;
 }
@@ -324,6 +345,7 @@ function buildSnapshot(): SnapshotResponse {
         cronExpression: job.cronExpression,
         nextFireAt: next.toISOString(),
         humanDelta: humanDelta(deltaSec),
+        domain: job.domain,
       });
     } catch {
       // skip unparseable expressions
@@ -339,7 +361,69 @@ function buildSnapshot(): SnapshotResponse {
     emailsSentToday: emailLog.todaySent,
     apiCostToday: apiUsage.today.cost,
     invoicesThisMonth: invoices.thisMonth,
+    invoiceQueuePending: getInvoiceQueuePending(),
   };
+
+  // ── Calendar data (monthly view) ──────────────────────────────────
+  const calendarDays: string[] = [];
+  for (let i = 45; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    calendarDays.push(d.toISOString().slice(0, 10));
+  }
+
+  let calendarJobs: SnapshotResponse['calendarData']['jobs'] = [];
+  try {
+    const stmts = getStmts();
+    const historyRows = stmts.jobHistoryMonth.all() as any[];
+
+    for (const job of jobs) {
+      const runs = historyRows
+        .filter(r => r.job_name === job.name)
+        .map(r => ({
+          day: r.ts.slice(0, 10),
+          hour: parseInt(r.ts.slice(11, 13), 10),
+          result: r.result as string,
+          ts: r.ts as string,
+          durationMs: r.duration_ms as number | null,
+        }));
+
+      // Compute future scheduled fire times for the next 45 days (covers month view navigation)
+      const scheduled: { day: string; hour: number }[] = [];
+      try {
+        const interval = CronExpressionParser.parse(job.cronExpression, { tz });
+        const endDate = new Date();
+        endDate.setDate(endDate.getDate() + 45);
+        // Only include jobs that fire at most a few times per day to avoid flooding the calendar
+        const isHighFreq = job.cronExpression.startsWith('*') || job.cronExpression.startsWith('*/5') || job.cronExpression.startsWith('*/15') || job.cronExpression.startsWith('*/30');
+        if (!isHighFreq) {
+          let next = interval.next().toDate();
+          let safety = 0;
+          while (next.getTime() <= endDate.getTime() && safety < 200) {
+            scheduled.push({
+              day: next.toISOString().slice(0, 10),
+              hour: next.getHours(),
+            });
+            next = interval.next().toDate();
+            safety++;
+          }
+        }
+      } catch {
+        // skip unparseable
+      }
+
+      calendarJobs.push({
+        name: job.name,
+        label: job.label,
+        cronExpression: job.cronExpression,
+        domain: job.domain,
+        runs,
+        scheduled,
+      });
+    }
+  } catch {
+    calendarJobs = [];
+  }
 
   return {
     generatedAt: new Date().toISOString(),
@@ -358,6 +442,7 @@ function buildSnapshot(): SnapshotResponse {
     invoices,
     emailLog,
     healthSummary,
+    calendarData: { days: calendarDays, jobs: calendarJobs },
   };
 }
 
