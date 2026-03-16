@@ -4,6 +4,52 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.5.0] — 2026-03-16
+
+### Garmin MFA Interactive Login + Multi-Feature Updates
+
+Complete interactive MFA flow for Garmin Connect, plus portal improvements, routing fixes, and invoice queue system.
+
+#### Garmin MFA Interactive Login (`src/services/garmin.ts`)
+- **Full MFA-aware SSO flow** — Custom `loginWithMfa()` bypasses the `garmin-connect` library's broken `login()` entirely, using a fresh axios instance with manual cookie handling to avoid stale Bearer tokens
+- **Telegram notification + code submission** — When Garmin requires MFA, the bot sends a Telegram message; user replies with `/garminmfa <code>` to complete authentication
+- **Dynamic MFA form parsing** — Extracts CSRF token, hidden inputs, code field name, and submit URL from the actual MFA HTML page (handles Garmin's `mfa-code` field, `verifyMFA/loginEnterMfaCode` endpoint)
+- **OAuth1 → OAuth2 token exchange** — After ticket extraction, completes the full OAuth flow and persists tokens to disk
+- **Persistent rate-limit backoff** — Cloudflare Error 1015 / HTTP 429 detection triggers 2-hour backoff, persisted to `rate_limit_until.txt` (survives pm2 restarts)
+- **Rate-limit detection on library errors** — `checkErrorForRateLimit()` parses error messages from `garmin-connect` library exceptions for rate-limit indicators
+- **All login paths protected** — `getClient()`, `attemptReLogin()`, and `keepAlive()` check rate limits and MFA pending state before any SSO contact
+
+#### Garmin MFA Bot Integration (`src/bot.ts`)
+- **`setMfaNotifier()` registration** — Sends HTML-formatted Telegram messages when MFA is needed
+- **`/garminmfa <code>` command** — Submits verification code to the pending MFA challenge with success/failure feedback
+
+#### Portal Domain Tagging (`src/portal/telemetry.ts`, `src/portal/server.ts`, `src/portal/portal.html`)
+- Domain tag tracking for messages processed through the portal
+- Enhanced telemetry for domain-level visibility
+
+#### Keyword Routing Fixes (`src/router/classifier.ts`, `src/domains/domain-handler.ts`)
+- Improved keyword pattern matching for Portuguese terms
+- Better domain routing for ambiguous messages
+
+#### Invoice Queue System (`src/services/invoice-queue.ts`, `migrations/010_invoice_queue.sql`)
+- **New invoice queue** — SQLite-backed queue for async invoice processing with retry logic
+- **`enqueueInvoice()`** / **`getPendingCount()`** — Queue management functions
+- **Scheduled processor** — Runs every 15 minutes to process pending invoices
+
+#### SSH Connection Testing (`src/services/invoice-filer.ts`)
+- **`testSshConnection()`** — Exported function for portal health checks and diagnostics
+
+#### New Files
+- `src/services/invoice-queue.ts`, `migrations/010_invoice_queue.sql`
+
+#### Modified Files
+- `src/services/garmin.ts`, `src/bot.ts`, `src/services/scheduler.ts`
+- `src/portal/portal.html`, `src/portal/server.ts`, `src/portal/telemetry.ts`
+- `src/router/classifier.ts`, `src/domains/domain-handler.ts`
+- `src/services/invoice-filer.ts`
+
+---
+
 ## [3.4.0] — 2026-03-15
 
 ### Portal Dashboard Enhancements — Timeline, Email Log, Job History
