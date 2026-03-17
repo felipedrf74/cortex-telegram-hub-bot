@@ -136,6 +136,35 @@ interface MfaPendingState {
 let _mfaPending: MfaPendingState | null = null;
 let _mfaNotifier: ((message: string) => Promise<void>) | null = null;
 
+// ─── SSO cookie persistence (avoids MFA on re-login) ────────────────
+const SSO_COOKIES_FILE = `${config.garmin.tokenPath}/sso_cookies.json`;
+
+function saveSsoCookies(cookieJar: Record<string, string>): void {
+  try {
+    const dir = config.garmin.tokenPath;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(SSO_COOKIES_FILE, JSON.stringify(cookieJar, null, 2));
+    logger.info('Garmin: SSO cookies saved to disk');
+  } catch (err) {
+    logger.warn({ err }, 'Garmin: failed to save SSO cookies');
+  }
+}
+
+function loadSsoCookies(): Record<string, string> | null {
+  try {
+    if (fs.existsSync(SSO_COOKIES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SSO_COOKIES_FILE, 'utf-8'));
+      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+        logger.info({ cookieCount: Object.keys(data).length }, 'Garmin: loaded saved SSO cookies');
+        return data as Record<string, string>;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Garmin: failed to load SSO cookies');
+  }
+  return null;
+}
+
 // ─── Rate-limit backoff (persisted to disk to survive restarts) ──────
 const RATE_LIMIT_FILE = `${config.garmin.tokenPath}/rate_limit_until.txt`;
 
@@ -222,8 +251,12 @@ function waitForMfaCode(): Promise<string> {
  * The garmin-connect library's httpClient has no cookie jar and its request
  * interceptor adds stale Bearer tokens to SSO requests, breaking login.
  */
-function createSsoClient(): { http: ReturnType<typeof axios.create>; getCookies: () => string } {
-  const cookieJar: Record<string, string> = {};
+function createSsoClient(savedCookies?: Record<string, string>): {
+  http: ReturnType<typeof axios.create>;
+  getCookies: () => string;
+  getCookieJar: () => Record<string, string>;
+} {
+  const cookieJar: Record<string, string> = savedCookies ? { ...savedCookies } : {};
   const http = axios.create({
     maxRedirects: 5,
     validateStatus: () => true, // Accept ALL statuses — we handle errors ourselves
@@ -250,7 +283,11 @@ function createSsoClient(): { http: ReturnType<typeof axios.create>; getCookies:
     return cfg;
   });
 
-  return { http, getCookies: () => Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; ') };
+  return {
+    http,
+    getCookies: () => Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join('; '),
+    getCookieJar: () => ({ ...cookieJar }),
+  };
 }
 
 /**
@@ -279,8 +316,10 @@ async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise
   const GC_MODERN = httpClient.url.GC_MODERN;
   const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-  // Create a fresh HTTP client with cookie handling for the SSO flow
-  const { http } = createSsoClient();
+  // Create HTTP client with cookie handling — reuse saved SSO cookies if available
+  // (Garmin recognizes trusted sessions by cookie, skipping MFA)
+  const savedCookies = loadSsoCookies();
+  const { http, getCookieJar } = createSsoClient(savedCookies ?? undefined);
 
   // Step 2: Get SSO page + CSRF token (two requests to establish session cookies)
   const step1Params = { clientId: 'GarminConnect', locale: 'en', service: GC_MODERN };
@@ -336,6 +375,7 @@ async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise
   let ticketMatch = /ticket=([^"]+)"/.exec(step3Html);
   if (ticketMatch) {
     logger.info('Garmin MFA: got ticket directly (no MFA needed)');
+    saveSsoCookies(getCookieJar());
     await finishLogin(httpClient, ticketMatch[1]);
     return;
   }
@@ -483,6 +523,7 @@ async function loginWithMfa(client: InstanceType<typeof GarminConnect>): Promise
 
   const ticket = ticketMatch[1];
   logger.info('Garmin MFA: ticket obtained after MFA verification');
+  saveSsoCookies(getCookieJar());
   await finishLogin(httpClient, ticket);
 }
 
