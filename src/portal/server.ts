@@ -37,6 +37,12 @@ import { getPendingCount as getInvoiceQueuePending } from '../services/invoice-q
 import { sendDailyBriefing } from '../services/scheduler';
 import { generateCoachBriefing } from '../services/garmin-coach';
 import { runContentDiscovery } from '../services/content-discovery';
+import {
+  getAllChannels as getRefChannels,
+  removeChannel as removeRefChannel,
+  getAllKnowledge,
+} from '../state/content-references';
+import { addAndAnalyzeChannel, synthesizeKnowledge as reSynthesizeKnowledge } from '../services/channel-learner';
 import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { CronExpressionParser } from 'cron-parser';
 
@@ -95,6 +101,11 @@ interface SnapshotResponse {
       scheduled: { day: string; hour: number }[];
     }[];
   };
+  contentReferences: {
+    channels: { id: number; url: string; name: string | null; status: string; videosAnalyzed: number; lastAnalyzed: string | null; error: string | null }[];
+    knowledgeCategories: number;
+  };
+  transcriptStats: { transcripts: number; studies: number };
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -107,6 +118,7 @@ const CACHE_TTL_MS = 3_000;
 const VALID_ACTIONS = new Set([
   'refresh-garmin', 'trigger-briefing', 'trigger-coach', 'trigger-content',
   'clear-history', 'test-ssh', 'test-graph', 'restart-polling',
+  'resynthesize-knowledge',
 ]);
 
 const actionCooldowns = new Map<string, number>();
@@ -425,6 +437,36 @@ function buildSnapshot(): SnapshotResponse {
     calendarJobs = [];
   }
 
+  // ── Content reference channels ─────────────────────────────
+  let contentReferences: { channels: any[]; knowledgeCategories: number } = {
+    channels: [],
+    knowledgeCategories: 0,
+  };
+  try {
+    contentReferences = {
+      channels: getRefChannels().map((ch) => ({
+        id: ch.id,
+        url: ch.channel_url,
+        name: ch.channel_name,
+        status: ch.status,
+        videosAnalyzed: ch.video_count_analyzed,
+        lastAnalyzed: ch.last_analyzed_at,
+        error: ch.error_message,
+      })),
+      knowledgeCategories: getAllKnowledge().length,
+    };
+  } catch { /* table may not exist yet */ }
+
+  // ── Transcript stats ──────────────────────────────────────
+  const transcriptStats = (() => {
+    try {
+      const db = getDb();
+      const total = db.prepare('SELECT COUNT(*) as c FROM video_transcripts').get() as { c: number };
+      const studies = db.prepare('SELECT COUNT(*) as c FROM video_studies').get() as { c: number };
+      return { transcripts: total.c, studies: studies.c };
+    } catch { return { transcripts: 0, studies: 0 }; }
+  })();
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -443,6 +485,8 @@ function buildSnapshot(): SnapshotResponse {
     emailLog,
     healthSummary,
     calendarData: { days: calendarDays, jobs: calendarJobs },
+    contentReferences,
+    transcriptStats,
   };
 }
 
@@ -593,6 +637,12 @@ async function handleAction(
       return { ok: true, message: 'Bot restart initiated — polling will resume in ~5s' };
     }
 
+    case 'resynthesize-knowledge': {
+      await reSynthesizeKnowledge();
+      pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual knowledge re-synthesis' });
+      return { ok: true, message: 'Content knowledge re-synthesized from all active channels' };
+    }
+
     default:
       return { ok: false, message: `Unknown action: ${name}` };
   }
@@ -644,6 +694,53 @@ export function createPortalServer(bot: Bot): http.Server {
     } catch (err) {
       logger.error({ err }, 'Portal: snapshot failed');
       res.status(500).json({ error: 'Failed to build snapshot' });
+    }
+  });
+
+  // ── POST /api/channels — add a reference channel ───────────
+  app.post('/api/channels', async (req: Request, res: Response) => {
+    const { url } = req.body;
+    if (!url || typeof url !== 'string' || !url.includes('youtube.com')) {
+      res.status(400).json({ ok: false, message: 'Invalid YouTube URL' });
+      return;
+    }
+    try {
+      const result = await addAndAnalyzeChannel(url, 'portal');
+      cachedSnapshot = null;
+      res.json({
+        ok: result.analysis.success,
+        channel: {
+          id: result.channel.id,
+          name: result.channel.channel_name,
+          url: result.channel.channel_url,
+          status: result.channel.status,
+        },
+        analysis: {
+          summary: result.analysis.summary,
+          patternsFound: result.analysis.patternsFound,
+          videosAnalyzed: result.analysis.videosAnalyzed,
+          error: result.analysis.error,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── DELETE /api/channels/:id — remove a reference channel ──
+  app.delete('/api/channels/:id', async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) {
+      res.status(400).json({ ok: false, message: 'Invalid channel ID' });
+      return;
+    }
+    try {
+      removeRefChannel(id);
+      await reSynthesizeKnowledge();
+      cachedSnapshot = null;
+      res.json({ ok: true, message: 'Channel removed and knowledge re-synthesized' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 

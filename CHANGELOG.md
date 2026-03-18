@@ -4,6 +4,60 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.7.0] — 2026-03-18
+
+### Content Creator Learning System + Garmin Auth Hardening + Telegram Formatting
+
+Major feature: AI-powered YouTube channel analysis, pattern extraction, and knowledge injection into the content domain. Plus Garmin auth fixes and unified Telegram HTML formatting across all domains.
+
+#### Content Creator Learning System (`src/services/channel-learner.ts`, `src/state/content-references.ts`)
+- **YouTube channel analysis pipeline** — Fetches top 10 performing videos per channel via YouTube Data API, sorted by view count
+- **Claude Sonnet pattern extraction** — Analyzes video metadata + transcripts across 9 categories: hook_style, title_pattern, content_structure, editing_style, storytelling, cta_pattern, audience_engagement, visual_style, brand_voice
+- **Cross-channel knowledge synthesis** — Merges patterns from all tracked channels using Claude Haiku with concatenation fallback for JSON parse errors
+- **Dynamic prompt injection** — `buildKnowledgePromptBlock()` injects learned patterns into the content domain system prompt at runtime
+- **4 default channels seeded** — Daniel Barada, Newel of Knowledge, Jett Franzen, Dan Koe
+- **Weekly auto-refresh** — Scheduled channel re-analysis every Sunday at 03:00
+
+#### YouTube Transcript Extraction (`src/services/youtube-transcript.ts`)
+- **yt-dlp as primary fetcher** — YouTube blocks caption delivery from server IPs; yt-dlp handles YouTube's protections successfully
+- **HTTP fallback** — Original caption URL approach retained as fallback
+- **WebVTT parser** — `parseVttCaptions()` with timestamp parsing and segment deduplication
+
+#### Video Study & Transcription (`src/services/video-study.ts`)
+- **`/transcribe <url>`** — Fetches transcript via yt-dlp, saves as .docx to `~/Desktop/IDEAS`, sends file via Telegram
+- **`/studyvideo <url>`** — Deep video analysis (hook breakdown, structure, content ideas, reel cuts), saved as .docx
+- **DOCX generation** — Uses `docx` npm package for Word file creation with proper headings and formatting
+
+#### Bot Commands (`src/bot.ts`, `src/router/index.ts`)
+- **`/learnfrom <channel>`** — Add a YouTube channel for pattern learning
+- **`/references`** — View tracked channels and their analysis status
+- **`/relearn`** — Re-analyze all tracked channels with fresh data
+- **`/transcribe <url>`** — Download video transcript as Word file
+- **`/studyvideo <url>`** — Deep video analysis as Word file
+
+#### Portal Integration (`src/portal/server.ts`, `src/portal/portal.html`)
+- Content References card with add/remove channel UI
+- Video Transcripts stats card
+- Re-synthesize knowledge quick action button
+- POST /api/channels and DELETE /api/channels/:id endpoints
+
+#### Database Migrations
+- **011_content_references.sql** — `content_ref_channels`, `content_patterns`, `content_knowledge` tables
+- **012_video_transcripts.sql** — `video_transcripts`, `video_studies` tables
+
+#### Garmin Auth Hardening (`src/services/garmin.ts`, `src/services/scheduler.ts`)
+- **Serialized auth recovery** — `serializedAuthRecovery()` prevents parallel MFA storms; all concurrent 403s funnel through ONE recovery attempt instead of 10+ independent re-logins
+- **Pre-authentication for coach** — `ensureAuthenticated()` validates session before batch API calls, avoiding race conditions
+- **Keepalive offset** — Moved from `:00/:30` to `:05/:35` to prevent collision with coach job at `:00`
+- **PM2 auto-start on reboot** — Registered `pm2-dominguez` systemd service with `pm2 startup` + `pm2 save`
+
+#### Telegram HTML Formatting (`src/services/anthropic.ts`)
+- **All 3 domain prompts** (secretary, triathlon, content) now enforce Telegram HTML formatting
+- Explicit rules: only `<b>`, `<i>`, `<code>` tags — no markdown `**`, `##`, `---`, `| tables |`, or ``` code blocks
+- Consistent visual language: emoji bullets (•, ▸), ━━━ section dividers, clean scannable layout
+
+---
+
 ## [3.5.0] — 2026-03-16
 
 ### Garmin MFA Interactive Login + Multi-Feature Updates

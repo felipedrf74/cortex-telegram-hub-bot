@@ -692,6 +692,24 @@ export async function keepAlive(): Promise<boolean> {
 }
 
 /**
+ * Pre-authenticate: validate the session and recover if needed.
+ * Call this BEFORE batch API calls (e.g. coach briefing) to avoid
+ * 10+ parallel 403s all triggering separate MFA flows.
+ */
+export async function ensureAuthenticated(): Promise<boolean> {
+  if (!isGarminConfigured()) return false;
+  try {
+    const client = await getClient();
+    await client.getUserSettings();
+    logger.info('Garmin: pre-auth check passed');
+    return true;
+  } catch {
+    logger.warn('Garmin: pre-auth check failed, running recovery');
+    return serializedAuthRecovery();
+  }
+}
+
+/**
  * Extract HTTP status from garmin-connect errors.
  * The library throws plain Errors with messages like "ERROR: (403), Forbidden, {...}"
  * instead of attaching a .response property, so we parse the message string.
@@ -706,6 +724,56 @@ function extractErrorStatus(err: unknown): number | null {
   return match ? parseInt(match[1], 10) : null;
 }
 
+// ─── Serialized auth recovery (prevents parallel MFA storms) ─────────
+let _authRecoveryPromise: Promise<boolean> | null = null;
+
+/**
+ * Ensures only ONE auth recovery runs at a time.
+ * All concurrent 403 callers await the same promise.
+ */
+async function serializedAuthRecovery(): Promise<boolean> {
+  if (_authRecoveryPromise) {
+    logger.info('Garmin: auth recovery already in progress, waiting...');
+    return _authRecoveryPromise;
+  }
+  _authRecoveryPromise = (async () => {
+    try {
+      // Step 1: Try OAuth2 token refresh
+      try {
+        const client = await getClient();
+        await (client.client as any).refreshOauth2Token();
+        persistTokens();
+        // Validate with lightweight call
+        await client.getUserSettings();
+        logger.info('Garmin: auth recovered via OAuth2 refresh');
+        return true;
+      } catch {
+        logger.warn('Garmin: OAuth2 refresh failed in recovery, trying token reload');
+      }
+
+      // Step 2: Reload tokens from disk
+      const tokenDir = config.garmin.tokenPath;
+      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+        try {
+          const client = await getClient();
+          client.loadTokenByFile(tokenDir);
+          await client.getUserSettings();
+          logger.info('Garmin: auth recovered via token reload');
+          return true;
+        } catch {
+          logger.warn('Garmin: token reload failed in recovery, trying re-login');
+        }
+      }
+
+      // Step 3: Full re-login (may trigger MFA — only once)
+      return attemptReLogin();
+    } finally {
+      _authRecoveryPromise = null;
+    }
+  })();
+  return _authRecoveryPromise;
+}
+
 async function safeGet<T = unknown>(url: string): Promise<T> {
   const client = await getClient();
   try {
@@ -715,48 +783,24 @@ async function safeGet<T = unknown>(url: string): Promise<T> {
   } catch (err: unknown) {
     const status = extractErrorStatus(err);
     if (status === 401 || status === 403) {
-      logger.warn({ status, url: url.split('?')[0] }, 'Garmin: auth error, attempting OAuth2 refresh');
+      logger.warn({ status, url: url.split('?')[0] }, 'Garmin: auth error, waiting for serialized recovery');
 
-      // Step 1: Try refreshing OAuth2 token directly (handles 403 that the library misses)
-      try {
-        await (client.client as any).refreshOauth2Token();
-        persistTokens();
-        const result = await client.get(url) as T;
-        persistTokens();
-        logger.info('Garmin: recovered via OAuth2 refresh');
-        return result;
-      } catch (refreshErr) {
-        logger.warn({ err: refreshErr }, 'Garmin: OAuth2 refresh failed, trying token reload');
-      }
-
-      // Step 2: Reload tokens from disk (another concurrent call may have refreshed them)
-      const tokenDir = config.garmin.tokenPath;
-      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
-        client.loadTokenByFile(tokenDir);
-        try {
-          const result = await client.get(url) as T;
-          persistTokens();
-          return result;
-        } catch (reloadErr) {
-          logger.warn({ err: reloadErr }, 'Garmin: token reload failed, trying re-login');
-        }
-      }
-
-      // Step 3: Last resort — full re-login
-      if (await attemptReLogin()) {
+      // All concurrent 403s funnel through ONE recovery attempt
+      const recovered = await serializedAuthRecovery();
+      if (recovered) {
         try {
           const freshClient = await getClient();
           const result = await freshClient.get(url) as T;
           persistTokens();
-          logger.info('Garmin: recovered via re-login');
+          logger.info({ url: url.split('?')[0] }, 'Garmin: recovered, retried successfully');
           return result;
-        } catch (loginErr) {
-          logger.error({ err: loginErr }, 'Garmin: re-login succeeded but API call still failed');
-          throw loginErr;
+        } catch (retryErr) {
+          logger.error({ err: retryErr, url: url.split('?')[0] }, 'Garmin: recovered but retry still failed');
+          throw retryErr;
         }
       }
 
-      throw err; // all recovery attempts exhausted
+      throw err; // recovery failed
     }
     throw err;
   }

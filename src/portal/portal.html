@@ -719,6 +719,47 @@
     </table>
   </div>
 
+  <!-- ── Content References ──────────────── -->
+  <div class="card">
+    <h2>📚 Content References</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value" id="ref-channels">—</div>
+        <div class="stat-label">Channels</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="ref-knowledge">—</div>
+        <div class="stat-label">Knowledge Areas</div>
+      </div>
+    </div>
+
+    <!-- Add channel form -->
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="ref-url-input" type="text" placeholder="https://www.youtube.com/@channel"
+        style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none"
+        onkeydown="if(event.key==='Enter')addRefChannel()">
+      <button class="action-btn" onclick="addRefChannel()" style="white-space:nowrap">
+        <span class="icon">➕</span> Learn
+      </button>
+    </div>
+    <div id="ref-add-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;display:none"></div>
+
+    <!-- Channel list -->
+    <table id="ref-channels-table">
+      <thead><tr><th>Channel</th><th>Status</th><th>Videos</th><th>Last Analyzed</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Video Transcripts ─────────────────── -->
+  <div class="card">
+    <h2>📝 Video Transcripts</h2>
+    <div id="transcriptStats">
+      <p>Cached transcripts: <strong id="transcriptCount">—</strong></p>
+      <p>Video studies: <strong id="studyCount">—</strong></p>
+    </div>
+  </div>
+
   <!-- ── Scheduled Jobs (with sparklines) ───── -->
   <div class="card card-full">
     <h2>⏱️ Scheduled Jobs</h2>
@@ -740,6 +781,7 @@
       <button class="action-btn" onclick="doAction('test-ssh')"><span class="icon">🔑</span> Test SSH</button>
       <button class="action-btn" onclick="doAction('test-graph')"><span class="icon">📧</span> Test Graph</button>
       <button class="action-btn" onclick="if(confirm('Restart bot polling?')) doAction('restart-polling')"><span class="icon">🔄</span> Restart Polling</button>
+      <button class="action-btn" onclick="doAction('resynthesize-knowledge')"><span class="icon">🧠</span> Re-synthesize Knowledge</button>
     </div>
   </div>
 
@@ -1149,6 +1191,36 @@
       return `<tr><td>${esc(f.vendor)}</td><td class="mono">${esc(f.date)}</td><td>${esc(f.amount || '—')}</td><td><span class="badge ${cls}">${f.status}</span></td></tr>`;
     }).join('') || '<tr><td colspan="4" class="text-muted">No filings yet</td></tr>';
 
+    // Content references
+    if (snap.contentReferences) {
+      const cr = snap.contentReferences;
+      document.getElementById('ref-channels').textContent = cr.channels.length;
+      document.getElementById('ref-knowledge').textContent = cr.knowledgeCategories + '/9';
+
+      const refBody = document.querySelector('#ref-channels-table tbody');
+      refBody.innerHTML = cr.channels.map(ch => {
+        const cls = ch.status === 'active' ? 'badge-success'
+          : ch.status === 'analyzing' ? 'badge-running'
+          : ch.status === 'pending' ? 'badge-never'
+          : 'badge-failed';
+        const name = ch.name || ch.url.split('/').pop();
+        const lastA = ch.lastAnalyzed ? relativeTime(ch.lastAnalyzed) : '—';
+        return `<tr>
+          <td><a href="${esc(ch.url)}" target="_blank" style="color:var(--blue);text-decoration:none">${esc(name)}</a></td>
+          <td><span class="badge ${cls}">${ch.status}</span></td>
+          <td>${ch.videosAnalyzed || '—'}</td>
+          <td class="text-muted">${lastA}</td>
+          <td><button onclick="removeRefChannel(${ch.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px" title="Remove">🗑</button></td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="5" class="text-muted">No channels yet — add one above</td></tr>';
+    }
+
+    // Transcript stats
+    if (snap.transcriptStats) {
+      document.getElementById('transcriptCount').textContent = snap.transcriptStats.transcripts;
+      document.getElementById('studyCount').textContent = snap.transcriptStats.studies;
+    }
+
     // Jobs (with sparklines)
     const jobBody = document.querySelector('#jobs-table tbody');
     jobBody.innerHTML = snap.jobs.map(j => {
@@ -1217,6 +1289,59 @@
       showToast(`Error: ${err.message}`, false);
     } finally {
       setTimeout(() => btns.forEach(b => b.disabled = false), 2000);
+    }
+  };
+
+  // ── Content Reference Channel Management ────
+  window.addRefChannel = async function() {
+    const input = document.getElementById('ref-url-input');
+    const statusEl = document.getElementById('ref-add-status');
+    const url = input.value.trim();
+    if (!url || !url.includes('youtube.com')) {
+      statusEl.style.display = 'block';
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = '❌ Enter a valid YouTube channel URL';
+      return;
+    }
+
+    statusEl.style.display = 'block';
+    statusEl.style.color = 'var(--text2)';
+    statusEl.textContent = '🔍 Analyzing channel… (30-60s)';
+    input.disabled = true;
+
+    try {
+      const res = await apiFetch('/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        statusEl.style.color = 'var(--green)';
+        statusEl.textContent = `✅ ${data.channel.name || 'Channel'}: ${data.analysis.patternsFound} patterns from ${data.analysis.videosAnalyzed} videos`;
+        input.value = '';
+        await poll();
+      } else {
+        statusEl.style.color = 'var(--red)';
+        statusEl.textContent = `❌ ${data.analysis?.error || data.message || 'Failed'}`;
+      }
+    } catch (err) {
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = `❌ Error: ${err.message}`;
+    } finally {
+      input.disabled = false;
+      setTimeout(() => { statusEl.style.display = 'none'; }, 10000);
+    }
+  };
+
+  window.removeRefChannel = async function(id) {
+    if (!confirm('Remove this reference channel? Knowledge will be re-synthesized.')) return;
+    try {
+      await apiFetch(`/api/channels/${id}`, { method: 'DELETE' });
+      await poll();
+      showToast('Channel removed', true);
+    } catch (err) {
+      showToast('Failed to remove: ' + err.message, false);
     }
   };
 

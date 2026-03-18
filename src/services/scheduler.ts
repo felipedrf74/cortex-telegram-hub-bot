@@ -14,10 +14,11 @@ import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
-import { isGarminConfigured, keepAlive as garminKeepAlive } from './garmin';
+import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier } from '../portal/telemetry';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
+import { processAllChannels, seedDefaultChannels } from './channel-learner';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -68,6 +69,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
   registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
+  registerJob('channel_relearn',   'Channel Re-Learn',      '0 3 * * 0',       'content');
 
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -354,7 +356,7 @@ export function startScheduler(bot: Bot): void {
 
   // ── Garmin keep-alive (every 30 min) ───────────────────────────────
   if (isGarminConfigured()) {
-    cron.schedule('*/30 * * * *', wrapJob('garmin_keepalive', async () => {
+    cron.schedule('5,35 * * * *', wrapJob('garmin_keepalive', async () => {
       const ok = await garminKeepAlive();
       recordGarminRefresh(ok);
       if (!ok) {
@@ -366,7 +368,8 @@ export function startScheduler(bot: Bot): void {
   // ── Garmin coach briefing (configurable time) ──────────────────────
   if (config.garmin.coachEnabled && isGarminConfigured()) {
     cron.schedule(coachCron, wrapJob('garmin_coach', async () => {
-      logger.info('Daily coach briefing starting');
+      logger.info('Daily coach briefing starting — pre-authenticating Garmin');
+      await garminEnsureAuth();
       const result = await generateCoachBriefing();
 
       if (result.errors.length > 0) {
@@ -423,8 +426,31 @@ export function startScheduler(bot: Bot): void {
     }
   }), { timezone: tz });
 
+  // ── Weekly channel re-analysis (Sunday 03:00) ─────────────────
+  cron.schedule('0 3 * * 0', wrapJob('channel_relearn', async () => {
+    const result = await processAllChannels();
+    if (result.analyzed > 0 || result.failed > 0) {
+      const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
+        `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send channel relearn notification');
+        }
+      }
+    }
+  }), { timezone: tz });
+
+  // Seed default reference channels (only if table is empty)
+  try {
+    seedDefaultChannels();
+  } catch (err) {
+    logger.warn({ err }, 'Failed to seed default content reference channels');
+  }
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00)`
   );
 }
 

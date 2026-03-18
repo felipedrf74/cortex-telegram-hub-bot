@@ -25,6 +25,16 @@ import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved
 import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, testSshConnection, PT_MONTHS } from './services/invoice-filer';
 import { enqueueInvoice, getPendingCount } from './services/invoice-queue';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
+import {
+  addAndAnalyzeChannel,
+  processAllChannels,
+} from './services/channel-learner';
+import {
+  getAllChannels,
+  removeChannel as removeRefChannel,
+  buildKnowledgePromptBlock,
+} from './state/content-references';
+import { studyVideo, getTranscript, formatStudyResult, formatTranscriptMessage, saveTranscriptAsDocx, saveStudyAsDocx } from './services/video-study';
 import { recordFiling, deleteAmazonFilings, deleteUberFilings } from './state/invoice-filings';
 import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
 import {
@@ -1504,6 +1514,207 @@ export function createBot(): Bot {
         clearInterval(typingInterval);
         logger.error({ err }, 'Report generation failed');
         await ctx.reply(`❌ Report failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ── Content Learning Commands ──────────────────────────────
+
+  bot.command('learnfrom', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const url = ctx.match?.trim();
+      if (!url || !url.includes('youtube.com')) {
+        await ctx.reply(
+          '📚 <b>Usage:</b> <code>/learnfrom https://www.youtube.com/@ChannelHandle</code>\n\n' +
+          'Analyzes a YouTube channel and extracts content creation patterns (hooks, titles, storytelling, etc.) ' +
+          'to improve your content AI.',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      await ctx.replyWithChatAction('typing');
+      await ctx.reply(
+        '🔍 Analyzing channel… this takes 30-60s (fetching videos + Claude analysis).',
+        { parse_mode: 'HTML' },
+      );
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction('typing').catch(() => {});
+      }, 4000);
+      try {
+        const result = await addAndAnalyzeChannel(url, 'bot');
+        clearInterval(typingInterval);
+
+        if (result.analysis.success) {
+          let msg = `📚 <b>Channel Learned!</b>\n\n`;
+          msg += `📺 <b>${escapeHtml(result.channel.channel_name || url)}</b>\n`;
+          msg += `🎬 ${result.analysis.videosAnalyzed} videos analyzed\n`;
+          msg += `🧠 ${result.analysis.patternsFound} patterns extracted\n`;
+          if (result.analysis.summary) {
+            msg += `\n📝 <i>${escapeHtml(result.analysis.summary.substring(0, 300))}${result.analysis.summary.length > 300 ? '...' : ''}</i>\n`;
+          }
+          msg += `\n✅ Knowledge has been synthesized and will be used in future content suggestions.`;
+          await ctx.reply(msg, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(
+            `⚠️ Failed to analyze channel: ${escapeHtml(result.analysis.error || 'Unknown error')}\n\n` +
+            `Make sure the URL is correct and YOUTUBE_API_KEY is set.`,
+            { parse_mode: 'HTML' },
+          );
+        }
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Channel learning failed');
+        await ctx.reply(`❌ Analysis failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  bot.command('references', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const channels = getAllChannels();
+      if (channels.length === 0) {
+        await ctx.reply(
+          '📚 No reference channels configured.\n\nUse <code>/learnfrom https://www.youtube.com/@Channel</code> to add one.',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      let msg = `📚 <b>Content Reference Channels</b> (${channels.length})\n\n`;
+      for (const ch of channels) {
+        const statusEmoji = ch.status === 'active' ? '✅' :
+                           ch.status === 'analyzing' ? '🔄' :
+                           ch.status === 'pending' ? '⏳' : '❌';
+        msg += `${statusEmoji} <b>${escapeHtml(ch.channel_name || ch.channel_url)}</b>\n`;
+        msg += `   ${escapeHtml(ch.channel_url)}\n`;
+        if (ch.video_count_analyzed > 0) {
+          msg += `   📊 ${ch.video_count_analyzed} videos · Last: ${ch.last_analyzed_at?.split('T')[0] || 'never'}\n`;
+        }
+        if (ch.error_message) {
+          msg += `   ⚠️ <i>${escapeHtml(ch.error_message.substring(0, 80))}</i>\n`;
+        }
+        msg += '\n';
+      }
+
+      const knowledge = buildKnowledgePromptBlock();
+      if (knowledge) {
+        msg += `\n🧠 <b>Active knowledge:</b> ${knowledge.split('\n').filter(l => l.trim()).length} lines injected into content AI`;
+      } else {
+        msg += `\n⏳ <i>No knowledge synthesized yet. Add channels and wait for analysis.</i>`;
+      }
+
+      await ctx.reply(msg, { parse_mode: 'HTML' });
+    });
+  });
+
+  bot.command('relearn', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      await ctx.reply('🔄 Re-analyzing all reference channels… this may take a few minutes.', { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction('typing').catch(() => {});
+      }, 4000);
+      try {
+        const result = await processAllChannels(true);
+        clearInterval(typingInterval);
+        let msg = `🔄 <b>Re-learning Complete</b>\n\n`;
+        msg += `✅ Analyzed: ${result.analyzed} channel(s)\n`;
+        if (result.failed > 0) msg += `❌ Failed: ${result.failed}\n`;
+        msg += `🧠 Knowledge ${result.synthesized ? 'updated' : 'unchanged'}`;
+        await ctx.reply(msg, { parse_mode: 'HTML' });
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        await ctx.reply(`❌ Re-learning failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /transcribe — Quick transcript fetch → save as DOCX ───────────
+  bot.command('transcribe', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const url = ctx.match?.trim();
+      if (!url) {
+        await ctx.reply('Usage: /transcribe <youtube-url>\n\nFetches the transcript and sends it as a Word file.', { parse_mode: 'HTML' });
+        return;
+      }
+
+      const statusMsg = await ctx.reply('⏳ Fetching transcript...');
+
+      try {
+        const transcript = await getTranscript(url);
+        if (!transcript) {
+          await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+            '❌ No transcript available for this video. It may not have captions enabled.');
+          return;
+        }
+
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          '📄 Generating Word document...');
+
+        const filePath = await saveTranscriptAsDocx(transcript);
+
+        // Send summary + file
+        let caption = `📝 <b>${escapeHtml(transcript.title)}</b>\n`;
+        caption += `📺 ${escapeHtml(transcript.channelName)} · ${transcript.language}${transcript.isAutoGenerated ? ' (auto)' : ''}\n`;
+        caption += `⏱ ${Math.floor(transcript.durationSeconds / 60)}:${(transcript.durationSeconds % 60).toString().padStart(2, '0')} · ${transcript.segments.length} segments · ${Math.round(transcript.fullText.length / 1000)}K chars`;
+
+        await ctx.replyWithDocument(new InputFile(filePath), {
+          caption,
+          parse_mode: 'HTML',
+        });
+
+        // Clean up status message
+        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+      } catch (err: any) {
+        logger.error({ err, url }, '/transcribe failed');
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          `❌ Failed to fetch transcript: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /studyvideo — Deep video analysis → save as DOCX ───────────────
+  bot.command('studyvideo', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const url = ctx.match?.trim();
+      if (!url) {
+        await ctx.reply(
+          'Usage: /studyvideo <youtube-url>\n\n' +
+          'Deep-analyzes a video and sends the result as a Word file:\n' +
+          '• 🎣 Hook breakdown (first 30s)\n' +
+          '• 🏗️ Content structure with timestamps\n' +
+          '• ⭐ Key moments (quotable/viral)\n' +
+          '• 💡 Content ideas (PT-BR, your niches)\n' +
+          '• 🎬 Reel/Short cut suggestions',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const statusMsg = await ctx.reply('🔬 Studying video... (fetching transcript + running analysis, ~30s)');
+
+      try {
+        const result = await studyVideo(url);
+
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          '📄 Generating Word document...');
+
+        const filePath = await saveStudyAsDocx(result);
+
+        let caption = `🔬 <b>Video Study: ${escapeHtml(result.title)}</b>\n`;
+        caption += `📺 ${escapeHtml(result.channelName)}\n`;
+        caption += `🎣 Hook · 🏗️ Structure · ⭐ Key Moments · 💡 Ideas · 🎬 Reel Cuts`;
+
+        await ctx.replyWithDocument(new InputFile(filePath), {
+          caption,
+          parse_mode: 'HTML',
+        });
+
+        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+      } catch (err: any) {
+        logger.error({ err, url }, '/studyvideo failed');
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          `❌ Video study failed: ${escapeHtml(err.message || 'Unknown error')}`);
       }
     });
   });
@@ -3084,6 +3295,15 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /repurpose [topic] — 1 video → full ecosystem
 /feedback [url] [views] [ret%] — Log performance
 /report [week|month] — Content performance report
+
+<b>📚 CONTENT LEARNING</b>
+/learnfrom [url] — Analyze a YouTube channel and learn patterns
+/references — List reference channels and knowledge status
+/relearn — Re-analyze all channels and update knowledge
+
+<b>📝 VIDEO ANALYSIS</b>
+/transcribe [url] — Extract transcript from any YouTube video
+/studyvideo [url] — Deep study: hooks, structure, ideas, reel cuts
 
 <b>📄 FATURAS</b>
 /amazon [YYYY-MM] [--force] — Recolher faturas Amazon
