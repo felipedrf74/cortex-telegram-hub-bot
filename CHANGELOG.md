@@ -10,9 +10,11 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 Fixes a critical routing bug where follow-up replies to the coach briefing got hijacked to the wrong domain. Adds structured output templates and Garmin training awareness to the secretary domain.
 
-#### Conversation Continuity (`src/bot.ts`, `src/router/index.ts`)
-- **Domain sticky routing** — Follow-up messages within 5 minutes stay in the same domain instead of being re-routed by keyword matching. Explicit `/commands` always override.
-- **Coach briefing context preservation** — Both scheduled and manual coach briefings now save to triathlon conversation history, so follow-up replies have full context.
+#### Context-Aware Message Routing (`src/router/index.ts`, `src/services/anthropic.ts`, `src/bot.ts`)
+- **AI-powered conversation continuity** — When an active conversation exists, the classifier receives the bot's last message as context and lets Claude decide whether the new message is a follow-up or a topic switch. Replaces fragile heuristics (time windows, message length, question detection).
+- **Keyword bypass during active conversations** — When context is present, skips keyword matching entirely to prevent false hijacking (e.g. "calendar" in a training reply routing to secretary).
+- **Photo handler fix** — Photos no longer fall back to `lastActiveDomain`. Invoice/screenshot photos route by caption keywords or the default secretary pipeline, preventing invoice photos from being sent to the wrong domain.
+- **Coach briefing context preservation** — Both scheduled and manual coach briefings save to triathlon conversation history, so follow-up replies have full context.
 - **`setLastActiveDomain()` export** — Scheduler can set conversation continuity for cron-triggered messages (coach briefing, content workflow).
 
 #### Secretary Structured Output Templates (`src/services/anthropic.ts`)
