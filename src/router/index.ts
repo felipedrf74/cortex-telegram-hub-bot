@@ -1,5 +1,5 @@
 import { DomainName } from '../domains/types';
-import { patternMatch, keywordMatch, classifyWithClaude } from './classifier';
+import { patternMatch, keywordMatch, classifyWithClaude, ConversationContext } from './classifier';
 import { logger } from '../utils/logger';
 
 export { keywordMatch };
@@ -28,11 +28,13 @@ export function isSystemCommand(message: string): string | null {
   return null;
 }
 
-export async function routeMessage(message: string): Promise<RouteResult> {
-  // Step 1: Try pattern matching
+export async function routeMessage(
+  message: string,
+  activeContext?: ConversationContext | null,
+): Promise<RouteResult> {
+  // Step 1: Try pattern matching (explicit /commands always win)
   const patternDomain = patternMatch(message);
   if (patternDomain) {
-    // Strip the command prefix from the message
     const stripped = message.replace(/^\/\S+\s*/, '').trim();
     logger.debug({ domain: patternDomain, method: 'pattern' }, 'Routed by pattern');
     return {
@@ -43,7 +45,24 @@ export async function routeMessage(message: string): Promise<RouteResult> {
     };
   }
 
-  // Step 2: Try keyword matching (free — no API call)
+  // Step 2: If there's an active conversation, skip keyword matching and go
+  // straight to the context-aware classifier. Keywords are too blunt — "calendar"
+  // in a reply about moving a training session shouldn't hijack to secretary.
+  if (activeContext) {
+    const classification = await classifyWithClaude(message, activeContext);
+    logger.debug(
+      { domain: classification.domain, confidence: classification.confidence, activeContext: activeContext.domain },
+      'Routed by context-aware classifier',
+    );
+    return {
+      domain: classification.domain,
+      method: 'classifier',
+      confidence: classification.confidence,
+      strippedMessage: message,
+    };
+  }
+
+  // Step 3: No active conversation — try keyword matching (free, no API call)
   const kwDomain = keywordMatch(message);
   if (kwDomain) {
     logger.debug({ domain: kwDomain, method: 'keyword' }, 'Routed by keyword');
@@ -55,7 +74,7 @@ export async function routeMessage(message: string): Promise<RouteResult> {
     };
   }
 
-  // Step 3: Claude classifier for ambiguous messages
+  // Step 4: Claude classifier for ambiguous messages (no active conversation)
   const classification = await classifyWithClaude(message);
   logger.debug({ domain: classification.domain, confidence: classification.confidence, method: 'classifier' }, 'Routed by classifier');
   return {

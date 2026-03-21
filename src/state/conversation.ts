@@ -37,6 +37,24 @@ export function addToConversation(domain: DomainName, role: 'user' | 'assistant'
   `).run(domain, domain, maxKeep);
 }
 
+/**
+ * Get the last assistant message for a domain (if it was the most recent message).
+ * Returns null if the last message was from the user (conversation already answered).
+ * Used by the router to provide conversation context to the classifier.
+ */
+export function getLastAssistantMessage(domain: DomainName): string | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT role, content FROM conversations
+    WHERE domain = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(domain) as DomainMessage | undefined;
+
+  if (!row || row.role !== 'assistant') return null;
+  return row.content;
+}
+
 export function clearConversation(domain: DomainName): void {
   const db = getDb();
   db.prepare('DELETE FROM conversations WHERE domain = ?').run(domain);

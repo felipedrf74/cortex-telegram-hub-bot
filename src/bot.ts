@@ -9,7 +9,7 @@ import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
 import { getActiveReminders } from './state/reminders';
-import { clearConversation, clearAllConversations, addToConversation } from './state/conversation';
+import { clearConversation, clearAllConversations, addToConversation, getLastAssistantMessage } from './state/conversation';
 import {
   formatMsTodoLists, formatMsTodoTasks, formatMsTodoTaskCreated, formatMsTodoSummary,
   formatReminders, splitMessage, escapeHtml,
@@ -2843,41 +2843,24 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
   try {
     await ctx.replyWithChatAction('typing');
 
-    const route = await routeMessage(text);
     const userId = ctx.from?.id;
 
-    // ── Conversation continuity: if user recently interacted with a domain
-    // and the new message is routed by a weak signal (keyword/classifier),
-    // prefer sticking with the previous domain. This prevents short follow-up
-    // replies (e.g. "check the calendar" after a coach briefing) from being
-    // hijacked to a different domain.
-    if (userId) {
+    // ── Build active conversation context for the classifier ──
+    // If the user recently interacted with a domain and the bot's last message
+    // is still unanswered, pass that context to the classifier so it can
+    // intelligently decide: is this a follow-up or a new topic?
+    let activeContext: { domain: DomainName; lastAssistantMessage: string } | null = null;
+    if (userId && !text.startsWith('/')) {
       const lastState = lastActiveDomain.get(userId);
-      if (
-        lastState &&
-        Date.now() - lastState.timestamp < CONTINUITY_WINDOW_MS &&
-        route.domain !== lastState.domain &&
-        route.method !== 'pattern' // explicit /commands always win
-      ) {
-        // Check if the message looks like a conversational reply
-        // (short, no slash command, routed by keyword or low-confidence classifier)
-        const isLikelyFollowUp =
-          text.length < 200 &&
-          !text.startsWith('/') &&
-          (route.method === 'keyword' || (route.method === 'classifier' && route.confidence < 0.85));
-
-        if (isLikelyFollowUp) {
-          logger.info(
-            { from: route.domain, to: lastState.domain, method: route.method, confidence: route.confidence },
-            'Conversation continuity: keeping previous domain for follow-up message',
-          );
-          route.domain = lastState.domain;
-          route.method = 'keyword'; // mark as overridden
-          route.confidence = 0.95;
+      if (lastState && Date.now() - lastState.timestamp < CONTINUITY_WINDOW_MS) {
+        const lastMsg = getLastAssistantMessage(lastState.domain);
+        if (lastMsg) {
+          activeContext = { domain: lastState.domain, lastAssistantMessage: lastMsg };
         }
       }
     }
 
+    const route = await routeMessage(text, activeContext);
     logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
 
     // Track last active domain for photo routing and conversation continuity
@@ -2910,17 +2893,18 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
     const caption = ctx.message?.caption || '';
     const userId = ctx.from?.id;
 
-    // ── Branch 1: Caption-based non-secretary domain routing (unchanged) ──
+    // ── Branch 1: Caption explicitly targets a non-secretary domain ──
+    // Only route to non-secretary if the caption has a clear keyword match.
+    // Never fall back to lastActiveDomain for photos — they are self-contained
+    // (invoices, screenshots, etc.) and should be classified on their own merit.
     if (caption) {
       const domainFromCaption = keywordMatch(caption) as DomainName | null;
-      const lastState = userId ? lastActiveDomain.get(userId) : null;
-      const activeDomain = domainFromCaption || lastState?.domain || null;
 
-      if (activeDomain && activeDomain !== 'secretary') {
-        const handler = DOMAIN_HANDLERS[activeDomain];
+      if (domainFromCaption && domainFromCaption !== 'secretary') {
+        const handler = DOMAIN_HANDLERS[domainFromCaption];
         const photoContext = `[Photo attached] ${caption}`;
         const response = await handler(photoContext, userId);
-        if (userId) lastActiveDomain.set(userId, { domain: activeDomain, timestamp: Date.now() });
+        if (userId) lastActiveDomain.set(userId, { domain: domainFromCaption, timestamp: Date.now() });
         const parts = splitMessage(response.text);
         for (const part of parts) {
           try {

@@ -2,6 +2,11 @@ import { DomainName, ClassificationResult } from '../domains/types';
 import { classifyMessage } from '../services/anthropic';
 import { logger } from '../utils/logger';
 
+export interface ConversationContext {
+  domain: DomainName;
+  lastAssistantMessage: string;
+}
+
 // ─── Pattern-based quick matching (no API call) ─────────────────────
 
 const DOMAIN_PATTERNS: Record<DomainName, RegExp[]> = {
@@ -60,8 +65,11 @@ export function keywordMatch(message: string): DomainName | null {
 
 // ─── Claude-based classification ────────────────────────────────────
 
-export async function classifyWithClaude(message: string): Promise<ClassificationResult> {
-  const result = await classifyMessage(message);
+export async function classifyWithClaude(
+  message: string,
+  activeContext?: ConversationContext | null,
+): Promise<ClassificationResult> {
+  const result = await classifyMessage(message, activeContext ?? undefined);
   logger.debug({ result }, 'Claude classification result');
   return result;
 }
