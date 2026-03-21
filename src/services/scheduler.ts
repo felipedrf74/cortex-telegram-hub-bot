@@ -8,7 +8,7 @@ import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
 import { formatDailyBriefing, DailyBriefingData, escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
-import { runContentDiscovery } from './content-discovery';
+// content-discovery.ts still exists for manual /discover but removed from scheduler
 import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-collector';
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
@@ -18,7 +18,10 @@ import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated a
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier } from '../portal/telemetry';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
+import { setLastActiveDomain } from '../bot';
+import { addToConversation } from '../state/conversation';
 import { processAllChannels, seedDefaultChannels } from './channel-learner';
+import { sendTopicCandidates, sendWeeklyPackage } from './content-workflow';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -60,7 +63,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('weekly_review',      'Weekly Review',         '0 17 * * 5',      'secretary');
   registerJob('shared_list',        'Shared List Check',     '*/5 * * * *',     'secretary');
   registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *',       'system');
-  registerJob('content_discovery',  'Content Discovery',     '43 16 * * *',     'content');
+  // content_discovery removed — replaced by content-workflow (tue/thu/fri topic candidates)
   registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *',       'invoices');
   registerJob('amazon_collection',  'Amazon Collection',     '15 9 1 * *',      'invoices');
   registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *',      'invoices');
@@ -70,6 +73,9 @@ export function startScheduler(bot: Bot): void {
   registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
   registerJob('channel_relearn',   'Channel Re-Learn',      '0 3 * * 0',       'content');
+  registerJob('tuesday_reels',     'Tuesday Reel Topics',   '0 9 * * 2',       'content');
+  registerJob('thursday_youtube',  'Thursday YT Topic',     '0 9 * * 4',       'content');
+  registerJob('friday_weekly',     'Friday Weekly Package',  '30 18 * * 5',     'content');
 
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -179,11 +185,29 @@ export function startScheduler(bot: Bot): void {
 
     if (newTasks.length === 0) return;
 
-    let msg = `👥 <b>New tasks from others</b>\n\n`;
-    for (const t of newTasks.slice(0, 10)) {
-      msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    // Categorize: due today vs other new tasks
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const dueToday = newTasks.filter((t) => t.dueDateTime && t.dueDateTime.slice(0, 10) === todayStr);
+    const otherNew = newTasks.filter((t) => !t.dueDateTime || t.dueDateTime.slice(0, 10) !== todayStr);
+
+    let msg = '';
+
+    if (dueToday.length > 0) {
+      msg += `📋 <b>Due today</b> (shared)\n`;
+      for (const t of dueToday) {
+        msg += `  ▸ ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+      }
     }
-    if (newTasks.length > 10) msg += `\n... and ${newTasks.length - 10} more`;
+
+    if (otherNew.length > 0) {
+      if (msg) msg += '\n';
+      msg += `🆕 <b>New tasks assigned</b>\n`;
+      for (const t of otherNew.slice(0, 8)) {
+        const due = t.dueDateTime ? ` 📅 ${t.dueDateTime.slice(0, 10)}` : '';
+        msg += `  ▸ ${escapeHtml(t.title)}${due} <i>[${escapeHtml(t.listName)}]</i>\n`;
+      }
+      if (otherNew.length > 8) msg += `  ... +${otherNew.length - 8} more\n`;
+    }
 
     for (const userId of config.telegram.allowedUserIds) {
       try {
@@ -201,29 +225,7 @@ export function startScheduler(bot: Bot): void {
     logger.info('Cleared self-created task cache and daily notifications');
   }), { timezone: tz });
 
-  // ── Content discovery (16:43) ──────────────────────────────────────
-  cron.schedule('43 16 * * *', wrapJob('content_discovery', async () => {
-    const result = await runContentDiscovery();
-
-    let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
-    if (result.ideas.length > 0) {
-      for (let i = 0; i < result.ideas.length; i++) {
-        msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
-      }
-    } else {
-      msg += `Ideas generated but couldn't parse titles — check the file.\n`;
-    }
-    msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
-    msg += `\n🔍 ${result.searchCount} web searches used`;
-
-    for (const userId of config.telegram.allowedUserIds) {
-      try {
-        await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-      } catch (err) {
-        logger.error({ err, userId }, 'Failed to send content discovery notification');
-      }
-    }
-  }), { timezone: tz });
+  // Old content_discovery (16:43) removed — replaced by content-workflow (Tue/Thu/Fri)
 
   // ── Monthly invoice collection (1st at 09:00) ─────────────────────
   cron.schedule('0 9 1 * *', wrapJob('invoice_collection', async () => {
@@ -384,7 +386,13 @@ export function startScheduler(bot: Bot): void {
       }
 
       const chunks = splitMessage(result.message);
+
+      // Save coach briefing to triathlon conversation history so follow-up replies have context
+      addToConversation('triathlon', 'assistant', result.message);
+
       for (const userId of config.telegram.allowedUserIds) {
+        // Set conversation continuity to triathlon so follow-up replies stay in context
+        setLastActiveDomain(userId, 'triathlon');
         try {
           for (const chunk of chunks) {
             await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
@@ -442,6 +450,39 @@ export function startScheduler(bot: Bot): void {
     }
   }), { timezone: tz });
 
+  // ── Content Workflow: Tuesday Reel Topics (09:00) ──────────────────
+  cron.schedule('0 9 * * 2', wrapJob('tuesday_reels', async () => {
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await sendTopicCandidates(bot, userId, 'reel', 'tuesday_reels');
+      } catch (err) {
+        logger.error({ err, userId }, 'Tuesday reel topics failed');
+      }
+    }
+  }), { timezone: tz });
+
+  // ── Content Workflow: Thursday YT Topic (09:00) ───────────────────
+  cron.schedule('0 9 * * 4', wrapJob('thursday_youtube', async () => {
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await sendTopicCandidates(bot, userId, 'youtube', 'thursday_youtube');
+      } catch (err) {
+        logger.error({ err, userId }, 'Thursday YouTube topics failed');
+      }
+    }
+  }), { timezone: tz });
+
+  // ── Content Workflow: Friday Weekly Package (18:30) ────────────────
+  cron.schedule('30 18 * * 5', wrapJob('friday_weekly', async () => {
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await sendWeeklyPackage(bot, userId);
+      } catch (err) {
+        logger.error({ err, userId }, 'Friday weekly package failed');
+      }
+    }
+  }), { timezone: tz });
+
   // Seed default reference channels (only if table is empty)
   try {
     seedDefaultChannels();
@@ -450,7 +491,7 @@ export function startScheduler(bot: Bot): void {
   }
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30)`
   );
 }
 

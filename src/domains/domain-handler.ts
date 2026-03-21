@@ -100,11 +100,12 @@ export async function handleSimpleDomain(
   message: string,
   maxIterations = 5,
   userId?: number,
+  maxTokensOverride?: number,
 ): Promise<DomainResponse> {
   const history = getConversationHistory(domain);
   const stateContext = await buildSimpleStateContext(domain, userId);
 
-  let result = await callDomain(domain, history, message, stateContext);
+  let result = await callDomain(domain, history, message, stateContext, maxTokensOverride);
   let finalText = result.text;
 
   const toolConversation: Anthropic.MessageParam[] = [];

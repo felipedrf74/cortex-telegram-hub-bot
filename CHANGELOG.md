@@ -4,6 +4,35 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.8.0] — 2026-03-21
+
+### Conversation Continuity + Secretary Intelligence + Content Engine Timeout Fix
+
+Fixes a critical routing bug where follow-up replies to the coach briefing got hijacked to the wrong domain. Adds structured output templates and Garmin training awareness to the secretary domain.
+
+#### Conversation Continuity (`src/bot.ts`, `src/router/index.ts`)
+- **Domain sticky routing** — Follow-up messages within 5 minutes stay in the same domain instead of being re-routed by keyword matching. Explicit `/commands` always override.
+- **Coach briefing context preservation** — Both scheduled and manual coach briefings now save to triathlon conversation history, so follow-up replies have full context.
+- **`setLastActiveDomain()` export** — Scheduler can set conversation continuity for cron-triggered messages (coach briefing, content workflow).
+
+#### Secretary Structured Output Templates (`src/services/anthropic.ts`)
+- **Daily overview format** — When asked "what's my day", responds with structured: Alerts → Schedule → Training → Pending tasks.
+- **Weekly overview format** — When asked "plan my week", responds with: Alerts → Per-day summaries → Balance check (Tech/Content/Training hours) → Suggestions.
+- **Availability check format** — Quick ✅/❌ response with nearest open slots.
+- **PT-BR friendly** — Templates use Portuguese labels (ALERTAS, AGENDA, TREINO, PENDENTE, BALANÇO, SUGESTÕES).
+
+#### Secretary Garmin Awareness (`src/domains/secretary.ts`)
+- **Training data injection** — Secretary context now includes last 3 days of Garmin activities (type, duration, distance, avg HR, calories) and current body battery level.
+- **Missing training detection** — Flags days with no training logged in the context.
+- **Body battery tracking** — Injects current body battery, charged/drained values for energy-aware scheduling.
+- **Zero API overhead** — Fetched in parallel with existing To Do/Calendar/Mail calls.
+
+#### Content Engine Timeout Fix (`content-engine/services/claude_client.py`, `src/services/content-engine.ts`)
+- **Python API timeout** — Increased from 60s to 180s. `/genscript` runs deep_search + Sonnet script generation which can take 90s+.
+- **Bot-side fetch timeout** — Increased from 120s to 180s to match the Python side.
+
+---
+
 ## [3.7.0] — 2026-03-18
 
 ### Content Creator Learning System + Garmin Auth Hardening + Telegram Formatting

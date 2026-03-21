@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
@@ -11,9 +12,148 @@ const IDEAS_DIR = process.env.IDEAS_DIR || path.join(os.homedir(), 'Desktop', 'I
 /** Threshold in chars — if formatted message exceeds this, save to file */
 const FILE_THRESHOLD = 3500;
 
+/** Command → subfolder mapping */
+const COMMAND_FOLDERS: Record<string, string> = {
+  deepsearch: 'RESEARCH',
+  sources: 'RESEARCH',
+  hotnews: 'RESEARCH',
+  trending: 'RESEARCH',
+  discover: 'RESEARCH',
+  ideas: 'RESEARCH',
+  reaction: 'IDEAS',
+  hooks: 'IDEAS',
+  titles: 'IDEAS',
+  video: 'IDEAS',
+  reel: 'IDEAS',
+  genscript: 'SCRIPTS',
+  script: 'SCRIPTS',
+  genthumbnail: 'THUMBNAILS',
+  gencaption: 'CAPTIONS',
+  competitor: 'ANALYSIS',
+  gaps: 'ANALYSIS',
+  seo: 'ANALYSIS',
+  feedback: 'ANALYTICS',
+  report: 'ANALYTICS',
+};
+
 /**
- * Saves content to IDEAS folder, organized as: IDEAS/<topic-slug>_<command>_<YYYY-MM-DD>.txt
+ * Converts HTML-formatted content into a DOCX document with proper formatting.
+ */
+function htmlToDocxChildren(content: string): Paragraph[] {
+  const plain = content
+    .replace(/<a href="([^"]*)">[^<]*<\/a>/g, '$1')
+    .replace(/<code>[^<]*<\/code>/g, (m) => m.replace(/<\/?code>/g, ''));
+
+  const lines = plain.split('\n');
+  const children: Paragraph[] = [];
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      children.push(new Paragraph({ text: '' }));
+      continue;
+    }
+
+    // Parse inline bold/italic from HTML tags
+    const runs: TextRun[] = [];
+    const regex = /(<b>(.+?)<\/b>|<i>(.+?)<\/i>|([^<]+|<[^>]*>))/g;
+    let match;
+    let hasRuns = false;
+    const stripped = line.replace(/<[^>]*>/g, '').trim();
+
+    // Check if line looks like a heading (starts with emoji + all caps or bold)
+    const isHeading = /^[🔥🎯📌🎣⏰📊🔍💡📝🎬🖼️📢✂️📁🏆⚡🧠💰🎯🔎📈💪🏃‍♂️🚴‍♂️⛪🇧🇷🌍]/.test(stripped) && stripped.length < 100;
+
+    if (isHeading && stripped === stripped) {
+      // Bold heading-like line
+      children.push(new Paragraph({
+        children: [new TextRun({ text: stripped, bold: true, size: 24, font: 'Calibri' })],
+        spacing: { before: 120, after: 60 },
+      }));
+      continue;
+    }
+
+    // Parse runs with bold/italic
+    while ((match = regex.exec(line)) !== null) {
+      if (match[2]) {
+        runs.push(new TextRun({ text: match[2], bold: true, font: 'Calibri', size: 22 }));
+        hasRuns = true;
+      } else if (match[3]) {
+        runs.push(new TextRun({ text: match[3], italics: true, font: 'Calibri', size: 22 }));
+        hasRuns = true;
+      } else if (match[4] && !match[4].startsWith('<')) {
+        runs.push(new TextRun({ text: match[4], font: 'Calibri', size: 22 }));
+        hasRuns = true;
+      }
+    }
+
+    if (!hasRuns) {
+      // Fallback — strip all HTML and add as plain text
+      runs.push(new TextRun({ text: stripped, font: 'Calibri', size: 22 }));
+    }
+
+    children.push(new Paragraph({ children: runs, spacing: { before: 40, after: 40 } }));
+  }
+
+  return children;
+}
+
+/**
+ * Saves content as DOCX to IDEAS/<subfolder>/<slug>_<command>_<date>.docx
  * Returns the file path, or null if content was short enough for inline display.
+ */
+export async function saveContentAsDocx(
+  content: string,
+  command: string,
+  topic: string,
+  forceFile = false,
+): Promise<string | null> {
+  if (!forceFile && content.length < FILE_THRESHOLD) return null;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const slug = topic
+    .toLowerCase()
+    .replace(/[^a-z0-9àáâãéêíóôõúç]+/gi, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 60);
+
+  const subfolder = COMMAND_FOLDERS[command] || 'OTHER';
+  const dir = path.join(IDEAS_DIR, subfolder);
+  const filename = `${slug}_${command}_${today}.docx`;
+  const filePath = path.join(dir, filename);
+
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const titleText = `${command.toUpperCase()} — ${topic}`;
+    const docChildren = [
+      new Paragraph({
+        children: [new TextRun({ text: titleText, bold: true, size: 32, font: 'Calibri', color: '1A1A2E' })],
+        heading: HeadingLevel.HEADING_1,
+        spacing: { after: 100 },
+      }),
+      new Paragraph({
+        children: [new TextRun({ text: `Generated: ${today}`, italics: true, size: 18, font: 'Calibri', color: '6B7280' })],
+        spacing: { after: 200 },
+      }),
+      ...htmlToDocxChildren(content),
+    ];
+
+    const doc = new Document({
+      sections: [{ children: docChildren }],
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+    fs.writeFileSync(filePath, buffer);
+    logger.info({ filePath, chars: content.length }, `Saved ${command} output as DOCX`);
+    return filePath;
+  } catch (err) {
+    logger.error({ err }, 'Failed to save content DOCX');
+    return null;
+  }
+}
+
+/**
+ * Legacy sync wrapper — saves as plain text. Kept for backward compat.
  */
 export function maybeSaveToFile(
   content: string,
@@ -23,7 +163,7 @@ export function maybeSaveToFile(
 ): string | null {
   if (!forceFile && content.length < FILE_THRESHOLD) return null;
 
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = new Date().toISOString().slice(0, 10);
   const slug = topic
     .toLowerCase()
     .replace(/[^a-z0-9àáâãéêíóôõúç]+/gi, '_')
@@ -32,7 +172,6 @@ export function maybeSaveToFile(
   const filename = `${slug}_${command}_${today}.txt`;
   const filePath = path.join(IDEAS_DIR, filename);
 
-  // Strip HTML tags for the plain-text file
   const plain = content
     .replace(/<b>/g, '**').replace(/<\/b>/g, '**')
     .replace(/<i>/g, '_').replace(/<\/i>/g, '_')
@@ -258,7 +397,7 @@ export async function getScript(topic: string, niche = 'general', maxDuration = 
   return engineFetch<ScriptResponse>('/script', {
     method: 'POST',
     body: JSON.stringify({ topic, niche, max_duration_minutes: maxDuration }),
-  }, 120_000); // scripts take longer — 2 min timeout
+  }, 180_000); // scripts take longer — research + Sonnet generation
 }
 
 export async function getTitles(topic: string, niche = 'general', count = 10): Promise<TitlesResponse> {

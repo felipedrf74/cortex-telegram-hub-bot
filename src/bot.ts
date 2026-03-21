@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { storeCallback, getCallback } from './utils/callback-store';
 import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config';
 import { logger } from './utils/logger';
@@ -8,7 +9,7 @@ import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
 import { getActiveReminders } from './state/reminders';
-import { clearConversation, clearAllConversations } from './state/conversation';
+import { clearConversation, clearAllConversations, addToConversation } from './state/conversation';
 import {
   formatMsTodoLists, formatMsTodoTasks, formatMsTodoTaskCreated, formatMsTodoSummary,
   formatReminders, splitMessage, escapeHtml,
@@ -34,7 +35,7 @@ import {
   removeChannel as removeRefChannel,
   buildKnowledgePromptBlock,
 } from './state/content-references';
-import { studyVideo, getTranscript, formatStudyResult, formatTranscriptMessage, saveTranscriptAsDocx, saveStudyAsDocx } from './services/video-study';
+import { studyVideo, getTranscript, formatStudyResult, formatTranscriptMessage, saveTranscriptAsDocx, saveStudyAsDocx, saveScriptAsDocx } from './services/video-study';
 import { recordFiling, deleteAmazonFilings, deleteUberFilings } from './state/invoice-filings';
 import { addVendor, removeVendorByName, getActiveVendors as getCustomVendors } from './state/invoice-vendors';
 import {
@@ -46,6 +47,11 @@ import {
   resolveReply as resolveUberReply, registerReplyWaiter as registerUberReplyWaiter,
 } from './services/uber-collector';
 import { generateCoachBriefing, CoachRecommendation } from './services/garmin-coach';
+import {
+  sendTopicCandidates, sendWeeklyPackage,
+  updateFeedback, markScriptGenerated, getTopicById,
+  generateReelScript, generateYouTubeScript,
+} from './services/content-workflow';
 import { setLastCoachState } from './domains/domain-handler';
 import {
   deepSearch, getSources, getHotNews, isContentEngineConfigured,
@@ -56,7 +62,7 @@ import {
   formatTrending, formatReaction, formatHooks, formatScript, formatTitles,
   formatThumbnail, formatCaption, formatCompetitor, formatGaps, formatSeo,
   formatRepurpose, formatFeedback, formatReport,
-  maybeSaveToFile,
+  maybeSaveToFile, saveContentAsDocx,
 } from './services/content-engine';
 import { isGarminConfigured, setMfaNotifier, isMfaPending, submitMfaCode } from './services/garmin';
 import { recordMessageProcessed } from './portal/telemetry';
@@ -78,21 +84,26 @@ async function sendOrSave(
   topic: string,
   forceFile = false,
 ): Promise<void> {
-  const saved = maybeSaveToFile(msg, command, topic, forceFile);
-  if (saved) {
-    // Send a short summary (first ~2500 chars) + file notice
-    const preview = msg.slice(0, 2500);
-    const truncated = msg.length > 2500;
-    const footer = truncated
-      ? `\n\n✂️ <i>Output truncated — full version saved.</i>\n📁 <code>${escapeHtml(saved)}</code>`
-      : `\n\n📁 <i>Full output saved:</i>\n<code>${escapeHtml(saved)}</code>`;
-    const finalMsg = preview + footer;
-    for (const chunk of splitMessage(finalMsg)) {
-      try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
-      catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+  // Always try to save as DOCX and send as downloadable file
+  const docxPath = await saveContentAsDocx(msg, command, topic, forceFile);
+  if (docxPath) {
+    // Send a clean short summary + the file
+    const plain = msg.replace(/<[^>]*>/g, '');
+    const firstLine = plain.split('\n').find(l => l.trim().length > 10)?.trim().slice(0, 120) || topic;
+    const caption = `📄 <b>${escapeHtml(command.toUpperCase())}</b> — ${escapeHtml(topic)}\n\n${escapeHtml(firstLine)}${firstLine.length >= 120 ? '...' : ''}`;
+
+    try {
+      await ctx.replyWithDocument(new InputFile(docxPath), {
+        caption,
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      // Fallback: send file path if document upload fails
+      logger.error({ err }, `Failed to send ${command} DOCX via Telegram`);
+      await ctx.reply(`📁 Saved to: <code>${escapeHtml(docxPath)}</code>`, { parse_mode: 'HTML' });
     }
   } else {
-    // Short enough — send inline as before
+    // Short enough — send inline
     for (const chunk of splitMessage(msg)) {
       try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
       catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
@@ -146,37 +157,7 @@ function enqueue(userId: number, fn: () => Promise<void>): void {
   processingQueue.set(userId, next);
 }
 
-// ─── Inline Keyboard Callback Store ─────────────────────────────────
-
-interface CallbackEntry {
-  data: any;
-  expires: number;
-}
-
-const callbackStore = new Map<string, CallbackEntry>();
-
-// Time-based cleanup every 10 minutes (more reliable than counter-based)
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of callbackStore) {
-    if (entry.expires < now) callbackStore.delete(key);
-  }
-}, 10 * 60 * 1000);
-
-function storeCallback(data: any): string {
-  const ref = crypto.randomUUID().slice(0, 8);
-  callbackStore.set(ref, { data, expires: Date.now() + 300_000 }); // 5 min TTL
-  return ref;
-}
-
-function getCallback(ref: string): any | null {
-  const entry = callbackStore.get(ref);
-  if (!entry || entry.expires < Date.now()) {
-    callbackStore.delete(ref);
-    return null;
-  }
-  return entry.data;
-}
+// ─── Inline Keyboard Callback Store (shared from utils/callback-store.ts) ───
 
 // ─── Telegram File Re-download Helper ────────────────────────────────
 
@@ -286,7 +267,20 @@ const pendingEdits = new Map<number, PendingEdit>();
 
 // ─── Last Active Domain (per user) ──────────────────────────────────
 
-const lastActiveDomain = new Map<number, DomainName>();
+interface LastDomainState {
+  domain: DomainName;
+  timestamp: number;
+}
+
+const lastActiveDomain = new Map<number, LastDomainState>();
+
+/** Conversation continuity window — if user replies within this time, prefer sticking with the same domain */
+const CONTINUITY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Set last active domain for a user (used by scheduler for cron-triggered messages) */
+export function setLastActiveDomain(userId: number, domain: DomainName): void {
+  lastActiveDomain.set(userId, { domain, timestamp: Date.now() });
+}
 
 // ─── Bot Setup ───────────────────────────────────────────────────────
 
@@ -1196,10 +1190,7 @@ export function createBot(): Bot {
       try {
         const result = await getSources(query);
         const msg = formatSources(result);
-        for (const chunk of splitMessage(msg)) {
-          try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
-          catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
-        }
+        await sendOrSave(ctx, msg, 'sources', query, true);
       } catch (err: any) {
         logger.error({ err }, 'Sources fetch failed');
         await ctx.reply(`❌ Sources failed: ${escapeHtml(err.message || 'Unknown error')}`);
@@ -1217,10 +1208,7 @@ export function createBot(): Bot {
       try {
         const result = await getHotNews();
         const msg = formatHotNews(result);
-        for (const chunk of splitMessage(msg)) {
-          try { await ctx.reply(chunk, { parse_mode: 'HTML' }); }
-          catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
-        }
+        await sendOrSave(ctx, msg, 'hotnews', 'trending', true);
       } catch (err: any) {
         logger.error({ err }, 'Hot news failed');
         await ctx.reply(`❌ Hot news failed: ${escapeHtml(err.message || 'Unknown error')}`);
@@ -1240,10 +1228,7 @@ export function createBot(): Bot {
         const result = await getTrending(niche);
         clearInterval(typingInterval);
         const msg = formatTrending(result);
-        for (const chunk of splitMessage(msg)) {
-          try { await ctx.reply(chunk, { parse_mode: 'HTML' }); }
-          catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
-        }
+        await sendOrSave(ctx, msg, 'trending', niche || 'general', true);
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Trending failed');
@@ -1435,26 +1420,6 @@ export function createBot(): Bot {
     });
   });
 
-  bot.command('repurpose', async (ctx) => {
-    enqueue(ctx.from!.id, async () => {
-      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
-      const topic = ctx.match?.trim();
-      if (!topic) { await ctx.reply('Usage: /repurpose <topic>\nExample: /repurpose meu vídeo sobre corrida 5k'); return; }
-      await ctx.replyWithChatAction('typing');
-      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
-      try {
-        const result = await getRepurpose(topic);
-        clearInterval(typingInterval);
-        const msg = formatRepurpose(result);
-        await sendOrSave(ctx, msg, 'repurpose', topic, true); // always save
-      } catch (err: any) {
-        clearInterval(typingInterval);
-        logger.error({ err }, 'Repurpose failed');
-        await ctx.reply(`❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
-      }
-    });
-  });
-
   // ── Phase 5: Learning System ──
 
   bot.command('feedback', async (ctx) => {
@@ -1629,6 +1594,32 @@ export function createBot(): Bot {
     });
   });
 
+  // ─── /contenttopic — Manual trigger for trending topics ────────────
+  bot.command('contenttopic', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const arg = ctx.match?.trim().toLowerCase();
+      if (arg === 'tuesday' || arg === 'reels') {
+        await sendTopicCandidates(bot, ctx.from!.id, 'reel', 'tuesday_reels');
+      } else if (arg === 'thursday' || arg === 'youtube') {
+        await sendTopicCandidates(bot, ctx.from!.id, 'youtube', 'thursday_youtube');
+      } else {
+        await ctx.reply(
+          '📋 <b>Usage:</b>\n\n' +
+          '<code>/contenttopic tuesday</code> — 5 trending Reel topics\n' +
+          '<code>/contenttopic thursday</code> — 5 trending YouTube topics',
+          { parse_mode: 'HTML' },
+        );
+      }
+    });
+  });
+
+  // ─── /contentretro — Manual trigger for weekly content package ─────
+  bot.command('contentretro', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      await sendWeeklyPackage(bot, ctx.from!.id);
+    });
+  });
+
   // ─── /transcribe — Quick transcript fetch → save as DOCX ───────────
   bot.command('transcribe', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
@@ -1715,6 +1706,162 @@ export function createBot(): Bot {
         logger.error({ err, url }, '/studyvideo failed');
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
           `❌ Video study failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /script — Generate content script → save as DOCX ──────────────
+  bot.command('script', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const topic = ctx.match?.trim();
+      if (!topic) {
+        await ctx.reply(
+          '📝 Usage: /script <topic or prompt>\n\n' +
+          'Generates a full video script and sends it as a Word file.\n\n' +
+          'Examples:\n' +
+          '  /script why most people waste their 20s\n' +
+          '  /script 5 habits that changed my life in Portugal\n' +
+          '  /script reaction to trending topic about AI replacing jobs',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const statusMsg = await ctx.reply('✍️ Writing script... this may take a minute.');
+
+      try {
+        // Use the content domain to generate the script
+        const scriptPrompt = `Write a complete YouTube video script about: "${topic}". Include all sections: CONTEXTO (tema, duração, tom, estrutura), HOOK (0-15s), PROBLEMA, CONCEITO, APLICAÇÃO with practical examples, and CTA. Full script in PT-BR, ready to record. Be detailed and creative.`;
+        const response = await handleContent(scriptPrompt, 8192);
+
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          '📄 Saving as Word document...');
+
+        const filePath = await saveScriptAsDocx(topic, response.text);
+
+        const caption = `📝 <b>Script: ${escapeHtml(topic)}</b>\n✅ Ready to record`;
+
+        await ctx.replyWithDocument(new InputFile(filePath), {
+          caption,
+          parse_mode: 'HTML',
+        });
+
+        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+      } catch (err: any) {
+        logger.error({ err, topic }, '/script failed');
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          `❌ Script generation failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /repurpose — Upload a script .docx → multi-format content ─────
+  bot.command('repurpose', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      // Check if replying to a document message
+      const replyMsg = ctx.message?.reply_to_message;
+      const doc = replyMsg?.document || ctx.message?.document;
+      const textTopic = ctx.match?.trim();
+
+      // Text-based: /repurpose <topic> (no document)
+      if (!doc && textTopic) {
+        await ctx.replyWithChatAction('typing');
+        const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+        try {
+          const repurposePrompt = `Repurpose the following content topic into these formats:\n\n` +
+            `1. **3 REELS/SHORTS** (30-60s each) — complete scripts with hook, body, CTA. Each one takes a different angle.\n` +
+            `2. **1 STORIES SEQUENCE** (5-7 stories) — text + poll/question stickers suggestions.\n\n` +
+            `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
+            `Topic: ${textTopic}`;
+          const contentResponse = await handleContent(repurposePrompt, 8192);
+          clearInterval(typingInterval);
+          const filePath = await saveScriptAsDocx(`Repurpose — ${textTopic}`, contentResponse.text);
+          await ctx.replyWithDocument(new InputFile(filePath), {
+            caption: `♻️ <b>Repurposed: ${escapeHtml(textTopic)}</b>\n🎬 3 Reels · 📖 Stories`,
+            parse_mode: 'HTML',
+          });
+        } catch (err: any) {
+          clearInterval(typingInterval);
+          logger.error({ err }, '/repurpose (text) failed');
+          await ctx.reply(`❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        }
+        return;
+      }
+
+      if (!doc) {
+        await ctx.reply(
+          '♻️ <b>Usage:</b>\n\n' +
+          '▸ Reply to a .docx script file with /repurpose\n' +
+          '▸ Or: <code>/repurpose topic here</code>\n\n' +
+          'Generates from your script:\n' +
+          '  ▸ 3 Reels/Shorts scripts (30-60s)\n' +
+          '  ▸ 1 Stories sequence',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const fileName = doc.file_name || '';
+      if (!fileName.endsWith('.docx')) {
+        await ctx.reply('❌ Please send a .docx file. Other formats are not supported.');
+        return;
+      }
+
+      const statusMsg = await ctx.reply('📥 Reading script...');
+
+      try {
+        // Download the file from Telegram
+        const file = await ctx.api.getFile(doc.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+        const response = await fetch(fileUrl);
+        const buffer = Buffer.from(await response.arrayBuffer());
+
+        // Extract text from .docx using mammoth
+        const mammoth = await import('mammoth');
+        const result = await mammoth.default.extractRawText({ buffer });
+        const scriptText = result.value;
+
+        if (!scriptText || scriptText.trim().length < 50) {
+          await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+            '❌ Could not extract enough text from the document.');
+          return;
+        }
+
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          '♻️ Repurposing script into multiple formats...');
+
+        // Send to content domain with high token limit
+        const repurposePrompt = `I have the following YouTube video script. Repurpose it into these formats:\n\n` +
+          `1. **3 REELS/SHORTS** (30-60s each) — complete scripts with hook, body, CTA. Each one takes a different angle from the original.\n` +
+          `2. **1 STORIES SEQUENCE** (5-7 stories) — text + poll/question stickers suggestions.\n\n` +
+          `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
+          `━━━ ORIGINAL SCRIPT ━━━\n\n${scriptText}`;
+
+        const contentResponse = await handleContent(repurposePrompt, 8192);
+
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          '📄 Saving as Word document...');
+
+        // Extract topic from filename
+        const topic = fileName
+          .replace(/^script_/, '').replace(/\.docx$/, '').replace(/_/g, ' ').trim()
+          || 'repurposed content';
+
+        const filePath = await saveScriptAsDocx(`Repurpose — ${topic}`, contentResponse.text);
+
+        const caption = `♻️ <b>Repurposed: ${escapeHtml(topic)}</b>\n` +
+          `🎬 3 Reels · 📖 Stories`;
+
+        await ctx.replyWithDocument(new InputFile(filePath), {
+          caption,
+          parse_mode: 'HTML',
+        });
+
+        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+      } catch (err: any) {
+        logger.error({ err }, '/repurpose failed');
+        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+          `❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
       }
     });
   });
@@ -2043,6 +2190,14 @@ export function createBot(): Bot {
           setLastCoachState(ctx.from!.id, result.recommendations, result.message.substring(0, 500));
         }
 
+        // Set conversation continuity to triathlon so follow-up replies stay in context
+        if (ctx.from?.id) {
+          lastActiveDomain.set(ctx.from.id, { domain: 'triathlon', timestamp: Date.now() });
+        }
+
+        // Save to triathlon conversation history so follow-ups have context
+        addToConversation('triathlon', 'assistant', result.message);
+
         // Send the human-readable briefing
         const chunks = splitMessage(result.message);
         for (const chunk of chunks) {
@@ -2275,6 +2430,68 @@ export function createBot(): Bot {
     }
   });
 
+  // ── Content Workflow Callback Handler ──
+  bot.callbackQuery(/^cw:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1]; // approve | skip | reject
+    const feedbackId = parseInt(parts[2], 10);
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    if (isNaN(feedbackId)) {
+      await ctx.answerCallbackQuery({ text: '⚠️ Invalid topic reference.' });
+      return;
+    }
+
+    const topic = getTopicById(feedbackId);
+    if (!topic) {
+      await ctx.answerCallbackQuery({ text: '⚠️ Topic not found.' });
+      return;
+    }
+
+    if (action === 'approve') {
+      updateFeedback(feedbackId, 'approved');
+      await ctx.answerCallbackQuery({ text: `✅ ${topic.title.slice(0, 40)}` });
+
+      enqueue(ctx.from!.id, async () => {
+        const statusMsg = await ctx.reply(
+          `✍️ Generating ${topic.format} script for: <b>${escapeHtml(topic.title)}</b>...`,
+          { parse_mode: 'HTML' },
+        );
+
+        try {
+          const scriptText = topic.format === 'reel'
+            ? await generateReelScript(topic)
+            : await generateYouTubeScript(topic);
+
+          const filePath = await saveScriptAsDocx(topic.title, scriptText);
+          markScriptGenerated(feedbackId);
+
+          const emoji = topic.format === 'reel' ? '🎬' : '🎥';
+          await ctx.replyWithDocument(new InputFile(filePath), {
+            caption: `${emoji} <b>${topic.format === 'reel' ? 'Reel' : 'YT'} Script: ${escapeHtml(topic.title)}</b>\n✅ Ready to record`,
+            parse_mode: 'HTML',
+          });
+
+          await ctx.api.deleteMessage(ctx.chat!.id, statusMsg.message_id).catch(() => {});
+        } catch (err: any) {
+          logger.error({ err, feedbackId }, 'Content workflow script generation failed');
+          await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id,
+            `❌ Script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        }
+      });
+
+    } else if (action === 'skip') {
+      updateFeedback(feedbackId, 'skipped');
+      await ctx.answerCallbackQuery({ text: `⏭ Skipped: ${topic.title.slice(0, 40)}` });
+
+    } else if (action === 'reject') {
+      updateFeedback(feedbackId, 'rejected');
+      await ctx.answerCallbackQuery({ text: `👎 Noted — won't suggest similar` });
+    }
+  });
+
   // ── Invoice Correction Callback Handler ──
   bot.callbackQuery(/^nf:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
@@ -2480,6 +2697,69 @@ export function createBot(): Bot {
     await ctx.reply('🎥 Video messages are not supported yet. You can send a photo or type a description.');
   });
   bot.on('message:document', async (ctx) => {
+    const doc = ctx.message?.document;
+    const caption = ctx.message?.caption?.trim() || '';
+
+    // Handle /repurpose as caption on a document upload
+    if (caption.startsWith('/repurpose') && doc?.file_name?.endsWith('.docx')) {
+      enqueue(ctx.from!.id, async () => {
+        const statusMsg = await ctx.reply('📥 Reading script...');
+        try {
+          const file = await ctx.api.getFile(doc.file_id);
+          const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+          const response = await fetch(fileUrl);
+          const buffer = Buffer.from(await response.arrayBuffer());
+
+          const mammoth = await import('mammoth');
+          const result = await mammoth.default.extractRawText({ buffer });
+          const scriptText = result.value;
+
+          if (!scriptText || scriptText.trim().length < 50) {
+            await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+              '❌ Could not extract enough text from the document.');
+            return;
+          }
+
+          await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+            '♻️ Repurposing script into multiple formats...');
+
+          const repurposePrompt = `I have the following YouTube video script. Repurpose it into these formats:\n\n` +
+            `1. **3 REELS/SHORTS** (30-60s each) — complete scripts with hook, body, CTA. Each one takes a different angle from the original.\n` +
+            `2. **1 STORIES SEQUENCE** (5-7 stories) — text + poll/question stickers suggestions.\n\n` +
+            `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
+            `━━━ ORIGINAL SCRIPT ━━━\n\n${scriptText}`;
+
+          const contentResponse = await handleContent(repurposePrompt, 8192);
+
+          await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+            '📄 Saving as Word document...');
+
+          const topic = (doc.file_name || 'repurposed')
+            .replace(/^script_/, '').replace(/\.docx$/, '').replace(/_/g, ' ').trim();
+
+          const filePath = await saveScriptAsDocx(`Repurpose — ${topic}`, contentResponse.text);
+
+          await ctx.replyWithDocument(new InputFile(filePath), {
+            caption: `♻️ <b>Repurposed: ${escapeHtml(topic)}</b>\n🎬 3 Reels · 📖 Stories`,
+            parse_mode: 'HTML',
+          });
+
+          await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+        } catch (err: any) {
+          logger.error({ err }, '/repurpose (document caption) failed');
+          await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
+            `❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        }
+      });
+      return;
+    }
+
+    // Hint about /repurpose for .docx files
+    if (doc?.file_name?.endsWith('.docx')) {
+      await ctx.reply('📎 To repurpose a script, send the .docx file with <code>/repurpose</code> as caption.\n\nOr reply to the file with <code>/repurpose</code>.', { parse_mode: 'HTML' });
+      return;
+    }
+
     await ctx.reply('📎 File attachments are not supported yet. Please describe what you need in text.');
   });
   bot.on('message:sticker', async (ctx) => {
@@ -2564,10 +2844,44 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     await ctx.replyWithChatAction('typing');
 
     const route = await routeMessage(text);
+    const userId = ctx.from?.id;
+
+    // ── Conversation continuity: if user recently interacted with a domain
+    // and the new message is routed by a weak signal (keyword/classifier),
+    // prefer sticking with the previous domain. This prevents short follow-up
+    // replies (e.g. "check the calendar" after a coach briefing) from being
+    // hijacked to a different domain.
+    if (userId) {
+      const lastState = lastActiveDomain.get(userId);
+      if (
+        lastState &&
+        Date.now() - lastState.timestamp < CONTINUITY_WINDOW_MS &&
+        route.domain !== lastState.domain &&
+        route.method !== 'pattern' // explicit /commands always win
+      ) {
+        // Check if the message looks like a conversational reply
+        // (short, no slash command, routed by keyword or low-confidence classifier)
+        const isLikelyFollowUp =
+          text.length < 200 &&
+          !text.startsWith('/') &&
+          (route.method === 'keyword' || (route.method === 'classifier' && route.confidence < 0.85));
+
+        if (isLikelyFollowUp) {
+          logger.info(
+            { from: route.domain, to: lastState.domain, method: route.method, confidence: route.confidence },
+            'Conversation continuity: keeping previous domain for follow-up message',
+          );
+          route.domain = lastState.domain;
+          route.method = 'keyword'; // mark as overridden
+          route.confidence = 0.95;
+        }
+      }
+    }
+
     logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
 
-    // Track last active domain for photo routing
-    if (ctx.from?.id) lastActiveDomain.set(ctx.from.id, route.domain);
+    // Track last active domain for photo routing and conversation continuity
+    if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
 
     const handler = DOMAIN_HANDLERS[route.domain];
     const response = await handler(route.strippedMessage, ctx.from?.id);
@@ -2599,13 +2913,14 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
     // ── Branch 1: Caption-based non-secretary domain routing (unchanged) ──
     if (caption) {
       const domainFromCaption = keywordMatch(caption) as DomainName | null;
-      const activeDomain = domainFromCaption || (userId ? lastActiveDomain.get(userId) : null);
+      const lastState = userId ? lastActiveDomain.get(userId) : null;
+      const activeDomain = domainFromCaption || lastState?.domain || null;
 
       if (activeDomain && activeDomain !== 'secretary') {
         const handler = DOMAIN_HANDLERS[activeDomain];
         const photoContext = `[Photo attached] ${caption}`;
         const response = await handler(photoContext, userId);
-        if (userId) lastActiveDomain.set(userId, activeDomain);
+        if (userId) lastActiveDomain.set(userId, { domain: activeDomain, timestamp: Date.now() });
         const parts = splitMessage(response.text);
         for (const part of parts) {
           try {

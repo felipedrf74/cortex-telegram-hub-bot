@@ -16,7 +16,8 @@ const SYSTEM_COMMANDS = [
   '/help', '/status', '/clear', '/start', '/discover', '/deepsearch', '/sources', '/hotnews',
   '/trending', '/reaction', '/hooks', '/genscript', '/titles', '/genthumbnail', '/gencaption',
   '/competitor', '/gaps', '/seo', '/repurpose', '/feedback', '/report',
-  '/learnfrom', '/references', '/relearn', '/studyvideo', '/transcribe',
+  '/learnfrom', '/references', '/relearn', '/studyvideo', '/transcribe', '/script', '/repurpose',
+  '/contenttopic', '/contentretro',
 ];
 
 export function isSystemCommand(message: string): string | null {

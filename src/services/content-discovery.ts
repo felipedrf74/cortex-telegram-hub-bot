@@ -27,7 +27,7 @@ Felipe's profile:
 - Content pillars: Fitness/gym, running, cycling, politics & news reactions, self-development, trending topic commentary
 
 TARGET AUDIENCE:
-- Name archetype: Lucas, 20 years old, from São Paulo, Brazil
+- Male, Brazilian, ages 18-35
 - Loves: learning new things, understanding what's happening around him
 - Dislikes: laziness
 - Desires: personal growth
@@ -66,11 +66,11 @@ RULES:
 - Every idea must be tied to something CURRENT — no evergreen filler
 - Be specific: "Lula's new economic policy reaction" not "politics in Brazil"
 - Hooks must be scroll-stopping — think pattern interrupt, curiosity gap, bold claim
-- Prioritize ideas with HIGH shareability and comment potential among young Brazilian men (18-25)
+- Prioritize ideas with HIGH shareability and comment potential among Brazilian men (18-35)
 - Include at least 2 ideas per major niche (fitness, news/politics, self-development)
 - Flag if any topic is time-sensitive (will expire in 24-48h)
 - ALL titles and hooks should be in PT-BR (Brazilian Portuguese) — the audience speaks Portuguese
-- Think about what would make Lucas (20, São Paulo) stop scrolling and watch`;
+- Think about what would make a Brazilian man (18-35) stop scrolling and watch`;
 
 export interface ContentDiscoveryResult {
   ideas: string[];       // just the titles/headers
@@ -90,7 +90,7 @@ Search for what's trending RIGHT NOW in these niches and generate content ideas:
 ${CONTENT_NICHES.map((n, i) => `${i + 1}. ${n}`).join('\n')}
 
 Focus on what happened TODAY or in the last 24-48 hours. I need ideas I can film/create THIS WEEK.
-Remember: my audience is young Brazilian men (18-25) who want growth and hate laziness. Titles and hooks in PT-BR.`;
+Remember: my audience is Brazilian men (18-35) who want growth and hate laziness. Titles and hooks in PT-BR.`;
 
   logger.info('Starting daily content discovery with web search...');
 

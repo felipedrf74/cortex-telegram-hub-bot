@@ -8,6 +8,7 @@ import { isOutlookTodoConfigured, getAllPendingTasks } from '../services/microso
 import { now, startOfDay, endOfDay, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getSharedMemorySummary } from '../state/shared-memory';
+import { isGarminConfigured, getActivitiesByDate, getBodyBatteryEvents, GarminActivity } from '../services/garmin';
 import { logger } from '../utils/logger';
 import Anthropic from '@anthropic-ai/sdk';
 
@@ -25,8 +26,13 @@ async function buildStateContext(): Promise<string> {
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
+  // Build date range for Garmin: last 3 days
+  const today = now();
+  const threeDaysAgo = today.minus({ days: 3 }).toFormat('yyyy-MM-dd');
+  const todayStr = today.toFormat('yyyy-MM-dd');
+
   // Fetch all data sources in parallel (no redundant calls)
-  const [todoResult, reminders, calendarResult, unreadResult] = await Promise.all([
+  const [todoResult, reminders, calendarResult, unreadResult, garminActivities, garminBodyBattery] = await Promise.all([
     isOutlookTodoConfigured()
       ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
@@ -36,6 +42,12 @@ async function buildStateContext(): Promise<string> {
       : Promise.resolve([] as any[]),
     isOutlookMailConfigured()
       ? getUnreadCount().catch(() => null)
+      : Promise.resolve(null),
+    isGarminConfigured()
+      ? getActivitiesByDate(threeDaysAgo, todayStr).catch(() => [] as GarminActivity[])
+      : Promise.resolve([] as GarminActivity[]),
+    isGarminConfigured()
+      ? getBodyBatteryEvents(todayStr).catch(() => null)
       : Promise.resolve(null),
   ]);
 
@@ -82,6 +94,63 @@ async function buildStateContext(): Promise<string> {
   }
   if (unreadResult !== null) {
     parts.push(`\nOutlook: ${unreadResult} unread`);
+  }
+
+  // Garmin training summary (last 3 days)
+  if (garminActivities.length > 0 || garminBodyBattery) {
+    parts.push('\n[GARMIN TRAINING SUMMARY]');
+
+    if (garminActivities.length > 0) {
+      // Group by date
+      const byDate = new Map<string, GarminActivity[]>();
+      for (const a of garminActivities) {
+        const date = a.startTimeLocal?.substring(0, 10) || 'unknown';
+        const list = byDate.get(date) || [];
+        list.push(a);
+        byDate.set(date, list);
+      }
+
+      for (const [date, activities] of [...byDate.entries()].sort()) {
+        const summaries = activities.map((a) => {
+          const type = a.activityType?.typeKey || a.activityName || 'activity';
+          const dur = a.duration ? `${Math.round(a.duration / 60)}min` : '';
+          const dist = a.distance ? `${(a.distance / 1000).toFixed(1)}km` : '';
+          const hr = a.averageHR ? `avgHR:${a.averageHR}` : '';
+          const cal = a.calories ? `${a.calories}cal` : '';
+          return `${type} ${[dur, dist, hr, cal].filter(Boolean).join(' ')}`;
+        });
+        parts.push(`  ${date}: ${summaries.join(' | ')}`);
+      }
+
+      // Check for missing training days
+      const activityDates = new Set(byDate.keys());
+      for (let i = 0; i < 3; i++) {
+        const d = today.minus({ days: i }).toFormat('yyyy-MM-dd');
+        if (!activityDates.has(d)) {
+          parts.push(`  ${d}: No training logged`);
+        }
+      }
+    } else {
+      parts.push('  No activities in the last 3 days');
+    }
+
+    // Body battery
+    if (garminBodyBattery && typeof garminBodyBattery === 'object') {
+      const bb = garminBodyBattery as Record<string, unknown>;
+      const events = bb.bodyBatteryValuesArray ?? bb.bodyBatteryEvents;
+      if (Array.isArray(events) && events.length > 0) {
+        // Get the latest value
+        const latest = events[events.length - 1];
+        const val = Array.isArray(latest) ? latest[1] : (latest as Record<string, unknown>)?.bodyBatteryLevel;
+        if (val != null) parts.push(`  Body Battery: ${val}/100`);
+      }
+      // Try charged/drained from daily summary fields
+      const charged = bb.bodyBatteryChargedValue ?? bb.totalCharged;
+      const drained = bb.bodyBatteryDrainedValue ?? bb.totalDrained;
+      if (charged != null || drained != null) {
+        parts.push(`  Charged: ${charged ?? '?'} | Drained: ${drained ?? '?'}`);
+      }
+    }
   }
 
   // Cross-domain shared context

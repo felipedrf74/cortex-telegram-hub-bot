@@ -653,3 +653,75 @@ export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string>
   logger.info({ filePath, title: result.title }, 'Video study saved as DOCX');
   return filePath;
 }
+
+/**
+ * Save a content script as a .docx Word file and return the file path.
+ */
+export async function saveScriptAsDocx(topic: string, scriptText: string): Promise<string> {
+  const SCRIPTS_DIR = path.join(IDEAS_DIR, 'SCRIPTS');
+  if (!fs.existsSync(SCRIPTS_DIR)) fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
+
+  // Parse script sections from the HTML/text response
+  const cleanText = scriptText.replace(/<[^>]*>/g, '');
+  const lines = cleanText.split('\n');
+
+  const children: Paragraph[] = [
+    new Paragraph({
+      children: [new TextRun({ text: topic, bold: true, size: 32 })],
+      heading: HeadingLevel.HEADING_1,
+    }),
+    new Paragraph({
+      children: [new TextRun({ text: `Generated: ${new Date().toISOString().slice(0, 10)}`, italics: true, size: 20, color: '888888' })],
+    }),
+    new Paragraph({ text: '' }),
+  ];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      children.push(new Paragraph({ text: '' }));
+      continue;
+    }
+
+    // Detect section headers (lines in ALL CAPS or with ━━━/───/--- dividers)
+    const isHeader = /^[A-ZÁÉÍÓÚÀÂÊÔÃÕÇ\s\d\-—─━:()[\]]{4,}$/.test(trimmed) && trimmed.length < 80;
+    const isDivider = /^[━─\-=]{3,}/.test(trimmed);
+
+    if (isDivider) continue; // skip dividers, we use heading styles instead
+    if (isHeader) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: trimmed, bold: true, size: 26 })],
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 240, after: 120 },
+      }));
+    } else if (trimmed.startsWith('▸') || trimmed.startsWith('•') || trimmed.startsWith('-')) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: trimmed, size: 22 })],
+        spacing: { after: 80 },
+        indent: { left: 360 },
+      }));
+    } else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      // Stage directions like [pausa 2s]
+      children.push(new Paragraph({
+        children: [new TextRun({ text: trimmed, italics: true, size: 22, color: '666666' })],
+        spacing: { after: 80 },
+      }));
+    } else {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: trimmed, size: 22 })],
+        spacing: { after: 100 },
+      }));
+    }
+  }
+
+  const doc = new Document({ sections: [{ children }] });
+
+  const filename = `script_${sanitizeFilename(topic)}.docx`;
+  const filePath = path.join(SCRIPTS_DIR, filename);
+
+  const buffer = await Packer.toBuffer(doc);
+  fs.writeFileSync(filePath, buffer);
+
+  logger.info({ filePath, topic }, 'Script saved as DOCX');
+  return filePath;
+}
