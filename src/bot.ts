@@ -277,6 +277,29 @@ const lastActiveDomain = new Map<number, LastDomainState>();
 /** Conversation continuity window — if user replies within this time, prefer sticking with the same domain */
 const CONTINUITY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
+// ─── Periodic Memory Cleanup ─────────────────────────────────────────
+// Prevent unbounded growth of per-user Maps over long-running sessions.
+setInterval(() => {
+  const now = Date.now();
+
+  // Clean up stale rate-limit entries (no timestamps within the last minute)
+  for (const [userId, timestamps] of rateLimitMap) {
+    const fresh = timestamps.filter((t) => now - t < 60_000);
+    if (fresh.length === 0) rateLimitMap.delete(userId);
+    else rateLimitMap.set(userId, fresh);
+  }
+
+  // Clean up expired lastActiveDomain entries (older than continuity window)
+  for (const [userId, state] of lastActiveDomain) {
+    if (now - state.timestamp > CONTINUITY_WINDOW_MS) lastActiveDomain.delete(userId);
+  }
+
+  // Clean up expired pending edits (2-min TTL)
+  for (const [userId, edit] of pendingEdits) {
+    if (now > edit.expires) pendingEdits.delete(userId);
+  }
+}, 10 * 60 * 1000); // every 10 minutes
+
 /** Set last active domain for a user (used by scheduler for cron-triggered messages) */
 export function setLastActiveDomain(userId: number, domain: DomainName): void {
   lastActiveDomain.set(userId, { domain, timestamp: Date.now() });

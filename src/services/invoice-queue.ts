@@ -208,24 +208,26 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
       }
 
       if (result.success) {
-        stmts.markFiled.run(item.id);
+        // Atomic: mark as filed + record in invoice_filings in a single transaction
+        const db = getDb();
+        db.transaction(() => {
+          stmts.markFiled.run(item.id);
+          recordFiling({
+            vendor: analysis.vendor || 'Unknown',
+            amount: analysis.totalAmount || null,
+            document_date: analysis.documentDate || null,
+            invoice_number: analysis.invoiceNumber || null,
+            source: item.source as 'photo' | 'email' | 'amazon' | 'uber',
+            source_ref: `queue_${item.id}`,
+            remote_path: result.filePath,
+            folder_path: result.folderPath,
+            filename: result.filename,
+            file_size_bytes: result.originalSizeKB ? result.originalSizeKB * 1024 : null,
+            compressed_size_bytes: result.compressedSizeKB ? result.compressedSizeKB * 1024 : null,
+            status: 'filed',
+          });
+        })();
         flushed++;
-
-        // Record filing in invoice_filings table
-        recordFiling({
-          vendor: analysis.vendor || 'Unknown',
-          amount: analysis.totalAmount || null,
-          document_date: analysis.documentDate || null,
-          invoice_number: analysis.invoiceNumber || null,
-          source: item.source as 'photo' | 'email' | 'amazon' | 'uber',
-          source_ref: `queue_${item.id}`,
-          remote_path: result.filePath,
-          folder_path: result.folderPath,
-          filename: result.filename,
-          file_size_bytes: result.originalSizeKB ? result.originalSizeKB * 1024 : null,
-          compressed_size_bytes: result.compressedSizeKB ? result.compressedSizeKB * 1024 : null,
-          status: 'filed',
-        });
 
         // Clean up local file
         try { fs.unlinkSync(item.local_path); } catch { /* ignore */ }
