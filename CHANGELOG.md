@@ -49,6 +49,13 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 - Book Library table with pillars, frameworks, reference count
 - 6 new API endpoints: `/api/agents`, `/api/signals`, `/api/pipeline`, `/api/books`, `/api/signals/:id/dismiss`, `/api/override/sprint`
 - 5 new quick actions: run-performance-agent, run-voice-evolution, run-reaction-radar, run-seo-agent, run-pipeline-agent
+- Add Book form in portal (title + author + Extract button)
+
+#### Bug Fixes
+- Fixed Mission Control not rendering — `apiFetch()` returns raw Response, not JSON; added `.then(r => r.json())` to all calls
+- Fixed migration 014 crash — referenced non-existent `content_references` table (correct: `content_ref_channels`)
+- Fixed `/genscript` timeout — Python Claude client had 60s timeout, increased to 180s; bot-side bumped to 180s
+- Fixed bot crash loop (11h downtime) caused by bad migration on startup
 
 #### Database
 - Migration 015: `agent_signals`, `agent_runs`, `book_library`, `seo_keywords`, `content_pipeline` tables
