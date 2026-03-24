@@ -91,6 +91,11 @@ export const config = {
       : !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN),
     rootFolderId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '',
   },
+  // ── YouTube ────────────────────────────────────────────────────────
+  youtube: {
+    apiKey: process.env.YOUTUBE_API_KEY || '',
+    channelId: process.env.YOUTUBE_CHANNEL_ID || '',  // Felipe's own channel ID
+  },
   // ── Content Engine (Python microservice) ────────────────────────────
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',

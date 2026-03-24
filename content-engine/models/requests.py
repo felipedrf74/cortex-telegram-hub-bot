@@ -69,6 +69,7 @@ class ScriptRequest(BaseModel):
     format: str = Field(default="YouTube")
     language: str = Field(default="pt-BR")
     max_duration_minutes: int = Field(default=8, ge=1, le=30)
+    context_signals: list[dict] | None = Field(default=None)  # Intelligence bus signals
 
 
 class ScriptResponse(BaseModel):

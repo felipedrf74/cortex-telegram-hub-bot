@@ -22,6 +22,13 @@ import { setLastActiveDomain } from '../bot';
 import { addToConversation } from '../state/conversation';
 import { processAllChannels, seedDefaultChannels } from './channel-learner';
 import { sendTopicCandidates, sendWeeklyPackage } from './content-workflow';
+import { runPipelineAgent } from '../agents/pipeline-agent';
+import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
+import { runReactionRadar } from '../agents/reaction-radar-agent';
+import { runPerformanceAgent } from '../agents/performance-agent';
+import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
+import { expireStaleSignals } from './intelligence-bus';
+import { seedBooksIfEmpty } from '../commands/books';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -76,6 +83,12 @@ export function startScheduler(bot: Bot): void {
   registerJob('tuesday_reels',     'Tuesday Reel Topics',   '0 9 * * 2',       'content');
   registerJob('thursday_youtube',  'Thursday YT Topic',     '0 9 * * 4',       'content');
   registerJob('friday_weekly',     'Friday Weekly Package',  '30 18 * * 5',     'content');
+  registerJob('pipeline_agent',   'Pipeline Tracker',       '0 20 * * *',      'content');
+  registerJob('performance_agent','Performance Intel',        '0 6 * * 0',       'content');
+  registerJob('voice_evolution', 'Voice Evolution',          '0 4 1 * *',       'content');
+  registerJob('reaction_radar',   'Reaction Radar',          '0 6,10,14,18,22 * * *', 'content');
+  registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
+  registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
 
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -483,6 +496,51 @@ export function startScheduler(bot: Bot): void {
     }
   }), { timezone: tz });
 
+  // ── Pipeline Agent (daily 20:00) ───────────────────────────────────
+  cron.schedule('0 20 * * *', wrapJob('pipeline_agent', async () => {
+    await runPipelineAgent();
+  }), { timezone: tz });
+
+  // ── Performance Agent (Sunday 06:00, after channel relearn) ──────
+  cron.schedule('0 6 * * 0', wrapJob('performance_agent', async () => {
+    await runPerformanceAgent();
+  }), { timezone: tz });
+
+  // ── Voice Evolution Agent (1st of month, 04:00) ─────────────────
+  cron.schedule('0 4 1 * *', wrapJob('voice_evolution', async () => {
+    await runVoiceEvolutionAgent();
+  }), { timezone: tz });
+
+  // ── Reaction Radar Agent (every 4 hours) ─────────────────────────
+  cron.schedule('0 6,10,14,18,22 * * *', wrapJob('reaction_radar', async () => {
+    await runReactionRadar();
+  }), { timezone: tz });
+
+  // ── SEO Tracking Agent (Monday 06:00) ────────────────────────────
+  cron.schedule('0 6 * * 1', wrapJob('seo_agent', async () => {
+    await runSEOAgent();
+    const msg = '🔍 <b>SEO Agent</b> — weekly keyword rank check complete. Use <code>/seorank</code> to see results.';
+    for (const userId of config.telegram.allowedUserIds) {
+      try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+    }
+  }), { timezone: tz });
+
+  // ── Signal Expiry Cleanup (hourly) ────────────────────────────────
+  cron.schedule('0 * * * *', wrapJob('expire_signals', async () => {
+    const expired = expireStaleSignals();
+    if (expired > 0) logger.info({ expired }, 'Expired stale intelligence bus signals');
+  }));
+
+  // Run signal expiry on startup
+  expireStaleSignals();
+
+  // Seed SEO keywords (only if table is empty)
+  try {
+    seedKeywordsIfEmpty();
+  } catch (err) {
+    logger.warn({ err }, 'Failed to seed SEO keywords');
+  }
+
   // Seed default reference channels (only if table is empty)
   try {
     seedDefaultChannels();
@@ -490,8 +548,19 @@ export function startScheduler(bot: Bot): void {
     logger.warn({ err }, 'Failed to seed default content reference channels');
   }
 
+  // Seed book library (only if table is empty)
+  try {
+    seedBooksIfEmpty(async (msg) => {
+      for (const userId of config.telegram.allowedUserIds) {
+        try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+      }
+    });
+  } catch (err) {
+    logger.warn({ err }, 'Failed to seed book library');
+  }
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly)`
   );
 }
 

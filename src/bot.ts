@@ -66,6 +66,9 @@ import {
 } from './services/content-engine';
 import { isGarminConfigured, setMfaNotifier, isMfaPending, submitMfaCode } from './services/garmin';
 import { recordMessageProcessed } from './portal/telemetry';
+import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePublishedStage } from './commands/pipeline';
+import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
+import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
 import fs from 'fs';
 import path from 'path';
 
@@ -1643,6 +1646,22 @@ export function createBot(): Bot {
       await sendWeeklyPackage(bot, ctx.from!.id);
     });
   });
+
+  // ─── Book Commands ────────────────────────────────────────────────
+  bot.command('addbook', async (ctx) => { enqueue(ctx.from!.id, () => handleAddBook(ctx)); });
+  bot.command('booknote', async (ctx) => { enqueue(ctx.from!.id, () => handleBookNote(ctx)); });
+  bot.command('books', async (ctx) => { enqueue(ctx.from!.id, () => handleListBooks(ctx)); });
+  bot.command('bookidea', async (ctx) => { enqueue(ctx.from!.id, () => handleBookIdea(ctx)); });
+
+  // ─── SEO Commands ──────────────────────────────────────────────────
+  bot.command('seokeyword', async (ctx) => { enqueue(ctx.from!.id, () => handleAddSEOKeyword(ctx)); });
+  bot.command('seorank', async (ctx) => { enqueue(ctx.from!.id, () => handleSEORank(ctx)); });
+
+  // ─── Pipeline Commands ─────────────────────────────────────────────
+  bot.command('pipeline', async (ctx) => { enqueue(ctx.from!.id, () => handlePipelineStatus(ctx)); });
+  bot.command('filmed', async (ctx) => { enqueue(ctx.from!.id, () => handleFilmedStage(ctx)); });
+  bot.command('editing', async (ctx) => { enqueue(ctx.from!.id, () => handleEditingStage(ctx)); });
+  bot.command('published', async (ctx) => { enqueue(ctx.from!.id, () => handlePublishedStage(ctx)); });
 
   // ─── /transcribe — Quick transcript fetch → save as DOCX ───────────
   bot.command('transcribe', async (ctx) => {

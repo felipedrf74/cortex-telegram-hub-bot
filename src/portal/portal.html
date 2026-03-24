@@ -785,6 +785,58 @@
     </div>
   </div>
 
+  <!-- ── Mission Control: Content Agents ──────── -->
+  <div class="card card-full">
+    <h2>🤖 Content Agent Mesh
+      <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="mesh-status"></span>
+    </h2>
+
+    <!-- Metric cards row -->
+    <div class="stats-grid" style="margin-bottom:16px">
+      <div class="stat-box">
+        <div class="stat-value" id="mc-signals">—</div>
+        <div class="stat-label">Active Signals</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="mc-pipeline">—</div>
+        <div class="stat-label">Pipeline</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="mc-books">—</div>
+        <div class="stat-label">Books</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="mc-bottleneck">—</div>
+        <div class="stat-label">Bottleneck</div>
+      </div>
+    </div>
+
+    <!-- Agent cards 2x3 grid -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-bottom:16px" id="mc-agents"></div>
+
+    <!-- Sprint mode toggle -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px;background:var(--surface2);border-radius:8px">
+      <span>⚡ Content Sprint Mode</span>
+      <button class="action-btn" id="mc-sprint-btn" onclick="toggleSprint()" style="font-size:12px">OFF</button>
+      <span class="text-muted" style="font-size:11px" id="mc-sprint-status"></span>
+    </div>
+
+    <!-- Signal log table -->
+    <h3 style="font-size:14px;margin-bottom:8px;color:var(--text2)">Intelligence Bus</h3>
+    <div style="max-height:300px;overflow-y:auto">
+      <table class="table" style="font-size:12px">
+        <thead><tr><th>Source</th><th>Type</th><th>Summary</th><th>Age</th><th></th></tr></thead>
+        <tbody id="mc-signals-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Book Library ──────────────────────── -->
+  <div class="card card-full">
+    <h2>📚 Book Library</h2>
+    <div id="mc-book-list" style="font-size:13px"></div>
+  </div>
+
   <!-- ── Activity Log ──────────────────────── -->
   <div class="card card-full">
     <h2>📋 Activity Log <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="event-count"></span></h2>
@@ -1344,6 +1396,130 @@
       showToast('Failed to remove: ' + err.message, false);
     }
   };
+
+  // ── Mission Control polling ─────────────
+  async function pollMissionControl() {
+    try {
+      const [agentsRes, signalsRes, pipelineRes, booksRes] = await Promise.all([
+        apiFetch('/api/agents'),
+        apiFetch('/api/signals?limit=30'),
+        apiFetch('/api/pipeline'),
+        apiFetch('/api/books'),
+      ]);
+
+      // Metric cards
+      document.getElementById('mc-signals').textContent = signalsRes.activeCount || 0;
+      document.getElementById('mc-books').textContent = (booksRes.books || []).filter(b => b.extraction_status === 'extracted').length;
+      document.getElementById('mc-pipeline').textContent = pipelineRes.totalActive || 0;
+      const bn = pipelineRes.bottleneck;
+      document.getElementById('mc-bottleneck').textContent = bn ? `${bn.stage} (${bn.count})` : 'Clear ✅';
+      document.getElementById('mc-bottleneck').style.color = bn ? 'var(--yellow)' : 'var(--green)';
+
+      // Agent cards
+      const agentEl = document.getElementById('mc-agents');
+      const agents = agentsRes.agents || [];
+      const agentActions = {
+        'performance-agent': 'run-performance-agent',
+        'voice-evolution': 'run-voice-evolution',
+        'reaction-radar': 'run-reaction-radar',
+        'seo-agent': 'run-seo-agent',
+        'pipeline-agent': 'run-pipeline-agent',
+        'channel-learner': 'resynthesize-knowledge',
+      };
+      agentEl.innerHTML = agents.map(a => {
+        const color = a.status === 'error' ? 'var(--red)' : a.status === 'success' ? 'var(--green)' : 'var(--text2)';
+        const action = agentActions[a.agent] || '';
+        const runBtn = action ? `<button class="action-btn" onclick="doAction('${action}')" style="font-size:11px;padding:3px 8px">▶ Run</button>` : '';
+        return `<div style="background:var(--surface2);border-radius:8px;padding:12px;border-left:3px solid ${color}">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <b style="font-size:13px">${a.agent}</b>
+            ${runBtn}
+          </div>
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">
+            Last: ${a.last_run ? new Date(a.last_run).toLocaleString() : 'never'}<br>
+            Signals: ${a.signals_produced || 0} produced · Status: <span style="color:${color}">${a.status || 'idle'}</span>
+          </div>
+        </div>`;
+      }).join('');
+
+      // Sprint mode
+      const sprintSignal = (signalsRes.signals || []).find(s => s.signal_type === 'content_sprint_mode' && s.status === 'active');
+      const sprintBtn = document.getElementById('mc-sprint-btn');
+      const sprintStatus = document.getElementById('mc-sprint-status');
+      if (sprintSignal) {
+        sprintBtn.textContent = 'ON ⚡';
+        sprintBtn.style.background = 'var(--yellow)';
+        sprintBtn.style.color = '#000';
+        sprintStatus.textContent = 'Sprint mode active — maximum output';
+      } else {
+        sprintBtn.textContent = 'OFF';
+        sprintBtn.style.background = '';
+        sprintBtn.style.color = '';
+        sprintStatus.textContent = '';
+      }
+
+      // Signal log table
+      const sigTable = document.getElementById('mc-signals-table');
+      const signals = (signalsRes.signals || []).filter(s => s.status === 'active').slice(0, 20);
+      sigTable.innerHTML = signals.map(s => {
+        const age = Math.round((Date.now() - new Date(s.created_at).getTime()) / 3600000);
+        const ageStr = age < 1 ? '<1h' : age < 24 ? age + 'h' : Math.round(age / 24) + 'd';
+        const payload = s.payload || {};
+        const summary = payload.recommendation || payload.description || payload.finding ||
+          payload.title || payload.keyword || payload.phrase || JSON.stringify(payload).slice(0, 80);
+        const urgent = s.priority === 'urgent' ? 'border-left:3px solid var(--yellow);' : '';
+        return `<tr style="${urgent}">
+          <td style="white-space:nowrap">${s.source_agent}</td>
+          <td><code style="font-size:11px;background:var(--surface);padding:1px 4px;border-radius:3px">${s.signal_type}</code></td>
+          <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${summary}">${summary}</td>
+          <td style="white-space:nowrap;color:var(--text2)">${ageStr}</td>
+          <td><button onclick="dismissSig(${s.id})" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px">✕</button></td>
+        </tr>`;
+      }).join('');
+
+      // Book library
+      const bookEl = document.getElementById('mc-book-list');
+      const books = booksRes.books || [];
+      if (books.length === 0) {
+        bookEl.innerHTML = '<span class="text-muted">No books. Use /addbook in Telegram.</span>';
+      } else {
+        bookEl.innerHTML = '<table class="table" style="font-size:12px"><thead><tr><th>Title</th><th>Author</th><th>Pillars</th><th>Frameworks</th><th>Referenced</th><th>Status</th></tr></thead><tbody>' +
+          books.map(b => {
+            const pillars = JSON.parse(b.pillar_mapping || '[]').join(', ') || '—';
+            const fwCount = JSON.parse(b.key_frameworks || '[]').length;
+            const statusIcon = b.extraction_status === 'extracted' ? '✅' : b.extraction_status === 'extracting' ? '⏳' : '❌';
+            return `<tr><td><b>${b.title}</b></td><td>${b.author}</td><td>${pillars}</td><td>${fwCount}</td><td>${b.times_referenced}</td><td>${statusIcon}</td></tr>`;
+          }).join('') +
+          '</tbody></table>';
+      }
+    } catch (err) {
+      console.warn('Mission Control poll failed:', err);
+    }
+  }
+
+  async function toggleSprint() {
+    try {
+      await apiFetch('/api/override/sprint', { method: 'POST' });
+      await pollMissionControl();
+      showToast('Sprint mode toggled', true);
+    } catch (err) {
+      showToast('Sprint toggle failed: ' + err.message, false);
+    }
+  }
+
+  window.dismissSig = async function(id) {
+    try {
+      await apiFetch(`/api/signals/${id}/dismiss`, { method: 'POST' });
+      await pollMissionControl();
+      showToast('Signal dismissed', true);
+    } catch (err) {
+      showToast('Dismiss failed: ' + err.message, false);
+    }
+  };
+
+  // Poll mission control alongside main poll
+  pollMissionControl();
+  setInterval(pollMissionControl, 30_000);
 
   function showToast(msg, ok) {
     const el = document.getElementById('toast');

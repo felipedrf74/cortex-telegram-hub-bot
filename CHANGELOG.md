@@ -4,6 +4,62 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.0.0] — 2026-03-24
+
+### Content Agent Mesh — 9 Autonomous AI Agents + Intelligence Bus + Mission Control
+
+#### Intelligence Bus
+- New shared message system (`agent_signals` table) for inter-agent communication
+- Signal types: `channel_dna`, `book_knowledge`, `keyword_rank_change`, `reaction_opportunity`, `retention_pattern`, `hook_effectiveness`, `voice_pattern`, `voice_phrase_trend`, `pipeline_bottleneck`, `seo_opportunity`, `pillar_performance`
+- Auto-expiration (TTL), priority levels, consume/dismiss lifecycle
+- `agent_runs` table tracks execution history with timing
+
+#### Agents
+- **Channel Learner** (upgraded) — Now writes `channel_dna` signals to the bus
+- **Book Extractor** — 8-query web research + Sonnet synthesis into structured BookDNA; 6 Austrian economics books auto-seeded
+- **SEO Agent** — Daily keyword rank tracking, opportunity detection, `seo_keywords` table
+- **Reaction Radar** — Monitors reference channels + YouTube trending for reaction-worthy content
+- **Performance Agent** — Analyzes content performance, retention patterns, hook effectiveness, pillar rankings
+- **Voice Evolution Agent** — Tracks Felipe's evolving voice patterns and signature phrases
+- **Pipeline Agent** — Manages content from idea → published, detects bottlenecks
+
+#### Book Knowledge System
+- `/addbook Title | Author` — Research and extract a book via web + Claude Sonnet
+- `/booknote Title | Note` — Add personal insights (high-priority bus signals)
+- `/books` — List library with extraction status, pillars, framework count
+- `/bookidea [topic]` — Local keyword search across all book frameworks and ideas
+- `book_library` table with core thesis, key frameworks, quotable ideas, pillar mapping
+
+#### Script Writer Enhancement
+- Reads ALL active intelligence bus signals and weaves them into Claude prompt
+- Integrates: hook insights, voice patterns, SEO keywords, book frameworks, retention data, pillar rankings
+- Intelligence block injected as structured context sections
+
+#### Content Pipeline
+- `/pipeline` — View content pipeline status (idea → scripted → filming → editing → published)
+- `/filmed`, `/editing`, `/published` — Move items through stages
+- `content_pipeline` table with stage tracking
+
+#### Mission Control Portal
+- New "Content Agent Mesh" section in the web portal
+- Metric cards: active signals, pipeline items, books loaded, bottleneck status
+- Agent cards grid with status badges, last run, signals produced, "Run Now" buttons
+- Sprint Mode toggle (increases agent frequency)
+- Intelligence Bus signal log with source, type, summary, age, dismiss button
+- Book Library table with pillars, frameworks, reference count
+- 6 new API endpoints: `/api/agents`, `/api/signals`, `/api/pipeline`, `/api/books`, `/api/signals/:id/dismiss`, `/api/override/sprint`
+- 5 new quick actions: run-performance-agent, run-voice-evolution, run-reaction-radar, run-seo-agent, run-pipeline-agent
+
+#### Database
+- Migration 015: `agent_signals`, `agent_runs`, `book_library`, `seo_keywords`, `content_pipeline` tables
+
+#### Documentation
+- Updated to v4.0.0 with 18 sections (was 14)
+- New sections: Content Agent Mesh, Book Knowledge System, Intelligence Bus, Google Drive Integration
+- Updated: Bot Commands, Database Schema, Architecture Patterns, Mission Control Portal
+
+---
+
 ## [3.9.0] — 2026-03-24
 
 ### Creator Profile Intelligence + Google Drive Integration + Deep Search Overhaul

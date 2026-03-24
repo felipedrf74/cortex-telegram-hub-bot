@@ -1,8 +1,8 @@
 # Cortex Telegram Hub Bot — Technical & Functional Documentation
 
-> **Version:** 3.7.0 | **Platform:** Node.js + TypeScript | **AI:** Claude (Anthropic) | **Database:** SQLite
+> **Version:** 4.0.0 | **Platform:** Node.js + TypeScript + Python | **AI:** Claude Sonnet/Haiku (Anthropic) | **Database:** SQLite
 
-A multi-domain AI-powered Telegram personal assistant that unifies task management, calendar coordination, fitness coaching, invoice automation, and an intelligent content creation workflow into a single bot interface with a real-time web status portal.
+A multi-domain AI-powered Telegram personal assistant that unifies task management, calendar coordination, fitness coaching, invoice automation, and a full **Content Agent Mesh** (9 autonomous AI agents + intelligence bus + book knowledge system) into a single bot interface with a real-time Mission Control portal.
 
 ---
 
@@ -13,15 +13,19 @@ A multi-domain AI-powered Telegram personal assistant that unifies task manageme
 3. [Configuration Reference](#3-configuration-reference)
 4. [Bot Commands](#4-bot-commands)
 5. [Content Creation Workflow — Step by Step](#5-content-creation-workflow--step-by-step)
-6. [Message Routing & AI Classification](#6-message-routing--ai-classification)
-7. [Scheduled Jobs](#7-scheduled-jobs)
-8. [Integrations](#8-integrations)
-9. [Cortex Status Portal](#9-cortex-status-portal)
-10. [Database Schema](#10-database-schema)
-11. [Deployment](#11-deployment)
-12. [Workflows & Examples](#12-workflows--examples)
-13. [Architecture Patterns](#13-architecture-patterns)
-14. [Troubleshooting](#14-troubleshooting)
+6. [Content Agent Mesh](#6-content-agent-mesh)
+7. [Book Knowledge System](#7-book-knowledge-system)
+8. [Intelligence Bus](#8-intelligence-bus)
+9. [Message Routing & AI Classification](#9-message-routing--ai-classification)
+10. [Scheduled Jobs](#10-scheduled-jobs)
+11. [Integrations](#11-integrations)
+12. [Mission Control Portal](#12-mission-control-portal)
+13. [Google Drive Integration](#13-google-drive-integration)
+14. [Database Schema](#14-database-schema)
+15. [Deployment](#15-deployment)
+16. [Workflows & Examples](#16-workflows--examples)
+17. [Architecture Patterns](#17-architecture-patterns)
+18. [Troubleshooting](#18-troubleshooting)
 
 ---
 
@@ -397,6 +401,15 @@ You can also **send a photo** of a schedule/timetable and the AI will extract ev
 | `/amazon [YYYY-MM] [--force]` | Collect Amazon.es invoices |
 | `/uber [YYYY-MM] [--force]` | Collect Uber + Uber Eats invoices |
 
+### Book Knowledge
+
+| Command | Description |
+|---------|-------------|
+| `/addbook Title \| Author` | Research and extract a book into the knowledge library |
+| `/booknote Title \| Note` | Add a personal insight to a book |
+| `/books` | List all books in the library with extraction status |
+| `/bookidea [topic]` | Search book library for relevant frameworks and ideas |
+
 ### System
 
 | Command | Description |
@@ -574,9 +587,149 @@ All generated content is saved as Word documents:
 | `/transcribe` | `~/Desktop/IDEAS/` |
 | `/studyvideo` | `~/Desktop/IDEAS/` |
 
+### File Output Structure
+
+All content creation outputs are saved as professional DOCX files organized in 5 folders:
+
+```
+~/Desktop/IDEAS/
+├── RESEARCH/     ← /deepsearch, /sources, /trending, /hotnews, /transcribe
+├── IDEAS/        ← /contenttopic, /hooks, /titles, /reaction, /studyvideo
+├── SCRIPTS/      ← /genscript, /script, /repurpose, reel/youtube from workflow
+├── VISUALS/      ← /genthumbnail, /gencaption
+└── REPORTS/      ← /competitor, /gaps, /seo, /feedback, /report
+```
+
+Files are also uploaded to **Google Drive** automatically. Each Telegram message includes a "📂 Open in Google Drive" link.
+
 ---
 
-## 6. Message Routing & AI Classification
+## 6. Content Agent Mesh
+
+The Content Agent Mesh is a system of **9 autonomous AI agents** that collaborate through a shared **intelligence bus** to continuously improve content quality.
+
+### Agent Overview
+
+| Agent | Purpose | Schedule | Signals Produced |
+|-------|---------|----------|-----------------|
+| **Channel Learner** | Extracts patterns from reference YouTube channels | Sunday 03:00 | `channel_dna` |
+| **Book Extractor** | Researches books and extracts frameworks | On-demand via `/addbook` | `book_knowledge` |
+| **SEO Agent** | Tracks keyword rankings and search visibility | Daily 08:00 | `keyword_rank_change`, `seo_opportunity` |
+| **Reaction Radar** | Monitors for reaction-worthy content | Daily 10:00 | `reaction_opportunity` |
+| **Performance Agent** | Analyzes content performance and trends | Daily 22:00 | `retention_pattern`, `hook_effectiveness`, `pillar_performance` |
+| **Voice Evolution** | Tracks Felipe's evolving voice and phrases | Weekly Sunday 04:00 | `voice_pattern`, `voice_phrase_trend` |
+| **Pipeline Agent** | Manages content from idea → publish | Daily 20:00 | `pipeline_bottleneck` |
+| **Content Workflow** | Generates topic candidates for approval | Tue/Thu/Fri 09:00 | Topic candidates with approval buttons |
+| **Script Writer** | Generates scripts enriched with bus signals | On-demand via `/genscript` | — (consumer) |
+
+### How Agents Collaborate
+
+1. **Channel Learner** extracts hook patterns → writes `channel_dna` signal
+2. **Performance Agent** finds which hooks work best → writes `hook_effectiveness` signal
+3. **Voice Evolution** detects Felipe's trending phrases → writes `voice_phrase_trend` signal
+4. **SEO Agent** finds keyword opportunities → writes `seo_opportunity` signal
+5. **Script Writer** reads ALL active signals and weaves them into the script prompt
+
+### Creator Profile
+
+All creative modules share a centralized `creator_profile.py` containing:
+
+- **Audience:** Brazilian men, 18-35
+- **Pillars:** Fitness/triathlon, politics (conservative/libertarian), Austrian economics, faith/family, self-development, geopolitics
+- **Voice:** Direct, data-driven, no-BS, controversial when needed
+- **Worldview:** Anti-state, free market, Christian, nuclear family, NAP, individual sovereignty
+- **Language:** Portuguese PT-BR, conversational
+
+---
+
+## 7. Book Knowledge System
+
+The book library stores structured intellectual knowledge extracted via web research + Claude Sonnet synthesis.
+
+### Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/addbook Title \| Author` | Research and extract a book | `/addbook The Law \| Frédéric Bastiat` |
+| `/booknote Title \| Note` | Add a personal insight to a book | `/booknote The Law \| Legal plunder = INSS` |
+| `/books` | List all books in the library | `/books` |
+| `/bookidea [topic]` | Search library for relevant frameworks | `/bookidea inflação` |
+
+### Extraction Pipeline
+
+1. **8 parallel web searches** (summary, concepts, quotes, frameworks, criticism, philosophy)
+2. **Claude Sonnet synthesis** into structured `BookDNA`
+3. **Stored in SQLite** with: core thesis, key frameworks, quotable ideas, pillar mapping
+4. **Intelligence bus signal** written for each book (consumed by Script Writer)
+
+### Seed Library
+
+On first startup, 6 Austrian economics classics are auto-extracted:
+
+- *The Law* — Frédéric Bastiat
+- *Economics in One Lesson* — Henry Hazlitt
+- *Human Action* — Ludwig von Mises
+- *The Road to Serfdom* — Friedrich Hayek
+- *Democracy: The God That Failed* — Hans-Hermann Hoppe
+- *Anatomy of the State* — Murray Rothbard
+
+### BookDNA Structure
+
+Each extracted book contains:
+
+- **Core Thesis** — 2-3 sentence summary
+- **Key Frameworks** — 3-6 named frameworks with description, content use-case, and pillar mapping
+- **Quotable Ideas** — 4-8 provocative ideas with context and "use when" guidance
+- **Pillar Mapping** — Which content pillars this book relates to
+- **Counter-Arguments** — What critics say (useful for reaction content)
+- **Related Thinkers** — Cross-referencing with other authors
+- **Personal Notes** — Felipe's own insights (added via `/booknote`)
+
+---
+
+## 8. Intelligence Bus
+
+The intelligence bus is a shared message system that allows agents to communicate asynchronously.
+
+### Signal Structure
+
+```
+{
+  source_agent: "performance-agent",
+  signal_type: "hook_effectiveness",
+  priority: "normal" | "urgent",
+  payload: { ... },       // Agent-specific data
+  ttl_hours: 168,         // Auto-expires after 7 days
+  status: "active" | "consumed" | "expired" | "dismissed"
+}
+```
+
+### Signal Types
+
+| Signal Type | Source | Consumed By |
+|-------------|--------|-------------|
+| `channel_dna` | Channel Learner | Script Writer, Content Workflow |
+| `book_knowledge` | Book Extractor | Script Writer |
+| `keyword_rank_change` | SEO Agent | Content Workflow, Script Writer |
+| `seo_opportunity` | SEO Agent | Content Workflow |
+| `reaction_opportunity` | Reaction Radar | Content Workflow |
+| `retention_pattern` | Performance Agent | Script Writer |
+| `hook_effectiveness` | Performance Agent | Hook Generator |
+| `pillar_performance` | Performance Agent | Content Workflow |
+| `voice_pattern` | Voice Evolution | Script Writer |
+| `voice_phrase_trend` | Voice Evolution | Script Writer |
+| `pipeline_bottleneck` | Pipeline Agent | Mission Control |
+| `content_sprint_mode` | Mission Control | All Agents (increases frequency) |
+
+### API Endpoints
+
+- `GET /api/signals` — List active signals (filterable by type)
+- `POST /api/signals/:id/dismiss` — Dismiss a signal
+- `GET /api/agents` — All agent states and stats
+
+---
+
+## 9. Message Routing & AI Classification
 
 The bot uses a three-tier classification system for non-command messages:
 
@@ -610,7 +763,7 @@ Photos sent to the bot are analyzed with Claude Vision:
 
 ---
 
-## 7. Scheduled Jobs
+## 10. Scheduled Jobs
 
 All jobs run in the configured timezone (default: `Europe/Lisbon`). Failures trigger Telegram alerts.
 
@@ -637,7 +790,7 @@ All jobs run in the configured timezone (default: `Europe/Lisbon`). Failures tri
 
 ---
 
-## 8. Integrations
+## 11. Integrations
 
 ### Microsoft Graph (Outlook + To Do)
 
@@ -729,7 +882,7 @@ API usage is tracked in the `api_usage` SQLite table with per-call cost calculat
 
 ---
 
-## 9. Cortex Status Portal
+## 12. Mission Control Portal
 
 **URL:** `http://localhost:8200` (configurable via `PORTAL_PORT`)
 
@@ -778,12 +931,23 @@ Manual triggers with 30-second cooldown:
 - Refresh Garmin session
 - Send morning briefing
 - Send coach report
-- Run content discovery
 - Re-synthesize knowledge
 - Clear conversation history
 - Test SSH connection
 - Test MS Graph token
 - Restart bot polling
+- Run Performance Agent
+- Run Voice Evolution
+- Run Reaction Radar
+- Run SEO Agent
+- Run Pipeline Agent
+
+#### Content Agent Mesh Panel
+- **Metric Cards:** Active signals, pipeline items, books loaded, bottleneck status
+- **Agent Cards Grid:** 6 agents with status badges, last run, signals produced, "Run" buttons
+- **Sprint Mode Toggle:** Enables maximum-frequency content output
+- **Intelligence Bus Table:** Signal log with source, type, summary, age, dismiss button
+- **Book Library Table:** All books with pillars, frameworks, reference count, status
 
 ### API Endpoints
 
@@ -794,12 +958,37 @@ Manual triggers with 30-second cooldown:
 | `POST` | `/api/action/:name` | Trigger a quick action |
 | `POST` | `/api/channels` | Add a reference channel |
 | `DELETE` | `/api/channels/:id` | Remove a reference channel |
+| `GET` | `/api/agents` | All agent states and stats |
+| `GET` | `/api/signals` | Active intelligence bus signals |
+| `POST` | `/api/signals/:id/dismiss` | Dismiss a signal |
+| `GET` | `/api/pipeline` | Pipeline stage counts + bottleneck |
+| `GET` | `/api/books` | Full book library |
+| `POST` | `/api/override/sprint` | Toggle Content Sprint Mode |
 
 All `/api/*` routes require `Authorization: Bearer <PORTAL_TOKEN>` header.
 
 ---
 
-## 10. Database Schema
+## 13. Google Drive Integration
+
+Content outputs (DOCX files) are automatically uploaded to Google Drive for easy access from any device.
+
+### Setup
+
+1. Enable **Google Drive API** in Google Cloud Console
+2. Add `drive.file` scope to your OAuth token (via Google OAuth Playground)
+3. Set `GOOGLE_DRIVE_FOLDER_ID` in `.env` (the ID of the target Drive folder)
+
+### How It Works
+
+- When `saveContentAsDocx()` creates a file, it calls `uploadToDrive()` with the subfolder name
+- The file is uploaded to Drive under a subfolder matching the local structure (RESEARCH, SCRIPTS, etc.)
+- The Drive URL is returned and included in the Telegram message as "📂 Open in Google Drive"
+- Local file + Drive copy are both kept (Drive is the accessibility layer, not the primary store)
+
+---
+
+## 14. Database Schema
 
 SQLite database at `./data/bot.db` with auto-applied migrations.
 
@@ -829,12 +1018,17 @@ SQLite database at `./data/bot.db` with auto-applied migrations.
 | `video_transcripts` | 012 | Fetched video transcripts |
 | `video_studies` | 012 | Deep video study results |
 | `content_topic_feedback` | 013 | Topic candidates with approve/skip/reject feedback |
+| `agent_signals` | 015 | Intelligence bus signals between agents |
+| `agent_runs` | 015 | Agent execution history with timing |
+| `book_library` | 015 | Book knowledge library (BookDNA) |
+| `seo_keywords` | 015 | SEO keyword tracking and rankings |
+| `content_pipeline` | 015 | Content pipeline stages (idea → published) |
 
 Migrations run automatically on startup. See `migrations/*.sql` for the full schemas.
 
 ---
 
-## 11. Deployment
+## 15. Deployment
 
 ### PM2 Production Setup
 
@@ -886,7 +1080,7 @@ The deploy script:
 
 ---
 
-## 12. Workflows & Examples
+## 16. Workflows & Examples
 
 ### Task Creation via Photo
 
@@ -953,7 +1147,7 @@ Three collection jobs run sequentially:
 
 ---
 
-## 13. Architecture Patterns
+## 17. Architecture Patterns
 
 ### Message Processing Queue
 Sequential per-user processing prevents race conditions when multiple messages arrive simultaneously. Commands are enqueued and processed in order.
@@ -996,6 +1190,22 @@ buildTasteProfileBlock() → injected into topic generation prompts
 Better topics over time → more aligned with creator preferences
 ```
 
+### Content Agent Mesh Architecture
+```
+Channel Learner → channel_dna signal → Intelligence Bus
+Book Extractor → book_knowledge signal → Intelligence Bus
+SEO Agent → keyword_rank_change signal → Intelligence Bus
+Reaction Radar → reaction_opportunity → Intelligence Bus
+Performance Agent → retention_pattern, hook_effectiveness → Intelligence Bus
+Voice Evolution → voice_pattern, voice_phrase_trend → Intelligence Bus
+    ↓
+Intelligence Bus → All active signals → Script Writer prompt injection
+    ↓
+Script Writer reads signals + weaves into Claude prompt
+    ↓
+Script with hooks, frameworks, keywords, phrases integrated
+```
+
 ### Serialized Auth Recovery (Garmin)
 When multiple API calls get 403 simultaneously, ONE recovery attempt runs while others wait. Prevents MFA storm (10+ concurrent re-login attempts triggering 10 email codes).
 
@@ -1021,7 +1231,7 @@ The telemetry module (`src/portal/telemetry.ts`) has zero project imports — it
 
 ---
 
-## 14. Troubleshooting
+## 18. Troubleshooting
 
 ### Bot Not Responding
 

@@ -418,9 +418,33 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
 }
 
 export async function getScript(topic: string, niche = 'general', maxDuration = 8): Promise<ScriptResponse> {
+  // Query intelligence bus for context signals
+  let contextSignals: any[] = [];
+  try {
+    const { readSignals } = await import('./intelligence-bus');
+    const signalTypes = [
+      'hook_effectiveness', 'voice_pattern', 'voice_phrase_trend',
+      'channel_dna', 'book_knowledge', 'keyword_rank_change',
+      'retention_pattern', 'pillar_performance',
+    ] as const;
+    const raw = readSignals('script-engine', [...signalTypes], 30);
+    contextSignals = raw.map(s => ({
+      type: s.signal_type,
+      source: s.source_agent,
+      payload: s.payload,
+    }));
+    logger.info({ signalCount: contextSignals.length }, 'Injecting bus signals into script generation');
+  } catch {
+    // Bus unavailable — generate without signals (backward compatible)
+  }
+
   return engineFetch<ScriptResponse>('/script', {
     method: 'POST',
-    body: JSON.stringify({ topic, niche, max_duration_minutes: maxDuration }),
+    body: JSON.stringify({
+      topic, niche,
+      max_duration_minutes: maxDuration,
+      context_signals: contextSignals.length > 0 ? contextSignals : undefined,
+    }),
   }, 180_000); // scripts take longer — research + Sonnet generation
 }
 

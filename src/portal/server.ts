@@ -44,6 +44,15 @@ import {
 } from '../state/content-references';
 import { addAndAnalyzeChannel, synthesizeKnowledge as reSynthesizeKnowledge } from '../services/channel-learner';
 import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
+import {
+  getActiveSignalCount, getSignalLog, getAgentStats, dismissSignal, writeSignal,
+} from '../services/intelligence-bus';
+import { getPipelineStats } from '../agents/pipeline-agent';
+import { runSEOAgent } from '../agents/seo-agent';
+import { runReactionRadar } from '../agents/reaction-radar-agent';
+import { runPerformanceAgent } from '../agents/performance-agent';
+import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
+import { runPipelineAgent } from '../agents/pipeline-agent';
 import { CronExpressionParser } from 'cron-parser';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -119,6 +128,8 @@ const VALID_ACTIONS = new Set([
   'refresh-garmin', 'trigger-briefing', 'trigger-coach', 'trigger-content',
   'clear-history', 'test-ssh', 'test-graph', 'restart-polling',
   'resynthesize-knowledge',
+  'run-performance-agent', 'run-voice-evolution', 'run-reaction-radar',
+  'run-seo-agent', 'run-pipeline-agent',
 ]);
 
 const actionCooldowns = new Map<string, number>();
@@ -643,6 +654,28 @@ async function handleAction(
       return { ok: true, message: 'Content knowledge re-synthesized from all active channels' };
     }
 
+    // ── Content Agent Mesh Actions ───────────────────────────────
+    case 'run-performance-agent': {
+      await runPerformanceAgent();
+      return { ok: true, message: 'Performance Agent completed' };
+    }
+    case 'run-voice-evolution': {
+      await runVoiceEvolutionAgent();
+      return { ok: true, message: 'Voice Evolution Agent completed' };
+    }
+    case 'run-reaction-radar': {
+      await runReactionRadar();
+      return { ok: true, message: 'Reaction Radar completed' };
+    }
+    case 'run-seo-agent': {
+      await runSEOAgent();
+      return { ok: true, message: 'SEO Agent completed' };
+    }
+    case 'run-pipeline-agent': {
+      await runPipelineAgent();
+      return { ok: true, message: 'Pipeline Agent completed' };
+    }
+
     default:
       return { ok: false, message: `Unknown action: ${name}` };
   }
@@ -767,6 +800,97 @@ export function createPortalServer(bot: Bot): http.Server {
     } catch (err) {
       logger.error({ err, action: name }, 'Portal: action failed');
       res.status(500).json({ ok: false, message: `Action failed: ${(err as Error)?.message ?? 'unknown'}` });
+    }
+  });
+
+  // ── Mission Control API ──────────────────────────────────────────
+
+  // GET /api/agents — all agent states
+  app.get('/api/agents', (_req: Request, res: Response) => {
+    try {
+      const stats = getAgentStats();
+      res.json({ ok: true, agents: stats });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/signals — active intelligence bus signals
+  app.get('/api/signals', (req: Request, res: Response) => {
+    try {
+      const limit = parseInt(String(req.query.limit) || '50', 10);
+      const typeFilter = req.query.type ? String(req.query.type) : undefined;
+      let signals = getSignalLog(Math.min(limit, 200));
+      if (typeFilter) {
+        signals = signals.filter(s => s.signal_type === typeFilter);
+      }
+      res.json({ ok: true, signals, activeCount: getActiveSignalCount() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/signals/:id/dismiss — dismiss a signal
+  app.post('/api/signals/:id/dismiss', (req: Request, res: Response) => {
+    try {
+      const id = parseInt(String(req.params.id), 10);
+      if (isNaN(id)) { res.status(400).json({ ok: false, message: 'Invalid ID' }); return; }
+      dismissSignal(id);
+      cachedSnapshot = null;
+      res.json({ ok: true, message: 'Signal dismissed' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/pipeline — pipeline status
+  app.get('/api/pipeline', (_req: Request, res: Response) => {
+    try {
+      const stats = getPipelineStats();
+      res.json({ ok: true, ...stats });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/books — book library
+  app.get('/api/books', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const books = db.prepare(`
+        SELECT id, title, author, core_thesis, pillar_mapping, key_frameworks,
+               personal_notes, extraction_status, times_referenced, created_at
+        FROM book_library ORDER BY times_referenced DESC, created_at DESC
+      `).all();
+      res.json({ ok: true, books });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/override/sprint — toggle content sprint mode
+  app.post('/api/override/sprint', (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const existing = db.prepare(
+        "SELECT id FROM agent_signals WHERE signal_type = 'content_sprint_mode' AND status = 'active'"
+      ).get() as any;
+
+      if (existing) {
+        dismissSignal(existing.id);
+        res.json({ ok: true, sprint: false, message: 'Sprint mode disabled' });
+      } else {
+        writeSignal({
+          source_agent: 'mission-control',
+          signal_type: 'content_sprint_mode',
+          payload: { enabled: true, activated_at: new Date().toISOString() },
+          priority: 'urgent',
+        });
+        res.json({ ok: true, sprint: true, message: 'Sprint mode enabled' });
+      }
+      cachedSnapshot = null;
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 

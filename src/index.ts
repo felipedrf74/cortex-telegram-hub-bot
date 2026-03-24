@@ -4,6 +4,7 @@ import { initDatabase, closeDatabase, getDb } from './services/database';
 import { createBot } from './bot';
 import { startScheduler } from './services/scheduler';
 import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
+import { setDbProvider as setBusDbProvider } from './services/intelligence-bus';
 import { createPortalServer } from './portal/server';
 import type http from 'http';
 
@@ -16,8 +17,9 @@ async function main(): Promise<void> {
   // Initialize database
   initDatabase();
 
-  // Wire up DB provider for telemetry job history persistence
+  // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());
+  setBusDbProvider(() => getDb() as any);
 
   // Create bot
   const bot = createBot();

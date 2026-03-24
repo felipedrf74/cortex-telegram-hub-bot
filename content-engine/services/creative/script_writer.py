@@ -84,6 +84,63 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     }
     est_duration = duration_map.get(req.format, f"{req.max_duration_minutes}:00")
 
+    # Build intelligence context from bus signals
+    intelligence_block = ""
+    if req.context_signals:
+        sections = []
+        for sig in req.context_signals:
+            sig_type = sig.get("type", "")
+            payload = sig.get("payload", {})
+
+            if sig_type == "hook_effectiveness":
+                rec = payload.get("recommendation", "")
+                if rec:
+                    sections.append(f"HOOK INSIGHT: {rec}")
+
+            elif sig_type == "voice_pattern":
+                desc = payload.get("description", "")
+                if desc:
+                    sections.append(f"VOICE PATTERN: {desc}")
+
+            elif sig_type == "voice_phrase_trend":
+                phrase = payload.get("phrase", "")
+                ctx = payload.get("context", "")
+                if phrase:
+                    sections.append(f"FELIPE'S PHRASE: \"{phrase}\" — use when: {ctx}")
+
+            elif sig_type == "channel_dna" and payload.get("category") in ("hook_style", "storytelling", "content_structure"):
+                patterns = payload.get("patterns", [])
+                if patterns:
+                    channel = payload.get("channel_name", "")
+                    sections.append(f"REFERENCE ({channel} — {payload['category']}): {', '.join(patterns[:3])}")
+
+            elif sig_type == "book_knowledge":
+                thesis = payload.get("core_thesis", "")
+                title = payload.get("title", "")
+                frameworks = payload.get("key_frameworks", [])
+                if thesis:
+                    fw_names = [f.get("name", "") for f in frameworks[:2]]
+                    sections.append(f"BOOK ({title}): {thesis[:150]}. Frameworks: {', '.join(fw_names)}")
+
+            elif sig_type == "keyword_rank_change":
+                kw = payload.get("keyword", "")
+                if kw:
+                    sections.append(f"SEO TARGET: Work in the keyword \"{kw}\" naturally")
+
+            elif sig_type == "retention_pattern":
+                rec = payload.get("recommendation", "")
+                if rec:
+                    sections.append(f"RETENTION: {rec}")
+
+            elif sig_type == "pillar_performance":
+                rankings = payload.get("rankings", [])
+                if rankings:
+                    top = rankings[0]
+                    sections.append(f"TOP PILLAR: {top.get('pillar', '')} ({top.get('avg_views', 0)} avg views, trend: {top.get('trend', 'stable')})")
+
+        if sections:
+            intelligence_block = "\n\nINTELLIGENCE FROM CONTENT AGENTS:\n" + "\n".join(f"• {s}" for s in sections[:15])
+
     prompt = f"""Write a complete video script about: {req.topic}
 
 NICHE: {req.niche}
@@ -92,7 +149,7 @@ TARGET DURATION: {est_duration}
 LANGUAGE: {req.language}
 
 RESEARCH FINDINGS:
-{research_context}
+{research_context}{intelligence_block}
 
 Also provide:
 1. A killer hook (first line of the script)

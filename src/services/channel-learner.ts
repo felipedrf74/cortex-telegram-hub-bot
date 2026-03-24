@@ -30,6 +30,7 @@ import {
   type PatternCategory,
   type ContentRefChannel,
 } from '../state/content-references';
+import { writeSignal } from './intelligence-bus';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -420,6 +421,58 @@ async function synthesizeKnowledge(): Promise<void> {
     type: 'job',
     summary: `Content knowledge synthesized from ${channels.length} channel(s)`,
   });
+
+  // Write structured Channel DNA signals to the intelligence bus
+  writeChannelDNASignals(channels);
+}
+
+/**
+ * Writes one signal per channel per pattern category to the intelligence bus.
+ * Other agents (Script, Hooks, SEO, Performance) can read these independently.
+ */
+function writeChannelDNASignals(channels: ContentRefChannel[]): void {
+  let signalCount = 0;
+
+  for (const channel of channels) {
+    for (const category of PATTERN_CATEGORIES) {
+      const patterns = getAllPatternsByCategory(category)
+        .filter((p) => (p as any).channel_id === channel.id && p.confidence >= 0.4);
+
+      if (patterns.length === 0) continue;
+
+      const examples: string[] = [];
+      const patternNames: string[] = [];
+
+      for (const p of patterns) {
+        patternNames.push(p.pattern_text.slice(0, 80));
+        try {
+          const ex = JSON.parse(p.examples) as string[];
+          examples.push(...ex.slice(0, 2));
+        } catch { /* skip bad JSON */ }
+      }
+
+      try {
+        writeSignal({
+          source_agent: 'channel-learner',
+          signal_type: 'channel_dna',
+          payload: {
+            channel_name: channel.channel_name || channel.channel_url,
+            channel_id: channel.channel_id,
+            category,
+            patterns: patternNames,
+            examples: examples.slice(0, 6),
+            effectiveness_score: null, // filled by Performance Agent later
+            extracted_at: new Date().toISOString(),
+          },
+        });
+        signalCount++;
+      } catch (err) {
+        logger.warn({ err, channel: channel.channel_name, category }, 'Failed to write channel DNA signal');
+      }
+    }
+  }
+
+  logger.info({ signalCount, channelCount: channels.length }, 'Channel DNA signals written to intelligence bus');
 }
 
 // ─── Main Analysis Pipeline ──────────────────────────────────────────
