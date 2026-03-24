@@ -772,16 +772,47 @@
   <!-- ── Quick Actions ─────────────────────── -->
   <div class="card card-full">
     <h2>⚡ Quick Actions</h2>
-    <div class="actions-grid">
-      <button class="action-btn" onclick="doAction('refresh-garmin')"><span class="icon">🏃</span> Refresh Garmin</button>
-      <button class="action-btn" onclick="doAction('trigger-briefing')"><span class="icon">🌅</span> Morning Briefing</button>
-      <button class="action-btn" onclick="doAction('trigger-coach')"><span class="icon">🏋️</span> Coach Report</button>
-      <button class="action-btn" onclick="doAction('trigger-content')"><span class="icon">🎬</span> Content Discovery</button>
-      <button class="action-btn" onclick="doAction('clear-history')"><span class="icon">🗑️</span> Clear History</button>
-      <button class="action-btn" onclick="doAction('test-ssh')"><span class="icon">🔑</span> Test SSH</button>
-      <button class="action-btn" onclick="doAction('test-graph')"><span class="icon">📧</span> Test Graph</button>
-      <button class="action-btn" onclick="if(confirm('Restart bot polling?')) doAction('restart-polling')"><span class="icon">🔄</span> Restart Polling</button>
-      <button class="action-btn" onclick="doAction('resynthesize-knowledge')"><span class="icon">🧠</span> Re-synthesize Knowledge</button>
+
+    <!-- Secretary & Scheduling -->
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--accent);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">📋 Secretary & Scheduling</div>
+      <div class="actions-grid">
+        <button class="action-btn" onclick="doAction('trigger-briefing')"><span class="icon">🌅</span> Morning Briefing</button>
+        <button class="action-btn" onclick="doAction('clear-history')"><span class="icon">🗑️</span> Clear History</button>
+      </div>
+    </div>
+
+    <!-- Triathlon & Health -->
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🏋️ Triathlon & Health</div>
+      <div class="actions-grid">
+        <button class="action-btn" onclick="doAction('refresh-garmin')"><span class="icon">🏃</span> Refresh Garmin</button>
+        <button class="action-btn" onclick="doAction('trigger-coach')"><span class="icon">🏋️</span> Coach Report</button>
+      </div>
+    </div>
+
+    <!-- Content Creation -->
+    <div style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--yellow);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🎬 Content Creation</div>
+      <div class="actions-grid">
+        <button class="action-btn" onclick="doAction('trigger-content')"><span class="icon">🔍</span> Run Discovery</button>
+        <button class="action-btn" onclick="doAction('resynthesize-knowledge')"><span class="icon">🧠</span> Re-synthesize Knowledge</button>
+        <button class="action-btn" onclick="doAction('run-reaction-radar')"><span class="icon">📡</span> Reaction Radar</button>
+        <button class="action-btn" onclick="doAction('run-seo-agent')"><span class="icon">🔎</span> SEO Agent</button>
+        <button class="action-btn" onclick="doAction('run-performance-agent')"><span class="icon">📊</span> Performance Agent</button>
+        <button class="action-btn" onclick="doAction('run-voice-evolution')"><span class="icon">🗣</span> Voice Evolution</button>
+        <button class="action-btn" onclick="doAction('run-pipeline-agent')"><span class="icon">🏗</span> Pipeline Agent</button>
+      </div>
+    </div>
+
+    <!-- System & Integrations -->
+    <div>
+      <div style="font-size:11px;color:var(--red);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🔧 System & Integrations</div>
+      <div class="actions-grid">
+        <button class="action-btn" onclick="doAction('test-ssh')"><span class="icon">🔑</span> Test SSH</button>
+        <button class="action-btn" onclick="doAction('test-graph')"><span class="icon">📧</span> Test Graph</button>
+        <button class="action-btn" onclick="if(confirm('Restart bot polling?')) doAction('restart-polling')"><span class="icon">🔄</span> Restart Polling</button>
+      </div>
     </div>
   </div>
 
@@ -808,6 +839,34 @@
       <div class="stat-box">
         <div class="stat-value" id="mc-bottleneck">—</div>
         <div class="stat-label">Bottleneck</div>
+      </div>
+    </div>
+
+    <!-- Agent Mesh Graph -->
+    <div style="background:var(--surface2);border-radius:10px;padding:16px;margin-bottom:16px;position:relative;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:13px;font-weight:600;color:var(--text)">Agent Communication Mesh</span>
+        <span style="font-size:11px;color:var(--text2)" id="mesh-pulse-count"></span>
+      </div>
+      <svg id="agent-mesh-svg" viewBox="0 0 800 420" style="width:100%;height:auto;max-height:420px">
+        <defs>
+          <!-- Glow filter for active nodes -->
+          <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <!-- Arrow marker -->
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent)" opacity="0.6"/></marker>
+          <marker id="arrow-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#00b894"/></marker>
+          <!-- Pulse animation -->
+          <radialGradient id="pulse-grad"><stop offset="0%" stop-color="#6c5ce7" stop-opacity="0.4"/><stop offset="100%" stop-color="#6c5ce7" stop-opacity="0"/></radialGradient>
+        </defs>
+        <!-- Connections drawn by JS -->
+        <g id="mesh-connections"></g>
+        <!-- Nodes drawn by JS -->
+        <g id="mesh-nodes"></g>
+      </svg>
+      <!-- Legend -->
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--text2);flex-wrap:wrap">
+        <span>🟢 Active</span> <span>🟡 Idle</span> <span>🔴 Error</span>
+        <span style="margin-left:auto">Lines = signal flow · Pulse = active signals</span>
       </div>
     </div>
 
@@ -1408,6 +1467,135 @@
     }
   };
 
+  // ── Agent Mesh Graph ───────────────────
+  const MESH_AGENTS = [
+    { id: 'channel-learner',  label: 'Channel\nLearner',     icon: '📺', x: 130, y: 60,  produces: ['channel_dna'] },
+    { id: 'book-extractor',   label: 'Book\nExtractor',      icon: '📚', x: 400, y: 30,  produces: ['book_knowledge'] },
+    { id: 'seo-agent',        label: 'SEO\nAgent',           icon: '🔍', x: 670, y: 60,  produces: ['keyword_rank_change', 'keyword_opportunity'] },
+    { id: 'reaction-radar',   label: 'Reaction\nRadar',      icon: '📡', x: 70,  y: 210, produces: ['reaction_opportunity'] },
+    { id: 'performance-agent',label: 'Performance\nAgent',   icon: '📊', x: 730, y: 210, produces: ['pillar_performance', 'retention_pattern', 'hook_effectiveness'] },
+    { id: 'voice-evolution',  label: 'Voice\nEvolution',     icon: '🗣', x: 130, y: 360, produces: ['voice_pattern', 'voice_phrase_trend'] },
+    { id: 'content-workflow', label: 'Content\nWorkflow',    icon: '📝', x: 400, y: 390, produces: [], consumes: ['book_knowledge', 'channel_dna', 'keyword_rank_change'] },
+    { id: 'pipeline-agent',   label: 'Pipeline\nAgent',      icon: '🏗', x: 670, y: 360, produces: ['pipeline_bottleneck'] },
+    { id: 'script-writer',    label: 'Script\nWriter',       icon: '✍️', x: 400, y: 210, produces: [], consumes: ['ALL'] },
+  ];
+
+  // Signal flow connections: [from, to, signalType]
+  const MESH_EDGES = [
+    ['channel-learner',  'script-writer',    'channel_dna'],
+    ['channel-learner',  'content-workflow',  'channel_dna'],
+    ['book-extractor',   'script-writer',    'book_knowledge'],
+    ['book-extractor',   'content-workflow',  'book_knowledge'],
+    ['seo-agent',        'script-writer',    'keyword_rank_change'],
+    ['seo-agent',        'content-workflow',  'keyword_rank_change'],
+    ['reaction-radar',   'content-workflow',  'reaction_opportunity'],
+    ['performance-agent','script-writer',    'retention_pattern'],
+    ['performance-agent','content-workflow',  'pillar_performance'],
+    ['voice-evolution',  'script-writer',    'voice_pattern'],
+    ['pipeline-agent',   'content-workflow',  'pipeline_bottleneck'],
+    ['content-workflow',  'pipeline-agent',   'content_published'],
+  ];
+
+  function renderMeshGraph(agentStats, signalData) {
+    const svg = document.getElementById('agent-mesh-svg');
+    const connG = document.getElementById('mesh-connections');
+    const nodeG = document.getElementById('mesh-nodes');
+    if (!svg) return;
+
+    // Build status lookup from agent stats
+    const statusMap = {};
+    (agentStats || []).forEach(a => { statusMap[a.agent] = a; });
+
+    // Build active signal types set
+    const activeTypes = new Set();
+    (signalData || []).filter(s => s.status === 'active').forEach(s => activeTypes.add(s.signal_type));
+
+    // Draw connections
+    let connHtml = '';
+    MESH_EDGES.forEach(([fromId, toId, sigType]) => {
+      const from = MESH_AGENTS.find(a => a.id === fromId);
+      const to = MESH_AGENTS.find(a => a.id === toId);
+      if (!from || !to) return;
+      const isActive = activeTypes.has(sigType);
+      const color = isActive ? '#00b894' : '#2d3140';
+      const width = isActive ? 2 : 1;
+      const marker = isActive ? 'url(#arrow-active)' : 'url(#arrow)';
+      const opacity = isActive ? 0.8 : 0.3;
+      const dasharray = isActive ? '' : '4,4';
+
+      // Offset line endpoints to node border (radius ~28)
+      const dx = to.x - from.x, dy = to.y - from.y;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      const r = 28;
+      const x1 = from.x + (dx/dist)*r, y1 = from.y + (dy/dist)*r;
+      const x2 = to.x - (dx/dist)*r, y2 = to.y - (dy/dist)*r;
+
+      connHtml += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dasharray}" opacity="${opacity}" marker-end="${marker}">`;
+      if (isActive) {
+        connHtml += `<animate attributeName="opacity" values="0.4;0.9;0.4" dur="2s" repeatCount="indefinite"/>`;
+      }
+      connHtml += `</line>`;
+
+      // Signal pulse dot traveling along active connections
+      if (isActive) {
+        connHtml += `<circle r="3" fill="#00b894" opacity="0.9">
+          <animateMotion dur="3s" repeatCount="indefinite" path="M${x1},${y1} L${x2},${y2}"/>
+        </circle>`;
+      }
+    });
+    connG.innerHTML = connHtml;
+
+    // Draw nodes
+    let nodeHtml = '';
+    MESH_AGENTS.forEach(agent => {
+      const stat = statusMap[agent.id];
+      const isActive = stat && stat.last_status === 'success';
+      const isError = stat && stat.last_status === 'error';
+      const nodeColor = isError ? '#e17055' : isActive ? '#00b894' : '#fdcb6e';
+      const bgColor = isError ? '#2d1515' : isActive ? '#0d2d24' : '#2d2a15';
+      const signals = stat ? stat.signals_produced : 0;
+
+      // Node circle
+      nodeHtml += `<g class="mesh-node" style="cursor:pointer" data-agent="${agent.id}">`;
+
+      // Glow for active
+      if (isActive && signals > 0) {
+        nodeHtml += `<circle cx="${agent.x}" cy="${agent.y}" r="35" fill="url(#pulse-grad)">
+          <animate attributeName="r" values="30;40;30" dur="3s" repeatCount="indefinite"/>
+        </circle>`;
+      }
+
+      // Main circle
+      nodeHtml += `<circle cx="${agent.x}" cy="${agent.y}" r="28" fill="${bgColor}" stroke="${nodeColor}" stroke-width="2"/>`;
+
+      // Icon
+      nodeHtml += `<text x="${agent.x}" y="${agent.y - 2}" text-anchor="middle" dominant-baseline="central" font-size="18">${agent.icon}</text>`;
+
+      // Label below
+      const labelLines = agent.label.split('\n');
+      labelLines.forEach((line, i) => {
+        nodeHtml += `<text x="${agent.x}" y="${agent.y + 36 + i * 13}" text-anchor="middle" font-size="10" fill="#8b8fa3" font-family="-apple-system,system-ui,sans-serif">${line}</text>`;
+      });
+
+      // Signal count badge
+      if (signals > 0) {
+        nodeHtml += `<circle cx="${agent.x + 20}" cy="${agent.y - 20}" r="9" fill="${nodeColor}"/>`;
+        nodeHtml += `<text x="${agent.x + 20}" y="${agent.y - 20}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#0f1117" font-weight="bold">${signals}</text>`;
+      }
+
+      nodeHtml += `</g>`;
+    });
+
+    // Central "Intelligence Bus" label
+    nodeHtml += `<text x="400" y="210" text-anchor="middle" dominant-baseline="central" font-size="10" fill="#6c5ce7" font-weight="600" opacity="0.5">INTELLIGENCE BUS</text>`;
+
+    nodeG.innerHTML = nodeHtml;
+
+    // Update pulse count
+    const activeCount = [...activeTypes].length;
+    document.getElementById('mesh-pulse-count').textContent = `${activeCount} signal types active`;
+  }
+
   // ── Mission Control polling ─────────────
   async function pollMissionControl() {
     try {
@@ -1420,6 +1608,9 @@
 
       // Metric cards
       document.getElementById('mc-signals').textContent = signalsRes.activeCount || 0;
+
+      // Render agent mesh graph
+      renderMeshGraph(agentsRes.agents || [], signalsRes.signals || []);
       document.getElementById('mc-books').textContent = (booksRes.books || []).filter(b => b.extraction_status === 'extracted').length;
       document.getElementById('mc-pipeline').textContent = pipelineRes.totalActive || 0;
       const bn = pipelineRes.bottleneck;
