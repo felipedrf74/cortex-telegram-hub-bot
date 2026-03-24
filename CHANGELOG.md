@@ -4,6 +4,29 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.1.1] — 2026-03-24
+
+### Portal Enhancements
+
+#### Agent Communication Mesh Graph
+- Interactive SVG node graph showing all 9 agents with signal flow connections
+- Animated green pulse dots traveling along active signal connections
+- Color-coded nodes: green (success), yellow (idle), red (error)
+- Signal count badges on each agent node
+- Glow animation on agents with active signals
+- Central "Intelligence Bus" label connecting all agents
+- Auto-updates every 30 seconds with Mission Control poll
+
+#### Domain-Organized Quick Actions
+- Quick Actions reorganized into 4 color-coded domain groups:
+  - 📋 Secretary & Scheduling (purple): Morning Briefing, Clear History
+  - 🏋️ Triathlon & Health (green): Refresh Garmin, Coach Report
+  - 🎬 Content Creation (yellow): Discovery, Re-synthesize, Reaction Radar, SEO Agent, Performance Agent, Voice Evolution, Pipeline Agent
+  - 🔧 System & Integrations (red): Test SSH, Test Graph, Restart Polling
+- All 7 content agent runners now directly accessible from Quick Actions
+
+---
+
 ## [4.1.0] — 2026-03-24
 
 ### Content Creation Consolidation — Sprints 1-4
