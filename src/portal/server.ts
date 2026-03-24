@@ -853,6 +853,23 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // POST /api/books — add and extract a book
+  app.post('/api/books', async (req: Request, res: Response) => {
+    try {
+      const { title, author } = req.body || {};
+      if (!title || !author) {
+        res.status(400).json({ ok: false, message: 'title and author are required' });
+        return;
+      }
+      const { handleAddBookFromPortal } = await import('../commands/books');
+      const result = await handleAddBookFromPortal(title, author);
+      cachedSnapshot = null;
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/books — book library
   app.get('/api/books', (_req: Request, res: Response) => {
     try {

@@ -834,6 +834,17 @@
   <!-- ── Book Library ──────────────────────── -->
   <div class="card card-full">
     <h2>📚 Book Library</h2>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="book-title-input" type="text" placeholder="Book title"
+        style="flex:2;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none">
+      <input id="book-author-input" type="text" placeholder="Author"
+        style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none"
+        onkeydown="if(event.key==='Enter')addBookFromPortal()">
+      <button class="action-btn" onclick="addBookFromPortal()" style="white-space:nowrap">
+        <span class="icon">📖</span> Extract
+      </button>
+    </div>
+    <div id="book-add-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;display:none"></div>
     <div id="mc-book-list" style="font-size:13px"></div>
   </div>
 
@@ -1401,10 +1412,10 @@
   async function pollMissionControl() {
     try {
       const [agentsRes, signalsRes, pipelineRes, booksRes] = await Promise.all([
-        apiFetch('/api/agents'),
-        apiFetch('/api/signals?limit=30'),
-        apiFetch('/api/pipeline'),
-        apiFetch('/api/books'),
+        apiFetch('/api/agents').then(r => r.json()),
+        apiFetch('/api/signals?limit=30').then(r => r.json()),
+        apiFetch('/api/pipeline').then(r => r.json()),
+        apiFetch('/api/books').then(r => r.json()),
       ]);
 
       // Metric cards
@@ -1499,7 +1510,7 @@
 
   async function toggleSprint() {
     try {
-      await apiFetch('/api/override/sprint', { method: 'POST' });
+      await apiFetch('/api/override/sprint', { method: 'POST' }).then(r => r.json());
       await pollMissionControl();
       showToast('Sprint mode toggled', true);
     } catch (err) {
@@ -1507,9 +1518,36 @@
     }
   }
 
+  window.addBookFromPortal = async function() {
+    const title = document.getElementById('book-title-input').value.trim();
+    const author = document.getElementById('book-author-input').value.trim();
+    if (!title || !author) { showToast('Enter both title and author', false); return; }
+    const statusEl = document.getElementById('book-add-status');
+    statusEl.style.display = 'block';
+    statusEl.textContent = `Extracting "${title}"... (takes ~30s)`;
+    try {
+      const res = await apiFetch('/api/books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, author }),
+      }).then(r => r.json());
+      if (res.ok) {
+        showToast(res.message, true);
+        document.getElementById('book-title-input').value = '';
+        document.getElementById('book-author-input').value = '';
+        await pollMissionControl();
+      } else {
+        showToast(res.message, false);
+      }
+    } catch (err) {
+      showToast('Book extraction failed: ' + err.message, false);
+    }
+    statusEl.style.display = 'none';
+  };
+
   window.dismissSig = async function(id) {
     try {
-      await apiFetch(`/api/signals/${id}/dismiss`, { method: 'POST' });
+      await apiFetch(`/api/signals/${id}/dismiss`, { method: 'POST' }).then(r => r.json());
       await pollMissionControl();
       showToast('Signal dismissed', true);
     } catch (err) {

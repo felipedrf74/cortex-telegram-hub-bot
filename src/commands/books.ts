@@ -133,6 +133,33 @@ async function extractAndStore(title: string, author: string): Promise<void> {
   }
 }
 
+// ── Portal Handler (no Telegram context) ────────────────────────────
+
+export async function handleAddBookFromPortal(
+  title: string, author: string,
+): Promise<{ ok: boolean; message: string }> {
+  const db = getDb();
+  const existing = db.prepare('SELECT extraction_status FROM book_library WHERE title = ? AND author = ?')
+    .get(title, author) as any;
+
+  if (existing?.extraction_status === 'extracted') {
+    return { ok: true, message: `${title} already in library` };
+  }
+
+  db.prepare(`
+    INSERT INTO book_library (title, author, extraction_status)
+    VALUES (?, ?, 'pending')
+    ON CONFLICT(title, author) DO UPDATE SET extraction_status = 'pending'
+  `).run(title, author);
+
+  try {
+    await extractAndStore(title, author);
+    return { ok: true, message: `${title} extracted successfully` };
+  } catch (err: any) {
+    return { ok: false, message: `Extraction failed: ${err.message?.slice(0, 100)}` };
+  }
+}
+
 // ── Bot Command Handlers ────────────────────────────────────────────
 
 export async function handleAddBook(ctx: Context): Promise<void> {
