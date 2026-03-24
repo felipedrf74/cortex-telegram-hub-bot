@@ -85,22 +85,23 @@ async function sendOrSave(
   forceFile = false,
 ): Promise<void> {
   // Always try to save as DOCX and send as downloadable file
-  const docxPath = await saveContentAsDocx(msg, command, topic, forceFile);
-  if (docxPath) {
-    // Send a clean short summary + the file
+  const result = await saveContentAsDocx(msg, command, topic, forceFile);
+  if (result) {
+    // Send a clean short summary + the file + Drive link
     const plain = msg.replace(/<[^>]*>/g, '');
     const firstLine = plain.split('\n').find(l => l.trim().length > 10)?.trim().slice(0, 120) || topic;
-    const caption = `📄 <b>${escapeHtml(command.toUpperCase())}</b> — ${escapeHtml(topic)}\n\n${escapeHtml(firstLine)}${firstLine.length >= 120 ? '...' : ''}`;
+    const driveLink = result.driveUrl ? `\n\n📂 <a href="${escapeHtml(result.driveUrl)}">Open in Google Drive</a>` : '';
+    const caption = `📄 <b>${escapeHtml(command.toUpperCase())}</b> — ${escapeHtml(topic)}\n\n${escapeHtml(firstLine)}${firstLine.length >= 120 ? '...' : ''}${driveLink}`;
 
     try {
-      await ctx.replyWithDocument(new InputFile(docxPath), {
+      await ctx.replyWithDocument(new InputFile(result.filePath), {
         caption,
         parse_mode: 'HTML',
       });
     } catch (err) {
       // Fallback: send file path if document upload fails
       logger.error({ err }, `Failed to send ${command} DOCX via Telegram`);
-      await ctx.reply(`📁 Saved to: <code>${escapeHtml(docxPath)}</code>`, { parse_mode: 'HTML' });
+      await ctx.reply(`📁 Saved to: <code>${escapeHtml(result.filePath)}</code>`, { parse_mode: 'HTML' });
     }
   } else {
     // Short enough — send inline

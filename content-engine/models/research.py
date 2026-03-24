@@ -28,6 +28,8 @@ class TrendingTopic(BaseModel):
     sources: list[str] = Field(default_factory=list)
     first_seen: datetime | None = None
     niche: str = ""                           # which content niche it fits
+    content_angle: str = ""                   # how Felipe should approach this topic
+    relevance: int = 5                        # 1-10 brand relevance score
 
 
 class ContentBrief(BaseModel):

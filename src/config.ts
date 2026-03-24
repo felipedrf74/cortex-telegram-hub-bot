@@ -84,6 +84,13 @@ export const config = {
     coachEnabled: (process.env.GARMIN_COACH_ENABLED || 'false') === 'true',
     coachTime: process.env.GARMIN_COACH_TIME || '21:00',
   },
+  // ── Google Drive (DOCX uploads) ───────────────────────────────────
+  googleDrive: {
+    enabled: process.env.GOOGLE_DRIVE_ENABLED
+      ? process.env.GOOGLE_DRIVE_ENABLED === 'true'
+      : !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN),
+    rootFolderId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || '',
+  },
   // ── Content Engine (Python microservice) ────────────────────────────
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',

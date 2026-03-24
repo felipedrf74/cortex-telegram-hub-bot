@@ -22,6 +22,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { pushEvent } from '../portal/telemetry';
+import { uploadToDrive } from './google-drive';
 import {
   fetchTranscript,
   extractVideoId,
@@ -579,11 +580,14 @@ export async function saveTranscriptAsDocx(transcript: TranscriptResult): Promis
   });
 
   const filename = `transcript_${sanitizeFilename(transcript.title)}_${transcript.videoId}.docx`;
-  const filePath = path.join(IDEAS_DIR, filename);
+  const dir = path.join(IDEAS_DIR, 'RESEARCH');
+  const filePath = path.join(dir, filename);
 
-  if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
+
+  uploadToDrive(filePath, filename, 'RESEARCH').catch(() => {});
 
   logger.info({ filePath, title: transcript.title }, 'Transcript saved as DOCX');
   return filePath;
@@ -644,11 +648,14 @@ export async function saveStudyAsDocx(result: VideoStudyResult): Promise<string>
   });
 
   const filename = `study_${sanitizeFilename(result.title)}_${result.videoId}.docx`;
-  const filePath = path.join(IDEAS_DIR, filename);
+  const dir = path.join(IDEAS_DIR, 'IDEAS');
+  const filePath = path.join(dir, filename);
 
-  if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
+
+  uploadToDrive(filePath, filename, 'IDEAS').catch(() => {});
 
   logger.info({ filePath, title: result.title }, 'Video study saved as DOCX');
   return filePath;
@@ -721,6 +728,8 @@ export async function saveScriptAsDocx(topic: string, scriptText: string): Promi
 
   const buffer = await Packer.toBuffer(doc);
   fs.writeFileSync(filePath, buffer);
+
+  uploadToDrive(filePath, filename, 'SCRIPTS').catch(() => {});
 
   logger.info({ filePath, topic }, 'Script saved as DOCX');
   return filePath;

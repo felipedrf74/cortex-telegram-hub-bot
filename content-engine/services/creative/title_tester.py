@@ -6,11 +6,13 @@ import time
 import logging
 from models.requests import TitlesRequest, TitlesResponse
 from services.claude_client import ask_claude_json
+from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.titles")
 
-SYSTEM_PROMPT = """You are a YouTube/Instagram title optimisation expert for PT-BR content.
-You generate title variants using different psychological strategies, then score each one.
+SYSTEM_PROMPT = f"""You are Felipe's YouTube/Instagram title specialist.
+
+{get_profile(short=True)}
 
 STRATEGIES to use (mix them):
 - NUMBER: "5 Razões para..." / "3 Erros que..."
@@ -21,12 +23,14 @@ STRATEGIES to use (mix them):
 - STORY: "Eu Testei [TOPIC] por [TIME] e..."
 - CONTROVERSY: "PAREI de [THING] e Isto Aconteceu"
 - URGENCY: "O Que NINGUÉM Está a Dizer"
+- CONTRARIAN: Goes against mainstream — Felipe's signature
 
 SCORING (0-100) based on:
 - Length: YouTube ideal 50-60 chars, Instagram 30-40
 - Power words: CAPITALISE emotional words
 - Keyword placement: primary keyword in first 5 words
 - Emotional trigger strength
+- Brand alignment with Felipe's conservative/libertarian voice
 - Clickability vs deliverability balance
 
 Return ONLY a JSON array. No markdown."""
@@ -36,16 +40,18 @@ async def generate(req: TitlesRequest) -> TitlesResponse:
     start = time.monotonic()
 
     char_target = "50-60" if req.platform == "YouTube" else "30-40"
-    prompt = f"""Generate {req.count} title variants for:
+    prompt = f"""Generate {req.count} title variants for Felipe's channel:
 - Topic: {req.topic}
 - Niche: {req.niche}
 - Platform: {req.platform} (ideal length: {char_target} characters)
+
+Titles should sound like Felipe — direct, bold, no-BS. His audience is Brazilian men 18-35.
 
 Return JSON array where each object has:
 - "title": the title in PT-BR
 - "strategy": which strategy was used
 - "score": 0-100 effectiveness score
-- "why": one sentence on why it works
+- "why": one sentence on why it works for Felipe's audience
 - "char_count": number of characters
 
 Sort by score descending."""

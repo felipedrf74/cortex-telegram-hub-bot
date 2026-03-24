@@ -11,11 +11,14 @@ import logging
 from models.requests import ScriptRequest, ScriptResponse
 from models.research import SourceReference
 from services.claude_client import ask_claude, MODEL
+from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.script")
 
-SYSTEM_PROMPT = """You are Felipe's AI scriptwriter for Portuguese-language YouTube content.
+SYSTEM_PROMPT = f"""You are Felipe's AI scriptwriter for Portuguese-language YouTube content.
 You write natural, conversational scripts as if Felipe is talking to camera — never robotic.
+
+{get_profile()}
 
 SCRIPT STRUCTURE (enforce for every script):
 

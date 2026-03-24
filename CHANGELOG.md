@@ -4,6 +4,48 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [3.9.0] — 2026-03-24
+
+### Creator Profile Intelligence + Google Drive Integration + Deep Search Overhaul
+
+All creative AI modules now inject Felipe's full creator profile (voice, worldview, audience) into every prompt. Deep search and hot news completely rebuilt for substantive, source-backed output. Google Drive integration for automatic DOCX uploads.
+
+#### Creator Profile System (`content-engine/services/creator_profile.py`)
+- **Single source of truth** — New `creator_profile.py` module with Felipe's full identity: conservative, Christian, libertarian, Austrian economics, anti-state, nuclear family, Brazilian men 18-35 audience.
+- **Injected into ALL creative modules** — hook_generator, title_tester, caption_writer, thumbnail_gen, repurpose_engine, script_writer all now receive Felipe's voice, worldview, and audience context.
+- **Before**: Generic outputs with no personality. **After**: Every output reflects Felipe's brand — direct, controversial, data-driven.
+
+#### Creative Module Overhaul (all files in `content-engine/services/creative/`)
+- **hook_generator** — Removed hardcoded template lists. Added contrarian/challenge trigger types. Hooks now reflect Felipe's anti-state, pro-freedom voice.
+- **title_tester** — Added CONTRARIAN strategy. Scoring now includes brand alignment with conservative/libertarian voice.
+- **caption_writer** — Full profile injection. Hashtag pools split by pillar (fitness, politics, faith, general). CTA drives debate, not generic "comenta aí".
+- **thumbnail_gen** — Visual identity per content pillar (fitness: high contrast athletic; politics: red/black dramatic; faith: warm serious).
+- **repurpose_engine** — All atomized content in Felipe's voice. Tweets provocative, reels open with controversy, polls spark debate.
+- **script_writer** — Full creator profile in system prompt for worldview-aligned scripts.
+
+#### Deep Search Overhaul (`content-engine/services/orchestrator.py`)
+- **Multi-query research** — Generates 5 targeted search queries per topic (PT-BR + English) instead of 1 generic search.
+- **AI-synthesized briefs** — Claude analyzes all sources and produces structured briefs with: key findings, data points, source URLs, Felipe's angle, and content opportunities.
+- **Source attribution** — Every brief includes clickable source links and publication dates.
+- **Hot news worldview filter** — `/hotnews` queries now target Felipe's pillars (politics, economics, fitness, faith) and filter through his conservative/libertarian lens.
+
+#### Google Drive Integration (`src/services/google-drive.ts`)
+- **Automatic DOCX upload** — All content outputs (scripts, research, news, analysis) automatically uploaded to Google Drive in organized folders.
+- **Drive link in Telegram** — Each DOCX message now includes a clickable "Open in Google Drive" link.
+- **Folder structure** — RESEARCH, IDEAS, SCRIPTS, VISUALS, REPORTS subfolders mirror local `~/Desktop/IDEAS/`.
+- **OAuth2 with refresh** — Uses existing Google OAuth credentials with `drive.file` scope.
+
+#### Content Engine Output Structure (`src/services/content-engine.ts`)
+- **5-folder organization** — RESEARCH (deepsearch, sources, trending, hotnews), IDEAS (topics, hooks, titles), SCRIPTS (genscript, repurpose), VISUALS (thumbnails, captions), REPORTS (competitor, gaps, seo, feedback).
+- **DocxResult type** — `saveContentAsDocx()` now returns `{ filePath, driveUrl }` instead of just a path.
+
+#### Bug Fixes
+- **Bot crash-loop fix** — Migration `014_missing_indexes.sql` referenced non-existent `content_references` table. Fixed to `content_ref_channels`. Bot was down ~11 hours due to this.
+- **Script generation timeout** — Python httpx timeout increased from 60s to 180s. Bot-side fetch timeout increased to 180s to match.
+- **Google token script** — Added Drive scope to OAuth token generation script.
+
+---
+
 ## [3.8.0] — 2026-03-21
 
 ### Conversation Continuity + Secretary Intelligence + Content Engine Timeout Fix

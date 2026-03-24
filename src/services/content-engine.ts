@@ -4,6 +4,7 @@ import path from 'path';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { uploadToDrive } from './google-drive';
 
 // ── File Saver for large outputs ────────────────────────────────────
 
@@ -14,26 +15,35 @@ const FILE_THRESHOLD = 3500;
 
 /** Command → subfolder mapping */
 const COMMAND_FOLDERS: Record<string, string> = {
+  // RESEARCH — raw input & trending data
   deepsearch: 'RESEARCH',
   sources: 'RESEARCH',
   hotnews: 'RESEARCH',
   trending: 'RESEARCH',
   discover: 'RESEARCH',
-  ideas: 'RESEARCH',
+  transcribe: 'RESEARCH',
+  // IDEAS — ideation, hooks, titles, reactions, studies
+  ideas: 'IDEAS',
   reaction: 'IDEAS',
   hooks: 'IDEAS',
   titles: 'IDEAS',
   video: 'IDEAS',
   reel: 'IDEAS',
+  contenttopic: 'IDEAS',
+  studyvideo: 'IDEAS',
+  // SCRIPTS — production-ready scripts & repurpose
   genscript: 'SCRIPTS',
   script: 'SCRIPTS',
-  genthumbnail: 'THUMBNAILS',
-  gencaption: 'CAPTIONS',
-  competitor: 'ANALYSIS',
-  gaps: 'ANALYSIS',
-  seo: 'ANALYSIS',
-  feedback: 'ANALYTICS',
-  report: 'ANALYTICS',
+  repurpose: 'SCRIPTS',
+  // VISUALS — thumbnails & captions
+  genthumbnail: 'VISUALS',
+  gencaption: 'VISUALS',
+  // REPORTS — analysis, competitive intel, feedback
+  competitor: 'REPORTS',
+  gaps: 'REPORTS',
+  seo: 'REPORTS',
+  feedback: 'REPORTS',
+  report: 'REPORTS',
 };
 
 /**
@@ -97,16 +107,21 @@ function htmlToDocxChildren(content: string): Paragraph[] {
   return children;
 }
 
+export interface DocxResult {
+  filePath: string;
+  driveUrl?: string;
+}
+
 /**
  * Saves content as DOCX to IDEAS/<subfolder>/<slug>_<command>_<date>.docx
- * Returns the file path, or null if content was short enough for inline display.
+ * Returns the file path + Drive URL, or null if content was short enough for inline display.
  */
 export async function saveContentAsDocx(
   content: string,
   command: string,
   topic: string,
   forceFile = false,
-): Promise<string | null> {
+): Promise<DocxResult | null> {
   if (!forceFile && content.length < FILE_THRESHOLD) return null;
 
   const today = new Date().toISOString().slice(0, 10);
@@ -145,7 +160,16 @@ export async function saveContentAsDocx(
     const buffer = await Packer.toBuffer(doc);
     fs.writeFileSync(filePath, buffer);
     logger.info({ filePath, chars: content.length }, `Saved ${command} output as DOCX`);
-    return filePath;
+
+    // Upload to Google Drive — wait briefly for URL to include in Telegram caption
+    let driveUrl: string | undefined;
+    try {
+      driveUrl = await uploadToDrive(filePath, filename, subfolder) || undefined;
+    } catch {
+      // Drive upload failure is non-critical
+    }
+
+    return { filePath, driveUrl };
   } catch (err) {
     logger.error({ err }, 'Failed to save content DOCX');
     return null;
@@ -358,7 +382,7 @@ export async function deepSearch(query: string, niches?: string[], maxResults = 
   return engineFetch<DeepSearchResponse>('/deepsearch', {
     method: 'POST',
     body: JSON.stringify({ query, niches: niches || [], max_results: maxResults }),
-  });
+  }, 180_000); // deep search: 5 query variations + AI synthesis
 }
 
 export async function getSources(query: string): Promise<SourcesResponse> {
@@ -480,20 +504,82 @@ function escapeHtml(text: string): string {
 }
 
 export function formatDeepSearch(res: DeepSearchResponse): string {
-  let msg = `🔬 <b>Deep Search: "${escapeHtml(res.query)}"</b>\n`;
-  msg += `<i>${res.briefs.length} ideas found in ${res.duration_ms}ms (${res.search_count} searches)</i>\n\n`;
+  let msg = `🔬 <b>DEEP SEARCH: "${escapeHtml(res.query)}"</b>\n`;
+  msg += `<i>${res.briefs.length} content ideas · ${res.search_count} sources scanned · ${res.duration_ms}ms</i>\n\n`;
+
+  // First brief has the research context in why_now
+  if (res.briefs.length > 0 && res.briefs[0].why_now.includes('RESUMO:')) {
+    msg += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `📊 <b>RESEARCH BRIEFING</b>\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    // Format the research block nicely
+    const sections = res.briefs[0].why_now.split('\n\n');
+    for (const section of sections) {
+      if (section.startsWith('RESUMO:')) {
+        msg += `${escapeHtml(section.replace('RESUMO: ', ''))}\n\n`;
+      } else if (section.startsWith('FATOS-CHAVE:')) {
+        msg += `<b>📌 FATOS-CHAVE</b>\n`;
+        const facts = section.split('\n').slice(1);
+        for (const f of facts) msg += `${escapeHtml(f)}\n`;
+        msg += '\n';
+      } else if (section.startsWith('ARGUMENTOS A FAVOR:')) {
+        msg += `<b>✅ ARGUMENTOS A FAVOR</b>\n`;
+        const args = section.split('\n').slice(1);
+        for (const a of args) msg += `${escapeHtml(a)}\n`;
+        msg += '\n';
+      } else if (section.startsWith('CONTRA-ARGUMENTOS:')) {
+        msg += `<b>⚔️ CONTRA-ARGUMENTOS</b>\n`;
+        const args = section.split('\n').slice(1);
+        for (const a of args) msg += `${escapeHtml(a)}\n`;
+        msg += '\n';
+      } else if (section.startsWith('ÂNGULO DO FELIPE:')) {
+        msg += `<b>🎯 SEU ÂNGULO</b>\n`;
+        msg += `<i>${escapeHtml(section.replace('ÂNGULO DO FELIPE: ', ''))}</i>\n\n`;
+      }
+    }
+  }
+
+  // Content ideas
+  msg += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `💡 <b>CONTENT IDEAS</b>\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
   for (let i = 0; i < res.briefs.length; i++) {
     const b = res.briefs[i];
-    const fire = b.time_sensitive ? ' 🔥' : '';
+    const fire = b.time_sensitive ? ' 🔥 URGENTE' : '';
     msg += `<b>${i + 1}. ${escapeHtml(b.title)}</b>${fire}\n`;
-    msg += `   📌 ${escapeHtml(b.niche)} · ${b.format} · Score: ${b.score.toFixed(2)}\n`;
-    msg += `   🎣 <i>${escapeHtml(b.hook)}</i>\n`;
-    if (b.key_points.length > 0) {
-      msg += `   📝 ${b.key_points.map((p) => escapeHtml(p)).join(' | ')}\n`;
+    msg += `   🎬 ${escapeHtml(b.format)}\n`;
+    msg += `   🎣 <i>"${escapeHtml(b.hook)}"</i>\n`;
+    if (b.why_now && !b.why_now.includes('RESUMO:')) {
+      msg += `   ⏰ ${escapeHtml(b.why_now)}\n`;
     }
-    msg += '\n';
+    if (b.key_points.length > 0) {
+      msg += `   📝 <b>Talking points:</b>\n`;
+      for (const p of b.key_points) {
+        msg += `      • ${escapeHtml(p)}\n`;
+      }
+    }
+    msg += `   📋 <code>/genscript ${b.title.slice(0, 80)}</code>\n\n`;
   }
+
+  // Sources
+  const sources = res.briefs[0]?.sources || [];
+  if (sources.length > 0) {
+    msg += `━━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `🔗 <b>SOURCES</b>\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    for (const s of sources) {
+      if (isSafeUrl(s.url)) {
+        msg += `• <a href="${escapeHtml(s.url)}">${escapeHtml(s.title)}</a>\n`;
+      } else {
+        msg += `• ${escapeHtml(s.title)}\n`;
+      }
+      if (s.relevance_note) {
+        msg += `  <i>${escapeHtml(s.relevance_note)}</i>\n`;
+      }
+    }
+  }
+
   return msg;
 }
 
@@ -521,13 +607,22 @@ export function formatSources(res: SourcesResponse): string {
 }
 
 export function formatHotNews(res: HotNewsResponse): string {
-  let msg = `🔥 <b>Hot News Right Now</b>\n\n`;
+  const NICHE_EMOJI: Record<string, string> = {
+    politica: '🏛', economia: '📊', fitness: '💪',
+    fe_familia: '✝️', geopolitica: '🌍', desenvolvimento: '🧠',
+    reacao: '🎬', geral: '📰',
+  };
+  let msg = `🔥 <b>Hot News — Curated for You</b>\n\n`;
   for (let i = 0; i < res.topics.length; i++) {
-    const t = res.topics[i];
-    const filled = Math.min(10, Math.max(0, Math.round(t.heat_score * 10)));
-    const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
-    msg += `${i + 1}. <b>${escapeHtml(t.topic)}</b>\n`;
-    msg += `   ${bar} ${(t.heat_score * 100).toFixed(0)}% · ${escapeHtml(t.niche)}\n`;
+    const t = res.topics[i] as any;
+    const emoji = NICHE_EMOJI[t.niche] || '📰';
+    const relevance = t.relevance ? '⭐'.repeat(Math.min(5, Math.ceil(t.relevance / 2))) : '';
+    msg += `${emoji} <b>${i + 1}. ${escapeHtml(t.topic)}</b>\n`;
+    if (t.content_angle) {
+      msg += `   💡 <i>${escapeHtml(t.content_angle)}</i>\n`;
+    }
+    msg += `   ${relevance} · ${escapeHtml(t.niche)}\n`;
+    msg += `   📋 <code>/deepsearch ${t.topic.slice(0, 80)}</code>\n\n`;
   }
   return msg;
 }

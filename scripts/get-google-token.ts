@@ -26,6 +26,7 @@ const REDIRECT_URI = 'http://localhost:3001/callback';
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar',
   'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/drive.file',
 ].join(' ');
 
 const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
