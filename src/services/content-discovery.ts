@@ -5,6 +5,8 @@ import { config } from '../config';
 import { now } from '../utils/date-parser';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { saveIdea } from '../state/saved-ideas';
+import { isDuplicateIdea } from './content-dedup';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -165,10 +167,37 @@ Remember: my audience is Brazilian men (18-35) who want growth and hate laziness
   const fileContent = `# Daily Content Ideas — ${dayName}, ${today.toFormat('LLLL dd, yyyy')}\n\n_Generated at ${today.toFormat('HH:mm')} | ${searchCount} web searches used_\n\n${fullContent}`;
   fs.writeFileSync(filePath, fileContent, 'utf-8');
 
-  logger.info({ searchCount, ideaCount: ideas.length, filePath }, 'Content discovery complete');
+  // Save ideas to SQLite (unified storage)
+  const allIdeas = [...ideas, ...quickShorts];
+  let savedCount = 0;
+  for (const title of allIdeas) {
+    try {
+      const dedup = await isDuplicateIdea(title);
+      if (dedup.isDuplicate && dedup.confidence > 0.8) {
+        logger.info({ title, similarTo: dedup.similarTo }, 'Discovery idea skipped (duplicate)');
+        continue;
+      }
+      // Score: main ideas get higher score than quick shorts
+      const isMainIdea = ideas.includes(title);
+      const score = isMainIdea ? 0.7 : 0.4;
+      saveIdea({
+        title,
+        sourceDate: dateStr,
+        source: 'discovery',
+        score,
+        workflowEligible: isMainIdea, // main ideas are workflow-eligible
+        niche: undefined,
+      });
+      savedCount++;
+    } catch (err) {
+      logger.warn({ err, title }, 'Failed to save discovery idea to DB');
+    }
+  }
+
+  logger.info({ searchCount, ideaCount: allIdeas.length, savedCount, filePath }, 'Content discovery complete');
 
   return {
-    ideas: [...ideas, ...quickShorts],
+    ideas: allIdeas,
     fullContent,
     filePath,
     searchCount,

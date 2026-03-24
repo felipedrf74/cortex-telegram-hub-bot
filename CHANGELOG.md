@@ -4,6 +4,49 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.1.0] — 2026-03-24
+
+### Content Creation Consolidation — Sprints 1-4
+
+#### Sprint 1: Command Cleanup
+- `/script` is now the single entry point for script generation (always includes research + intelligence bus signals)
+- `/genscript` → alias forwarding to `/script` (deprecated)
+- `/discover` is the unified trend scanner with flags: `--news` (replaces `/hotnews`), `--platform` (replaces `/trending`), no flags = full discovery
+- `/hotnews` and `/trending` → aliases forwarding to `/discover`
+- `/help` redesigned with Content Quick Guide decision tree + reorganized into 6 logical groups
+
+#### Sprint 2: Unified Idea Storage + Creative Staleness Fix
+- Migration 016: `saved_ideas` extended with source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now
+- Content Discovery now saves ideas to SQLite (unified storage) instead of only markdown files
+- Semantic dedup (`content-dedup.ts`): Claude Haiku checks topic+angle similarity across last 14 days before inserting any idea
+- 10 angle tags tracked: opinion, reaction, how-to, story, myth-bust, comparison, data, framework, listicle, trending-take
+- Angle diversity injection: 30-day distribution computed and injected into topic generation prompts (OVERUSED/UNDERUSED labels)
+- Per-batch constraint: ≥3 different angles, max 2 per angle, ≥1 underused
+- Discovery cross-pollination: workflow-eligible discovery ideas injected into Tue/Thu/Fri topic generation
+- Book knowledge signals injected into topic generation prompts
+
+#### Sprint 3: Feedback Loops + Reaction Criteria
+- `/published` command enhanced: accepts URL-only, stores published_url/published_at (migration 017), writes `content_published` bus signal, shows idea-to-publish time
+- `/reaction` now checks Reaction Radar signals first — shows pre-scored matches before running fresh scan
+- Reaction Radar agent upgraded to 5-dimension scoring rubric (0-10 each):
+  - Audience trigger, Controversy potential, Timeliness, Visual reactability, Pillar alignment
+  - Minimum 25/50 to qualify; signal type unified to `reaction_opportunity`
+- New signal types: `reaction_opportunity`, `content_published`
+
+#### Sprint 4: YouTube Data Integration + SEO Dashboard
+- New `youtube-analytics.ts` service: getVideoStats(), getRecentVideoStats(), checkKeywordRanking(), extractVideoId()
+- `/feedback [URL]` (URL-only) now auto-fetches views/likes/comments from YouTube API
+- `/seo` (no args) shows keyword ranking dashboard with trends
+- `/seo track [keyword]` adds keyword to tracking + immediately checks current rank
+- `YOUTUBE_CHANNEL_ID` configured for SEO Agent + Performance Agent
+
+#### QA Bug Fixes
+- Fixed `toggleSprint()` not on `window` — Sprint mode button in portal was broken (ReferenceError)
+- Fixed portal Mission Control not rendering — `apiFetch()` returns raw Response, added `.then(r => r.json())`
+- Added book upload form to portal (POST /api/books endpoint)
+
+---
+
 ## [4.0.0] — 2026-03-24
 
 ### Content Agent Mesh — 9 Autonomous AI Agents + Intelligence Bus + Mission Control

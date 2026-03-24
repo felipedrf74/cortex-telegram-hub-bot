@@ -38,9 +38,21 @@ interface VideoFinding {
   source: 'reference_channel' | 'trending' | 'search';
 }
 
+interface ReactionScores {
+  audience_trigger: number;   // 0-10
+  controversy: number;        // 0-10
+  timeliness: number;         // 0-10
+  visual_reactability: number;// 0-10
+  pillar_alignment: number;   // 0-10
+}
+
 interface ScoredFinding extends VideoFinding {
   reactionScore: number;
+  scores: ReactionScores;
+  totalScore: number;         // sum of all scores (0-50)
   suggestedAngle: string;
+  keyQuoteOrClip: string;
+  counterPosition: string;
   bookReference: { book: string; framework: string } | null;
   reactionWindowHours: number;
 }
@@ -187,77 +199,108 @@ function detectPillar(title: string): string {
   return bestPillar;
 }
 
+/**
+ * 5-Dimension Reaction Scoring Rubric.
+ * Each dimension 0-10. Minimum total 25/50 to qualify.
+ */
 function scoreReactionPotential(
   video: VideoFinding,
   bookFrameworks: Map<string, { book: string; framework: string }[]>,
   pillarRankings: Map<string, number>,
 ): ScoredFinding {
-  let score = 0;
+  const lowerTitle = video.title.toLowerCase();
+  const hoursAge = (Date.now() - new Date(video.publishedAt).getTime()) / (1000 * 60 * 60);
+
+  // 1. Audience Trigger (0-10): How strongly will this trigger Brazilian men 18-35?
+  let audienceTrigger = 0;
+  const triggerKeywords = ['homem', 'masculin', 'treino', 'disciplina', 'luta', 'trabalho',
+    'preguiça', 'fracass', 'sucesso', 'liberdade', 'imposto', 'governo',
+    'família', 'pai', 'cristão', 'dieta', 'academia', 'corrida'];
+  const triggerHits = triggerKeywords.filter(k => lowerTitle.includes(k)).length;
+  audienceTrigger = Math.min(10, triggerHits * 3 + (video.pillar !== 'none' ? 3 : 0));
+  // Opposition to values = strong trigger
+  const leftKeywords = ['socialismo', 'igualdade', 'cotas', 'regulação', 'estado social',
+    'imposto justo', 'sus funciona', 'feminism', 'aborto', 'desarm'];
+  if (leftKeywords.some(k => lowerTitle.includes(k))) audienceTrigger = Math.min(10, audienceTrigger + 4);
+
+  // 2. Controversy Potential (0-10): How polarizing?
+  let controversy = 0;
+  const controversyKeywords = ['polêmica', 'chocante', 'proibido', 'censurado', 'mentira',
+    'destruiu', 'acabou', 'urgente', 'bomba', 'escândalo', 'absurdo',
+    'vergonha', 'verdade', 'ninguém fala', 'lacrou', 'cancelado'];
+  controversy = Math.min(10, controversyKeywords.filter(k => lowerTitle.includes(k)).length * 3);
+  if (leftKeywords.some(k => lowerTitle.includes(k))) controversy = Math.min(10, controversy + 3);
+  if (video.viewCount > 500000) controversy = Math.min(10, controversy + 2); // viral = controversial
+
+  // 3. Timeliness (0-10): How fresh?
+  let timeliness = 0;
+  if (hoursAge < 6) timeliness = 10;
+  else if (hoursAge < 12) timeliness = 9;
+  else if (hoursAge < 24) timeliness = 7;
+  else if (hoursAge < 48) timeliness = 5;
+  else if (hoursAge < 72) timeliness = 3;
+  else timeliness = 1;
+
+  // 4. Visual Reactability (0-10): Can you react on camera?
+  let visualReactability = 5; // base — videos are always reactable
+  if (video.source === 'reference_channel' || video.source === 'trending') visualReactability = 8;
+  if (video.viewCount > 100000) visualReactability = Math.min(10, visualReactability + 2); // proven clip
+
+  // 5. Pillar Alignment (0-10): Maps to content pillars?
+  let pillarAlignment = 0;
+  if (video.pillar !== 'none') {
+    pillarAlignment = 5;
+    if (pillarRankings.has(video.pillar)) pillarAlignment += 2;
+    // Multi-pillar bonus (title touches multiple pillars)
+    const pillarHits = Object.entries(PILLAR_KEYWORDS)
+      .filter(([_, kws]) => kws.some(k => lowerTitle.includes(k))).length;
+    if (pillarHits >= 2) pillarAlignment = 10;
+    else if (pillarHits === 1) pillarAlignment = Math.min(10, pillarAlignment + 2);
+  }
+
+  const scores: ReactionScores = {
+    audience_trigger: audienceTrigger,
+    controversy,
+    timeliness,
+    visual_reactability: visualReactability,
+    pillar_alignment: pillarAlignment,
+  };
+  const totalScore = audienceTrigger + controversy + timeliness + visualReactability + pillarAlignment;
+
+  // Build suggested angle
   let suggestedAngle = '';
+  let counterPosition = '';
+  let keyQuoteOrClip = `Video: "${video.title}" by ${video.channelTitle}`;
   let bookReference: { book: string; framework: string } | null = null;
 
-  // Pillar relevance (0-25)
-  if (video.pillar !== 'none') {
-    score += 15;
-    if (pillarRankings.has(video.pillar)) {
-      score += Math.min(10, pillarRankings.get(video.pillar)! / 1000);
-    }
-  }
-
-  // Controversy detection (0-25)
-  const controversyKeywords = ['polêmica', 'chocante', 'proibido', 'censurado', 'mentira', 'verdade',
-    'destruiu', 'acabou', 'urgente', 'bomba', 'escândalo', 'absurdo', 'vergonha'];
-  const lowerTitle = video.title.toLowerCase();
-  const controversyHits = controversyKeywords.filter(k => lowerTitle.includes(k)).length;
-  score += Math.min(25, controversyHits * 10);
-
-  // Opposition to worldview = stronger reaction angle (0-20)
-  const leftKeywords = ['socialismo', 'igualdade', 'cotas', 'regulação', 'estado social', 'redistribuição',
-    'imposto justo', 'sus funciona', 'educação pública'];
-  const oppositionHits = leftKeywords.filter(k => lowerTitle.includes(k)).length;
-  if (oppositionHits > 0) {
-    score += 20;
+  if (leftKeywords.some(k => lowerTitle.includes(k))) {
     suggestedAngle = 'Disagree — counter with free market / libertarian arguments';
+    counterPosition = 'Expose the statist logic and present the freedom-based alternative';
+  } else if (video.source === 'reference_channel') {
+    suggestedAngle = `React/respond to ${video.channelTitle}'s take`;
+    counterPosition = `Agree, disagree, or add Felipe's unique perspective`;
+  } else {
+    suggestedAngle = `React to "${video.title.slice(0, 50)}" — ${video.pillar} angle`;
+    counterPosition = 'Take a contrarian or deeper-analysis stance';
   }
 
-  // Reference channel upload (0-15)
-  if (video.source === 'reference_channel') {
-    score += 15;
-    suggestedAngle = suggestedAngle || `React/respond to ${video.channelTitle}'s take`;
-  }
-
-  // Trending with high views (0-15)
-  if (video.viewCount > 100000) {
-    score += Math.min(15, Math.floor(video.viewCount / 100000) * 5);
-  }
-
-  // Book framework match (0-10)
+  // Book framework match
   const pillarBooks = bookFrameworks.get(video.pillar) || [];
   if (pillarBooks.length > 0) {
-    const best = pillarBooks[0];
-    bookReference = best;
-    score += 10;
-    suggestedAngle = suggestedAngle || `Use ${best.book}'s "${best.framework}" framework to counter`;
+    bookReference = pillarBooks[0];
+    suggestedAngle += ` (use ${bookReference.book}'s "${bookReference.framework}" framework)`;
   }
 
-  // Time sensitivity (0-10)
-  const hoursAge = (Date.now() - new Date(video.publishedAt).getTime()) / (1000 * 60 * 60);
-  if (hoursAge < 6) score += 10;
-  else if (hoursAge < 12) score += 7;
-  else if (hoursAge < 24) score += 4;
-
-  // Normalize to 0-1
-  const normalizedScore = Math.min(1, score / 100);
   const reactionWindow = hoursAge < 12 ? 12 : hoursAge < 24 ? 24 : 48;
-
-  if (!suggestedAngle) {
-    suggestedAngle = `React to "${video.title}" — ${video.pillar} content from ${video.channelTitle}`;
-  }
 
   return {
     ...video,
-    reactionScore: Math.round(normalizedScore * 100) / 100,
+    reactionScore: Math.min(1, totalScore / 50),
+    scores,
+    totalScore,
     suggestedAngle,
+    keyQuoteOrClip,
+    counterPosition,
     bookReference,
     reactionWindowHours: reactionWindow,
   };
@@ -354,33 +397,36 @@ export async function runReactionRadar(): Promise<void> {
     // Check what we've already signaled (avoid duplicates)
     const existingUrls = new Set(
       (db.prepare(
-        "SELECT json_extract(payload, '$.url') as url FROM agent_signals WHERE signal_type IN ('trending_spike', 'competitor_upload') AND status = 'active'"
+        "SELECT json_extract(payload, '$.source_url') as url FROM agent_signals WHERE signal_type = 'reaction_opportunity' AND status = 'active'"
       ).all() as any[]).map(r => r.url)
     );
 
-    // Write signals for top findings (threshold: 0.5)
+    // Write signals for top findings (minimum total score: 25/50)
     let alertsSent = 0;
     for (const finding of scored) {
-      if (finding.reactionScore < 0.5) break;
+      if (finding.totalScore < 25) break; // Minimum 25/50 to qualify
       if (existingUrls.has(finding.url)) continue;
 
-      const signalType = finding.source === 'reference_channel' ? 'competitor_upload' : 'trending_spike';
-      const priority = finding.reactionScore >= 0.8 ? 'urgent' : 'normal';
+      const priority = finding.totalScore >= 40 ? 'urgent' : 'normal';
 
       writeSignal({
         source_agent: 'reaction-radar',
-        signal_type: signalType,
+        signal_type: 'reaction_opportunity',
         payload: {
-          source: finding.source,
           title: finding.title,
-          url: finding.url,
+          source_url: finding.url,
+          source_type: 'video',
           channel: finding.channelTitle,
-          views_velocity: finding.viewCount > 0 ? `${Math.round(finding.viewCount / 1000)}K` : 'N/A',
-          reaction_score: finding.reactionScore,
-          suggested_angle: finding.suggestedAngle,
+          source_origin: finding.source,
+          scores: finding.scores,
+          total_score: finding.totalScore,
+          reaction_angle: finding.suggestedAngle,
+          key_quote_or_clip: finding.keyQuoteOrClip,
+          your_counter_position: finding.counterPosition,
           book_reference: finding.bookReference,
           pillar: finding.pillar,
           reaction_window_hours: finding.reactionWindowHours,
+          views: finding.viewCount,
         },
         priority,
       });

@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { storeCallback, getCallback } from './utils/callback-store';
 import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';
 import { config } from './config';
+import { getDb } from './services/database';
 import { logger } from './utils/logger';
 import { routeMessage, isSystemCommand, keywordMatch } from './router';
 import { DomainName } from './domains/types';
@@ -111,6 +112,116 @@ async function sendOrSave(
     for (const chunk of splitMessage(msg)) {
       try { await ctx.reply(chunk, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }); }
       catch (err) { if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, '')); else throw err; }
+    }
+  }
+}
+
+// ─── Shared Command Handlers ────────────────────────────────────────
+
+/**
+ * Unified script handler — used by both /script and /genscript (alias).
+ * Always includes research + intelligence bus signal injection.
+ */
+async function handleScriptCommand(ctx: Context): Promise<void> {
+  if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+  const topic = ctx.match?.toString().trim();
+  if (!topic) {
+    await ctx.reply(
+      '📝 <b>Usage:</b> <code>/script &lt;topic&gt;</code>\n\n' +
+      'Generates a full video script with research + intelligence.\n\n' +
+      'Examples:\n' +
+      '  <code>/script dieta carnívora 30 dias resultados</code>\n' +
+      '  <code>/script por que o estado é seu inimigo</code>\n' +
+      '  <code>/script reaction to trending topic about AI</code>',
+      { parse_mode: 'HTML' },
+    );
+    return;
+  }
+  await ctx.reply('📝 Generating script… this takes 30-60s (research + writing).', { parse_mode: 'HTML' });
+  const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+  try {
+    const result = await getScript(topic);
+    clearInterval(typingInterval);
+    const msg = formatScript(result);
+    await sendOrSave(ctx, msg, 'script', topic, true);
+  } catch (err: any) {
+    clearInterval(typingInterval);
+    logger.error({ err }, 'Script generation failed');
+    await ctx.reply(`❌ Script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+  }
+}
+
+/**
+ * Unified discover handler — used by /discover, /hotnews (alias), /trending (alias).
+ * Flags: --news (hotnews only), --platform (cross-platform trending), default (full discovery).
+ */
+async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'platform' = 'full'): Promise<void> {
+  if (mode === 'news') {
+    // /hotnews behavior
+    if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+    await ctx.replyWithChatAction('typing');
+    const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+    try {
+      const result = await getHotNews();
+      clearInterval(typingInterval);
+      const msg = formatHotNews(result);
+      await sendOrSave(ctx, msg, 'discover', 'trending-news', true);
+    } catch (err: any) {
+      clearInterval(typingInterval);
+      logger.error({ err }, 'Hot news failed');
+      await ctx.reply(`❌ Discover (news) failed: ${escapeHtml(err.message || 'Unknown error')}`);
+    }
+  } else if (mode === 'platform') {
+    // /trending behavior
+    if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+    const niche = ctx.match?.toString().replace(/--platform\s*/i, '').trim() || undefined;
+    await ctx.replyWithChatAction('typing');
+    const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+    try {
+      const result = await getTrending(niche);
+      clearInterval(typingInterval);
+      const msg = formatTrending(result);
+      await sendOrSave(ctx, msg, 'discover', niche || 'general', true);
+    } catch (err: any) {
+      clearInterval(typingInterval);
+      logger.error({ err }, 'Trending failed');
+      await ctx.reply(`❌ Discover (platform) failed: ${escapeHtml(err.message || 'Unknown error')}`);
+    }
+  } else {
+    // Full discovery (original /discover behavior)
+    await ctx.replyWithChatAction('typing');
+    await ctx.reply('🔍 Running content discovery… this takes ~2 minutes.', { parse_mode: 'HTML' });
+    const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+    try {
+      const result = await runContentDiscovery();
+      clearInterval(typingInterval);
+      const dateStr = now().toFormat('yyyy-MM-dd');
+      let msg = `🎬 <b>Content Ideas Ready</b>\n\n`;
+      if (result.ideas.length > 0) {
+        for (let i = 0; i < result.ideas.length; i++) {
+          msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
+        }
+      } else {
+        msg += `Ideas generated but couldn't parse titles — check the file.\n`;
+      }
+      msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
+      msg += `\n🔍 ${result.searchCount} web searches used`;
+      for (const chunk of splitMessage(msg)) {
+        await ctx.reply(chunk, { parse_mode: 'HTML' });
+      }
+      if (result.ideas.length > 0) {
+        const keyboard = new InlineKeyboard();
+        for (let i = 0; i < Math.min(result.ideas.length, 10); i++) {
+          const ref = storeCallback({ title: result.ideas[i], date: dateStr });
+          keyboard.text(`💾 ${i + 1}`, `ci:save:${ref}`);
+          if ((i + 1) % 5 === 0) keyboard.row();
+        }
+        await ctx.reply('Tap to save ideas you want to pursue:', { reply_markup: keyboard });
+      }
+    } catch (err: any) {
+      clearInterval(typingInterval);
+      logger.error({ err }, 'Content discovery failed');
+      await ctx.reply(`❌ Content discovery failed: ${escapeHtml(err.message || 'Unknown error')}`);
     }
   }
 }
@@ -1073,46 +1184,16 @@ export function createBot(): Bot {
     });
   });
 
-  // ── Content Discovery ──
+  // ── Content Discovery (unified: /discover, /discover --news, /discover --platform) ──
   bot.command('discover', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      await ctx.replyWithChatAction('typing');
-      await ctx.reply('🔍 Running content discovery… this takes ~2 minutes.', { parse_mode: 'HTML' });
-      // Keep typing indicator alive during the long-running discovery
-      const typingInterval = setInterval(() => {
-        ctx.replyWithChatAction('typing').catch(() => {});
-      }, 4000);
-      try {
-        const result = await runContentDiscovery();
-        clearInterval(typingInterval);
-        const dateStr = now().toFormat('yyyy-MM-dd');
-        let msg = `🎬 <b>Content Ideas Ready</b>\n\n`;
-        if (result.ideas.length > 0) {
-          for (let i = 0; i < result.ideas.length; i++) {
-            msg += `${i + 1}. ${escapeHtml(result.ideas[i])}\n`;
-          }
-        } else {
-          msg += `Ideas generated but couldn't parse titles — check the file.\n`;
-        }
-        msg += `\n📁 <code>${escapeHtml(result.filePath)}</code>`;
-        msg += `\n🔍 ${result.searchCount} web searches used`;
-        for (const chunk of splitMessage(msg)) {
-          await ctx.reply(chunk, { parse_mode: 'HTML' });
-        }
-        // Inline save buttons for each idea
-        if (result.ideas.length > 0) {
-          const keyboard = new InlineKeyboard();
-          for (let i = 0; i < Math.min(result.ideas.length, 10); i++) {
-            const ref = storeCallback({ title: result.ideas[i], date: dateStr });
-            keyboard.text(`💾 ${i + 1}`, `ci:save:${ref}`);
-            if ((i + 1) % 5 === 0) keyboard.row();
-          }
-          await ctx.reply('Tap to save ideas you want to pursue:', { reply_markup: keyboard });
-        }
-      } catch (err: any) {
-        clearInterval(typingInterval);
-        logger.error({ err }, 'Content discovery failed (manual)');
-        await ctx.reply(`❌ Content discovery failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      const input = ctx.match?.toString().trim() || '';
+      if (input.startsWith('--news')) {
+        await handleDiscoverCommand(ctx, 'news');
+      } else if (input.startsWith('--platform')) {
+        await handleDiscoverCommand(ctx, 'platform');
+      } else {
+        await handleDiscoverCommand(ctx, 'full');
       }
     });
   });
@@ -1225,43 +1306,18 @@ export function createBot(): Bot {
     });
   });
 
+  // /hotnews → alias for /discover --news
   bot.command('hotnews', async (ctx) => {
-    enqueue(ctx.from!.id, async () => {
-      if (!isContentEngineConfigured()) {
-        await ctx.reply('⚠️ Content Engine not enabled.');
-        return;
-      }
-      await ctx.replyWithChatAction('typing');
-      try {
-        const result = await getHotNews();
-        const msg = formatHotNews(result);
-        await sendOrSave(ctx, msg, 'hotnews', 'trending', true);
-      } catch (err: any) {
-        logger.error({ err }, 'Hot news failed');
-        await ctx.reply(`❌ Hot news failed: ${escapeHtml(err.message || 'Unknown error')}`);
-      }
-    });
+    logger.info('Deprecated /hotnews used — forwarding to /discover --news');
+    enqueue(ctx.from!.id, async () => { await handleDiscoverCommand(ctx, 'news'); });
   });
 
   // ── Phase 2: Visual + Social ──
 
+  // /trending → alias for /discover --platform
   bot.command('trending', async (ctx) => {
-    enqueue(ctx.from!.id, async () => {
-      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
-      const niche = ctx.match?.trim() || undefined;
-      await ctx.replyWithChatAction('typing');
-      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
-      try {
-        const result = await getTrending(niche);
-        clearInterval(typingInterval);
-        const msg = formatTrending(result);
-        await sendOrSave(ctx, msg, 'trending', niche || 'general', true);
-      } catch (err: any) {
-        clearInterval(typingInterval);
-        logger.error({ err }, 'Trending failed');
-        await ctx.reply(`❌ Trending failed: ${escapeHtml(err.message || 'Unknown error')}`);
-      }
-    });
+    logger.info('Deprecated /trending used — forwarding to /discover --platform');
+    enqueue(ctx.from!.id, async () => { await handleDiscoverCommand(ctx, 'platform'); });
   });
 
   bot.command('reaction', async (ctx) => {
@@ -1269,6 +1325,35 @@ export function createBot(): Bot {
       if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
       const topic = ctx.match?.trim();
       if (!topic) { await ctx.reply('Usage: /reaction <topic>\nExample: /reaction Lula cortou verbas'); return; }
+
+      // Check Reaction Radar signals first
+      const { readSignals } = await import('./services/intelligence-bus');
+      const radarSignals = readSignals('reaction-command', ['reaction_opportunity']);
+      const topicLower = topic.toLowerCase();
+      const matching = radarSignals.filter((s: any) => {
+        const p = s.payload as any;
+        const text = `${p.title || ''} ${p.topic || ''} ${p.description || ''}`.toLowerCase();
+        return topicLower.split(/\s+/).some((w: string) => w.length > 3 && text.includes(w));
+      });
+
+      if (matching.length > 0) {
+        let radarMsg = `🔍 <b>Reaction Radar found ${matching.length} match${matching.length > 1 ? 'es' : ''}:</b>\n\n`;
+        for (const sig of matching.slice(0, 3)) {
+          const p = sig.payload as any;
+          radarMsg += `📺 <b>${escapeHtml(p.title || p.topic || '')}</b>\n`;
+          if (p.scores) {
+            const s = p.scores;
+            radarMsg += `   🎯 Audience: ${s.audience_trigger}/10 · 🔥 Controversy: ${s.controversy}/10 · ⏰ Timely: ${s.timeliness}/10\n`;
+            radarMsg += `   📹 Visual: ${s.visual_reactability}/10 · 🏷 Pillars: ${s.pillar_alignment}/10 · <b>Total: ${p.total_score || 'N/A'}/50</b>\n`;
+          }
+          if (p.reaction_angle) radarMsg += `   💡 Angle: ${escapeHtml(p.reaction_angle)}\n`;
+          if (p.source_url) radarMsg += `   🔗 ${escapeHtml(p.source_url)}\n`;
+          radarMsg += '\n';
+        }
+        radarMsg += `<i>Running fresh scan for more angles...</i>`;
+        await ctx.reply(radarMsg, { parse_mode: 'HTML' });
+      }
+
       await ctx.replyWithChatAction('typing');
       const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
       try {
@@ -1306,23 +1391,11 @@ export function createBot(): Bot {
     });
   });
 
+  // /genscript → alias for /script (deprecated, forwards silently)
   bot.command('genscript', async (ctx) => {
+    logger.info('Deprecated /genscript used — forwarding to /script handler');
     enqueue(ctx.from!.id, async () => {
-      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
-      const topic = ctx.match?.trim();
-      if (!topic) { await ctx.reply('Usage: /genscript <topic>\nExample: /genscript dieta carnívora 30 dias resultados'); return; }
-      await ctx.reply('📝 Generating script… this takes 30-60s (research + writing).', { parse_mode: 'HTML' });
-      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
-      try {
-        const result = await getScript(topic);
-        clearInterval(typingInterval);
-        const msg = formatScript(result);
-        await sendOrSave(ctx, msg, 'genscript', topic, true); // always save scripts
-      } catch (err: any) {
-        clearInterval(typingInterval);
-        logger.error({ err }, 'Script generation failed');
-        await ctx.reply(`❌ Script failed: ${escapeHtml(err.message || 'Unknown error')}`);
-      }
+      await handleScriptCommand(ctx);
     });
   });
 
@@ -1429,16 +1502,82 @@ export function createBot(): Bot {
 
   bot.command('seo', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const input = ctx.match?.trim() || '';
+
+      // /seo (no args) → dashboard of tracked keywords
+      if (!input) {
+        const db = getDb();
+        const keywords = db.prepare(`
+          SELECT keyword, last_rank, previous_rank, trend, last_checked
+          FROM seo_keywords ORDER BY last_rank ASC NULLS LAST, keyword ASC
+        `).all() as any[];
+
+        if (keywords.length === 0) {
+          await ctx.reply(
+            '📊 <b>SEO Dashboard</b>\n\nNo keywords tracked yet.\n\n' +
+            '<code>/seo track [keyword]</code> — Track a keyword\n' +
+            '<code>/seo [topic]</code> — Research keywords for a topic',
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        let msg = `📊 <b>SEO Dashboard</b> (${keywords.length} keywords)\n\n`;
+        for (const kw of keywords) {
+          const arrow = kw.trend === 'up' ? '📈' : kw.trend === 'down' ? '📉' : '➡️';
+          const rank = kw.last_rank ? `#${kw.last_rank}` : 'N/R';
+          const delta = (kw.previous_rank && kw.last_rank)
+            ? ` (was #${kw.previous_rank})`
+            : '';
+          msg += `${arrow} <b>${escapeHtml(kw.keyword)}</b> — ${rank}${delta}\n`;
+        }
+        msg += `\n<i>Updated: ${keywords[0]?.last_checked || 'never'}</i>`;
+        await ctx.reply(msg, { parse_mode: 'HTML' });
+        return;
+      }
+
+      // /seo track [keyword] → add keyword to tracking
+      if (input.startsWith('track ')) {
+        const keyword = input.replace('track ', '').trim();
+        if (!keyword) { await ctx.reply('Usage: <code>/seo track [keyword]</code>', { parse_mode: 'HTML' }); return; }
+
+        const db = getDb();
+        db.prepare(`
+          INSERT OR IGNORE INTO seo_keywords (keyword, pillar, last_checked)
+          VALUES (?, 'manual', datetime('now'))
+        `).run(keyword);
+
+        // Immediately check ranking
+        const { checkKeywordRanking } = await import('./services/youtube-analytics');
+        const channelId = config.youtube?.channelId;
+        if (channelId) {
+          const result = await checkKeywordRanking(keyword, channelId);
+          if (result.position) {
+            db.prepare('UPDATE seo_keywords SET last_rank = ? WHERE keyword = ?')
+              .run(result.position, keyword);
+            await ctx.reply(
+              `✅ Now tracking: <b>${escapeHtml(keyword)}</b>\nCurrent rank: <b>#${result.position}</b>` +
+              (result.topCompetitor ? `\nTop competitor: ${escapeHtml(result.topCompetitor)}` : ''),
+              { parse_mode: 'HTML' },
+            );
+          } else {
+            await ctx.reply(`✅ Now tracking: <b>${escapeHtml(keyword)}</b>\nNo ranking found yet (not in top 20).`, { parse_mode: 'HTML' });
+          }
+        } else {
+          await ctx.reply(`✅ Now tracking: <b>${escapeHtml(keyword)}</b>\n⚠️ Set YOUTUBE_CHANNEL_ID to enable rank checking.`, { parse_mode: 'HTML' });
+        }
+        return;
+      }
+
+      // /seo [topic] → keyword research via content engine
       if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
-      const topic = ctx.match?.trim();
-      if (!topic) { await ctx.reply('Usage: /seo <topic>\nExample: /seo dieta carnívora'); return; }
       await ctx.replyWithChatAction('typing');
       const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
       try {
-        const result = await getSeo(topic);
+        const result = await getSeo(input);
         clearInterval(typingInterval);
         const msg = formatSeo(result);
-        await sendOrSave(ctx, msg, 'seo', topic);
+        await sendOrSave(ctx, msg, 'seo', input);
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'SEO analysis failed');
@@ -1455,17 +1594,53 @@ export function createBot(): Bot {
       const args = ctx.match?.trim();
       if (!args) {
         await ctx.reply(
-          'Usage: /feedback <url> <views> <retention%> [likes] [comments] [subs]\n' +
-          'Example: /feedback https://youtu.be/abc 15000 45.2 800 120 50',
+          '📊 <b>Usage:</b>\n' +
+          '<code>/feedback &lt;url&gt;</code> — Auto-fetch from YouTube API\n' +
+          '<code>/feedback &lt;url&gt; &lt;views&gt; &lt;ret%&gt; [likes] [comments] [subs]</code> — Manual\n\n' +
+          'Example: <code>/feedback https://youtu.be/abc</code>',
+          { parse_mode: 'HTML' },
         );
         return;
       }
       const parts = args.split(/\s+/);
-      if (parts.length < 3) {
-        await ctx.reply('❌ Need at least: URL, views, retention%. See /feedback for usage.');
+      const videoUrl = parts[0];
+
+      // Auto-fetch mode: URL only (no manual numbers)
+      if (parts.length === 1 && (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be'))) {
+        await ctx.reply('📊 Fetching stats from YouTube API...', { parse_mode: 'HTML' });
+        const { extractVideoId, getVideoStats } = await import('./services/youtube-analytics');
+        const videoId = extractVideoId(videoUrl);
+        if (!videoId) { await ctx.reply('❌ Could not extract video ID from URL.'); return; }
+
+        const stats = await getVideoStats(videoId);
+        if (!stats) { await ctx.reply('❌ Could not fetch stats. Video may be private or API key issue.'); return; }
+
+        await ctx.replyWithChatAction('typing');
+        try {
+          const result = await logFeedback({
+            video_url: videoUrl,
+            views: stats.views,
+            retention_pct: stats.retentionPct || 0,
+            likes: stats.likes,
+            comments: stats.comments,
+            subs_gained: stats.subscribersGained || 0,
+          });
+          const msg = formatFeedback(result);
+          const autoNote = `\n\n<i>📡 Auto-fetched from YouTube API: ${stats.views.toLocaleString()} views, ${stats.likes.toLocaleString()} likes, ${stats.comments.toLocaleString()} comments</i>`;
+          await sendOrSave(ctx, msg + autoNote, 'feedback', videoUrl);
+        } catch (err: any) {
+          logger.error({ err }, 'Feedback logging failed');
+          await ctx.reply(`❌ Feedback failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        }
         return;
       }
-      const [videoUrl, viewsStr, retStr, likesStr, commentsStr, subsStr] = parts;
+
+      // Manual mode: URL + numbers
+      if (parts.length < 3) {
+        await ctx.reply('❌ Need at least: URL, views, retention%. Or just URL for auto-fetch.');
+        return;
+      }
+      const [, viewsStr, retStr, likesStr, commentsStr, subsStr] = parts;
       const views = parseInt(viewsStr, 10);
       const retention = parseFloat(retStr);
       if (isNaN(views) || isNaN(retention)) {
@@ -1753,48 +1928,10 @@ export function createBot(): Bot {
     });
   });
 
-  // ─── /script — Generate content script → save as DOCX ──────────────
+  // ─── /script — Full video script (research + intelligence bus) ──────
   bot.command('script', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      const topic = ctx.match?.trim();
-      if (!topic) {
-        await ctx.reply(
-          '📝 Usage: /script <topic or prompt>\n\n' +
-          'Generates a full video script and sends it as a Word file.\n\n' +
-          'Examples:\n' +
-          '  /script why most people waste their 20s\n' +
-          '  /script 5 habits that changed my life in Portugal\n' +
-          '  /script reaction to trending topic about AI replacing jobs',
-          { parse_mode: 'HTML' },
-        );
-        return;
-      }
-
-      const statusMsg = await ctx.reply('✍️ Writing script... this may take a minute.');
-
-      try {
-        // Use the content domain to generate the script
-        const scriptPrompt = `Write a complete YouTube video script about: "${topic}". Include all sections: CONTEXTO (tema, duração, tom, estrutura), HOOK (0-15s), PROBLEMA, CONCEITO, APLICAÇÃO with practical examples, and CTA. Full script in PT-BR, ready to record. Be detailed and creative.`;
-        const response = await handleContent(scriptPrompt, 8192);
-
-        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-          '📄 Saving as Word document...');
-
-        const filePath = await saveScriptAsDocx(topic, response.text);
-
-        const caption = `📝 <b>Script: ${escapeHtml(topic)}</b>\n✅ Ready to record`;
-
-        await ctx.replyWithDocument(new InputFile(filePath), {
-          caption,
-          parse_mode: 'HTML',
-        });
-
-        await ctx.api.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
-      } catch (err: any) {
-        logger.error({ err, topic }, '/script failed');
-        await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-          `❌ Script generation failed: ${escapeHtml(err.message || 'Unknown error')}`);
-      }
+      await handleScriptCommand(ctx);
     });
   });
 
@@ -3613,50 +3750,62 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /deload — Deload recommendations
 /pain — Pain/injury report
 
-<b>📹 CONTENT CREATION</b>
-/discover — Run daily content discovery (trending topics)
-/ideas [date] — View ideas by date (default: today)
-/ideas saved — View saved ideas from discovery
-/video [topic] — Video ideas
-/reel [topic] — Reel concepts
+<b>📹 CONTENT — Quick Guide</b>
+• Want ideas? → Wait for Tue/Thu/Fri auto-delivery or /contenttopic
+• Research trends? → /discover (--news or --platform)
+• Reaction angles? → /reaction [topic]
+• Ready to write? → /script [topic]
+• Have a script? → /repurpose to multiply
+• Published? → /published [URL] to close pipeline
+• Track performance? → /feedback [URL]
 
-<b>🔬 CONTENT ENGINE</b>
-/deepsearch [topic] — Full research pipeline
+<b>🔍 DISCOVER &amp; RESEARCH</b>
+/discover — Full content discovery (trending + ideas)
+/discover --news — Hot news scan
+/discover --platform — Cross-platform trends
+/deepsearch [topic] — Deep research pipeline
 /sources [topic] — Curated source list
-/hotnews — What's trending now
-/trending [niche] — Cross-platform trends
 /reaction [topic] — Find reaction-worthy content
+
+<b>✍️ CREATE</b>
+/script [topic] — Full video script (research + AI intelligence)
 /hooks [topic] — Generate scroll-stopping hooks
-/genscript [topic] — Full video script with research
 /titles [topic] — A/B title variants
 /genthumbnail [title] — Thumbnail concepts
 /gencaption [topic] — Instagram caption + hashtags
+/repurpose [topic] — 1 video → Reels + Stories + Tweets
+
+<b>📊 ANALYZE</b>
 /competitor [channel] — Reverse-engineer a channel
 /gaps [niche] — Find content gaps
 /seo [topic] — Keyword analysis
-/repurpose [topic] — 1 video → full ecosystem
 /feedback [url] [views] [ret%] — Log performance
 /report [week|month] — Content performance report
 
-<b>📚 CONTENT LEARNING</b>
-/learnfrom [url] — Analyze a YouTube channel and learn patterns
-/references — List reference channels and knowledge status
-/relearn — Re-analyze all channels and update knowledge
+<b>📚 KNOWLEDGE</b>
+/learnfrom [url] — Learn from a YouTube channel
+/references — List reference channels
+/relearn — Re-analyze all channels
+/addbook Title | Author — Add book to library
+/books — View book library
+/bookidea [topic] — Search books for ideas
 
-<b>📝 VIDEO ANALYSIS</b>
-/transcribe [url] — Extract transcript from any YouTube video
-/studyvideo [url] — Deep study: hooks, structure, ideas, reel cuts
+<b>📝 VIDEO TOOLS</b>
+/transcribe [url] — Extract YouTube transcript
+/studyvideo [url] — Deep study: hooks, structure, reel cuts
+/ideas [date] — View ideas by date
+/ideas saved — View saved ideas
 
 <b>📄 FATURAS</b>
 /amazon [YYYY-MM] [--force] — Recolher faturas Amazon
-/uber [YYYY-MM] [--force] — Recolher faturas Uber (viagens + Eats)
-📸 Send photo of invoice → Auto-files via SSH (or queues if Mac offline)
+/uber [YYYY-MM] [--force] — Recolher faturas Uber
+📸 Send photo of invoice → Auto-files
 
 <b>🔧 SYSTEM</b>
 /help — This menu
 /status — Current state overview
 /clear [domain] — Clear conversation history
-/garminmfa [code] — Submit Garmin MFA verification code
+/garminmfa [code] — Submit Garmin MFA code
 
-💡 You can also just type naturally — I'll route to the right domain.
+💡 Just type naturally — I'll route to the right domain.
 🌐 Portal: http://your-server:8200`;

@@ -1508,7 +1508,7 @@
     }
   }
 
-  async function toggleSprint() {
+  window.toggleSprint = async function() {
     try {
       await apiFetch('/api/override/sprint', { method: 'POST' }).then(r => r.json());
       await pollMissionControl();

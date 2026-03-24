@@ -6,6 +6,7 @@ import type { Context } from 'grammy';
 import { getPipelineStats, advancePipelineStage } from '../agents/pipeline-agent';
 import { getDb } from '../services/database';
 import { escapeHtml } from '../utils/telegram-formatter';
+import { writeSignal } from '../services/intelligence-bus';
 
 export async function handlePipelineStatus(ctx: Context): Promise<void> {
   const stats = getPipelineStats();
@@ -84,13 +85,20 @@ export async function handleEditingStage(ctx: Context): Promise<void> {
 
 export async function handlePublishedStage(ctx: Context): Promise<void> {
   const input = ctx.match?.toString().trim() || '';
-  const parts = input.split(/\s+/);
-  // Last part might be a YouTube URL
-  const youtubeUrl = parts.find(p => p.includes('youtube.com') || p.includes('youtu.be'));
-  const topic = parts.filter(p => p !== youtubeUrl).join(' ');
 
-  if (!topic) {
-    await ctx.reply('Usage: <code>/published [topic] [youtube_url]</code>', { parse_mode: 'HTML' });
+  // Accept: /published [URL] or /published [topic] [URL]
+  const urlMatch = input.match(/(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\S+)/);
+  const youtubeUrl = urlMatch?.[1];
+  const topic = input.replace(youtubeUrl || '', '').trim();
+
+  if (!topic && !youtubeUrl) {
+    await ctx.reply(
+      '🚀 <b>Usage:</b>\n' +
+      '<code>/published [topic] [youtube_url]</code>\n' +
+      '<code>/published https://youtube.com/watch?v=xxx</code>\n\n' +
+      'Marks a pipeline item as published and closes the loop.',
+      { parse_mode: 'HTML' },
+    );
     return;
   }
 
@@ -100,13 +108,78 @@ export async function handlePublishedStage(ctx: Context): Promise<void> {
     videoId = match?.[1];
   }
 
-  const ok = advancePipelineStage(topic, 'published', {
-    youtube_video_id: videoId,
-  });
+  const db = getDb();
+  const publishedAt = new Date().toISOString();
 
-  if (ok) {
-    await ctx.reply(`🚀 <b>${escapeHtml(topic)}</b> marked as <b>published</b>!${videoId ? ` (${videoId})` : ''}`, { parse_mode: 'HTML' });
+  // Try to find matching pipeline item
+  let pipelineItem: any = null;
+  if (videoId) {
+    pipelineItem = db.prepare('SELECT * FROM content_pipeline WHERE youtube_video_id = ?').get(videoId);
+  }
+  if (!pipelineItem && topic) {
+    pipelineItem = db.prepare("SELECT * FROM content_pipeline WHERE topic_title LIKE ? AND stage != 'published' ORDER BY created_at DESC LIMIT 1")
+      .get(`%${topic}%`);
+  }
+
+  if (pipelineItem) {
+    // Update existing item
+    db.prepare(`
+      UPDATE content_pipeline SET stage = 'published', published_url = ?, published_at = ?,
+        youtube_video_id = COALESCE(?, youtube_video_id),
+        stage_history = json_insert(stage_history, '$[#]', json_object('stage', 'published', 'at', ?)),
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(youtubeUrl || null, publishedAt, videoId || null, publishedAt, pipelineItem.id);
+
+    // Calculate time from idea to publish
+    const createdAt = new Date(pipelineItem.created_at).getTime();
+    const publishedMs = new Date(publishedAt).getTime();
+    const daysTaken = Math.round((publishedMs - createdAt) / 86400000);
+
+    // Write intelligence bus signal
+    writeSignal({
+      source_agent: 'pipeline',
+      signal_type: 'content_published',
+      payload: {
+        pipeline_id: pipelineItem.id,
+        title: pipelineItem.topic_title,
+        video_url: youtubeUrl,
+        video_id: videoId,
+        days_to_publish: daysTaken,
+        published_at: publishedAt,
+      },
+    });
+
+    await ctx.reply(
+      `🚀 <b>${escapeHtml(pipelineItem.topic_title)}</b> — Published!\n\n` +
+      `📊 Idea → Published: <b>${daysTaken} days</b>\n` +
+      (youtubeUrl ? `🔗 ${escapeHtml(youtubeUrl)}\n` : '') +
+      `\n✅ Pipeline closed. Performance Agent will track this video.`,
+      { parse_mode: 'HTML' },
+    );
   } else {
-    await ctx.reply('❌ Topic not found in pipeline.', { parse_mode: 'HTML' });
+    // Create retroactively
+    db.prepare(`
+      INSERT INTO content_pipeline (topic_title, stage, published_url, published_at, youtube_video_id, stage_history)
+      VALUES (?, 'published', ?, ?, ?, json_array(json_object('stage', 'published', 'at', ?)))
+    `).run(topic || 'Untitled', youtubeUrl || null, publishedAt, videoId || null, publishedAt);
+
+    writeSignal({
+      source_agent: 'pipeline',
+      signal_type: 'content_published',
+      payload: {
+        title: topic || 'Untitled',
+        video_url: youtubeUrl,
+        video_id: videoId,
+        published_at: publishedAt,
+      },
+    });
+
+    await ctx.reply(
+      `🚀 Published (new entry):\n<b>${escapeHtml(topic || 'Untitled')}</b>\n` +
+      (youtubeUrl ? `🔗 ${escapeHtml(youtubeUrl)}\n` : '') +
+      `\n✅ Created in pipeline as published.`,
+      { parse_mode: 'HTML' },
+    );
   }
 }

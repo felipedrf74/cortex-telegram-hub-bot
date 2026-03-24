@@ -26,7 +26,9 @@ export type SignalType =
   | 'keyword_opportunity'
   | 'pipeline_bottleneck'
   | 'pipeline_capacity'
-  | 'content_sprint_mode';
+  | 'content_sprint_mode'
+  | 'reaction_opportunity'
+  | 'content_published';
 
 export interface AgentSignal {
   id: number;
@@ -69,6 +71,8 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   pipeline_bottleneck: 7 * 24,      // 7 days
   pipeline_capacity: 7 * 24,
   content_sprint_mode: 7 * 24,      // default, can be overridden
+  reaction_opportunity: 48,          // 48 hours — reactions lose value fast
+  content_published: 30 * 24,        // 30 days — for performance tracking
 };
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────

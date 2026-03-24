@@ -13,6 +13,9 @@ import { saveScriptAsDocx } from './video-study';
 import { storeCallback } from '../utils/callback-store';
 import { escapeHtml } from '../utils/telegram-formatter';
 import { InputFile } from 'grammy';
+import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
+import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
+import { readSignals } from './intelligence-bus';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -25,6 +28,7 @@ export interface TopicCandidate {
   niche: string;
   whyNow: string;
   hookIdea: string;
+  angleTag?: string;
 }
 
 // ─── Database helpers ───────────────────────────────────────────────
@@ -36,11 +40,11 @@ export function storeTopicCandidates(
 ): number[] {
   const db = getDb();
   const stmt = db.prepare(
-    `INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+    `INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
   );
   return candidates.map((c) => {
-    const info = stmt.run(c.title, c.niche, format, sourceJob, c.hookIdea, c.whyNow);
+    const info = stmt.run(c.title, c.niche, format, sourceJob, c.hookIdea, c.whyNow, c.angleTag || null);
     return Number(info.lastInsertRowid);
   });
 }
@@ -166,7 +170,7 @@ ${trendingInstr}
   if (tasteBlock) prompt += tasteBlock + '\n';
 
   prompt += `RESPOND ONLY with a JSON array. No extra text before or after the array.
-Each element must have: { "title": "topic title in PT-BR", "niche": "one of: fitness, politics, self-development, trending, running, faith, economics", "whyNow": "why this topic is relevant right now", "hookIdea": "opening hook line in PT-BR (first 3 seconds)" }`;
+Each element must have: { "title": "topic title in PT-BR", "niche": "one of: fitness, politics, self-development, trending, running, faith, economics", "whyNow": "why this topic is relevant right now", "hookIdea": "opening hook line in PT-BR (first 3 seconds)", "angle_tag": "one of: opinion, reaction, how-to, story, myth-bust, comparison, data, framework, listicle, trending-take" }`;
 
   return prompt;
 }
@@ -179,9 +183,42 @@ export async function generateTopicCandidates(
   const systemPrompt = buildTopicSystemPrompt(format, isTrending);
   const today = now();
 
+  // Build enrichment blocks
+  const angleDiversity = buildAngleDiversityBlock();
+
+  // Book knowledge injection (Sprint 3.2)
+  let bookBlock = '';
+  try {
+    const bookSignals = readSignals('content-workflow', ['book_knowledge']);
+    if (bookSignals.length > 0) {
+      const bookLines = bookSignals.slice(0, 5).map((s: any) => {
+        const p = s.payload as any;
+        const fwNames = (p.key_frameworks || []).map((f: any) => f.name).join(', ');
+        return `- "${p.title}" by ${p.author}: ${fwNames}`;
+      });
+      bookBlock = `\n## Book Frameworks Available\nThese intellectual frameworks from your library could seed compelling topics:\n${bookLines.join('\n')}\nConsider generating 1-2 topics that apply these frameworks to current events. Use angle_tag "framework" for these.\n`;
+    }
+  } catch { /* non-critical */ }
+
+  // Discovery cross-pollination (Sprint 2.4)
+  let discoveryBlock = '';
+  try {
+    const eligible = getWorkflowEligibleIdeas();
+    if (eligible.length > 0) {
+      const ideasList = eligible.slice(0, 5).map(i => `- ${i.title}`).join('\n');
+      discoveryBlock = `\n## Pre-Researched Ideas from Daily Discovery\nThese high-scoring ideas were found by the daily trend scanner. Consider including, modifying, or building on them:\n${ideasList}\n`;
+      // Mark promoted
+      for (const idea of eligible.slice(0, 5)) {
+        markIdeaPromoted(idea.id);
+      }
+    }
+  } catch { /* non-critical */ }
+
+  const enrichment = `${angleDiversity}${bookBlock}${discoveryBlock}`;
+
   const userMessage = isTrending
-    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates. Search for what's hot right now across my content pillars. JSON array only.`
-    : `Generate ${count} evergreen ${format} topic candidates across my content pillars. Timeless topics I can record anytime. JSON array only.`;
+    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates. Search for what's hot right now across my content pillars.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche", "whyNow", "hookIdea", "angle_tag".`
+    : `Generate ${count} evergreen ${format} topic candidates across my content pillars. Timeless topics I can record anytime.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche", "whyNow", "hookIdea", "angle_tag".`;
 
   const cachedSystem: Anthropic.TextBlockParam[] = [
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
@@ -228,8 +265,30 @@ export async function generateTopicCandidates(
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]) as TopicCandidate[];
-    return parsed.slice(0, count);
+    const parsed = JSON.parse(jsonMatch[0]) as any[];
+    // Normalize: map angle_tag from various field names Claude might use
+    const candidates: TopicCandidate[] = parsed.slice(0, count).map(c => ({
+      title: c.title || '',
+      niche: c.niche || '',
+      whyNow: c.whyNow || c.why_now || '',
+      hookIdea: c.hookIdea || c.hook_idea || c.hook || '',
+      angleTag: c.angleTag || c.angle_tag || undefined,
+    }));
+
+    // Run dedup on each candidate
+    const deduped: TopicCandidate[] = [];
+    for (const c of candidates) {
+      try {
+        const dup = await isDuplicateIdea(c.title, c.angleTag);
+        if (dup.isDuplicate && dup.confidence > 0.8) {
+          logger.info({ title: c.title, similarTo: dup.similarTo }, 'Workflow topic skipped (duplicate)');
+          continue;
+        }
+      } catch { /* allow through on error */ }
+      deduped.push(c);
+    }
+
+    return deduped;
   } catch (err) {
     logger.error({ err, format }, 'Failed to parse topic candidates JSON');
     return [];
