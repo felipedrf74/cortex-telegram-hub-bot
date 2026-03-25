@@ -29,6 +29,7 @@ import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
+import { runAutoresearch, getScheduledTarget } from './autoresearch';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -89,6 +90,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('reaction_radar',   'Reaction Radar',          '0 6,10,14,18,22 * * *', 'content');
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
+  registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
 
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -522,6 +524,29 @@ export function startScheduler(bot: Bot): void {
     const msg = '🔍 <b>SEO Agent</b> — weekly keyword rank check complete. Use <code>/seorank</code> to see results.';
     for (const userId of config.telegram.allowedUserIds) {
       try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+    }
+  }), { timezone: tz });
+
+  // ── Autoresearch (Sunday 01:00 — rotates through targets) ────────
+  cron.schedule('0 1 * * 0', wrapJob('autoresearch', async () => {
+    const targetId = getScheduledTarget();
+    const onProgress = async (msg: string) => {
+      for (const userId of config.telegram.allowedUserIds) {
+        try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+      }
+    };
+    try {
+      const result = await runAutoresearch(targetId, 3, false, onProgress);
+      const kept = result.rounds.filter(r => r.decision === 'kept').length;
+      const summary = `🔬 <b>Autoresearch: ${targetId}</b>\n\n` +
+        `Score: <b>${(result.finalScore * 100).toFixed(1)}%</b>\n` +
+        `Kept ${kept}/${result.rounds.length} mutations\n` +
+        `Duration: ${(result.totalDurationMs / 1000).toFixed(0)}s`;
+      for (const userId of config.telegram.allowedUserIds) {
+        try { await bot.api.sendMessage(userId, summary, { parse_mode: 'HTML' }); } catch {}
+      }
+    } catch (err) {
+      logger.error({ err, targetId }, 'Scheduled autoresearch failed');
     }
   }), { timezone: tz });
 

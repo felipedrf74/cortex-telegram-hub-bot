@@ -8,7 +8,7 @@ data/
 logs/
 .DS_Store
 .claude/
-prompts/
+# prompts/ — tracked (needed for autoresearch)
 content-engine/.venv/
 content-engine/__pycache__/
 content-engine/data/

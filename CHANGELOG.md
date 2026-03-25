@@ -4,6 +4,41 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.2.0] — 2026-03-25
+
+### Autoresearch — Automated Prompt Optimization (Karpathy Pattern)
+
+Self-improving prompt system that runs an automated loop: execute prompt → score output → mutate prompt → keep or revert → repeat.
+
+#### Phase 1: Prompt Extraction
+- Extracted all 6 system prompts from inline TypeScript to standalone `prompts/*.md` files
+- New `src/utils/prompt-loader.ts` with mtime-based caching, template variable injection, and write-back support
+- Prompts: secretary, content, triathlon, classifier, topic-generation, channel-learner
+- Updated all call sites in `anthropic.ts`, `content-workflow.ts`, `channel-learner.ts`, `garmin-coach.ts`
+
+#### Phase 2: Experiment Tracking
+- New migration `018_autoresearch.sql` with `autoresearch_experiments` table and `autoresearch_summary` view
+- Tracks every round: baseline score, new score, mutation description, prompt diff, decision (kept/reverted), git commit hash
+
+#### Phase 3: Eval Criteria Registry
+- Binary evaluation criteria for all 6 targets (23 criteria total, 22 test inputs)
+- Weighted scoring: critical criteria (1.5x weight) for tool usage, worldview alignment, JSON validity
+- Test inputs with realistic state context (calendar, tasks, Garmin metrics)
+
+#### Phase 4: Core Eval Runner
+- `runAutoresearch()` — full mutation loop with Haiku scoring + Sonnet mutations
+- `runEvalOnly()` — single eval without mutation for benchmarking
+- Automatic git commit on improvement, git revert on regression
+- Early termination at 99%+ score
+- Weekly target rotation by ISO week number
+
+#### Phase 5: Telegram Commands + Scheduler
+- `/autoresearch <target> [rounds] [--dry]` — run optimization with live progress updates
+- `/evalscore <target>` — benchmark current prompt score
+- Weekly cron: Sunday 01:00 Europe/Lisbon, rotating through all 6 targets (3 rounds each)
+
+---
+
 ## [4.1.1] — 2026-03-24
 
 ### Portal Enhancements

@@ -70,6 +70,7 @@ import { recordMessageProcessed } from './portal/telemetry';
 import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePublishedStage } from './commands/pipeline';
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
+import { handleAutoresearch, handleEvalScore } from './commands/autoresearch';
 import fs from 'fs';
 import path from 'path';
 
@@ -1837,6 +1838,10 @@ export function createBot(): Bot {
   bot.command('filmed', async (ctx) => { enqueue(ctx.from!.id, () => handleFilmedStage(ctx)); });
   bot.command('editing', async (ctx) => { enqueue(ctx.from!.id, () => handleEditingStage(ctx)); });
   bot.command('published', async (ctx) => { enqueue(ctx.from!.id, () => handlePublishedStage(ctx)); });
+
+  // ─── Autoresearch Commands ──────────────────────────────────────────
+  bot.command('autoresearch', async (ctx) => { enqueue(ctx.from!.id, () => handleAutoresearch(ctx)); });
+  bot.command('evalscore', async (ctx) => { enqueue(ctx.from!.id, () => handleEvalScore(ctx)); });
 
   // ─── /transcribe — Quick transcript fetch → save as DOCX ───────────
   bot.command('transcribe', async (ctx) => {
@@ -3800,6 +3805,10 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /amazon [YYYY-MM] [--force] — Recolher faturas Amazon
 /uber [YYYY-MM] [--force] — Recolher faturas Uber
 📸 Send photo of invoice → Auto-files
+
+<b>🔬 AUTORESEARCH</b>
+/autoresearch [target] [rounds] [--dry] — Run prompt optimization
+/evalscore [target] — Score current prompt without mutation
 
 <b>🔧 SYSTEM</b>
 /help — This menu

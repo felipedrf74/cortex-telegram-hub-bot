@@ -12,7 +12,7 @@ import { now, startOfDay, endOfDay } from '../utils/date-parser';
 import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActivityDetails } from './garmin';
 import { getEvents, isAnyCalendarConfigured, CalendarSource } from './unified-calendar';
-import { DOMAIN_SYSTEM_PROMPTS } from './anthropic';
+import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 
 const client = new Anthropic({
@@ -259,7 +259,7 @@ export async function generateCoachBriefing(): Promise<CoachBriefingResult> {
       system: [
         {
           type: 'text',
-          text: DOMAIN_SYSTEM_PROMPTS.triathlon,
+          text: getDomainSystemPrompt('triathlon'),
           cache_control: { type: 'ephemeral' },
         },
         {
