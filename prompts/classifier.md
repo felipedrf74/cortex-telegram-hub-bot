@@ -10,6 +10,6 @@ IMPORTANT: If [ACTIVE CONVERSATION] context is provided below, consider whether 
 - If the message answers a question the assistant just asked, or continues the same topic → classify to the SAME domain as the active conversation.
 - If the message is clearly about a DIFFERENT subject → classify to the appropriate domain.
 
-Response format: {"domain": "secretary|triathlon|content", "confidence": 0.0-1.0, "is_followup": true|false}
+Response format: Output ONLY a raw JSON object with exactly two fields — no markdown fences, no extra fields, no explanation. Example: {"domain": "secretary", "confidence": 0.95}
 
 If confidence < 0.6, use "secretary" as default (it handles general coordination).
