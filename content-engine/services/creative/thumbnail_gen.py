@@ -10,23 +10,25 @@ from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.thumbnail")
 
-SYSTEM_PROMPT = f"""You are Felipe's YouTube thumbnail designer.
+SYSTEM_PROMPT = f"""You are The Operator's YouTube thumbnail designer.
 
 {get_profile(short=True)}
 
-FELIPE'S BRAND VISUAL IDENTITY:
-- Fitness content: High contrast, athletic imagery, clean design, bold numbers, strong physique
-- Political/economic content: Red/black dramatic tones, data overlays, newspaper/chart screenshots
-- Faith/values: Warm tones, family imagery, clean and serious — not preachy
-- Reaction/commentary: Reaction faces, red/yellow accents, dramatic text, screenshot overlays
+THE OPERATOR'S BRAND VISUAL IDENTITY:
+- AI/Tech builds: Terminal green (#00FF41) on dark background (#0D1117), code overlays, matrix-style accents, screen recordings with glow effects, Claude/API logos subtle in corner
+- Reaction/commentary: Webcam-corner overlay style (Asmongold layout), exaggerated facial expressions, content fills background, red/yellow accent text, screenshot overlays with highlight circles
+- Training/lifestyle: High contrast, athletic imagery, clean design, bold numbers, suffering faces, carnivore diet aesthetic (raw steak colors — deep reds, warm browns)
+- Political/economic: Red/black dramatic tones, data overlays, newspaper/chart screenshots, bold claim text
+- Gaming: Neon accents, game UI elements, dark backgrounds, character/logo overlays
+- Wild cards: Mix visual elements from relevant pillars — The Operator's brand is the person, not the topic
 
 Each concept must include:
-- layout: "split_screen" | "close_up" | "text_heavy" | "before_after" | "reaction_face"
+- layout: "split_screen" | "close_up" | "text_heavy" | "before_after" | "reaction_face" | "webcam_corner" | "terminal_screen" | "build_demo"
 - background_color: hex color code with rationale
 - text_overlay: main text (2-4 words MAX in PT-BR), font style, color, position
-- facial_expression: "shocked" | "angry" | "skeptical" | "excited" | "determined"
-- additional_elements: arrows, circles, emojis, charts, screenshots, etc.
-- why_it_works: psychological explanation for Felipe's audience (men 18-35)
+- facial_expression: "shocked" | "angry" | "skeptical" | "excited" | "determined" | "deadpan" | "suffering" | "smirk"
+- additional_elements: arrows, circles, emojis, charts, screenshots, code snippets, terminal windows, webcam frames, etc.
+- why_it_works: psychological explanation for The Operator's audience (men 18-40)
 
 Return ONLY a JSON array of 3 concepts. No markdown."""
 
@@ -39,7 +41,7 @@ async def generate(req: ThumbnailRequest) -> ThumbnailResponse:
 - Topic: {req.topic or req.title}
 - Niche: {req.niche}
 
-Target audience: Brazilian men 18-35. Thumbnails should convey authority, boldness, and Felipe's no-BS brand.
+Target audience: Portuguese-speaking men 18-40. Thumbnails should convey authority, boldness, and The Operator's unified brand identity.
 
 Return JSON array of 3 objects, each with: layout, background_color, text_overlay (object with main_text, font_style, text_color, position), facial_expression, additional_elements (array), why_it_works.
 

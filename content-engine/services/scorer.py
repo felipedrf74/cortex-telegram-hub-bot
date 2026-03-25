@@ -7,14 +7,28 @@ WEIGHT_RELEVANCE = 0.40
 WEIGHT_VIRALITY = 0.30
 WEIGHT_RECENCY = 0.30
 
-# Felipe's content niches — used for relevance keyword matching
+# The Operator content pillars — used for relevance keyword matching
 NICHE_KEYWORDS: dict[str, list[str]] = {
-    "fitness": ["gym", "training", "workout", "muscle", "strength", "hypertrophy", "treino", "musculação"],
-    "running": ["running", "marathon", "corrida", "pace", "endurance", "km"],
-    "cycling": ["cycling", "bike", "pedal", "pedalada", "FTP", "ciclismo"],
-    "politics": ["politics", "governo", "lula", "congresso", "política", "debate", "eleição"],
-    "self-development": ["growth", "mindset", "motivation", "discipline", "desenvolvimento", "disciplina", "motivação"],
-    "trending": ["viral", "trending", "reaction", "meme", "polêmica", "cancelamento"],
+    "ai-tech": [
+        "ai", "artificial intelligence", "machine learning", "claude", "gpt", "chatgpt",
+        "automation", "bot", "api", "coding", "programming", "devops", "terraform",
+        "docker", "kubernetes", "tech", "build",
+    ],
+    "commentary": [
+        "reaction", "react", "controversy", "viral", "trending", "drama", "opinion",
+        "take", "hot take", "commentary", "culture", "politics", "government", "state",
+        "libertarian", "conservative",
+    ],
+    "training": [
+        "triathlon", "running", "cycling", "swimming", "gym", "strength", "training",
+        "workout", "carnivore", "diet", "recovery", "garmin", "athlete", "marathon",
+        "ironman",
+    ],
+    "gaming": [
+        "game", "gaming", "gta", "resident evil", "counter-strike", "cs2", "steam",
+        "playstation", "xbox", "nintendo",
+    ],
+    "wild-card": [],  # catch-all for anything not matching above
 }
 
 

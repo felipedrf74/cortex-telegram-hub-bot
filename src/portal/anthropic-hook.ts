@@ -51,7 +51,24 @@ export async function trackedCreate(
   category: string,
 ): Promise<Anthropic.Message> {
   const start = Date.now();
-  const response = await client.messages.create(params);
+
+  // Use streaming for long operations: high max_tokens or Sonnet model
+  // The Anthropic SDK requires stream:true for operations that may take 10+ minutes
+  const isSonnet = params.model.includes('sonnet');
+  const isLargeRequest = params.max_tokens >= 4096;
+  const useStreaming = isSonnet || isLargeRequest;
+
+  let response: Anthropic.Message;
+  if (useStreaming) {
+    const stream = await client.messages.stream({
+      ...params,
+      stream: true,
+    });
+    response = await stream.finalMessage();
+  } else {
+    response = await client.messages.create(params);
+  }
+
   const durationMs = Date.now() - start;
   const usage = response.usage;
   const cost = computeCost(params.model, usage);

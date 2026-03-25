@@ -46,14 +46,23 @@ async def ask_claude(
         "content-type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        resp = await client.post(ANTHROPIC_URL, json=body, headers=headers)
-        resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        try:
+            resp = await client.post(ANTHROPIC_URL, json=body, headers=headers)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error("Claude API HTTP error %d: %s", e.response.status_code, e.response.text[:300])
+            raise
+        except httpx.TimeoutException:
+            logger.error("Claude API timeout after 300s for model=%s max_tokens=%d", model, max_tokens)
+            raise
         data = resp.json()
 
     # Extract text from first content block
     content_blocks = data.get("content", [])
     text_parts = [b["text"] for b in content_blocks if b.get("type") == "text"]
+    if not text_parts:
+        logger.warning("Claude returned no text blocks: %s", str(data)[:300])
     return "\n".join(text_parts)
 
 

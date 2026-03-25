@@ -15,9 +15,10 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
-const IDEAS_DIR = path.join(process.env.HOME || '/home/dominguez', 'Desktop', 'IDEAS', 'SCRIPTS');
+const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS', 'SCRIPTS');
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey, maxRetries: 2 });
 

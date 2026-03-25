@@ -774,6 +774,21 @@ async function serializedAuthRecovery(): Promise<boolean> {
   return _authRecoveryPromise;
 }
 
+/** Data endpoints where 404 means "no data" (not an auth failure) */
+const DATA_ENDPOINTS_404_OK = [
+  '/wellness-service/',
+  '/workout-service/schedule/',
+  '/workout-service/api/trainingplan/',
+  '/hrv-service/',
+  '/metrics-service/',
+  '/sleep-service/',
+];
+
+/** Check if a URL is a data endpoint (not an auth endpoint) */
+function isDataEndpoint(url: string): boolean {
+  return DATA_ENDPOINTS_404_OK.some(prefix => url.includes(prefix));
+}
+
 async function safeGet<T = unknown>(url: string): Promise<T> {
   const client = await getClient();
   try {
@@ -782,6 +797,19 @@ async function safeGet<T = unknown>(url: string): Promise<T> {
     return result;
   } catch (err: unknown) {
     const status = extractErrorStatus(err);
+
+    // 404 on data endpoints = no data available (not an auth failure)
+    if (status === 404 && isDataEndpoint(url)) {
+      logger.debug({ status, url: url.split('?')[0] }, 'Garmin: data endpoint returned 404, treating as empty');
+      return null as T;
+    }
+
+    // 403 on data endpoints = likely permission/feature issue, NOT auth failure
+    if (status === 403 && isDataEndpoint(url)) {
+      logger.debug({ status, url: url.split('?')[0] }, 'Garmin: data endpoint returned 403, treating as empty (not auth failure)');
+      return null as T;
+    }
+
     if (status === 401 || status === 403) {
       logger.warn({ status, url: url.split('?')[0] }, 'Garmin: auth error, waiting for serialized recovery');
 

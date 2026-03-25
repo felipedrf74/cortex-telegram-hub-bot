@@ -16,6 +16,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } from 'docx';
 import { config } from '../config';
@@ -527,7 +528,7 @@ export function formatTranscriptMessage(transcript: TranscriptResult): string {
 
 // ─── DOCX Export ─────────────────────────────────────────────────────
 
-export const IDEAS_DIR = '/home/dominguez/Desktop/IDEAS';
+export const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS');
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9_\-.\s]/g, '').replace(/\s+/g, '_').substring(0, 80);

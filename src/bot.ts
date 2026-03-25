@@ -1940,6 +1940,165 @@ export function createBot(): Bot {
     });
   });
 
+  // ─── /reel — Generate a Reel/Short script with SFX + editing cues ──
+  bot.command('reel', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const topic = ctx.match?.toString().trim();
+      if (!topic) {
+        await ctx.reply(
+          '🎬 <b>Usage:</b> <code>/reel &lt;topic&gt;</code>\n\n' +
+          'Generates a 30-60s Reel/Short script with [SFX:] markers, [EDIT:] cues, and timing marks.\n\n' +
+          'Examples:\n' +
+          '  <code>/reel 3 erros no jejum intermitente</code>\n' +
+          '  <code>/reel por que acordar às 5h é golpe</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      await ctx.reply('🎬 Generating Reel script… ~30s (research + writing).', { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getScript(topic, 'general', 1, 'Reel');
+        clearInterval(typingInterval);
+        const msg = formatScript(result);
+        await sendOrSave(ctx, msg, 'reel', topic, true);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Reel script generation failed');
+        await ctx.reply(`❌ Reel script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /buildscript — Generate a Build Log script for tech/AI projects ──
+  bot.command('buildscript', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isContentEngineConfigured()) { await ctx.reply('⚠️ Content Engine not enabled.'); return; }
+      const project = ctx.match?.toString().trim();
+      if (!project) {
+        await ctx.reply(
+          '🛠️ <b>Usage:</b> <code>/buildscript &lt;project&gt;</code>\n\n' +
+          'Generates a Build Log script (Hook → Problem → Build → Result) with screen recording cues.\n\n' +
+          'Examples:\n' +
+          '  <code>/buildscript telegram bot que agenda treinos</code>\n' +
+          '  <code>/buildscript AI agent que analisa concorrentes</code>',
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+      await ctx.reply('🛠️ Generating Build Log script… ~30-60s (research + writing).', { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const result = await getScript(project, 'general', 2, 'Build');
+        clearInterval(typingInterval);
+        const msg = formatScript(result);
+        await sendOrSave(ctx, msg, 'buildscript', project, true);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Build script generation failed');
+        await ctx.reply(`❌ Build script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /calendar — Generate a content calendar for the next week/month ──
+  bot.command('calendar', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      const period = ctx.match?.toString().trim() || 'week';
+      const days = period.toLowerCase().startsWith('month') ? 30 : 7;
+      await ctx.reply(`📅 Generating ${days}-day content calendar…`, { parse_mode: 'HTML' });
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const calendarPrompt =
+          `Generate a content calendar for the next ${days} days for a Brazilian creator named Felipe "The Operator" Dominguez.\n\n` +
+          `PILLARS (rotate evenly across all days):\n` +
+          `🤖 AI/Tech — builds, automations, AI tools\n` +
+          `🗣️ Commentary — politics, culture, hot takes\n` +
+          `💪 Training — triathlon, carnivore diet, fitness\n` +
+          `🎮 Gaming — Helldivers, game reviews\n` +
+          `🃏 Wild Card — memes, personal stories, collabs\n\n` +
+          `For each day provide EXACTLY this format (one line per day):\n` +
+          `DAY | PILLAR_EMOJI | TOPIC | FORMAT | TIME_SENSITIVITY\n\n` +
+          `FORMAT must be one of: Reel, YouTube, Both\n` +
+          `TIME_SENSITIVITY must be: 🔥 (urgent/trending) or ⏳ (evergreen)\n\n` +
+          `Rules:\n` +
+          `- Each pillar appears at least once per week\n` +
+          `- Mix Reels and YouTube formats (not all the same)\n` +
+          `- Topics should be specific and actionable, not generic\n` +
+          `- Start from tomorrow's date\n` +
+          `- Output as HTML table with <b> tags for headers\n` +
+          `- Language: PT-BR for topics`;
+
+        const contentResponse = await handleContent(calendarPrompt, 4096);
+        clearInterval(typingInterval);
+        const msg = `📅 <b>CONTENT CALENDAR — Next ${days} days</b>\n\n${contentResponse.text}`;
+        await sendOrSave(ctx, msg, 'calendar', `${days}-day-plan`);
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Calendar generation failed');
+        await ctx.reply(`❌ Calendar failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
+  // ─── /brandcheck — Analyze recent content for pillar balance ──────
+  bot.command('brandcheck', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      await ctx.replyWithChatAction('typing');
+      const typingInterval = setInterval(() => { ctx.replyWithChatAction('typing').catch(() => {}); }, 4000);
+      try {
+        const db = getDb();
+        // Query last 30 days of content topics by niche
+        const rows = db.prepare(`
+          SELECT niche, COUNT(*) as cnt, sentiment,
+                 GROUP_CONCAT(topic, ' | ') as topics
+          FROM content_topic_feedback
+          WHERE created_at > datetime('now', '-30 days')
+          GROUP BY niche, sentiment
+          ORDER BY cnt DESC
+        `).all() as Array<{ niche: string; cnt: number; sentiment: string; topics: string }>;
+
+        if (rows.length === 0) {
+          clearInterval(typingInterval);
+          await ctx.reply(
+            '📊 <b>Brand Check</b>\n\nNo content topics found in the last 30 days.\n' +
+            'Use <code>/contenttopic</code> to generate topic candidates first.',
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        // Build a summary for Claude to analyze
+        let dataSummary = 'Content topics from the last 30 days by niche and sentiment:\n\n';
+        for (const row of rows) {
+          dataSummary += `- ${row.niche || 'unknown'} (${row.sentiment}): ${row.cnt} topics\n`;
+          dataSummary += `  Examples: ${row.topics.split(' | ').slice(0, 3).join(', ')}\n`;
+        }
+
+        const analysisPrompt =
+          `You are a content strategist analyzing pillar balance for Felipe "The Operator" Dominguez.\n\n` +
+          `His 5 pillars are:\n` +
+          `🤖 AI/Tech\n🗣️ Commentary/Politics\n💪 Training/Fitness\n🎮 Gaming\n🃏 Wild Card\n\n` +
+          `Here is the actual data from the last 30 days:\n${dataSummary}\n\n` +
+          `Provide:\n` +
+          `1. A brief analysis of which pillars are OVER-represented and which are UNDER-represented\n` +
+          `2. A "balance score" from 1-10 (10 = perfectly balanced)\n` +
+          `3. Exactly 3 specific topic suggestions for each underrepresented pillar\n\n` +
+          `Format as clean HTML with <b> tags for headers. Be direct and actionable. Language: PT-BR.`;
+
+        const contentResponse = await handleContent(analysisPrompt, 4096);
+        clearInterval(typingInterval);
+        const msg = `📊 <b>BRAND CHECK — Pillar Balance (30 days)</b>\n\n${contentResponse.text}`;
+        await sendOrSave(ctx, msg, 'brandcheck', 'pillar-analysis');
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Brand check failed');
+        await ctx.reply(`❌ Brand check failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      }
+    });
+  });
+
   // ─── /repurpose — Upload a script .docx → multi-format content ─────
   bot.command('repurpose', async (ctx) => {
     enqueue(ctx.from!.id, async () => {

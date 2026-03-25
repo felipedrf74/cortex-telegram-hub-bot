@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { Bot, InlineKeyboard } from 'grammy';
 import { config } from '../config';
@@ -20,7 +21,7 @@ import { loadPromptWithVars } from '../utils/prompt-loader';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-const IDEAS_DIR = path.join(process.env.HOME || '/home/dominguez', 'Desktop', 'IDEAS');
+const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS');
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -110,8 +111,8 @@ export function buildTasteProfileBlock(): string {
   // Summary stats
   const approvedNiches = [...new Set(approved.map((r) => r.niche).filter(Boolean))];
   const rejectedNiches = [...new Set(rejected.map((r) => r.niche).filter(Boolean))];
-  block += `\nPreferred niches: ${approvedNiches.join(', ') || 'varied'}`;
-  block += `\nAvoided niches: ${rejectedNiches.join(', ') || 'none'}\n`;
+  block += `\nPreferred pillars: ${approvedNiches.join(', ') || 'varied'}`;
+  block += `\nAvoided pillars: ${rejectedNiches.join(', ') || 'none'}\n`;
 
   return block;
 }
@@ -180,8 +181,8 @@ export async function generateTopicCandidates(
   const enrichment = `${angleDiversity}${bookBlock}${discoveryBlock}`;
 
   const userMessage = isTrending
-    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates. Search for what's hot right now across my content pillars.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche", "whyNow", "hookIdea", "angle_tag".`
-    : `Generate ${count} evergreen ${format} topic candidates across my content pillars. Timeless topics I can record anytime.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche", "whyNow", "hookIdea", "angle_tag".`;
+    ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for The Operator brand. Search for what's hot right now across all pillars (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`
+    : `Generate ${count} evergreen ${format} topic candidates for The Operator brand. Timeless topics across any pillar (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Follow genuine interest, not quotas.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`;
 
   const cachedSystem: Anthropic.TextBlockParam[] = [
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
@@ -264,7 +265,7 @@ export async function generateReelScript(topic: TopicCandidate): Promise<string>
   const prompt = `Write a complete 30-60 second Instagram Reel / YouTube Short script in PT-BR.
 
 Topic: "${topic.title}"
-Niche: ${topic.niche}
+Pillar: ${topic.niche}
 Context: ${topic.whyNow}
 Opening hook idea: "${topic.hookIdea}"
 
@@ -274,10 +275,13 @@ Structure:
 📢 CTA (last 5-10s): What should the viewer do? Follow, comment, share?
 
 Rules:
-- Write in PT-BR (Brazilian Portuguese)
-- Conversational and authentic tone
+- Write in PT-BR (Brazilian Portuguese) — sound like how Felipe actually talks, not formal
+- Conversational and authentic tone, The Operator energy
 - Short sentences, high energy
-- Include [PAUSE], [CORTE], [ZOOM] editing cues where impactful`;
+- Include [SFX:name] markers (1 every 12-15s): Vine Boom, FAHHH, Metal Pipe, Bruh, Sad Violin, Emotional Damage, He He He Ha, Among Us, Windows Error, Record Scratch, Goofy Ahh, Womp Womp
+- Include [EDIT:technique] markers: zoom punch, hard cut to black, speed ramp, text popup, deadpan stare, repeat x3, chaos layering
+- Include [SHOW ON SCREEN: ...] markers for any sources, screenshots, or data
+- Include [PAUSE] for dramatic timing`;
 
   const result = await handleContent(prompt, 4096);
   return result.text;
@@ -287,7 +291,7 @@ export async function generateYouTubeScript(topic: TopicCandidate): Promise<stri
   const prompt = `Write a complete YouTube video script in PT-BR (8-15 min).
 
 Topic: "${topic.title}"
-Niche: ${topic.niche}
+Pillar: ${topic.niche}
 Context: ${topic.whyNow}
 Opening hook idea: "${topic.hookIdea}"
 
@@ -302,11 +306,14 @@ Include ALL of these sections:
 Also provide:
 📌 5 TITLE OPTIONS (PT-BR, SEO-friendly, curiosity-driven)
 🖼️ THUMBNAIL CONCEPT (visual description: text overlay, expression, colors)
+📋 SOURCE BRIEF — what external material is referenced, who said it, links
 
 Rules:
-- All in PT-BR (Brazilian Portuguese)
-- Authentic, conversational, motivational tone
-- Include [SHOW ON SCREEN], [CORTE], [B-ROLL] markers
+- All in PT-BR (Brazilian Portuguese) — sound like how Felipe actually talks, The Operator energy
+- Authentic, conversational tone with meme energy where appropriate
+- Include [SFX:name] markers (2-3 per minute): Vine Boom, FAHHH, Metal Pipe, Bruh, Sad Violin, Emotional Damage, He He He Ha, Among Us, Windows Error, Record Scratch, Goofy Ahh, Womp Womp
+- Include [EDIT:technique] markers: zoom punch, hard cut to black, speed ramp, text popup, deadpan stare, repeat x3, chaos layering
+- Include [SHOW ON SCREEN: ...] markers for sources, screenshots, data points
 - Include [PAUSE] markers for dramatic effect
 - Short paragraphs, easy to read on teleprompter`;
 
@@ -358,7 +365,7 @@ export async function sendTopicCandidates(
 
     const msg = `${headerEmoji} <b>Topic ${i + 1} of ${candidates.length}</b>\n\n` +
       `📌 <b>${escapeHtml(c.title)}</b>\n` +
-      `🎯 Niche: ${escapeHtml(c.niche)}\n` +
+      `🎯 Pillar: ${escapeHtml(c.niche)}\n` +
       `🎣 Hook: <i>"${escapeHtml(c.hookIdea)}"</i>\n` +
       `⏰ Why now: ${escapeHtml(c.whyNow)}`;
 

@@ -4,6 +4,35 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.3.0] — 2026-03-25
+
+### "The Operator" Unified Brand + Bug Fixes + New Commands
+
+#### Brand Evolution
+- Replaced niche-based content system with unified "The Operator" identity
+- New creator profile: AI/Tech (35%), Commentary/Reactions (30%), Training/Lifestyle (20%), Gaming (5%), Wild Cards (10%)
+- Asmongold-style recording + Gen Z meme editing as signature style
+- All scripts now include `[SFX:name]`, `[EDIT:technique]`, `[SHOW ON SCREEN:]` markers
+- SFX library: Vine Boom, FAHHH, Metal Pipe, Bruh, Sad Violin, Emotional Damage, Among Us, etc.
+- Updated: creator_profile.py, script_writer.py, hook_generator.py, caption_writer.py, repurpose_engine.py, thumbnail_gen.py, scorer.py
+- Updated prompts: content.md, topic-generation.md
+- Updated: content-workflow.ts pillar system
+
+#### Bug Fixes
+- **CRITICAL**: Added streaming mode for Anthropic API calls >4096 tokens / Sonnet model (prevents 10+ min timeout crashes)
+- **HIGH**: Garmin 403/404 on wellness/workout endpoints now return empty data instead of triggering MFA recovery loops
+- **HIGH**: Content-engine `/gaps` endpoint — added error handling for non-JSON Claude responses + increased timeout to 300s
+- **MEDIUM**: Dedup API rate limiting — added exponential backoff (1s/2s/4s, 3 retries) + 5-min in-memory cache
+- **LOW**: Fixed hardcoded `/home/dominguez` paths in 3 files → uses `os.homedir()` consistently
+
+#### New Commands
+- `/reel [topic]` — Generate Reel/Short script with SFX markers and timing
+- `/buildscript [project]` — Build log script (Hook → Problem → Build → Result)
+- `/calendar [period]` — AI content calendar balanced across pillars (week/month)
+- `/brandcheck` — Analyze last 30 days of content for pillar balance + suggestions
+
+---
+
 ## [4.2.0] — 2026-03-25
 
 ### Autoresearch — Automated Prompt Optimization (Karpathy Pattern)

@@ -13,6 +13,54 @@ interface DedupResult {
   confidence: number;
 }
 
+// ─── In-memory cache to avoid re-checking the same idea within 5 minutes ───
+const dedupCache = new Map<string, { result: DedupResult; expiresAt: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getCacheKey(idea: string, angle?: string): string {
+  return `${idea.toLowerCase().trim()}|${angle ?? ''}`;
+}
+
+function getCached(key: string): DedupResult | null {
+  const entry = dedupCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    dedupCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCache(key: string, result: DedupResult): void {
+  dedupCache.set(key, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+  // Evict expired entries periodically (keep cache small)
+  if (dedupCache.size > 200) {
+    const now = Date.now();
+    for (const [k, v] of dedupCache) {
+      if (now > v.expiresAt) dedupCache.delete(k);
+    }
+  }
+}
+
+/**
+ * Fetch with exponential backoff on 429 responses.
+ * Retries up to 3 times with delays of 1s, 2s, 4s.
+ */
+async function fetchWithBackoff(url: string, init: RequestInit, maxRetries = 3): Promise<Response> {
+  let lastResp: Response | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(url, init);
+    if (resp.status !== 429 || attempt === maxRetries) {
+      return resp;
+    }
+    lastResp = resp;
+    const delayMs = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+    logger.warn({ attempt: attempt + 1, delayMs }, 'Dedup API rate-limited (429), backing off');
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+  return lastResp!;
+}
+
 /**
  * Check if a new idea is semantically similar to recent ideas (last 14 days).
  * Two ideas about the SAME topic with DIFFERENT angles are NOT duplicates.
@@ -21,6 +69,14 @@ export async function isDuplicateIdea(
   newIdea: string,
   angleTag?: string,
 ): Promise<DedupResult> {
+  // Check in-memory cache first
+  const cacheKey = getCacheKey(newIdea, angleTag);
+  const cached = getCached(cacheKey);
+  if (cached) {
+    logger.debug({ newIdea }, 'Dedup cache hit');
+    return cached;
+  }
+
   const db = getDb();
 
   // Gather recent ideas from both tables
@@ -40,7 +96,9 @@ export async function isDuplicateIdea(
 
   // If fewer than 3 recent ideas, skip dedup (not enough data)
   if (existingIdeas.length < 3) {
-    return { isDuplicate: false, similarTo: null, confidence: 0 };
+    const result: DedupResult = { isDuplicate: false, similarTo: null, confidence: 0 };
+    setCache(cacheKey, result);
+    return result;
   }
 
   const ideasList = existingIdeas
@@ -59,7 +117,7 @@ Example: "Por que o estado é seu inimigo" (opinion) and "Reação: nova lei do 
 Respond with JSON only: { "isDuplicate": boolean, "similarTo": string | null, "confidence": number }`;
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const resp = await fetchWithBackoff('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': config.anthropic.apiKey,
@@ -87,6 +145,9 @@ Respond with JSON only: { "isDuplicate": boolean, "similarTo": string | null, "c
     if (result.isDuplicate && result.confidence > 0.8) {
       logger.info({ newIdea, similarTo: result.similarTo, confidence: result.confidence }, 'Duplicate idea detected');
     }
+
+    // Cache the result
+    setCache(cacheKey, result);
 
     return result;
   } catch (err) {

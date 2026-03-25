@@ -84,8 +84,23 @@ identify the top {req.max_gaps} content gaps — topics where there's demand but
 
 Return JSON array of gap objects with: topic, gap_type, search_demand, existing_content_quality, opportunity_score, suggested_angle, suggested_title."""
 
-    gaps = await ask_claude_json(prompt, system=SYSTEM_PROMPT)
-    gaps_list = gaps if isinstance(gaps, list) else [gaps]
+    try:
+        gaps = await ask_claude_json(prompt, system=SYSTEM_PROMPT)
+    except Exception as e:
+        logger.error("Claude call failed in gap_finder: %s", e)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return GapsResponse(
+            niche=req.niche,
+            gaps=[{"topic": "Analysis unavailable", "gap_type": "error", "error": str(e)}],
+            duration_ms=duration_ms,
+        )
+
+    # Handle non-JSON / malformed response
+    if isinstance(gaps, dict) and "raw" in gaps and len(gaps) == 1:
+        logger.warning("Claude returned non-JSON in gap_finder, raw: %s", str(gaps.get("raw", ""))[:200])
+        gaps_list = []
+    else:
+        gaps_list = gaps if isinstance(gaps, list) else [gaps]
 
     duration_ms = int((time.monotonic() - start) * 1000)
     return GapsResponse(

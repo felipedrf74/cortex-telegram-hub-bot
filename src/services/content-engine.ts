@@ -29,11 +29,13 @@ const COMMAND_FOLDERS: Record<string, string> = {
   titles: 'IDEAS',
   video: 'IDEAS',
   reel: 'IDEAS',
+  calendar: 'IDEAS',
   contenttopic: 'IDEAS',
   studyvideo: 'IDEAS',
   // SCRIPTS — production-ready scripts & repurpose
   genscript: 'SCRIPTS',
   script: 'SCRIPTS',
+  buildscript: 'SCRIPTS',
   repurpose: 'SCRIPTS',
   // VISUALS — thumbnails & captions
   genthumbnail: 'VISUALS',
@@ -42,6 +44,7 @@ const COMMAND_FOLDERS: Record<string, string> = {
   competitor: 'REPORTS',
   gaps: 'REPORTS',
   seo: 'REPORTS',
+  brandcheck: 'REPORTS',
   feedback: 'REPORTS',
   report: 'REPORTS',
 };
@@ -417,7 +420,7 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
   }, 45_000);
 }
 
-export async function getScript(topic: string, niche = 'general', maxDuration = 8): Promise<ScriptResponse> {
+export async function getScript(topic: string, niche = 'general', maxDuration = 8, format = 'YouTube'): Promise<ScriptResponse> {
   // Query intelligence bus for context signals
   let contextSignals: any[] = [];
   try {
@@ -441,7 +444,7 @@ export async function getScript(topic: string, niche = 'general', maxDuration = 
   return engineFetch<ScriptResponse>('/script', {
     method: 'POST',
     body: JSON.stringify({
-      topic, niche,
+      topic, niche, format,
       max_duration_minutes: maxDuration,
       context_signals: contextSignals.length > 0 ? contextSignals : undefined,
     }),
