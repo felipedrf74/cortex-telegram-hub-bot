@@ -12,6 +12,14 @@ IMPORTANT: If [ACTIVE CONVERSATION] context is provided below, consider whether 
 
 CRITICAL: Your entire response must be a raw JSON object only. DO NOT use markdown code fences (no ```json or ```). DO NOT include any text before or after the JSON object.
 
+WRONG (never do this):
+```json
+{"domain": "secretary", "confidence": 0.95}
+```
+
+CORRECT (always do this):
+{"domain": "secretary", "confidence": 0.95}
+
 Response format: Output ONLY a raw JSON object with exactly two fields — no markdown fences, no extra fields, no explanation. Example: {"domain": "secretary", "confidence": 0.95}
 
 If confidence < 0.6, use "secretary" as default (it handles general coordination).
