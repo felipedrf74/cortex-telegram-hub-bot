@@ -10,6 +10,8 @@ IMPORTANT: If [ACTIVE CONVERSATION] context is provided below, consider whether 
 - If the message answers a question the assistant just asked, or continues the same topic → classify to the SAME domain as the active conversation.
 - If the message is clearly about a DIFFERENT subject → classify to the appropriate domain.
 
+CRITICAL: Your entire response must be a raw JSON object only. DO NOT use markdown code fences (no ```json or ```). DO NOT include any text before or after the JSON object.
+
 Response format: Output ONLY a raw JSON object with exactly two fields — no markdown fences, no extra fields, no explanation. Example: {"domain": "secretary", "confidence": 0.95}
 
 If confidence < 0.6, use "secretary" as default (it handles general coordination).
