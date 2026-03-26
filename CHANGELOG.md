@@ -4,6 +4,38 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.4.0] — 2026-03-26
+
+### Content Accuracy Framework — Anti-Hallucination System
+
+#### Fact-Verification Layer
+- All scripts now pass through mandatory fact-grounding rules embedded in system prompts
+- Script writer enforces `[VERIFIED: source]`, `[TAKE]`, and `[NEEDS VERIFICATION]` inline tags
+- Research context now includes full source URLs so Claude can reference them in scripts
+- Every script ends with `📋 FONTES VERIFICADAS` section listing verified sources + alerts
+
+#### Source Registry (`source_registry.py`)
+- Tier 1: Official primary sources (TSE, STF, Planalto, PubMed, Cochrane, Reuters, AP)
+- Tier 2: Reputable journalism (Folha, Estadão, G1, BBC Brasil, Bloomberg)
+- Fact-checkers: Agência Lupa, Aos Fatos, AFP Checamos, Reuters Fact Check
+- Tier REJECT list: anonymous channels, partisan blogs, content farms
+- High-risk category classifier: political_status, legal_outcome, election_data, economic_statistics, health_claims, person_status, recent_events
+
+#### Automatic Verification Queries
+- `get_verification_queries()` detects political, economic, and health keywords in topics
+- Adds targeted verification queries to deep_search (e.g. `site:tse.jus.br`, `site:portal.stf.jus.br`)
+- Political topics get 2 extra verification queries, economic get 2, health get 2
+
+#### Content Prompt Updates
+- `prompts/content.md` updated with non-negotiable accuracy section
+- `script_writer.py` system prompt includes full accuracy rules + FONTES format
+- All factual claims must come from RESEARCH FINDINGS, never from LLM memory
+- Opinions tagged `[TAKE]` so Felipe knows what's commentary vs. verified fact
+
+Triggered by: Bolsonaro 2026 election hallucination incident where LLM stated he would run despite being legally barred until 2030.
+
+---
+
 ## [4.3.0] — 2026-03-25
 
 ### "The Operator" Unified Brand + Bug Fixes + New Commands

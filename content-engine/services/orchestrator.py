@@ -86,13 +86,18 @@ class ResearchOrchestrator:
 
         start = time.monotonic()
 
-        # Phase 1: Wide search — query + variations for depth
+        # Phase 0: Add verification queries for high-risk topics
+        from services.source_registry import get_verification_queries
+        verification_queries = get_verification_queries(query)
+
+        # Phase 1: Wide search — query + variations for depth + verification
         search_variations = [
             query,
             f"{query} dados estatísticas números Brasil",
             f"{query} opinião análise crítica",
             f"{query} polêmica debate consequências",
             f"{query} YouTube vídeo viral tendência",
+            *verification_queries,  # Add targeted verification queries
         ]
 
         var_tasks = [self._fan_out(q, max_per_searcher=5) for q in search_variations]

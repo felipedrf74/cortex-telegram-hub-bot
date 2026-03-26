@@ -119,7 +119,37 @@ RULES:
 - For reaction scripts: [PLAY CLIP: timestamp-timestamp]
 - Never use filler — every sentence must earn its place
 - End with a thought that makes the viewer think or feel
-- The Operator doesn't hedge — commit to the take"""
+- The Operator doesn't hedge — commit to the take
+
+CRITICAL CONTENT ACCURACY RULES:
+
+1. NEVER state a person's current legal/political/professional status from memory.
+   ONLY use facts from the RESEARCH FINDINGS provided below.
+
+2. For ANY claim about:
+   - Who holds a political position → ONLY use from research, tag [VERIFIED: source]
+   - Whether someone can/will run for election → ONLY use from research, tag [VERIFIED: source]
+   - Court decisions, sentences, legal status → ONLY use from research, tag [VERIFIED: source]
+   - Statistics, poll numbers, economic data → ONLY use from research, tag [VERIFIED: source]
+   - Scientific/health claims → ONLY use from research, tag [VERIFIED: source]
+
+3. If a claim cannot be found in the RESEARCH FINDINGS, DO NOT include it.
+   Replace with: [NEEDS VERIFICATION: <claim>]
+
+4. Separate FACTS from TAKES clearly:
+   - FACT (needs source): "Bolsonaro está inelegível até 2030 [VERIFIED: TSE]"
+   - TAKE (no source needed): "Isso muda completamente o jogo da direita"
+   Mark opinions with [TAKE] so Felipe knows what's commentary vs. fact.
+
+5. When discussing trending topics, ONLY reference information from the research findings.
+   NEVER assume that because something was true in your training data, it is still true today.
+
+6. At the END of every script, include a FONTES section:
+   ---
+   📋 FONTES VERIFICADAS:
+   1. [Claim] — [Source from research] — [URL if available]
+   ⚠️ ALERTAS: [Any claims marked NEEDS VERIFICATION]
+   ---"""
 
 
 async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
@@ -129,12 +159,18 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     research = await orchestrator.deep_search(req.topic, max_results=5)
     briefs = research.briefs
 
-    # Build research context for Claude
+    # Build research context for Claude — include full details + source URLs for fact verification
     research_context = ""
     sources_used: list[SourceReference] = []
-    for b in briefs[:5]:
-        research_context += f"- {b.title}: {b.why_now[:150]}\n"
-        sources_used.extend(b.sources)
+    for i, b in enumerate(briefs[:5], 1):
+        research_context += f"\n[RESEARCH {i}] {b.title}\n"
+        research_context += f"  Summary: {b.why_now[:300]}\n"
+        if hasattr(b, 'key_points') and b.key_points:
+            for kp in b.key_points[:3]:
+                research_context += f"  • {kp}\n"
+        for src in b.sources[:3]:
+            research_context += f"  SOURCE: {src.title} — {src.url}\n"
+            sources_used.append(src)
 
     # Estimated duration mapping
     duration_map = {
@@ -208,8 +244,16 @@ FORMAT: {req.format}
 TARGET DURATION: {est_duration}
 LANGUAGE: {req.language}
 
-RESEARCH FINDINGS:
+VERIFIED RESEARCH FINDINGS (USE ONLY THESE AS FACTUAL BASIS):
 {research_context}{intelligence_block}
+
+ACCURACY INSTRUCTIONS:
+- ONLY use facts that appear in the RESEARCH FINDINGS above.
+- Tag factual claims with [VERIFIED: source name] inline.
+- Tag your opinions/commentary with [TAKE] so Felipe knows what's fact vs. opinion.
+- If you want to make a claim NOT found in research, mark it [NEEDS VERIFICATION: claim].
+- DO NOT invent statistics, poll numbers, dates, legal outcomes, or people's current status.
+- At the end, include a FONTES VERIFICADAS section listing sources used.
 
 Also provide:
 1. A killer hook (first line of the script)
@@ -220,7 +264,14 @@ After the script, on separate lines write:
 HOOK: [the hook text]
 TITLE1: [first title option]
 TITLE2: [second title option]
-TITLE3: [third title option]"""
+TITLE3: [third title option]
+
+Then include:
+---
+📋 FONTES VERIFICADAS:
+[list each source used with URL]
+⚠️ ALERTAS: [any claims marked NEEDS VERIFICATION]
+---"""
 
     # Use Sonnet for script quality
     raw = await ask_claude(prompt, system=SYSTEM_PROMPT, model=MODEL, max_tokens=8192)
