@@ -250,8 +250,17 @@ Extract content creation patterns across all 9 categories. Focus on what makes t
     .map((b) => b.text)
     .join('');
 
-  // Strip markdown fences
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  // Extract JSON from potential markdown fences or surrounding text
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    text = fenceMatch[1].trim();
+  } else {
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
+    if (jsonStart !== -1 && jsonEnd > jsonStart) {
+      text = text.slice(jsonStart, jsonEnd + 1);
+    }
+  }
 
   try {
     return JSON.parse(text) as ExtractionResult;
@@ -347,7 +356,19 @@ async function synthesizeKnowledge(): Promise<void> {
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('');
-      text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+
+      // Extract JSON from potential markdown fences or surrounding text
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fenceMatch) {
+        text = fenceMatch[1].trim();
+      } else {
+        // Try to find the JSON object directly
+        const jsonStart = text.indexOf('{');
+        const jsonEnd = text.lastIndexOf('}');
+        if (jsonStart !== -1 && jsonEnd > jsonStart) {
+          text = text.slice(jsonStart, jsonEnd + 1);
+        }
+      }
 
       const result = JSON.parse(text) as {
         categories: { category: string; synthesized_text: string; source_channels: string[] }[];

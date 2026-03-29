@@ -4,6 +4,31 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
+## [4.4.1] — 2026-03-29
+
+### Bug Fixes & DST Recovery
+
+#### Fix: Content domain max_tokens overflow
+- `handleContent()` received Telegram user ID as `maxTokensOverride` parameter, sending `max_tokens: 7807541475` to the Anthropic API (Haiku limit: 64K)
+- Caused 400 errors on every content domain message routed through the unified handler
+- Fix: aligned `handleContent` signature with other domain handlers (`_userId?` instead of `maxTokensOverride?`)
+
+#### Fix: JSON parsing failures in channel knowledge synthesis
+- `synthesizeKnowledge()` and `extractPatterns()` used a naive regex (`^```json...```$`) to strip markdown fences — failed when LLM added any text before/after the JSON block
+- All 9 knowledge categories fell back to raw concatenation instead of Claude-refined synthesis
+- Fix: robust JSON extraction that first tries regex fence matching, then falls back to finding `{`...`}` boundaries
+
+#### New: DST Watchdog — automatic recovery for missed cron jobs
+- `node-cron` silently skips fixed-time jobs during DST transitions (Europe/Lisbon spring forward: last Sunday of March)
+- New `*/15` interval cron (DST-safe) checks all registered jobs against their expected schedule using `cron-parser`
+- If a job was expected to run but didn't (within a 3-hour grace window), it fires the job and logs a warning
+- Covers both spring forward (skipped hour) and any future clock-change edge cases
+- Affected jobs: `daily_briefing`, `reaction_radar`, `channel_relearn`, `performance_agent`, `garmin_coach`, and all other fixed-time crons
+
+Triggered by: Morning briefing and 5+ scheduled jobs missed on 2026-03-29 DST transition day.
+
+---
+
 ## [4.4.0] — 2026-03-26
 
 ### Content Accuracy Framework — Anti-Hallucination System

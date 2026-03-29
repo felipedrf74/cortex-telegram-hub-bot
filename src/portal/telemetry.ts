@@ -59,6 +59,7 @@ export interface JobStatus {
   lastResult: 'success' | 'failed' | 'running' | 'never';
   lastDurationMs: number | null;
   lastError: string | null;
+  wrappedFn?: () => Promise<void>; // stored by wrapJob for DST recovery
 }
 
 const jobMap = new Map<string, JobStatus>();
@@ -92,7 +93,7 @@ export function setJobFailureNotifier(fn: FailureNotifier): void {
  * and re-throws so existing logger.error calls continue to work.
  */
 export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<void> {
-  return async () => {
+  const wrapped = async () => {
     const status = jobMap.get(name);
     if (!status) return fn(); // unregistered — run without tracking
 
@@ -131,10 +132,21 @@ export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<vo
       throw err; // re-throw so existing catch blocks in scheduler still fire
     }
   };
+
+  // Store the wrapped callback so DST watchdog can re-invoke missed jobs
+  const status = jobMap.get(name);
+  if (status) status.wrappedFn = wrapped;
+
+  return wrapped;
 }
 
 export function getJobStatuses(): JobStatus[] {
   return Array.from(jobMap.values());
+}
+
+/** Returns the internal job map — used by DST watchdog to access wrappedFn callbacks. */
+export function getJobMap(): ReadonlyMap<string, JobStatus> {
+  return jobMap;
 }
 
 // ─── Bot Reference (for restart polling) ─────────────────────────────

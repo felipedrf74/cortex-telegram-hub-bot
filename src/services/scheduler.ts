@@ -15,7 +15,8 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
-import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier } from '../portal/telemetry';
+import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, getJobMap } from '../portal/telemetry';
+import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../bot';
@@ -584,8 +585,41 @@ export function startScheduler(bot: Bot): void {
     logger.warn({ err }, 'Failed to seed book library');
   }
 
+  // ── DST Watchdog (every 15 min) — recovers jobs missed during clock changes ──
+  // Interval crons (*/15) are DST-safe. This checks fixed-time jobs for missed runs.
+  const DST_SKIP_JOBS = new Set([
+    'reminders', 'shared_list', 'garmin_keepalive', 'invoice_queue', 'expire_signals',
+  ]);
+  cron.schedule('*/15 * * * *', async () => {
+    const jobMap = getJobMap();
+    const nowMs = Date.now();
+    for (const [name, status] of jobMap) {
+      if (DST_SKIP_JOBS.has(name)) continue;     // interval jobs don't need recovery
+      if (!status.wrappedFn) continue;            // no callback stored
+      if (status.lastResult === 'running') continue;
+
+      try {
+        const expr = CronExpressionParser.parse(status.cronExpression, { tz });
+        const expectedPrev = expr.prev().toDate().getTime();
+        const lastRan = status.lastRunAt ? new Date(status.lastRunAt).getTime() : 0;
+
+        // Job was expected to run since last execution but didn't — fire it now
+        // Grace window: only recover if missed within the last 3 hours (avoid re-firing old jobs on restart)
+        if (expectedPrev > lastRan && (nowMs - expectedPrev) < 3 * 60 * 60 * 1000) {
+          logger.warn({ job: name, label: status.label, expectedAt: new Date(expectedPrev).toISOString() },
+            'DST watchdog: recovering missed job');
+          status.wrappedFn().catch((err) => {
+            logger.error({ err, job: name }, 'DST watchdog: recovered job failed');
+          });
+        }
+      } catch {
+        // ignore parse errors for unusual cron expressions
+      }
+    }
+  });
+
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), dst-watchdog (*/15)`
   );
 }
 
