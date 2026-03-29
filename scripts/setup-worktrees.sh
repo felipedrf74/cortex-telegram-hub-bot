@@ -9,19 +9,22 @@
 #
 # Usage:
 #   ./scripts/setup-worktrees.sh                    # Initial setup
-#   ./scripts/setup-worktrees.sh add feature-name   # Add new worktree
-#   ./scripts/setup-worktrees.sh remove feature-name # Remove worktree
+#   ./scripts/setup-worktrees.sh add feature-name   # Add new feature worktree
+#   ./scripts/setup-worktrees.sh add-bug name       # Add bugfix worktree (from develop)
+#   ./scripts/setup-worktrees.sh add-hotfix name    # Add hotfix worktree (from main)
+#   ./scripts/setup-worktrees.sh remove name        # Remove worktree
 #   ./scripts/setup-worktrees.sh list                # List active worktrees
 #   ./scripts/setup-worktrees.sh clean               # Remove merged worktrees
 #
-# Structure created:
+# Structure:
 #   ~/Desktop/Custom Connectors/Cortex/
-#   ├── cortex-telegram-hub-bot/          ← main repo (main branch)
+#   ├── cortex-telegram-hub-bot/              ← main repo (main branch)
 #   └── nexushub-worktrees/
-#       ├── feature-aiprovider/           ← feature/NH-001-aiprovider
-#       ├── feature-message-adapter/      ← feature/NH-002-message-adapter
-#       ├── feature-test-expansion/       ← feature/NH-003-test-expansion
-#       └── hotfix-xxx/                   ← hotfix branches
+#       ├── feature-aiprovider/               ← feature/NH-001-aiprovider
+#       ├── feature-message-adapter/          ← feature/NH-002-message-adapter
+#       ├── feature-test-expansion/           ← feature/NH-003-test-expansion
+#       ├── bugfix-agent/                     ← bugfix/current (always-on bug agent)
+#       └── hotfix-xxx/                       ← hotfix branches (created on demand)
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -29,52 +32,58 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKTREE_BASE="$(dirname "$REPO_DIR")/nexushub-worktrees"
 COMMAND="${1:-setup}"
 
+create_worktree() {
+  local BRANCH="$1"
+  local DIR="$2"
+  local BASE_BRANCH="${3:-develop}"  # default: branch from develop
+  local WORKTREE_PATH="$WORKTREE_BASE/$DIR"
+  
+  if [ -d "$WORKTREE_PATH" ]; then
+    echo "   ⏭️  $DIR already exists"
+    return
+  fi
+  
+  # Create branch if it doesn't exist
+  if ! git show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
+    git branch "$BRANCH" "$BASE_BRANCH" 2>/dev/null || git branch "$BRANCH" main
+    echo "   🌿 Created branch: $BRANCH (from $BASE_BRANCH)"
+  fi
+  
+  # Create worktree
+  git worktree add "$WORKTREE_PATH" "$BRANCH"
+  
+  # Install dependencies
+  echo "   📦 Installing deps in $DIR..."
+  cd "$WORKTREE_PATH"
+  npm ci --silent 2>/dev/null || npm install --silent 2>/dev/null
+  cd "$REPO_DIR"
+  
+  echo "   ✅ $DIR → $BRANCH"
+}
+
 case "$COMMAND" in
   setup)
     echo "🌳 Setting up Nexus Hub worktree environment..."
     echo ""
     
-    # Ensure we're on main/develop
     cd "$REPO_DIR"
     git fetch origin
-    
-    # Create worktree base directory
     mkdir -p "$WORKTREE_BASE"
     
-    # Create initial feature worktrees from develop
+    # Feature agents (branch from develop)
     FEATURES=(
-      "feature/NH-001-aiprovider:feature-aiprovider"
-      "feature/NH-002-message-adapter:feature-message-adapter"
-      "feature/NH-003-test-expansion:feature-test-expansion"
+      "feature/NH-001-aiprovider:feature-aiprovider:develop"
+      "feature/NH-002-message-adapter:feature-message-adapter:develop"
+      "feature/NH-003-test-expansion:feature-test-expansion:develop"
     )
     
     for entry in "${FEATURES[@]}"; do
-      BRANCH="${entry%%:*}"
-      DIR="${entry##*:}"
-      WORKTREE_PATH="$WORKTREE_BASE/$DIR"
-      
-      if [ -d "$WORKTREE_PATH" ]; then
-        echo "   ⏭️  $DIR already exists"
-        continue
-      fi
-      
-      # Create branch from develop if it doesn't exist
-      if ! git show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
-        git branch "$BRANCH" develop 2>/dev/null || git branch "$BRANCH" main
-        echo "   🌿 Created branch: $BRANCH"
-      fi
-      
-      # Create worktree
-      git worktree add "$WORKTREE_PATH" "$BRANCH"
-      
-      # Install dependencies in the worktree
-      echo "   📦 Installing deps in $DIR..."
-      cd "$WORKTREE_PATH"
-      npm ci --silent 2>/dev/null || npm install --silent 2>/dev/null
-      cd "$REPO_DIR"
-      
-      echo "   ✅ $DIR → $BRANCH"
+      IFS=':' read -r BRANCH DIR BASE <<< "$entry"
+      create_worktree "$BRANCH" "$DIR" "$BASE"
     done
+    
+    # Bug agent (always-on, branches from develop)
+    create_worktree "bugfix/current" "bugfix-agent" "develop"
     
     echo ""
     echo "═══════════════════════════════════════════════"
@@ -83,58 +92,70 @@ case "$COMMAND" in
     echo "  📂 Main repo:  $REPO_DIR"
     echo "  📂 Worktrees:  $WORKTREE_BASE/"
     echo ""
-    echo "  To open Claude Code on a feature:"
-    echo "    cd $WORKTREE_BASE/feature-aiprovider && claude"
-    echo ""
-    echo "  To open multiple agents in parallel:"
+    echo "  Launch agents:"
     echo "    Terminal 1: cd .../feature-aiprovider && claude"
     echo "    Terminal 2: cd .../feature-message-adapter && claude"
     echo "    Terminal 3: cd .../feature-test-expansion && claude"
+    echo "    Terminal 4: cd .../bugfix-agent && claude"
+    echo ""
+    echo "  Bug agent prompt:"
+    echo "    \"You are the Bug Agent. See CLAUDE.md for your role."
+    echo "     Check pm2 logs, error patterns, and edge cases."
+    echo "     For each bug: write failing test → fix → verify.\""
     echo "═══════════════════════════════════════════════"
     ;;
     
   add)
     FEATURE_NAME="${2:?Usage: $0 add <feature-name>}"
-    BRANCH="feature/${FEATURE_NAME}"
-    DIR="feature-${FEATURE_NAME}"
-    WORKTREE_PATH="$WORKTREE_BASE/$DIR"
-    
     cd "$REPO_DIR"
-    
-    if [ -d "$WORKTREE_PATH" ]; then
-      echo "❌ Worktree already exists: $WORKTREE_PATH"
-      exit 1
-    fi
-    
-    # Create branch from develop
-    if ! git show-ref --verify --quiet "refs/heads/$BRANCH" 2>/dev/null; then
-      git branch "$BRANCH" develop 2>/dev/null || git branch "$BRANCH" main
-    fi
-    
     mkdir -p "$WORKTREE_BASE"
-    git worktree add "$WORKTREE_PATH" "$BRANCH"
+    create_worktree "feature/${FEATURE_NAME}" "feature-${FEATURE_NAME}" "develop"
+    echo ""
+    echo "Launch: cd $WORKTREE_BASE/feature-${FEATURE_NAME} && claude"
+    ;;
     
-    cd "$WORKTREE_PATH"
-    npm ci --silent 2>/dev/null || npm install --silent 2>/dev/null
+  add-bug)
+    BUG_NAME="${2:?Usage: $0 add-bug <bug-name>}"
+    cd "$REPO_DIR"
+    mkdir -p "$WORKTREE_BASE"
+    create_worktree "bugfix/${BUG_NAME}" "bugfix-${BUG_NAME}" "develop"
+    echo ""
+    echo "Launch: cd $WORKTREE_BASE/bugfix-${BUG_NAME} && claude"
+    ;;
     
-    echo "✅ Created worktree: $DIR → $BRANCH"
-    echo "   cd $WORKTREE_PATH && claude"
+  add-hotfix)
+    HOTFIX_NAME="${2:?Usage: $0 add-hotfix <hotfix-name>}"
+    cd "$REPO_DIR"
+    mkdir -p "$WORKTREE_BASE"
+    # CRITICAL: hotfixes branch from main (production), not develop
+    create_worktree "hotfix/${HOTFIX_NAME}" "hotfix-${HOTFIX_NAME}" "main"
+    echo ""
+    echo "⚠️  HOTFIX: Branched from main (production code)"
+    echo "Launch: cd $WORKTREE_BASE/hotfix-${HOTFIX_NAME} && claude"
+    echo ""
+    echo "Tell the agent:"
+    echo "  \"You are a Hotfix Agent. See CLAUDE.md. This is PRODUCTION code."
+    echo "   Fix ONLY the specific bug described. Minimal changes only.\""
     ;;
     
   remove)
-    FEATURE_NAME="${2:?Usage: $0 remove <feature-name>}"
-    DIR="feature-${FEATURE_NAME}"
-    WORKTREE_PATH="$WORKTREE_BASE/$DIR"
-    
+    NAME="${2:?Usage: $0 remove <name>}"
     cd "$REPO_DIR"
     
-    if [ ! -d "$WORKTREE_PATH" ]; then
-      echo "❌ Worktree not found: $DIR"
-      exit 1
-    fi
+    # Try multiple directory patterns
+    for prefix in "feature-" "bugfix-" "hotfix-"; do
+      WORKTREE_PATH="$WORKTREE_BASE/${prefix}${NAME}"
+      if [ -d "$WORKTREE_PATH" ]; then
+        git worktree remove "$WORKTREE_PATH" --force
+        echo "✅ Removed worktree: ${prefix}${NAME}"
+        exit 0
+      fi
+    done
     
-    git worktree remove "$WORKTREE_PATH" --force
-    echo "✅ Removed worktree: $DIR"
+    echo "❌ Worktree not found for: $NAME"
+    echo "   Available worktrees:"
+    ls -1 "$WORKTREE_BASE/" 2>/dev/null || echo "   (none)"
+    exit 1
     ;;
     
   list)
@@ -146,14 +167,22 @@ case "$COMMAND" in
     
   clean)
     cd "$REPO_DIR"
-    echo "🧹 Cleaning merged worktrees..."
+    echo "🧹 Cleaning stale worktrees..."
     git worktree prune
-    echo "✅ Pruned stale worktrees"
+    echo "✅ Pruned"
     git worktree list
     ;;
     
   *)
-    echo "Usage: $0 {setup|add|remove|list|clean}"
+    echo "Usage: $0 {setup|add|add-bug|add-hotfix|remove|list|clean}"
+    echo ""
+    echo "  setup              Create all default worktrees"
+    echo "  add <name>         Add feature worktree (from develop)"
+    echo "  add-bug <name>     Add bugfix worktree (from develop)"
+    echo "  add-hotfix <name>  Add hotfix worktree (from main)"
+    echo "  remove <name>      Remove a worktree"
+    echo "  list               List all worktrees"
+    echo "  clean              Prune stale worktrees"
     exit 1
     ;;
 esac

@@ -23,10 +23,11 @@ Nexus Hub (formerly Cortex) — AI-powered creator operating system built with T
 
 ## Git Workflow
 
-- **main** — Production. Auto-deploys via GitHub Actions CD.
+- **main** — Production. Auto-deploys via GitHub Actions CD on merge.
 - **develop** — Integration branch. Merge features here first.
 - **feature/NH-xxx-name** — Feature branches. Branch from develop.
-- **hotfix/description** — Critical fixes. Branch from main.
+- **hotfix/description** — Critical production fixes. Branch from **main**.
+- **bugfix/description** — Non-critical bug fixes. Branch from **develop**.
 
 ### Commit Convention
 Format: `type(scope): description`
@@ -35,7 +36,43 @@ Types: feat, fix, refactor, test, docs, ci, chore, perf, style
 ### Before Pushing
 - Run `npx vitest run` — all tests must pass
 - Run `npx tsc --noEmit` — no type errors
-- Pre-commit and pre-push hooks will enforce this automatically
+- Pre-commit and pre-push hooks enforce this automatically
+
+## Agent Roles
+
+Each Claude Code instance operates as a specialized agent. Know your role:
+
+### Feature Agent (feature/NH-xxx-*)
+- Branch from: **develop**
+- Merge target: **develop** (Felipe merges)
+- Focus: New functionality, architecture changes, new integrations
+- Commit prefix: `feat(scope):` or `refactor(scope):`
+
+### Bug Agent (bugfix/*)
+- Branch from: **develop**
+- Merge target: **develop** (Felipe merges)
+- Focus: Fix non-critical bugs, improve error handling, edge cases
+- Commit prefix: `fix(scope):`
+- Process:
+  1. Read the bug description or error log
+  2. Write a failing test that reproduces the bug
+  3. Fix the bug
+  4. Verify the test passes
+  5. Check no other tests broke
+  6. Commit: `fix(scope): description` with "Fixes #issue" if applicable
+
+### Hotfix Agent (hotfix/*)
+- Branch from: **main** (NOT develop — this is production code)
+- Merge target: **main** AND **develop** (Felipe merges both)
+- Focus: Critical production bugs that need immediate deployment
+- Commit prefix: `fix(scope):`
+- CRITICAL: Hotfixes must be minimal. Fix ONLY the bug, nothing else.
+
+### Test Agent (feature/NH-xxx-test-*)
+- Branch from: **develop**
+- Merge target: **develop** (Felipe merges)
+- Focus: Expand test coverage, add integration tests, improve mocks
+- Commit prefix: `test(scope):`
 
 ## Key Architecture
 
@@ -75,6 +112,7 @@ npx vitest                # Watch mode
 - Setup file: `__tests__/setup.ts` (mocks Anthropic, Grammy, Pino)
 - External APIs are ALWAYS mocked — never call real APIs in tests
 - Use in-memory SQLite (`:memory:`) for database tests
+- **Bug fix rule:** Always write a failing test BEFORE fixing the bug
 
 ## Notion Integration
 
@@ -86,6 +124,7 @@ npx vitest                # Watch mode
 - **CI:** GitHub Actions (`ci.yml`) — lint, test, build, Python check, migrations
 - **CD:** GitHub Actions (`cd-production.yml`) — auto-deploy on merge to main
 - **Release:** GitHub Actions (`release.yml`) — manual version bump + GitHub Release
+- **Deploy flow:** Merge to main → CI validates → CD backs up server → rsync code → npm ci → PM2 restart → health check → Notion log
 
 ## Deploy Target
 
@@ -95,25 +134,40 @@ npx vitest                # Watch mode
 
 ## When You Finish Work
 
-After completing a feature or significant chunk of work:
+After completing a feature, bugfix, or significant chunk of work:
 
-1. **Commit with conventional format:**
+1. **Run tests:**
+   ```
+   npx vitest run
+   ```
+
+2. **Commit with conventional format:**
    ```
    git add .
    git commit -m "feat(core): add AIProvider interface with fallback logic"
    ```
+   For bugs:
+   ```
+   git commit -m "fix(router): handle empty message in keyword match
 
-2. **Push the feature branch:**
+   - Added test reproducing the null return on empty string
+   - Fixed regex boundary in NL_KEYWORD_ROUTES
+   - Verified all 212+ existing tests still pass"
+   ```
+
+3. **Push the branch:**
    ```
    git push origin feature/NH-xxx-name
+   # or: git push origin bugfix/fix-empty-message
+   # or: git push origin hotfix/fix-garmin-crash
    ```
 
-3. **Send a completion notification** by creating a file:
+4. **Log completion:**
    ```
-   echo "DONE: feature/NH-xxx-name — Description of what was completed" >> ~/Desktop/nexushub-agent-log.md
+   echo "$(date '+%Y-%m-%d %H:%M') DONE: branch-name — Description of what was completed" >> ~/Desktop/nexushub-agent-log.md
    ```
 
-4. **Do NOT merge to develop or main** — Felipe reviews and merges.
+5. **Do NOT merge to develop or main** — Felipe reviews and merges.
 
 ## Rules
 
@@ -124,3 +178,5 @@ After completing a feature or significant chunk of work:
 - Use `os.homedir()` for paths — never hardcode `/home/dominguez` or `/Users/felipedominguez`
 - Max 20 conversation messages per domain (auto-pruned by SQLite trigger)
 - SQLite: single-file DB, no concurrent writes, use WAL mode
+- Bug fixes MUST include a test that fails without the fix and passes with it
+- Hotfixes MUST be minimal — fix only the bug, no refactoring
