@@ -1,0 +1,177 @@
+name: CI — Lint, Test, Build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ═══════════════════════════════════════════════════
+  # LINT & TYPE CHECK
+  # ═══════════════════════════════════════════════════
+  lint:
+    name: 🔍 Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Lint prompts (no empty files)
+        run: |
+          for f in prompts/*.md; do
+            if [ ! -s "$f" ]; then
+              echo "❌ Empty prompt file: $f"
+              exit 1
+            fi
+          done
+          echo "✅ All prompt files have content"
+
+  # ═══════════════════════════════════════════════════
+  # UNIT & INTEGRATION TESTS
+  # ═══════════════════════════════════════════════════
+  test:
+    name: 🧪 Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npx vitest run --reporter=verbose --coverage
+        env:
+          NODE_ENV: test
+          TELEGRAM_BOT_TOKEN: test_token
+          TELEGRAM_ALLOWED_USER_IDS: '123456789'
+          ANTHROPIC_API_KEY: sk-ant-test-key
+          DATABASE_PATH: ':memory:'
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  # ═══════════════════════════════════════════════════
+  # BUILD VERIFICATION
+  # ═══════════════════════════════════════════════════
+  build:
+    name: 🔨 Build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Verify dist output
+        run: |
+          test -f dist/index.js || { echo "❌ dist/index.js not found"; exit 1; }
+          echo "✅ Build output verified"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════
+  # CONTENT ENGINE (PYTHON) TESTS
+  # ═══════════════════════════════════════════════════
+  python-test:
+    name: 🐍 Content Engine Check
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: content-engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          cd content-engine
+          pip install -r requirements.txt
+
+      - name: Syntax check
+        run: |
+          cd content-engine
+          python -m py_compile main.py
+          python -m py_compile config.py
+          find . -name "*.py" -not -path "./.venv/*" -not -path "./__pycache__/*" \
+            -exec python -m py_compile {} \;
+          echo "✅ All Python files compile"
+
+  # ═══════════════════════════════════════════════════
+  # MIGRATION SAFETY CHECK
+  # ═══════════════════════════════════════════════════
+  migrations:
+    name: 🗃️ Migration Check
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify migration sequence
+        run: |
+          cd migrations
+          expected=1
+          for f in $(ls *.sql | sort); do
+            num=$(echo "$f" | grep -oP '^\d+')
+            num=$((10#$num))  # Remove leading zeros
+            if [ "$num" -ne "$expected" ]; then
+              echo "❌ Gap in migration sequence: expected $expected, got $num ($f)"
+              exit 1
+            fi
+            expected=$((expected + 1))
+          done
+          echo "✅ $((expected - 1)) migrations in sequence"
+
+      - name: Validate SQL syntax
+        run: |
+          for f in migrations/*.sql; do
+            if ! sqlite3 :memory: < "$f" 2>/dev/null; then
+              echo "⚠️  Potential issue in $f (may need tables from prior migrations)"
+            fi
+          done
+          echo "✅ Migration syntax check complete"

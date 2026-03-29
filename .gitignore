@@ -13,3 +13,5 @@ content-engine/.venv/
 content-engine/__pycache__/
 content-engine/data/
 content-engine/**/__pycache__/
+# Test output
+coverage/

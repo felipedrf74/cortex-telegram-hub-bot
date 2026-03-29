@@ -1,17 +1,28 @@
 {
-  "name": "telegram-hub-bot",
-  "version": "1.0.0",
-  "description": "Telegram personal command center bot with multi-domain AI routing",
+  "name": "nexus-hub",
+  "version": "4.4.1",
+  "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc && cp src/portal/portal.html dist/portal/portal.html",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
+    "verify": "npm run typecheck && npm run test",
+    "precommit": "npm run verify",
+    "release:patch": "npm run verify && npm version patch",
+    "release:minor": "npm run verify && npm version minor",
+    "release:major": "npm run verify && npm version major"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["telegram", "bot", "ai", "claude", "productivity", "content-creation"],
+  "author": "Felipe Dominguez",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
@@ -38,6 +49,9 @@
     "@types/luxon": "^3.7.1",
     "@types/node": "^25.3.3",
     "@types/sharp": "^0.31.1",
-    "typescript": "^5.9.3"
+    "@vitest/coverage-v8": "^3.1.1",
+    "@vitest/ui": "^3.1.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.1.1"
   }
 }
