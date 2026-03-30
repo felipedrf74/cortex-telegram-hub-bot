@@ -59,7 +59,6 @@ jobs:
           echo "new=$NEW" >> $GITHUB_OUTPUT
           echo "tag=v${NEW}" >> $GITHUB_OUTPUT
           
-          # Update package.json
           npm version "$NEW" --no-git-tag-version
           echo "📦 Version: $CURRENT → $NEW"
 
@@ -69,7 +68,6 @@ jobs:
           VERSION="${{ steps.bump.outputs.new }}"
           NOTES="${{ github.event.inputs.changelog }}"
           
-          # Prepend new entry to CHANGELOG
           {
             head -3 CHANGELOG.md
             echo ""
@@ -105,7 +103,7 @@ jobs:
           prerelease: false
 
       - name: Update Notion release log
-        if: env.NOTION_TOKEN != ''
+        if: ${{ secrets.NOTION_TOKEN != '' }}
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_RELEASES_DB: ${{ secrets.NOTION_RELEASES_DB }}
@@ -120,7 +118,10 @@ jobs:
                 \"Release\": { \"title\": [{ \"text\": { \"content\": \"${{ steps.bump.outputs.tag }}\" } }] },
                 \"Status\": { \"select\": { \"name\": \"✅ Released\" } },
                 \"Type\": { \"select\": { \"name\": \"Release\" } },
+                \"Environment\": { \"select\": { \"name\": \"Production\" } },
                 \"Date\": { \"date\": { \"start\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" } },
+                \"Commit\": { \"rich_text\": [{ \"text\": { \"content\": \"${GITHUB_SHA:0:8}\" } }] },
+                \"Author\": { \"rich_text\": [{ \"text\": { \"content\": \"$GITHUB_ACTOR\" } }] },
                 \"Notes\": { \"rich_text\": [{ \"text\": { \"content\": \"${{ github.event.inputs.changelog }}\" } }] }
               }
-            }" || echo "⚠️  Notion update skipped"
+            }" && echo "✅ Notion release logged" || echo "⚠️  Notion update failed"
