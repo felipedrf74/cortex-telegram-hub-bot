@@ -28,6 +28,17 @@ export const config = {
     maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
     secretaryMaxTokens: 2048,   // needs headroom for parallel tool calls
   },
+  // ── Alternative AI Providers (optional fallbacks) ──────────────────
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY || '',
+    model: process.env.OPENAI_MODEL || 'gpt-4o',
+    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4o-mini',
+  },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || '',
+    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.0-flash',
+  },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
