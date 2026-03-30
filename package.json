@@ -20,13 +20,21 @@
     "release:minor": "npm run verify && npm version minor",
     "release:major": "npm run verify && npm version major"
   },
-  "keywords": ["telegram", "bot", "ai", "claude", "productivity", "content-creation"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "ai",
+    "claude",
+    "productivity",
+    "content-creation"
+  ],
   "author": "Felipe Dominguez",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/msal-node": "^5.0.6",
+    "@google/generative-ai": "^0.24.1",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "better-sqlite3": "^12.6.2",
     "cron-parser": "^5.5.0",
@@ -39,6 +47,7 @@
     "luxon": "^3.7.2",
     "mammoth": "^1.12.0",
     "node-cron": "^4.2.1",
+    "openai": "^6.33.0",
     "pino": "^10.3.1",
     "playwright": "^1.58.2",
     "sharp": "^0.34.5"
