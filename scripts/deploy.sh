@@ -109,13 +109,17 @@ echo ""
 echo "🟢 Starting services..."
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 start content-engine 2>/dev/null && $PM2 start telegram-hub-bot 2>/dev/null && $PM2 save && echo '   ✅ All services running'"
 
-# ── 8. Health check ──────────────────────────────────
+# ── 8. Health check (with retry) ─────────────────────
 echo ""
-echo "🏥 Health check..."
-sleep 3
+echo "🏥 Health check (waiting 10s for startup)..."
+sleep 10
 
 HEALTH_OK=true
-ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null && echo ' ✅ Content engine OK' || echo ' ❌ Content engine FAIL'"
+
+# Content engine
+ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null && echo ' ✅ Content engine OK' || echo ' ⚠️  Content engine not responding'"
+
+# Portal
 PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
 if [ -n "$PORTAL_TOKEN" ]; then
   ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
@@ -123,11 +127,20 @@ else
   ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
 fi
 
+# Bot status with retry
 BOT_STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='telegram-hub-bot')?.pm2_env?.status\"" 2>/dev/null || echo "unknown")
+
+if [ "$BOT_STATUS" != "online" ]; then
+  echo " ⏳ Bot not ready yet, retrying in 5s..."
+  sleep 5
+  BOT_STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='telegram-hub-bot')?.pm2_env?.status\"" 2>/dev/null || echo "unknown")
+fi
+
 if [ "$BOT_STATUS" = "online" ]; then
   echo " ✅ Bot: online"
 else
   echo " ❌ Bot: $BOT_STATUS"
+  echo "    Check logs: ssh $SERVER '$PM2 logs telegram-hub-bot --lines 30 --nostream'"
   DEPLOY_STATUS="❌ Failed"
   HEALTH_OK=false
 fi
