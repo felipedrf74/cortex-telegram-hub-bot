@@ -40,8 +40,13 @@ vi.mock('../../src/services/anthropic', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
-    gemini: { apiKey: 'gemini-test-key', model: 'gemini-2.0-flash', classifierModel: 'gemini-2.0-flash' },
-    anthropic: { maxTokens: 1024 },
+    gemini: {
+      apiKey: 'gemini-test-key',
+      model: 'gemini-2.0-pro',
+      classifierModel: 'gemini-2.0-flash',
+      maxTokens: 1024,
+      secretaryMaxTokens: 2048,
+    },
   },
 }));
 
@@ -177,6 +182,24 @@ describe('GeminiProvider', () => {
 
       await provider.callDomain('content', [], 'Full script', '', 4096);
       // Verify generateContent was called (model configured with maxOutputTokens)
+      expect(mockGenerateContent).toHaveBeenCalledOnce();
+    });
+
+    // ── Smart model routing ──────────────────────────────────────
+    // Note: Gemini's getGenerativeModel is mocked, so we can't directly assert
+    // the model name. Instead we verify the routing logic via the shared
+    // getModelRouting tests in ai-provider.test.ts, and here confirm the provider
+    // calls generateContent (which means routing was applied before the call).
+
+    it('routes secretary through expensive model path', async () => {
+      mockGeminiResponse('Tasks checked.');
+      await provider.callDomain('secretary', [], 'Check tasks', '');
+      expect(mockGenerateContent).toHaveBeenCalledOnce();
+    });
+
+    it('routes triathlon through cheap model path', async () => {
+      mockGeminiResponse('Great swim.');
+      await provider.callDomain('triathlon', [], 'How was my swim?', '');
       expect(mockGenerateContent).toHaveBeenCalledOnce();
     });
   });

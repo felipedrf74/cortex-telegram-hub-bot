@@ -7,7 +7,7 @@
  */
 
 import OpenAI from 'openai';
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage } from './ai-provider';
+import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, getModelRouting } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -126,6 +126,7 @@ ${message}`;
     stateContext: string,
     maxTokensOverride?: number,
   ): Promise<AICallResult> {
+    const routing = getModelRouting(config.openai, domain);
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
@@ -140,8 +141,8 @@ ${message}`;
     ];
 
     const response = await getClient().chat.completions.create({
-      model: config.openai.model,
-      max_tokens: maxTokensOverride || config.anthropic.maxTokens,
+      model: routing.model,
+      max_tokens: maxTokensOverride || routing.maxTokens,
       messages,
       ...(useTools ? { tools: toOpenAITools() } : {}),
     });
@@ -161,6 +162,7 @@ ${message}`;
     stateContext: string,
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult> {
+    const routing = getModelRouting(config.openai, domain);
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
@@ -209,8 +211,8 @@ ${message}`;
     }
 
     const response = await getClient().chat.completions.create({
-      model: config.openai.model,
-      max_tokens: config.anthropic.maxTokens,
+      model: routing.model,
+      max_tokens: routing.maxTokens,
       messages,
       ...(useTools ? { tools: toOpenAITools() } : {}),
     });

@@ -15,7 +15,7 @@ import {
   SchemaType,
   type GenerateContentResult,
 } from '@google/generative-ai';
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage } from './ai-provider';
+import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, getModelRouting } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -167,15 +167,16 @@ ${message}`;
     stateContext: string,
     maxTokensOverride?: number,
   ): Promise<AICallResult> {
+    const routing = getModelRouting(config.gemini, domain);
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
     const model = getClient().getGenerativeModel({
-      model: config.gemini.model,
+      model: routing.model,
       systemInstruction: systemPrompt,
       generationConfig: {
-        maxOutputTokens: maxTokensOverride || config.anthropic.maxTokens,
+        maxOutputTokens: maxTokensOverride || routing.maxTokens,
       },
       ...(useTools ? {
         tools: [{ functionDeclarations: toGeminiFunctionDeclarations() }],
@@ -211,15 +212,16 @@ ${message}`;
     stateContext: string,
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult> {
+    const routing = getModelRouting(config.gemini, domain);
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
     const model = getClient().getGenerativeModel({
-      model: config.gemini.model,
+      model: routing.model,
       systemInstruction: systemPrompt,
       generationConfig: {
-        maxOutputTokens: config.anthropic.maxTokens,
+        maxOutputTokens: routing.maxTokens,
       },
       ...(useTools ? {
         tools: [{ functionDeclarations: toGeminiFunctionDeclarations() }],

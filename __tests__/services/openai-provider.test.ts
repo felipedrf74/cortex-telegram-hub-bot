@@ -29,8 +29,13 @@ vi.mock('../../src/services/anthropic', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
-    openai: { apiKey: 'sk-test-key', model: 'gpt-4o', classifierModel: 'gpt-4o-mini' },
-    anthropic: { maxTokens: 1024 },
+    openai: {
+      apiKey: 'sk-test-key',
+      model: 'gpt-4o',
+      classifierModel: 'gpt-4o-mini',
+      maxTokens: 1024,
+      secretaryMaxTokens: 2048,
+    },
   },
 }));
 
@@ -185,6 +190,29 @@ describe('OpenAIProvider', () => {
 
       await provider.callDomain('content', [], 'Full script', '', 4096);
       expect(mockCreate.mock.calls[0][0].max_tokens).toBe(4096);
+    });
+
+    // ── Smart model routing ──────────────────────────────────────
+
+    it('uses expensive model (gpt-4o) + 2048 tokens for secretary', async () => {
+      mockChatResponse('OK');
+      await provider.callDomain('secretary', [], 'Check tasks', '');
+      expect(mockCreate.mock.calls[0][0].model).toBe('gpt-4o');
+      expect(mockCreate.mock.calls[0][0].max_tokens).toBe(2048);
+    });
+
+    it('uses cheap model (gpt-4o-mini) + 2048 tokens for triathlon', async () => {
+      mockChatResponse('OK');
+      await provider.callDomain('triathlon', [], 'My run', '');
+      expect(mockCreate.mock.calls[0][0].model).toBe('gpt-4o-mini');
+      expect(mockCreate.mock.calls[0][0].max_tokens).toBe(2048);
+    });
+
+    it('uses cheap model (gpt-4o-mini) + 1024 tokens for content', async () => {
+      mockChatResponse('Here is a hook.');
+      await provider.callDomain('content', [], 'Write a hook', '');
+      expect(mockCreate.mock.calls[0][0].model).toBe('gpt-4o-mini');
+      expect(mockCreate.mock.calls[0][0].max_tokens).toBe(1024);
     });
 
     it('includes conversation history', async () => {

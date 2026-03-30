@@ -33,11 +33,15 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY || '',
     model: process.env.OPENAI_MODEL || 'gpt-4o',
     classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4o-mini',
+    maxTokens: 1024,            // content domain — conversational
+    secretaryMaxTokens: 2048,   // secretary — parallel tool calls need headroom
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
     model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
     classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.0-flash',
+    maxTokens: 1024,
+    secretaryMaxTokens: 2048,
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
