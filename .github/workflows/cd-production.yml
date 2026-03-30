@@ -1,13 +1,9 @@
 name: CD — Deploy to Production
 
+# MANUAL ONLY — GitHub Actions runners can't reach the server (IPv6-only).
+# Deploy from your Mac using: ./scripts/deploy.sh
+# This workflow is available for future use when the server has a stable public endpoint.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - '.github/ISSUE_TEMPLATE/**'
-      - 'docs/**'
-
   workflow_dispatch:
     inputs:
       rollback_version:
@@ -21,9 +17,6 @@ env:
   PM2: /home/dominguez/.npm-global/bin/pm2
 
 jobs:
-  # ═══════════════════════════════════════════════════
-  # PRE-DEPLOY CHECKS
-  # ═══════════════════════════════════════════════════
   pre-deploy:
     name: ✅ Pre-Deploy Validation
     runs-on: ubuntu-latest
@@ -61,9 +54,6 @@ jobs:
         run: |
           echo "✅ Deploying from main branch — CI must have passed"
 
-  # ═══════════════════════════════════════════════════
-  # BACKUP CURRENT VERSION
-  # ═══════════════════════════════════════════════════
   backup:
     name: 💾 Backup Current
     runs-on: ubuntu-latest
@@ -82,7 +72,6 @@ jobs:
             
             mkdir -p "$BACKUP_DIR"
             
-            # Backup dist + prompts + migrations + package.json + ecosystem
             tar czf "$BACKUP_DIR/${CURRENT_VERSION}_${TIMESTAMP}.tar.gz" \
               -C "${{ env.REMOTE_DIR }}" \
               dist/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js \
@@ -90,15 +79,11 @@ jobs:
               content-engine/services/ content-engine/routers/ content-engine/models/ \
               content-engine/searchers/ 2>/dev/null || true
             
-            # Keep only last 10 backups
             ls -t "$BACKUP_DIR"/*.tar.gz | tail -n +11 | xargs rm -f 2>/dev/null || true
             
             echo "✅ Backup created: ${CURRENT_VERSION}_${TIMESTAMP}.tar.gz"
             echo "📦 Backups on disk: $(ls "$BACKUP_DIR"/*.tar.gz | wc -l)"
 
-  # ═══════════════════════════════════════════════════
-  # DEPLOY
-  # ═══════════════════════════════════════════════════
   deploy:
     name: 🚀 Deploy ${{ needs.pre-deploy.outputs.version }}
     runs-on: ubuntu-latest
@@ -128,11 +113,8 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             export PATH=$PATH:$(dirname ${{ env.PM2 }})
-            
-            # Stop services
             ${{ env.PM2 }} stop telegram-hub-bot 2>/dev/null || true
             ${{ env.PM2 }} stop content-engine 2>/dev/null || true
-            
             echo "🛑 Services stopped"
 
       - name: Sync files
@@ -154,20 +136,12 @@ jobs:
           script: |
             export PATH=$PATH:$(dirname ${{ env.PM2 }})
             cd ${{ env.REMOTE_DIR }}
-            
-            # Install dependencies
             npm ci --production
-            
-            # Start services
             ${{ env.PM2 }} start content-engine 2>/dev/null || true
             ${{ env.PM2 }} start telegram-hub-bot
             ${{ env.PM2 }} save
-            
             echo "🟢 Services started"
 
-  # ═══════════════════════════════════════════════════
-  # POST-DEPLOY HEALTH CHECK
-  # ═══════════════════════════════════════════════════
   health-check:
     name: 🏥 Health Check
     runs-on: ubuntu-latest
@@ -184,10 +158,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             export PATH=$PATH:$(dirname ${{ env.PM2 }})
-            
-            # Check PM2 status
             BOT_STATUS=$(${{ env.PM2 }} jlist | node -pe "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='telegram-hub-bot')?.pm2_env?.status" 2>/dev/null)
-            
             if [ "$BOT_STATUS" = "online" ]; then
               echo "✅ telegram-hub-bot: online"
             else
@@ -195,19 +166,11 @@ jobs:
               ${{ env.PM2 }} logs telegram-hub-bot --lines 20 --nostream
               exit 1
             fi
-            
-            # Check portal
             curl -sf http://localhost:8200/ >/dev/null && echo "✅ Portal: responding" || echo "⚠️  Portal: not responding"
-            
-            # Check content engine
             curl -sf http://localhost:8100/health >/dev/null && echo "✅ Content engine: healthy" || echo "⚠️  Content engine: not responding"
-            
             echo ""
             echo "📊 Version deployed: $(node -p "require('./package.json').version")"
 
-  # ═══════════════════════════════════════════════════
-  # NOTIFY NOTION
-  # ═══════════════════════════════════════════════════
   notify:
     name: 📋 Update Notion
     runs-on: ubuntu-latest
