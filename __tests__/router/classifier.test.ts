@@ -1,21 +1,24 @@
 /**
  * Router Classifier Tests
- * 
+ *
  * Tests the three-tier classification system:
  * - Tier 1: Pattern matching (commands)
  * - Tier 2: Keyword matching (natural language)
  * - Tier 3: Claude AI classification (mocked)
+ *
+ * Plus full integration tests for routeMessage()
  */
 
-import { describe, it, expect } from 'vitest';
-import { patternMatch, keywordMatch } from '../../src/router/classifier';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { patternMatch, keywordMatch, classifyWithClaude } from '../../src/router/classifier';
+import { routeMessage, isSystemCommand } from '../../src/router/index';
 
 // ═══════════════════════════════════════════════════════════════════
 // TIER 1: PATTERN MATCHING (Commands)
 // ═══════════════════════════════════════════════════════════════════
 
 describe('patternMatch — Tier 1 Command Routing', () => {
-  
+
   describe('Secretary commands', () => {
     const secretaryCommands = [
       '/todo buy milk',
@@ -317,6 +320,254 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
 
     it.each(noMatch)('"%s" → null', (msg) => {
       expect(keywordMatch(msg)).toBeNull();
+    });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// TIER 3: CLAUDE CLASSIFICATION (Mocked API)
+// ═══════════════════════════════════════════════════════════════════
+
+// We need to mock the anthropic service module to control what classifyMessage returns
+vi.mock('../../src/services/anthropic', () => ({
+  classifyMessage: vi.fn(),
+}));
+
+// Also mock the logger so tests don't produce output
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
+import { classifyMessage } from '../../src/services/anthropic';
+
+const mockClassifyMessage = vi.mocked(classifyMessage);
+
+describe('classifyWithClaude — Tier 3 AI Classification', () => {
+  beforeEach(() => {
+    mockClassifyMessage.mockReset();
+  });
+
+  it('returns the domain and confidence from the Claude classifier', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.95 });
+
+    const result = await classifyWithClaude('I ran 10k today');
+    expect(result).toEqual({ domain: 'triathlon', confidence: 0.95 });
+  });
+
+  it('passes activeContext to the classifier when provided', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.85 });
+
+    const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Great run!' };
+    await classifyWithClaude('move it to wednesday', context);
+
+    expect(mockClassifyMessage).toHaveBeenCalledWith('move it to wednesday', context);
+  });
+
+  it('passes undefined context when null is provided', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.7 });
+
+    await classifyWithClaude('hello there', null);
+    expect(mockClassifyMessage).toHaveBeenCalledWith('hello there', undefined);
+  });
+
+  it('handles low confidence (falls back to secretary in classifyMessage)', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.3 });
+
+    const result = await classifyWithClaude('something ambiguous');
+    expect(result.domain).toBe('secretary');
+    expect(result.confidence).toBe(0.3);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// SYSTEM COMMAND DETECTION
+// ═══════════════════════════════════════════════════════════════════
+
+describe('isSystemCommand', () => {
+  it('recognizes /help', () => {
+    expect(isSystemCommand('/help')).toBe('/help');
+  });
+
+  it('recognizes /status', () => {
+    expect(isSystemCommand('/status')).toBe('/status');
+  });
+
+  it('recognizes /clear with arguments', () => {
+    expect(isSystemCommand('/clear all')).toBe('/clear');
+  });
+
+  it('recognizes /start', () => {
+    expect(isSystemCommand('/start')).toBe('/start');
+  });
+
+  it('recognizes content-agent system commands', () => {
+    expect(isSystemCommand('/discover topic')).toBe('/discover');
+    expect(isSystemCommand('/deepsearch AI trends')).toBe('/deepsearch');
+    expect(isSystemCommand('/hotnews')).toBe('/hotnews');
+    expect(isSystemCommand('/trending fitness')).toBe('/trending');
+  });
+
+  it('is case insensitive', () => {
+    expect(isSystemCommand('/HELP')).toBe('/help');
+    expect(isSystemCommand('/Status')).toBe('/status');
+  });
+
+  it('handles whitespace', () => {
+    expect(isSystemCommand('  /help  ')).toBe('/help');
+  });
+
+  it('returns null for non-system commands', () => {
+    expect(isSystemCommand('/todo buy milk')).toBeNull();
+    expect(isSystemCommand('/gym')).toBeNull();
+    expect(isSystemCommand('hello')).toBeNull();
+    expect(isSystemCommand('')).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// FULL ROUTER INTEGRATION (routeMessage)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('routeMessage — Three-Tier Routing Integration', () => {
+  beforeEach(() => {
+    mockClassifyMessage.mockReset();
+  });
+
+  describe('Tier 1 always wins (commands bypass everything)', () => {
+    it('/todo routes to secretary with method=pattern, confidence=1.0', async () => {
+      const result = await routeMessage('/todo buy milk');
+      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('pattern');
+      expect(result.confidence).toBe(1.0);
+      // classifyMessage should NOT be called
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('/gym routes to triathlon with stripped message', async () => {
+      const result = await routeMessage('/gym upper body');
+      expect(result.domain).toBe('triathlon');
+      expect(result.method).toBe('pattern');
+      expect(result.strippedMessage).toBe('upper body');
+    });
+
+    it('/video routes to content', async () => {
+      const result = await routeMessage('/video idea about AI');
+      expect(result.domain).toBe('content');
+      expect(result.method).toBe('pattern');
+    });
+
+    it('commands win even with active context', async () => {
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Hi' };
+      const result = await routeMessage('/todo buy milk', context);
+      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('pattern');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Active context skips keyword matching, goes to classifier', () => {
+    it('with active context, ambiguous message goes to classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.88 });
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Your 5K time was great!' };
+
+      const result = await routeMessage('move it to wednesday', context);
+      expect(result.domain).toBe('triathlon');
+      expect(result.method).toBe('classifier');
+      expect(result.confidence).toBe(0.88);
+    });
+
+    it('keyword-heavy message still goes to classifier when context is active', async () => {
+      // "schedule a meeting" would match secretary via keywords, but with active
+      // triathlon context, the classifier should decide (maybe user is scheduling a training)
+      mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.75 });
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Rest day today.' };
+
+      const result = await routeMessage('schedule a meeting', context);
+      expect(result.method).toBe('classifier');
+      // The classifier decided it's triathlon, not secretary
+      expect(result.domain).toBe('triathlon');
+    });
+  });
+
+  describe('Tier 2 keyword matching (no active context)', () => {
+    it('workout routes to triathlon via keyword', async () => {
+      const result = await routeMessage('I had a great workout today');
+      expect(result.domain).toBe('triathlon');
+      expect(result.method).toBe('keyword');
+      expect(result.confidence).toBe(0.9);
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('youtube routes to content via keyword', async () => {
+      const result = await routeMessage('I need a youtube video idea');
+      expect(result.domain).toBe('content');
+      expect(result.method).toBe('keyword');
+    });
+
+    it('tasks routes to secretary via keyword', async () => {
+      const result = await routeMessage('what are my tasks for today?');
+      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('keyword');
+    });
+  });
+
+  describe('Tier 3 Claude fallback (no match, no context)', () => {
+    it('ambiguous message falls through to Claude classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.65 });
+
+      const result = await routeMessage('hello, how are you?');
+      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('classifier');
+      expect(result.confidence).toBe(0.65);
+      expect(mockClassifyMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('completely ambiguous message still returns a result', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.3 });
+
+      const result = await routeMessage('ok');
+      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('classifier');
+    });
+  });
+
+  describe('Message stripping', () => {
+    it('strips command prefix from pattern-matched messages', async () => {
+      const result = await routeMessage('/todo buy milk and eggs');
+      expect(result.strippedMessage).toBe('buy milk and eggs');
+    });
+
+    it('keeps full message for command-only messages', async () => {
+      const result = await routeMessage('/todos');
+      expect(result.strippedMessage).toBe('/todos');
+    });
+
+    it('keeps full message for keyword and classifier routes', async () => {
+      const result = await routeMessage('I had a great workout today');
+      expect(result.strippedMessage).toBe('I had a great workout today');
+    });
+  });
+
+  describe('Edge cases', () => {
+    it('empty string falls through to classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0 });
+
+      const result = await routeMessage('');
+      expect(result.method).toBe('classifier');
+    });
+
+    it('whitespace-only falls through to classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0 });
+
+      const result = await routeMessage('   ');
+      expect(result.method).toBe('classifier');
     });
   });
 });
