@@ -18,13 +18,12 @@ export default defineConfig({
         'src/**/*.d.ts',
       ],
       thresholds: {
-        // Phase 0: Start low, increase as test coverage grows
-        // Current: 1.82% lines, 56% branches, 29% functions
-        // Target by end of Phase 0: 30% lines, 30% functions
-        lines: 1,
-        functions: 5,
-        branches: 10,
-        statements: 1,
+        // Raised after 256 tests (7% growth from agents)
+        // Will increase further as coverage expands
+        lines: 10,
+        functions: 15,
+        branches: 15,
+        statements: 10,
       },
     },
     // Timeout for AI-related tests that might need more time

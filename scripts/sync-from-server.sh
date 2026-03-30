@@ -13,14 +13,18 @@
 # SAFE: Never touches main, develop, or the server.
 #       Only creates a new branch with server state.
 #
+# Environment:
+#   DEPLOY_SERVER   — SSH connection string (default: dominguez@serverdominguez)
+#   DEPLOY_PATH     — Remote project path (default: /home/dominguez/telegram-hub-bot)
+#
 # Usage:
 #   ./scripts/sync-from-server.sh           # Full sync
 #   ./scripts/sync-from-server.sh --dry-run # Preview only
 # ─────────────────────────────────────────────────────
 set -euo pipefail
 
-SERVER="dominguez@serverdominguez"
-REMOTE_DIR="/home/dominguez/telegram-hub-bot"
+SERVER="${DEPLOY_SERVER:-dominguez@serverdominguez}"
+REMOTE_DIR="${DEPLOY_PATH:-/home/dominguez/telegram-hub-bot}"
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DRY_RUN="${1:-}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -55,7 +59,6 @@ fi
 echo "📥 Fetching source files from server..."
 mkdir -p "$TEMP_DIR"
 
-# Pull only source code (not data, logs, node_modules, .env)
 rsync -avz --delete \
   --include='src/***' \
   --include='prompts/***' \
@@ -83,7 +86,6 @@ echo "  📊 Changes on server vs local repo"
 echo "═══════════════════════════════════════════════"
 echo ""
 
-# Compare each synced file against local
 CHANGED_FILES=()
 NEW_FILES=()
 for f in $(cd "$TEMP_DIR" && find . -type f -name '*.ts' -o -name '*.js' -o -name '*.py' -o -name '*.md' -o -name '*.json' -o -name '*.sql' | sort); do
@@ -129,9 +131,7 @@ fi
 echo "🌿 Creating branch: $SYNC_BRANCH"
 git checkout -b "$SYNC_BRANCH" main
 
-# Copy changed files from server
 for f in "${CHANGED_FILES[@]}" "${NEW_FILES[@]}"; do
-  # Ensure directory exists
   mkdir -p "$(dirname "$LOCAL_DIR/$f")"
   cp "$TEMP_DIR/$f" "$LOCAL_DIR/$f"
 done
@@ -181,5 +181,4 @@ echo "  4. Return to your working branch:"
 echo "     git checkout $ORIGINAL_BRANCH"
 echo ""
 
-# Clean up temp
 rm -rf "$TEMP_DIR"

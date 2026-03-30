@@ -1,5 +1,26 @@
 # CLAUDE.md — Nexus Hub Development Instructions
 
+## ⚡ FIRST: Check for Assigned Task
+
+**Before doing anything else**, check if you have a task assigned:
+
+```bash
+cat .agent-prompt.md 2>/dev/null
+```
+
+If `.agent-prompt.md` exists, **read it and execute the task described**. It contains:
+- What to build/fix/test
+- Step-by-step instructions specific to your agent role
+- The Notion task ID for tracking
+
+If no task file exists, wait for instructions from Felipe.
+
+When you complete the task:
+1. Follow all steps in the prompt file (commit, push, log)
+2. Then tell Felipe: "Task complete. Run `node scripts/dispatch-tasks.js --done <your-agent-dir>` to mark it in Notion and get the next task."
+
+---
+
 ## Project
 
 Nexus Hub (formerly Cortex) — AI-powered creator operating system built with TypeScript, Grammy (Telegram), Anthropic Claude, SQLite, and a Python/FastAPI content engine.
@@ -146,25 +167,15 @@ After completing a feature, bugfix, or significant chunk of work:
    git add .
    git commit -m "feat(core): add AIProvider interface with fallback logic"
    ```
-   For bugs:
-   ```
-   git commit -m "fix(router): handle empty message in keyword match
-
-   - Added test reproducing the null return on empty string
-   - Fixed regex boundary in NL_KEYWORD_ROUTES
-   - Verified all 212+ existing tests still pass"
-   ```
 
 3. **Push the branch:**
    ```
-   git push origin feature/NH-xxx-name
-   # or: git push origin bugfix/fix-empty-message
-   # or: git push origin hotfix/fix-garmin-crash
+   git push origin $(git branch --show-current)
    ```
 
 4. **Log completion:**
    ```
-   echo "$(date '+%Y-%m-%d %H:%M') DONE: branch-name — Description of what was completed" >> ~/Desktop/nexushub-agent-log.md
+   echo "$(date '+%Y-%m-%d %H:%M') DONE: $(git branch --show-current) — Description" >> ~/Desktop/nexushub-agent-log.md
    ```
 
 5. **Do NOT merge to develop or main** — Felipe reviews and merges.
