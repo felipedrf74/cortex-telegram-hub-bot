@@ -44,7 +44,7 @@ Nexus Hub (formerly Cortex) — AI-powered creator operating system built with T
 
 ## Git Workflow
 
-- **main** — Production. Auto-deploys via GitHub Actions CD on merge.
+- **main** — Production. CI validates automatically. Deploy is MANUAL (see below).
 - **develop** — Integration branch. Merge features here first.
 - **feature/NH-xxx-name** — Feature branches. Branch from develop.
 - **hotfix/description** — Critical production fixes. Branch from **main**.
@@ -58,6 +58,26 @@ Types: feat, fix, refactor, test, docs, ci, chore, perf, style
 - Run `npx vitest run` — all tests must pass
 - Run `npx tsc --noEmit` — no type errors
 - Pre-commit and pre-push hooks enforce this automatically
+
+## CI/CD — IMPORTANT
+
+- **CI (automatic):** Runs on every push/PR — lint, typecheck, vitest, build, Python check, migrations. This is the quality gate.
+- **CD (MANUAL ONLY):** Server is IPv6-only. GitHub Actions runners cannot reach it. Felipe deploys manually from his Mac using `./scripts/deploy.sh`.
+- **Release (manual):** Triggered via GitHub Actions UI.
+
+### What this means for you as an agent:
+- **Your job is to make CI pass.** Write code, write tests, push. CI validates automatically.
+- **Do NOT attempt deployment.** No SSH to server, no deploy commands, no modifying CD workflow.
+- **Do NOT add push triggers to cd-production.yml.** It's manual-only for a reason.
+- **See `DEPLOY.md`** for full deployment context if needed.
+
+### Deployment Flow
+```
+You write code → Push to feature branch → CI validates (automatic)
+  → Felipe reviews → Merge to develop → CI validates (automatic)
+  → Felipe merges to main → CI validates (automatic)
+  → Felipe runs ./scripts/deploy.sh from his Mac → Server updated
+```
 
 ## Agent Roles
 
@@ -140,18 +160,12 @@ npx vitest                # Watch mode
 - **Development Board DB:** 332ad49d-23e7-81aa-831e-d5a3ceff20c1
 - **Releases DB:** 332ad49d-23e7-8134-b413-d8d3cc3f1a4a
 
-## CI/CD
+## Server Info (DO NOT attempt to connect)
 
-- **CI:** GitHub Actions (`ci.yml`) — lint, test, build, Python check, migrations
-- **CD:** GitHub Actions (`cd-production.yml`) — auto-deploy on merge to main
-- **Release:** GitHub Actions (`release.yml`) — manual version bump + GitHub Release
-- **Deploy flow:** Merge to main → CI validates → CD backs up server → rsync code → npm ci → PM2 restart → health check → Notion log
-
-## Deploy Target
-
-- Server: `dominguez@serverdominguez`
+- Server: `dominguez@serverdominguez` (IPv6-only, local resolution only)
 - Path: `/home/dominguez/telegram-hub-bot`
 - Backups: `/home/dominguez/backups/nexushub/` (last 10)
+- Deploy: Felipe only, via `./scripts/deploy.sh` from Mac
 
 ## When You Finish Work
 
@@ -184,6 +198,8 @@ After completing a feature, bugfix, or significant chunk of work:
 
 - Never modify `.env` or `data/` directory
 - Never call real external APIs (Anthropic, Microsoft, Google, Garmin) in tests
+- Never attempt SSH connections to the server or run deploy commands
+- Never modify `cd-production.yml` to add automatic triggers
 - Always run tests before committing
 - Keep prompts/*.md files — they are hot-reloadable and tracked in git
 - Use `os.homedir()` for paths — never hardcode `/home/dominguez` or `/Users/felipedominguez`
