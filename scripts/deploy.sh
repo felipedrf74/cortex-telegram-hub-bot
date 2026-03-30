@@ -101,6 +101,27 @@ ssh "$SERVER" "cd $REMOTE_DIR && npm ci --production 2>&1 | tail -1"
 ssh "$SERVER" "cd $REMOTE_DIR/content-engine && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -3"
 echo "   ✅ Dependencies updated"
 
+# ── 5b. Rebuild native modules for PM2's Node ────────
+# PM2 daemon runs under Linuxbrew Node (25.x) while system node is 22.x.
+# npm ci compiles native addons against system node, so we must rebuild
+# for the Node version PM2 actually uses to spawn child processes.
+echo ""
+echo "🔧 Rebuilding native modules for PM2 Node..."
+ssh "$SERVER" "
+  PM2_PID=\$(cat ~/.pm2/pm2.pid 2>/dev/null)
+  PM2_NODE=\$(readlink /proc/\$PM2_PID/exe 2>/dev/null)
+  SYSTEM_NODE=\$(which node)
+  if [ -n \"\$PM2_NODE\" ] && [ \"\$PM2_NODE\" != \"\$SYSTEM_NODE\" ]; then
+    PM2_NODE_DIR=\$(dirname \"\$PM2_NODE\")
+    echo \"   PM2 uses: \$PM2_NODE\"
+    echo \"   System:   \$SYSTEM_NODE\"
+    cd $REMOTE_DIR && PATH=\"\$PM2_NODE_DIR:\$PATH\" npm rebuild better-sqlite3 2>&1 | tail -1
+    echo '   ✅ Native modules rebuilt for PM2 Node'
+  else
+    echo '   ✅ PM2 and system Node match — no rebuild needed'
+  fi
+"
+
 # ── 6. Ensure protected directories exist ────────────
 ssh "$SERVER" "mkdir -p $REMOTE_DIR/data/garmin-tokens $REMOTE_DIR/logs $REMOTE_DIR/content-engine/data"
 
