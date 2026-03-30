@@ -390,6 +390,9 @@ interface LastDomainState {
 
 const lastActiveDomain = new Map<number, LastDomainState>();
 
+/** Tracks the last pending calendar callback ref per user, so text follow-ups can reference it */
+const pendingCalendarRef = new Map<number, { ref: string; timestamp: number }>();
+
 /** Conversation continuity window — if user replies within this time, prefer sticking with the same domain */
 const CONTINUITY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -3189,6 +3192,55 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
 
     const userId = ctx.from?.id;
 
+    // ── Calendar follow-up detection ──
+    // If user recently received a calendar preview and sends a text about creating/adjusting events,
+    // auto-trigger the calendar creation instead of routing to a domain that lacks context.
+    if (userId) {
+      const pending = pendingCalendarRef.get(userId);
+      if (pending && Date.now() - pending.timestamp < 10 * 60 * 1000) {
+        const lower = text.toLowerCase();
+        const isCalendarFollowUp = /\b(cri[ae]|create|adjust|add|confirm|yes|sim|manda|vai|go ahead)\b/.test(lower)
+          && /\b(event|evento|calendar|calend[aá]rio|outlook|agenda)\b/.test(lower);
+        if (isCalendarFollowUp) {
+          const cbData = getCallback(pending.ref);
+          if (cbData) {
+            pendingCalendarRef.delete(userId);
+            await ctx.reply('⏳ Criando eventos no calendário...');
+            const events = cbData.events as { title: string; start: string; end: string; description?: string }[];
+            const categories = cbData.categories as string[];
+            let successCount = 0;
+            const createdTitles: string[] = [];
+            for (const event of events) {
+              try {
+                const created = await createCalendarEvent({
+                  title: event.title, start: event.start, end: event.end,
+                  description: event.description, categories,
+                });
+                successCount++;
+                createdTitles.push(created.summary);
+              } catch (err) {
+                logger.error({ err, eventTitle: event.title }, 'Failed to create calendar event from text follow-up');
+              }
+            }
+            if (successCount === 0) {
+              await ctx.reply('⚠️ Falha ao criar os eventos. Tente novamente.');
+              return;
+            }
+            let msg = `📅✅ <b>${successCount} evento${successCount > 1 ? 's' : ''} criado${successCount > 1 ? 's' : ''}:</b>\n`;
+            for (const title of createdTitles) msg += `\n  📌 ${escapeHtml(title)}`;
+            msg += `\n\n🏷️ ${escapeHtml(categories[0])}`;
+            try {
+              await ctx.reply(msg, { parse_mode: 'HTML' });
+            } catch (err) {
+              if (isHtmlParseError(err)) await ctx.reply(msg.replace(/<[^>]*>/g, ''));
+              else throw err;
+            }
+            return;
+          }
+        }
+      }
+    }
+
     // ── Build active conversation context for the classifier ──
     // If the user recently interacted with a domain and the bot's last message
     // is still unanswered, pass that context to the classifier so it can
@@ -3441,6 +3493,23 @@ async function handleCalendarExtraction(
 
   const info = await parseCaptionInfo(caption);
 
+  // ── Shift past events forward to next occurrence of same weekday ──
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const allInPast = result.events.every((e) => new Date(e.start) < todayStart);
+  if (allInPast && result.events.length > 0) {
+    const earliest = new Date(Math.min(...result.events.map((e) => new Date(e.start).getTime())));
+    const daysDiff = Math.ceil((todayStart.getTime() - earliest.getTime()) / (24 * 60 * 60 * 1000));
+    const weeksToShift = Math.ceil(daysDiff / 7);
+    const msShift = weeksToShift * 7 * 24 * 60 * 60 * 1000;
+    logger.info({ weeksShifted: weeksToShift, originalStart: earliest.toISOString() },
+      'Calendar events are in the past — shifting forward to preserve weekdays');
+    for (const e of result.events) {
+      e.start = new Date(new Date(e.start).getTime() + msShift).toISOString().replace('Z', '').split('.')[0];
+      e.end = new Date(new Date(e.end).getTime() + msShift).toISOString().replace('Z', '').split('.')[0];
+    }
+  }
+
   // ── Apply prefix to event titles (SMS - / EC - ) ──
   const prefixedEvents = result.events.map((e) => ({
     ...e,
@@ -3522,7 +3591,11 @@ async function handleCalendarExtraction(
     categories: info.categories,
     fileId,
     caption,
-  });
+  }, 10 * 60 * 1000); // 10 min TTL for calendar follow-ups
+
+  // Track pending calendar ref so text follow-ups can trigger creation
+  const calUserId = ctx.from?.id;
+  if (calUserId) pendingCalendarRef.set(calUserId, { ref, timestamp: Date.now() });
 
   const keyboard = new InlineKeyboard()
     .text(`✅ Criar ${prefixedEvents.length} evento${prefixedEvents.length > 1 ? 's' : ''}`, `cal:create:${ref}`)

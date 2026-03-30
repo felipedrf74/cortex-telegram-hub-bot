@@ -15,7 +15,7 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
-import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, getJobMap } from '../portal/telemetry';
+import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
@@ -92,6 +92,9 @@ export function startScheduler(bot: Bot): void {
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
   registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
+
+  // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
+  seedJobLastRunFromHistory();
 
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
@@ -586,11 +589,11 @@ export function startScheduler(bot: Bot): void {
   }
 
   // ── DST Watchdog (every 15 min) — recovers jobs missed during clock changes ──
-  // Interval crons (*/15) are DST-safe. This checks fixed-time jobs for missed runs.
+  // Runs at minute 2/17/32/47 to avoid racing with normal crons that fire at :00/:15/:30/:45.
   const DST_SKIP_JOBS = new Set([
     'reminders', 'shared_list', 'garmin_keepalive', 'invoice_queue', 'expire_signals',
   ]);
-  cron.schedule('*/15 * * * *', async () => {
+  cron.schedule('2,17,32,47 * * * *', async () => {
     const jobMap = getJobMap();
     const nowMs = Date.now();
     for (const [name, status] of jobMap) {
@@ -604,8 +607,10 @@ export function startScheduler(bot: Bot): void {
         const lastRan = status.lastRunAt ? new Date(status.lastRunAt).getTime() : 0;
 
         // Job was expected to run since last execution but didn't — fire it now
-        // Grace window: only recover if missed within the last 3 hours (avoid re-firing old jobs on restart)
-        if (expectedPrev > lastRan && (nowMs - expectedPrev) < 3 * 60 * 60 * 1000) {
+        // Min 2 min overdue: avoids racing with the normal cron that should fire the job
+        // Max 3 hour window: avoids re-firing stale jobs after a restart
+        const overdueMs = nowMs - expectedPrev;
+        if (expectedPrev > lastRan && overdueMs >= 2 * 60 * 1000 && overdueMs < 3 * 60 * 60 * 1000) {
           logger.warn({ job: name, label: status.label, expectedAt: new Date(expectedPrev).toISOString() },
             'DST watchdog: recovering missed job');
           status.wrappedFn().catch((err) => {
