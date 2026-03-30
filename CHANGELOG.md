@@ -27,6 +27,29 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 Triggered by: Morning briefing and 5+ scheduled jobs missed on 2026-03-29 DST transition day.
 
+## [4.4.2] — 2026-03-30
+
+### DST Watchdog Hardening & Calendar UX Improvements
+
+#### Fix: DST watchdog firing duplicates on restart and at cron boundaries
+- Watchdog ran at `*/15` (minute :00) — same time as normal crons, causing race conditions and duplicate job executions
+- On restart, in-memory `lastRunAt` was null for all jobs, so watchdog re-fired everything within the 3-hour window
+- Fix: changed watchdog schedule to `2,17,32,47` (offset by 2 min) with 2-minute minimum overdue threshold
+- Fix: `seedJobLastRunFromHistory()` loads last successful run times from `job_history` table on startup
+
+#### Fix: Calendar image events created on past dates
+- When user sends a calendar screenshot showing last week's dates, events were created in the past
+- Fix: updated vision prompt to instruct Claude to shift past dates to next weekday occurrence
+- Fix: added post-extraction safety net in `handleCalendarExtraction` — if all events are in the past, auto-shifts forward by whole weeks to preserve weekday alignment
+
+#### New: Calendar text follow-up context
+- When user sends a text like "events were not created, create them" after a calendar image preview, the bot now recognizes it as a calendar follow-up and creates the pending events
+- Previously, such messages were routed to the secretary domain which had no context about the calendar image
+- 10-minute context window per user with regex-based intent detection (PT/EN)
+
+#### Infra: Google Calendar token refresh
+- Re-authenticated Google OAuth2 via OAuth Playground — Calendar, Gmail, and Drive all working on new refresh token
+
 ---
 
 ## [4.4.0] — 2026-03-26

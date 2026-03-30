@@ -161,6 +161,7 @@ Return:
 - Use 24h format, ISO 8601, NO timezone suffix (system handles tz).
 - If no end time, assume 1h duration.
 - If all-day event, use 00:00:00 to 23:59:59.
+- IMPORTANT: If the dates shown in the image are in the past (before today), shift ALL events forward to the NEXT occurrence of the same weekday. For example, if the image shows Monday March 23 but today is March 29, map it to Monday March 30.
 - If week shown already passed this year, assume next year.
 - Keep titles concise (max 60 chars). Skip description unless essential.
 - OMIT Lunch events. Focus on meetings and work events.

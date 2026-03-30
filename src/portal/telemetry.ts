@@ -10,6 +10,7 @@
  * with zero risk of circular dependencies.
  */
 import type { Bot } from 'grammy';
+import { logger } from '../utils/logger';
 
 // ─── Activity Event Ring Buffer ──────────────────────────────────────
 
@@ -213,6 +214,33 @@ let _getDb: DbProvider | null = null;
 /** Set the database provider once the DB is initialized. */
 export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
+}
+
+/** Seed lastRunAt for all registered jobs from job_history. Call after DB init. */
+export function seedJobLastRunFromHistory(): void {
+  if (!_getDb) return;
+  try {
+    const db = _getDb() as any;
+    const rows = db.prepare(`
+      SELECT job_name, MAX(ts) as last_ts
+      FROM job_history WHERE result = 'success'
+      GROUP BY job_name
+    `).all() as { job_name: string; last_ts: string }[];
+    let seeded = 0;
+    for (const row of rows) {
+      const status = jobMap.get(row.job_name);
+      if (status && !status.lastRunAt) {
+        status.lastRunAt = new Date(row.last_ts + 'Z').toISOString();
+        status.lastResult = 'success';
+        seeded++;
+      }
+    }
+    if (seeded > 0) {
+      logger.info({ seeded }, 'DST watchdog: seeded lastRunAt from job_history');
+    }
+  } catch {
+    // non-critical — watchdog will just be conservative
+  }
 }
 
 /** Persist a job run to the job_history table (non-critical). */
