@@ -34,6 +34,57 @@ export interface AIToolResultContent {
   content: string;
 }
 
+// ─── Model Routing (shared across all providers) ──────────────────
+
+/**
+ * Result of model routing: which model and token limit to use for a task.
+ */
+export interface ModelRouting {
+  model: string;
+  maxTokens: number;
+}
+
+/**
+ * Provider-agnostic model configuration. Each provider (Anthropic, OpenAI,
+ * Gemini, future) defines these four values in config.ts.
+ *
+ * To add a new provider, create a config block with these keys and call
+ * getModelRouting(config.yourProvider, domain) in your adapter.
+ */
+export interface ProviderModelConfig {
+  /** Expensive/capable model for complex tasks (secretary with multi-step tools) */
+  model: string;
+  /** Cheap/fast model for simple tasks (classification, triathlon, content) */
+  classifierModel: string;
+  /** Default max tokens for simple domains (content: ~1024) */
+  maxTokens: number;
+  /** Higher token limit for secretary (needs headroom for parallel tool calls) */
+  secretaryMaxTokens: number;
+}
+
+/**
+ * Determine which model and token limit to use for a given domain.
+ *
+ * Routing rules:
+ * - secretary: expensive model + high token limit (multi-step tool use)
+ * - triathlon: cheap model + medium token limit (tool calls + calendar ops)
+ * - content:   cheap model + default token limit (conversational)
+ */
+export function getModelRouting(
+  cfg: ProviderModelConfig,
+  domain: DomainName,
+): ModelRouting {
+  switch (domain) {
+    case 'secretary':
+      return { model: cfg.model, maxTokens: cfg.secretaryMaxTokens };
+    case 'triathlon':
+      return { model: cfg.classifierModel, maxTokens: 2048 };
+    case 'content':
+    default:
+      return { model: cfg.classifierModel, maxTokens: cfg.maxTokens };
+  }
+}
+
 // ─── Provider Interface ─────────────────────────────────────────────
 
 export interface AIProvider {

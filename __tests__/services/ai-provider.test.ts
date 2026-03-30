@@ -6,8 +6,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { FallbackProvider } from '../../src/services/ai-provider';
-import type { AIProvider, AICallResult } from '../../src/services/ai-provider';
+import { FallbackProvider, getModelRouting } from '../../src/services/ai-provider';
+import type { AIProvider, AICallResult, ProviderModelConfig } from '../../src/services/ai-provider';
 import type { ClassificationResult } from '../../src/domains/types';
 
 // ─── Helper: create a mock AIProvider ────────────────────────────────
@@ -256,5 +256,36 @@ describe('AnthropicProvider', () => {
       );
       expect(result.text).toBe('Task created!');
     });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Model Routing (shared helper)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('getModelRouting', () => {
+  const cfg: ProviderModelConfig = {
+    model: 'expensive-model',
+    classifierModel: 'cheap-model',
+    maxTokens: 1024,
+    secretaryMaxTokens: 2048,
+  };
+
+  it('secretary: expensive model + high token limit', () => {
+    const r = getModelRouting(cfg, 'secretary');
+    expect(r.model).toBe('expensive-model');
+    expect(r.maxTokens).toBe(2048);
+  });
+
+  it('triathlon: cheap model + 2048 tokens (tool calls need headroom)', () => {
+    const r = getModelRouting(cfg, 'triathlon');
+    expect(r.model).toBe('cheap-model');
+    expect(r.maxTokens).toBe(2048);
+  });
+
+  it('content: cheap model + default token limit', () => {
+    const r = getModelRouting(cfg, 'content');
+    expect(r.model).toBe('cheap-model');
+    expect(r.maxTokens).toBe(1024);
   });
 });
