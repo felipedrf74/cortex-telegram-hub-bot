@@ -17,15 +17,24 @@
  *   NOTION_DB_ID     — Development Board database ID (default: from memory)
  */
 
-const NOTION_TOKEN = process.env.NOTION_TOKEN || '';
 const NOTION_DB_ID = process.env.NOTION_DB_ID || '332ad49d-23e7-81aa-831e-d5a3ceff20c1';
 const WORKTREE_BASE = require('path').resolve(__dirname, '../../nexushub-worktrees');
 const REPO_DIR = require('path').resolve(__dirname, '..');
 const fs = require('fs');
 const path = require('path');
 
+// Read NOTION_TOKEN from env or .env.agents fallback
+let NOTION_TOKEN = process.env.NOTION_TOKEN || '';
 if (!NOTION_TOKEN) {
-  console.error('❌ NOTION_TOKEN required. Set it as environment variable.');
+  try {
+    const f = fs.readFileSync(path.join(__dirname, '..', '.env.agents'), 'utf8');
+    const m = f.match(/NOTION_TOKEN=(.+)/);
+    if (m) NOTION_TOKEN = m[1].trim();
+  } catch {}
+}
+
+if (!NOTION_TOKEN) {
+  console.error('❌ NOTION_TOKEN required. Set env var or create .env.agents');
   process.exit(1);
 }
 

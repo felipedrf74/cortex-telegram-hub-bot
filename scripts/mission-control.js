@@ -182,6 +182,29 @@ end tell`;
       return send(res, {ok:true,output:`Agent ${b.agent} started with task: ${fs.existsSync(path.join(WORKTREES, b.agent, '.agent-task.json')) ? JSON.parse(fs.readFileSync(path.join(WORKTREES, b.agent, '.agent-task.json'),'utf8')).title : 'unknown'}`});
     }
     if (route === 'stop-agent') { const b = await readBody(req); await run(`pkill -f "worktrees/${b.agent}" 2>/dev/null; pkill -f "launch-agent.sh ${b.agent}" 2>/dev/null; true`); return send(res, {ok:true,output:`Agent ${b.agent} stopped`}); }
+    if (route === 'view-terminal') {
+      const b = await readBody(req);
+      let tty = '';
+      try { tty = execSync(`ps -p $(pgrep -f "worktrees/${b.agent}" | head -1) -o tty= 2>/dev/null`, { encoding: 'utf8' }).trim(); } catch {}
+      const searchTerm = tty || b.agent;
+      const matchBy = tty ? `tty of s contains "${tty}"` : `name of s contains "${b.agent}" or name of s contains "launch-agent"`;
+      const script = `tell application "iTerm"
+activate
+tell current window
+repeat with t in tabs
+repeat with s in sessions of t
+if ${matchBy} then
+select t
+return "focused"
+end if
+end repeat
+end repeat
+end tell
+end tell
+return "not found"`;
+      const r2 = await run(`osascript -e '${script.replace(/'/g,"'\\''")}'`);
+      return send(res, {ok:r2.ok,output:r2.output.includes('focused') ? `Switched to ${b.agent} terminal` : `No terminal found for ${b.agent}. Start the agent first.`});
+    }
     if (route === 'write-prompt') { const b = await readBody(req); fs.writeFileSync(path.join(WORKTREES,b.agent,'.agent-prompt.md'), b.prompt); return send(res, {ok:true,output:`Prompt written to ${b.agent}/.agent-prompt.md`}); }
     if (route === 'rollback') return send(res, await run('./scripts/rollback.sh latest'));
     if (route === 'server-status') return send(res, await run('ssh dominguez@serverdominguez "pm2 list" 2>&1 || echo "Cannot reach server"'));
@@ -315,52 +338,50 @@ async function moveT(id,s){await api('move-task',{id,status:s});T=T.map(t=>t.id=
 const PAGE4 = `<script>
 function rAgents(){
   return '<div class="ag">'+AG.map(a=>{
-    const i=AI[a.name]||AI.backend;
-    const sm={
-      online:{l:'● Online',bg:'rgba(45,212,160,.15)',c:'#2dd4a0'},
-      'has-task':{l:'◉ Has task (offline)',bg:'rgba(245,166,35,.15)',c:'#f5a623'},
-      'has-prompt':{l:'◎ Prompt ready (offline)',bg:'rgba(74,158,255,.15)',c:'#4a9eff'},
-      offline:{l:'○ Offline',bg:'rgba(85,93,117,.15)',c:'#555d75'}
-    };
-    const st=sm[a.status]||sm.offline;
-    return '<div class="ag-c" style="border-left-color:'+i.c+'"><div class="hd"><div><span style="font-size:16px">'+i.e+'</span> <b>'+i.n+'</b></div>'
-      +'<span class="badge" style="background:'+st.bg+';color:'+st.c+'">'+st.l+'</span></div>'
-      +'<div style="font-size:10px;color:var(--t2);margin-top:2px">'+i.r+(a.pid?' · PID: '+a.pid:'')+'</div>'
-      +(a.task?'<div class="tk"><b>'+a.task.title+'</b><div style="color:var(--t3);margin-top:2px">'+(a.task.priority||'')+' · '+(a.task.agent||'')+'</div></div>'
-       :'<div class="tk" style="color:var(--t3)">No task assigned</div>')+((a.name==='qa'&&a.queueCount>0)?'<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">📥 '+a.queueCount+' task(s) queued for validation</div>':'')
-      +'<div class="btns">'
-      +'<button class="btn btn-green" onclick="startTask(&#39;'+a.name+'&#39;)">▸ Start task</button>'
-      +(a.status==='online'
-        ?'<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">■ Stop</button>'
-        :'<button class="btn" onclick="startAgent(&#39;'+a.name+'&#39;)">▸ Launch shell</button>')
-      +'<button class="btn btn-blue" onclick="checkAgent(&#39;'+a.name+'&#39;)">👁 WIP</button>'
-      +'<button class="btn btn-amber" onclick="markDone(&#39;'+a.name+'&#39;)">✓ Done</button>'
-      +'<button class="btn" onclick="clearAgent(&#39;'+a.name+'&#39;)">✕ Clear</button>'
-      +((a.name==='qa')?'<button class="btn btn-orange" onclick="viewQAQueue()">📥 Queue</button>':'')+'<button class="btn btn-purple" onclick="agentGitLog(&#39;'+a.name+'&#39;)">⎇ Git log</button>'
-      +'</div>'
-      +'<div class="out" id="out-'+a.name+'" style="display:none"></div>'
-      +'</div>'
-  }).join('')+'</div>'
+    var i=AI[a.name]||AI.backend;
+    var sm={online:{l:"\\u25cf Online",bg:"rgba(45,212,160,.15)",c:"#2dd4a0"},"has-task":{l:"\\u25c9 Has task (offline)",bg:"rgba(245,166,35,.15)",c:"#f5a623"},"has-prompt":{l:"\\u25ce Prompt ready",bg:"rgba(74,158,255,.15)",c:"#4a9eff"},offline:{l:"\\u25cb Offline",bg:"rgba(85,93,117,.15)",c:"#555d75"}};
+    var st=sm[a.status]||sm.offline;
+    var h='<div class="ag-c" style="border-left-color:'+i.c+'">';
+    h+='<div class="hd"><div><span style="font-size:16px">'+i.e+'</span> <b>'+i.n+'</b></div>';
+    h+='<span class="badge" style="background:'+st.bg+';color:'+st.c+'">'+st.l+'</span></div>';
+    h+='<div style="font-size:10px;color:var(--t2);margin-top:2px">'+i.r+(a.pid?" PID:"+a.pid:"")+'</div>';
+    if(a.task){h+='<div class="tk"><b>'+a.task.title+'</b><div style="color:var(--t3);margin-top:2px">'+(a.task.priority||"")+'</div></div>';}
+    else{h+='<div class="tk" style="color:var(--t3)">No task assigned</div>';}
+    if(a.name==="qa"&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for QA</div>";}
+    h+='<div class="btns">';
+    h+='<button class="btn btn-green" onclick="startTask(&#39;'+a.name+'&#39;)">Start task</button>';
+    if(a.status==="online"){h+='<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">Stop</button>';}
+    else{h+='<button class="btn" onclick="startAgent(&#39;'+a.name+'&#39;)">Launch shell</button>';}
+    h+='<button class="btn btn-blue" onclick="checkAgent(&#39;'+a.name+'&#39;)">WIP</button>';
+    h+='<button class="btn" onclick="viewTerminal(&#39;'+a.name+'&#39;)">Terminal</button>';
+    h+='<button class="btn btn-amber" onclick="markDone(&#39;'+a.name+'&#39;)">Done</button>';
+    h+='<button class="btn" onclick="clearAgent(&#39;'+a.name+'&#39;)">Clear</button>';
+    if(a.name==="qa"){h+='<button class="btn btn-orange" onclick="viewQAQueue()">Queue</button>';}
+    h+='<button class="btn btn-purple" onclick="agentGitLog(&#39;'+a.name+'&#39;)">Git log</button>';
+    h+='</div><div class="out" id="out-'+a.name+'" style="display:none"></div></div>';
+    return h;
+  }).join("")+'</div>'
   +'<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">'
-  +'<button class="btn btn-green btn-big" onclick="startAllTasks()">▸ Start all tasks</button>'
-  +'<button class="btn btn-red btn-big" onclick="stopAll()">■ Stop all</button>'
-  +'<button class="btn btn-big" onclick="refreshAgents()">⟳ Refresh status</button>'
-  +'<button class="btn btn-big" onclick="dispatchAndStart()">🚀 Dispatch + Start all</button>'
+  +'<button class="btn btn-green btn-big" onclick="startAllTasks()">Start all tasks</button>'
+  +'<button class="btn btn-red btn-big" onclick="stopAll()">Stop all</button>'
+  +'<button class="btn btn-big" onclick="refreshAgents()">Refresh status</button>'
+  +'<button class="btn btn-big" onclick="dispatchAndStart()">Dispatch + Start all</button>'
   +'</div>'
 }
-async function startTask(n){log('Starting task for '+n+'...');const d=await api('start-task',{agent:n});showOut(n,d.output||'Started');setTimeout(refreshAgents,4000)}
-async function startAgent(n){log('Launching shell for '+n+'...');const d=await api('start-agent',{agent:n});showOut(n,d.output||'Launched');setTimeout(refreshAgents,3000)}
-async function stopAgent(n){log('Stopping '+n+'...');const d=await api('stop-agent',{agent:n});showOut(n,d.output||'Stopped');setTimeout(refreshAgents,2000)}
-async function checkAgent(n){const d=await api('agent-log',{agent:n});showOut(n,d.output||'No task files found')}
-async function markDone(n){const d=await api('agent-done',{agent:n,summary:'completed via Mission Control'});showOut(n,d.output||'Done');refresh()}
-async function clearAgent(n){await api('clear-stale');showOut(n,'Task files cleared');refreshAgents()}
-async function agentGitLog(n){const d=await api('agent-branches',{agent:n});showOut(n,d.output||'No commits')}
-async function startAllTasks(){for(const n of ['backend','qa','devops','flex']){await startTask(n);await new Promise(r=>setTimeout(r,2000))}}
-async function stopAll(){for(const n of ['backend','qa','devops','flex'])await stopAgent(n);refreshAgents()}
-async function dispatchAndStart(){log('Dispatching + starting all...');await api('dispatch');await new Promise(r=>setTimeout(r,2000));await startAllTasks()}
-async function refreshAgents(){const d=await api('agents');if(d.ok){AG=d.agents;render()}}
-async function viewQAQueue(){const d=await api("qa-queue");if(d.ok&&d.queue.length>0){const txt=d.queue.map((q,i)=>(i+1)+". "+q.title+" (from: "+q.originAgent+", queued: "+new Date(q.queuedAt).toLocaleTimeString()+")").join("\n");showOut("qa","QA Queue ("+d.count+" pending):\n"+txt)}else{showOut("qa","QA queue is empty")}}
-function showOut(n,txt){const el=document.getElementById('out-'+n);if(el){el.style.display='block';el.textContent=txt}}
+async function startTask(n){log("Starting task "+n+"...");var d=await api("start-task",{agent:n});showOut(n,d.output||"Started");setTimeout(refreshAgents,4000)}
+async function startAgent(n){log("Launching "+n+"...");var d=await api("start-agent",{agent:n});showOut(n,d.output||"Launched");setTimeout(refreshAgents,3000)}
+async function stopAgent(n){log("Stopping "+n+"...");var d=await api("stop-agent",{agent:n});showOut(n,d.output||"Stopped");setTimeout(refreshAgents,2000)}
+async function checkAgent(n){var d=await api("agent-log",{agent:n});showOut(n,d.output||"No task files")}
+async function markDone(n){var d=await api("agent-done",{agent:n,summary:"completed via Mission Control"});showOut(n,d.output||"Done");refresh()}
+async function clearAgent(n){await api("clear-stale");showOut(n,"Task files cleared");refreshAgents()}
+async function agentGitLog(n){var d=await api("agent-branches",{agent:n});showOut(n,d.output||"No commits")}
+async function viewQAQueue(){var d=await api("qa-queue");if(d.ok&&d.queue.length>0){var t=d.queue.map(function(q,i){return(i+1)+". "+q.title+" (from:"+q.originAgent+")"}).join("\\n");showOut("qa","QA Queue ("+d.count+"):\\n"+t)}else{showOut("qa","QA queue empty")}}
+async function startAllTasks(){for(var n of["backend","qa","devops","flex"]){await startTask(n);await new Promise(function(r){setTimeout(r,2000)})}}
+async function stopAll(){for(var n of["backend","qa","devops","flex"])await stopAgent(n);refreshAgents()}
+async function dispatchAndStart(){log("Dispatch + start...");await api("dispatch");await new Promise(function(r){setTimeout(r,2000)});await startAllTasks()}
+async function refreshAgents(){var d=await api("agents");if(d.ok){AG=d.agents;render()}}
+async function viewTerminal(n){log("Focusing "+n+" terminal...");var d=await api("view-terminal",{agent:n});showOut(n,d.output||"No terminal found")}
+function showOut(n,t){var el=document.getElementById("out-"+n);if(el){el.style.display="block";el.textContent=t}}
 </script>`;
 const PAGE5 = `<script>
 function rPipe(){
