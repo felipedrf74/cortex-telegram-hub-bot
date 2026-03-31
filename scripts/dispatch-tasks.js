@@ -71,21 +71,6 @@ If this task has no user-facing change, write "No user-facing change — interna
 
 This review summary is MANDATORY. Felipe uses it to decide whether to merge your work.
 `;
-1. Step-by-step commands Felipe can run to verify
-2. Expected output for each step
-
-### Tests added
-- List new test files/cases
-- Total test count before → after
-
-### Breaking changes
-- None / list any
-
-### Dependencies added
-- None / list any new npm packages
-
-This review summary is MANDATORY. Felipe uses it to decide whether to merge your work.
-`;
 
 // ─── Notion API ─────────────────────────────────────────────────────
 
@@ -291,6 +276,7 @@ ${task.id}
 - Do NOT modify feature code or domain handlers
 - Do NOT merge to develop or main
 ${REVIEW_HANDOFF}`;
+  } else {
     prompt = `# ⚡ Feature Agent Task
 
 ## Task: ${task.title}

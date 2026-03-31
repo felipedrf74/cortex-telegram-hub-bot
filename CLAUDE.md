@@ -16,8 +16,34 @@ If `.agent-prompt.md` exists, **read it and execute the task described**. It con
 If no task file exists, wait for instructions from Felipe.
 
 When you complete the task:
-1. Follow all steps in the prompt file (commit, push, log)
-2. Then tell Felipe: "Task complete. Run `node scripts/dispatch-tasks.js --done <your-agent-dir>` to mark it in Notion and get the next task."
+1. Follow all steps in the prompt file (commit, push)
+2. Run the self-chain script to hand off automatically:
+```bash
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent <your-agent-dir> --summary "brief description of what you did"
+```
+Replace `<your-agent-dir>` with your worktree folder name: `backend`, `qa`, `devops`, or `flex`.
+
+This script automatically:
+- Updates the Notion card status
+- Triggers QA validation if needed
+- Fetches your next task and writes a new .agent-prompt.md
+- You then read the new .agent-prompt.md and continue working
+
+3. After running agent-complete.js, check for a new .agent-prompt.md:
+```bash
+cat .agent-prompt.md 2>/dev/null
+```
+If it exists, read it and execute the next task. If not, you're idle — wait for instructions.
+
+### QA Agent: After validating
+If you are the QA agent validating another agent's work:
+```bash
+# If everything passes:
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent qa --verdict pass
+
+# If something fails:
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent qa --verdict fail --reason "describe what failed"
+```
 
 ---
 

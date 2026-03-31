@@ -90,11 +90,11 @@ case "$COMMAND" in
   summary)
     cd "$REPO_DIR"
     echo "🤖 Nexus Hub Agents:"
-    git worktree list --porcelain | grep -E "^worktree|^branch" | paste - - | while read wt branch; do
-      DIR=$(echo "$wt" | sed 's/worktree //')
-      BR=$(echo "$branch" | sed 's/branch refs\/heads\///')
+    git worktree list --porcelain | grep -E "^worktree|^branch" | paste - - | while IFS=$'\t' read -r wt branch; do
+      DIR="${wt#worktree }"
+      BR="${branch#branch refs/heads/}"
       NAME=$(basename "$DIR")
-      CHANGES=$(cd "$DIR" && git status --porcelain | wc -l | tr -d ' ')
+      CHANGES=$(cd "$DIR" && git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
       if [ "$CHANGES" -gt 0 ]; then
         echo "  ⚡ $NAME ($BR) — $CHANGES changes"
       else
