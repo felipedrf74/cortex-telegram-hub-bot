@@ -111,6 +111,8 @@ describe('Database Schema', () => {
     'content_patterns', 'content_knowledge', 'video_transcripts',
     'video_studies', 'content_topic_feedback', 'agent_signals',
     'agent_runs', 'book_library', 'content_pipeline',
+    'installed_skills', 'skill_submodules',
+    'skill_credentials', 'skill_migrations',
   ];
 
   it.each(expectedTables)('table "%s" exists', (table) => {

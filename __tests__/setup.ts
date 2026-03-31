@@ -69,7 +69,11 @@ vi.mock('grammy', () => {
     row = vi.fn().mockReturnThis();
   }
 
-  return { Bot, InlineKeyboard, Context: class {} };
+  class InputFile {
+    constructor(public source: string | Buffer, public filename?: string) {}
+  }
+
+  return { Bot, InlineKeyboard, InputFile, Context: class {} };
 });
 
 // Mock Pino logger
