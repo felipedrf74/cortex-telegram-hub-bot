@@ -1,0 +1,9 @@
+{
+  "id": "334ad49d-23e7-810a-89db-cecc81e25168",
+  "title": "Skill database migrations",
+  "description": "Create migration for: installed_skills (id PK, version, enabled, config JSON), skill_submodules (skill_id, submodule_id, enabled, config), skill_credentials (encrypted), skill_migrations tracking table.",
+  "priority": "\ud83d\udfe0 High",
+  "phase": "Phase 1 \u2014 Private Beta",
+  "tags": [],
+  "originAgent": "devops"
+}
