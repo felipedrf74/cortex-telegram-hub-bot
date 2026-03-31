@@ -182,7 +182,7 @@ echo ""
 if [ -n "$NOTION_TOKEN" ]; then
   echo "📋 Logging deploy to Notion..."
   DEPLOY_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  AUTHOR=$(git config user.name 2>/dev/null || echo "Felipe")
+  AUTHOR="Felipe Dominguez"
 
   curl -s -X POST "https://api.notion.com/v1/pages" \
     -H "Authorization: Bearer $NOTION_TOKEN" \
