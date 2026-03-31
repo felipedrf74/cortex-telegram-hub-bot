@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Cortex Telegram Hub Bot are documented in this file.
+All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
 
@@ -454,7 +454,7 @@ Complete interactive MFA flow for Garmin Connect, plus portal improvements, rout
 
 ### Portal Dashboard Enhancements — Timeline, Email Log, Job History
 
-Five new visual features for the Cortex Status Portal, plus email delivery tracking and persistent job history.
+Five new visual features for the Nexus Hub Status Portal, plus email delivery tracking and persistent job history.
 
 #### 1. Daily Timeline View
 - Horizontal 24h timeline at the top of the dashboard showing today's activity
@@ -496,7 +496,7 @@ Five new visual features for the Cortex Status Portal, plus email delivery track
 
 ## [3.3.0] — 2026-03-14
 
-### Cortex Status Portal — Self-Hosted Web Dashboard
+### Nexus Hub Status Portal — Self-Hosted Web Dashboard
 
 Real-time monitoring dashboard for all bot subsystems, accessible at `http://server:8200`. Single-page app with 10-second auto-refresh, Bearer token auth, and 8 quick actions.
 

@@ -1,12 +1,12 @@
-# Cortex Telegram Bot — Adaptation Guide
+# Nexus Hub Telegram Bot — Adaptation Guide
 
 ## What This Is
 
-This guide maps the improvements made to Claude.ai skills (Secretary + Content Creation) into actionable changes for Cortex's domain system prompts. Since Cortex uses its own Grammy/TypeScript/SQLite architecture with Claude API calls, the adaptations are about porting the **concepts and prompt patterns** — not the MCP tool calls.
+This guide maps the improvements made to Claude.ai skills (Secretary + Content Creation) into actionable changes for Nexus Hub's domain system prompts. Since Nexus Hub uses its own Grammy/TypeScript/SQLite architecture with Claude API calls, the adaptations are about porting the **concepts and prompt patterns** — not the MCP tool calls.
 
 ---
 
-## 1. Secretary Domain → Cortex Secretary Skill
+## 1. Secretary Domain → Nexus Hub Secretary Skill
 
 ### What Changed in Claude.ai
 - Added structured output templates for quick commands
@@ -14,10 +14,10 @@ This guide maps the improvements made to Claude.ai skills (Secretary + Content C
 - Added Garmin integration for training-aware scheduling
 - Added content-calendar bridge
 
-### What to Port to Cortex
+### What to Port to Nexus Hub
 
 #### A) Structured Output Templates
-Add these templates to the secretary domain's system prompt in Cortex. They ensure consistent, scannable responses regardless of which Claude model handles the request.
+Add these templates to the secretary domain's system prompt in Nexus Hub. They ensure consistent, scannable responses regardless of which Claude model handles the request.
 
 **Daily overview template:**
 ```
@@ -40,7 +40,7 @@ Add these templates to the secretary domain's system prompt in Cortex. They ensu
 **Implementation**: Add these templates directly to your secretary domain's system prompt under a "## Response Formats" section. Include the instruction: "When the user asks about their day or week, ALWAYS use these structured formats."
 
 #### B) Garmin-Aware Scheduling
-Since Cortex already has Garmin MCP integration and the nightly coaching briefing, extend it:
+Since Nexus Hub already has Garmin MCP integration and the nightly coaching briefing, extend it:
 
 **In the secretary system prompt, add:**
 ```
@@ -66,7 +66,7 @@ If content deadlines exist but no production blocks are scheduled, flag it.
 
 ---
 
-## 2. Content Creation Domain → Cortex Content Skill
+## 2. Content Creation Domain → Nexus Hub Content Skill
 
 ### What Changed in Claude.ai
 - Fixed research workflow to use web_search/web_fetch instead of broken screenshot flow
@@ -75,10 +75,10 @@ If content deadlines exist but no production blocks are scheduled, flag it.
 - Added scheduling bridge
 - Added platform-specific strategy sections
 
-### What to Port to Cortex
+### What to Port to Nexus Hub
 
 #### A) Research Workflow Fix
-The Cortex content domain likely has the same "take screenshots" instructions that don't work. Replace with:
+The Nexus Hub content domain likely has the same "take screenshots" instructions that don't work. Replace with:
 
 **In the content domain system prompt, replace any screenshot references with:**
 ```
@@ -114,10 +114,10 @@ Commands:
 /tiktok trending — Current TikTok trends in both niches
 ```
 
-**Implementation**: Add to the content domain system prompt. If Cortex uses a command router, register the new /tiktok commands.
+**Implementation**: Add to the content domain system prompt. If Nexus Hub uses a command router, register the new /tiktok commands.
 
 #### C) Channel Analytics Connection
-If Cortex's Channel Learning System (v3.7.0) already extracts YouTube data, connect it to the content domain:
+If Nexus Hub's Channel Learning System (v3.7.0) already extracts YouTube data, connect it to the content domain:
 
 **Add to content domain system prompt:**
 ```
@@ -131,7 +131,7 @@ Use this data to make specific recommendations like "Your cycling content averag
 **Implementation**: The Channel Learning System stores video analysis data. Expose a query function that the content domain can call to get recent performance metrics. Inject a summary of recent channel performance into the content domain's context (similar to how the Garmin nightly briefing works).
 
 #### D) YouTube Transcript Integration
-Cortex v3.7.0 added YouTube transcript extraction and deep video analysis via Claude Sonnet. Leverage this for reaction content:
+Nexus Hub v3.7.0 added YouTube transcript extraction and deep video analysis via Claude Sonnet. Leverage this for reaction content:
 
 **Add to content domain system prompt:**
 ```
@@ -152,7 +152,7 @@ For reaction content (/reaction command):
 ## 3. Cross-Domain Improvements
 
 ### A) Shared Context Between Secretary and Content
-Currently the secretary and content domains are siloed in Cortex. To enable the content-calendar bridge:
+Currently the secretary and content domains are siloed in Nexus Hub. To enable the content-calendar bridge:
 
 **Option 1 (Simple)**: Add a shared SQLite table `content_schedule` that both domains can read/write:
 ```sql
@@ -179,7 +179,7 @@ Add this routing logic to the content domain's handler if not already present.
 
 ---
 
-## 4. Priority Order for Cortex Implementation
+## 4. Priority Order for Nexus Hub Implementation
 
 | Priority | Change | Effort | Impact |
 |----------|--------|--------|--------|
@@ -191,7 +191,7 @@ Add this routing logic to the content domain's handler if not already present.
 | 6 | Create content_schedule shared table | 1-2 hr | Medium — cross-domain bridge |
 | 7 | Connect channel analytics to content domain | 2-3 hr | Medium — data-driven recommendations |
 
-Items 1-4 are quick system prompt updates. Items 5-7 require code changes in the Cortex bot.
+Items 1-4 are quick system prompt updates. Items 5-7 require code changes in the Nexus Hub bot.
 
 ---
 
@@ -201,4 +201,4 @@ The improved Claude.ai skill files are packaged alongside this guide:
 - `secretary/SKILL.md` — Updated secretary skill
 - `content-creation/SKILL.md` — Updated content creation skill
 
-Use these as reference when adapting the Cortex domain prompts — the structure and wording can be adapted directly.
+Use these as reference when adapting the Nexus Hub domain prompts — the structure and wording can be adapted directly.

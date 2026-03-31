@@ -2,7 +2,7 @@
 
 ## Project Context
 
-Cortex is a Telegram bot (`telegram-hub-bot/`) with 5 AI domains: secretary, triathlon, content, qliksense, aws. Each domain has its own system prompt, conversation history, and state context. Messages route via: slash commands → keyword matching → Haiku classifier. Only `secretary` has tool-use (Microsoft To Do, Calendar, Email). Other domains are conversational only.
+Nexus Hub is a Telegram bot (`telegram-hub-bot/`) with 5 AI domains: secretary, triathlon, content, qliksense, aws. Each domain has its own system prompt, conversation history, and state context. Messages route via: slash commands → keyword matching → Haiku classifier. Only `secretary` has tool-use (Microsoft To Do, Calendar, Email). Other domains are conversational only.
 
 **Key files:**
 - `src/services/anthropic.ts` — `DOMAIN_SYSTEM_PROMPTS`, `callDomain()`, `continueWithToolResults()`, `CLASSIFIER_SYSTEM_PROMPT`

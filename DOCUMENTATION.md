@@ -1,4 +1,4 @@
-# Cortex Telegram Hub Bot — Technical & Functional Documentation
+# Nexus Hub — Technical & Functional Documentation
 
 > **Version:** 4.0.0 | **Platform:** Node.js + TypeScript + Python | **AI:** Claude Sonnet/Haiku (Anthropic) | **Database:** SQLite
 
@@ -68,7 +68,7 @@ A multi-domain AI-powered Telegram personal assistant that unifies task manageme
      +────────────────+ | Garmin|    +─────────────────+
                         +───────+
               +─────────────────────────+
-              |  Cortex Status Portal   |
+              |  Nexus Hub Status Portal|
               |  (Express :8200)        |
               |  Same Node.js process   |
               +─────────────────────────+

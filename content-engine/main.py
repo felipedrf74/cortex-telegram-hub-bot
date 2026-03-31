@@ -28,9 +28,9 @@ logging.basicConfig(
 logger = logging.getLogger("content-engine")
 
 app = FastAPI(
-    title="Cortex Content Engine",
+    title="Nexus Hub Content Engine",
     version="0.1.0",
-    description="Research-powered content creation engine for the Cortex Telegram bot",
+    description="Research-powered content creation engine for the Nexus Hub Telegram bot",
 )
 
 app.include_router(research_router)
