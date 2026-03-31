@@ -19,14 +19,21 @@ const WORKTREE_BASE = require('path').resolve(__dirname, '../../nexushub-worktre
 const fs = require('fs');
 const path = require('path');
 
-// Read NOTION_TOKEN from env or .env.agents fallback
+// Read NOTION_TOKEN from env or .env.agents fallback (checks multiple locations)
 let NOTION_TOKEN = process.env.NOTION_TOKEN || '';
 if (!NOTION_TOKEN) {
-  try {
-    const envFile = fs.readFileSync(path.join(__dirname, '..', '.env.agents'), 'utf8');
-    const match = envFile.match(/NOTION_TOKEN=(.+)/);
-    if (match) NOTION_TOKEN = match[1].trim();
-  } catch {}
+  const searchPaths = [
+    path.join(__dirname, '..', '.env.agents'),           // Main repo
+    path.join(process.cwd(), '.env.agents'),              // Current worktree (symlinked)
+    path.join(WORKTREE_BASE, '..', 'cortex-telegram-hub-bot', '.env.agents'), // Relative to worktrees
+  ];
+  for (const p of searchPaths) {
+    try {
+      const f = fs.readFileSync(p, 'utf8');
+      const m = f.match(/NOTION_TOKEN=(.+)/);
+      if (m) { NOTION_TOKEN = m[1].trim(); break; }
+    } catch {}
+  }
 }
 if (!NOTION_TOKEN) {
   console.error('❌ NOTION_TOKEN required. Set env var or create .env.agents');
