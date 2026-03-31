@@ -82,3 +82,27 @@ export interface InvoiceVendor {
   enabled: number;       // SQLite boolean: 1 = active, 0 = disabled
   created_at: string;
 }
+
+// ── Skill Registry ─────────────────────────────────────────────────
+
+export interface InstalledSkill {
+  id: number;
+  name: string;
+  description: string | null;
+  version: string;
+  domain: string | null;
+  enabled: number;       // SQLite boolean: 1 = enabled, 0 = disabled
+  config_json: string | null;
+  installed_at: string;
+  updated_at: string;
+}
+
+export interface SkillSubmodule {
+  id: number;
+  skill_id: number;
+  module_name: string;
+  version: string;
+  enabled: number;       // SQLite boolean: 1 = enabled, 0 = disabled
+  config_json: string | null;
+  created_at: string;
+}
