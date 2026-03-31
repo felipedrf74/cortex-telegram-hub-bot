@@ -103,9 +103,32 @@ const AGENT_MAP = {
 // Tasks that need QA validation (feature code changes)
 const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect'];
 
-// ─── Write QA validation prompt ─────────────────────────────────────
-function writeQAPrompt(task, originAgent) {
+// ─── QA Queue System ────────────────────────────────────────────────
+const QA_QUEUE_DIR = path.join(WORKTREE_BASE, 'qa', '.qa-queue');
+
+function ensureQAQueue() {
+  if (!fs.existsSync(QA_QUEUE_DIR)) fs.mkdirSync(QA_QUEUE_DIR, { recursive: true });
+}
+
+function getQueuedTasks() {
+  ensureQAQueue();
+  return fs.readdirSync(QA_QUEUE_DIR)
+    .filter(f => f.endsWith('.json'))
+    .sort()
+    .map(f => JSON.parse(fs.readFileSync(path.join(QA_QUEUE_DIR, f), 'utf8')));
+}
+
+function nextQueueNumber() {
+  ensureQAQueue();
+  const files = fs.readdirSync(QA_QUEUE_DIR).filter(f => f.endsWith('.json')).sort();
+  if (files.length === 0) return '001';
+  const last = parseInt(files[files.length - 1].replace('.json', ''), 10);
+  return String(last + 1).padStart(3, '0');
+}
+
+function writeQAPromptFromTask(task, originAgent) {
   const qaPath = path.join(WORKTREE_BASE, 'qa');
+  const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
   const prompt = `# 🧪 QA Validation Task
 
 ## Validating: ${task.title}
@@ -117,24 +140,32 @@ function writeQAPrompt(task, originAgent) {
 ${task.description}
 
 ## Your job
-1. Pull the latest code from the ${originAgent} agent's branch:
-   \`git fetch origin && git merge origin/agent/${originAgent} --no-edit\`
+1. Pull the latest code: \`git fetch origin && git merge origin/agent/${originAgent} --no-edit\`
 2. Read the changed files and understand what was built
-3. Run the test suite: \`npx vitest run\`
-4. Run type check: \`npx tsc --noEmit\`
-5. Write integration/validation tests for the new code
-6. Check acceptance criteria from the task description
-7. Look for: missing error handling, untested edge cases, type safety issues
+3. Run: \`npx vitest run\` and \`npx tsc --noEmit\`
+4. Write validation tests for the new code
+5. Check acceptance criteria from the description
+6. Look for: missing error handling, untested edge cases, type safety
 
-## When done, run ONE of these:
+## Auto-chain (MANDATORY — do this immediately after validating)
 ### If everything passes:
 \`\`\`bash
-node ~/Desktop/Custom\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent qa --verdict pass
+AGENT_DIR=$(basename $(pwd))
+node ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass
 \`\`\`
 ### If something fails:
 \`\`\`bash
-node ~/Desktop/Custom\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent qa --verdict fail --reason "describe what failed"
+AGENT_DIR=$(basename $(pwd))
+node ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "what failed"
 \`\`\`
+Then immediately check for the next queued validation:
+\`\`\`bash
+cat .agent-prompt.md 2>/dev/null
+\`\`\`
+If a new .agent-prompt.md exists, read and execute it. Do NOT stop.
+
+## Queue info
+${getQueuedTasks().length} task(s) in QA queue. After this validation, the next one loads automatically.
 
 ## Notion Task ID
 ${task.id}
@@ -142,16 +173,39 @@ ${task.id}
 ## Rules
 - You are VALIDATING, not building features
 - If tests fail, report what failed — don't fix the feature code
-- Write tests that prove the feature works correctly
 - Push your test additions: \`git push origin $(git branch --show-current)\`
+- Always call agent-complete.js — this moves the card and loads the next task
 `;
   fs.writeFileSync(path.join(qaPath, '.agent-prompt.md'), prompt);
   fs.writeFileSync(path.join(qaPath, '.agent-task.json'), JSON.stringify({
     id: task.id, title: task.title, description: task.description,
-    priority: task.priority, phase: task.phase, tags: task.tags,
+    priority: task.priority, phase: task.phase, tags: task.tags || [],
     agent: '🧪 QA', originAgent,
   }, null, 2));
-  console.log(`  📋 QA prompt written → qa/.agent-prompt.md`);
+}
+
+function writeQAPrompt(task, originAgent) {
+  ensureQAQueue();
+  const qaPath = path.join(WORKTREE_BASE, 'qa');
+  const qaTaskFile = path.join(qaPath, '.agent-task.json');
+  const qaBusy = fs.existsSync(qaTaskFile);
+
+  // Add to queue
+  const queueFile = path.join(QA_QUEUE_DIR, `${nextQueueNumber()}.json`);
+  fs.writeFileSync(queueFile, JSON.stringify({
+    id: task.id, title: task.title, description: task.description,
+    priority: task.priority, phase: task.phase, tags: task.tags || [],
+    originAgent, queuedAt: new Date().toISOString(),
+  }, null, 2));
+
+  if (qaBusy) {
+    // QA is already working — task is queued, will be picked up automatically
+    console.log(`  📥 QA is busy — task queued (${getQueuedTasks().length} in queue)`);
+  } else {
+    // QA is idle — write prompt immediately
+    writeQAPromptFromTask(task, originAgent);
+    console.log(`  📋 QA prompt written → qa/.agent-prompt.md`);
+  }
 }
 
 // ─── Write next task prompt for an agent ─────────────────────────────
@@ -182,17 +236,25 @@ ${task.description}
 4. Run: \`npx vitest run\` and \`npx tsc --noEmit\`
 5. Commit: \`git commit -m "${role.commitPrefix}(scope): ${task.title.toLowerCase().substring(0, 50)}"\`
 6. Push: \`git push origin $(git branch --show-current)\`
-7. When done, run:
+
+## Auto-chain (MANDATORY — do this immediately after pushing)
 \`\`\`bash
-node ~/Desktop/Custom\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent ${agentDir} --summary "brief description of what you did"
+AGENT_DIR=$(basename $(pwd))
+node ~/Desktop/Custom\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "describe what you built"
 \`\`\`
+Then immediately check for the next task:
+\`\`\`bash
+cat .agent-prompt.md 2>/dev/null
+\`\`\`
+If a new .agent-prompt.md exists, read and execute it. Do NOT stop.
 
 ## Notion Task ID
 ${task.id}
 
 ## Rules
 - Do NOT merge to develop or main
-- After completing, run the agent-complete.js command above — it handles everything
+- Always run tests before committing
+- Always call agent-complete.js when done — this chains to QA and fetches your next task
 `;
   fs.writeFileSync(path.join(agentPath, '.agent-prompt.md'), prompt);
   fs.writeFileSync(path.join(agentPath, '.agent-task.json'), JSON.stringify({
@@ -226,39 +288,50 @@ async function main() {
 
   // ─── QA agent finishing a validation ─────────────────────────────
   if (agentDir === 'qa' && verdict) {
+    // Remove completed task from queue
+    ensureQAQueue();
+    const queueFiles = fs.readdirSync(QA_QUEUE_DIR).filter(f => f.endsWith('.json')).sort();
+    const matchFile = queueFiles.find(f => {
+      try {
+        const q = JSON.parse(fs.readFileSync(path.join(QA_QUEUE_DIR, f), 'utf8'));
+        return q.id === task.id;
+      } catch { return false; }
+    });
+    if (matchFile) {
+      fs.unlinkSync(path.join(QA_QUEUE_DIR, matchFile));
+      console.log(`  🗑️  Removed from QA queue: ${matchFile}`);
+    }
+
     if (verdict === 'pass') {
       console.log(`  ✅ QA PASSED → moving to Done`);
       await updateTaskStatus(task.id, 'Done');
-      // Clear QA files
-      fs.unlinkSync(path.join(WORKTREE_BASE, 'qa', '.agent-task.json'));
-      fs.unlinkSync(path.join(WORKTREE_BASE, 'qa', '.agent-prompt.md'));
       console.log(`  🎉 Task "${task.title}" is DONE — ready for Felipe to merge + deploy`);
-      console.log(`  📢 Felipe: merge agent branches to develop, then nexus-deploy`);
     } else {
       console.log(`  ❌ QA FAILED → sending back to original agent`);
       console.log(`  Reason: ${failReason || 'not specified'}`);
       await updateTaskStatus(task.id, 'In Progress');
-      // Write fix prompt for the original agent
       const originAgent = task.originAgent || 'backend';
-      const fixPrompt = `# 🔧 Fix Required — QA Failed
-
-## Task: ${task.title}
-## QA Failure Reason: ${failReason || 'See QA notes'}
-
-## Instructions
-1. Read the QA failure reason above
-2. Fix the issues identified
-3. Run tests: \`npx vitest run\`
-4. Commit the fix: \`git commit -m "fix(scope): address QA feedback for ${task.title.toLowerCase().substring(0, 40)}"\`
-5. Push: \`git push origin $(git branch --show-current)\`
-6. When done, run:
-\`\`\`bash
-node ~/Desktop/Custom\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent ${originAgent} --summary "fixed QA issues"
-\`\`\`
-`;
-      const originPath = path.join(WORKTREE_BASE, originAgent);
-      fs.writeFileSync(path.join(originPath, '.agent-prompt.md'), fixPrompt);
+      const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
+      const fixPrompt = `# 🔧 Fix Required — QA Failed\n\n## Task: ${task.title}\n## QA Failure Reason: ${failReason || 'See QA notes'}\n\n## Instructions\n1. Read the QA failure reason above\n2. Fix the issues identified\n3. Run tests: \`npx vitest run\` and \`npx tsc --noEmit\`\n4. Commit: \`git commit -m "fix(scope): address QA feedback"\`\n5. Push: \`git push origin $(git branch --show-current)\`\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename $(pwd))\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --summary "fixed QA issues"\n\`\`\`\nThen check for next task: \`cat .agent-prompt.md 2>/dev/null\`\n`;
+      fs.writeFileSync(path.join(WORKTREE_BASE, originAgent, '.agent-prompt.md'), fixPrompt);
       console.log(`  📋 Fix prompt written → ${originAgent}/.agent-prompt.md`);
+    }
+
+    // Check queue for next QA task
+    const remaining = getQueuedTasks();
+    if (remaining.length > 0) {
+      const next = remaining[0];
+      console.log(`\n  📥 QA queue has ${remaining.length} more task(s)`);
+      console.log(`  ✅ Loading next: "${next.title}"`);
+      await updateTaskStatus(next.id, 'QA Validating');
+      writeQAPromptFromTask(next, next.originAgent);
+      console.log(`\n  👉 QA agent: read .agent-prompt.md and continue validating`);
+    } else {
+      // Clear QA files — agent is idle
+      const qaPath = path.join(WORKTREE_BASE, 'qa');
+      try { fs.unlinkSync(path.join(qaPath, '.agent-task.json')); } catch {}
+      try { fs.unlinkSync(path.join(qaPath, '.agent-prompt.md')); } catch {}
+      console.log(`  💤 QA queue empty — agent is idle`);
     }
     return;
   }

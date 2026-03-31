@@ -1,49 +1,62 @@
 # CLAUDE.md — Nexus Hub Development Instructions
 
-## ⚡ FIRST: Check for Assigned Task
+## ⚡ AUTONOMOUS AGENT MODE
 
-**Before doing anything else**, check if you have a task assigned:
+You are part of a self-orchestrating dev team. You work independently and chain to the next step when done.
 
+### Step 1: Check for task
 ```bash
 cat .agent-prompt.md 2>/dev/null
 ```
+If it exists, read it and execute the task. If not, wait for instructions.
 
-If `.agent-prompt.md` exists, **read it and execute the task described**. It contains:
-- What to build/fix/test
-- Step-by-step instructions specific to your agent role
-- The Notion task ID for tracking
+### Step 2: Execute the task
+- Read CLAUDE.md and the task prompt
+- Implement/test/fix as described
+- Run `npx vitest run` and `npx tsc --noEmit` before committing
+- Commit and push to your branch
 
-If no task file exists, wait for instructions from Felipe.
-
-When you complete the task:
-1. Follow all steps in the prompt file (commit, push)
-2. Run the self-chain script to hand off automatically:
+### Step 3: Auto-chain when done
+Detect which worktree you're in and run the completion script:
 ```bash
-node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent <your-agent-dir> --summary "brief description of what you did"
+AGENT_DIR=$(basename $(pwd))
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "brief description of what you did"
 ```
-Replace `<your-agent-dir>` with your worktree folder name: `backend`, `qa`, `devops`, or `flex`.
-
-This script automatically:
-- Updates the Notion card status
-- Triggers QA validation if needed
+This automatically:
+- Updates the Notion card
+- Triggers QA validation for feature work
+- Queues tasks if QA is busy
 - Fetches your next task and writes a new .agent-prompt.md
-- You then read the new .agent-prompt.md and continue working
 
-3. After running agent-complete.js, check for a new .agent-prompt.md:
+### Step 4: Continue the loop
+After agent-complete.js runs, immediately check for more work:
 ```bash
 cat .agent-prompt.md 2>/dev/null
 ```
-If it exists, read it and execute the next task. If not, you're idle — wait for instructions.
+If a new task exists, **read it and execute it immediately** — do not stop or ask.
+If no task exists, say "Agent idle — no more tasks in queue" and wait.
 
-### QA Agent: After validating
-If you are the QA agent validating another agent's work:
+### QA Agent: Validation workflow
+If you are the QA agent and your prompt says "QA Validation Task":
+1. Pull the code from the specified branch
+2. Run tests, type check, review code
+3. Write additional validation tests if needed
+4. When done, run ONE of:
 ```bash
-# If everything passes:
-node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent qa --verdict pass
-
-# If something fails:
-node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent qa --verdict fail --reason "describe what failed"
+# Everything passes:
+AGENT_DIR=$(basename $(pwd))
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass
+# Something fails:
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "what failed"
 ```
+Then check for the next queued validation task.
+
+### CRITICAL RULES
+- **Never stop between tasks** — always check for .agent-prompt.md after completing
+- **Never ask for permission** — you have --dangerously-skip-permissions
+- **Never merge to main or develop** — only push to your branch
+- **Always run tests before committing** — `npx vitest run && npx tsc --noEmit`
+- **Always call agent-complete.js when done** — this is how the pipeline chains
 
 ---
 
