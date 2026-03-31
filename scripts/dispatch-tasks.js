@@ -10,6 +10,7 @@
  *   node scripts/dispatch-tasks.js --list             # Show available tasks
  *   node scripts/dispatch-tasks.js --assign <task-id> <agent-dir>  # Manual assign
  *   node scripts/dispatch-tasks.js --status           # Show agent statuses
+ *   node scripts/dispatch-tasks.js --done <agent-dir> # Mark task done, clear agent
  * 
  * Environment:
  *   NOTION_TOKEN     — Notion integration token
@@ -27,6 +28,41 @@ if (!NOTION_TOKEN) {
   console.error('❌ NOTION_TOKEN required. Set it as environment variable.');
   process.exit(1);
 }
+
+// ─── Review Handoff Template (shared by all agents) ─────────────────
+
+const REVIEW_HANDOFF = `
+## REQUIRED: Review handoff (do this BEFORE saying you're done)
+
+When your work is complete, you MUST provide Felipe with a review summary using this exact format:
+
+### What was done
+- Brief list of what was implemented/fixed
+
+### Files changed
+- List key files added or modified
+
+### Acceptance criteria
+- [ ] \`npx vitest run\` passes — all tests green
+- [ ] \`npx tsc --noEmit\` — no type errors
+- [ ] (Add specific criteria for this task)
+
+### Validation steps
+1. Step-by-step commands Felipe can run to verify
+2. Expected output for each step
+
+### Tests added
+- List new test files/cases
+- Total test count before → after
+
+### Breaking changes
+- None / list any
+
+### Dependencies added
+- None / list any new npm packages
+
+This review summary is MANDATORY. Felipe uses it to decide whether to merge your work.
+`;
 
 // ─── Notion API ─────────────────────────────────────────────────────
 
@@ -54,7 +90,7 @@ async function fetchTasks(status = 'To Do') {
       select: { equals: status },
     },
     sorts: [
-      { property: 'Priority', direction: 'ascending' },  // Critical first
+      { property: 'Priority', direction: 'ascending' },
     ],
   });
 
@@ -98,12 +134,10 @@ function getAgents() {
       } catch {}
     }
 
-    // Check git status
     let branch = 'unknown';
     try {
       const headFile = path.join(worktreePath, '.git');
       if (fs.existsSync(headFile)) {
-        // Worktree .git is a file pointing to the main repo
         const gitDir = fs.readFileSync(headFile, 'utf-8').trim().replace('gitdir: ', '');
         const headRef = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim();
         branch = headRef.replace('ref: refs/heads/', '');
@@ -134,7 +168,6 @@ function assignTaskToAgent(task, agentDir) {
   const taskFile = path.join(WORKTREE_BASE, agentDir, '.agent-task.json');
   const promptFile = path.join(WORKTREE_BASE, agentDir, '.agent-prompt.md');
 
-  // Determine the agent type and create appropriate prompt
   const isBugAgent = agentDir.includes('bugfix');
   const isTestAgent = agentDir.includes('test');
 
@@ -159,6 +192,7 @@ ${task.description}
 6. Commit: \`git commit -m "fix(scope): ${task.title.toLowerCase()}"\`
 7. Push: \`git push origin $(git branch --show-current)\`
 8. Log: \`echo "$(date '+%Y-%m-%d %H:%M') DONE: ${task.title}" >> ~/Desktop/nexushub-agent-log.md\`
+9. **Provide the review handoff summary** (see below)
 
 ## Notion Task ID
 ${task.id}
@@ -167,7 +201,7 @@ ${task.id}
 - Write failing test BEFORE fixing
 - Do NOT merge to develop or main
 - Run all tests before committing
-`;
+${REVIEW_HANDOFF}`;
   } else if (isTestAgent) {
     prompt = `# 🧪 Test Agent Task
 
@@ -190,6 +224,7 @@ ${task.description}
 8. Commit: \`git commit -m "test(scope): ${task.title.toLowerCase()}"\`
 9. Push: \`git push origin $(git branch --show-current)\`
 10. Log: \`echo "$(date '+%Y-%m-%d %H:%M') DONE: ${task.title}" >> ~/Desktop/nexushub-agent-log.md\`
+11. **Provide the review handoff summary** (see below)
 
 ## Notion Task ID
 ${task.id}
@@ -198,7 +233,7 @@ ${task.id}
 - Never call real external APIs in tests
 - Use \`__tests__/setup.ts\` mocks
 - Do NOT merge to develop or main
-`;
+${REVIEW_HANDOFF}`;
   } else {
     prompt = `# ⚡ Feature Agent Task
 
@@ -220,6 +255,7 @@ ${task.description}
 7. Commit: \`git commit -m "feat(scope): ${task.title.toLowerCase()}"\`
 8. Push: \`git push origin $(git branch --show-current)\`
 9. Log: \`echo "$(date '+%Y-%m-%d %H:%M') DONE: ${task.title}" >> ~/Desktop/nexushub-agent-log.md\`
+10. **Provide the review handoff summary** (see below)
 
 ## Notion Task ID
 ${task.id}
@@ -229,10 +265,9 @@ ${task.id}
 - Write tests for new code
 - Do NOT merge to develop or main
 - Use \`os.homedir()\` for paths, never hardcode
-`;
+${REVIEW_HANDOFF}`;
   }
 
-  // Write task metadata and prompt
   fs.writeFileSync(taskFile, JSON.stringify(task, null, 2));
   fs.writeFileSync(promptFile, prompt);
 
@@ -252,23 +287,19 @@ function matchTaskToAgent(task, agents) {
   const tags = task.tags || [];
   const title = task.title.toLowerCase();
 
-  // Bug-related tasks → bug agent
   if (tags.includes('bug') || title.includes('bug') || title.includes('fix') || title.includes('edge case')) {
     const bugAgent = agents.find(a => a.type === 'bug' && !a.hasTask);
     if (bugAgent) return bugAgent;
   }
 
-  // Test-related tasks → test agent
   if (tags.includes('test') || title.includes('test')) {
     const testAgent = agents.find(a => a.name.includes('test') && !a.hasTask);
     if (testAgent) return testAgent;
   }
 
-  // Everything else → first available feature agent
   const featureAgent = agents.find(a => a.type === 'feature' && !a.hasTask);
   if (featureAgent) return featureAgent;
 
-  // Fallback: any idle agent
   return agents.find(a => !a.hasTask) || null;
 }
 
@@ -349,11 +380,9 @@ async function cmdDispatch() {
       continue;
     }
 
-    // Assign task
     assignTaskToAgent(task, agent.name);
-    agent.hasTask = true;  // Mark as busy for next iteration
+    agent.hasTask = true;
 
-    // Update Notion status to "In Progress"
     try {
       await updateTaskStatus(task.id, 'In Progress');
     } catch (e) {
@@ -369,23 +398,13 @@ async function cmdDispatch() {
 
     assigned++;
 
-    // Don't assign more tasks than idle agents
     if (assigned >= idleAgents.length) break;
 
-    // Rate limit Notion API
     await new Promise(r => setTimeout(r, 350));
   }
 
   console.log(`\n✅ Dispatched ${assigned} tasks to agents`);
-  console.log('\n📌 Next steps:');
-  console.log('   Open each agent terminal and run:');
-
-  for (const a of agents.filter(a => a.hasTask && a.currentTask)) {
-    // Only show newly assigned
-  }
-
-  console.log('');
-  console.log('   For each agent, in its terminal, type:');
+  console.log('\n📌 For each agent terminal, type:');
   console.log('   > Read .agent-prompt.md and execute the task described.');
   console.log('');
 }
@@ -399,7 +418,6 @@ async function cmdAssign() {
     process.exit(1);
   }
 
-  // Fetch the specific task
   const resp = await notionFetch(`/pages/${taskId}`, 'GET');
   const task = {
     id: resp.id,
