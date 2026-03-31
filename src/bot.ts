@@ -474,6 +474,21 @@ export function createBot(): Bot {
     );
   });
 
+  bot.command('version', async (ctx) => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+    const commitHash = process.env.GIT_COMMIT || 'dev';
+    const nodeVersion = process.version;
+    const uptime = process.uptime();
+    const uptimeStr = `${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`;
+    await ctx.reply(
+      `<b>Nexus Hub</b> v${pkg.version}\n` +
+      `Commit: <code>${commitHash}</code>\n` +
+      `Node: ${nodeVersion}\n` +
+      `Uptime: ${uptimeStr}`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
   bot.command('help', async (ctx) => {
     await ctx.reply(HELP_TEXT, { parse_mode: 'HTML' });
   });
