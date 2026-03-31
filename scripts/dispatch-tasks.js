@@ -47,7 +47,30 @@ When your work is complete, you MUST provide Felipe with a review summary using 
 - [ ] \`npx tsc --noEmit\` — no type errors
 - [ ] (Add specific criteria for this task)
 
-### Validation steps
+### User test steps (how Felipe tests this in Telegram)
+1. Open Telegram → Nexus Hub bot
+2. Send: (the command or message that triggers the feature)
+3. Expected response: (what the bot should reply)
+4. Edge case: (what happens with invalid input)
+
+If this task has no user-facing change, write "No user-facing change — internal refactor only."
+
+### Dev validation steps
+1. Step-by-step commands Felipe can run to verify
+2. Expected output for each step
+
+### Tests added
+- List new test files/cases
+- Total test count before → after
+
+### Breaking changes
+- None / list any
+
+### Dependencies added
+- None / list any new npm packages
+
+This review summary is MANDATORY. Felipe uses it to decide whether to merge your work.
+`;
 1. Step-by-step commands Felipe can run to verify
 2. Expected output for each step
 
@@ -103,6 +126,7 @@ async function fetchTasks(status = 'To Do') {
     tags: (page.properties.Tags?.multi_select || []).map(t => t.name),
     month: page.properties.Month?.select?.name || '',
     status: page.properties.Status?.select?.name || '',
+    agent: page.properties.Agent?.select?.name || '',
   }));
 }
 
@@ -150,8 +174,9 @@ function getAgents() {
       branch,
       hasTask,
       currentTask,
-      type: dir.startsWith('bugfix') ? 'bug' :
-            dir.startsWith('hotfix') ? 'hotfix' : 'feature',
+      type: dir === 'qa' ? 'qa' :
+            dir === 'devops' ? 'devops' :
+            dir === 'flex' ? 'flex' : 'backend',
     });
   }
 
@@ -168,8 +193,9 @@ function assignTaskToAgent(task, agentDir) {
   const taskFile = path.join(WORKTREE_BASE, agentDir, '.agent-task.json');
   const promptFile = path.join(WORKTREE_BASE, agentDir, '.agent-prompt.md');
 
-  const isBugAgent = agentDir.includes('bugfix');
-  const isTestAgent = agentDir.includes('test');
+  const isBugAgent = agentDir === 'flex' && (task.agent === '♻️ Refactor' || task.agent === '🔒 Security');
+  const isTestAgent = agentDir === 'qa';
+  const isDevOps = agentDir === 'devops';
 
   let prompt;
   if (isBugAgent) {
@@ -234,7 +260,37 @@ ${task.id}
 - Use \`__tests__/setup.ts\` mocks
 - Do NOT merge to develop or main
 ${REVIEW_HANDOFF}`;
-  } else {
+  } else if (isDevOps) {
+    prompt = `# ⚙️ DevOps Agent Task
+
+## Task: ${task.title}
+**Priority:** ${task.priority}
+**Phase:** ${task.phase}
+**Tags:** ${task.tags.join(', ')}
+
+## Description
+${task.description}
+
+## Instructions
+1. Read CLAUDE.md for project context
+2. Understand the infrastructure task described above
+3. Implement the changes (CI/CD, migrations, deploy scripts, monitoring)
+4. Write tests if applicable
+5. Run tests: \`npx vitest run\`
+6. Run type check: \`npx tsc --noEmit\`
+7. Commit: \`git commit -m "ci(scope): ${task.title.toLowerCase()}"\`
+8. Push: \`git push origin $(git branch --show-current)\`
+9. Log: \`echo "$(date '+%Y-%m-%d %H:%M') DONE: ${task.title}" >> ~/Desktop/nexushub-agent-log.md\`
+10. **Provide the review handoff summary** (see below)
+
+## Notion Task ID
+${task.id}
+
+## Rules
+- Only touch infrastructure: CI/CD, migrations, deploy, monitoring
+- Do NOT modify feature code or domain handlers
+- Do NOT merge to develop or main
+${REVIEW_HANDOFF}`;
     prompt = `# ⚡ Feature Agent Task
 
 ## Task: ${task.title}
@@ -284,22 +340,26 @@ function clearAgentTask(agentDir) {
 // ─── Task Matching ──────────────────────────────────────────────────
 
 function matchTaskToAgent(task, agents) {
-  const tags = task.tags || [];
-  const title = task.title.toLowerCase();
+  const agentTag = task.agent || '';
 
-  if (tags.includes('bug') || title.includes('bug') || title.includes('fix') || title.includes('edge case')) {
-    const bugAgent = agents.find(a => a.type === 'bug' && !a.hasTask);
-    if (bugAgent) return bugAgent;
+  // Map Notion Agent tags to worktree directory names
+  const AGENT_MAP = {
+    '🔧 Backend': 'backend',
+    '🧪 QA': 'qa',
+    '⚙️ DevOps': 'devops',
+    '🔒 Security': 'flex',
+    '♻️ Refactor': 'flex',
+    '🏗️ Architect': 'backend',  // Architect tasks go to Backend for implementation
+  };
+
+  const targetDir = AGENT_MAP[agentTag];
+
+  if (targetDir) {
+    const match = agents.find(a => a.name === targetDir && !a.hasTask);
+    if (match) return match;
   }
 
-  if (tags.includes('test') || title.includes('test')) {
-    const testAgent = agents.find(a => a.name.includes('test') && !a.hasTask);
-    if (testAgent) return testAgent;
-  }
-
-  const featureAgent = agents.find(a => a.type === 'feature' && !a.hasTask);
-  if (featureAgent) return featureAgent;
-
+  // Fallback: any idle agent
   return agents.find(a => !a.hasTask) || null;
 }
 
