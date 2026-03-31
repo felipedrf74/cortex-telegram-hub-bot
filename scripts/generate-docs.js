@@ -201,7 +201,7 @@ while (i < lines.length) {
       children.push(spacer(400));
       children.push(new Paragraph({
         children: [new TextRun({
-          text: 'CORTEX',
+          text: 'NEXUS HUB',
           font: FONT_MAIN,
           size: 72,
           bold: true,
@@ -212,7 +212,7 @@ while (i < lines.length) {
       }));
       children.push(new Paragraph({
         children: [new TextRun({
-          text: text.replace('Cortex Telegram Hub Bot — ', ''),
+          text: text.replace('Nexus Hub — ', ''),
           font: FONT_MAIN,
           size: 28,
           color: GRAY,

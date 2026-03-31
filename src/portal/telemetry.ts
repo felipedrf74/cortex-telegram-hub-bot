@@ -1,5 +1,5 @@
 /**
- * In-process telemetry singleton for the Cortex Status Portal.
+ * In-process telemetry singleton for the Nexus Hub Status Portal.
  *
  * Owns:
  *  - Activity event ring buffer (200 entries, in-memory)

@@ -43,7 +43,7 @@ DATA INTERPRETATION:
 
 OUTPUT FORMAT (follow exactly):
 
-🏋️ <b>CORTEX — DAILY COACH BRIEFING</b>
+🏋️ <b>NEXUS HUB — DAILY COACH BRIEFING</b>
 📅 {date} — 21:00
 
 ━━━ <b>TODAY'S SNAPSHOT</b> ━━━
