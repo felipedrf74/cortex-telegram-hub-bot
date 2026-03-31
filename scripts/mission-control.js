@@ -181,7 +181,16 @@ end tell`;
       await run(`osascript -e '${script.replace(/'/g,"'\\''")}'`);
       return send(res, {ok:true,output:`Agent ${b.agent} started with task: ${fs.existsSync(path.join(WORKTREES, b.agent, '.agent-task.json')) ? JSON.parse(fs.readFileSync(path.join(WORKTREES, b.agent, '.agent-task.json'),'utf8')).title : 'unknown'}`});
     }
-    if (route === 'stop-agent') { const b = await readBody(req); await run(`pkill -f "worktrees/${b.agent}" 2>/dev/null; pkill -f "launch-agent.sh ${b.agent}" 2>/dev/null; true`); return send(res, {ok:true,output:`Agent ${b.agent} stopped`}); }
+    if (route === 'stop-agent') {
+      const b = await readBody(req);
+      const agents = agentStatus();
+      const ag = agents.find(a => a.name === b.agent);
+      if (ag && ag.pid) {
+        await run(`kill -TERM ${ag.pid} 2>/dev/null; sleep 0.3; kill -9 ${ag.pid} 2>/dev/null; true`);
+      }
+      await run(`pkill -f "worktrees/${b.agent}" 2>/dev/null; pkill -f "launch-agent.sh ${b.agent}" 2>/dev/null; true`);
+      return send(res, {ok:true, output:`Agent ${b.agent} stopped${ag?.pid ? ` (killed PID ${ag.pid})` : ' (no PID, used pkill)'}`});
+    }
     if (route === 'view-terminal') {
       const b = await readBody(req);
       let tty = '';
@@ -208,6 +217,16 @@ return "not found"`;
     if (route === 'write-prompt') { const b = await readBody(req); fs.writeFileSync(path.join(WORKTREES,b.agent,'.agent-prompt.md'), b.prompt); return send(res, {ok:true,output:`Prompt written to ${b.agent}/.agent-prompt.md`}); }
     if (route === 'rollback') return send(res, await run('./scripts/rollback.sh latest'));
     if (route === 'server-status') return send(res, await run('ssh dominguez@serverdominguez "pm2 list" 2>&1 || echo "Cannot reach server"'));
+    if (route === 'dispatch-single') {
+      const b = await readBody(req);
+      if (!b.taskId) return send(res, {ok:false, output:'taskId required'}, 400);
+      const agArg = b.agent ? `--agent ${b.agent}` : '';
+      return send(res, await run(`node "${SCRIPT('dispatch-task.js')}" --task ${b.taskId.trim()} ${agArg}`));
+    }
+    if (route === 'list-todo') {
+      const tasks = await fetchTasks();
+      return send(res, { ok: true, tasks: tasks.filter(t => t.status === 'To Do' || t.status === 'Backlog') });
+    }
     if (route === 'agent-branches') { const b = await readBody(req); return send(res, await run(`git log origin/agent/${b.agent||'backend'} --oneline -10 2>/dev/null || echo 'No branch found'`)); }
     if (route === 'sync-server') return send(res, await run('./scripts/sync-from-server.sh --dry-run 2>&1'));
     return send(res, {ok:false,error:'Unknown route'}, 404);
@@ -367,6 +386,22 @@ function rAgents(){
   +'<button class="btn btn-big" onclick="refreshAgents()">Refresh status</button>'
   +'<button class="btn btn-big" onclick="dispatchAndStart()">Dispatch + Start all</button>'
   +'</div>'
+  +'<div style="margin-top:12px;background:var(--bg2);border-radius:10px;border:1px solid var(--bdr);padding:12px">'
+  +'<div style="font-size:12px;font-weight:600;color:var(--t2);margin-bottom:8px;display:flex;align-items:center;gap:6px">🎯 Dispatch Specific Task</div>'
+  +'<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
+  +'<input id="dispatch-task-id" placeholder="Notion task ID (e.g. 334ad49d-...)" style="flex:2;min-width:200px;background:var(--bg);border:1px solid var(--bdr);border-radius:5px;padding:5px 10px;color:var(--t1);font:inherit;font-size:12px;outline:none">'
+  +'<select id="dispatch-agent" style="background:var(--bg);border:1px solid var(--bdr);border-radius:5px;padding:5px 10px;color:var(--t1);font:inherit;font-size:12px;outline:none">'
+  +'<option value="">Auto (from Agent field)</option>'
+  +'<option value="backend">🔧 Backend</option>'
+  +'<option value="qa">🧪 QA</option>'
+  +'<option value="devops">⚙️ DevOps</option>'
+  +'<option value="flex">♻️ Flex</option>'
+  +'</select>'
+  +'<button class="btn btn-blue" onclick="dispatchSingle()">▸ Dispatch</button>'
+  +'<button class="btn" onclick="listTodo()">📋 List To Do</button>'
+  +'</div>'
+  +'<div class="out" id="dispatch-out" style="display:none;max-height:160px"></div>'
+  +'</div>'
 }
 async function startTask(n){log("Starting task "+n+"...");var d=await api("start-task",{agent:n});showOut(n,d.output||"Started");setTimeout(refreshAgents,4000)}
 async function startAgent(n){log("Launching "+n+"...");var d=await api("start-agent",{agent:n});showOut(n,d.output||"Launched");setTimeout(refreshAgents,3000)}
@@ -377,11 +412,39 @@ async function clearAgent(n){await api("clear-stale");showOut(n,"Task files clea
 async function agentGitLog(n){var d=await api("agent-branches",{agent:n});showOut(n,d.output||"No commits")}
 async function viewQAQueue(){var d=await api("qa-queue");if(d.ok&&d.queue.length>0){var t=d.queue.map(function(q,i){return(i+1)+". "+q.title+" (from:"+q.originAgent+")"}).join("\\n");showOut("qa","QA Queue ("+d.count+"):\\n"+t)}else{showOut("qa","QA queue empty")}}
 async function startAllTasks(){for(var n of["backend","qa","devops","flex"]){await startTask(n);await new Promise(function(r){setTimeout(r,2000)})}}
-async function stopAll(){for(var n of["backend","qa","devops","flex"])await stopAgent(n);refreshAgents()}
+async function stopAll(){
+  log("Stopping all agents by PID...");
+  // Stop in parallel — backend fix now kills by PID directly
+  await Promise.all(["backend","qa","devops","flex"].map(n=>stopAgent(n)));
+  setTimeout(refreshAgents,2500);
+  showOut("backend","Stop all sent — refreshing in 2.5s...");
+}
 async function dispatchAndStart(){log("Dispatch + start...");await api("dispatch");await new Promise(function(r){setTimeout(r,2000)});await startAllTasks()}
 async function refreshAgents(){var d=await api("agents");if(d.ok){AG=d.agents;render()}}
 async function viewTerminal(n){log("Focusing "+n+" terminal...");var d=await api("view-terminal",{agent:n});showOut(n,d.output||"No terminal found")}
 function showOut(n,t){var el=document.getElementById("out-"+n);if(el){el.style.display="block";el.textContent=t}}
+async function dispatchSingle(){
+  var taskId=(document.getElementById("dispatch-task-id")||{}).value||"";
+  var agent=(document.getElementById("dispatch-agent")||{}).value||"";
+  if(!taskId.trim()){showDispatch("❌ Paste a Notion task ID first");return}
+  showDispatch("⟳ Dispatching...");
+  var d=await api("dispatch-single",{taskId:taskId.trim(),agent:agent||undefined});
+  showDispatch(d.output||(d.ok?"✅ Done":"❌ Failed"));
+  if(d.ok) setTimeout(refreshAgents,1500);
+}
+async function listTodo(){
+  showDispatch("⟳ Loading To Do tasks from Notion...");
+  var d=await api("list-todo");
+  if(!d.ok){showDispatch("❌ "+d.error);return}
+  var tasks=d.tasks||[];
+  if(!tasks.length){showDispatch("✅ No To Do or Backlog tasks found");return}
+  var lines=tasks.map(function(t){
+    var agentWarn=t.agent?"":"  ⚠️ NO AGENT";
+    return t.id+"  ["+t.priority+"] ["+t.agent+"]"+agentWarn+"\n  "+t.title;
+  });
+  showDispatch("To Do / Backlog ("+tasks.length+"):\n\n"+lines.join("\n\n")+"\n\n─── Click ID to copy & paste above ───");
+}
+function showDispatch(t){var el=document.getElementById("dispatch-out");if(el){el.style.display="block";el.textContent=t}}
 </script>`;
 const PAGE5 = `<script>
 function rPipe(){
