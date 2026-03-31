@@ -27,8 +27,17 @@ echo "🚀 Deploying from: $LOCAL_DIR"
 echo "   To: $SERVER:$REMOTE_DIR"
 echo ""
 
-VERSION=$(node -p "require('$LOCAL_DIR/package.json').version" 2>/dev/null || echo "unknown")
-COMMIT=$(cd "$LOCAL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Auto-bump patch version on each deploy
+cd "$LOCAL_DIR"
+OLD_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+npm version patch --no-git-tag-version > /dev/null 2>&1
+VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
+echo "📌 Version: $OLD_VERSION → $VERSION"
+git add package.json package-lock.json 2>/dev/null
+git commit -m "chore: bump version to $VERSION [deploy]" --no-verify 2>/dev/null
+git push origin "$(git branch --show-current)" --no-verify 2>/dev/null || true
+
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DEPLOY_STATUS="✅ Success"
 
 # ── 1. Build TypeScript locally ──────────────────────
@@ -128,7 +137,7 @@ ssh "$SERVER" "mkdir -p $REMOTE_DIR/data/garmin-tokens $REMOTE_DIR/logs $REMOTE_
 # ── 7. Start services ────────────────────────────────
 echo ""
 echo "🟢 Starting services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 start content-engine 2>/dev/null && $PM2 start telegram-hub-bot 2>/dev/null && $PM2 save && echo '   ✅ All services running'"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 set telegram-hub-bot env GIT_COMMIT $COMMIT 2>/dev/null; $PM2 start content-engine 2>/dev/null && $PM2 start telegram-hub-bot 2>/dev/null && $PM2 save && echo '   ✅ All services running'"
 
 # ── 8. Health check (with retry) ─────────────────────
 echo ""
