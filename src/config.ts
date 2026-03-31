@@ -43,6 +43,26 @@ export const config = {
     maxTokens: 1024,
     secretaryMaxTokens: 2048,
   },
+  // ── Provider Fallback Routing ─────────────────────────────────────
+  // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'
+  providerRouting: {
+    classify: {
+      primary: process.env.AI_CLASSIFY_PRIMARY || 'anthropic',
+      fallback: process.env.AI_CLASSIFY_FALLBACK || 'openai',
+    },
+    chat: {
+      primary: process.env.AI_CHAT_PRIMARY || 'anthropic',
+      fallback: process.env.AI_CHAT_FALLBACK || 'openai',
+    },
+    toolUse: {
+      primary: process.env.AI_TOOL_USE_PRIMARY || 'anthropic',
+      fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
+    },
+    circuitBreaker: {
+      failureThreshold: parseInt(process.env.AI_CB_FAILURE_THRESHOLD || '3', 10),
+      cooldownMs: parseInt(process.env.AI_CB_COOLDOWN_MS || '60000', 10),
+    },
+  },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
