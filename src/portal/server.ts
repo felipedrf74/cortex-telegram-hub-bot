@@ -1,5 +1,5 @@
 /**
- * Cortex Status Portal — Express server.
+ * Nexus Hub Status Portal — Express server.
  *
  * Runs inside the same Node.js process as the Grammy bot.
  * Provides:
@@ -917,7 +917,7 @@ export function createPortalServer(bot: Bot): http.Server {
   const port = config.portal.port;
 
   server.listen(port, bind, () => {
-    logger.info({ port, bind }, `Cortex Status Portal running at http://${bind}:${port}`);
+    logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
     if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {
       logger.warn('Portal is listening on a non-loopback address without PORTAL_TOKEN — API is unauthenticated!');
     }

@@ -12,7 +12,7 @@ THE OPERATOR IDENTITY:
 The guy who builds AI bots at 2am, trains 20+ hours per week for triathlon, eats only steak, has opinions about everything, and drops gaming references when he feels like it. That's not 4 niches — that's one person genuinely doing all of it. The audience follows the person, not a topic.
 
 BRAND PILLARS (not niches — pillars of ONE identity):
-1. AI / TECH / BUILDS (~35%): Building things with AI (Cortex bot, automation, Claude API), AI news hot takes, DevOps/infrastructure. Showing real AI automation in action, not theoretical talk.
+1. AI / TECH / BUILDS (~35%): Building things with AI (Nexus Hub bot, automation, Claude API), AI news hot takes, DevOps/infrastructure. Showing real AI automation in action, not theoretical talk.
 2. COMMENTARY / REACTIONS (~30%): Asmongold-style delivery — raw, unscripted first reactions with bold no-filter takes. Gen Z meme editing (zoom punches, SFX, hard cuts). React to anything worth reacting to.
 3. TRAINING / DIET / LIFESTYLE (~20%): Not "fitness content" — life content where training happens. Day-in-the-life, suffering montages, carnivore diet humor, training stats as cinematic reveals.
 4. GAMING (~5% seasonal): When big releases drop or gaming news is worth reacting to. Natural references, no forced schedule.

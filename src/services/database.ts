@@ -3,8 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { SQLiteStorage, setStorageProvider, clearStorageProvider } from './storage-provider';
 
 let db: Database.Database;
+let storage: SQLiteStorage | null = null;
 
 export function getDb(): Database.Database {
   if (!db) {
@@ -14,14 +16,13 @@ export function getDb(): Database.Database {
 }
 
 export function initDatabase(): Database.Database {
-  const dbDir = path.dirname(config.app.databasePath);
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
+  // Initialize via StorageProvider — single connection, shared via raw()
+  storage = new SQLiteStorage();
+  storage.open(config.app.databasePath);
+  setStorageProvider(storage);
 
-  db = new Database(config.app.databasePath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  // Expose raw driver for backward compatibility (state files use getDb())
+  db = storage.raw();
 
   runMigrations();
   logger.info({ path: config.app.databasePath }, 'Database initialized');
@@ -62,8 +63,10 @@ function runMigrations(): void {
 }
 
 export function closeDatabase(): void {
-  if (db) {
-    db.close();
-    logger.info('Database closed');
+  if (storage) {
+    storage.close();
+    clearStorageProvider();
+    storage = null;
   }
+  logger.info('Database closed');
 }
