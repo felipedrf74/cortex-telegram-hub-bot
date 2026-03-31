@@ -321,7 +321,12 @@ async function main() {
       const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
       const fixPrompt = `# 🔧 Fix Required — QA Failed\n\n## Task: ${task.title}\n## QA Failure Reason: ${failReason || 'See QA notes'}\n\n## Instructions\n1. Read the QA failure reason above\n2. Fix the issues identified\n3. Run tests: \`npx vitest run\` and \`npx tsc --noEmit\`\n4. Commit: \`git commit -m "fix(scope): address QA feedback"\`\n5. Push: \`git push origin $(git branch --show-current)\`\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename $(pwd))\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --summary "fixed QA issues"\n\`\`\`\nThen check for next task: \`cat .agent-prompt.md 2>/dev/null\`\n`;
       fs.writeFileSync(path.join(WORKTREE_BASE, originAgent, '.agent-prompt.md'), fixPrompt);
-      console.log(`  📋 Fix prompt written → ${originAgent}/.agent-prompt.md`);
+      fs.writeFileSync(path.join(WORKTREE_BASE, originAgent, '.agent-task.json'), JSON.stringify({
+        id: task.id, title: task.title, description: `FIX: ${failReason || 'QA issues'}`,
+        priority: task.priority, phase: task.phase, tags: task.tags || [],
+        agent: task.agent || task.originAgent, originAgent,
+      }, null, 2));
+      console.log(`  📋 Fix prompt + task file written → ${originAgent}/`);
     }
 
     // Check queue for next QA task
