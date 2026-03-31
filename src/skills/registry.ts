@@ -9,25 +9,30 @@
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 import type BetterSqlite3 from 'better-sqlite3';
-import type { SkillId, SkillManifest, SubModuleManifest } from './types';
+import type { SkillManifest } from './types';
 
 // ─── Row Types ──────────────────────────────────────────────────────
 
 export interface InstalledSkillRow {
-  id: string;
+  id: number;
+  name: string;
+  description: string | null;
   version: string;
-  enabled: number; // SQLite boolean: 0 | 1
-  config: string;  // JSON string
   domain: string | null;
+  enabled: number; // SQLite boolean: 0 | 1
+  config_json: string | null;
   installed_at: string;
   updated_at: string;
 }
 
 export interface SkillSubmoduleRow {
-  skill_id: string;
-  submodule_id: string;
+  id: number;
+  skill_id: number;
+  module_name: string;
+  version: string;
   enabled: number;
-  config: string;
+  config_json: string | null;
+  created_at: string;
 }
 
 // ─── Prepared Statements ────────────────────────────────────────────
@@ -38,124 +43,160 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
   if (_stmts) return _stmts;
   const db = getDb();
   _stmts = {
-    insertSkill: db.prepare(`
-      INSERT INTO installed_skills (id, version, enabled, config, domain)
-      VALUES (?, ?, 1, ?, ?)`),
+    upsertSkill: db.prepare(`
+      INSERT INTO installed_skills (name, description, version, domain, config_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET
+        description = excluded.description,
+        version = excluded.version,
+        domain = excluded.domain,
+        config_json = excluded.config_json,
+        updated_at = datetime('now')`),
     deleteSkill: db.prepare(`
-      DELETE FROM installed_skills WHERE id = ?`),
+      DELETE FROM installed_skills WHERE name = ?`),
     enable: db.prepare(`
       UPDATE installed_skills SET enabled = 1, updated_at = datetime('now')
-      WHERE id = ?`),
+      WHERE name = ?`),
     disable: db.prepare(`
       UPDATE installed_skills SET enabled = 0, updated_at = datetime('now')
-      WHERE id = ?`),
-    getById: db.prepare(`
-      SELECT * FROM installed_skills WHERE id = ?`),
+      WHERE name = ?`),
+    getByName: db.prepare(`
+      SELECT * FROM installed_skills WHERE name = ?`),
     getEnabled: db.prepare(`
-      SELECT * FROM installed_skills WHERE enabled = 1`),
+      SELECT * FROM installed_skills WHERE enabled = 1 ORDER BY name`),
     getByDomain: db.prepare(`
-      SELECT * FROM installed_skills WHERE domain = ? AND enabled = 1`),
+      SELECT * FROM installed_skills WHERE domain = ? AND enabled = 1 ORDER BY name`),
     getAll: db.prepare(`
-      SELECT * FROM installed_skills`),
-    insertSubmodule: db.prepare(`
-      INSERT INTO skill_submodules (skill_id, submodule_id, enabled, config)
-      VALUES (?, ?, ?, ?)`),
+      SELECT * FROM installed_skills ORDER BY name`),
+    upsertSubmodule: db.prepare(`
+      INSERT INTO skill_submodules (skill_id, module_name, version, config_json)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(skill_id, module_name) DO UPDATE SET
+        version = excluded.version,
+        config_json = excluded.config_json`),
     getSubmodules: db.prepare(`
-      SELECT * FROM skill_submodules WHERE skill_id = ?`),
+      SELECT * FROM skill_submodules WHERE skill_id = ? ORDER BY module_name`),
     enableSubmodule: db.prepare(`
-      UPDATE skill_submodules SET enabled = 1 WHERE skill_id = ? AND submodule_id = ?`),
+      UPDATE skill_submodules SET enabled = 1 WHERE skill_id = ? AND module_name = ?`),
     disableSubmodule: db.prepare(`
-      UPDATE skill_submodules SET enabled = 0 WHERE skill_id = ? AND submodule_id = ?`),
+      UPDATE skill_submodules SET enabled = 0 WHERE skill_id = ? AND module_name = ?`),
     updateConfig: db.prepare(`
-      UPDATE installed_skills SET config = ?, updated_at = datetime('now')
-      WHERE id = ?`),
-    updateVersion: db.prepare(`
-      UPDATE installed_skills SET version = ?, updated_at = datetime('now')
-      WHERE id = ?`),
+      UPDATE installed_skills SET config_json = ?, updated_at = datetime('now')
+      WHERE name = ?`),
   };
   return _stmts;
+}
+
+// ─── Install Options ────────────────────────────────────────────────
+
+export interface InstallSkillOptions {
+  name: string;
+  description?: string;
+  version?: string;
+  domain?: string;
+  config?: Record<string, unknown>;
+  submodules?: Array<{
+    module_name: string;
+    version?: string;
+    config?: Record<string, unknown>;
+  }>;
 }
 
 // ─── Registry API ───────────────────────────────────────────────────
 
 /**
- * Install a skill from its manifest. Inserts the skill row and
- * creates submodule rows with their default enabled state.
- * No-op if the skill is already installed.
+ * Install a skill (or update if already installed).
+ * Also installs submodules if provided. Returns the installed skill row.
  */
-export function install(
+export function install(opts: InstallSkillOptions): InstalledSkillRow {
+  const stmts = getStmts();
+  const configJson = opts.config ? JSON.stringify(opts.config) : null;
+
+  stmts.upsertSkill.run(
+    opts.name,
+    opts.description || null,
+    opts.version || '1.0.0',
+    opts.domain || null,
+    configJson,
+  );
+
+  const skill = stmts.getByName.get(opts.name) as InstalledSkillRow;
+
+  if (opts.submodules?.length) {
+    for (const sub of opts.submodules) {
+      const subConfig = sub.config ? JSON.stringify(sub.config) : null;
+      stmts.upsertSubmodule.run(
+        skill.id,
+        sub.module_name,
+        sub.version || '1.0.0',
+        subConfig,
+      );
+    }
+  }
+
+  logger.info({ skill: opts.name, version: skill.version }, 'Skill installed');
+  return skill;
+}
+
+/**
+ * Install a skill from its manifest. Convenience wrapper around install()
+ * that extracts fields from a SkillManifest.
+ */
+export function installFromManifest(
   manifest: SkillManifest,
   options: { domain?: string; config?: Record<string, unknown> } = {},
 ): InstalledSkillRow {
-  const stmts = getStmts();
-  const existing = stmts.getById.get(manifest.id) as InstalledSkillRow | undefined;
-  if (existing) {
-    logger.warn({ skillId: manifest.id }, 'Skill already installed, skipping');
-    return existing;
-  }
-
-  const db = getDb();
-  const configJson = JSON.stringify(options.config ?? {});
-
-  const insertAll = db.transaction(() => {
-    stmts.insertSkill.run(manifest.id, manifest.version, configJson, options.domain ?? null);
-
-    if (manifest.subModules) {
-      for (const sub of manifest.subModules) {
-        stmts.insertSubmodule.run(
-          manifest.id,
-          sub.id,
-          sub.enabledByDefault ? 1 : 0,
-          '{}',
-        );
-      }
-    }
+  return install({
+    name: manifest.id,
+    description: manifest.description,
+    version: manifest.version,
+    domain: options.domain,
+    config: options.config,
+    submodules: manifest.subModules?.map(sub => ({
+      module_name: sub.id,
+      version: manifest.version,
+      config: undefined,
+    })),
   });
-
-  insertAll();
-  logger.info({ skillId: manifest.id, version: manifest.version }, 'Skill installed');
-
-  return stmts.getById.get(manifest.id) as InstalledSkillRow;
 }
 
 /**
- * Uninstall a skill. Removes the skill and all related submodules
- * (CASCADE handles submodules, credentials, and migrations).
+ * Uninstall a skill by name. Cascade-deletes submodules.
  * Returns true if the skill was found and removed.
  */
-export function uninstall(skillId: SkillId): boolean {
+export function uninstall(name: string): boolean {
   const stmts = getStmts();
-  const result = stmts.deleteSkill.run(skillId);
+  const result = stmts.deleteSkill.run(name);
   if (result.changes > 0) {
-    logger.info({ skillId }, 'Skill uninstalled');
+    logger.info({ skill: name }, 'Skill uninstalled');
     return true;
   }
-  logger.warn({ skillId }, 'Skill not found for uninstall');
+  logger.warn({ skill: name }, 'Skill not found for uninstall');
   return false;
 }
 
 /**
- * Enable an installed skill. Returns true if the skill was found.
+ * Enable a skill by name. Returns true if the skill was found and updated.
  */
-export function enable(skillId: SkillId): boolean {
+export function enable(name: string): boolean {
   const stmts = getStmts();
-  const result = stmts.enable.run(skillId);
+  const result = stmts.enable.run(name);
   if (result.changes > 0) {
-    logger.info({ skillId }, 'Skill enabled');
+    logger.info({ skill: name }, 'Skill enabled');
     return true;
   }
   return false;
 }
 
 /**
- * Disable an installed skill (without removing it).
- * Returns true if the skill was found.
+ * Disable a skill by name (without removing it).
+ * Returns true if the skill was found and updated.
  */
-export function disable(skillId: SkillId): boolean {
+export function disable(name: string): boolean {
   const stmts = getStmts();
-  const result = stmts.disable.run(skillId);
+  const result = stmts.disable.run(name);
   if (result.changes > 0) {
-    logger.info({ skillId }, 'Skill disabled');
+    logger.info({ skill: name }, 'Skill disabled');
     return true;
   }
   return false;
@@ -176,10 +217,10 @@ export function getByDomain(domain: string): InstalledSkillRow[] {
 }
 
 /**
- * Get a single skill by ID (regardless of enabled state).
+ * Get a single skill by name (regardless of enabled state).
  */
-export function getById(skillId: SkillId): InstalledSkillRow | undefined {
-  return getStmts().getById.get(skillId) as InstalledSkillRow | undefined;
+export function getByName(name: string): InstalledSkillRow | undefined {
+  return getStmts().getByName.get(name) as InstalledSkillRow | undefined;
 }
 
 /**
@@ -190,33 +231,33 @@ export function getAll(): InstalledSkillRow[] {
 }
 
 /**
- * Get submodules for a skill.
+ * Get submodules for a skill by skill ID.
  */
-export function getSubmodules(skillId: SkillId): SkillSubmoduleRow[] {
+export function getSubmodules(skillId: number): SkillSubmoduleRow[] {
   return getStmts().getSubmodules.all(skillId) as SkillSubmoduleRow[];
 }
 
 /**
  * Enable a specific submodule within a skill.
  */
-export function enableSubmodule(skillId: SkillId, submoduleId: string): boolean {
-  const result = getStmts().enableSubmodule.run(skillId, submoduleId);
+export function enableSubmodule(skillId: number, moduleName: string): boolean {
+  const result = getStmts().enableSubmodule.run(skillId, moduleName);
   return result.changes > 0;
 }
 
 /**
  * Disable a specific submodule within a skill.
  */
-export function disableSubmodule(skillId: SkillId, submoduleId: string): boolean {
-  const result = getStmts().disableSubmodule.run(skillId, submoduleId);
+export function disableSubmodule(skillId: number, moduleName: string): boolean {
+  const result = getStmts().disableSubmodule.run(skillId, moduleName);
   return result.changes > 0;
 }
 
 /**
  * Update a skill's config JSON.
  */
-export function updateConfig(skillId: SkillId, config: Record<string, unknown>): boolean {
-  const result = getStmts().updateConfig.run(JSON.stringify(config), skillId);
+export function updateConfig(name: string, config: Record<string, unknown>): boolean {
+  const result = getStmts().updateConfig.run(JSON.stringify(config), name);
   return result.changes > 0;
 }
 

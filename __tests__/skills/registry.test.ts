@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import type { SkillManifest, SemVer } from '../../src/skills/types';
+import type { SkillManifest } from '../../src/skills/types';
 
 // ─── Test Helpers ───────────────────────────────────────────────────
 
@@ -20,7 +20,6 @@ function createTestDb(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  // Apply all migrations
   const files = fs.readdirSync(MIGRATIONS_DIR)
     .filter(f => f.endsWith('.sql'))
     .sort();
@@ -37,11 +36,14 @@ function createManifest(overrides: Partial<SkillManifest> = {}): SkillManifest {
   return {
     id: 'test-skill',
     name: 'Test Skill',
-    version: '1.0.0' as SemVer,
+    version: '1.0.0',
     description: 'A test skill',
     author: 'Test Author',
+    license: 'MIT',
+    hubVersion: '>=1.0.0',
+    platforms: ['telegram'],
+    category: 'productivity',
     tier: 'private',
-    minCoreVersion: '0.1.0' as SemVer,
     ...overrides,
   };
 }
@@ -58,12 +60,13 @@ vi.mock('../../src/services/database', () => ({
 
 import {
   install,
+  installFromManifest,
   uninstall,
   enable,
   disable,
   getEnabled,
   getByDomain,
-  getById,
+  getByName,
   getAll,
   getSubmodules,
   enableSubmodule,
@@ -77,7 +80,7 @@ import {
 describe('skills/registry', () => {
   beforeEach(() => {
     testDb = createTestDb();
-    _resetStmts(); // Clear cached prepared statements
+    _resetStmts();
   });
 
   afterEach(() => {
@@ -88,64 +91,97 @@ describe('skills/registry', () => {
 
   describe('install()', () => {
     it('should insert a skill into installed_skills', () => {
-      const manifest = createManifest({ id: 'my-skill', version: '2.0.0' as SemVer });
-      const row = install(manifest);
+      const row = install({ name: 'my-skill', version: '2.0.0' });
 
-      expect(row.id).toBe('my-skill');
+      expect(row.name).toBe('my-skill');
       expect(row.version).toBe('2.0.0');
       expect(row.enabled).toBe(1);
       expect(row.domain).toBeNull();
+      expect(row.id).toBeGreaterThan(0);
     });
 
     it('should store config as JSON', () => {
-      const manifest = createManifest();
-      const row = install(manifest, { config: { apiKey: 'abc', retries: 3 } });
+      const row = install({
+        name: 'cfg-skill',
+        config: { apiKey: 'abc', retries: 3 },
+      });
 
-      const parsed = JSON.parse(row.config);
+      const parsed = JSON.parse(row.config_json!);
       expect(parsed.apiKey).toBe('abc');
       expect(parsed.retries).toBe(3);
     });
 
     it('should store domain when provided', () => {
-      const manifest = createManifest({ id: 'tri-skill' });
-      const row = install(manifest, { domain: 'triathlon' });
-
+      const row = install({ name: 'tri-skill', domain: 'triathlon' });
       expect(row.domain).toBe('triathlon');
     });
 
-    it('should insert submodules with default enabled state', () => {
-      const manifest = createManifest({
-        id: 'with-subs',
-        subModules: [
-          { id: 'garmin-sync', name: 'Garmin Sync', description: 'Sync', enabledByDefault: false },
-          { id: 'nutrition', name: 'Nutrition', description: 'Meals', enabledByDefault: true },
+    it('should store description when provided', () => {
+      const row = install({ name: 'desc-skill', description: 'A great skill' });
+      expect(row.description).toBe('A great skill');
+    });
+
+    it('should install submodules', () => {
+      const row = install({
+        name: 'with-subs',
+        submodules: [
+          { module_name: 'garmin-sync', version: '1.0.0' },
+          { module_name: 'nutrition' },
         ],
       });
 
-      install(manifest);
-      const subs = getSubmodules('with-subs');
+      const subs = getSubmodules(row.id);
+      expect(subs).toHaveLength(2);
+      expect(subs.map(s => s.module_name).sort()).toEqual(['garmin-sync', 'nutrition']);
+    });
+
+    it('should upsert on duplicate name (update instead of error)', () => {
+      install({ name: 'dup-skill', version: '1.0.0' });
+      install({ name: 'dup-skill', version: '2.0.0', description: 'Updated' });
+
+      const all = getAll();
+      expect(all).toHaveLength(1);
+      expect(all[0].version).toBe('2.0.0');
+      expect(all[0].description).toBe('Updated');
+    });
+
+    it('should default version to 1.0.0', () => {
+      const row = install({ name: 'no-version' });
+      expect(row.version).toBe('1.0.0');
+    });
+
+    it('should default config_json to null', () => {
+      const row = install({ name: 'no-config' });
+      expect(row.config_json).toBeNull();
+    });
+  });
+
+  // ── installFromManifest() ───────────────────────────────────────
+
+  describe('installFromManifest()', () => {
+    it('should install from a SkillManifest', () => {
+      const manifest = createManifest({ id: 'from-manifest', version: '3.0.0' });
+      const row = installFromManifest(manifest, { domain: 'content' });
+
+      expect(row.name).toBe('from-manifest');
+      expect(row.version).toBe('3.0.0');
+      expect(row.domain).toBe('content');
+    });
+
+    it('should install manifest subModules as submodules', () => {
+      const manifest = createManifest({
+        id: 'manifest-subs',
+        subModules: [
+          { id: 'garmin-sync', name: 'Garmin Sync', description: 'Sync', default: false },
+          { id: 'nutrition', name: 'Nutrition', description: 'Meals', default: true },
+        ],
+      });
+
+      const row = installFromManifest(manifest);
+      const subs = getSubmodules(row.id);
 
       expect(subs).toHaveLength(2);
-      const garmin = subs.find(s => s.submodule_id === 'garmin-sync');
-      const nutrition = subs.find(s => s.submodule_id === 'nutrition');
-      expect(garmin!.enabled).toBe(0);
-      expect(nutrition!.enabled).toBe(1);
-    });
-
-    it('should return existing row if skill already installed', () => {
-      const manifest = createManifest({ id: 'dup-skill' });
-      const first = install(manifest);
-      const second = install(manifest);
-
-      expect(first.id).toBe(second.id);
-      expect(getAll()).toHaveLength(1);
-    });
-
-    it('should default config to empty JSON object', () => {
-      const manifest = createManifest();
-      const row = install(manifest);
-
-      expect(JSON.parse(row.config)).toEqual({});
+      expect(subs.map(s => s.module_name).sort()).toEqual(['garmin-sync', 'nutrition']);
     });
   });
 
@@ -153,26 +189,23 @@ describe('skills/registry', () => {
 
   describe('uninstall()', () => {
     it('should remove an installed skill', () => {
-      install(createManifest({ id: 'remove-me' }));
-      expect(getById('remove-me')).toBeDefined();
+      install({ name: 'remove-me' });
+      expect(getByName('remove-me')).toBeDefined();
 
       const result = uninstall('remove-me');
       expect(result).toBe(true);
-      expect(getById('remove-me')).toBeUndefined();
+      expect(getByName('remove-me')).toBeUndefined();
     });
 
     it('should cascade delete submodules', () => {
-      const manifest = createManifest({
-        id: 'cascade-test',
-        subModules: [
-          { id: 'sub-a', name: 'A', description: 'A', enabledByDefault: true },
-        ],
+      const row = install({
+        name: 'cascade-test',
+        submodules: [{ module_name: 'sub-a' }],
       });
-      install(manifest);
-      expect(getSubmodules('cascade-test')).toHaveLength(1);
+      expect(getSubmodules(row.id)).toHaveLength(1);
 
       uninstall('cascade-test');
-      expect(getSubmodules('cascade-test')).toHaveLength(0);
+      expect(getSubmodules(row.id)).toHaveLength(0);
     });
 
     it('should return false for non-existent skill', () => {
@@ -184,13 +217,13 @@ describe('skills/registry', () => {
 
   describe('enable() / disable()', () => {
     it('should disable then re-enable a skill', () => {
-      install(createManifest({ id: 'toggle-skill' }));
+      install({ name: 'toggle-skill' });
 
       expect(disable('toggle-skill')).toBe(true);
-      expect(getById('toggle-skill')!.enabled).toBe(0);
+      expect(getByName('toggle-skill')!.enabled).toBe(0);
 
       expect(enable('toggle-skill')).toBe(true);
-      expect(getById('toggle-skill')!.enabled).toBe(1);
+      expect(getByName('toggle-skill')!.enabled).toBe(1);
     });
 
     it('should return false for non-existent skill', () => {
@@ -199,13 +232,12 @@ describe('skills/registry', () => {
     });
 
     it('should update the updated_at timestamp', () => {
-      install(createManifest({ id: 'ts-skill' }));
-      const before = getById('ts-skill')!.updated_at;
+      install({ name: 'ts-skill' });
+      const before = getByName('ts-skill')!.updated_at;
 
       disable('ts-skill');
-      const after = getById('ts-skill')!.updated_at;
+      const after = getByName('ts-skill')!.updated_at;
 
-      // Both are datetime strings — after should be >= before
       expect(after >= before).toBe(true);
     });
   });
@@ -214,14 +246,14 @@ describe('skills/registry', () => {
 
   describe('getEnabled()', () => {
     it('should return only enabled skills', () => {
-      install(createManifest({ id: 'skill-a' }));
-      install(createManifest({ id: 'skill-b' }));
-      install(createManifest({ id: 'skill-c' }));
+      install({ name: 'skill-a' });
+      install({ name: 'skill-b' });
+      install({ name: 'skill-c' });
       disable('skill-b');
 
       const enabled = getEnabled();
       expect(enabled).toHaveLength(2);
-      expect(enabled.map(s => s.id).sort()).toEqual(['skill-a', 'skill-c']);
+      expect(enabled.map(s => s.name).sort()).toEqual(['skill-a', 'skill-c']);
     });
 
     it('should return empty array when no skills installed', () => {
@@ -233,9 +265,9 @@ describe('skills/registry', () => {
 
   describe('getByDomain()', () => {
     it('should return enabled skills for a domain', () => {
-      install(createManifest({ id: 'tri-1' }), { domain: 'triathlon' });
-      install(createManifest({ id: 'tri-2' }), { domain: 'triathlon' });
-      install(createManifest({ id: 'sec-1' }), { domain: 'secretary' });
+      install({ name: 'tri-1', domain: 'triathlon' });
+      install({ name: 'tri-2', domain: 'triathlon' });
+      install({ name: 'sec-1', domain: 'secretary' });
 
       const tri = getByDomain('triathlon');
       expect(tri).toHaveLength(2);
@@ -243,8 +275,8 @@ describe('skills/registry', () => {
     });
 
     it('should exclude disabled skills', () => {
-      install(createManifest({ id: 'dis-1' }), { domain: 'content' });
-      install(createManifest({ id: 'dis-2' }), { domain: 'content' });
+      install({ name: 'dis-1', domain: 'content' });
+      install({ name: 'dis-2', domain: 'content' });
       disable('dis-1');
 
       expect(getByDomain('content')).toHaveLength(1);
@@ -255,16 +287,16 @@ describe('skills/registry', () => {
     });
   });
 
-  // ── getById() / getAll() ──────────────────────────────────────
+  // ── getByName() / getAll() ────────────────────────────────────
 
-  describe('getById() / getAll()', () => {
+  describe('getByName() / getAll()', () => {
     it('should return undefined for missing skill', () => {
-      expect(getById('missing')).toBeUndefined();
+      expect(getByName('missing')).toBeUndefined();
     });
 
     it('should return all skills regardless of enabled state', () => {
-      install(createManifest({ id: 'all-1' }));
-      install(createManifest({ id: 'all-2' }));
+      install({ name: 'all-1' });
+      install({ name: 'all-2' });
       disable('all-2');
 
       expect(getAll()).toHaveLength(2);
@@ -274,31 +306,32 @@ describe('skills/registry', () => {
   // ── Submodule operations ──────────────────────────────────────
 
   describe('submodule operations', () => {
+    let skillId: number;
+
     beforeEach(() => {
-      install(createManifest({
-        id: 'sub-skill',
-        subModules: [
-          { id: 'mod-a', name: 'A', description: 'A', enabledByDefault: true },
-          { id: 'mod-b', name: 'B', description: 'B', enabledByDefault: false },
+      const row = install({
+        name: 'sub-skill',
+        submodules: [
+          { module_name: 'mod-a' },
+          { module_name: 'mod-b' },
         ],
-      }));
+      });
+      skillId = row.id;
     });
 
-    it('should enable a disabled submodule', () => {
-      expect(enableSubmodule('sub-skill', 'mod-b')).toBe(true);
-      const subs = getSubmodules('sub-skill');
-      expect(subs.find(s => s.submodule_id === 'mod-b')!.enabled).toBe(1);
-    });
+    it('should disable then re-enable a submodule', () => {
+      expect(disableSubmodule(skillId, 'mod-a')).toBe(true);
+      const subs = getSubmodules(skillId);
+      expect(subs.find(s => s.module_name === 'mod-a')!.enabled).toBe(0);
 
-    it('should disable an enabled submodule', () => {
-      expect(disableSubmodule('sub-skill', 'mod-a')).toBe(true);
-      const subs = getSubmodules('sub-skill');
-      expect(subs.find(s => s.submodule_id === 'mod-a')!.enabled).toBe(0);
+      expect(enableSubmodule(skillId, 'mod-a')).toBe(true);
+      const subsAfter = getSubmodules(skillId);
+      expect(subsAfter.find(s => s.module_name === 'mod-a')!.enabled).toBe(1);
     });
 
     it('should return false for non-existent submodule', () => {
-      expect(enableSubmodule('sub-skill', 'mod-z')).toBe(false);
-      expect(disableSubmodule('sub-skill', 'mod-z')).toBe(false);
+      expect(enableSubmodule(skillId, 'mod-z')).toBe(false);
+      expect(disableSubmodule(skillId, 'mod-z')).toBe(false);
     });
   });
 
@@ -306,11 +339,11 @@ describe('skills/registry', () => {
 
   describe('updateConfig()', () => {
     it('should update skill config JSON', () => {
-      install(createManifest({ id: 'cfg-skill' }));
+      install({ name: 'cfg-skill' });
       updateConfig('cfg-skill', { theme: 'dark', maxRetries: 5 });
 
-      const row = getById('cfg-skill')!;
-      const parsed = JSON.parse(row.config);
+      const row = getByName('cfg-skill')!;
+      const parsed = JSON.parse(row.config_json!);
       expect(parsed.theme).toBe('dark');
       expect(parsed.maxRetries).toBe(5);
     });
