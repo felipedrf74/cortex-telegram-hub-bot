@@ -1,5 +1,5 @@
 {
-  "name": "nexus-hub",
+  "name": "@nexushub/core",
   "version": "4.4.3",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
