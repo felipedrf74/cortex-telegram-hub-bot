@@ -122,7 +122,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
 
     // Collect published video transcripts
     const transcripts = db.prepare(`
-      SELECT title, transcript FROM video_transcripts
+      SELECT title, full_text FROM video_transcripts
       WHERE created_at > ?
       ORDER BY created_at DESC
       LIMIT 10
@@ -146,7 +146,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       : 'No generated scripts available for this period.';
 
     const transcriptsBlock = transcripts.length > 0
-      ? transcripts.map((t: any) => `=== ${t.title} ===\n${(t.transcript || '').slice(0, 2000)}`).join('\n\n')
+      ? transcripts.map((t: any) => `=== ${t.title} ===\n${(t.full_text || '').slice(0, 2000)}`).join('\n\n')
       : 'No published transcripts available for this period. Analyze scripts against the creator profile instead.';
 
     const prompt = ANALYSIS_PROMPT
