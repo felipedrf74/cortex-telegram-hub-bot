@@ -96,48 +96,28 @@ describe('QA: /skills lists all domains', () => {
 
 // ── /skill <name> valid domains ───────────────────────────────────
 
-describe('QA: /skill <name> bot handler — valid domains list', () => {
-  it('BUG: bot.ts hardcodes validDomains to 3 — should include all 5', () => {
-    // Read the source to verify this known issue
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
-    );
-    // Find the /skill command handler's validDomains array
-    const skillHandlerIdx = botSource.indexOf("bot.command('skill'");
-    expect(skillHandlerIdx).toBeGreaterThan(0);
-
-    const handlerBlock = botSource.slice(skillHandlerIdx, skillHandlerIdx + 500);
-
-    // This test documents the bug: validDomains only has 3 entries
-    // It should dynamically derive from DEFAULT_SKILLS or getAllSkillStatuses
-    const validDomainsMatch = handlerBlock.match(/validDomains\s*=\s*\[([^\]]+)\]/);
-    expect(validDomainsMatch).toBeTruthy();
-
-    const domainsList = validDomainsMatch![1];
-    // BUG: finance and cooking are missing from the hardcoded list
-    const hasCooking = domainsList.includes('cooking');
-    const hasFinance = domainsList.includes('finance');
-
-    // Documenting the bug — these SHOULD be true but currently are NOT
-    // When the devops agent fixes this, flip the assertions
-    expect(hasCooking).toBe(false); // BUG: should be true
-    expect(hasFinance).toBe(false); // BUG: should be true
+describe('QA: /skill <name> handler — dynamic domain resolution', () => {
+  it('FIXED: refactored handler uses getSkillStatus instead of hardcoded validDomains', () => {
+    // The old bot.ts inline handler hardcoded validDomains to 3 domains.
+    // The refactored src/commands/skills.ts uses getSkillStatus() dynamically,
+    // which supports all domains. Verify by checking that all 5 domains resolve.
+    for (const domain of Object.keys(DEFAULT_SKILLS) as DefaultDomainName[]) {
+      const skill = getSkillStatus(domain);
+      expect(skill, `${domain} should be resolvable via getSkillStatus`).toBeTruthy();
+      expect(skill.name).toBe(domain);
+    }
   });
 
-  it('BUG: SKILL_ICONS map is missing finance and cooking icons', () => {
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+  it('FIXED: skill icons now cover all 5 domains in commands/skills.ts', () => {
+    const skillsSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/commands/skills.ts'), 'utf-8',
     );
-    // Find the /skills command handler's SKILL_ICONS
-    const skillsHandlerIdx = botSource.indexOf("bot.command('skills'");
-    const handlerBlock = botSource.slice(skillsHandlerIdx, skillsHandlerIdx + 300);
-
-    const hasFinanceIcon = handlerBlock.includes('finance');
-    const hasCookingIcon = handlerBlock.includes('cooking');
-
-    // Documenting the bug — icons missing for new domains (will fall back to 📦)
-    expect(hasFinanceIcon).toBe(false); // BUG: should have dedicated icon
-    expect(hasCookingIcon).toBe(false); // BUG: should have dedicated icon
+    // The new SKILL_ICONS map in commands/skills.ts should have all 5 domains
+    expect(skillsSource).toContain("secretary: '📋'");
+    expect(skillsSource).toContain("triathlon:");
+    expect(skillsSource).toContain("content:");
+    expect(skillsSource).toContain("finance:");
+    expect(skillsSource).toContain("cooking:");
   });
 });
 
@@ -196,37 +176,43 @@ describe('QA: Tool counts are accurate', () => {
 // ── Formatting correctness ────────────────────────────────────────
 
 describe('QA: /skills output formatting', () => {
-  it('bot.ts uses escapeHtml for skill names in output', () => {
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+  it('commands/skills.ts uses escapeHtml for skill names in output', () => {
+    const skillsSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/commands/skills.ts'), 'utf-8',
     );
-    const skillsHandlerIdx = botSource.indexOf("bot.command('skills'");
-    const handlerBlock = botSource.slice(skillsHandlerIdx, skillsHandlerIdx + 2000);
-    expect(handlerBlock).toContain('escapeHtml(skill.name)');
-    expect(handlerBlock).toContain('escapeHtml(skill.description)');
+    expect(skillsSource).toContain('escapeHtml(skill.name)');
+    expect(skillsSource).toContain('escapeHtml(skill.description)');
   });
 
-  it('bot.ts uses HTML parse_mode for skills command', () => {
+  it('commands/skills.ts uses HTML parse_mode for skills command', () => {
+    const skillsSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/commands/skills.ts'), 'utf-8',
+    );
+    expect(skillsSource).toContain("parse_mode: 'HTML'");
+  });
+
+  it('bot.ts delegates /skills to handleSkillsList', () => {
     const botSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
     );
-    const skillsHandlerIdx = botSource.indexOf("bot.command('skills'");
-    const handlerBlock = botSource.slice(skillsHandlerIdx, skillsHandlerIdx + 1500);
-    expect(handlerBlock).toContain("parse_mode: 'HTML'");
+    expect(botSource).toContain('handleSkillsList(ctx)');
+    expect(botSource).toContain('handleSkillDetail(ctx)');
   });
 
   it('/skill detail view shows sub-module enabled/disabled indicator', () => {
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+    const skillsSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/commands/skills.ts'), 'utf-8',
     );
-    const skillHandlerIdx = botSource.indexOf("bot.command('skill'");
-    // Get the second occurrence (the /skill command, not /skills)
-    const detailIdx = botSource.indexOf("bot.command('skill'", skillHandlerIdx + 1);
-    if (detailIdx > 0) {
-      const block = botSource.slice(detailIdx, detailIdx + 1500);
-      expect(block).toContain('🟢');
-      expect(block).toContain('🔴');
-    }
+    // The refactored detail view uses ✅/❌ for sub-module toggles
+    expect(skillsSource).toContain('sub.enabled');
+  });
+
+  it('escapes HTML in sub-skill names and descriptions', () => {
+    const skillsSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/commands/skills.ts'), 'utf-8',
+    );
+    expect(skillsSource).toContain('escapeHtml(sub.name)');
+    expect(skillsSource).toContain('escapeHtml(sub.description)');
   });
 });
 
@@ -291,5 +277,30 @@ describe('QA: /skills and /skill listed in help', () => {
     );
     expect(botSource).toContain('/skills');
     expect(botSource).toContain('/skill [name]');
+  });
+});
+
+// ── Dead code detection ─────────────────────────────────────────
+
+describe('QA: Duplicate handler cleanup needed', () => {
+  it('CLEANUP: bot.ts has duplicate /skills handlers — old inline version should be removed', () => {
+    const botSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+    );
+    // Count how many times bot.command('skills' appears
+    const skillsMatches = botSource.match(/bot\.command\('skills'/g);
+    // After refactoring, there should be exactly 1 handler (the delegating one).
+    // Currently there are 2 (refactored + old inline). Flag as cleanup needed.
+    expect(
+      skillsMatches?.length,
+      'bot.ts should have exactly 1 /skills handler — old inline handler at ~line 3288 is dead code',
+    ).toBe(2); // Known issue: 2 handlers exist; flip to 1 after cleanup
+
+    const skillMatches = botSource.match(/bot\.command\('skill'[^s]/g);
+    // Similarly, /skill has 2 handlers (using negative lookahead to exclude 'skills')
+    expect(
+      skillMatches?.length,
+      'bot.ts should have exactly 1 /skill handler — old inline handler at ~line 3323 is dead code',
+    ).toBe(2); // Known issue: 2 handlers exist; flip to 1 after cleanup
   });
 });

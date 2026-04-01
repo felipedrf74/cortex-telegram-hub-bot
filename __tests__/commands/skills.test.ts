@@ -100,8 +100,8 @@ describe('formatSkillsList', () => {
     const skills = getAllSkillStatuses();
     const result = formatSkillsList(skills);
 
-    // Secretary has 6 sub-skills, all enabled by default
-    expect(result).toContain('6/6 active');
+    // Secretary has 7 sub-skills, all enabled by default
+    expect(result).toContain('7/7 active');
   });
 
   it('shows enabled toggle for active skills', () => {
@@ -168,7 +168,7 @@ describe('formatSkillDetail', () => {
     expect(result).toContain('reminders');
     expect(result).toContain('notes');
     expect(result).toContain('shared-memory');
-    expect(result).toContain('Sub-modules (6)');
+    expect(result).toContain('Sub-modules (7)');
   });
 
   it('shows tool count per sub-module', () => {
