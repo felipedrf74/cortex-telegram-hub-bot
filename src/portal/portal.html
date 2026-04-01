@@ -1215,7 +1215,13 @@
   }
 
   // ── Skill Packages rendering ────────────────
-  const skillIcons = { tasks: '📋', calendar: '📅', email: '✉️', reminders: '⏰', notes: '📝', 'shared-memory': '🧠', briefings: '☀️' };
+  const skillIcons = {
+    tasks: '📋', calendar: '📅', email: '✉️', reminders: '⏰', notes: '📝',
+    'shared-memory': '🧠', briefings: '☀️', 'training-plans': '🏋️',
+    'research-pipeline': '🔬', 'script-generator': '📜', 'seo-tracker': '🔍',
+    'reaction-radar': '📡', 'voice-evolution': '🎙️', 'performance-intel': '📊',
+    'pipeline-tracker': '🚀', 'topic-scheduler': '📆', 'meme-scout': '🃏',
+  };
   const domainSkillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
 
   async function fetchSkillPackages() {

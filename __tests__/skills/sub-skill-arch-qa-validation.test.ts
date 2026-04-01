@@ -204,9 +204,12 @@ describe('Sub-Skill Architecture — skill-config module', () => {
     expect(skillConfigTs).toContain('export function getSubSkillNames');
   });
 
-  it('all sub-skills have enabledByDefault set to true in initial config', () => {
+  it('only experimental sub-skills may have enabledByDefault set to false', () => {
     const disabledMatches = skillConfigTs.match(/enabledByDefault:\s*false/g);
-    expect(disabledMatches).toBeNull();
+    // meme-scout is the only experimental (disabled-by-default) sub-skill
+    if (disabledMatches) {
+      expect(disabledMatches.length).toBe(1);
+    }
   });
 });
 

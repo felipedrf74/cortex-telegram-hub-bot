@@ -43,8 +43,8 @@ describe('SkillConfig — structure', () => {
       for (const sub of skill.subSkills) {
         expect(sub.name).toBeTruthy();
         expect(sub.description).toBeTruthy();
-        // Sub-skills must have either tools or cronJobs (briefings has only crons)
-        expect(sub.tools.length + (sub.cronJobs?.length ?? 0)).toBeGreaterThan(0);
+        // Sub-skills should have tools, cronJobs, or be placeholder sub-skills (e.g. meme-scout)
+        // Placeholder sub-skills act as feature flags for future functionality
         expect(typeof sub.enabledByDefault).toBe('boolean');
       }
     }
@@ -156,9 +156,62 @@ describe('SkillConfig — content skill', () => {
     expect(subNames).toContain('shared-memory');
   });
 
-  it('has the fewest sub-skills', () => {
-    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.triathlon.subSkills.length);
-    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.secretary.subSkills.length);
+  it('is version 2.0.0 with manifest v2 sub-skills', () => {
+    expect(cnt.version).toBe('2.0.0');
+  });
+
+  it('has all 11 granular sub-skills', () => {
+    const subNames = cnt.subSkills.map(s => s.name);
+    expect(subNames).toContain('notes');
+    expect(subNames).toContain('shared-memory');
+    expect(subNames).toContain('research-pipeline');
+    expect(subNames).toContain('script-generator');
+    expect(subNames).toContain('seo-tracker');
+    expect(subNames).toContain('reaction-radar');
+    expect(subNames).toContain('voice-evolution');
+    expect(subNames).toContain('performance-intel');
+    expect(subNames).toContain('pipeline-tracker');
+    expect(subNames).toContain('topic-scheduler');
+    expect(subNames).toContain('meme-scout');
+    expect(cnt.subSkills.length).toBe(11);
+  });
+
+  it('meme-scout is disabled by default', () => {
+    const meme = cnt.subSkills.find(s => s.name === 'meme-scout')!;
+    expect(meme).toBeDefined();
+    expect(meme.enabledByDefault).toBe(false);
+  });
+
+  it('all other content sub-skills are enabled by default', () => {
+    for (const sub of cnt.subSkills) {
+      if (sub.name === 'meme-scout') continue;
+      expect(sub.enabledByDefault).toBe(true);
+    }
+  });
+
+  it('agent sub-skills map to correct cron job IDs', () => {
+    const pipelineSub = cnt.subSkills.find(s => s.name === 'pipeline-tracker')!;
+    expect(pipelineSub.cronJobs).toContain('pipeline_agent');
+
+    const perfSub = cnt.subSkills.find(s => s.name === 'performance-intel')!;
+    expect(perfSub.cronJobs).toContain('performance_agent');
+
+    const voiceSub = cnt.subSkills.find(s => s.name === 'voice-evolution')!;
+    expect(voiceSub.cronJobs).toContain('voice_evolution');
+
+    const radarSub = cnt.subSkills.find(s => s.name === 'reaction-radar')!;
+    expect(radarSub.cronJobs).toContain('reaction_radar');
+
+    const seoSub = cnt.subSkills.find(s => s.name === 'seo-tracker')!;
+    expect(seoSub.cronJobs).toContain('seo_agent');
+
+    const topicSub = cnt.subSkills.find(s => s.name === 'topic-scheduler')!;
+    expect(topicSub.cronJobs).toContain('tuesday_reels');
+    expect(topicSub.cronJobs).toContain('thursday_youtube');
+    expect(topicSub.cronJobs).toContain('friday_weekly');
+
+    const researchSub = cnt.subSkills.find(s => s.name === 'research-pipeline')!;
+    expect(researchSub.cronJobs).toContain('channel_relearn');
   });
 });
 
@@ -192,6 +245,8 @@ describe('SkillConfig — getSubSkillNames()', () => {
   it('returns sub-skill names for content', () => {
     const names = getSubSkillNames('content');
     expect(names).toContain('notes');
-    expect(names.length).toBe(2);
+    expect(names).toContain('pipeline-tracker');
+    expect(names).toContain('reaction-radar');
+    expect(names.length).toBe(11);
   });
 });
