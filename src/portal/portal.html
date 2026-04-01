@@ -1054,6 +1054,33 @@
     <div id="integration-health"></div>
   </div>
 
+  <!-- ── Usage Metering ─────────────────────── -->
+  <div class="card">
+    <h2>📈 Usage Metering (Today)</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value" id="um-messages">—</div>
+        <div class="stat-label">Messages</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="um-tokens">—</div>
+        <div class="stat-label">Tokens</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="um-calls">—</div>
+        <div class="stat-label">API Calls</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="um-cost">—</div>
+        <div class="stat-label">Cost (USD)</div>
+      </div>
+    </div>
+    <table id="um-users-table">
+      <thead><tr><th>User ID</th><th>Messages</th><th>Tokens</th><th>API Calls</th><th>Cost</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- ── Training Plans ─────────────────────── -->
   <div class="card">
     <h2>🏋️ Training Plans</h2>
@@ -1862,6 +1889,23 @@
 
     // Integration Health
     renderIntegrationHealth(snap.integrations);
+
+    // Usage Metering
+    if (snap.usageMetering) {
+      const um = snap.usageMetering;
+      document.getElementById('um-messages').textContent = um.today.messageCount;
+      document.getElementById('um-tokens').textContent = um.today.totalTokens.toLocaleString();
+      document.getElementById('um-calls').textContent = um.today.apiCalls;
+      document.getElementById('um-cost').textContent = '$' + um.today.costUsd.toFixed(4);
+      const umBody = document.querySelector('#um-users-table tbody');
+      umBody.innerHTML = um.byUser.map(u => `<tr>
+        <td class="mono">${u.userId}</td>
+        <td>${u.messageCount}</td>
+        <td>${u.totalTokens.toLocaleString()}</td>
+        <td>${u.apiCalls}</td>
+        <td>$${u.costUsd.toFixed(4)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No user activity today</td></tr>';
+    }
 
     // Training Plans
     if (snap.trainingPlans) {

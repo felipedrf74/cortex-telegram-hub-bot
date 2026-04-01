@@ -46,11 +46,13 @@ function computeCost(model: string, usage: Anthropic.Usage): number {
  * @param category Identifies the call site: 'classify_message', 'classify_image',
  *                 'domain_secretary', 'domain_triathlon', 'domain_content',
  *                 'tool_continuation', 'invoice_filing', 'coach_analysis'
+ * @param options  Optional metering context: userId and whether this is a user-initiated message
  */
 export async function trackedCreate(
   client: Anthropic,
   params: Anthropic.MessageCreateParamsNonStreaming,
   category: string,
+  options?: { userId?: number; isUserMessage?: boolean },
 ): Promise<Anthropic.Message> {
   const start = Date.now();
 
@@ -94,6 +96,20 @@ export async function trackedCreate(
     );
   } catch (err) {
     logger.warn({ err }, 'Failed to record api_usage');
+  }
+
+  // Record per-user usage metering (non-critical — swallow errors)
+  try {
+    const { recordUsage } = require('../services/usage-metering');
+    recordUsage(
+      options?.userId ?? 0,
+      usage.input_tokens,
+      usage.output_tokens,
+      cost,
+      options?.isUserMessage ?? false,
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to record usage metering');
   }
 
   // Push activity event

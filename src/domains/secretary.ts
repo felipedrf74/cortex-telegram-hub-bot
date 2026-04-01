@@ -171,11 +171,11 @@ async function buildStateContext(): Promise<string> {
   return result;
 }
 
-export async function handleSecretary(message: string): Promise<DomainResponse> {
+export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
   const history = getConversationHistory(DOMAIN);
   const stateContext = await buildStateContext();
 
-  let result = await callDomain(DOMAIN, history, message, stateContext);
+  let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;
 
   // Accumulate full tool conversation chain across iterations
@@ -220,7 +220,7 @@ export async function handleSecretary(message: string): Promise<DomainResponse> 
     );
 
     logger.debug({ iteration: iterations, msgCount: toolConversation.length }, 'Calling continueWithToolResults');
-    result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation);
+    result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, userId);
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');
   }

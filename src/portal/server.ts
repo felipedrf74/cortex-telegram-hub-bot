@@ -164,6 +164,10 @@ interface SnapshotResponse {
       toolCount: number;
     }[];
   }[];
+  usageMetering: {
+    today: { messageCount: number; totalTokens: number; apiCalls: number; costUsd: number };
+    byUser: { userId: number; messageCount: number; totalTokens: number; apiCalls: number; costUsd: number }[];
+  };
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -744,6 +748,35 @@ function buildSnapshot(): SnapshotResponse {
     }
   } catch { /* table may not exist yet */ }
 
+  // ── Usage metering stats ──────────────────────────────────────────
+  let usageMetering: SnapshotResponse['usageMetering'] = {
+    today: { messageCount: 0, totalTokens: 0, apiCalls: 0, costUsd: 0 },
+    byUser: [],
+  };
+  try {
+    const { getGlobalDailyUsage, getDailyUsage } = require('../services/usage-metering');
+    const global = getGlobalDailyUsage();
+    usageMetering.today = {
+      messageCount: global.messageCount,
+      totalTokens: global.totalTokens,
+      apiCalls: global.apiCalls,
+      costUsd: global.costUsd,
+    };
+    // Per-user breakdown for allowed users
+    for (const uid of config.telegram.allowedUserIds) {
+      const u = getDailyUsage(uid);
+      if (u.apiCalls > 0) {
+        usageMetering.byUser.push({
+          userId: uid,
+          messageCount: u.messageCount,
+          totalTokens: u.totalTokens,
+          apiCalls: u.apiCalls,
+          costUsd: u.costUsd,
+        });
+      }
+    }
+  } catch { /* table may not exist yet */ }
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -767,6 +800,7 @@ function buildSnapshot(): SnapshotResponse {
     domainStatus,
     skillStatus: getAllSkillStatuses(),
     trainingPlans,
+    usageMetering,
   };
 }
 

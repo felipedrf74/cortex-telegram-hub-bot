@@ -1,4 +1,4 @@
--- 021: Fitness Training Plans with calendar blockers + weekly auto-adjust
+-- 023: Fitness Training Plans with calendar blockers + weekly auto-adjust
 -- Stores AI-generated periodized plans, weekly microcycles, individual sessions,
 -- and completion logs for adherence tracking and auto-adjustment.
 

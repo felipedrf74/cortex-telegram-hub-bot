@@ -319,6 +319,7 @@ describe('handleSimpleDomain', () => {
       'Write a full script',
       expect.any(String),
       4096,
+      undefined,
     );
   });
 });

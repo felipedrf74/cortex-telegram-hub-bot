@@ -45,12 +45,11 @@ describe('handleContent', () => {
   it('delegates to handleSimpleDomain with domain "content"', async () => {
     mockHandler.mockResolvedValue({ text: 'hook draft', domain: 'content' });
     await handleContent('Write a hook');
-    expect(mockHandler).toHaveBeenCalledWith('content', 'Write a hook', 5);
+    expect(mockHandler).toHaveBeenCalledWith('content', 'Write a hook', 5, undefined);
   });
 
-  it('does NOT pass userId (content domain does not use it)', async () => {
+  it('passes userId to handleSimpleDomain', async () => {
     await handleContent('Script idea', 99);
-    // handleContent calls handleSimpleDomain('content', msg, 5) — no userId
-    expect(mockHandler).toHaveBeenCalledWith('content', 'Script idea', 5);
+    expect(mockHandler).toHaveBeenCalledWith('content', 'Script idea', 5, 99);
   });
 });

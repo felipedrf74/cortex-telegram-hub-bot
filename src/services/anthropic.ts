@@ -561,7 +561,8 @@ export async function callDomain(
   history: DomainMessage[],
   currentMessage: string,
   stateContext: string,
-  maxTokensOverride?: number
+  maxTokensOverride?: number,
+  userId?: number,
 ): Promise<CallDomainResult> {
   let systemPrompt = getDomainSystemPrompt(domain);
   if (domain === 'content') {
@@ -592,7 +593,7 @@ export async function callDomain(
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
-    }, `domain_${domain}`);
+    }, `domain_${domain}`, { userId, isUserMessage: true });
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in callDomain');
     throw err;
@@ -617,7 +618,8 @@ export async function continueWithToolResults(
   history: DomainMessage[],
   currentMessage: string,
   stateContext: string,
-  toolConversation: Anthropic.MessageParam[]
+  toolConversation: Anthropic.MessageParam[],
+  userId?: number,
 ): Promise<CallDomainResult> {
   let systemPrompt = getDomainSystemPrompt(domain);
   if (domain === 'content') {
@@ -647,7 +649,7 @@ export async function continueWithToolResults(
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
-    }, 'tool_continuation');
+    }, 'tool_continuation', { userId });
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in continueWithToolResults');
     throw err;
