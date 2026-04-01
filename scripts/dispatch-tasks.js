@@ -54,6 +54,7 @@ When your work is complete, you MUST provide Felipe with a review summary using 
 ### Acceptance criteria
 - [ ] \`npx vitest run\` passes — all tests green
 - [ ] \`npx tsc --noEmit\` — no type errors
+- [ ] Portal updated (\`src/portal/portal.html\`) — if feature adds cron jobs, commands, integrations, or user-facing functionality
 - [ ] (Add specific criteria for this task)
 
 ### User test steps (how Felipe tests this in Telegram)

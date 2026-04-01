@@ -57,6 +57,7 @@ Then check for the next queued validation task.
 - **Never merge to main or develop** — only push to your branch
 - **Always run tests before committing** — `npx vitest run && npx tsc --noEmit`
 - **Always call agent-complete.js when done** — this is how the pipeline chains
+- **Always update the Status Portal** — if your feature adds cron jobs, new commands, new integrations, or user-facing functionality, update `src/portal/portal.html` to include it (timeline category, job calendar entry, action button, or status indicator). The portal is the user's dashboard at port 8200.
 
 ---
 
@@ -175,6 +176,7 @@ Each domain has isolated conversation history and system prompt:
 - `src/services/scheduler.ts` — 18+ cron jobs
 - `src/services/tool-executor.ts` — Tool call execution
 - `src/portal/telemetry.ts` — Zero-import telemetry (provider callbacks)
+- `src/portal/portal.html` — Status Portal UI (port 8200) — MUST update when adding features
 - `prompts/*.md` — Hot-reloadable system prompts
 
 ### Content Agent Mesh
