@@ -552,10 +552,10 @@ async function startAgent(n){log("Launching "+n+" (auto-loop)...");var d=await a
 async function stopAgent(n){log("Stopping "+n+"...");var d=await api("stop-agent",{agent:n});showOut(n,d.output||"Stopped");setTimeout(refreshAgents,2000)}
 async function checkAgent(n){var d=await api("agent-log",{agent:n});showOut(n,d.output||"No task files")}
 async function agentGitLog(n){var d=await api("agent-branches",{agent:n});showOut(n,d.output||"No commits")}
-async function startAllAgents(){for(var n of["backend","qa","devops","flex"]){await startAgent(n);await new Promise(function(r){setTimeout(r,2000)})}}
+async function startAllAgents(){for(var n of["backend","qa","devops","flex","frontend","qa2"]){await startAgent(n);await new Promise(function(r){setTimeout(r,2000)})}}
 async function stopAll(){
   log("Stopping all agents...");
-  await Promise.all(["backend","qa","devops","flex"].map(n=>stopAgent(n)));
+  await Promise.all(["backend","qa","devops","flex","frontend","qa2"].map(n=>stopAgent(n)));
   setTimeout(refreshAgents,2500);
 }
 async function refreshAgents(){var d=await api("agents");if(d.ok){AG=d.agents;render()}}

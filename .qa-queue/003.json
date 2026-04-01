@@ -1,9 +1,13 @@
 {
-  "id": "332ad49d-23e7-81b8-be1d-dd0024582ce2",
-  "title": "Copyright headers (60+ files)",
-  "description": "MIT license header on all source files.",
-  "priority": "\ud83d\udfe0 High",
-  "phase": "Phase 0 \u2014 Foundation",
-  "tags": [],
-  "originAgent": "flex"
+  "id": "335ad49d-23e7-8109-8575-f7c526db6c7e",
+  "title": "ARCH: Per-user data isolation + encryption for financial data",
+  "description": "Design and implement per-user data isolation with encryption for financial/sensitive data. Users must own their data exclusively with export/download capability. See page content for full spec.",
+  "priority": "🔴 Critical",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [
+    "arch",
+    "code"
+  ],
+  "originAgent": "backend",
+  "queuedAt": "2026-04-01T19:12:36.382Z"
 }

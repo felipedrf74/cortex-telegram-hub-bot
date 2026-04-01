@@ -1,9 +1,12 @@
 {
-  "id": "332ad49d-23e7-8123-9eb4-c02fa4b2f151",
-  "title": "Rename Cortex \u2192 Nexus Hub in codebase",
-  "description": "Docs, prompts, portal, README, all references.",
-  "priority": "\ud83d\udfe1 Medium",
-  "phase": "Phase 0 \u2014 Foundation",
-  "tags": [],
-  "originAgent": "flex"
+  "id": "335ad49d-23e7-81f7-8591-c9b1bb3138b9",
+  "title": "FEAT: Calendar event deduplication across multi-email accounts",
+  "description": "When a user has 2+ email accounts (e.g., personal Gmail + work Outlook), the same meeting invite appears on both calendars. Current system shows this as a conflict. Fix: fingerprint events by subject+time+organizer, merge duplicates, show as single event with 'synced across accounts' indicator. Update portal.html.",
+  "priority": "🟠 High",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [
+    "code"
+  ],
+  "originAgent": "backend",
+  "queuedAt": "2026-04-01T19:26:50.519Z"
 }

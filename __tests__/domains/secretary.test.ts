@@ -57,6 +57,10 @@ vi.mock('../../src/services/tool-executor', () => ({
   executeToolCall: vi.fn(),
 }));
 
+vi.mock('../../src/skills/registry', () => ({
+  isSubmoduleEnabled: vi.fn().mockReturnValue(true),
+}));
+
 vi.mock('../../src/utils/date-parser', () => ({
   now: vi.fn(),
   formatDateTime: vi.fn((d: string) => d),

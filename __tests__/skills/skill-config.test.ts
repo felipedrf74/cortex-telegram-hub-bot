@@ -14,6 +14,14 @@ import {
   getSkillDefinition,
   getAllToolNames,
   getSubSkillNames,
+  registerSkill,
+  unregisterSkill,
+  getRegisteredDomainNames,
+  getAllSkillDefinitions,
+  getPatternRoutes,
+  getKeywordRoutes,
+  getClassificationHints,
+  _resetRegistry,
 } from '../../src/skills/skill-config';
 import type { SkillDefinition, SubSkillDefinition } from '../../src/skills/skill-config';
 import { TOOLS } from '../../src/services/anthropic';
@@ -23,10 +31,12 @@ import { TOOLS } from '../../src/services/anthropic';
 // ═══════════════════════════════════════════════════════════════════
 
 describe('SkillConfig — structure', () => {
-  it('defines skills for all three domains', () => {
+  it('defines skills for all five domains', () => {
     expect(DEFAULT_SKILLS).toHaveProperty('secretary');
     expect(DEFAULT_SKILLS).toHaveProperty('triathlon');
     expect(DEFAULT_SKILLS).toHaveProperty('content');
+    expect(DEFAULT_SKILLS).toHaveProperty('finance');
+    expect(DEFAULT_SKILLS).toHaveProperty('cooking');
   });
 
   it('each skill has required fields', () => {
@@ -43,7 +53,8 @@ describe('SkillConfig — structure', () => {
       for (const sub of skill.subSkills) {
         expect(sub.name).toBeTruthy();
         expect(sub.description).toBeTruthy();
-        expect(sub.tools.length).toBeGreaterThan(0);
+        // Sub-skills should have tools, cronJobs, or be placeholder sub-skills (e.g. meme-scout)
+        // Placeholder sub-skills act as feature flags for future functionality
         expect(typeof sub.enabledByDefault).toBe('boolean');
       }
     }
@@ -155,9 +166,62 @@ describe('SkillConfig — content skill', () => {
     expect(subNames).toContain('shared-memory');
   });
 
-  it('has the fewest sub-skills', () => {
-    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.triathlon.subSkills.length);
-    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.secretary.subSkills.length);
+  it('is version 2.0.0 with manifest v2 sub-skills', () => {
+    expect(cnt.version).toBe('2.0.0');
+  });
+
+  it('has all 11 granular sub-skills', () => {
+    const subNames = cnt.subSkills.map(s => s.name);
+    expect(subNames).toContain('notes');
+    expect(subNames).toContain('shared-memory');
+    expect(subNames).toContain('research-pipeline');
+    expect(subNames).toContain('script-generator');
+    expect(subNames).toContain('seo-tracker');
+    expect(subNames).toContain('reaction-radar');
+    expect(subNames).toContain('voice-evolution');
+    expect(subNames).toContain('performance-intel');
+    expect(subNames).toContain('pipeline-tracker');
+    expect(subNames).toContain('topic-scheduler');
+    expect(subNames).toContain('meme-scout');
+    expect(cnt.subSkills.length).toBe(11);
+  });
+
+  it('meme-scout is disabled by default', () => {
+    const meme = cnt.subSkills.find(s => s.name === 'meme-scout')!;
+    expect(meme).toBeDefined();
+    expect(meme.enabledByDefault).toBe(false);
+  });
+
+  it('all other content sub-skills are enabled by default', () => {
+    for (const sub of cnt.subSkills) {
+      if (sub.name === 'meme-scout') continue;
+      expect(sub.enabledByDefault).toBe(true);
+    }
+  });
+
+  it('agent sub-skills map to correct cron job IDs', () => {
+    const pipelineSub = cnt.subSkills.find(s => s.name === 'pipeline-tracker')!;
+    expect(pipelineSub.cronJobs).toContain('pipeline_agent');
+
+    const perfSub = cnt.subSkills.find(s => s.name === 'performance-intel')!;
+    expect(perfSub.cronJobs).toContain('performance_agent');
+
+    const voiceSub = cnt.subSkills.find(s => s.name === 'voice-evolution')!;
+    expect(voiceSub.cronJobs).toContain('voice_evolution');
+
+    const radarSub = cnt.subSkills.find(s => s.name === 'reaction-radar')!;
+    expect(radarSub.cronJobs).toContain('reaction_radar');
+
+    const seoSub = cnt.subSkills.find(s => s.name === 'seo-tracker')!;
+    expect(seoSub.cronJobs).toContain('seo_agent');
+
+    const topicSub = cnt.subSkills.find(s => s.name === 'topic-scheduler')!;
+    expect(topicSub.cronJobs).toContain('tuesday_reels');
+    expect(topicSub.cronJobs).toContain('thursday_youtube');
+    expect(topicSub.cronJobs).toContain('friday_weekly');
+
+    const researchSub = cnt.subSkills.find(s => s.name === 'research-pipeline')!;
+    expect(researchSub.cronJobs).toContain('channel_relearn');
   });
 });
 
@@ -167,9 +231,15 @@ describe('SkillConfig — content skill', () => {
 
 describe('SkillConfig — getSkillDefinition()', () => {
   it('returns the correct skill for each domain', () => {
-    expect(getSkillDefinition('secretary').name).toBe('secretary');
-    expect(getSkillDefinition('triathlon').name).toBe('triathlon');
-    expect(getSkillDefinition('content').name).toBe('content');
+    expect(getSkillDefinition('secretary')!.name).toBe('secretary');
+    expect(getSkillDefinition('triathlon')!.name).toBe('triathlon');
+    expect(getSkillDefinition('content')!.name).toBe('content');
+    expect(getSkillDefinition('finance')!.name).toBe('finance');
+    expect(getSkillDefinition('cooking')!.name).toBe('cooking');
+  });
+
+  it('returns undefined for unknown skills', () => {
+    expect(getSkillDefinition('nonexistent')).toBeUndefined();
   });
 });
 
@@ -191,6 +261,159 @@ describe('SkillConfig — getSubSkillNames()', () => {
   it('returns sub-skill names for content', () => {
     const names = getSubSkillNames('content');
     expect(names).toContain('notes');
-    expect(names.length).toBe(2);
+    expect(names).toContain('pipeline-tracker');
+    expect(names).toContain('reaction-radar');
+    expect(names.length).toBe(11);
+  });
+
+  it('returns empty array for unknown skills', () => {
+    expect(getSubSkillNames('nonexistent')).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// DYNAMIC SKILL REGISTRATION TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+const ACCOUNTING_SKILL: SkillDefinition = {
+  name: 'accounting',
+  description: 'Corporate accounting — ledgers, reconciliation, audits',
+  version: '1.0.0',
+  routing: {
+    patternRoutes: [/^\/(ledger|reconcile|audit)\b/i],
+    keywordRoute: /\b(ledgers?|reconciliation|audits?|accounting|bookkeeping)\b/i,
+    classificationHint: {
+      label: 'accounting',
+      description: 'ledgers, reconciliation, audits, bookkeeping',
+      examples: ['reconcile the ledger', 'run an audit'],
+    },
+  },
+  subSkills: [
+    {
+      name: 'ledgers',
+      description: 'Ledger management',
+      enabledByDefault: true,
+      tools: ['create_ledger', 'get_ledgers'],
+    },
+    {
+      name: 'audits',
+      description: 'Audit tracking',
+      enabledByDefault: true,
+      tools: ['run_audit', 'get_audits'],
+    },
+  ],
+};
+
+describe('SkillConfig — dynamic skill registration', () => {
+  afterEach(() => {
+    _resetRegistry();
+  });
+
+  it('registerSkill adds a new skill to the registry', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getSkillDefinition('accounting')).toBeDefined();
+    expect(getSkillDefinition('accounting')!.name).toBe('accounting');
+  });
+
+  it('registered skill appears in getRegisteredDomainNames', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const names = getRegisteredDomainNames();
+    expect(names).toContain('accounting');
+    expect(names).toHaveLength(6);
+  });
+
+  it('registered skill appears in getAllSkillDefinitions', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const defs = getAllSkillDefinitions();
+    expect(defs).toHaveLength(6);
+    expect(defs.map(d => d.name)).toContain('accounting');
+  });
+
+  it('registered skill appears in getPatternRoutes', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const routes = getPatternRoutes();
+    expect(routes).toHaveLength(6);
+    const accounting = routes.find(r => r.domain === 'accounting')!;
+    expect(accounting.patterns[0].test('/ledger check')).toBe(true);
+  });
+
+  it('registered skill appears in getKeywordRoutes', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const routes = getKeywordRoutes();
+    expect(routes).toHaveLength(6);
+    const accounting = routes.find(r => r.domain === 'accounting')!;
+    expect(accounting.pattern.test('reconcile the ledger')).toBe(true);
+    expect(accounting.priority).toBe(0); // non-secretary = high priority
+  });
+
+  it('registered skill appears in getClassificationHints', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const hints = getClassificationHints();
+    expect(hints).toHaveLength(6);
+    expect(hints.map(h => h.label)).toContain('accounting');
+  });
+
+  it('registered skill tools appear in getAllToolNames', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const tools = getAllToolNames();
+    expect(tools).toContain('create_ledger');
+    expect(tools).toContain('run_audit');
+  });
+
+  it('registered skill sub-skills appear in getSubSkillNames', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const names = getSubSkillNames('accounting');
+    expect(names).toEqual(['ledgers', 'audits']);
+  });
+
+  it('enabledSkills filter works with dynamic skills', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const routes = getPatternRoutes(new Set(['accounting', 'secretary']));
+    expect(routes).toHaveLength(2);
+    expect(routes.map(r => r.domain)).toContain('accounting');
+    expect(routes.map(r => r.domain)).toContain('secretary');
+  });
+
+  it('unregisterSkill removes a dynamic skill', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getSkillDefinition('accounting')).toBeDefined();
+
+    const removed = unregisterSkill('accounting');
+    expect(removed).toBe(true);
+    expect(getSkillDefinition('accounting')).toBeUndefined();
+    expect(getRegisteredDomainNames()).toHaveLength(5);
+  });
+
+  it('unregisterSkill returns false for default skills', () => {
+    expect(unregisterSkill('secretary')).toBe(false);
+    expect(getSkillDefinition('secretary')).toBeDefined();
+  });
+
+  it('unregisterSkill returns false for unknown skills', () => {
+    expect(unregisterSkill('nonexistent')).toBe(false);
+  });
+
+  it('registerSkill can overwrite an existing dynamic skill', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    const updated = { ...ACCOUNTING_SKILL, version: '2.0.0' };
+    registerSkill(updated);
+    expect(getSkillDefinition('accounting')!.version).toBe('2.0.0');
+  });
+
+  it('_resetRegistry restores defaults only', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getRegisteredDomainNames()).toHaveLength(6);
+    _resetRegistry();
+    expect(getRegisteredDomainNames()).toHaveLength(5);
+    expect(getSkillDefinition('accounting')).toBeUndefined();
+    expect(getSkillDefinition('secretary')).toBeDefined();
+  });
+
+  it('defaults are preserved after registering dynamic skills', () => {
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getSkillDefinition('secretary')!.name).toBe('secretary');
+    expect(getSkillDefinition('triathlon')!.name).toBe('triathlon');
+    expect(getSkillDefinition('content')!.name).toBe('content');
+    expect(getSkillDefinition('finance')!.name).toBe('finance');
   });
 });

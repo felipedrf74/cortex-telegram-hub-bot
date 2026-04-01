@@ -20,6 +20,8 @@ const SYSTEM_COMMANDS = [
   '/competitor', '/gaps', '/seo', '/repurpose', '/feedback', '/report',
   '/learnfrom', '/references', '/relearn', '/studyvideo', '/transcribe', '/script', '/repurpose',
   '/contenttopic', '/contentretro',
+  '/onboard', '/profile',
+  '/skills', '/skill',
 ];
 
 export function isSystemCommand(message: string): string | null {

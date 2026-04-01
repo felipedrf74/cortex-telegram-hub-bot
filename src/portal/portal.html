@@ -275,6 +275,167 @@
   .domain-detail-chip.ok { background: rgba(0,184,148,.1); color: var(--green); }
   .domain-detail-chip.warn { background: rgba(225,112,85,.1); color: var(--red); }
 
+  /* ── Skill Toggle Switch ──────────────────── */
+  .toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--border);
+    border-radius: 20px;
+    transition: background .2s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--text2);
+    border-radius: 50%;
+    transition: transform .2s, background .2s;
+  }
+
+  .toggle-switch input:checked + .toggle-slider {
+    background: var(--green);
+  }
+
+  .toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(16px);
+    background: #fff;
+  }
+
+  .toggle-switch input:disabled + .toggle-slider {
+    opacity: .4;
+    cursor: not-allowed;
+  }
+
+  /* ── Skill Cards ────────────────────────── */
+  .skill-card {
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 16px;
+    border-left: 4px solid var(--accent);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .skill-card.disabled {
+    opacity: .55;
+    border-left-color: var(--text2);
+  }
+
+  .skill-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .skill-card-header h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .skill-card-desc {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 2px;
+  }
+
+  .skill-submodules {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .submodule-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(139,143,163,.06);
+    font-size: 12px;
+  }
+
+  .submodule-row .sub-name {
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .submodule-row .sub-desc {
+    color: var(--text2);
+    margin-left: 6px;
+    font-weight: 400;
+  }
+
+  .submodule-row .sub-tools {
+    font-size: 11px;
+    color: var(--text2);
+    margin-left: auto;
+    margin-right: 10px;
+  }
+
+  /* ── Skill Package Cards ────────────────── */
+  .skill-package-card {
+    background: var(--surface2); border-radius: 8px; padding: 14px 16px;
+  }
+  .skill-package-card h3 {
+    font-size: 14px; margin: 0 0 4px; text-transform: capitalize;
+  }
+  .skill-version { font-weight: 400; font-size: 11px; color: var(--muted); }
+  .skill-desc { font-size: 12px; color: var(--muted); margin: 0 0 10px; display: block; }
+  .sub-skill-list { display: flex; flex-direction: column; gap: 6px; }
+  .sub-skill-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+    background: var(--surface); transition: opacity .2s;
+  }
+  .sub-skill-card.disabled { opacity: .45; }
+  .sub-skill-icon { font-size: 18px; flex-shrink: 0; }
+  .sub-skill-info { flex: 1; min-width: 0; }
+  .sub-skill-info strong { font-size: 12px; display: block; text-transform: capitalize; }
+  .sub-skill-desc { font-size: 11px; color: var(--muted); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub-skill-meta { font-size: 10px; color: var(--muted); }
+  .sub-skill-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .sub-skill-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: rgba(139,143,163,.08);
+    color: var(--text2);
+  }
+  .sub-skill-chip.on { background: rgba(0,184,148,.1); color: var(--green); }
+  .sub-skill-chip.off { background: rgba(225,112,85,.08); color: var(--red); }
+  .sub-skill-tools { font-size: 10px; color: var(--text2); opacity: .7; }
+
   /* ── Daily Timeline ─────────────────────── */
   .timeline-wrap {
     position: relative;
@@ -771,10 +932,65 @@
     </div>
   </div>
 
+  <!-- ── Skill Packages ────────────────────── -->
+  <div class="card card-full">
+    <h2>🧩 Skill Packages <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Sub-skill toggles</span></h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px" id="skill-packages"></div>
+  </div>
+
   <!-- ── Domain Handlers ───────────────────── -->
   <div class="card card-full">
-    <h2>🧩 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Pre-skill modules</span></h2>
+    <h2>🔧 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Runtime status</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="domain-handlers"></div>
+  </div>
+
+  <!-- ── Skill Management ──────────────────── -->
+  <div class="card card-full">
+    <h2>🔧 Skill Management</h2>
+    <p style="font-size:12px;color:var(--text2);margin:4px 0 12px">Enable or disable skills and sub-modules per domain. Changes take effect immediately.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px" id="skill-panel"></div>
+  </div>
+
+  <!-- ── Skill Module Status ──────────────────── -->
+  <div class="card card-full">
+    <h2>🔧 Skill Modules <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Installed skills &amp; sub-modules</span></h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="skill-modules"></div>
+  </div>
+
+  <!-- ── Error Monitoring ──────────────────── -->
+  <div class="card">
+    <h2>🚨 Error Monitor</h2>
+    <div class="stats-grid" id="error-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="err-today">—</div>
+        <div class="stat-label">Today</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="err-7d">—</div>
+        <div class="stat-label">Last 7 Days</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="err-30d">—</div>
+        <div class="stat-label">Last 30 Days</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px">
+        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Source (7d)</h4>
+        <div id="err-by-source" style="font-size:12px"></div>
+      </div>
+      <div style="flex:1;min-width:140px">
+        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Level (7d)</h4>
+        <div id="err-by-level" style="font-size:12px"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">Recent Errors</h4>
+      <table style="font-size:11px" id="err-recent">
+        <thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- ── API Usage ─────────────────────────── -->
@@ -836,6 +1052,53 @@
   <div class="card">
     <h2>🔗 Integration Health</h2>
     <div id="integration-health"></div>
+  </div>
+
+  <!-- ── Usage Metering ─────────────────────── -->
+  <div class="card">
+    <h2>📈 Usage Metering (Today)</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value" id="um-messages">—</div>
+        <div class="stat-label">Messages</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="um-tokens">—</div>
+        <div class="stat-label">Tokens</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="um-calls">—</div>
+        <div class="stat-label">API Calls</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="um-cost">—</div>
+        <div class="stat-label">Cost (USD)</div>
+      </div>
+    </div>
+    <table id="um-users-table">
+      <thead><tr><th>User ID</th><th>Messages</th><th>Tokens</th><th>API Calls</th><th>Cost</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Training Plans ─────────────────────── -->
+  <div class="card">
+    <h2>🏋️ Training Plans</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value" id="tp-active">—</div>
+        <div class="stat-label">Active Plans</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tp-completed">—</div>
+        <div class="stat-label">Sessions Done</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tp-adherence">—</div>
+        <div class="stat-label">Week Adherence</div>
+      </div>
+    </div>
+    <div id="tp-plan-name" style="font-size:13px;color:var(--text2)"></div>
   </div>
 
   <!-- ── Invoices ──────────────────────────── -->
@@ -1125,6 +1388,70 @@
     const el = document.createElement('span');
     el.textContent = s;
     return el.innerHTML;
+  }
+
+  // ── Skill Packages rendering ────────────────
+  const skillIcons = {
+    tasks: '📋', calendar: '📅', email: '✉️', reminders: '⏰', notes: '📝',
+    'shared-memory': '🧠', briefings: '☀️', 'training-plans': '🏋️',
+    'research-pipeline': '🔬', 'script-generator': '📜', 'seo-tracker': '🔍',
+    'reaction-radar': '📡', 'voice-evolution': '🎙️', 'performance-intel': '📊',
+    'pipeline-tracker': '🚀', 'topic-scheduler': '📆', 'meme-scout': '🃏',
+  };
+  const domainSkillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
+
+  async function fetchSkillPackages() {
+    try {
+      const res = await fetch('/api/skills', { headers: authHeaders() });
+      if (!res.ok) return;
+      const skills = await res.json();
+      renderSkillPackages(skills);
+    } catch { /* ignore */ }
+  }
+
+  function renderSkillPackages(skills) {
+    const el = document.getElementById('skill-packages');
+    if (!el) return;
+    el.innerHTML = skills.map(skill => {
+      const color = domainSkillColors[skill.name] || 'var(--accent)';
+      const subCards = skill.subSkills.map(sub => {
+        const icon = skillIcons[sub.name] || '🔧';
+        const cls = sub.enabled ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
+        return `<div class="${cls}" data-domain="${skill.name}" data-sub="${sub.name}" onclick="toggleSubSkill(this)">
+          <span class="sub-skill-icon">${icon}</span>
+          <div class="sub-skill-info">
+            <strong>${esc(sub.name)}</strong>
+            <span class="sub-skill-desc">${esc(sub.description)}</span>
+            <span class="sub-skill-meta">${sub.toolCount} tools</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" ${sub.enabled ? 'checked' : ''} tabindex="-1">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>`;
+      }).join('');
+      return `<div class="skill-package-card" style="border-left:3px solid ${color}">
+        <h3>${esc(skill.name)} <span class="skill-version">v2.0.0</span></h3>
+        <p class="skill-desc">${esc(skill.description)}</p>
+        <div class="sub-skill-list">${subCards}</div>
+      </div>`;
+    }).join('');
+  }
+
+  async function toggleSubSkill(card) {
+    const domain = card.dataset.domain;
+    const subSkill = card.dataset.sub;
+    const checkbox = card.querySelector('input[type="checkbox"]');
+    const newState = !checkbox.checked;
+    checkbox.checked = newState;
+    card.className = newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
+    try {
+      await fetch('/api/skills/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ domain, subSkill, enabled: newState }),
+      });
+    } catch { checkbox.checked = !newState; card.className = !newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled'; }
   }
 
   // ── Timeline rendering ─────────────────────
@@ -1442,10 +1769,13 @@
     document.getElementById('bot-last-msg').textContent = relativeTime(snap.bot.lastMessageAt);
     document.getElementById('bot-uptime').textContent = snap.uptime.human;
 
+    // Skill packages (sub-skill toggles)
+    fetchSkillPackages();
+
     // Domain handlers
     if (snap.domainStatus) {
-      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬' };
-      const domainColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
+      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
+      const domainColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe', cooking: '#e17055' };
       const domainEl = document.getElementById('domain-handlers');
       domainEl.innerHTML = snap.domainStatus.map(d => {
         const icon = domainIcons[d.domain] || '🧩';
@@ -1481,6 +1811,36 @@
             <span>Last: <span class="val">${relativeTime(d.lastMessageAt)}</span></span>
           </div>
           <div class="domain-card-details">${detailChips}</div>
+        </div>`;
+      }).join('');
+    }
+
+    // Skill module status
+    if (snap.skillStatus) {
+      const skillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe', cooking: '#e17055' };
+      const skillIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
+      const skillEl = document.getElementById('skill-modules');
+      skillEl.innerHTML = snap.skillStatus.map(s => {
+        const color = skillColors[s.name] || 'var(--accent)';
+        const icon = skillIcons[s.name] || '🔌';
+        const statusDot = s.enabled
+          ? '<span class="status-dot dot-green"></span> Enabled'
+          : '<span class="status-dot dot-red"></span> Disabled';
+        const enabledCount = s.subSkills.filter(ss => ss.enabled).length;
+        const totalTools = s.subSkills.reduce((sum, ss) => sum + ss.toolCount, 0);
+        const subChips = s.subSkills.map(ss => {
+          const cls = ss.enabled ? 'on' : 'off';
+          const dot = ss.enabled ? '●' : '○';
+          return `<span class="sub-skill-chip ${cls}" title="${esc(ss.description)}">${dot} ${esc(ss.name)} <span class="sub-skill-tools">(${ss.toolCount})</span></span>`;
+        }).join('');
+
+        return `<div class="skill-card${s.enabled ? '' : ' disabled'}" style="border-left-color:${color}">
+          <div class="skill-card-header">
+            <h3>${icon} ${esc(s.name)}</h3>
+            <span style="font-size:12px">${statusDot}</span>
+          </div>
+          <div class="skill-card-desc">${esc(s.description)} &mdash; ${enabledCount}/${s.subSkills.length} sub-skills, ${totalTools} tools</div>
+          <div class="sub-skill-grid">${subChips}</div>
         </div>`;
       }).join('');
     }
@@ -1535,6 +1895,32 @@
 
     // Integration Health
     renderIntegrationHealth(snap.integrations);
+
+    // Usage Metering
+    if (snap.usageMetering) {
+      const um = snap.usageMetering;
+      document.getElementById('um-messages').textContent = um.today.messageCount;
+      document.getElementById('um-tokens').textContent = um.today.totalTokens.toLocaleString();
+      document.getElementById('um-calls').textContent = um.today.apiCalls;
+      document.getElementById('um-cost').textContent = '$' + um.today.costUsd.toFixed(4);
+      const umBody = document.querySelector('#um-users-table tbody');
+      umBody.innerHTML = um.byUser.map(u => `<tr>
+        <td class="mono">${u.userId}</td>
+        <td>${u.messageCount}</td>
+        <td>${u.totalTokens.toLocaleString()}</td>
+        <td>${u.apiCalls}</td>
+        <td>$${u.costUsd.toFixed(4)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No user activity today</td></tr>';
+    }
+
+    // Training Plans
+    if (snap.trainingPlans) {
+      const tp = snap.trainingPlans;
+      document.getElementById('tp-active').textContent = tp.activePlans;
+      document.getElementById('tp-completed').textContent = tp.totalCompletedSessions;
+      document.getElementById('tp-adherence').textContent = tp.currentWeekAdherence + '%';
+      document.getElementById('tp-plan-name').textContent = tp.currentPlanName ? `Active: ${tp.currentPlanName}` : 'No active plan';
+    }
 
     // Invoices
     document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;
@@ -1977,6 +2363,140 @@
       showToast('Dismiss failed: ' + err.message, false);
     }
   };
+
+  // ── Skill Management ─────────────────────────
+  const SKILL_ICONS = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+  const SKILL_COLORS = { secretary: '#6c5ce7', triathlon: '#00b894', content: '#fdcb6e' };
+
+  async function loadSkills() {
+    try {
+      const res = await apiFetch('/api/skills').then(r => r.json());
+      if (!res.ok) return;
+      renderSkills(res.skills);
+    } catch (err) {
+      console.warn('Skill load failed:', err);
+    }
+  }
+
+  function renderSkills(skills) {
+    const panel = document.getElementById('skill-panel');
+    if (!panel) return;
+
+    panel.innerHTML = skills.map(skill => {
+      const icon = SKILL_ICONS[skill.name] || '⚙️';
+      const color = SKILL_COLORS[skill.name] || 'var(--accent)';
+      const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
+      const enabledTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
+      const disabledClass = skill.enabled ? '' : ' disabled';
+
+      const subRows = skill.subSkills.map(sub => {
+        const subDisabled = !skill.enabled;
+        return `<div class="submodule-row">
+          <span>
+            <span class="sub-name">${esc(sub.name)}</span>
+            <span class="sub-desc">${esc(sub.description)}</span>
+          </span>
+          <span class="sub-tools">${sub.toolCount} tool${sub.toolCount !== 1 ? 's' : ''}</span>
+          <label class="toggle-switch">
+            <input type="checkbox" ${sub.enabled ? 'checked' : ''} ${subDisabled ? 'disabled' : ''}
+              onchange="toggleSubSkill('${skill.name}', '${sub.name}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>`;
+      }).join('');
+
+      return `<div class="skill-card${disabledClass}" style="border-left-color:${color}" id="skill-${skill.name}">
+        <div class="skill-card-header">
+          <div>
+            <h3>${icon} ${esc(skill.name)}</h3>
+            <div class="skill-card-desc">${esc(skill.description)} — ${enabledTools}/${totalTools} tools active</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" ${skill.enabled ? 'checked' : ''}
+              onchange="toggleSkill('${skill.name}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="skill-submodules">${subRows}</div>
+      </div>`;
+    }).join('');
+  }
+
+  window.toggleSkill = async function(name, enabled) {
+    try {
+      const action = enabled ? 'enable' : 'disable';
+      const res = await apiFetch(`/api/skills/${name}/${action}`, { method: 'POST' }).then(r => r.json());
+      if (!res.ok) { showToast(res.message, false); return; }
+      showToast(`Skill "${name}" ${action}d`, true);
+      await loadSkills();
+    } catch (err) {
+      showToast('Skill toggle failed: ' + err.message, false);
+      await loadSkills();
+    }
+  };
+
+  window.toggleSubSkill = async function(skill, sub, enabled) {
+    try {
+      const action = enabled ? 'enable' : 'disable';
+      const res = await apiFetch(`/api/skills/${skill}/subskills/${sub}/${action}`, { method: 'POST' }).then(r => r.json());
+      if (!res.ok) { showToast(res.message, false); return; }
+      showToast(`Sub-skill "${sub}" ${action}d`, true);
+      await loadSkills();
+    } catch (err) {
+      showToast('Sub-skill toggle failed: ' + err.message, false);
+      await loadSkills();
+    }
+  };
+
+  // Initial load + periodic refresh
+  loadSkills();
+  setInterval(loadSkills, 30_000);
+
+  // ── Error Monitoring ─────────────────────────
+  async function loadErrors() {
+    try {
+      const res = await apiFetch('/api/errors').then(r => r.json());
+      if (!res.ok) return;
+
+      document.getElementById('err-today').textContent = res.today;
+      document.getElementById('err-7d').textContent = res.last7d;
+      document.getElementById('err-30d').textContent = res.last30d;
+
+      // Color the today count
+      const todayEl = document.getElementById('err-today');
+      todayEl.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
+
+      // By source
+      const srcEl = document.getElementById('err-by-source');
+      srcEl.innerHTML = (res.bySource || []).map(s =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span class="mono">${esc(s.source)}</span><span class="val">${s.count}</span></div>`
+      ).join('') || '<span class="text-muted">No errors</span>';
+
+      // By level
+      const lvlEl = document.getElementById('err-by-level');
+      const lvlColors = { fatal: 'var(--red)', error: 'var(--orange)', warning: 'var(--yellow)' };
+      lvlEl.innerHTML = (res.byLevel || []).map(l =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:${lvlColors[l.level] || 'var(--text)'}">${esc(l.level)}</span><span class="val">${l.count}</span></div>`
+      ).join('') || '<span class="text-muted">No errors</span>';
+
+      // Recent errors table
+      const tbody = document.querySelector('#err-recent tbody');
+      tbody.innerHTML = (res.recent || []).slice(0, 10).map(e => {
+        const lvlColor = lvlColors[e.level] || 'var(--text)';
+        return `<tr>
+          <td class="mono">${shortTime(e.ts)}</td>
+          <td style="color:${lvlColor}">${esc(e.level)}</td>
+          <td class="mono">${esc(e.source)}</td>
+          <td title="${esc(e.message)}">${esc(e.message.slice(0, 80))}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="4" class="text-muted">No recent errors ✅</td></tr>';
+    } catch (err) {
+      console.warn('Error monitor poll failed:', err);
+    }
+  }
+
+  loadErrors();
+  setInterval(loadErrors, 30_000);
 
   // Poll mission control alongside main poll
   pollMissionControl();
