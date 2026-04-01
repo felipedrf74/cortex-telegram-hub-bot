@@ -331,29 +331,32 @@ server.listen(PORT, () => {
   // ─── Server-side auto-assign loop (every 45s) ────────────────────
   setInterval(async () => {
     try {
+      // Step 1: Auto-assign idle agents (dispatch To Do / QA queue)
       const results = await autoAssignAll();
       if (results.length > 0) {
         console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
-        // Auto-launch offline agents that just received a task
-        for (const r of results) {
-          if (r.task && r.source) {
-            const agents = agentStatus();
-            const ag = agents.find(a => a.name === r.agent);
-            if (ag && !ag.running && ag.hasPrompt) {
-              console.log(`[auto-launch] Starting ${r.agent} (received task while offline)`);
-              const launcher = path.join(REPO, 'scripts/launch-agent.sh').replace(/ /g, '\\\\ ');
-              const script = `tell application "iTerm"
+      }
+
+      // Step 2: Auto-launch ANY agent that has a prompt but isn't running
+      const agents = agentStatus();
+      for (const ag of agents) {
+        if (ag.hasPrompt && !ag.running) {
+          console.log(`[auto-launch] Starting ${ag.name} (has prompt, not running)`);
+          const launcherPath = path.join(REPO, 'scripts/launch-agent.sh');
+          const applescript = `tell application "iTerm"
 activate
 tell current window
 create tab with default profile
 tell current session of current tab
-write text "${launcher} ${r.agent}"
+write text "\\\"${launcherPath}\\\" ${ag.name}"
 end tell
 end tell
 end tell`;
-              run(`osascript -e '${script.replace(/'/g,"'\\''")}'`);
-            }
-          }
+          exec(`osascript -e '${applescript.replace(/'/g,"'\\''")}'`, (err) => {
+            if (err) console.error(`[auto-launch] Failed for ${ag.name}:`, err.message);
+            else console.log(`[auto-launch] ✅ ${ag.name} launched in iTerm`);
+          });
+          await new Promise(r => setTimeout(r, 2000)); // Stagger launches
         }
       }
     } catch (e) { console.error('[auto-assign] Error:', e.message); }
@@ -495,17 +498,18 @@ const PAGE4 = `<script>
 function rAgents(){
   return '<div class="ag">'+AG.map(a=>{
     var i=AI[a.name]||AI.backend;
-    var sm={online:{l:"\\u25cf Online (auto-loop)",bg:"rgba(45,212,160,.15)",c:"#2dd4a0"},"has-task":{l:"\\u25c9 Has task (idle)",bg:"rgba(245,166,35,.15)",c:"#f5a623"},"has-prompt":{l:"\\u25ce Prompt ready",bg:"rgba(74,158,255,.15)",c:"#4a9eff"},offline:{l:"\\u25cb Offline",bg:"rgba(85,93,117,.15)",c:"#555d75"}};
+    var sm={online:{l:"\\u25cf Online (auto-loop)",bg:"rgba(45,212,160,.15)",c:"#2dd4a0"},"has-task":{l:"\\u25cf Starting...",bg:"rgba(245,166,35,.15)",c:"#f5a623"},"has-prompt":{l:"\\u25ce Launching...",bg:"rgba(74,158,255,.15)",c:"#4a9eff"},offline:{l:"\\u25cb Offline",bg:"rgba(85,93,117,.15)",c:"#555d75"}};
     var st=sm[a.status]||sm.offline;
     var h='<div class="ag-c" style="border-left-color:'+i.c+'">';
     h+='<div class="hd"><div><span style="font-size:16px">'+i.e+'</span> <b>'+i.n+'</b></div>';
     h+='<span class="badge" style="background:'+st.bg+';color:'+st.c+'">'+st.l+'</span></div>';
     h+='<div style="font-size:10px;color:var(--t2);margin-top:2px">'+i.r+(a.pid?" PID:"+a.pid:"")+'</div>';
     if(a.task){h+='<div class="tk"><b>'+a.task.title+'</b><div style="color:var(--t3);margin-top:2px">'+(a.task.priority||"")+'</div></div>';}
-    else{h+='<div class="tk" style="color:var(--t3)">No task assigned — auto-loop will pick up next To Do</div>';}
+    else{h+='<div class="tk" style="color:var(--t3)">No task — auto-assign checks every 45s</div>';}
     if(a.name==="qa"&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for QA (auto-pickup)</div>";}
     h+='<div class="btns">';
     if(a.status==="online"){h+='<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">\\u23F9 Stop</button>';}
+    else if(a.status==="has-task"||a.status==="has-prompt"){h+='<span style="font-size:10px;color:var(--amber);padding:4px 8px">Auto-launching in next cycle...</span>';}
     else{h+='<button class="btn btn-green" onclick="startAgent(&#39;'+a.name+'&#39;)">\\u25B6 Launch</button>';}
     h+='<button class="btn" onclick="viewTerminal(&#39;'+a.name+'&#39;)">Terminal</button>';
     h+='<button class="btn btn-blue" onclick="checkAgent(&#39;'+a.name+'&#39;)">Logs</button>';
