@@ -73,7 +73,7 @@ import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePubl
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
 import { handleAutoresearch, handleEvalScore } from './commands/autoresearch';
-import { getAllSkillStatuses, getSkillStatus, type SkillStatus } from './skills/skill-manager';
+import { getAllSkillStatuses, type SkillStatus } from './skills/skill-manager';
 import fs from 'fs';
 import path from 'path';
 
@@ -3175,16 +3175,17 @@ export function createBot(): Bot {
       return;
     }
 
-    const validDomains = ['secretary', 'triathlon', 'content'];
-    if (!validDomains.includes(name)) {
+    const allStatuses = getAllSkillStatuses();
+    const skill = allStatuses.find(s => s.name === name);
+    if (!skill) {
+      const available = allStatuses.map(s => s.name).join(', ');
       await ctx.reply(
-        `Unknown skill "<b>${escapeHtml(name)}</b>".\n\nAvailable skills: ${validDomains.join(', ')}`,
+        `Unknown skill "<b>${escapeHtml(name)}</b>".\n\nAvailable skills: ${available}`,
         { parse_mode: 'HTML' },
       );
       return;
     }
 
-    const skill = getSkillStatus(name as DomainName);
     const SKILL_ICONS: Record<string, string> = { secretary: '📋', triathlon: '🏊', content: '🎬' };
     const icon = SKILL_ICONS[skill.name] || '📦';
     const status = skill.enabled ? '✅ Enabled' : '❌ Disabled';
