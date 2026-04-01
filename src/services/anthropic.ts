@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { DomainMessage, DomainName } from '../domains/types';
-import { trackedCreate } from '../portal/anthropic-hook';
+import { trackedCreate, computeCost } from '../portal/anthropic-hook';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';
 
@@ -352,10 +352,17 @@ ${message}`;
   }
 }
 
+export interface CallDomainUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
 export interface CallDomainResult {
   text: string;
   toolCalls: Anthropic.ToolUseBlock[];
   stopReason: string;
+  usage: CallDomainUsage;
 }
 
 // Legacy getCachedTools — kept for backwards compatibility, delegates to secretary domain
@@ -418,6 +425,11 @@ export async function callDomain(
     text: textBlocks.join('\n'),
     toolCalls,
     stopReason: response.stop_reason || 'end_turn',
+    usage: {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      costUsd: computeCost(getModelForDomain(domain), response.usage),
+    },
   };
 }
 
@@ -473,5 +485,10 @@ export async function continueWithToolResults(
     text: textBlocks.join('\n'),
     toolCalls,
     stopReason: response.stop_reason || 'end_turn',
+    usage: {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      costUsd: computeCost(getModelForDomain(domain), response.usage),
+    },
   };
 }
