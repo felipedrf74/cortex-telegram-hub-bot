@@ -275,6 +275,40 @@
   .domain-detail-chip.ok { background: rgba(0,184,148,.1); color: var(--green); }
   .domain-detail-chip.warn { background: rgba(225,112,85,.1); color: var(--red); }
 
+  /* ── Skill Package Cards ────────────────── */
+  .skill-package-card {
+    background: var(--surface2); border-radius: 8px; padding: 14px 16px;
+  }
+  .skill-package-card h3 {
+    font-size: 14px; margin: 0 0 4px; text-transform: capitalize;
+  }
+  .skill-version { font-weight: 400; font-size: 11px; color: var(--muted); }
+  .skill-desc { font-size: 12px; color: var(--muted); margin: 0 0 10px; display: block; }
+  .sub-skill-list { display: flex; flex-direction: column; gap: 6px; }
+  .sub-skill-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+    background: var(--surface); transition: opacity .2s;
+  }
+  .sub-skill-card.disabled { opacity: .45; }
+  .sub-skill-icon { font-size: 18px; flex-shrink: 0; }
+  .sub-skill-info { flex: 1; min-width: 0; }
+  .sub-skill-info strong { font-size: 12px; display: block; text-transform: capitalize; }
+  .sub-skill-desc { font-size: 11px; color: var(--muted); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub-skill-meta { font-size: 10px; color: var(--muted); }
+  .toggle-switch { position: relative; width: 34px; height: 18px; flex-shrink: 0; }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; inset: 0; background: var(--surface2); border-radius: 18px;
+    transition: background .2s; cursor: pointer;
+  }
+  .toggle-slider::before {
+    content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px;
+    background: var(--text); border-radius: 50%; transition: transform .2s;
+  }
+  .toggle-switch input:checked + .toggle-slider { background: var(--green); }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(16px); }
+
   /* ── Daily Timeline ─────────────────────── */
   .timeline-wrap {
     position: relative;
@@ -771,9 +805,15 @@
     </div>
   </div>
 
+  <!-- ── Skill Packages ────────────────────── -->
+  <div class="card card-full">
+    <h2>🧩 Skill Packages <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Sub-skill toggles</span></h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px" id="skill-packages"></div>
+  </div>
+
   <!-- ── Domain Handlers ───────────────────── -->
   <div class="card card-full">
-    <h2>🧩 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Pre-skill modules</span></h2>
+    <h2>🔧 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Runtime status</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="domain-handlers"></div>
   </div>
 
@@ -1127,6 +1167,64 @@
     return el.innerHTML;
   }
 
+  // ── Skill Packages rendering ────────────────
+  const skillIcons = { tasks: '📋', calendar: '📅', email: '✉️', reminders: '⏰', notes: '📝', 'shared-memory': '🧠', briefings: '☀️' };
+  const domainSkillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
+
+  async function fetchSkillPackages() {
+    try {
+      const res = await fetch('/api/skills', { headers: authHeaders() });
+      if (!res.ok) return;
+      const skills = await res.json();
+      renderSkillPackages(skills);
+    } catch { /* ignore */ }
+  }
+
+  function renderSkillPackages(skills) {
+    const el = document.getElementById('skill-packages');
+    if (!el) return;
+    el.innerHTML = skills.map(skill => {
+      const color = domainSkillColors[skill.name] || 'var(--accent)';
+      const subCards = skill.subSkills.map(sub => {
+        const icon = skillIcons[sub.name] || '🔧';
+        const cls = sub.enabled ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
+        return `<div class="${cls}" data-domain="${skill.name}" data-sub="${sub.name}" onclick="toggleSubSkill(this)">
+          <span class="sub-skill-icon">${icon}</span>
+          <div class="sub-skill-info">
+            <strong>${esc(sub.name)}</strong>
+            <span class="sub-skill-desc">${esc(sub.description)}</span>
+            <span class="sub-skill-meta">${sub.toolCount} tools</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" ${sub.enabled ? 'checked' : ''} tabindex="-1">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>`;
+      }).join('');
+      return `<div class="skill-package-card" style="border-left:3px solid ${color}">
+        <h3>${esc(skill.name)} <span class="skill-version">v2.0.0</span></h3>
+        <p class="skill-desc">${esc(skill.description)}</p>
+        <div class="sub-skill-list">${subCards}</div>
+      </div>`;
+    }).join('');
+  }
+
+  async function toggleSubSkill(card) {
+    const domain = card.dataset.domain;
+    const subSkill = card.dataset.sub;
+    const checkbox = card.querySelector('input[type="checkbox"]');
+    const newState = !checkbox.checked;
+    checkbox.checked = newState;
+    card.className = newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
+    try {
+      await fetch('/api/skills/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ domain, subSkill, enabled: newState }),
+      });
+    } catch { checkbox.checked = !newState; card.className = !newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled'; }
+  }
+
   // ── Timeline rendering ─────────────────────
   function renderTimeline(snap) {
     const track = document.getElementById('timeline-track');
@@ -1441,6 +1539,9 @@
     document.getElementById('bot-polling').className = 'stat-value ' + (snap.bot.polling ? 'text-green' : 'text-red');
     document.getElementById('bot-last-msg').textContent = relativeTime(snap.bot.lastMessageAt);
     document.getElementById('bot-uptime').textContent = snap.uptime.human;
+
+    // Skill packages (sub-skill toggles)
+    fetchSkillPackages();
 
     // Domain handlers
     if (snap.domainStatus) {

@@ -19,6 +19,7 @@ export interface SubSkillDefinition {
   description: string;
   tools: string[];                  // tool names from TOOLS array in anthropic.ts
   enabledByDefault: boolean;
+  cronJobs?: string[];              // cron job IDs owned by this sub-skill
 }
 
 export interface SkillDefinition {
@@ -32,8 +33,8 @@ export interface SkillDefinition {
 
 const SECRETARY_SKILL: SkillDefinition = {
   name: 'secretary',
-  description: 'Personal assistant — tasks, calendar, email, reminders, notes',
-  version: '1.0.0',
+  description: 'Personal assistant — tasks, calendar, email, reminders, notes, briefings',
+  version: '2.0.0',
   subSkills: [
     {
       name: 'tasks',
@@ -46,6 +47,7 @@ const SECRETARY_SKILL: SkillDefinition = {
         'ms_todo_get_checklist', 'ms_todo_add_checklist_item',
         'ms_todo_get_lists', 'ms_todo_create_list', 'ms_todo_delete_list',
       ],
+      cronJobs: ['end_of_day', 'shared_list'],
     },
     {
       name: 'calendar',
@@ -55,6 +57,7 @@ const SECRETARY_SKILL: SkillDefinition = {
         'get_calendar_events', 'create_calendar_event',
         'update_calendar_event', 'delete_calendar_event',
       ],
+      cronJobs: ['conflict_detection'],
     },
     {
       name: 'email',
@@ -64,12 +67,14 @@ const SECRETARY_SKILL: SkillDefinition = {
         'search_outlook_emails', 'read_outlook_email',
         'send_outlook_email', 'reply_outlook_email', 'get_outlook_unread',
       ],
+      cronJobs: ['fossa_email'],
     },
     {
       name: 'reminders',
       description: 'Time-based reminders',
       enabledByDefault: true,
       tools: ['set_reminder'],
+      cronJobs: ['reminders'],
     },
     {
       name: 'notes',
@@ -82,6 +87,13 @@ const SECRETARY_SKILL: SkillDefinition = {
       description: 'Cross-domain shared facts',
       enabledByDefault: true,
       tools: ['shared_memory_set', 'shared_memory_remove'],
+    },
+    {
+      name: 'briefings',
+      description: 'Morning briefing, weekly review, and daily digest',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['daily_briefing', 'weekly_review'],
     },
   ],
 };
@@ -171,4 +183,29 @@ export function getAllToolNames(): string[] {
 /** Get all sub-skill names for a domain. */
 export function getSubSkillNames(domain: DomainName): string[] {
   return DEFAULT_SKILLS[domain].subSkills.map(s => s.name);
+}
+
+/** Find which domain+sub-skill owns a given cron job ID. Returns null if not mapped. */
+export function getCronJobOwner(jobId: string): { domain: DomainName; subSkill: string } | null {
+  for (const [domain, skill] of Object.entries(DEFAULT_SKILLS)) {
+    for (const sub of skill.subSkills) {
+      if (sub.cronJobs?.includes(jobId)) {
+        return { domain: domain as DomainName, subSkill: sub.name };
+      }
+    }
+  }
+  return null;
+}
+
+/** Get all cron job IDs owned by sub-skills across all domains. */
+export function getAllCronJobMappings(): Map<string, { domain: DomainName; subSkill: string }> {
+  const map = new Map<string, { domain: DomainName; subSkill: string }>();
+  for (const [domain, skill] of Object.entries(DEFAULT_SKILLS)) {
+    for (const sub of skill.subSkills) {
+      for (const jobId of sub.cronJobs ?? []) {
+        map.set(jobId, { domain: domain as DomainName, subSkill: sub.name });
+      }
+    }
+  }
+  return map;
 }

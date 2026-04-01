@@ -12,6 +12,7 @@ import { executeToolCall } from '../services/tool-executor';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import { isGarminConfigured, getActivitiesByDate, getBodyBatteryEvents, GarminActivity } from '../services/garmin';
 import { logger } from '../utils/logger';
+import { isSubmoduleEnabled } from '../skills/registry';
 import Anthropic from '@anthropic-ai/sdk';
 
 const DOMAIN: DomainName = 'secretary';
@@ -28,21 +29,27 @@ async function buildStateContext(): Promise<string> {
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
+  // Check which sub-skills are enabled to skip unnecessary API calls
+  const tasksEnabled = isSubmoduleEnabled('secretary', 'tasks');
+  const calendarEnabled = isSubmoduleEnabled('secretary', 'calendar');
+  const emailEnabled = isSubmoduleEnabled('secretary', 'email');
+  const remindersEnabled = isSubmoduleEnabled('secretary', 'reminders');
+
   // Build date range for Garmin: last 3 days
   const today = now();
   const threeDaysAgo = today.minus({ days: 3 }).toFormat('yyyy-MM-dd');
   const todayStr = today.toFormat('yyyy-MM-dd');
 
-  // Fetch all data sources in parallel (no redundant calls)
+  // Fetch all data sources in parallel (skip disabled sub-skills)
   const [todoResult, reminders, calendarResult, unreadResult, garminActivities, garminBodyBattery] = await Promise.all([
-    isOutlookTodoConfigured()
+    tasksEnabled && isOutlookTodoConfigured()
       ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
-    Promise.resolve(getRemindersForToday()),
-    isAnyCalendarConfigured()
+    remindersEnabled ? Promise.resolve(getRemindersForToday()) : Promise.resolve([]),
+    calendarEnabled && isAnyCalendarConfigured()
       ? getEvents(startOfDay(), endOfDay()).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
-    isOutlookMailConfigured()
+    emailEnabled && isOutlookMailConfigured()
       ? getUnreadCount().catch(() => null)
       : Promise.resolve(null),
     isGarminConfigured()

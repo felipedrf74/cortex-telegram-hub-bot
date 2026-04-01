@@ -62,6 +62,8 @@ import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { CronExpressionParser } from 'cron-parser';
+import { getAllSkillStatuses, enableSubSkill, disableSubSkill } from '../skills/skill-manager';
+import type { DomainName } from '../domains/types';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -937,6 +939,36 @@ export function createPortalServer(bot: Bot): http.Server {
     } catch (err) {
       logger.error({ err }, 'Portal: snapshot failed');
       res.status(500).json({ error: 'Failed to build snapshot' });
+    }
+  });
+
+  // ── GET /api/skills — all skill statuses with sub-skill toggles ──
+  app.get('/api/skills', (_req: Request, res: Response) => {
+    try {
+      res.json(getAllSkillStatuses());
+    } catch (err) {
+      logger.error({ err }, 'Portal: skills status failed');
+      res.status(500).json({ error: 'Failed to get skill statuses' });
+    }
+  });
+
+  // ── POST /api/skills/toggle — toggle a sub-skill on/off ──────
+  app.post('/api/skills/toggle', (req: Request, res: Response) => {
+    const { domain, subSkill, enabled } = req.body;
+    if (!domain || !subSkill || typeof enabled !== 'boolean') {
+      res.status(400).json({ ok: false, message: 'Required: domain, subSkill, enabled (boolean)' });
+      return;
+    }
+    try {
+      const result = enabled
+        ? enableSubSkill(domain as DomainName, subSkill)
+        : disableSubSkill(domain as DomainName, subSkill);
+      // Invalidate snapshot cache so next fetch reflects the toggle
+      cachedSnapshot = null;
+      res.json({ ok: result, domain, subSkill, enabled });
+    } catch (err) {
+      logger.error({ err }, 'Portal: skill toggle failed');
+      res.status(500).json({ ok: false, message: 'Toggle failed' });
     }
   });
 

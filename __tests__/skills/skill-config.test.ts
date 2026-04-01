@@ -43,7 +43,8 @@ describe('SkillConfig — structure', () => {
       for (const sub of skill.subSkills) {
         expect(sub.name).toBeTruthy();
         expect(sub.description).toBeTruthy();
-        expect(sub.tools.length).toBeGreaterThan(0);
+        // Sub-skills must have either tools or cronJobs (briefings has only crons)
+        expect(sub.tools.length + (sub.cronJobs?.length ?? 0)).toBeGreaterThan(0);
         expect(typeof sub.enabledByDefault).toBe('boolean');
       }
     }

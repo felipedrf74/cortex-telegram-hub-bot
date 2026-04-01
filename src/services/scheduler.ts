@@ -18,7 +18,8 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
-import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
+import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
+import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
@@ -45,6 +46,9 @@ const todayNotifications: string[] = [];
 export function getTodayNotifications(): string[] { return todayNotifications; }
 
 export function startScheduler(bot: Bot): void {
+  // Register sub-skill gating so disabled sub-skills skip their cron jobs
+  setJobEnabledChecker(isCronJobEnabled);
+
   // Register failure notifier so wrapJob sends Telegram alerts on job failures
   setJobFailureNotifier(async (jobLabel, errorMessage) => {
     const short = errorMessage.slice(0, 120);
