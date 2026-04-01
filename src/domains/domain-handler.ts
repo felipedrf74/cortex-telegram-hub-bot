@@ -7,6 +7,7 @@ import { listTodos } from '../state/todos';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
+import { getActivePlanSummary } from '../services/training-plans';
 import Anthropic from '@anthropic-ai/sdk';
 import type { CoachRecommendation } from '../services/garmin-coach';
 
@@ -83,6 +84,16 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
       parts.push('\nCorrect tool usage examples:');
       parts.push('- MODIFY/SWAP → update_calendar_event(event_id="...", calendar_source="outlook", new_title="...", new_start="...", new_end="...")');
       parts.push('- REST/cancel → delete_calendar_event(event_id="...", calendar_source="outlook")');
+    }
+  }
+
+  // Active training plan context for triathlon domain
+  if (domain === 'triathlon' && userId) {
+    try {
+      const planSummary = getActivePlanSummary(userId);
+      if (planSummary) parts.push(`\n${planSummary}`);
+    } catch {
+      // Training plan tables may not exist yet — skip silently
     }
   }
 

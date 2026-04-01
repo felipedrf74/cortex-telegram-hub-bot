@@ -1054,6 +1054,26 @@
     <div id="integration-health"></div>
   </div>
 
+  <!-- ── Training Plans ─────────────────────── -->
+  <div class="card">
+    <h2>🏋️ Training Plans</h2>
+    <div class="stats-grid" style="margin-bottom:12px">
+      <div class="stat-box">
+        <div class="stat-value" id="tp-active">—</div>
+        <div class="stat-label">Active Plans</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tp-completed">—</div>
+        <div class="stat-label">Sessions Done</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tp-adherence">—</div>
+        <div class="stat-label">Week Adherence</div>
+      </div>
+    </div>
+    <div id="tp-plan-name" style="font-size:13px;color:var(--text2)"></div>
+  </div>
+
   <!-- ── Invoices ──────────────────────────── -->
   <div class="card">
     <h2>🧾 Invoices</h2>
@@ -1842,6 +1862,15 @@
 
     // Integration Health
     renderIntegrationHealth(snap.integrations);
+
+    // Training Plans
+    if (snap.trainingPlans) {
+      const tp = snap.trainingPlans;
+      document.getElementById('tp-active').textContent = tp.activePlans;
+      document.getElementById('tp-completed').textContent = tp.totalCompletedSessions;
+      document.getElementById('tp-adherence').textContent = tp.currentWeekAdherence + '%';
+      document.getElementById('tp-plan-name').textContent = tp.currentPlanName ? `Active: ${tp.currentPlanName}` : 'No active plan';
+    }
 
     // Invoices
     document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;

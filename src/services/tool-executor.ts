@@ -6,6 +6,7 @@ import { setSharedMemory, removeSharedMemory } from '../state/shared-memory';
 import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
+import * as trainingPlans from './training-plans';
 import { logger } from '../utils/logger';
 
 export async function executeToolCall(
@@ -265,6 +266,105 @@ export async function executeToolCall(
       case 'shared_memory_remove': {
         const removed = removeSharedMemory(input.key);
         return { success: removed, key: input.key };
+      }
+
+      // ── Training Plan tools ──
+      case 'create_training_plan': {
+        const plan = trainingPlans.createPlan({
+          user_id: input.user_id || 0,
+          name: input.name,
+          sport: input.sport,
+          goal: input.goal,
+          duration_weeks: input.duration_weeks,
+          periodization: input.periodization,
+          start_date: input.start_date,
+          end_date: input.end_date,
+          preferences_json: input.preferences_json,
+        });
+        return { success: true, plan_id: plan.id, name: plan.name, status: plan.status };
+      }
+
+      case 'add_training_week': {
+        const week = trainingPlans.createWeek({
+          plan_id: input.plan_id,
+          week_number: input.week_number,
+          focus: input.focus,
+          intensity_pct: input.intensity_pct,
+          volume_sessions: input.volume_sessions,
+          notes: input.notes,
+        });
+        return { success: true, week_id: week.id, week_number: week.week_number };
+      }
+
+      case 'add_training_session': {
+        const session = trainingPlans.createSession({
+          week_id: input.week_id,
+          plan_id: input.plan_id,
+          day_of_week: input.day_of_week,
+          session_type: input.session_type,
+          title: input.title,
+          description: input.description,
+          exercises_json: input.exercises_json,
+          duration_minutes: input.duration_minutes,
+          intensity_text: input.intensity_text,
+        });
+        return { success: true, session_id: session.id, title: session.title, day: session.day_of_week };
+      }
+
+      case 'get_training_plan': {
+        const plan = input.plan_id
+          ? trainingPlans.getPlanById(input.plan_id)
+          : trainingPlans.getActivePlan(input.user_id || 0);
+        if (!plan) return { error: 'No training plan found' };
+
+        const currentWeek = trainingPlans.getCurrentWeek(plan.id);
+        const weeks = trainingPlans.getWeeksForPlan(plan.id);
+        const sessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
+        const adherence = currentWeek ? trainingPlans.getWeeklyAdherence(plan.id, currentWeek.id) : null;
+
+        return {
+          plan: { id: plan.id, name: plan.name, sport: plan.sport, goal: plan.goal, status: plan.status, start_date: plan.start_date, end_date: plan.end_date, duration_weeks: plan.duration_weeks, periodization: plan.periodization },
+          total_weeks: weeks.length,
+          current_week: currentWeek ? { id: currentWeek.id, number: currentWeek.week_number, focus: currentWeek.focus, intensity_pct: currentWeek.intensity_pct, auto_adjusted: !!currentWeek.auto_adjusted, adjustment_reason: currentWeek.adjustment_reason } : null,
+          sessions: sessions.map(s => ({ id: s.id, day: s.day_of_week, type: s.session_type, title: s.title, status: s.status, intensity: s.intensity_text, duration_min: s.duration_minutes, has_calendar: !!s.calendar_event_id })),
+          adherence,
+        };
+      }
+
+      case 'log_training_completion': {
+        const session = trainingPlans.getSessionById(input.session_id);
+        if (!session) return { error: `Session ${input.session_id} not found` };
+
+        const completion = trainingPlans.logCompletion({
+          session_id: input.session_id,
+          plan_id: session.plan_id,
+          rpe_overall: input.rpe_overall,
+          duration_minutes: input.duration_minutes,
+          energy_level: input.energy_level,
+          soreness_level: input.soreness_level,
+          actual_exercises_json: input.actual_exercises_json,
+          notes: input.notes,
+        });
+        return { success: true, completion_id: completion.id, session_title: session.title };
+      }
+
+      case 'update_training_session': {
+        const updated = trainingPlans.updateSession(input.session_id, {
+          title: input.title,
+          exercises_json: input.exercises_json,
+          duration_minutes: input.duration_minutes,
+          intensity_text: input.intensity_text,
+          description: input.description,
+          status: input.status,
+        });
+        return { success: updated, session_id: input.session_id };
+      }
+
+      case 'link_session_calendar': {
+        const linked = trainingPlans.linkSessionToCalendar(
+          input.session_id, input.calendar_event_id, input.calendar_source,
+        );
+        return { success: linked, session_id: input.session_id };
       }
 
       default:

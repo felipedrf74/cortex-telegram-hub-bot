@@ -138,6 +138,12 @@ interface SnapshotResponse {
     knowledgeCategories: number;
   };
   transcriptStats: { transcripts: number; studies: number };
+  trainingPlans: {
+    activePlans: number;
+    totalCompletedSessions: number;
+    currentWeekAdherence: number;
+    currentPlanName: string | null;
+  } | null;
   domainStatus: {
     domain: string;
     label: string;
@@ -710,6 +716,16 @@ function buildSnapshot(): SnapshotResponse {
     logger.warn({ err }, 'Portal: failed to query domain status');
   }
 
+  // ── Training plan stats ──────────────────────────────────────────
+  let trainingPlans: { activePlans: number; totalCompletedSessions: number; currentWeekAdherence: number; currentPlanName: string | null } | null = null;
+  try {
+    const { getPlanStats } = require('../services/training-plans');
+    const userId = config.telegram.allowedUserIds[0];
+    if (userId) {
+      trainingPlans = getPlanStats(userId);
+    }
+  } catch { /* table may not exist yet */ }
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -732,6 +748,7 @@ function buildSnapshot(): SnapshotResponse {
     transcriptStats,
     domainStatus,
     skillStatus: getAllSkillStatuses(),
+    trainingPlans,
   };
 }
 
