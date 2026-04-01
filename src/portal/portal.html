@@ -678,6 +678,198 @@
     50% { opacity: 0.4; }
   }
 
+  /* ── AI Provider Cards ──────────────────── */
+  .provider-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .provider-card {
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 14px;
+    border-top: 3px solid var(--accent);
+    position: relative;
+  }
+
+  .provider-card.primary { border-top-color: var(--green); }
+  .provider-card.fallback { border-top-color: var(--yellow); }
+  .provider-card.unconfigured { border-top-color: var(--border); opacity: 0.6; }
+
+  .provider-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .provider-card-header h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .provider-role {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+
+  .provider-role.primary { background: rgba(0,184,148,.15); color: var(--green); }
+  .provider-role.fallback { background: rgba(253,203,110,.15); color: var(--yellow); }
+
+  .provider-meta {
+    font-size: 11px;
+    color: var(--text2);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .provider-meta .model-name {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--text);
+    background: rgba(139,143,163,.08);
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+
+  .provider-cost {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+    margin-top: 8px;
+  }
+
+  .provider-cost-label {
+    font-size: 10px;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Fallback Chain ────────────────────────── */
+  .fallback-chains {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .chain-card {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .chain-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text2);
+    margin-bottom: 10px;
+  }
+
+  .chain-flow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chain-node {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .chain-node.active { border-color: var(--green); color: var(--green); }
+  .chain-node.standby { border-color: var(--border); color: var(--text2); }
+  .chain-node.disabled { border-color: var(--border); color: var(--border); opacity: 0.5; }
+
+  .chain-arrow {
+    color: var(--text2);
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .chain-cb-info {
+    font-size: 10px;
+    color: var(--text2);
+    margin-top: 8px;
+  }
+
+  /* ── Cost Breakdown Bar ────────────────────── */
+  .cost-bar-container {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 14px;
+  }
+
+  .cost-bar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .cost-bar-track {
+    height: 20px;
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    background: var(--border);
+    margin-bottom: 8px;
+  }
+
+  .cost-bar-segment {
+    height: 100%;
+    transition: width 0.3s ease;
+    min-width: 1px;
+  }
+
+  .cost-bar-legend {
+    display: flex;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--text2);
+    flex-wrap: wrap;
+  }
+
+  .cost-bar-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .cost-bar-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+
+  @media (max-width: 900px) {
+    .provider-cards { grid-template-columns: 1fr; }
+    .fallback-chains { grid-template-columns: 1fr; }
+  }
+
   /* scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -836,6 +1028,28 @@
   <div class="card">
     <h2>🔗 Integration Health</h2>
     <div id="integration-health"></div>
+  </div>
+
+  <!-- ── AI Providers ─────────────────────── -->
+  <div class="card card-full">
+    <h2>🤖 AI Providers & Fallback Chain</h2>
+
+    <!-- Provider status cards -->
+    <div class="provider-cards" id="ai-provider-cards"></div>
+
+    <!-- Fallback chain visualization -->
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:8px">Fallback Routing</div>
+    <div class="fallback-chains" id="ai-fallback-chains"></div>
+
+    <!-- Daily cost by provider -->
+    <div class="cost-bar-container" id="ai-cost-breakdown">
+      <div class="cost-bar-header">
+        <span style="font-size:12px;font-weight:600;color:var(--text)">Today's Cost by Provider</span>
+        <span style="font-size:12px;color:var(--text2)" id="ai-cost-total">$0.000</span>
+      </div>
+      <div class="cost-bar-track" id="ai-cost-bar"></div>
+      <div class="cost-bar-legend" id="ai-cost-legend"></div>
+    </div>
   </div>
 
   <!-- ── Invoices ──────────────────────────── -->
@@ -1407,6 +1621,109 @@
     container.innerHTML = html;
   }
 
+  // ── AI Provider rendering ───────────────────
+  const PROVIDER_ICONS = { anthropic: '🟣', openai: '🟢', gemini: '🔵' };
+  const PROVIDER_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
+  const PROVIDER_COLORS = { anthropic: '#6c5ce7', openai: '#00b894', gemini: '#74b9ff', unknown: '#8b8fa3' };
+
+  function renderAiProviders(ai) {
+    const cardsEl = document.getElementById('ai-provider-cards');
+    const chainsEl = document.getElementById('ai-fallback-chains');
+    const costBarEl = document.getElementById('ai-cost-bar');
+    const costLegendEl = document.getElementById('ai-cost-legend');
+    const costTotalEl = document.getElementById('ai-cost-total');
+
+    // Build cost lookup
+    const costMap = {};
+    let totalCost = 0;
+    for (const c of ai.costByProvider) {
+      costMap[c.provider] = c;
+      totalCost += c.cost;
+    }
+    costTotalEl.textContent = '$' + totalCost.toFixed(3);
+
+    // Provider cards
+    cardsEl.innerHTML = ai.providers.map(p => {
+      const icon = PROVIDER_ICONS[p.name] || '⚪';
+      const label = PROVIDER_LABELS[p.name] || p.name;
+      const roleClass = p.role;
+      const cardClass = !p.configured ? 'unconfigured' : p.role;
+      const statusBadge = p.configured
+        ? '<span class="badge badge-configured">Configured</span>'
+        : '<span class="badge badge-not-configured">Not configured</span>';
+      const costData = costMap[p.name];
+      const costStr = costData ? '$' + costData.cost.toFixed(3) : '$0.000';
+      const callsStr = costData ? costData.calls : 0;
+
+      return `<div class="provider-card ${cardClass}">
+        <div class="provider-card-header">
+          <h3>${icon} ${label}</h3>
+          <span class="provider-role ${roleClass}">${p.role}</span>
+        </div>
+        <div class="provider-meta">
+          <div>${statusBadge}</div>
+          <div>Chat: <span class="model-name">${esc(p.model)}</span></div>
+          <div>Classifier: <span class="model-name">${esc(p.classifierModel)}</span></div>
+        </div>
+        <div class="provider-cost">${costStr}</div>
+        <div class="provider-cost-label">${callsStr} calls today</div>
+      </div>`;
+    }).join('');
+
+    // Fallback chain visualization
+    const taskTypes = [
+      { key: 'classify', label: 'Classification', icon: '🏷️' },
+      { key: 'chat', label: 'Chat / Domains', icon: '💬' },
+      { key: 'toolUse', label: 'Tool Use', icon: '🔧' },
+    ];
+
+    const configuredSet = new Set(ai.providers.filter(p => p.configured).map(p => p.name));
+
+    chainsEl.innerHTML = taskTypes.map(t => {
+      const route = ai.routing[t.key];
+      if (!route) return '';
+
+      const primaryConfigured = configuredSet.has(route.primary);
+      const fallbackConfigured = configuredSet.has(route.fallback);
+
+      const primaryClass = primaryConfigured ? 'active' : 'disabled';
+      const fallbackClass = fallbackConfigured ? 'standby' : 'disabled';
+
+      const primaryIcon = PROVIDER_ICONS[route.primary] || '⚪';
+      const fallbackIcon = PROVIDER_ICONS[route.fallback] || '⚪';
+      const primaryLabel = PROVIDER_LABELS[route.primary] || route.primary;
+      const fallbackLabel = PROVIDER_LABELS[route.fallback] || route.fallback;
+
+      return `<div class="chain-card">
+        <div class="chain-label">${t.icon} ${t.label}</div>
+        <div class="chain-flow">
+          <div class="chain-node ${primaryClass}">${primaryIcon} ${primaryLabel}</div>
+          <span class="chain-arrow">→</span>
+          <div class="chain-node ${fallbackClass}">${fallbackIcon} ${fallbackLabel}</div>
+        </div>
+        <div class="chain-cb-info">Circuit breaker: ${ai.circuitBreaker.failureThreshold} failures → ${(ai.circuitBreaker.cooldownMs / 1000)}s cooldown</div>
+      </div>`;
+    }).join('');
+
+    // Cost breakdown bar
+    if (totalCost > 0) {
+      costBarEl.innerHTML = ai.costByProvider.map(c => {
+        const pct = (c.cost / totalCost) * 100;
+        const color = PROVIDER_COLORS[c.provider] || PROVIDER_COLORS.unknown;
+        return `<div class="cost-bar-segment" style="width:${pct}%;background:${color}" title="${PROVIDER_LABELS[c.provider] || c.provider}: $${c.cost.toFixed(4)} (${c.calls} calls)"></div>`;
+      }).join('');
+
+      costLegendEl.innerHTML = ai.costByProvider.map(c => {
+        const color = PROVIDER_COLORS[c.provider] || PROVIDER_COLORS.unknown;
+        const label = PROVIDER_LABELS[c.provider] || c.provider;
+        return `<span class="cost-bar-legend-item"><span class="cost-bar-dot" style="background:${color}"></span> ${label}: $${c.cost.toFixed(3)} (${c.calls})</span>`;
+      }).join('');
+    } else {
+      costBarEl.innerHTML = '<div class="cost-bar-segment" style="width:100%;background:var(--border)"></div>';
+      costLegendEl.innerHTML = '<span class="text-muted">No API calls today</span>';
+    }
+  }
+
   // ── Render snapshot ────────────────────────
   function render(snap) {
     // Header
@@ -1535,6 +1852,9 @@
 
     // Integration Health
     renderIntegrationHealth(snap.integrations);
+
+    // AI Providers
+    if (snap.aiProviders) renderAiProviders(snap.aiProviders);
 
     // Invoices
     document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;

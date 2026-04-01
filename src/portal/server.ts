@@ -135,6 +135,22 @@ interface SnapshotResponse {
     lastMessageAt: string | null;
     details: Record<string, string | number | boolean>;
   }[];
+  aiProviders: {
+    providers: {
+      name: string;
+      role: 'primary' | 'fallback';
+      configured: boolean;
+      model: string;
+      classifierModel: string;
+    }[];
+    routing: {
+      classify: { primary: string; fallback: string };
+      chat: { primary: string; fallback: string };
+      toolUse: { primary: string; fallback: string };
+    };
+    circuitBreaker: { failureThreshold: number; cooldownMs: number };
+    costByProvider: { provider: string; calls: number; cost: number }[];
+  };
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -262,6 +278,65 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
       GROUP BY domain`),
   };
   return _stmts;
+}
+
+// ─── AI Provider Data ───────────────────────────────────────────────
+
+function buildAiProviderData(): SnapshotResponse['aiProviders'] {
+  const providers: SnapshotResponse['aiProviders']['providers'] = [
+    {
+      name: 'anthropic',
+      role: 'primary',
+      configured: !!config.anthropic.apiKey,
+      model: config.anthropic.model,
+      classifierModel: config.anthropic.classifierModel,
+    },
+    {
+      name: 'openai',
+      role: 'fallback',
+      configured: !!config.openai.apiKey,
+      model: config.openai.model,
+      classifierModel: config.openai.classifierModel,
+    },
+    {
+      name: 'gemini',
+      role: 'fallback',
+      configured: !!config.gemini.apiKey,
+      model: config.gemini.model,
+      classifierModel: config.gemini.classifierModel,
+    },
+  ];
+
+  let costByProvider: { provider: string; calls: number; cost: number }[] = [];
+  try {
+    const db = getDb();
+    costByProvider = db.prepare(`
+      SELECT
+        CASE
+          WHEN model LIKE '%claude%' OR model LIKE '%haiku%' OR model LIKE '%sonnet%' OR model LIKE '%opus%' THEN 'anthropic'
+          WHEN model LIKE '%gpt%' OR model LIKE '%o1%' OR model LIKE '%o3%' OR model LIKE '%o4%' THEN 'openai'
+          WHEN model LIKE '%gemini%' THEN 'gemini'
+          ELSE 'unknown'
+        END AS provider,
+        COUNT(*) AS calls,
+        COALESCE(SUM(cost_usd), 0) AS cost
+      FROM api_usage WHERE ts >= date('now')
+      GROUP BY provider ORDER BY cost DESC
+    `).all() as { provider: string; calls: number; cost: number }[];
+  } catch {
+    // table may not exist yet
+  }
+
+  return {
+    providers,
+    routing: {
+      classify: config.providerRouting.classify,
+      chat: config.providerRouting.chat,
+      toolUse: config.providerRouting.toolUse,
+    },
+    circuitBreaker: config.providerRouting.circuitBreaker,
+    costByProvider,
+  };
 }
 
 // ─── Snapshot Builder ───────────────────────────────────────────────
@@ -708,6 +783,7 @@ function buildSnapshot(): SnapshotResponse {
     contentReferences,
     transcriptStats,
     domainStatus,
+    aiProviders: buildAiProviderData(),
   };
 }
 
