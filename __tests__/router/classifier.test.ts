@@ -10,21 +10,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  getPatternRoutes, getKeywordRoutes, getClassificationHints,
-} from '../../src/skills/skill-config';
-
-// Mock skill-manager to return all routes without needing DB
-vi.mock('../../src/skills/skill-manager', async () => {
-  const config = await import('../../src/skills/skill-config');
-  return {
-    getEnabledPatternRoutes: () => config.getPatternRoutes(),
-    getEnabledKeywordRoutes: () => config.getKeywordRoutes(),
-    getEnabledClassificationHints: () => config.getClassificationHints(),
-    isSkillEnabled: () => true,
-  };
-});
-
 import { patternMatch, keywordMatch, classifyWithClaude } from '../../src/router/classifier';
 import { routeMessage, isSystemCommand } from '../../src/router/index';
 

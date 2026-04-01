@@ -1,14 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-/** The three built-in domains. Kept as a narrow type for domain handlers. */
-export type DefaultDomainName = 'secretary' | 'triathlon' | 'content';
-
-/**
- * Any domain/skill name — includes the three defaults plus any dynamically
- * registered skill.  The `(string & {})` arm keeps autocomplete for known
- * values while accepting arbitrary strings at compile time.
- */
-export type DomainName = DefaultDomainName | (string & {});
+export type DomainName = 'secretary' | 'triathlon' | 'content';
 
 export interface DomainContext {
   domain: DomainName;

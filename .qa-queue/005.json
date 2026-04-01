@@ -1,0 +1,9 @@
+{
+  "id": "332ad49d-23e7-8123-9eb4-c02fa4b2f151",
+  "title": "Rename Cortex \u2192 Nexus Hub in codebase",
+  "description": "Docs, prompts, portal, README, all references.",
+  "priority": "\ud83d\udfe1 Medium",
+  "phase": "Phase 0 \u2014 Foundation",
+  "tags": [],
+  "originAgent": "flex"
+}

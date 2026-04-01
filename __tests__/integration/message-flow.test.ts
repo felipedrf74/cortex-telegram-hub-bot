@@ -47,23 +47,6 @@ vi.mock('../../src/services/tool-executor', () => ({
   executeToolCall: vi.fn(),
 }));
 
-vi.mock('../../src/services/usage-metering', () => ({
-  recordUsage: vi.fn(),
-}));
-
-vi.mock('../../src/skills/skill-manager', async () => {
-  const config = await import('../../src/skills/skill-config');
-  return {
-    getEnabledPatternRoutes: () => config.getPatternRoutes(),
-    getEnabledKeywordRoutes: () => config.getKeywordRoutes(),
-    getEnabledClassificationHints: () => config.getClassificationHints(),
-    isSkillEnabled: () => true,
-    seedDefaultSkills: vi.fn(),
-    getToolsForDomain: vi.fn().mockReturnValue([]),
-    invalidateToolCache: vi.fn(),
-  };
-});
-
 vi.mock('../../src/utils/date-parser', () => ({
   now: vi.fn().mockReturnValue({
     toFormat: vi.fn().mockReturnValue('Wednesday, April 01 2026, 10:00'),

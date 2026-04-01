@@ -21,7 +21,7 @@ const COST_PER_MTK: Record<string, { in: number; out: number; cacheRead: number;
 
 const warnedModels = new Set<string>();
 
-export function computeCost(model: string, usage: Anthropic.Usage): number {
+function computeCost(model: string, usage: Anthropic.Usage): number {
   const rates = COST_PER_MTK[model];
   if (!rates) {
     if (!warnedModels.has(model)) {

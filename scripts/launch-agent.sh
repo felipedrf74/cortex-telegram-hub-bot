@@ -92,10 +92,14 @@ Never stop between tasks — keep chaining until no more .agent-prompt.md exists
     IDLE_COUNT=$((IDLE_COUNT + 1))
 
     if [ $IDLE_COUNT -eq 1 ]; then
-      echo "💤 [$AGENT] No task. Polling every ${POLL_INTERVAL}s..."
+      echo "💤 [$AGENT] No task. Polling Notion every ${POLL_INTERVAL}s..."
     fi
 
-    # Just check if a new prompt appeared (Mission Control auto-assign handles dispatch)
+    # Try to dispatch a task for this agent
+    node "$REPO_DIR/scripts/agent-complete.js" --agent "$AGENT" --check-only 2>/dev/null
+    # Also try the dispatcher
+    node "$REPO_DIR/scripts/dispatch-tasks.js" 2>/dev/null | grep -i "$AGENT" && IDLE_COUNT=0
+
     if [ -f ".agent-prompt.md" ]; then
       echo "📋 [$AGENT] New task found!"
       continue

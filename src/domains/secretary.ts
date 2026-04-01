@@ -9,7 +9,6 @@ import { isOutlookMailConfigured, getUnreadCount } from '../services/outlook-mai
 import { isOutlookTodoConfigured, getAllPendingTasks } from '../services/microsoft-todo';
 import { now, startOfDay, endOfDay, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
-import { recordUsage } from '../services/usage-metering';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import { isGarminConfigured, getActivitiesByDate, getBodyBatteryEvents, GarminActivity } from '../services/garmin';
 import { logger } from '../utils/logger';
@@ -165,17 +164,12 @@ async function buildStateContext(): Promise<string> {
   return result;
 }
 
-export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
+export async function handleSecretary(message: string): Promise<DomainResponse> {
   const history = getConversationHistory(DOMAIN);
   const stateContext = await buildStateContext();
 
   let result = await callDomain(DOMAIN, history, message, stateContext);
   let finalText = result.text;
-
-  // Accumulate usage across all API calls for this message
-  const defaultUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
-  let totalTokens = (result.usage ?? defaultUsage).inputTokens + (result.usage ?? defaultUsage).outputTokens;
-  let totalCost = (result.usage ?? defaultUsage).costUsd;
 
   // Accumulate full tool conversation chain across iterations
   const toolConversation: Anthropic.MessageParam[] = [];
@@ -221,14 +215,7 @@ export async function handleSecretary(message: string, userId?: number): Promise
     logger.debug({ iteration: iterations, msgCount: toolConversation.length }, 'Calling continueWithToolResults');
     result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation);
     finalText = result.text;
-    totalTokens += (result.usage ?? defaultUsage).inputTokens + (result.usage ?? defaultUsage).outputTokens;
-    totalCost += (result.usage ?? defaultUsage).costUsd;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');
-  }
-
-  // Record usage metering (1 message = 1 user interaction, accumulated tokens/cost)
-  if (userId) {
-    recordUsage(userId, DOMAIN, totalTokens, totalCost);
   }
 
   // Guard against empty response (can happen after errors exhaust tool iterations)

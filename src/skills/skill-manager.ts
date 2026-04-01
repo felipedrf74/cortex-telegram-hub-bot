@@ -12,12 +12,8 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { DomainName } from '../domains/types';
-import {
-  DEFAULT_SKILLS, getSkillDefinition, getAllSkillDefinitions,
-  getPatternRoutes, getKeywordRoutes, getClassificationHints,
-  getRegisteredDomainNames,
-} from './skill-config';
-import type { SkillDefinition, PatternRoute, KeywordRoute, ClassificationHint } from './skill-config';
+import { DEFAULT_SKILLS, getSkillDefinition } from './skill-config';
+import type { SkillDefinition } from './skill-config';
 import * as registry from './registry';
 import { logger } from '../utils/logger';
 
@@ -151,8 +147,8 @@ function getEnabledToolNames(domain: DomainName): Set<string> {
   const skillDef = getSkillDefinition(domain);
   const skill = registry.getByName(domain);
 
-  // If skill not in DB, not in registry, or disabled, return empty set (no tools)
-  if (!skillDef || !skill || !skill.enabled) {
+  // If skill not in DB or disabled, return empty set (no tools)
+  if (!skill || !skill.enabled) {
     return new Set();
   }
 
@@ -200,35 +196,6 @@ export function disableSkill(domain: DomainName): boolean {
   return result;
 }
 
-// ── Dynamic Routing ─────────────────────────────────────────────
-
-/** Get the set of currently enabled skill names from the DB registry. */
-function getEnabledSkillNames(): Set<string> {
-  const enabled = registry.getEnabled();
-  return new Set(enabled.map(s => s.name));
-}
-
-/** Get pattern routes filtered by enabled skills. */
-export function getEnabledPatternRoutes(): PatternRoute[] {
-  return getPatternRoutes(getEnabledSkillNames());
-}
-
-/** Get keyword routes filtered by enabled skills, ordered by priority. */
-export function getEnabledKeywordRoutes(): KeywordRoute[] {
-  return getKeywordRoutes(getEnabledSkillNames());
-}
-
-/** Get classification hints for enabled skills (for the Haiku classifier prompt). */
-export function getEnabledClassificationHints(): ClassificationHint[] {
-  return getClassificationHints(getEnabledSkillNames());
-}
-
-/** Check if a domain/skill name is currently enabled. */
-export function isSkillEnabled(name: string): boolean {
-  const skill = registry.getByName(name);
-  return !!skill && skill.enabled === 1;
-}
-
 // ── Query API ────────────────────────────────────────────────────
 
 export interface SubSkillStatus {
@@ -245,11 +212,9 @@ export interface SkillStatus {
   subSkills: SubSkillStatus[];
 }
 
-/** Get the full status of a skill and its sub-skills. Returns null for unknown skills. */
-export function getSkillStatus(domain: DomainName): SkillStatus | null {
+/** Get the full status of a skill and its sub-skills. */
+export function getSkillStatus(domain: DomainName): SkillStatus {
   const def = getSkillDefinition(domain);
-  if (!def) return null;
-
   const skill = registry.getByName(domain);
   const enabledSubs = new Set(registry.getEnabledSubmodules(domain));
 
@@ -266,9 +231,7 @@ export function getSkillStatus(domain: DomainName): SkillStatus | null {
   };
 }
 
-/** Get status of all registered skills (defaults + dynamic). */
+/** Get status of all skills. */
 export function getAllSkillStatuses(): SkillStatus[] {
-  return getRegisteredDomainNames()
-    .map(name => getSkillStatus(name))
-    .filter((s): s is SkillStatus => s !== null);
+  return (Object.keys(DEFAULT_SKILLS) as DomainName[]).map(getSkillStatus);
 }

@@ -1,0 +1,9 @@
+{
+  "id": "332ad49d-23e7-81d9-9a8b-f6277db08cad",
+  "title": "SQLiteStorage implementation",
+  "description": "Wrap better-sqlite3 calls behind StorageProvider.",
+  "priority": "\ud83d\udfe0 High",
+  "phase": "Phase 0 \u2014 Foundation",
+  "tags": [],
+  "originAgent": "backend"
+}

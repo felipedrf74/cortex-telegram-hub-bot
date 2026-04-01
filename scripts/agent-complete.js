@@ -463,7 +463,7 @@ async function main() {
     try { fs.unlinkSync(path.join(agentPath, '.agent-task.json')); } catch {}
     try { fs.unlinkSync(path.join(agentPath, '.agent-prompt.md')); } catch {}
     console.log(`  💤 No more tasks for ${agentDir} — agent is idle`);
-    // No idle notification — too spammy. Felipe sees it in Mission Control if needed.
+    await notify(`💤 <b>${agentDir}</b> idle — no more tasks in To Do`);
   }
 }
 

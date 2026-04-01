@@ -343,7 +343,7 @@ describe('SkillManager — getSkillStatus()', () => {
   afterEach(() => { testDb.close(); });
 
   it('returns correct status for secretary', () => {
-    const status = getSkillStatus('secretary')!;
+    const status = getSkillStatus('secretary');
     expect(status.name).toBe('secretary');
     expect(status.enabled).toBe(true);
     expect(status.subSkills.length).toBe(DEFAULT_SKILLS.secretary.subSkills.length);
@@ -352,7 +352,7 @@ describe('SkillManager — getSkillStatus()', () => {
   it('reflects disabled sub-skills', () => {
     disableSubSkill('secretary', 'email');
 
-    const status = getSkillStatus('secretary')!;
+    const status = getSkillStatus('secretary');
     const emailSub = status.subSkills.find(s => s.name === 'email')!;
     expect(emailSub.enabled).toBe(false);
 
@@ -363,12 +363,12 @@ describe('SkillManager — getSkillStatus()', () => {
   it('reflects disabled skill', () => {
     disableSkill('secretary');
 
-    const status = getSkillStatus('secretary')!;
+    const status = getSkillStatus('secretary');
     expect(status.enabled).toBe(false);
   });
 
   it('includes tool count per sub-skill', () => {
-    const status = getSkillStatus('secretary')!;
+    const status = getSkillStatus('secretary');
     const tasksSub = status.subSkills.find(s => s.name === 'tasks')!;
     expect(tasksSub.toolCount).toBe(DEFAULT_SKILLS.secretary.subSkills.find(s => s.name === 'tasks')!.tools.length);
   });
@@ -409,14 +409,10 @@ describe('SkillManager — edge cases', () => {
   });
 
   it('getSkillStatus works even if skill not in DB', () => {
-    // No seedDefaultSkills() called — skill is in registry but not in DB
-    const status = getSkillStatus('secretary')!;
+    // No seedDefaultSkills() called
+    const status = getSkillStatus('secretary');
     expect(status.enabled).toBe(false);
     expect(status.subSkills.every(s => !s.enabled)).toBe(true);
-  });
-
-  it('getSkillStatus returns null for unknown skills', () => {
-    expect(getSkillStatus('nonexistent')).toBeNull();
   });
 
   it('disabling all sub-skills results in no tools', () => {
