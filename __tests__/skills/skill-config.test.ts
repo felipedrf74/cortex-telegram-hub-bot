@@ -132,18 +132,42 @@ describe('SkillConfig — secretary skill', () => {
 describe('SkillConfig — triathlon skill', () => {
   const tri = DEFAULT_SKILLS.triathlon;
 
-  it('has calendar, reminders, notes, shared-memory sub-skills', () => {
+  it('has all 9 granular sub-skills', () => {
     const subNames = tri.subSkills.map(s => s.name);
-    expect(subNames).toContain('calendar');
-    expect(subNames).toContain('reminders');
-    expect(subNames).toContain('notes');
-    expect(subNames).toContain('shared-memory');
+    expect(subNames).toContain('garmin-sync');
+    expect(subNames).toContain('coach-briefing');
+    expect(subNames).toContain('training-plans');
+    expect(subNames).toContain('nutrition-diet');
+    expect(subNames).toContain('body-composition');
+    expect(subNames).toContain('running');
+    expect(subNames).toContain('cycling');
+    expect(subNames).toContain('swimming');
+    expect(subNames).toContain('recovery-sleep');
+    expect(tri.subSkills.length).toBe(9);
   });
 
-  it('does NOT have tasks or email sub-skills', () => {
+  it('does NOT have legacy generic sub-skills', () => {
     const subNames = tri.subSkills.map(s => s.name);
     expect(subNames).not.toContain('tasks');
     expect(subNames).not.toContain('email');
+    expect(subNames).not.toContain('calendar');
+    expect(subNames).not.toContain('reminders');
+  });
+
+  it('disabled sub-skills: nutrition-diet, body-composition, cycling, swimming', () => {
+    const disabled = tri.subSkills.filter(s => !s.enabledByDefault).map(s => s.name);
+    expect(disabled).toContain('nutrition-diet');
+    expect(disabled).toContain('body-composition');
+    expect(disabled).toContain('cycling');
+    expect(disabled).toContain('swimming');
+    expect(disabled.length).toBe(4);
+  });
+
+  it('garmin cron jobs are mapped to sub-skills', () => {
+    const garminSync = tri.subSkills.find(s => s.name === 'garmin-sync')!;
+    expect(garminSync.cronJobs).toContain('garmin_keepalive');
+    const coachBriefing = tri.subSkills.find(s => s.name === 'coach-briefing')!;
+    expect(coachBriefing.cronJobs).toContain('garmin_coach');
   });
 });
 

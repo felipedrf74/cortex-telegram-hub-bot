@@ -26,7 +26,7 @@ describe('Training Plans Sub-Skill Config', () => {
     expect(tp.tools).toContain('log_training_completion');
     expect(tp.tools).toContain('update_training_session');
     expect(tp.tools).toContain('link_session_calendar');
-    expect(tp.tools).toHaveLength(7);
+    expect(tp.tools).toHaveLength(16);
   });
 
   it('training_plan_adjust cron job is mapped to triathlon/training-plans', () => {
@@ -41,14 +41,14 @@ describe('Training Plans Sub-Skill Config', () => {
     expect(triathlon.version).toBe('2.0.0');
   });
 
-  it('triathlon skill still has calendar, reminders, notes, shared-memory sub-skills', () => {
+  it('triathlon skill has 9 granular sub-skills after migration', () => {
     const triathlon = getSkillDefinition('triathlon');
     const names = triathlon.subSkills.map(s => s.name);
     expect(names).toContain('training-plans');
-    expect(names).toContain('calendar');
-    expect(names).toContain('reminders');
-    expect(names).toContain('notes');
-    expect(names).toContain('shared-memory');
-    expect(names).toHaveLength(5);
+    expect(names).toContain('garmin-sync');
+    expect(names).toContain('coach-briefing');
+    expect(names).toContain('running');
+    expect(names).toContain('recovery-sleep');
+    expect(names).toHaveLength(9);
   });
 });

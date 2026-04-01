@@ -204,11 +204,11 @@ describe('Sub-Skill Architecture — skill-config module', () => {
     expect(skillConfigTs).toContain('export function getSubSkillNames');
   });
 
-  it('only experimental sub-skills may have enabledByDefault set to false', () => {
+  it('disabled-by-default sub-skills are only experimental or future placeholders', () => {
     const disabledMatches = skillConfigTs.match(/enabledByDefault:\s*false/g);
-    // meme-scout is the only experimental (disabled-by-default) sub-skill
+    // 5 disabled: meme-scout (content) + nutrition-diet, body-composition, cycling, swimming (triathlon)
     if (disabledMatches) {
-      expect(disabledMatches.length).toBe(1);
+      expect(disabledMatches.length).toBe(5);
     }
   });
 });
@@ -279,24 +279,38 @@ describe('Sub-Skill Architecture — secretary sub-skills', () => {
 });
 
 describe('Sub-Skill Architecture — triathlon sub-skills', () => {
-  it('triathlon has calendar, reminders, notes, shared-memory', () => {
+  it('triathlon has 9 granular sub-skills', () => {
     const triBlock = skillConfigTs.slice(
       skillConfigTs.indexOf('TRIATHLON_SKILL'),
       skillConfigTs.indexOf('CONTENT_SKILL'),
     );
-    expect(triBlock).toContain("name: 'calendar'");
-    expect(triBlock).toContain("name: 'reminders'");
-    expect(triBlock).toContain("name: 'notes'");
-    expect(triBlock).toContain("name: 'shared-memory'");
+    expect(triBlock).toContain("name: 'garmin-sync'");
+    expect(triBlock).toContain("name: 'coach-briefing'");
+    expect(triBlock).toContain("name: 'training-plans'");
+    expect(triBlock).toContain("name: 'nutrition-diet'");
+    expect(triBlock).toContain("name: 'body-composition'");
+    expect(triBlock).toContain("name: 'running'");
+    expect(triBlock).toContain("name: 'cycling'");
+    expect(triBlock).toContain("name: 'swimming'");
+    expect(triBlock).toContain("name: 'recovery-sleep'");
   });
 
-  it('triathlon does NOT have tasks or email sub-skills', () => {
+  it('triathlon does NOT have legacy generic sub-skills', () => {
     const triBlock = skillConfigTs.slice(
       skillConfigTs.indexOf('TRIATHLON_SKILL'),
       skillConfigTs.indexOf('CONTENT_SKILL'),
     );
     expect(triBlock).not.toContain("name: 'tasks'");
     expect(triBlock).not.toContain("name: 'email'");
+  });
+
+  it('garmin cron jobs mapped to garmin-sync and coach-briefing', () => {
+    const triBlock = skillConfigTs.slice(
+      skillConfigTs.indexOf('TRIATHLON_SKILL'),
+      skillConfigTs.indexOf('CONTENT_SKILL'),
+    );
+    expect(triBlock).toContain("'garmin_keepalive'");
+    expect(triBlock).toContain("'garmin_coach'");
   });
 });
 

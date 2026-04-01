@@ -175,8 +175,12 @@ describe('SkillConfig — cron job mappings', () => {
   });
 
   it('getCronJobOwner returns null for unmapped jobs', () => {
-    expect(getCronJobOwner('garmin_keepalive')).toBeNull();
     expect(getCronJobOwner('nonexistent_job')).toBeNull();
+  });
+
+  it('getCronJobOwner maps garmin jobs to triathlon sub-skills', () => {
+    expect(getCronJobOwner('garmin_keepalive')).toEqual({ domain: 'triathlon', subSkill: 'garmin-sync' });
+    expect(getCronJobOwner('garmin_coach')).toEqual({ domain: 'triathlon', subSkill: 'coach-briefing' });
   });
 
   it('getAllCronJobMappings returns all secretary cron mappings', () => {
@@ -218,7 +222,6 @@ describe('SkillManager — isCronJobEnabled', () => {
 
   it('returns true for unmapped jobs', async () => {
     const { isCronJobEnabled } = await import('../../src/skills/skill-manager');
-    expect(isCronJobEnabled('garmin_keepalive')).toBe(true);
     expect(isCronJobEnabled('nonexistent_job')).toBe(true);
   });
 
