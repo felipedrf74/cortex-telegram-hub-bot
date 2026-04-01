@@ -543,6 +543,83 @@
   .text-muted { color: var(--text2); }
   .text-right { text-align: right; }
 
+  /* ── Integration Health ─────────────────── */
+  .int-group {
+    margin-bottom: 14px;
+  }
+
+  .int-group:last-child { margin-bottom: 0; }
+
+  .int-group-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text2);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .int-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--surface2);
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+
+  .int-row:last-child { margin-bottom: 0; }
+
+  .int-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .int-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--text2);
+  }
+
+  .int-health {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .int-health.valid     { background: rgba(0,184,148,.15); color: var(--green); }
+  .int-health.expired   { background: rgba(225,112,85,.15); color: var(--red); }
+  .int-health.warning   { background: rgba(253,203,110,.15); color: var(--yellow); }
+  .int-health.not_configured { background: rgba(139,143,163,.1); color: var(--text2); }
+
+  .int-alert {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    animation: pulse-alert 1.5s ease-in-out infinite;
+  }
+
+  .int-alert.expired { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .int-alert.warning { background: var(--yellow); box-shadow: 0 0 4px var(--yellow); }
+
+  @keyframes pulse-alert {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
   /* scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -691,13 +768,10 @@
     </table>
   </div>
 
-  <!-- ── Integrations ──────────────────────── -->
+  <!-- ── Integration Health ──────────────────── -->
   <div class="card">
-    <h2>🔗 Integrations</h2>
-    <table id="integrations-table">
-      <thead><tr><th>Service</th><th>Status</th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <h2>🔗 Integration Health</h2>
+    <div id="integration-health"></div>
   </div>
 
   <!-- ── Invoices ──────────────────────────── -->
@@ -1213,6 +1287,62 @@
     grid.innerHTML = html;
   }
 
+  // ── Integration Health rendering ────────────
+  const GROUP_ICONS = { google: '🔵', microsoft: '🟠', garmin: '🟢', system: '⚙️' };
+  const GROUP_LABELS = { google: 'Google (OAuth 2.0)', microsoft: 'Microsoft (MSAL)', garmin: 'Garmin (Session)', system: 'System' };
+  const HEALTH_LABELS = { valid: '✓ Valid', expired: '✗ Expired', warning: '⚠ Stale', not_configured: '— Not configured' };
+
+  function renderIntegrationHealth(integrations) {
+    const container = document.getElementById('integration-health');
+    if (!container) return;
+
+    // Group integrations by group
+    const groups = {};
+    for (const i of integrations) {
+      const g = i.group || 'system';
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(i);
+    }
+
+    let html = '';
+    const groupOrder = ['google', 'microsoft', 'garmin', 'system'];
+    for (const g of groupOrder) {
+      const items = groups[g];
+      if (!items || items.length === 0) continue;
+
+      // Check if any integration in this group has issues
+      const hasAlert = items.some(i => i.tokenHealth === 'expired' || i.tokenHealth === 'warning');
+      const alertDot = hasAlert
+        ? ` <span class="int-alert ${items.find(i => i.tokenHealth === 'expired') ? 'expired' : 'warning'}"></span>`
+        : '';
+
+      html += `<div class="int-group">`;
+      html += `<div class="int-group-label">${GROUP_ICONS[g] || '🔗'} ${GROUP_LABELS[g] || g}${alertDot}</div>`;
+
+      for (const i of items) {
+        const health = i.tokenHealth || (i.configured ? 'valid' : 'not_configured');
+        const healthLabel = HEALTH_LABELS[health] || health;
+        const lastCall = i.lastApiCall ? relativeTime(i.lastApiCall) : '—';
+
+        html += `<div class="int-row">`;
+        html += `  <div class="int-left">`;
+        html += `    <span>${esc(i.name)}</span>`;
+        html += `  </div>`;
+        html += `  <div class="int-right">`;
+        if (i.lastApiCall) {
+          html += `<span title="Last successful API call">🕐 ${lastCall}</span>`;
+        }
+        html += `    <span class="int-health ${health}">${healthLabel}</span>`;
+        html += `  </div>`;
+        html += `</div>`;
+      }
+
+      html += `</div>`;
+    }
+
+    container.innerHTML = html;
+  }
+
   // ── Render snapshot ────────────────────────
   function render(snap) {
     // Header
@@ -1296,13 +1426,8 @@
       }).join('') || '<tr><td colspan="4" class="text-muted">No emails sent yet</td></tr>';
     }
 
-    // Integrations
-    const intBody = document.querySelector('#integrations-table tbody');
-    intBody.innerHTML = snap.integrations.map(i => {
-      const cls = i.configured ? 'badge-configured' : 'badge-not-configured';
-      const statusText = i.status || (i.configured ? 'OK' : 'not configured');
-      return `<tr><td>${esc(i.name)}</td><td><span class="badge ${cls}">${esc(statusText)}</span></td></tr>`;
-    }).join('');
+    // Integration Health
+    renderIntegrationHealth(snap.integrations);
 
     // Invoices
     document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;
