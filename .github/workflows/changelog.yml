@@ -3,7 +3,6 @@ name: 📝 Update Changelog
 on:
   push:
     branches: [main]
-    # Don't trigger on changelog-only commits to avoid infinite loops
     paths-ignore:
       - 'CHANGELOG.md'
 
@@ -13,11 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history needed for git-cliff
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
@@ -31,16 +31,30 @@ jobs:
           tool: git-cliff
 
       - name: Generate Changelog
-        run: |
-          git-cliff --output CHANGELOG.md
+        run: git-cliff --output CHANGELOG.md
 
-      - name: Commit if changed
+      - name: Check for changes
+        id: check
         run: |
-          if git diff --quiet CHANGELOG.md; then
-            echo "No changelog changes — skipping commit"
+          if git diff --quiet CHANGELOG.md 2>/dev/null; then
+            echo "changed=false" >> $GITHUB_OUTPUT
           else
-            git add CHANGELOG.md
-            git commit -m "docs: update changelog [skip ci]"
-            git push origin main
-            echo "✅ CHANGELOG.md updated"
+            echo "changed=true" >> $GITHUB_OUTPUT
           fi
+
+      - name: Create PR with changelog update
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          BRANCH="chore/changelog-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog [skip ci]"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "docs: update CHANGELOG.md" \
+            --body "Auto-generated changelog update via git-cliff." \
+            --base main \
+            --head "$BRANCH" \
+            --label "documentation"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
