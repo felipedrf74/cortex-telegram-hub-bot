@@ -13,8 +13,9 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { DomainName } from '../domains/types';
 import {
-  DEFAULT_SKILLS, getSkillDefinition,
+  DEFAULT_SKILLS, getSkillDefinition, getAllSkillDefinitions,
   getPatternRoutes, getKeywordRoutes, getClassificationHints,
+  getRegisteredDomainNames,
 } from './skill-config';
 import type { SkillDefinition, PatternRoute, KeywordRoute, ClassificationHint } from './skill-config';
 import * as registry from './registry';
@@ -150,8 +151,8 @@ function getEnabledToolNames(domain: DomainName): Set<string> {
   const skillDef = getSkillDefinition(domain);
   const skill = registry.getByName(domain);
 
-  // If skill not in DB or disabled, return empty set (no tools)
-  if (!skill || !skill.enabled) {
+  // If skill not in DB, not in registry, or disabled, return empty set (no tools)
+  if (!skillDef || !skill || !skill.enabled) {
     return new Set();
   }
 
@@ -244,9 +245,11 @@ export interface SkillStatus {
   subSkills: SubSkillStatus[];
 }
 
-/** Get the full status of a skill and its sub-skills. */
-export function getSkillStatus(domain: DomainName): SkillStatus {
+/** Get the full status of a skill and its sub-skills. Returns null for unknown skills. */
+export function getSkillStatus(domain: DomainName): SkillStatus | null {
   const def = getSkillDefinition(domain);
+  if (!def) return null;
+
   const skill = registry.getByName(domain);
   const enabledSubs = new Set(registry.getEnabledSubmodules(domain));
 
@@ -263,7 +266,9 @@ export function getSkillStatus(domain: DomainName): SkillStatus {
   };
 }
 
-/** Get status of all skills. */
+/** Get status of all registered skills (defaults + dynamic). */
 export function getAllSkillStatuses(): SkillStatus[] {
-  return (Object.keys(DEFAULT_SKILLS) as DomainName[]).map(getSkillStatus);
+  return getRegisteredDomainNames()
+    .map(name => getSkillStatus(name))
+    .filter((s): s is SkillStatus => s !== null);
 }

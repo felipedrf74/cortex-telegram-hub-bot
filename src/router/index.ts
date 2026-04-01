@@ -41,7 +41,7 @@ export async function routeMessage(
     const stripped = message.replace(/^\/\S+\s*/, '').trim();
     logger.debug({ domain: patternDomain, method: 'pattern' }, 'Routed by pattern');
     return {
-      domain: patternDomain as DomainName,
+      domain: patternDomain,
       method: 'pattern',
       confidence: 1.0,
       strippedMessage: stripped || message,
@@ -71,7 +71,7 @@ export async function routeMessage(
   if (kwDomain) {
     logger.debug({ domain: kwDomain, method: 'keyword' }, 'Routed by keyword');
     return {
-      domain: kwDomain as DomainName,
+      domain: kwDomain,
       method: 'keyword',
       confidence: 0.9,
       strippedMessage: message,

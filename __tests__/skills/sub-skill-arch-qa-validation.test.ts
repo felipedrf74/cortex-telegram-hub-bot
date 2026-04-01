@@ -94,8 +94,12 @@ describe('Sub-Skill Architecture — tool name contract', () => {
 });
 
 describe('Sub-Skill Architecture — domain coverage', () => {
-  it('DomainName type defines exactly 3 domains', () => {
+  it('DefaultDomainName type defines exactly 3 domains', () => {
     expect(domainTypesTs).toContain("'secretary' | 'triathlon' | 'content'");
+  });
+
+  it('DomainName type is extensible (accepts any string)', () => {
+    expect(domainTypesTs).toContain('DefaultDomainName | (string & {})');
   });
 
   it('DEFAULT_SKILLS has entries for all 3 domains', () => {
@@ -104,8 +108,8 @@ describe('Sub-Skill Architecture — domain coverage', () => {
     expect(skillConfigTs).toContain("content: CONTENT_SKILL");
   });
 
-  it('DEFAULT_SKILLS is typed as Record<DomainName, SkillDefinition>', () => {
-    expect(skillConfigTs).toContain('Record<DomainName, SkillDefinition>');
+  it('DEFAULT_SKILLS is typed as Record<DefaultDomainName, SkillDefinition>', () => {
+    expect(skillConfigTs).toContain('Record<DefaultDomainName, SkillDefinition>');
   });
 
   it('skill names match domain names exactly', () => {

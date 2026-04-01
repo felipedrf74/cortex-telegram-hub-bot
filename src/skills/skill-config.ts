@@ -10,7 +10,7 @@
  * This is the single source of truth for the domain→sub-skill→tool mapping.
  */
 
-import type { DomainName } from '../domains/types';
+import type { DefaultDomainName } from '../domains/types';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -193,22 +193,53 @@ const CONTENT_SKILL: SkillDefinition = {
 
 // ── Exports ──────────────────────────────────────────────────────
 
-/** All default skill definitions, keyed by domain name. */
-export const DEFAULT_SKILLS: Record<DomainName, SkillDefinition> = {
+/** The three built-in skill definitions, keyed by default domain name. */
+export const DEFAULT_SKILLS: Record<DefaultDomainName, SkillDefinition> = {
   secretary: SECRETARY_SKILL,
   triathlon: TRIATHLON_SKILL,
   content: CONTENT_SKILL,
 };
 
-/** Get the skill definition for a domain. */
-export function getSkillDefinition(domain: DomainName): SkillDefinition {
-  return DEFAULT_SKILLS[domain];
+// ── Runtime Skill Registry ──────────────────────────────────────
+//
+// Starts with the three defaults but accepts dynamically registered
+// skills at runtime (e.g. plugins, user-defined domains).
+
+const _skillRegistry = new Map<string, SkillDefinition>(
+  Object.entries(DEFAULT_SKILLS) as [string, SkillDefinition][],
+);
+
+/**
+ * Register a new skill definition at runtime.
+ * Overwrites any existing skill with the same name.
+ */
+export function registerSkill(def: SkillDefinition): void {
+  _skillRegistry.set(def.name, def);
 }
 
-/** Get all tool names that a sub-skill provides across all domains. */
+/**
+ * Unregister a skill by name. Returns true if the skill was removed.
+ * Cannot unregister default skills — use disable instead.
+ */
+export function unregisterSkill(name: string): boolean {
+  if (name in DEFAULT_SKILLS) return false;
+  return _skillRegistry.delete(name);
+}
+
+/** Get the skill definition for a domain. Returns undefined for unknown skills. */
+export function getSkillDefinition(domain: string): SkillDefinition | undefined {
+  return _skillRegistry.get(domain);
+}
+
+/** Get all registered skill definitions (defaults + dynamic). */
+export function getAllSkillDefinitions(): SkillDefinition[] {
+  return [..._skillRegistry.values()];
+}
+
+/** Get all tool names that a sub-skill provides across all registered skills. */
 export function getAllToolNames(): string[] {
   const tools = new Set<string>();
-  for (const skill of Object.values(DEFAULT_SKILLS)) {
+  for (const skill of _skillRegistry.values()) {
     for (const sub of skill.subSkills) {
       for (const tool of sub.tools) {
         tools.add(tool);
@@ -218,9 +249,10 @@ export function getAllToolNames(): string[] {
   return [...tools];
 }
 
-/** Get all sub-skill names for a domain. */
-export function getSubSkillNames(domain: DomainName): string[] {
-  return DEFAULT_SKILLS[domain].subSkills.map(s => s.name);
+/** Get all sub-skill names for a domain. Returns empty array for unknown skills. */
+export function getSubSkillNames(domain: string): string[] {
+  const def = _skillRegistry.get(domain);
+  return def ? def.subSkills.map(s => s.name) : [];
 }
 
 // ── Dynamic Route Accessors ─────────────────────────────────────
@@ -241,7 +273,8 @@ export interface KeywordRoute {
  * @param enabledSkills Optional set of enabled skill names — if provided, only returns routes for those skills.
  */
 export function getPatternRoutes(enabledSkills?: Set<string>): PatternRoute[] {
-  return Object.values(DEFAULT_SKILLS)
+  const skills = [..._skillRegistry.values()];
+  return skills
     .filter(s => !enabledSkills || enabledSkills.has(s.name))
     .filter(s => s.routing.patternRoutes.length > 0)
     .map(s => ({ domain: s.name, patterns: s.routing.patternRoutes }));
@@ -253,7 +286,8 @@ export function getPatternRoutes(enabledSkills?: Set<string>): PatternRoute[] {
  * @param enabledSkills Optional set of enabled skill names.
  */
 export function getKeywordRoutes(enabledSkills?: Set<string>): KeywordRoute[] {
-  return Object.values(DEFAULT_SKILLS)
+  const skills = [..._skillRegistry.values()];
+  return skills
     .filter(s => !enabledSkills || enabledSkills.has(s.name))
     .filter(s => s.routing.keywordRoute !== null)
     .map(s => ({
@@ -269,12 +303,21 @@ export function getKeywordRoutes(enabledSkills?: Set<string>): KeywordRoute[] {
  * @param enabledSkills Optional set of enabled skill names.
  */
 export function getClassificationHints(enabledSkills?: Set<string>): ClassificationHint[] {
-  return Object.values(DEFAULT_SKILLS)
+  const skills = [..._skillRegistry.values()];
+  return skills
     .filter(s => !enabledSkills || enabledSkills.has(s.name))
     .map(s => s.routing.classificationHint);
 }
 
-/** Get all registered skill/domain names. */
+/** Get all registered skill/domain names (defaults + dynamic). */
 export function getRegisteredDomainNames(): string[] {
-  return Object.keys(DEFAULT_SKILLS);
+  return [..._skillRegistry.keys()];
+}
+
+/** Reset registry to defaults only (for testing). */
+export function _resetRegistry(): void {
+  _skillRegistry.clear();
+  for (const [name, def] of Object.entries(DEFAULT_SKILLS)) {
+    _skillRegistry.set(name, def);
+  }
 }
