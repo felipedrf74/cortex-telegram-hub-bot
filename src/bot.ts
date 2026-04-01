@@ -30,6 +30,7 @@ import { classifyAndExtractImage, ImageInvoiceResult, ImageCalendarResult, Image
 import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
 import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, testSshConnection, PT_MONTHS } from './services/invoice-filer';
+import { addTransaction, parseReceiptAmount } from './services/finance-tracker';
 import { enqueueInvoice, getPendingCount } from './services/invoice-queue';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
 import {
@@ -3007,6 +3008,12 @@ export function createBot(): Bot {
         await ctx.editMessageText('⚠️ Ação expirada. Envie a foto novamente.');
         return;
       }
+      // Delete auto-logged finance transaction if one was created
+      if (cbData.txId && ctx.from?.id) {
+        const { deleteTransaction } = await import('./services/finance-tracker');
+        deleteTransaction(ctx.from.id, cbData.txId);
+        logger.info({ txId: cbData.txId }, 'Undid auto-logged finance transaction (not an invoice)');
+      }
       await ctx.editMessageText('🔄 Reprocessando como tarefa...');
       // Re-download image from Telegram (stored fileId instead of base64 to save memory)
       const { base64: reBase64, mediaType: reMT } = await downloadTelegramFile(bot, cbData.fileId);
@@ -3636,6 +3643,22 @@ async function handleInvoiceFiling(
       status: 'filed',
     });
 
+    // ── Auto-log receipt as finance expense transaction ──
+    const userId = ctx.from?.id;
+    const parsedAmount = parseReceiptAmount(analysis.totalAmount);
+    let txId: number | null = null;
+
+    if (userId && parsedAmount) {
+      const txDate = analysis.documentDate || new Date().toISOString().split('T')[0];
+      const tx = addTransaction(userId, txDate, 'expense', parsedAmount, {
+        subcategory: 'receipt',
+        description: analysis.vendor ? `Receipt: ${analysis.vendor}` : 'Receipt from photo',
+        receiptRef: filingResult.filename || undefined,
+      });
+      txId = tx.id;
+      logger.info({ userId, amount: parsedAmount, vendor: analysis.vendor }, 'Receipt auto-logged as finance transaction');
+    }
+
     let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
     if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
     if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
@@ -3649,8 +3672,12 @@ async function handleInvoiceFiling(
       msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
     }
 
+    if (txId && parsedAmount) {
+      msg += `\n\n💳 <b>Despesa registrada:</b> R$ ${parsedAmount.toFixed(2)}`;
+    }
+
     // Store fileId instead of base64 to reduce memory (~500KB-2MB per entry)
-    const ref = storeCallback({ fileId, caption });
+    const ref = storeCallback({ fileId, caption, txId });
     const keyboard = new InlineKeyboard()
       .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
 

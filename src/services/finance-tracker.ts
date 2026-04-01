@@ -266,3 +266,91 @@ export function markTaxPaid(userId: number, month: string): boolean {
   ).run(userId, month);
   return result.changes > 0;
 }
+
+// ── Annual Tax Summary ────────────────────────────────────────────
+
+export interface AnnualTaxSummary {
+  year: number;
+  totalGrossIncome: number;
+  totalDeductions: number;
+  totalInssDue: number;
+  totalTaxDue: number;
+  totalPaid: number;
+  totalPending: number;
+  effectiveAnnualRate: number;
+  monthsPaid: number;
+  monthsPending: number;
+  months: TaxEvent[];
+}
+
+/**
+ * Get annual tax summary — aggregates all monthly tax events for IRPF declaration.
+ * Returns totals for income, deductions, INSS, tax due, and payment status.
+ */
+export function getAnnualTaxSummary(userId: number, year: number): AnnualTaxSummary {
+  const events = getTaxEvents(userId, { year });
+
+  let totalGrossIncome = 0;
+  let totalDeductions = 0;
+  let totalInssDue = 0;
+  let totalTaxDue = 0;
+  let totalPaid = 0;
+  let totalPending = 0;
+  let monthsPaid = 0;
+  let monthsPending = 0;
+
+  for (const e of events) {
+    totalGrossIncome += e.gross_income;
+    totalDeductions += e.deductions;
+    totalInssDue += e.inss_due;
+    totalTaxDue += e.tax_due;
+    if (e.status === 'paid') {
+      totalPaid += e.tax_due;
+      monthsPaid++;
+    } else {
+      totalPending += e.tax_due;
+      monthsPending++;
+    }
+  }
+
+  const effectiveAnnualRate = totalGrossIncome > 0
+    ? Math.round((totalTaxDue / totalGrossIncome) * 10000) / 100
+    : 0;
+
+  return {
+    year,
+    totalGrossIncome: Math.round(totalGrossIncome * 100) / 100,
+    totalDeductions: Math.round(totalDeductions * 100) / 100,
+    totalInssDue: Math.round(totalInssDue * 100) / 100,
+    totalTaxDue: Math.round(totalTaxDue * 100) / 100,
+    totalPaid: Math.round(totalPaid * 100) / 100,
+    totalPending: Math.round(totalPending * 100) / 100,
+    effectiveAnnualRate,
+    monthsPaid,
+    monthsPending,
+    months: events,
+  };
+}
+
+// ── Receipt Amount Parsing ────────────────────────────────────────
+
+/**
+ * Parse a currency string from a receipt into a numeric amount.
+ * Handles formats: "R$ 45,90", "€ 45.90", "45.90", "1.234,56", "R$1234.56"
+ */
+export function parseReceiptAmount(amountStr: string | null | undefined): number | null {
+  if (!amountStr) return null;
+
+  // Strip currency symbols and whitespace
+  let cleaned = amountStr.replace(/[R$€£¥\s]/g, '').trim();
+
+  if (!cleaned) return null;
+
+  // Detect Brazilian format: 1.234,56 (dots as thousands, comma as decimal)
+  if (/^\d{1,3}(\.\d{3})*(,\d{1,2})?$/.test(cleaned) || /^\d+(,\d{1,2})$/.test(cleaned)) {
+    cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+  }
+
+  const amount = parseFloat(cleaned);
+  return isNaN(amount) || amount <= 0 ? null : Math.round(amount * 100) / 100;
+}

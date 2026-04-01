@@ -309,6 +309,22 @@ export async function executeToolCall(
         const marked = financeTracker.markTaxPaid(uid, input.month);
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
+      case 'finance_annual_summary': {
+        const uid = userId ?? 0;
+        const summary = financeTracker.getAnnualTaxSummary(uid, input.year);
+        return {
+          year: summary.year,
+          totalGrossIncome: summary.totalGrossIncome,
+          totalDeductions: summary.totalDeductions,
+          totalInssDue: summary.totalInssDue,
+          totalTaxDue: summary.totalTaxDue,
+          totalPaid: summary.totalPaid,
+          totalPending: summary.totalPending,
+          effectiveAnnualRate: summary.effectiveAnnualRate,
+          monthsPaid: summary.monthsPaid,
+          monthsPending: summary.monthsPending,
+        };
+      }
 
       // ── Cooking tools ──
       case 'cooking_add_recipe': {

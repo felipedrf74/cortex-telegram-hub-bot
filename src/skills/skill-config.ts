@@ -215,9 +215,9 @@ const FINANCE_SKILL: SkillDefinition = {
     },
     {
       name: 'tax',
-      description: 'DARF/Carnê-Leão tax calculation',
+      description: 'DARF/Carnê-Leão tax calculation and annual summary',
       enabledByDefault: true,
-      tools: ['finance_calculate_tax', 'finance_get_tax_events', 'finance_mark_tax_paid'],
+      tools: ['finance_calculate_tax', 'finance_get_tax_events', 'finance_mark_tax_paid', 'finance_annual_summary'],
     },
     {
       name: 'notes',
