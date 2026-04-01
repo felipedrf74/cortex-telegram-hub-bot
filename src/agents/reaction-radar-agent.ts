@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Reaction Radar Agent — monitors reference channels for new uploads
  * and YouTube trending for reaction-worthy content.

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Prompt Loader — reads .md prompt files from the prompts/ directory
  * with mtime-based caching so files are only re-read when changed on disk.

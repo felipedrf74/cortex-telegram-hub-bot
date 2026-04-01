@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import Anthropic from '@anthropic-ai/sdk';
 import { DateTime } from 'luxon';
 import { execFileSync } from 'child_process';

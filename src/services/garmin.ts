@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Garmin Connect API client — wraps `garmin-connect` for auth,
  * extends with direct API calls for health/wellness endpoints.

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 // ─── WhatsAppAdapter — WhatsApp Cloud API MessageAdapter ────────────
 
 import * as fs from 'fs';

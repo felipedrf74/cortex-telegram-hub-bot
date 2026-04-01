@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { Todo, Note, Reminder } from '../domains/types';
 import { TodoList, TodoTask, ChecklistItem } from '../services/microsoft-todo';
 import { formatDate, formatDateTime, formatTime } from './date-parser';

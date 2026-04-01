@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 // ─── MessageAdapter — Platform-Agnostic Messaging Interface ─────────
 
 /** Options for sending a text message */

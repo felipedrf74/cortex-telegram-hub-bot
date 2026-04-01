@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { getDb } from '../services/database';
 import { DomainMessage, DomainName } from '../domains/types';
 

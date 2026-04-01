@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Intelligence Bus — shared signal system for the Content Agent Mesh.
  *

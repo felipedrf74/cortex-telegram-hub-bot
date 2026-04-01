@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Garmin Daily Coach — collects Garmin data, analyzes with Claude using
  * the Triatlon coaching persona, and formats a Telegram briefing message.

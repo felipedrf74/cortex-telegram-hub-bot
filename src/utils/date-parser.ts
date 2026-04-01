@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DateTime, WeekdayNumbers } from 'luxon';
 import { config } from '../config';
 

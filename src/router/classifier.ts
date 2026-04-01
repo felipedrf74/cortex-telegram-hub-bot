@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DomainName, ClassificationResult } from '../domains/types';
 import { classifyMessage } from '../services/anthropic';
 import { logger } from '../utils/logger';

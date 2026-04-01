@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 import type { InstalledSkill, SkillSubmodule } from '../domains/types';
