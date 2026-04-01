@@ -141,6 +141,17 @@ interface SnapshotResponse {
     lastMessageAt: string | null;
     details: Record<string, string | number | boolean>;
   }[];
+  skillStatus: {
+    name: string;
+    description: string;
+    enabled: boolean;
+    subSkills: {
+      name: string;
+      description: string;
+      enabled: boolean;
+      toolCount: number;
+    }[];
+  }[];
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -714,6 +725,7 @@ function buildSnapshot(): SnapshotResponse {
     contentReferences,
     transcriptStats,
     domainStatus,
+    skillStatus: getAllSkillStatuses(),
   };
 }
 
