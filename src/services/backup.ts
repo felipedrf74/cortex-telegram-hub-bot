@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
