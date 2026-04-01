@@ -32,10 +32,26 @@ const AGENT_MAP = {
 
 async function autoAssignAll() {
   const agents = agentStatus();
+  const allTasks = await fetchTasks();
   const results = [];
 
   for (const a of agents) {
-    // Skip agents that already have work
+    // Stale task cleanup: if agent has a task file, check Notion status
+    if (a.task && a.task.id) {
+      const notionTask = allTasks.find(t => t.id === a.task.id);
+      const staleStatuses = ['Done', 'Review', 'QA Validating'];
+      // If task is done/review in Notion (or doesn't exist), clear the stale files
+      if (!notionTask || (a.name !== 'qa' && staleStatuses.includes(notionTask.status)) || (notionTask.status === 'Done')) {
+        try {
+          fs.unlinkSync(path.join(WORKTREES, a.name, '.agent-task.json'));
+          fs.unlinkSync(path.join(WORKTREES, a.name, '.agent-prompt.md'));
+        } catch {}
+        a.task = null; a.hasPrompt = false;
+        results.push({ agent: a.name, action: 'cleared-stale', oldTask: notionTask?.title || a.task?.title || 'unknown' });
+      }
+    }
+
+    // Skip agents that already have valid work
     if (a.task || a.hasPrompt) continue;
 
     // QA agent: check .qa-queue/ first
@@ -71,17 +87,21 @@ async function autoAssignAll() {
       } catch (e) { results.push({ agent: 'qa', error: e.message }); }
     }
 
-    // All agents: check Notion "To Do" for matching tasks
+    // All agents: check Notion for tasks needing dispatch ("To Do" or orphaned "In Progress")
     try {
       const worktreeName = a.name;
       const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
-      const tasks = await fetchTasks();
-      const todoTasks = tasks.filter(t => t.status === 'To Do' && matchingTags.includes(t.agent));
-      if (todoTasks.length > 0) {
-        const next = todoTasks[0];
-        // Dispatch via dispatch-tasks.js
+      const assignableTasks = allTasks.filter(t =>
+        matchingTags.includes(t.agent) && (t.status === 'To Do' || t.status === 'In Progress')
+      );
+      if (assignableTasks.length > 0) {
+        const next = assignableTasks[0];
+        // If task is orphaned In Progress (agent has no files), move back to To Do first
+        if (next.status === 'In Progress') {
+          await notionFetch(`/pages/${next.id}`, 'PATCH', {properties:{Status:{select:{name:'To Do'}}}});
+        }
         const r = await run(`node "${SCRIPT('dispatch-tasks.js')}"`);
-        results.push({ agent: worktreeName, task: next.title, source: 'notion-todo', output: r.output?.substring(0, 200) });
+        results.push({ agent: worktreeName, task: next.title, source: next.status === 'To Do' ? 'notion-todo' : 'notion-recover' });
       }
     } catch (e) { results.push({ agent: a.name, error: e.message }); }
   }
