@@ -1496,8 +1496,8 @@
 
     // Domain handlers
     if (snap.domainStatus) {
-      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰' };
-      const domainColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe' };
+      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
+      const domainColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe', cooking: '#e17055' };
       const domainEl = document.getElementById('domain-handlers');
       domainEl.innerHTML = snap.domainStatus.map(d => {
         const icon = domainIcons[d.domain] || '🧩';
@@ -1539,8 +1539,8 @@
 
     // Skill module status
     if (snap.skillStatus) {
-      const skillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe' };
-      const skillIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰' };
+      const skillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe', cooking: '#e17055' };
+      const skillIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
       const skillEl = document.getElementById('skill-modules');
       skillEl.innerHTML = snap.skillStatus.map(s => {
         const color = skillColors[s.name] || 'var(--accent)';

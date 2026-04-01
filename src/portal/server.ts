@@ -744,6 +744,15 @@ function buildSnapshot(): SnapshotResponse {
         lastMessageAt: totalMap['finance']?.lastAt || null,
         details: {},
       },
+      {
+        domain: 'cooking',
+        label: 'Cooking Chef',
+        active: true,
+        messagesToday: todayMap['cooking'] || 0,
+        totalMessages: totalMap['cooking']?.count || 0,
+        lastMessageAt: totalMap['cooking']?.lastAt || null,
+        details: {},
+      },
     ];
   } catch (err) {
     logger.warn({ err }, 'Portal: failed to query domain status');

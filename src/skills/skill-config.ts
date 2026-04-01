@@ -234,6 +234,55 @@ const FINANCE_SKILL: SkillDefinition = {
   ],
 };
 
+const COOKING_SKILL: SkillDefinition = {
+  name: 'cooking',
+  description: 'Personal chef — recipes, meal planning, shopping lists',
+  version: '1.0.0',
+  routing: {
+    patternRoutes: [
+      /^\/(cook|recipe|meal|mealplan|shopping|ingredients?)\b/i,
+    ],
+    keywordRoute: /\b(recipes?|cooking|meal\s+(?:plan|prep)|shopping\s+list|ingredients?|cozinhar|receitas?|refei[çc][aã]o|lista\s+de\s+compras|cardápio|preparo)\b/i,
+    classificationHint: {
+      label: 'cooking',
+      description: 'recipes, meal planning, cooking, shopping lists, ingredient search, meal prep',
+      examples: ['find me a recipe with chicken', 'plan my meals for the week', 'generate shopping list'],
+    },
+  },
+  subSkills: [
+    {
+      name: 'recipes',
+      description: 'Recipe search and management',
+      enabledByDefault: true,
+      tools: ['cooking_add_recipe', 'cooking_get_recipes', 'cooking_delete_recipe'],
+    },
+    {
+      name: 'meal-planning',
+      description: 'Weekly meal planning',
+      enabledByDefault: true,
+      tools: ['cooking_set_meal', 'cooking_get_meal_plan', 'cooking_delete_meal'],
+    },
+    {
+      name: 'shopping',
+      description: 'Shopping list generation',
+      enabledByDefault: true,
+      tools: ['cooking_generate_shopping_list', 'cooking_get_shopping_list'],
+    },
+    {
+      name: 'notes',
+      description: 'Cooking notes and tips',
+      enabledByDefault: true,
+      tools: ['save_note', 'search_notes'],
+    },
+    {
+      name: 'shared-memory',
+      description: 'Cross-domain shared facts (dietary prefs, allergies)',
+      enabledByDefault: true,
+      tools: ['shared_memory_set', 'shared_memory_remove'],
+    },
+  ],
+};
+
 // ── Exports ──────────────────────────────────────────────────────
 
 /** The built-in skill definitions, keyed by default domain name. */
@@ -242,6 +291,7 @@ export const DEFAULT_SKILLS: Record<DefaultDomainName, SkillDefinition> = {
   triathlon: TRIATHLON_SKILL,
   content: CONTENT_SKILL,
   finance: FINANCE_SKILL,
+  cooking: COOKING_SKILL,
 };
 
 // ── Runtime Skill Registry ──────────────────────────────────────

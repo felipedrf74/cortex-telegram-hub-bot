@@ -31,11 +31,12 @@ import { TOOLS } from '../../src/services/anthropic';
 // ═══════════════════════════════════════════════════════════════════
 
 describe('SkillConfig — structure', () => {
-  it('defines skills for all four domains', () => {
+  it('defines skills for all five domains', () => {
     expect(DEFAULT_SKILLS).toHaveProperty('secretary');
     expect(DEFAULT_SKILLS).toHaveProperty('triathlon');
     expect(DEFAULT_SKILLS).toHaveProperty('content');
     expect(DEFAULT_SKILLS).toHaveProperty('finance');
+    expect(DEFAULT_SKILLS).toHaveProperty('cooking');
   });
 
   it('each skill has required fields', () => {
@@ -168,6 +169,7 @@ describe('SkillConfig — content skill', () => {
     expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.triathlon.subSkills.length);
     expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.secretary.subSkills.length);
     expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.finance.subSkills.length);
+    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.cooking.subSkills.length);
   });
 });
 
@@ -181,6 +183,7 @@ describe('SkillConfig — getSkillDefinition()', () => {
     expect(getSkillDefinition('triathlon')!.name).toBe('triathlon');
     expect(getSkillDefinition('content')!.name).toBe('content');
     expect(getSkillDefinition('finance')!.name).toBe('finance');
+    expect(getSkillDefinition('cooking')!.name).toBe('cooking');
   });
 
   it('returns undefined for unknown skills', () => {
@@ -262,20 +265,20 @@ describe('SkillConfig — dynamic skill registration', () => {
     registerSkill(ACCOUNTING_SKILL);
     const names = getRegisteredDomainNames();
     expect(names).toContain('accounting');
-    expect(names).toHaveLength(5);
+    expect(names).toHaveLength(6);
   });
 
   it('registered skill appears in getAllSkillDefinitions', () => {
     registerSkill(ACCOUNTING_SKILL);
     const defs = getAllSkillDefinitions();
-    expect(defs).toHaveLength(5);
+    expect(defs).toHaveLength(6);
     expect(defs.map(d => d.name)).toContain('accounting');
   });
 
   it('registered skill appears in getPatternRoutes', () => {
     registerSkill(ACCOUNTING_SKILL);
     const routes = getPatternRoutes();
-    expect(routes).toHaveLength(5);
+    expect(routes).toHaveLength(6);
     const accounting = routes.find(r => r.domain === 'accounting')!;
     expect(accounting.patterns[0].test('/ledger check')).toBe(true);
   });
@@ -283,7 +286,7 @@ describe('SkillConfig — dynamic skill registration', () => {
   it('registered skill appears in getKeywordRoutes', () => {
     registerSkill(ACCOUNTING_SKILL);
     const routes = getKeywordRoutes();
-    expect(routes).toHaveLength(5);
+    expect(routes).toHaveLength(6);
     const accounting = routes.find(r => r.domain === 'accounting')!;
     expect(accounting.pattern.test('reconcile the ledger')).toBe(true);
     expect(accounting.priority).toBe(0); // non-secretary = high priority
@@ -292,7 +295,7 @@ describe('SkillConfig — dynamic skill registration', () => {
   it('registered skill appears in getClassificationHints', () => {
     registerSkill(ACCOUNTING_SKILL);
     const hints = getClassificationHints();
-    expect(hints).toHaveLength(5);
+    expect(hints).toHaveLength(6);
     expect(hints.map(h => h.label)).toContain('accounting');
   });
 
@@ -324,7 +327,7 @@ describe('SkillConfig — dynamic skill registration', () => {
     const removed = unregisterSkill('accounting');
     expect(removed).toBe(true);
     expect(getSkillDefinition('accounting')).toBeUndefined();
-    expect(getRegisteredDomainNames()).toHaveLength(4);
+    expect(getRegisteredDomainNames()).toHaveLength(5);
   });
 
   it('unregisterSkill returns false for default skills', () => {
@@ -345,9 +348,9 @@ describe('SkillConfig — dynamic skill registration', () => {
 
   it('_resetRegistry restores defaults only', () => {
     registerSkill(ACCOUNTING_SKILL);
-    expect(getRegisteredDomainNames()).toHaveLength(5);
+    expect(getRegisteredDomainNames()).toHaveLength(6);
     _resetRegistry();
-    expect(getRegisteredDomainNames()).toHaveLength(4);
+    expect(getRegisteredDomainNames()).toHaveLength(5);
     expect(getSkillDefinition('accounting')).toBeUndefined();
     expect(getSkillDefinition('secretary')).toBeDefined();
   });

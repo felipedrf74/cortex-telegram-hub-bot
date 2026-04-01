@@ -107,7 +107,7 @@ describe('SkillManager — seedDefaultSkills()', () => {
   });
   afterEach(() => { testDb.close(); });
 
-  it('creates all four domain skills', () => {
+  it('creates all five domain skills', () => {
     seedDefaultSkills();
 
     const skills = registry.getAll();
@@ -116,6 +116,7 @@ describe('SkillManager — seedDefaultSkills()', () => {
     expect(names).toContain('triathlon');
     expect(names).toContain('content');
     expect(names).toContain('finance');
+    expect(names).toContain('cooking');
   });
 
   it('creates submodules for each skill', () => {
@@ -138,7 +139,7 @@ describe('SkillManager — seedDefaultSkills()', () => {
     seedDefaultSkills();
 
     const skills = registry.getAll();
-    expect(skills).toHaveLength(4);
+    expect(skills).toHaveLength(5);
   });
 
   it('preserves user toggles on re-seed', () => {
@@ -170,7 +171,7 @@ describe('SkillManager — seedDefaultSkills()', () => {
   it('all submodules enabled by default', () => {
     seedDefaultSkills();
 
-    for (const domain of ['secretary', 'triathlon', 'content', 'finance'] as const) {
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
       const enabledSubs = registry.getEnabledSubmodules(domain);
       const expectedCount = DEFAULT_SKILLS[domain].subSkills.filter(s => s.enabledByDefault).length;
       expect(enabledSubs.length).toBe(expectedCount);
@@ -384,10 +385,10 @@ describe('SkillManager — getAllSkillStatuses()', () => {
   });
   afterEach(() => { testDb.close(); });
 
-  it('returns status for all four skills', () => {
+  it('returns status for all five skills', () => {
     const statuses = getAllSkillStatuses();
-    expect(statuses).toHaveLength(4);
-    expect(statuses.map(s => s.name)).toEqual(expect.arrayContaining(['secretary', 'triathlon', 'content', 'finance']));
+    expect(statuses).toHaveLength(5);
+    expect(statuses.map(s => s.name)).toEqual(expect.arrayContaining(['secretary', 'triathlon', 'content', 'finance', 'cooking']));
   });
 });
 

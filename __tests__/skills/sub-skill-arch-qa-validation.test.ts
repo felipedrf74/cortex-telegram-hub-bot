@@ -94,19 +94,20 @@ describe('Sub-Skill Architecture — tool name contract', () => {
 });
 
 describe('Sub-Skill Architecture — domain coverage', () => {
-  it('DefaultDomainName type defines exactly 4 domains', () => {
-    expect(domainTypesTs).toContain("'secretary' | 'triathlon' | 'content' | 'finance'");
+  it('DefaultDomainName type defines exactly 5 domains', () => {
+    expect(domainTypesTs).toContain("'secretary' | 'triathlon' | 'content' | 'finance' | 'cooking'");
   });
 
   it('DomainName type is extensible (accepts any string)', () => {
     expect(domainTypesTs).toContain('DefaultDomainName | (string & {})');
   });
 
-  it('DEFAULT_SKILLS has entries for all 4 domains', () => {
+  it('DEFAULT_SKILLS has entries for all 5 domains', () => {
     expect(skillConfigTs).toContain("secretary: SECRETARY_SKILL");
     expect(skillConfigTs).toContain("triathlon: TRIATHLON_SKILL");
     expect(skillConfigTs).toContain("content: CONTENT_SKILL");
     expect(skillConfigTs).toContain("finance: FINANCE_SKILL");
+    expect(skillConfigTs).toContain("cooking: COOKING_SKILL");
   });
 
   it('DEFAULT_SKILLS is typed as Record<DefaultDomainName, SkillDefinition>', () => {
@@ -118,6 +119,7 @@ describe('Sub-Skill Architecture — domain coverage', () => {
     expect(skillConfigTs).toContain("name: 'triathlon'");
     expect(skillConfigTs).toContain("name: 'content'");
     expect(skillConfigTs).toContain("name: 'finance'");
+    expect(skillConfigTs).toContain("name: 'cooking'");
   });
 });
 

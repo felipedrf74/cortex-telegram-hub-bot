@@ -7,6 +7,7 @@ import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
 import * as financeTracker from './finance-tracker';
+import * as cookingChef from './cooking-chef';
 import { logger } from '../utils/logger';
 
 export async function executeToolCall(
@@ -307,6 +308,48 @@ export async function executeToolCall(
         const uid = userId ?? 0;
         const marked = financeTracker.markTaxPaid(uid, input.month);
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
+      }
+
+      // ── Cooking tools ──
+      case 'cooking_add_recipe': {
+        const uid = userId ?? 0;
+        const recipe = cookingChef.addRecipe(uid, input.title, input.ingredients, {
+          instructions: input.instructions, prepTime: input.prep_time_min,
+          cookTime: input.cook_time_min, servings: input.servings, tags: input.tags,
+        });
+        return { success: true, id: recipe.id, title: recipe.title };
+      }
+      case 'cooking_get_recipes': {
+        const uid = userId ?? 0;
+        return cookingChef.getRecipes(uid, { tags: input.tags, search: input.search, limit: input.limit });
+      }
+      case 'cooking_delete_recipe': {
+        const uid = userId ?? 0;
+        return cookingChef.deleteRecipe(uid, input.recipe_id) ? { success: true } : { error: 'Recipe not found' };
+      }
+      case 'cooking_set_meal': {
+        const uid = userId ?? 0;
+        const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
+          recipeId: input.recipe_id, notes: input.notes,
+        });
+        return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
+      }
+      case 'cooking_get_meal_plan': {
+        const uid = userId ?? 0;
+        return cookingChef.getMealPlan(uid, input.start_date, input.end_date);
+      }
+      case 'cooking_delete_meal': {
+        const uid = userId ?? 0;
+        return cookingChef.deleteMealPlan(uid, input.date, input.meal_type) ? { success: true } : { error: 'Meal not found' };
+      }
+      case 'cooking_generate_shopping_list': {
+        const uid = userId ?? 0;
+        return cookingChef.generateShoppingList(uid, input.week_start);
+      }
+      case 'cooking_get_shopping_list': {
+        const uid = userId ?? 0;
+        const list = cookingChef.getShoppingList(uid, input.week_start);
+        return list || { items: [], status: 'not_found' };
       }
 
       default:
