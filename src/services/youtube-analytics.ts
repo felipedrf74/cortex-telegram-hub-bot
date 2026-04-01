@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * YouTube Analytics Service — fetches video stats from YouTube Data API v3.
  *

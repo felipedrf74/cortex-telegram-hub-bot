@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { saveNote, searchNotes } from '../state/notes';
 import { setReminder } from '../state/reminders';
 import { setSharedMemory, removeSharedMemory } from '../state/shared-memory';

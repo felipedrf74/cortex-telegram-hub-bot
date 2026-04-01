@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 

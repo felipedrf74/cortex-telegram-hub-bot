@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Google Drive Service — uploads content DOCX files to a shared Drive folder.
  *

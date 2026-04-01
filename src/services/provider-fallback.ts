@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Provider Fallback — Per-task-type routing with circuit breaker auto-switch.
  *

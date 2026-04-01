@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Voice Evolution Agent — compares AI-generated scripts against
  * actual published video transcripts to learn Felipe's true voice.

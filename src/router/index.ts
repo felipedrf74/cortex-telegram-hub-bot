@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DomainName } from '../domains/types';
 import { patternMatch, keywordMatch, classifyWithClaude, ConversationContext } from './classifier';
 import { logger } from '../utils/logger';

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Transparent wrapper for Anthropic API calls that records usage metrics.
  *

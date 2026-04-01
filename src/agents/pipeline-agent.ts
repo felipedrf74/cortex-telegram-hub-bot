@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Pipeline Tracker Agent — monitors content pipeline stages,
  * detects bottlenecks, and adjusts topic generation pace.

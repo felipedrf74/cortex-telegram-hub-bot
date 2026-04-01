@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { google, calendar_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';

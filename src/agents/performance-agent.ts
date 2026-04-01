@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Performance Intelligence Agent — analyzes Felipe's YouTube channel
  * performance to identify what works and feed back into content creation.

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * SEO Tracking Agent — monitors YouTube keyword rankings,
  * identifies opportunities, and tracks Felipe's search visibility.

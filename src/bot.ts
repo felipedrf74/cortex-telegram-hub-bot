@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import crypto from 'crypto';
 import { storeCallback, getCallback } from './utils/callback-store';
 import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DomainResponse } from './types';
 import { handleSimpleDomain } from './domain-handler';
 

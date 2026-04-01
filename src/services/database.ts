@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';

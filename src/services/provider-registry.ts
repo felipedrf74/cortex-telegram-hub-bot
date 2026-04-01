@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Provider Registry — Manages available AI providers and creates the
  * TaskRoutingProvider based on configuration.
