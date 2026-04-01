@@ -1010,6 +1010,14 @@
         <div class="stat-value" id="inv-last-month">—</div>
         <div class="stat-label">Last Month</div>
       </div>
+      <div class="stat-box">
+        <div class="stat-value" id="inv-nlp-rules">—</div>
+        <div class="stat-label">NLP Rules</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="inv-schedules">—</div>
+        <div class="stat-label">Collectors</div>
+      </div>
     </div>
     <table id="invoices-table">
       <thead><tr><th>Vendor</th><th>Date</th><th>Amount</th><th>Status</th></tr></thead>
@@ -1699,6 +1707,8 @@
     // Invoices
     document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;
     document.getElementById('inv-last-month').textContent = snap.invoices.lastMonth;
+    document.getElementById('inv-nlp-rules').textContent = snap.invoices.nlpRulesActive + '/' + snap.invoices.nlpRulesCount;
+    document.getElementById('inv-schedules').textContent = snap.invoices.scheduledCollectors;
     const invBody = document.querySelector('#invoices-table tbody');
     invBody.innerHTML = snap.invoices.recentFilings.map(f => {
       const cls = f.status === 'filed' ? 'badge-success' : f.status === 'failed' ? 'badge-failed' : 'badge-never';

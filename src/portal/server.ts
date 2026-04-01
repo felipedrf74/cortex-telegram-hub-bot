@@ -108,6 +108,9 @@ interface SnapshotResponse {
     thisMonth: number;
     lastMonth: number;
     recentFilings: { vendor: string; date: string; amount: string | null; status: string }[];
+    nlpRulesCount: number;
+    nlpRulesActive: number;
+    scheduledCollectors: number;
   };
   emailLog: {
     todaySent: number;
@@ -454,6 +457,17 @@ function buildSnapshot(): SnapshotResponse {
     const lastMonth = stmts.lastMonthInvoices.get() as any;
     const recent = stmts.recentFilings.all() as any[];
 
+    // NLP rules and collection schedule counts (graceful — tables may not exist yet)
+    let nlpRulesCount = 0, nlpRulesActive = 0, scheduledCollectors = 0;
+    try {
+      const db = getDb();
+      nlpRulesCount = (db.prepare('SELECT COUNT(*) as c FROM invoice_nlp_rules').get() as any)?.c ?? 0;
+      nlpRulesActive = (db.prepare('SELECT COUNT(*) as c FROM invoice_nlp_rules WHERE enabled = 1').get() as any)?.c ?? 0;
+      scheduledCollectors = (db.prepare('SELECT COUNT(*) as c FROM invoice_collection_schedule WHERE enabled = 1').get() as any)?.c ?? 0;
+    } catch {
+      // tables may not exist yet — use defaults
+    }
+
     invoices = {
       thisMonth: thisMonth.c,
       lastMonth: lastMonth.c,
@@ -463,10 +477,13 @@ function buildSnapshot(): SnapshotResponse {
         amount: r.amount,
         status: r.status,
       })),
+      nlpRulesCount,
+      nlpRulesActive,
+      scheduledCollectors,
     };
   } catch (err) {
     logger.warn({ err }, 'Portal: failed to query invoice_filings');
-    invoices = { thisMonth: 0, lastMonth: 0, recentFilings: [] };
+    invoices = { thisMonth: 0, lastMonth: 0, recentFilings: [], nlpRulesCount: 0, nlpRulesActive: 0, scheduledCollectors: 0 };
   }
 
   // ── Email log from SQLite ───────────────────────────────────────
