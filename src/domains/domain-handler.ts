@@ -7,6 +7,7 @@ import { listTodos } from '../state/todos';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
+import { recordUsage } from '../services/usage-metering';
 import Anthropic from '@anthropic-ai/sdk';
 import type { CoachRecommendation } from '../services/garmin-coach';
 
@@ -110,6 +111,11 @@ export async function handleSimpleDomain(
   let result = await callDomain(domain, history, message, stateContext, maxTokensOverride);
   let finalText = result.text;
 
+  // Accumulate usage across all API calls for this message
+  const defaultUsage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+  let totalTokens = (result.usage ?? defaultUsage).inputTokens + (result.usage ?? defaultUsage).outputTokens;
+  let totalCost = (result.usage ?? defaultUsage).costUsd;
+
   const toolConversation: Anthropic.MessageParam[] = [];
   const toolsUsed: string[] = [];
   let iterations = 0;
@@ -134,6 +140,13 @@ export async function handleSimpleDomain(
     );
     result = await continueWithToolResults(domain, history, message, stateContext, toolConversation);
     finalText = result.text;
+    totalTokens += (result.usage ?? defaultUsage).inputTokens + (result.usage ?? defaultUsage).outputTokens;
+    totalCost += (result.usage ?? defaultUsage).costUsd;
+  }
+
+  // Record usage metering (1 message = 1 user interaction, accumulated tokens/cost)
+  if (userId) {
+    recordUsage(userId, domain, totalTokens, totalCost);
   }
 
   addToConversation(domain, 'user', message);

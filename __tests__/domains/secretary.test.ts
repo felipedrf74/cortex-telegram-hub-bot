@@ -57,6 +57,10 @@ vi.mock('../../src/services/tool-executor', () => ({
   executeToolCall: vi.fn(),
 }));
 
+vi.mock('../../src/services/usage-metering', () => ({
+  recordUsage: vi.fn(),
+}));
+
 vi.mock('../../src/utils/date-parser', () => ({
   now: vi.fn(),
   formatDateTime: vi.fn((d: string) => d),

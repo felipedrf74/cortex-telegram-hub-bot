@@ -131,6 +131,11 @@ interface SnapshotResponse {
     knowledgeCategories: number;
   };
   transcriptStats: { transcripts: number; studies: number };
+  usageMetering: {
+    today: { messages: number; tokens: number; cost: number };
+    last7d: { messages: number; tokens: number; cost: number };
+    last30d: { messages: number; tokens: number; cost: number };
+  };
   domainStatus: {
     domain: string;
     label: string;
@@ -265,6 +270,21 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
       SELECT domain, COUNT(*) as count, MAX(created_at) as last_at
       FROM conversations
       GROUP BY domain`),
+    meteringToday: db.prepare(`
+      SELECT COALESCE(SUM(message_count), 0) as messages,
+             COALESCE(SUM(token_count), 0) as tokens,
+             COALESCE(SUM(cost_usd), 0) as cost
+      FROM usage_metering WHERE date = date('now')`),
+    meteringWeek: db.prepare(`
+      SELECT COALESCE(SUM(message_count), 0) as messages,
+             COALESCE(SUM(token_count), 0) as tokens,
+             COALESCE(SUM(cost_usd), 0) as cost
+      FROM usage_metering WHERE date >= date('now', '-7 days')`),
+    meteringMonth: db.prepare(`
+      SELECT COALESCE(SUM(message_count), 0) as messages,
+             COALESCE(SUM(token_count), 0) as tokens,
+             COALESCE(SUM(cost_usd), 0) as cost
+      FROM usage_metering WHERE date >= date('now', '-30 days')`),
   };
   return _stmts;
 }
@@ -436,6 +456,27 @@ function buildSnapshot(): SnapshotResponse {
       last7d: { calls: 0, cost: 0, tokens: 0 },
       last30d: { calls: 0, cost: 0, tokens: 0 },
       byCategory: [],
+    };
+  }
+
+  // ── Usage metering from SQLite ─────────────────────────────────
+  let usageMetering: SnapshotResponse['usageMetering'];
+  try {
+    const stmts = getStmts();
+    const mToday = stmts.meteringToday.get() as any;
+    const mWeek = stmts.meteringWeek.get() as any;
+    const mMonth = stmts.meteringMonth.get() as any;
+    usageMetering = {
+      today: { messages: mToday.messages, tokens: mToday.tokens, cost: mToday.cost },
+      last7d: { messages: mWeek.messages, tokens: mWeek.tokens, cost: mWeek.cost },
+      last30d: { messages: mMonth.messages, tokens: mMonth.tokens, cost: mMonth.cost },
+    };
+  } catch (err) {
+    logger.warn({ err }, 'Portal: failed to query usage_metering');
+    usageMetering = {
+      today: { messages: 0, tokens: 0, cost: 0 },
+      last7d: { messages: 0, tokens: 0, cost: 0 },
+      last30d: { messages: 0, tokens: 0, cost: 0 },
     };
   }
 
@@ -705,6 +746,7 @@ function buildSnapshot(): SnapshotResponse {
     jobHistory,
     nextRuns,
     apiUsage,
+    usageMetering,
     recentEvents: getRecentEvents(),
     invoices,
     emailLog,
@@ -1199,6 +1241,27 @@ export function createPortalServer(bot: Bot): http.Server {
       }
       cachedSnapshot = null;
       res.json({ ok: true, message: `Sub-skill "${sub}" disabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/usage — usage metering per tenant
+  app.get('/api/usage', (req: Request, res: Response) => {
+    try {
+      const userId = req.query.user_id ? parseInt(String(req.query.user_id), 10) : null;
+      const startDate = String(req.query.start || new Date().toISOString().slice(0, 10));
+      const endDate = String(req.query.end || new Date().toISOString().slice(0, 10));
+
+      if (userId) {
+        const { getUserUsageRange } = require('../services/usage-metering');
+        const usage = getUserUsageRange(userId, startDate, endDate);
+        res.json({ ok: true, usage });
+      } else {
+        const { getDailyTotals } = require('../services/usage-metering');
+        const totals = getDailyTotals(startDate, endDate);
+        res.json({ ok: true, totals });
+      }
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }

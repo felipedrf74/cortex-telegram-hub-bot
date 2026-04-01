@@ -1,9 +1,12 @@
 {
-  "id": "334ad49d-23e7-810a-89db-cecc81e25168",
-  "title": "Skill database migrations",
-  "description": "Create migration for: installed_skills (id PK, version, enabled, config JSON), skill_submodules (skill_id, submodule_id, enabled, config), skill_credentials (encrypted), skill_migrations tracking table.",
-  "priority": "\ud83d\udfe0 High",
-  "phase": "Phase 1 \u2014 Private Beta",
-  "tags": [],
-  "originAgent": "devops"
+  "id": "334ad49d-23e7-81cc-aef3-ffca8f3040d2",
+  "title": "Refactor Secretary domain → skill package",
+  "description": "Migrate Secretary domain to skill package with GRANULAR SUB-SKILLS. Each feature becomes a toggleable sub-skill: calendar, tasks, reminders, email, briefings, invoices. Use manifest v2 format from ARCH spec (task 335ad49d-23e7-818f). Create src/skills/secretary/manifest.json with subSkills array. Each sub-skill registers its own cron jobs + tools. Disabled sub-skills unregister their crons/tools. Zero behavior change when all sub-skills enabled. Update portal.html with secretary sub-skill cards.",
+  "priority": "🔴 Critical",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [
+    "code"
+  ],
+  "originAgent": "flex",
+  "queuedAt": "2026-04-01T18:53:57.952Z"
 }
