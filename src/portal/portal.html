@@ -275,6 +275,123 @@
   .domain-detail-chip.ok { background: rgba(0,184,148,.1); color: var(--green); }
   .domain-detail-chip.warn { background: rgba(225,112,85,.1); color: var(--red); }
 
+  /* ── Skill Toggle Switch ──────────────────── */
+  .toggle-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--border);
+    border-radius: 20px;
+    transition: background .2s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--text2);
+    border-radius: 50%;
+    transition: transform .2s, background .2s;
+  }
+
+  .toggle-switch input:checked + .toggle-slider {
+    background: var(--green);
+  }
+
+  .toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(16px);
+    background: #fff;
+  }
+
+  .toggle-switch input:disabled + .toggle-slider {
+    opacity: .4;
+    cursor: not-allowed;
+  }
+
+  /* ── Skill Cards ────────────────────────── */
+  .skill-card {
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 16px;
+    border-left: 4px solid var(--accent);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .skill-card.disabled {
+    opacity: .55;
+  }
+
+  .skill-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .skill-card-header h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .skill-card-desc {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 2px;
+  }
+
+  .skill-submodules {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .submodule-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(139,143,163,.06);
+    font-size: 12px;
+  }
+
+  .submodule-row .sub-name {
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .submodule-row .sub-desc {
+    color: var(--text2);
+    margin-left: 6px;
+    font-weight: 400;
+  }
+
+  .submodule-row .sub-tools {
+    font-size: 11px;
+    color: var(--text2);
+    margin-left: auto;
+    margin-right: 10px;
+  }
+
   /* ── Daily Timeline ─────────────────────── */
   .timeline-wrap {
     position: relative;
@@ -777,6 +894,49 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="domain-handlers"></div>
   </div>
 
+  <!-- ── Skill Management ──────────────────── -->
+  <div class="card card-full">
+    <h2>🔧 Skill Management</h2>
+    <p style="font-size:12px;color:var(--text2);margin:4px 0 12px">Enable or disable skills and sub-modules per domain. Changes take effect immediately.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px" id="skill-panel"></div>
+  </div>
+
+  <!-- ── Error Monitoring ──────────────────── -->
+  <div class="card">
+    <h2>🚨 Error Monitor</h2>
+    <div class="stats-grid" id="error-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="err-today">—</div>
+        <div class="stat-label">Today</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="err-7d">—</div>
+        <div class="stat-label">Last 7 Days</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="err-30d">—</div>
+        <div class="stat-label">Last 30 Days</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px">
+        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Source (7d)</h4>
+        <div id="err-by-source" style="font-size:12px"></div>
+      </div>
+      <div style="flex:1;min-width:140px">
+        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Level (7d)</h4>
+        <div id="err-by-level" style="font-size:12px"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">Recent Errors</h4>
+      <table style="font-size:11px" id="err-recent">
+        <thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ── API Usage ─────────────────────────── -->
   <div class="card">
     <h2>📊 API Usage</h2>
@@ -849,6 +1009,14 @@
       <div class="stat-box">
         <div class="stat-value" id="inv-last-month">—</div>
         <div class="stat-label">Last Month</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="inv-nlp-rules">—</div>
+        <div class="stat-label">NLP Rules</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="inv-schedules">—</div>
+        <div class="stat-label">Collectors</div>
       </div>
     </div>
     <table id="invoices-table">
@@ -1539,6 +1707,8 @@
     // Invoices
     document.getElementById('inv-this-month').textContent = snap.invoices.thisMonth;
     document.getElementById('inv-last-month').textContent = snap.invoices.lastMonth;
+    document.getElementById('inv-nlp-rules').textContent = snap.invoices.nlpRulesActive + '/' + snap.invoices.nlpRulesCount;
+    document.getElementById('inv-schedules').textContent = snap.invoices.scheduledCollectors;
     const invBody = document.querySelector('#invoices-table tbody');
     invBody.innerHTML = snap.invoices.recentFilings.map(f => {
       const cls = f.status === 'filed' ? 'badge-success' : f.status === 'failed' ? 'badge-failed' : 'badge-never';
@@ -1977,6 +2147,140 @@
       showToast('Dismiss failed: ' + err.message, false);
     }
   };
+
+  // ── Skill Management ─────────────────────────
+  const SKILL_ICONS = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+  const SKILL_COLORS = { secretary: '#6c5ce7', triathlon: '#00b894', content: '#fdcb6e' };
+
+  async function loadSkills() {
+    try {
+      const res = await apiFetch('/api/skills').then(r => r.json());
+      if (!res.ok) return;
+      renderSkills(res.skills);
+    } catch (err) {
+      console.warn('Skill load failed:', err);
+    }
+  }
+
+  function renderSkills(skills) {
+    const panel = document.getElementById('skill-panel');
+    if (!panel) return;
+
+    panel.innerHTML = skills.map(skill => {
+      const icon = SKILL_ICONS[skill.name] || '⚙️';
+      const color = SKILL_COLORS[skill.name] || 'var(--accent)';
+      const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
+      const enabledTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
+      const disabledClass = skill.enabled ? '' : ' disabled';
+
+      const subRows = skill.subSkills.map(sub => {
+        const subDisabled = !skill.enabled;
+        return `<div class="submodule-row">
+          <span>
+            <span class="sub-name">${esc(sub.name)}</span>
+            <span class="sub-desc">${esc(sub.description)}</span>
+          </span>
+          <span class="sub-tools">${sub.toolCount} tool${sub.toolCount !== 1 ? 's' : ''}</span>
+          <label class="toggle-switch">
+            <input type="checkbox" ${sub.enabled ? 'checked' : ''} ${subDisabled ? 'disabled' : ''}
+              onchange="toggleSubSkill('${skill.name}', '${sub.name}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>`;
+      }).join('');
+
+      return `<div class="skill-card${disabledClass}" style="border-left-color:${color}" id="skill-${skill.name}">
+        <div class="skill-card-header">
+          <div>
+            <h3>${icon} ${esc(skill.name)}</h3>
+            <div class="skill-card-desc">${esc(skill.description)} — ${enabledTools}/${totalTools} tools active</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" ${skill.enabled ? 'checked' : ''}
+              onchange="toggleSkill('${skill.name}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="skill-submodules">${subRows}</div>
+      </div>`;
+    }).join('');
+  }
+
+  window.toggleSkill = async function(name, enabled) {
+    try {
+      const action = enabled ? 'enable' : 'disable';
+      const res = await apiFetch(`/api/skills/${name}/${action}`, { method: 'POST' }).then(r => r.json());
+      if (!res.ok) { showToast(res.message, false); return; }
+      showToast(`Skill "${name}" ${action}d`, true);
+      await loadSkills();
+    } catch (err) {
+      showToast('Skill toggle failed: ' + err.message, false);
+      await loadSkills();
+    }
+  };
+
+  window.toggleSubSkill = async function(skill, sub, enabled) {
+    try {
+      const action = enabled ? 'enable' : 'disable';
+      const res = await apiFetch(`/api/skills/${skill}/subskills/${sub}/${action}`, { method: 'POST' }).then(r => r.json());
+      if (!res.ok) { showToast(res.message, false); return; }
+      showToast(`Sub-skill "${sub}" ${action}d`, true);
+      await loadSkills();
+    } catch (err) {
+      showToast('Sub-skill toggle failed: ' + err.message, false);
+      await loadSkills();
+    }
+  };
+
+  // Initial load + periodic refresh
+  loadSkills();
+  setInterval(loadSkills, 30_000);
+
+  // ── Error Monitoring ─────────────────────────
+  async function loadErrors() {
+    try {
+      const res = await apiFetch('/api/errors').then(r => r.json());
+      if (!res.ok) return;
+
+      document.getElementById('err-today').textContent = res.today;
+      document.getElementById('err-7d').textContent = res.last7d;
+      document.getElementById('err-30d').textContent = res.last30d;
+
+      // Color the today count
+      const todayEl = document.getElementById('err-today');
+      todayEl.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
+
+      // By source
+      const srcEl = document.getElementById('err-by-source');
+      srcEl.innerHTML = (res.bySource || []).map(s =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span class="mono">${esc(s.source)}</span><span class="val">${s.count}</span></div>`
+      ).join('') || '<span class="text-muted">No errors</span>';
+
+      // By level
+      const lvlEl = document.getElementById('err-by-level');
+      const lvlColors = { fatal: 'var(--red)', error: 'var(--orange)', warning: 'var(--yellow)' };
+      lvlEl.innerHTML = (res.byLevel || []).map(l =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:${lvlColors[l.level] || 'var(--text)'}">${esc(l.level)}</span><span class="val">${l.count}</span></div>`
+      ).join('') || '<span class="text-muted">No errors</span>';
+
+      // Recent errors table
+      const tbody = document.querySelector('#err-recent tbody');
+      tbody.innerHTML = (res.recent || []).slice(0, 10).map(e => {
+        const lvlColor = lvlColors[e.level] || 'var(--text)';
+        return `<tr>
+          <td class="mono">${shortTime(e.ts)}</td>
+          <td style="color:${lvlColor}">${esc(e.level)}</td>
+          <td class="mono">${esc(e.source)}</td>
+          <td title="${esc(e.message)}">${esc(e.message.slice(0, 80))}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="4" class="text-muted">No recent errors ✅</td></tr>';
+    } catch (err) {
+      console.warn('Error monitor poll failed:', err);
+    }
+  }
+
+  loadErrors();
+  setInterval(loadErrors, 30_000);
 
   // Poll mission control alongside main poll
   pollMissionControl();

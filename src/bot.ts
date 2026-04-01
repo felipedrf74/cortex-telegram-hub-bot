@@ -73,6 +73,7 @@ import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePubl
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
 import { handleAutoresearch, handleEvalScore } from './commands/autoresearch';
+import { getAllSkillStatuses, type SkillStatus } from './skills/skill-manager';
 import fs from 'fs';
 import path from 'path';
 
@@ -3130,6 +3131,89 @@ export function createBot(): Bot {
     await ctx.reply('😄 Stickers are fun, but I can only process text and photos!');
   });
 
+  // ── Skill Management Commands ──
+
+  bot.command('skills', async (ctx) => {
+    const skills = getAllSkillStatuses();
+    if (skills.length === 0) {
+      await ctx.reply(
+        '<b>🔧 Skills</b>\n\n' +
+        'No skills installed yet.\n\n' +
+        'Skills are domain modules that give me capabilities like task management, ' +
+        'calendar access, email, and more. They are installed automatically when the bot starts.\n\n' +
+        'Try restarting the bot or check the <b>Status Portal</b> at port 8200.',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const SKILL_ICONS: Record<string, string> = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+    const lines: string[] = ['<b>🔧 Installed Skills</b>', ''];
+
+    for (const skill of skills) {
+      const icon = SKILL_ICONS[skill.name] || '📦';
+      const status = skill.enabled ? '✅ Enabled' : '❌ Disabled';
+      const activeSubs = skill.subSkills.filter(s => s.enabled).length;
+      const totalSubs = skill.subSkills.length;
+      const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
+      const activeTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
+
+      lines.push(`${icon} <b>${escapeHtml(skill.name)}</b> — ${status}`);
+      lines.push(`   ${escapeHtml(skill.description)}`);
+      lines.push(`   Sub-modules: ${activeSubs}/${totalSubs} active · Tools: ${activeTools}/${totalTools}`);
+      lines.push('');
+    }
+
+    lines.push('Use /skill &lt;name&gt; for detail view.');
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  });
+
+  bot.command('skill', async (ctx) => {
+    const name = ctx.match?.trim().toLowerCase();
+    if (!name) {
+      await ctx.reply('Usage: /skill &lt;name&gt;\nExample: /skill secretary', { parse_mode: 'HTML' });
+      return;
+    }
+
+    const allStatuses = getAllSkillStatuses();
+    const skill = allStatuses.find(s => s.name === name);
+    if (!skill) {
+      const available = allStatuses.map(s => s.name).join(', ');
+      await ctx.reply(
+        `Unknown skill "<b>${escapeHtml(name)}</b>".\n\nAvailable skills: ${available}`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const SKILL_ICONS: Record<string, string> = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+    const icon = SKILL_ICONS[skill.name] || '📦';
+    const status = skill.enabled ? '✅ Enabled' : '❌ Disabled';
+
+    const lines: string[] = [
+      `${icon} <b>${escapeHtml(skill.name)}</b> — ${status}`,
+      escapeHtml(skill.description),
+      '',
+      '<b>Sub-modules:</b>',
+    ];
+
+    for (const sub of skill.subSkills) {
+      const subStatus = sub.enabled ? '🟢' : '🔴';
+      lines.push(`  ${subStatus} <b>${escapeHtml(sub.name)}</b> — ${escapeHtml(sub.description)} (${sub.toolCount} tools)`);
+    }
+
+    const activeSubs = skill.subSkills.filter(s => s.enabled).length;
+    const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
+    const activeTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
+
+    lines.push('');
+    lines.push(`<b>Summary:</b> ${activeSubs}/${skill.subSkills.length} sub-modules active, ${activeTools}/${totalTools} tools available`);
+    lines.push('');
+    lines.push('Toggle sub-modules from the <b>Status Portal</b> at port 8200.');
+
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  });
+
   // ── Catch-all: Route to domain ──
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
@@ -4062,6 +4146,8 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 <b>🔧 SYSTEM</b>
 /help — This menu
 /status — Current state overview
+/skills — List installed skills
+/skill [name] — Skill detail view
 /clear [domain] — Clear conversation history
 /garminmfa [code] — Submit Garmin MFA code
 

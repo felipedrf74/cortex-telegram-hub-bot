@@ -89,6 +89,8 @@ export function startScheduler(bot: Bot): void {
   registerJob('garmin_keepalive',   'Garmin Keep-Alive',     '*/30 * * * *',    'triathlon');
   registerJob('garmin_coach',       'Garmin Coach',          coachCron,         'triathlon');
   registerJob('invoice_queue',      'Invoice Queue Flush',   '*/15 * * * *',    'invoices');
+  registerJob('invoice_nlp_rules', 'Invoice NLP Rules',     '0 */6 * * *',     'invoices');
+  registerJob('invoice_schedules', 'Invoice Schedules',     '*/10 * * * *',    'invoices');
   registerJob('channel_relearn',   'Channel Re-Learn',      '0 3 * * 0',       'content');
   registerJob('tuesday_reels',     'Tuesday Reel Topics',   '0 9 * * 2',       'content');
   registerJob('thursday_youtube',  'Thursday YT Topic',     '0 9 * * 4',       'content');
@@ -459,6 +461,40 @@ export function startScheduler(bot: Bot): void {
           logger.error({ err, userId }, 'Failed to send invoice queue flush notification');
         }
       }
+    }
+  }), { timezone: tz });
+
+  // ── Invoice NLP rules evaluation (every 6 hours) ───────────────────
+  // Scans unmatched queued invoices against user-defined NLP rules.
+  // Placeholder: feature agent will implement the actual NLP matching logic.
+  cron.schedule('0 */6 * * *', wrapJob('invoice_nlp_rules', async () => {
+    if (!isInvoiceFilingConfigured()) return;
+    try {
+      const db = (await import('./database')).getDb();
+      const rulesCount = (db.prepare('SELECT COUNT(*) as c FROM invoice_nlp_rules WHERE enabled = 1').get() as any)?.c ?? 0;
+      if (rulesCount === 0) return; // no rules configured — skip
+      logger.info({ rulesCount }, 'Invoice NLP rules evaluation — rules ready (awaiting feature implementation)');
+    } catch {
+      // table may not exist yet — skip silently
+    }
+  }), { timezone: tz });
+
+  // ── Invoice dynamic schedule checker (every 10 min) ────────────────
+  // Checks invoice_collection_schedule for due collection tasks.
+  // Placeholder: feature agent will implement the dynamic collector dispatch.
+  cron.schedule('*/10 * * * *', wrapJob('invoice_schedules', async () => {
+    if (!isInvoiceFilingConfigured()) return;
+    try {
+      const db = (await import('./database')).getDb();
+      const dueCount = (db.prepare(
+        `SELECT COUNT(*) as c FROM invoice_collection_schedule
+         WHERE enabled = 1
+           AND (next_run_at IS NULL OR next_run_at <= datetime('now'))`
+      ).get() as any)?.c ?? 0;
+      if (dueCount === 0) return; // nothing due — skip
+      logger.info({ dueCount }, 'Invoice schedules — due tasks found (awaiting feature implementation)');
+    } catch {
+      // table may not exist yet — skip silently
     }
   }), { timezone: tz });
 
