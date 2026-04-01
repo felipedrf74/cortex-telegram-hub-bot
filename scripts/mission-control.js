@@ -28,6 +28,12 @@ const QA_QUEUE_DIR = path.join(WORKTREES, 'qa', '.qa-queue');
 const AGENT_MAP = {
   '🔧 Backend': 'backend', '🧪 QA': 'qa', '⚙️ DevOps': 'devops',
   '🔒 Security': 'flex', '♻️ Refactor': 'flex', '🏗️ Architect': 'backend',
+  '🎨 Frontend': 'frontend', '🧪 QA2': 'qa2',
+};
+// QA routing: which QA agent validates which agent's work
+const QA_ROUTING = {
+  'backend': 'qa', 'frontend': 'qa',      // QA-1 validates code-heavy agents
+  'devops': 'qa2', 'flex': 'qa2',          // QA-2 validates infra/config agents
 };
 
 async function autoAssignAll() {
@@ -158,7 +164,7 @@ function agentStatus() {
     }
   } catch {}
 
-  return ['backend','qa','devops','flex'].map(name => {
+  return ['backend','qa','devops','flex','frontend','qa2'].map(name => {
     let task = null, hasPrompt = false, running = false, pid = null;
     try { task = JSON.parse(fs.readFileSync(path.join(WORKTREES, name, '.agent-task.json'), 'utf8')); } catch {}
     try { hasPrompt = fs.existsSync(path.join(WORKTREES, name, '.agent-prompt.md')); } catch {}
@@ -173,11 +179,11 @@ function agentStatus() {
     else if (task) status = 'has-task';
     else if (hasPrompt) status = 'has-prompt';
     
-    // QA queue count
+    // QA queue count (both qa and qa2 have queues)
     let queueCount = 0;
-    if (name === 'qa') {
+    if (name === 'qa' || name === 'qa2') {
       try {
-        const qd = path.join(WORKTREES, 'qa', '.qa-queue');
+        const qd = path.join(WORKTREES, name, '.qa-queue');
         if (fs.existsSync(qd)) queueCount = fs.readdirSync(qd).filter(f => f.endsWith('.json')).length;
       } catch {}
     }
@@ -201,7 +207,7 @@ async function handleAPI(req, res) {
     if (route === 'auto-assign') { const results = await autoAssignAll(); return send(res, { ok: true, assigned: results, msg: results.length ? `Auto-assigned ${results.length} agent(s)` : 'All agents busy or no tasks' }); }
     if (route === 'clear-stale') { await run(`rm -f "${WORKTREES}"/*/.agent-task.json "${WORKTREES}"/*/.agent-prompt.md`); return send(res, {ok:true,output:'Stale files cleared'}); }
     if (route === 'agent-done') { const b = await readBody(req); return send(res, await run(`node "${SCRIPT('agent-complete.js')}" --agent ${b.agent} --summary "${(b.summary||'done').replace(/"/g,'\\\\"')}"`)); }
-    if (route === 'merge-develop') return send(res, await run('git fetch origin && git checkout develop && git pull origin develop && git merge origin/agent/backend --no-edit 2>/dev/null; git merge origin/agent/qa --no-edit 2>/dev/null; git merge origin/agent/devops --no-edit 2>/dev/null; git merge origin/agent/flex --no-edit 2>/dev/null; npx vitest run 2>&1 | tail -5 && git push origin develop && git checkout main'));
+    if (route === 'merge-develop') return send(res, await run('git fetch origin && git checkout develop && git pull origin develop && git merge origin/agent/backend --no-edit 2>/dev/null; git merge origin/agent/qa --no-edit 2>/dev/null; git merge origin/agent/devops --no-edit 2>/dev/null; git merge origin/agent/flex --no-edit 2>/dev/null; git merge origin/agent/frontend --no-edit 2>/dev/null; git merge origin/agent/qa2 --no-edit 2>/dev/null; npx vitest run 2>&1 | tail -5 && git push origin develop && git checkout main'));
     if (route === 'merge-main') return send(res, await run('git fetch origin && git checkout main && git pull origin main && git merge origin/develop --no-edit && npx vitest run 2>&1 | tail -5 && git-cliff --output CHANGELOG.md && git add CHANGELOG.md && git diff --cached --quiet CHANGELOG.md 2>/dev/null || git commit -m "docs: update changelog [skip ci]" && git push origin main && echo "\\n📝 CHANGELOG.md updated"'));
     if (route === 'deploy') return send(res, await run(`./scripts/deploy.sh`));
     if (route === 'git-status') return send(res, await run('git fetch --all 2>/dev/null; echo "=== Branch ===" && git branch --show-current && echo "=== Status ===" && git status --short && echo "=== Recent ===" && git log --oneline -8'));
@@ -433,8 +439,8 @@ const PAGE2 = `<script>
 let T=[],AG=[],L=[],TAB='board';
 const S=['Backlog','To Do','In Progress','Review','QA Validating','Done'];
 const SC={Backlog:'#555d75','To Do':'#4a9eff','In Progress':'#f5a623',Review:'#b07cf5','QA Validating':'#ff8533',Done:'#2dd4a0'};
-const AC={'🔧 Backend':'#4a9eff','🧪 QA':'#2dd4a0','⚙️ DevOps':'#f5a623','🔒 Security':'#f25757','♻️ Refactor':'#b07cf5','🏗️ Architect':'#f06'};
-const AI={backend:{e:'🔧',n:'Backend',c:'#4a9eff',r:'Features, services, handlers'},qa:{e:'🧪',n:'QA',c:'#2dd4a0',r:'Validates other agents work'},devops:{e:'⚙️',n:'DevOps',c:'#f5a623',r:'CI/CD, infra, migrations'},flex:{e:'🔒/♻️',n:'Flex',c:'#b07cf5',r:'Security or Refactor'}};
+const AC={'🔧 Backend':'#4a9eff','🧪 QA':'#2dd4a0','⚙️ DevOps':'#f5a623','🔒 Security':'#f25757','♻️ Refactor':'#b07cf5','🏗️ Architect':'#f06','🎨 Frontend':'#f06','🧪 QA2':'#20c9b0'};
+const AI={backend:{e:'🔧',n:'Backend',c:'#4a9eff',r:'Features, services, handlers'},qa:{e:'🧪',n:'QA',c:'#2dd4a0',r:'Validates Backend + Frontend'},devops:{e:'⚙️',n:'DevOps',c:'#f5a623',r:'CI/CD, infra, migrations'},flex:{e:'🔒/♻️',n:'Flex',c:'#b07cf5',r:'Security or Refactor'},frontend:{e:'🎨',n:'Frontend',c:'#f06',r:'UI/UX, portal, dashboard, templates'},qa2:{e:'🧪',n:'QA2',c:'#20c9b0',r:'Validates DevOps + Flex'}};
 
 function log(m,t='info'){L.push({time:new Date().toLocaleTimeString(),m,t});if(L.length>60)L=L.slice(-60);rlog()}
 function rlog(){document.getElementById('log').innerHTML=L.map(l=>'<div style="color:'+({error:'#f25757',success:'#2dd4a0',warn:'#f5a623'}[l.t]||'#8e95ab')+'"><span style="opacity:.4">'+l.time+'</span> '+l.m+'</div>').join('');document.getElementById('log').scrollTop=9999}

@@ -189,8 +189,9 @@ function assignTaskToAgent(task, agentDir) {
   const promptFile = path.join(WORKTREE_BASE, agentDir, '.agent-prompt.md');
 
   const isBugAgent = agentDir === 'flex' && (task.agent === '♻️ Refactor' || task.agent === '🔒 Security');
-  const isTestAgent = agentDir === 'qa';
+  const isTestAgent = agentDir === 'qa' || agentDir === 'qa2';
   const isDevOps = agentDir === 'devops';
+  const isFrontend = agentDir === 'frontend';
 
   let prompt;
   if (isBugAgent) {
@@ -286,6 +287,44 @@ ${task.id}
 - Do NOT modify feature code or domain handlers
 - Do NOT merge to develop or main
 ${REVIEW_HANDOFF}`;
+  } else if (isFrontend) {
+    prompt = `# 🎨 Frontend Agent Task
+
+## Task: ${task.title}
+**Priority:** ${task.priority}
+**Phase:** ${task.phase}
+**Tags:** ${task.tags.join(', ')}
+
+## Description
+${task.description}
+
+## Instructions
+1. Read CLAUDE.md for project context and your role as Frontend Agent
+2. You specialize in: portal.html, landing page, dashboard, Telegram HTML templates, chart generation, CSS/HTML/React
+3. Your primary files: \`src/portal/portal.html\`, \`src/templates/\`, any \`.html\`, \`.css\`, \`.jsx\` files
+4. For Telegram message templates: use ONLY supported HTML tags (<b>, <i>, <u>, <code>, <pre>, <a>, <blockquote>)
+5. For charts/images: use chartjs-node-canvas to render server-side PNG
+6. Run: \`npx vitest run\` and \`npx tsc --noEmit\`
+7. Commit: \`git commit -m "feat(ui): ${task.title.toLowerCase().substring(0, 50)}"\`
+8. Push: \`git push origin $(git branch --show-current)\`
+9. Run auto-chain:
+\`\`\`bash
+AGENT_DIR=$(basename "$(pwd)")
+node ~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "describe what you built"
+\`\`\`
+
+## Notion Task ID
+${task.id}
+
+## Rules
+- Focus on UI/UX quality: clean design, mobile-responsive, dark mode compatible
+- Follow the existing portal design system (CSS variables: --bg, --bg2, --t1, --t2, --blue, --green, etc.)
+- For portal changes: update src/portal/portal.html directly
+- Always escape user data with escapeHtml() in Telegram messages
+- Telegram message limit: 4096 chars — auto-split if needed
+- Do NOT modify backend services, database, or domain handlers
+- Do NOT merge to develop or main
+${REVIEW_HANDOFF}`;
   } else {
     prompt = `# ⚡ Feature Agent Task
 
@@ -346,6 +385,8 @@ function matchTaskToAgent(task, agents) {
     '🔒 Security': 'flex',
     '♻️ Refactor': 'flex',
     '🏗️ Architect': 'backend',  // Architect tasks go to Backend for implementation
+    '🎨 Frontend': 'frontend',
+    '🧪 QA2': 'qa2',
   };
 
   const targetDir = AGENT_MAP[agentTag];
