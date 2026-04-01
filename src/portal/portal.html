@@ -69,6 +69,7 @@
   .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
   .dot-yellow { background: var(--yellow); }
+  .dot-blue { background: var(--blue); }
 
   /* ── Health Summary Bar ───────────────── */
   .health-bar {
@@ -884,6 +885,12 @@
     </table>
   </div>
 
+  <!-- ── Adapter Status ──────────────────────── -->
+  <div class="card">
+    <h2>📡 Adapter Status</h2>
+    <div id="adapter-status"></div>
+  </div>
+
   <!-- ── Integration Health ──────────────────── -->
   <div class="card">
     <h2>🔗 Integration Health</h2>
@@ -1403,6 +1410,50 @@
     grid.innerHTML = html;
   }
 
+  // ── Adapter Status rendering ─────────────────
+  const ADAPTER_STATUS_COLORS = {
+    connected: 'dot-green',
+    idle: 'dot-yellow',
+    planned: 'dot-blue',
+    error: 'dot-red',
+  };
+  const ADAPTER_STATUS_LABELS = {
+    connected: 'Connected',
+    idle: 'Idle',
+    planned: 'Planned',
+    error: 'Disconnected',
+  };
+
+  function renderAdapterStatus(adapters) {
+    const container = document.getElementById('adapter-status');
+    if (!container || !adapters) return;
+
+    let html = '';
+    for (const a of adapters) {
+      const dotCls = ADAPTER_STATUS_COLORS[a.status] || 'dot-red';
+      const label = ADAPTER_STATUS_LABELS[a.status] || a.status;
+      const lastMsg = a.lastMessageAt ? relativeTime(a.lastMessageAt) : '—';
+
+      html += `<div class="int-row" style="padding:10px 0;border-bottom:1px solid var(--border)">`;
+      html += `  <div class="int-left" style="display:flex;align-items:center;gap:10px">`;
+      html += `    <span class="status-dot ${dotCls}"></span>`;
+      html += `    <span style="font-weight:600">${esc(a.name)}</span>`;
+      html += `    <span class="badge ${a.status === 'connected' ? 'badge-success' : a.status === 'idle' ? 'badge-running' : a.status === 'planned' ? 'badge-never' : 'badge-failed'}">${label}</span>`;
+      html += `  </div>`;
+      html += `  <div class="int-right" style="display:flex;align-items:center;gap:12px">`;
+      if (a.configured && a.lastMessageAt) {
+        html += `<span title="Last message" style="font-size:12px;color:var(--muted)">🕐 ${lastMsg}</span>`;
+      }
+      if (!a.configured) {
+        html += `<span style="font-size:11px;color:var(--muted);font-style:italic">Not configured</span>`;
+      }
+      html += `  </div>`;
+      html += `</div>`;
+    }
+
+    container.innerHTML = html || '<div class="text-muted">No adapters configured</div>';
+  }
+
   // ── Integration Health rendering ────────────
   const GROUP_ICONS = { google: '🔵', microsoft: '🟠', garmin: '🟢', system: '⚙️' };
   const GROUP_LABELS = { google: 'Google (OAuth 2.0)', microsoft: 'Microsoft (MSAL)', garmin: 'Garmin (Session)', system: 'System' };
@@ -1614,6 +1665,9 @@
         </tr>`;
       }).join('') || '<tr><td colspan="4" class="text-muted">No emails sent yet</td></tr>';
     }
+
+    // Adapter Status
+    renderAdapterStatus(snap.adapters);
 
     // Integration Health
     renderIntegrationHealth(snap.integrations);
