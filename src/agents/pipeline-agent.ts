@@ -8,6 +8,7 @@
  */
 
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 
@@ -122,9 +123,14 @@ export function createPipelineEntry(
 export async function runPipelineAgent(): Promise<void> {
   const start = Date.now();
   let signalsProduced = 0;
+  let signalsConsumed = 0;
 
   try {
     const stats = getPipelineStats();
+
+    // Cross-agent learning: consume keyword + hook signals to prioritize pipeline items
+    const peerContext = buildAgentContext('pipeline-agent');
+    signalsConsumed += peerContext.signalsConsumed;
 
     // Check for sprint mode
     const sprintSignals = readSignals('pipeline-agent', ['content_sprint_mode'], 1);
@@ -157,10 +163,10 @@ export async function runPipelineAgent(): Promise<void> {
       signalsProduced++;
     }
 
-    logAgentRun('pipeline-agent', 'success', signalsProduced, 0, Date.now() - start);
+    logAgentRun('pipeline-agent', 'success', signalsProduced, signalsConsumed, Date.now() - start);
     logger.info({ stats, signalsProduced }, 'Pipeline agent completed');
   } catch (err: any) {
-    logAgentRun('pipeline-agent', 'error', signalsProduced, 0, Date.now() - start, err.message);
+    logAgentRun('pipeline-agent', 'error', signalsProduced, signalsConsumed, Date.now() - start, err.message);
     logger.error({ err }, 'Pipeline agent failed');
     throw err;
   }

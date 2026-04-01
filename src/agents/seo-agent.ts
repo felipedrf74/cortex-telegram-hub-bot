@@ -6,11 +6,12 @@
  *
  * Schedule: Weekly, Monday 06:00
  *
- * Consumes: pillar_performance, channel_dna
+ * Consumes: pillar_performance, channel_dna, retention_pattern (cross-agent), hook_effectiveness (cross-agent)
  * Produces: keyword_rank_change, keyword_opportunity
  */
 
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -288,6 +289,20 @@ export async function runSEOAgent(): Promise<void> {
       // Rate limit: 2s between API calls
       if (i < keywords.length - 1) {
         await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+
+    // Cross-agent learning: consume peer signals (retention, hooks, formulas)
+    const peerContext = buildAgentContext('seo-agent');
+    signalsConsumed += peerContext.signalsConsumed;
+
+    // Use retention insights to prioritize keywords that retain viewers
+    for (const ri of peerContext.retentionInsights) {
+      if (ri.avgRetention > 0.6 && ri.pattern) {
+        opportunities.push({
+          keyword: ri.pattern,
+          reason: `High retention pattern (${(ri.avgRetention * 100).toFixed(0)}%) — optimize for this`,
+        });
       }
     }
 
