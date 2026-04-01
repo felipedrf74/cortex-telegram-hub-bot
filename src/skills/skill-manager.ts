@@ -147,8 +147,8 @@ function getEnabledToolNames(domain: DomainName): Set<string> {
   const skillDef = getSkillDefinition(domain);
   const skill = registry.getByName(domain);
 
-  // If skill not in DB or disabled, return empty set (no tools)
-  if (!skill || !skill.enabled) {
+  // If skill not in DB or disabled, or no skill definition, return empty set
+  if (!skill || !skill.enabled || !skillDef) {
     return new Set();
   }
 
@@ -219,10 +219,10 @@ export function getSkillStatus(domain: DomainName): SkillStatus {
   const enabledSubs = new Set(registry.getEnabledSubmodules(domain));
 
   return {
-    name: def.name,
-    description: def.description,
+    name: def?.name ?? domain,
+    description: def?.description ?? '',
     enabled: skill?.enabled === 1,
-    subSkills: def.subSkills.map(sub => ({
+    subSkills: (def?.subSkills ?? []).map(sub => ({
       name: sub.name,
       description: sub.description,
       enabled: enabledSubs.has(sub.name),

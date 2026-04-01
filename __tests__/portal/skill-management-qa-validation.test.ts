@@ -144,10 +144,11 @@ describe('Skill Management QA Validation', () => {
   // ── Boundary: all disabled ────────────────────────────────────
 
   describe('boundary: all skills disabled', () => {
-    it('can disable all three domain skills simultaneously', () => {
+    it('can disable all four domain skills simultaneously', () => {
       disableSkill('secretary');
       disableSkill('triathlon');
       disableSkill('content');
+      disableSkill('finance');
 
       const skills = getAllSkillStatuses();
       for (const skill of skills) {
@@ -359,7 +360,7 @@ describe('Skill Management QA Validation', () => {
     it('calling seedDefaultSkills twice does not duplicate skills', () => {
       seedDefaultSkills(); // second call
       const skills = getAllSkillStatuses();
-      expect(skills).toHaveLength(3);
+      expect(skills).toHaveLength(4);
     });
 
     it('seeding again preserves disabled state', () => {

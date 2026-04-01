@@ -353,7 +353,7 @@ describe('Integration: Domain handler with tool calls', () => {
 
     expect(response.text).toBe('You have 1 pending task: Buy groceries (high priority).');
     expect(response.domain).toBe('secretary');
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', { domain: 'secretary' });
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', { domain: 'secretary' }, undefined);
     expect(mockContinueWithToolResults).toHaveBeenCalledTimes(1);
 
     // Verify conversation stored with tool annotation
@@ -456,8 +456,8 @@ describe('Integration: Domain handler with tool calls', () => {
     expect(response.text).toBe('You have 1 task and no events today.');
     // Both tools executed in parallel
     expect(mockExecuteToolCall).toHaveBeenCalledTimes(2);
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', {});
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('get_events', { start: '2026-04-01', end: '2026-04-01' });
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', {}, undefined);
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('get_events', { start: '2026-04-01', end: '2026-04-01' }, undefined);
   });
 });
 

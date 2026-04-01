@@ -711,6 +711,15 @@ function buildSnapshot(): SnapshotResponse {
           activeSignals: totalSignals,
         },
       },
+      {
+        domain: 'finance',
+        label: 'Finance Tracker',
+        active: true,
+        messagesToday: todayMap['finance'] || 0,
+        totalMessages: totalMap['finance']?.count || 0,
+        lastMessageAt: totalMap['finance']?.lastAt || null,
+        details: {},
+      },
     ];
   } catch (err) {
     logger.warn({ err }, 'Portal: failed to query domain status');

@@ -835,14 +835,14 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       expect(status.subSkills.find(s => s.name === 'calendar')?.enabled).toBe(true);
     });
 
-    it('getAllSkillStatuses returns all three domains', async () => {
+    it('getAllSkillStatuses returns all four domains', async () => {
       const { seedDefaultSkills, getAllSkillStatuses } = await import('../../src/skills/skill-manager');
 
       seedDefaultSkills();
 
       const statuses = getAllSkillStatuses();
-      expect(statuses.length).toBe(3);
-      expect(statuses.map(s => s.name).sort()).toEqual(['content', 'secretary', 'triathlon']);
+      expect(statuses.length).toBe(4);
+      expect(statuses.map(s => s.name).sort()).toEqual(['content', 'finance', 'secretary', 'triathlon']);
     });
   });
 
@@ -858,7 +858,7 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       const secondCount = getAll().length;
 
       expect(firstCount).toBe(secondCount);
-      expect(firstCount).toBe(3); // secretary, triathlon, content
+      expect(firstCount).toBe(4); // secretary, triathlon, content, finance
     });
 
     it('re-seeding preserves user toggle state', async () => {

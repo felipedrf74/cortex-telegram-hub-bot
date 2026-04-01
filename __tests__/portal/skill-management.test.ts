@@ -83,13 +83,14 @@ describe('Portal Skill Management', () => {
   });
 
   describe('GET /api/skills — getAllSkillStatuses()', () => {
-    it('returns all three domain skills', () => {
+    it('returns all four domain skills', () => {
       const skills = getAllSkillStatuses();
-      expect(skills).toHaveLength(3);
+      expect(skills).toHaveLength(4);
       const names = skills.map(s => s.name);
       expect(names).toContain('secretary');
       expect(names).toContain('triathlon');
       expect(names).toContain('content');
+      expect(names).toContain('finance');
     });
 
     it('each skill has name, description, enabled flag, and subSkills', () => {
