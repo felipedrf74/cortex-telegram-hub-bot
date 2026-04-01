@@ -159,6 +159,10 @@ export const config = {
     maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10), // 1MB default
     eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
   },
+  // ── Data Encryption ─────────────────────────────────────────────────
+  encryption: {
+    dataKey: process.env.DATA_ENCRYPTION_KEY || '',  // 64 hex chars (256-bit AES key)
+  },
   rateLimit: {
     maxMessagesPerMinute: 30,
   },
