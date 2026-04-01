@@ -40,6 +40,37 @@ if (!NOTION_TOKEN) {
   process.exit(1);
 }
 
+// ─── Telegram Notification ──────────────────────────────────────────
+let TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+let TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+if (!TG_TOKEN) {
+  const searchPaths = [
+    path.join(__dirname, '..', '.env.agents'),
+    path.join(process.cwd(), '.env.agents'),
+  ];
+  for (const p of searchPaths) {
+    try {
+      const f = fs.readFileSync(p, 'utf8');
+      const t = f.match(/TELEGRAM_BOT_TOKEN=(.+)/);
+      const c = f.match(/TELEGRAM_CHAT_ID=(.+)/);
+      if (t) TG_TOKEN = t[1].trim();
+      if (c) TG_CHAT_ID = c[1].trim();
+      if (TG_TOKEN) break;
+    } catch {}
+  }
+}
+
+async function notify(msg) {
+  if (!TG_TOKEN || !TG_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg, parse_mode: 'HTML' }),
+    });
+  } catch (e) { console.log(`  ⚠️ Telegram notify failed: ${e.message}`); }
+}
+
 // ─── Parse args ─────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 function getArg(name) {
@@ -157,12 +188,12 @@ ${task.description}
 ## Auto-chain (MANDATORY — do this immediately after validating)
 ### If everything passes:
 \`\`\`bash
-AGENT_DIR=$(basename $(pwd))
+AGENT_DIR=$(basename "$(pwd)")
 node ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass
 \`\`\`
 ### If something fails:
 \`\`\`bash
-AGENT_DIR=$(basename $(pwd))
+AGENT_DIR=$(basename "$(pwd)")
 node ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "what failed"
 \`\`\`
 Then immediately check for the next queued validation:
@@ -246,7 +277,7 @@ ${task.description}
 
 ## Auto-chain (MANDATORY — do this immediately after pushing)
 \`\`\`bash
-AGENT_DIR=$(basename $(pwd))
+AGENT_DIR=$(basename "$(pwd)")
 node ~/Desktop/Custom\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "describe what you built"
 \`\`\`
 Then immediately check for the next task:
@@ -313,13 +344,15 @@ async function main() {
       console.log(`  ✅ QA PASSED → moving to Done`);
       await updateTaskStatus(task.id, 'Done');
       console.log(`  🎉 Task "${task.title}" is DONE — ready for Felipe to merge + deploy`);
+      await notify(`✅ <b>QA passed</b>\n<i>${task.title}</i>\n→ Moved to Done. Ready for merge + deploy.`);
     } else {
       console.log(`  ❌ QA FAILED → sending back to original agent`);
       console.log(`  Reason: ${failReason || 'not specified'}`);
       await updateTaskStatus(task.id, 'In Progress');
+      await notify(`❌ <b>QA failed</b>\n<i>${task.title}</i>\nReason: ${failReason || 'not specified'}\n→ Sent back to ${task.originAgent || 'backend'}`);
       const originAgent = task.originAgent || 'backend';
       const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
-      const fixPrompt = `# 🔧 Fix Required — QA Failed\n\n## Task: ${task.title}\n## QA Failure Reason: ${failReason || 'See QA notes'}\n\n## Instructions\n1. Read the QA failure reason above\n2. Fix the issues identified\n3. Run tests: \`npx vitest run\` and \`npx tsc --noEmit\`\n4. Commit: \`git commit -m "fix(scope): address QA feedback"\`\n5. Push: \`git push origin $(git branch --show-current)\`\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename $(pwd))\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --summary "fixed QA issues"\n\`\`\`\nThen check for next task: \`cat .agent-prompt.md 2>/dev/null\`\n`;
+      const fixPrompt = `# 🔧 Fix Required — QA Failed\n\n## Task: ${task.title}\n## QA Failure Reason: ${failReason || 'See QA notes'}\n\n## Instructions\n1. Read the QA failure reason above\n2. Fix the issues identified\n3. Run tests: \`npx vitest run\` and \`npx tsc --noEmit\`\n4. Commit: \`git commit -m "fix(scope): address QA feedback"\`\n5. Push: \`git push origin $(git branch --show-current)\`\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --summary "fixed QA issues"\n\`\`\`\nThen check for next task: \`cat .agent-prompt.md 2>/dev/null\`\n`;
       fs.writeFileSync(path.join(WORKTREE_BASE, originAgent, '.agent-prompt.md'), fixPrompt);
       fs.writeFileSync(path.join(WORKTREE_BASE, originAgent, '.agent-task.json'), JSON.stringify({
         id: task.id, title: task.title, description: `FIX: ${failReason || 'QA issues'}`,
@@ -358,6 +391,7 @@ async function main() {
     await updateTaskStatus(task.id, 'QA Validating');
     writeQAPrompt(task, agentDir);
     console.log(`  🧪 QA agent should pick up validation automatically`);
+    await notify(`🔄 <b>${agentDir}</b> finished\n<i>${task.title}</i>\n→ Sent to QA validation`);
   } else {
     // DevOps/infra tasks skip QA → go straight to Done
     console.log(`  ⚙️ Infrastructure task → skipping QA → Done`);
@@ -379,12 +413,14 @@ async function main() {
     await updateTaskStatus(next.id, 'In Progress');
     writeAgentPrompt(next, agentDir);
     console.log(`\n  👉 Agent: read .agent-prompt.md and continue working`);
+    await notify(`📋 <b>${agentDir}</b> auto-picked next task\n<i>${next.title}</i>`);
   } else {
     // Clear task files — agent is idle
     const agentPath = path.join(WORKTREE_BASE, agentDir);
     try { fs.unlinkSync(path.join(agentPath, '.agent-task.json')); } catch {}
     try { fs.unlinkSync(path.join(agentPath, '.agent-prompt.md')); } catch {}
     console.log(`  💤 No more tasks for ${agentDir} — agent is idle`);
+    await notify(`💤 <b>${agentDir}</b> idle — no more tasks in To Do`);
   }
 }
 

@@ -22,6 +22,71 @@ if (!NOTION_TOKEN) {
   } catch {}
 }
 const DB_ID = '332ad49d-23e7-81aa-831e-d5a3ceff20c1';
+const QA_QUEUE_DIR = path.join(WORKTREES, 'qa', '.qa-queue');
+
+// ─── Agent→Worktree mapping for auto-assign ────────────────────────
+const AGENT_MAP = {
+  '🔧 Backend': 'backend', '🧪 QA': 'qa', '⚙️ DevOps': 'devops',
+  '🔒 Security': 'flex', '♻️ Refactor': 'flex', '🏗️ Architect': 'backend',
+};
+
+async function autoAssignAll() {
+  const agents = agentStatus();
+  const results = [];
+
+  for (const a of agents) {
+    // Skip agents that already have work
+    if (a.task || a.hasPrompt) continue;
+
+    // QA agent: check .qa-queue/ first
+    if (a.name === 'qa') {
+      try {
+        if (fs.existsSync(QA_QUEUE_DIR)) {
+          const queueFiles = fs.readdirSync(QA_QUEUE_DIR).filter(f => f.endsWith('.json')).sort();
+          if (queueFiles.length > 0) {
+            const next = JSON.parse(fs.readFileSync(path.join(QA_QUEUE_DIR, queueFiles[0]), 'utf8'));
+            // Use agent-complete.js to properly write the QA prompt
+            const r = await run(`node "${SCRIPT('agent-complete.js')}" --agent qa --check-only 2>&1 || true`);
+            // Manually write QA task if agent-complete didn't
+            const qaTaskFile = path.join(WORKTREES, 'qa', '.agent-task.json');
+            if (!fs.existsSync(qaTaskFile)) {
+              // Write task file from queue item
+              fs.writeFileSync(qaTaskFile, JSON.stringify({
+                id: next.id, title: next.title, description: next.description || '',
+                priority: next.priority || '', phase: next.phase || '', tags: next.tags || [],
+                agent: '🧪 QA', originAgent: next.originAgent || 'backend',
+              }, null, 2));
+              // Write prompt
+              const prompt = `# 🧪 QA Validation Task\n\n## Validating: ${next.title}\n**Original agent:** ${next.originAgent || 'unknown'}\n**Priority:** ${next.priority || ''}\n\n## Description\n${next.description || ''}\n\n## Instructions\n1. Pull latest: \`git fetch origin && git merge origin/agent/${next.originAgent || 'backend'} --no-edit\`\n2. Read changed files\n3. Run: \`npx vitest run\` and \`npx tsc --noEmit\`\n4. Write validation tests\n5. Check acceptance criteria\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename $(pwd))\nnode ~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass\n\`\`\`\nOr if fails: add \`--verdict fail --reason "what failed"\`\n\n## Notion Task ID\n${next.id}\n`;
+              fs.writeFileSync(path.join(WORKTREES, 'qa', '.agent-prompt.md'), prompt);
+              // Update Notion
+              try { await notionFetch(`/pages/${next.id}`, 'PATCH', {properties:{Status:{select:{name:'QA Validating'}}}}); } catch {}
+              // Remove from queue
+              fs.unlinkSync(path.join(QA_QUEUE_DIR, queueFiles[0]));
+            }
+            results.push({ agent: 'qa', task: next.title, source: 'qa-queue' });
+            continue;
+          }
+        }
+      } catch (e) { results.push({ agent: 'qa', error: e.message }); }
+    }
+
+    // All agents: check Notion "To Do" for matching tasks
+    try {
+      const worktreeName = a.name;
+      const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
+      const tasks = await fetchTasks();
+      const todoTasks = tasks.filter(t => t.status === 'To Do' && matchingTags.includes(t.agent));
+      if (todoTasks.length > 0) {
+        const next = todoTasks[0];
+        // Dispatch via dispatch-tasks.js
+        const r = await run(`node "${SCRIPT('dispatch-tasks.js')}"`);
+        results.push({ agent: worktreeName, task: next.title, source: 'notion-todo', output: r.output?.substring(0, 200) });
+      }
+    } catch (e) { results.push({ agent: a.name, error: e.message }); }
+  }
+  return results;
+}
 
 async function notionFetch(ep, method = 'POST', body = {}) {
   const r = await fetch(`https://api.notion.com/v1${ep}`, {
@@ -113,6 +178,7 @@ async function handleAPI(req, res) {
     if (route === 'move-task') { const b = await readBody(req); await notionFetch(`/pages/${b.id}`,'PATCH',{properties:{Status:{select:{name:b.status}}}}); return send(res, {ok:true,msg:`→ ${b.status}`}); }
     if (route === 'bulk-move') { const b = await readBody(req); for (const id of (b.ids||[])) await notionFetch(`/pages/${id}`,'PATCH',{properties:{Status:{select:{name:b.status}}}}); return send(res, {ok:true,msg:`Moved ${(b.ids||[]).length} → ${b.status}`}); }
     if (route === 'dispatch') return send(res, await run(`node "${SCRIPT('dispatch-tasks.js')}"`));
+    if (route === 'auto-assign') { const results = await autoAssignAll(); return send(res, { ok: true, assigned: results, msg: results.length ? `Auto-assigned ${results.length} agent(s)` : 'All agents busy or no tasks' }); }
     if (route === 'clear-stale') { await run(`rm -f "${WORKTREES}"/*/.agent-task.json "${WORKTREES}"/*/.agent-prompt.md`); return send(res, {ok:true,output:'Stale files cleared'}); }
     if (route === 'agent-done') { const b = await readBody(req); return send(res, await run(`node "${SCRIPT('agent-complete.js')}" --agent ${b.agent} --summary "${(b.summary||'done').replace(/"/g,'\\\\"')}"`)); }
     if (route === 'merge-develop') return send(res, await run('git fetch origin && git merge origin/agent/backend --no-edit 2>/dev/null; git merge origin/agent/qa --no-edit 2>/dev/null; git merge origin/agent/devops --no-edit 2>/dev/null; git push origin HEAD:develop', path.join(WORKTREES, 'backend')));
@@ -241,6 +307,8 @@ const server = http.createServer(async (req, res) => {
 });
 server.listen(PORT, () => console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}\n`));
 
+// ⚠️ TEMPLATE LITERAL ESCAPING: Use \\n (not \n) for JS newlines inside PAGE strings.
+// Single \n inside backticks becomes a real newline, breaking JS string syntax in the browser.
 const PAGE = `<!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Nexus Hub — Mission Control</title>
@@ -327,7 +395,21 @@ async function refresh(){
   const[b,a]=await Promise.all([api('board'),api('agents')]);
   if(b.ok)T=b.tasks;if(a.ok)AG=a.agents;
   document.getElementById('sync').textContent='Synced: '+new Date().toLocaleTimeString();
-  rstats();render()
+  rstats();render();
+  // Auto-assign: dispatch To Do tasks AND pick up QA queue for all idle agents
+  var hasIdle=(AG||[]).some(function(a){return !a.task&&!a.hasPrompt});
+  var hasTodo=T.some(function(t){return t.status==='To Do'&&t.agent});
+  var hasQAQueue=(AG||[]).some(function(a){return a.name==='qa'&&a.queueCount>0&&!a.task});
+  if(hasIdle&&(hasTodo||hasQAQueue)){
+    log('Auto-assigning idle agents...','warn');
+    var dd=await api('auto-assign');
+    if(dd.ok&&dd.assigned&&dd.assigned.length>0){
+      log('Auto-assigned '+dd.assigned.length+' agent(s)','success');
+      var[b2,a2]=await Promise.all([api('board'),api('agents')]);
+      if(b2.ok)T=b2.tasks;if(a2.ok)AG=a2.agents;
+      rstats();render();
+    }
+  }
 }
 
 function rstats(){
@@ -354,37 +436,37 @@ function rBoard(){
 }
 async function moveT(id,s){await api('move-task',{id,status:s});T=T.map(t=>t.id===id?{...t,status:s}:t);rstats();render()}
 </script>`;
+// ⚠️ TEMPLATE LITERAL ESCAPING: Use \\n (not \n) for JS newlines inside PAGE strings.
+// Single \n inside backticks becomes a real newline, breaking JS string syntax in the browser.
 const PAGE4 = `<script>
 function rAgents(){
   return '<div class="ag">'+AG.map(a=>{
     var i=AI[a.name]||AI.backend;
-    var sm={online:{l:"\\u25cf Online",bg:"rgba(45,212,160,.15)",c:"#2dd4a0"},"has-task":{l:"\\u25c9 Has task (offline)",bg:"rgba(245,166,35,.15)",c:"#f5a623"},"has-prompt":{l:"\\u25ce Prompt ready",bg:"rgba(74,158,255,.15)",c:"#4a9eff"},offline:{l:"\\u25cb Offline",bg:"rgba(85,93,117,.15)",c:"#555d75"}};
+    var sm={online:{l:"\\u25cf Online (auto-loop)",bg:"rgba(45,212,160,.15)",c:"#2dd4a0"},"has-task":{l:"\\u25c9 Has task (idle)",bg:"rgba(245,166,35,.15)",c:"#f5a623"},"has-prompt":{l:"\\u25ce Prompt ready",bg:"rgba(74,158,255,.15)",c:"#4a9eff"},offline:{l:"\\u25cb Offline",bg:"rgba(85,93,117,.15)",c:"#555d75"}};
     var st=sm[a.status]||sm.offline;
     var h='<div class="ag-c" style="border-left-color:'+i.c+'">';
     h+='<div class="hd"><div><span style="font-size:16px">'+i.e+'</span> <b>'+i.n+'</b></div>';
     h+='<span class="badge" style="background:'+st.bg+';color:'+st.c+'">'+st.l+'</span></div>';
     h+='<div style="font-size:10px;color:var(--t2);margin-top:2px">'+i.r+(a.pid?" PID:"+a.pid:"")+'</div>';
     if(a.task){h+='<div class="tk"><b>'+a.task.title+'</b><div style="color:var(--t3);margin-top:2px">'+(a.task.priority||"")+'</div></div>';}
-    else{h+='<div class="tk" style="color:var(--t3)">No task assigned</div>';}
-    if(a.name==="qa"&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for QA</div>";}
+    else{h+='<div class="tk" style="color:var(--t3)">No task assigned — auto-loop will pick up next To Do</div>';}
+    if(a.name==="qa"&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for QA (auto-pickup)</div>";}
     h+='<div class="btns">';
-    h+='<button class="btn btn-green" onclick="startTask(&#39;'+a.name+'&#39;)">Start task</button>';
-    if(a.status==="online"){h+='<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">Stop</button>';}
-    else{h+='<button class="btn" onclick="startAgent(&#39;'+a.name+'&#39;)">Launch shell</button>';}
-    h+='<button class="btn btn-blue" onclick="checkAgent(&#39;'+a.name+'&#39;)">WIP</button>';
+    if(a.status==="online"){h+='<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">\\u23F9 Stop</button>';}
+    else{h+='<button class="btn btn-green" onclick="startAgent(&#39;'+a.name+'&#39;)">\\u25B6 Launch</button>';}
     h+='<button class="btn" onclick="viewTerminal(&#39;'+a.name+'&#39;)">Terminal</button>';
-    h+='<button class="btn btn-amber" onclick="markDone(&#39;'+a.name+'&#39;)">Done</button>';
-    h+='<button class="btn" onclick="clearAgent(&#39;'+a.name+'&#39;)">Clear</button>';
-    if(a.name==="qa"){h+='<button class="btn btn-orange" onclick="viewQAQueue()">Queue</button>';}
+    h+='<button class="btn btn-blue" onclick="checkAgent(&#39;'+a.name+'&#39;)">Logs</button>';
     h+='<button class="btn btn-purple" onclick="agentGitLog(&#39;'+a.name+'&#39;)">Git log</button>';
     h+='</div><div class="out" id="out-'+a.name+'" style="display:none"></div></div>';
     return h;
   }).join("")+'</div>'
   +'<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">'
-  +'<button class="btn btn-green btn-big" onclick="startAllTasks()">Start all tasks</button>'
-  +'<button class="btn btn-red btn-big" onclick="stopAll()">Stop all</button>'
+  +'<button class="btn btn-green btn-big" onclick="startAllAgents()">\\u25B6 Launch all</button>'
+  +'<button class="btn btn-red btn-big" onclick="stopAll()">\\u23F9 Stop all</button>'
   +'<button class="btn btn-big" onclick="refreshAgents()">Refresh status</button>'
-  +'<button class="btn btn-big" onclick="dispatchAndStart()">Dispatch + Start all</button>'
+  +'</div>'
+  +'<div style="margin-top:8px;padding:10px;border-radius:8px;background:var(--bg2);border:1px solid var(--bdr);font-size:11px;color:var(--t2)">'
+  +'\\u2699\\uFE0F <b>Auto-orchestration active.</b> Agents loop continuously: execute task \\u2192 auto-complete \\u2192 notify via Telegram \\u2192 pick next task. Just move tasks to To Do in Notion — agents handle the rest.'
   +'</div>'
   +'<div style="margin-top:12px;background:var(--bg2);border-radius:10px;border:1px solid var(--bdr);padding:12px">'
   +'<div style="font-size:12px;font-weight:600;color:var(--t2);margin-bottom:8px;display:flex;align-items:center;gap:6px">🎯 Dispatch Specific Task</div>'
@@ -403,23 +485,16 @@ function rAgents(){
   +'<div class="out" id="dispatch-out" style="display:none;max-height:160px"></div>'
   +'</div>'
 }
-async function startTask(n){log("Starting task "+n+"...");var d=await api("start-task",{agent:n});showOut(n,d.output||"Started");setTimeout(refreshAgents,4000)}
-async function startAgent(n){log("Launching "+n+"...");var d=await api("start-agent",{agent:n});showOut(n,d.output||"Launched");setTimeout(refreshAgents,3000)}
+async function startAgent(n){log("Launching "+n+" (auto-loop)...");var d=await api("start-agent",{agent:n});showOut(n,d.output||"Launched");setTimeout(refreshAgents,4000)}
 async function stopAgent(n){log("Stopping "+n+"...");var d=await api("stop-agent",{agent:n});showOut(n,d.output||"Stopped");setTimeout(refreshAgents,2000)}
 async function checkAgent(n){var d=await api("agent-log",{agent:n});showOut(n,d.output||"No task files")}
-async function markDone(n){var d=await api("agent-done",{agent:n,summary:"completed via Mission Control"});showOut(n,d.output||"Done");refresh()}
-async function clearAgent(n){await api("clear-stale");showOut(n,"Task files cleared");refreshAgents()}
 async function agentGitLog(n){var d=await api("agent-branches",{agent:n});showOut(n,d.output||"No commits")}
-async function viewQAQueue(){var d=await api("qa-queue");if(d.ok&&d.queue.length>0){var t=d.queue.map(function(q,i){return(i+1)+". "+q.title+" (from:"+q.originAgent+")"}).join("\\n");showOut("qa","QA Queue ("+d.count+"):\\n"+t)}else{showOut("qa","QA queue empty")}}
-async function startAllTasks(){for(var n of["backend","qa","devops","flex"]){await startTask(n);await new Promise(function(r){setTimeout(r,2000)})}}
+async function startAllAgents(){for(var n of["backend","qa","devops","flex"]){await startAgent(n);await new Promise(function(r){setTimeout(r,2000)})}}
 async function stopAll(){
-  log("Stopping all agents by PID...");
-  // Stop in parallel — backend fix now kills by PID directly
+  log("Stopping all agents...");
   await Promise.all(["backend","qa","devops","flex"].map(n=>stopAgent(n)));
   setTimeout(refreshAgents,2500);
-  showOut("backend","Stop all sent — refreshing in 2.5s...");
 }
-async function dispatchAndStart(){log("Dispatch + start...");await api("dispatch");await new Promise(function(r){setTimeout(r,2000)});await startAllTasks()}
 async function refreshAgents(){var d=await api("agents");if(d.ok){AG=d.agents;render()}}
 async function viewTerminal(n){log("Focusing "+n+" terminal...");var d=await api("view-terminal",{agent:n});showOut(n,d.output||"No terminal found")}
 function showOut(n,t){var el=document.getElementById("out-"+n);if(el){el.style.display="block";el.textContent=t}}
@@ -440,9 +515,9 @@ async function listTodo(){
   if(!tasks.length){showDispatch("✅ No To Do or Backlog tasks found");return}
   var lines=tasks.map(function(t){
     var agentWarn=t.agent?"":"  ⚠️ NO AGENT";
-    return t.id+"  ["+t.priority+"] ["+t.agent+"]"+agentWarn+"\n  "+t.title;
+    return t.id+"  ["+t.priority+"] ["+t.agent+"]"+agentWarn+"\\n  "+t.title;
   });
-  showDispatch("To Do / Backlog ("+tasks.length+"):\n\n"+lines.join("\n\n")+"\n\n─── Click ID to copy & paste above ───");
+  showDispatch("To Do / Backlog ("+tasks.length+"):\\n\\n"+lines.join("\\n\\n")+"\\n\\n─── Click ID to copy & paste above ───");
 }
 function showDispatch(t){var el=document.getElementById("dispatch-out");if(el){el.style.display="block";el.textContent=t}}
 </script>`;
