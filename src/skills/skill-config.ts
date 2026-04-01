@@ -183,8 +183,8 @@ const TRIATHLON_SKILL: SkillDefinition = {
 
 const CONTENT_SKILL: SkillDefinition = {
   name: 'content',
-  description: 'Content creation — YouTube, Reels, scripts, research',
-  version: '1.0.0',
+  description: 'Content creation — YouTube, Reels, scripts, research, autonomous agents',
+  version: '2.0.0',
   routing: {
     patternRoutes: [
       /^\/(content|video|reel|script|caption|thumbnail|trend|ideas|discover|deepsearch|sources|hotnews)\b/i,
@@ -210,6 +210,67 @@ const CONTENT_SKILL: SkillDefinition = {
       description: 'Cross-domain shared facts (filming days, content calendar)',
       enabledByDefault: true,
       tools: ['shared_memory_set', 'shared_memory_remove'],
+    },
+    {
+      name: 'research-pipeline',
+      description: 'Channel re-learning and reference channel analysis',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['channel_relearn'],
+    },
+    {
+      name: 'script-generator',
+      description: 'AI script generation from approved topics',
+      enabledByDefault: true,
+      tools: [],
+    },
+    {
+      name: 'seo-tracker',
+      description: 'YouTube keyword rank tracking and opportunity detection',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['seo_agent'],
+    },
+    {
+      name: 'reaction-radar',
+      description: 'Monitors trending content and reference channels for reaction opportunities',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['reaction_radar'],
+    },
+    {
+      name: 'voice-evolution',
+      description: 'Compares AI scripts vs actual transcripts to learn voice patterns',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['voice_evolution'],
+    },
+    {
+      name: 'performance-intel',
+      description: 'Analyzes YouTube channel performance by pillar and format',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['performance_agent'],
+    },
+    {
+      name: 'pipeline-tracker',
+      description: 'Monitors content pipeline stages and detects bottlenecks',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['pipeline_agent'],
+    },
+    {
+      name: 'topic-scheduler',
+      description: 'Automated topic generation for Reels and YouTube videos',
+      enabledByDefault: true,
+      tools: [],
+      cronJobs: ['tuesday_reels', 'thursday_youtube', 'friday_weekly'],
+    },
+    {
+      name: 'meme-scout',
+      description: 'Discovers meme-worthy content for social engagement (experimental)',
+      enabledByDefault: false,
+      tools: [],
     },
   ],
 };
