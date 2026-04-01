@@ -68,6 +68,12 @@ import {
 } from '../skills/skill-manager';
 import type { DomainName } from '../domains/types';
 import { getErrorTrends } from '../services/error-monitor';
+import {
+  verifySignature, receiveWebhookEvent, getSubscriptions, registerSubscription,
+  removeSubscription, getWebhookStats, getRecentEvents as getRecentWebhookEvents,
+  replayEvent, expireSubscriptions,
+  type WebhookProvider,
+} from '../services/webhook-registry';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -1259,10 +1265,193 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── Webhook Infrastructure API ──────────────────────────────────────
+
+  // POST /api/webhooks/:provider — universal webhook receiver
+  // Uses raw body parsing for HMAC signature verification
+  app.post('/api/webhooks/:provider',
+    express.raw({ type: '*/*', limit: config.webhooks.maxPayloadBytes }),
+    async (req: Request, res: Response) => {
+      const provider = req.params.provider as WebhookProvider;
+
+      // Google webhook verification challenge (sync validation)
+      if (req.headers['x-goog-resource-state'] === 'sync') {
+        res.status(200).send('OK');
+        return;
+      }
+
+      // Microsoft Graph validation token (subscription verification)
+      const validationToken = req.query.validationToken;
+      if (validationToken && typeof validationToken === 'string') {
+        res.type('text/plain').status(200).send(validationToken);
+        return;
+      }
+
+      // Find matching subscription
+      const subs = getSubscriptions({ provider, status: 'active' });
+      const sub = subs.length > 0 ? subs[0] : null;
+
+      // Verify signature if subscription has a secret
+      if (sub?.secret) {
+        const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body));
+        const valid = verifySignature(
+          provider,
+          rawBody,
+          req.headers as Record<string, string | string[] | undefined>,
+          sub.secret,
+        );
+        if (!valid) {
+          logger.warn({ provider }, 'Webhook signature verification failed');
+          res.status(401).json({ ok: false, message: 'Invalid signature' });
+          return;
+        }
+      }
+
+      try {
+        // Parse payload
+        let payload: Record<string, unknown>;
+        if (Buffer.isBuffer(req.body)) {
+          try {
+            payload = JSON.parse(req.body.toString('utf-8'));
+          } catch {
+            payload = { raw: req.body.toString('utf-8') };
+          }
+        } else if (typeof req.body === 'object') {
+          payload = req.body as Record<string, unknown>;
+        } else {
+          payload = { raw: String(req.body) };
+        }
+
+        // Extract event type from provider-specific headers/payload
+        const eventType = extractEventType(provider, req.headers, payload);
+
+        // Extract idempotency key from provider-specific fields
+        const idempotencyKey = extractIdempotencyKey(provider, req.headers, payload);
+
+        const eventId = await receiveWebhookEvent({
+          provider,
+          event_type: eventType,
+          payload,
+          headers: flattenHeaders(req.headers),
+          idempotency_key: idempotencyKey,
+          subscription_id: sub?.id,
+        });
+
+        res.status(200).json({ ok: true, eventId });
+      } catch (err) {
+        logger.error({ err, provider }, 'Webhook processing failed');
+        res.status(500).json({ ok: false, message: 'Processing failed' });
+      }
+    });
+
+  // GET /api/webhooks/stats — webhook infrastructure health
+  app.get('/api/webhooks/stats', (_req: Request, res: Response) => {
+    try {
+      const stats = getWebhookStats();
+      res.json({ ok: true, ...stats });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/webhooks/subscriptions — list all subscriptions
+  app.get('/api/webhooks/subscriptions', (req: Request, res: Response) => {
+    try {
+      const provider = req.query.provider as WebhookProvider | undefined;
+      const subs = getSubscriptions(provider ? { provider } : undefined);
+      res.json({ ok: true, subscriptions: subs });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/webhooks/subscriptions — register a new subscription
+  app.post('/api/webhooks/subscriptions', (req: Request, res: Response) => {
+    const { provider, event_types, secret, external_id, metadata, expires_at } = req.body || {};
+    if (!provider) {
+      res.status(400).json({ ok: false, message: 'provider is required' });
+      return;
+    }
+    try {
+      const id = registerSubscription({
+        provider,
+        event_types,
+        endpoint_path: `/api/webhooks/${provider}`,
+        secret: secret || config.webhooks.secret || undefined,
+        external_id,
+        metadata,
+        expires_at,
+      });
+      if (id < 0) {
+        res.status(500).json({ ok: false, message: 'Failed to register subscription' });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, id, endpoint: `/api/webhooks/${provider}` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // DELETE /api/webhooks/subscriptions/:id — remove a subscription
+  app.delete('/api/webhooks/subscriptions/:id', (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) {
+      res.status(400).json({ ok: false, message: 'Invalid subscription ID' });
+      return;
+    }
+    try {
+      const removed = removeSubscription(id);
+      if (!removed) {
+        res.status(404).json({ ok: false, message: 'Subscription not found' });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: 'Subscription removed' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/webhooks/events — recent webhook events
+  app.get('/api/webhooks/events', (req: Request, res: Response) => {
+    try {
+      const provider = req.query.provider as string | undefined;
+      const status = req.query.status as string | undefined;
+      const limit = parseInt(String(req.query.limit || '50'), 10);
+      const events = getRecentWebhookEvents({
+        provider: provider || undefined,
+        status: status as any || undefined,
+        limit: Math.min(limit, 200),
+      });
+      res.json({ ok: true, events });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/webhooks/events/:id/replay — replay a failed event
+  app.post('/api/webhooks/events/:id/replay', async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) {
+      res.status(400).json({ ok: false, message: 'Invalid event ID' });
+      return;
+    }
+    try {
+      const success = await replayEvent(id);
+      res.json({ ok: success, message: success ? 'Event replayed successfully' : 'Replay failed' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Start HTTP server ──────────────────────────────────────────
   const server = http.createServer(app);
   const bind = config.portal.bind;
   const port = config.portal.port;
+
+  // Expire stale webhook subscriptions on server start
+  try { expireSubscriptions(); } catch { /* non-critical */ }
 
   server.listen(port, bind, () => {
     logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
@@ -1272,4 +1461,67 @@ export function createPortalServer(bot: Bot): http.Server {
   });
 
   return server;
+}
+
+// ─── Webhook Helpers ───────────────────────────────────────────────
+
+/** Extract event type from provider-specific headers/payload. */
+function extractEventType(
+  provider: string,
+  headers: Record<string, string | string[] | undefined>,
+  payload: Record<string, unknown>,
+): string {
+  switch (provider) {
+    case 'google_calendar':
+    case 'google_gmail':
+      return (headers['x-goog-resource-state'] as string) || 'update';
+    case 'outlook_calendar':
+    case 'outlook_mail':
+    case 'outlook_todo':
+      return (payload.changeType as string) || 'updated';
+    case 'garmin':
+      return (payload.activityType as string) || 'activity';
+    case 'strava':
+      return (payload.aspect_type as string) || (payload.object_type as string) || 'activity';
+    case 'github': {
+      const ghEvent = headers['x-github-event'];
+      return (typeof ghEvent === 'string' ? ghEvent : 'push');
+    }
+    default:
+      return (payload.event_type as string) || (payload.type as string) || 'unknown';
+  }
+}
+
+/** Extract idempotency key from provider-specific fields. */
+function extractIdempotencyKey(
+  provider: string,
+  headers: Record<string, string | string[] | undefined>,
+  payload: Record<string, unknown>,
+): string | undefined {
+  switch (provider) {
+    case 'google_calendar':
+    case 'google_gmail':
+      return headers['x-goog-message-number'] as string | undefined;
+    case 'outlook_calendar':
+    case 'outlook_mail':
+    case 'outlook_todo':
+      return payload.subscriptionId as string | undefined;
+    case 'github':
+      return headers['x-github-delivery'] as string | undefined;
+    case 'strava':
+      return payload.event_time ? String(payload.event_time) : undefined;
+    default:
+      return payload.id ? String(payload.id) : undefined;
+  }
+}
+
+/** Flatten Express headers into a simple string record (for storage). */
+function flattenHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value !== undefined) {
+      result[key] = Array.isArray(value) ? value.join(', ') : value;
+    }
+  }
+  return result;
 }
