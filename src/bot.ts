@@ -3327,16 +3327,17 @@ export function createBot(): Bot {
       return;
     }
 
-    const validDomains = ['secretary', 'triathlon', 'content'];
-    if (!validDomains.includes(name)) {
+    const allStatuses = getAllSkillStatuses();
+    const skill = allStatuses.find(s => s.name === name);
+    if (!skill) {
+      const available = allStatuses.map(s => s.name).join(', ');
       await ctx.reply(
-        `Unknown skill "<b>${escapeHtml(name)}</b>".\n\nAvailable skills: ${validDomains.join(', ')}`,
+        `Unknown skill "<b>${escapeHtml(name)}</b>".\n\nAvailable skills: ${available}`,
         { parse_mode: 'HTML' },
       );
       return;
     }
 
-    const skill = getSkillStatus(name as DomainName);
     const SKILL_ICONS: Record<string, string> = { secretary: '📋', triathlon: '🏊', content: '🎬' };
     const icon = SKILL_ICONS[skill.name] || '📦';
     const status = skill.enabled ? '✅ Enabled' : '❌ Disabled';
