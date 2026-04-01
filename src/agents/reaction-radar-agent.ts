@@ -6,11 +6,12 @@
  *
  * Schedule: Every 4 hours (06:00, 10:00, 14:00, 18:00, 22:00)
  *
- * Consumes: channel_dna, book_knowledge, pillar_performance
- * Produces: trending_spike, competitor_upload
+ * Consumes: channel_dna, book_knowledge, pillar_performance, voice_pattern (cross-agent)
+ * Produces: trending_spike, competitor_upload, reaction_opportunity
  */
 
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { buildAgentContext, formatContextForPrompt } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -323,6 +324,10 @@ export async function runReactionRadar(): Promise<void> {
     const bookSignals = readSignals('reaction-radar', ['book_knowledge'], 50);
     const pillarSignals = readSignals('reaction-radar', ['pillar_performance'], 5);
     signalsConsumed += dnaSignals.length + bookSignals.length + pillarSignals.length;
+
+    // Cross-agent learning: consume voice patterns to suggest reactions in Felipe's style
+    const peerContext = buildAgentContext('reaction-radar');
+    signalsConsumed += peerContext.signalsConsumed;
 
     // Build book framework lookup by pillar
     const bookFrameworks = new Map<string, { book: string; framework: string }[]>();

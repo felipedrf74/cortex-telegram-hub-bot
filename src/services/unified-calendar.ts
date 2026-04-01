@@ -8,6 +8,8 @@ export type CalendarSource = 'google' | 'outlook';
 
 export interface UnifiedCalendarEvent extends googleCal.CalendarEvent {
   source: CalendarSource;
+  /** When the same event exists on multiple calendars, lists all sources. */
+  syncedSources?: CalendarSource[];
 }
 
 export function isAnyCalendarConfigured(): boolean {
@@ -57,14 +59,17 @@ export async function getEvents(startDate: string, endDate: string): Promise<Uni
 
   await Promise.all(promises);
 
+  // Deduplicate events that exist on both calendars
+  const deduped = deduplicateEvents(events);
+
   // Sort all events by start time
-  events.sort((a, b) => {
+  deduped.sort((a, b) => {
     const aTime = new Date(a.start).getTime();
     const bTime = new Date(b.start).getTime();
     return aTime - bTime;
   });
 
-  return events;
+  return deduped;
 }
 
 export async function createEvent(
@@ -102,4 +107,75 @@ export async function deleteEvent(eventId: string, source: CalendarSource): Prom
   } else {
     await googleCal.deleteEvent(eventId);
   }
+}
+
+// ── Event Deduplication ─────────────────────────────────────────────
+
+/**
+ * Build a fingerprint for an event: normalized subject + start time (minute precision).
+ * Two events from different calendars with the same fingerprint are considered duplicates.
+ */
+export function eventFingerprint(event: UnifiedCalendarEvent): string {
+  const subject = (event.summary || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  // Round start time to the nearest minute to handle timezone conversion differences
+  const startMs = new Date(event.start).getTime();
+  const startMinute = Math.round(startMs / 60_000);
+  return `${subject}|${startMinute}`;
+}
+
+/**
+ * Deduplicate events from multiple calendar sources.
+ * When the same event appears on both Google and Outlook (same meeting invite),
+ * merge them into a single event with syncedSources listing both calendars.
+ * Keeps the event with the richer data (longer description, location present).
+ */
+export function deduplicateEvents(events: UnifiedCalendarEvent[]): UnifiedCalendarEvent[] {
+  if (events.length === 0) return events;
+  if (events.length === 1) return [{ ...events[0], syncedSources: [events[0].source] }];
+
+  const fingerMap = new Map<string, UnifiedCalendarEvent>();
+  let dupsFound = 0;
+
+  for (const event of events) {
+    const fp = eventFingerprint(event);
+    const existing = fingerMap.get(fp);
+
+    if (!existing) {
+      fingerMap.set(fp, { ...event, syncedSources: [event.source] });
+      continue;
+    }
+
+    // Duplicate found — merge sources and keep richer data
+    dupsFound++;
+    const sources = new Set(existing.syncedSources || [existing.source]);
+    sources.add(event.source);
+
+    // Keep whichever has more complete data
+    const existingScore = dataRichness(existing);
+    const newScore = dataRichness(event);
+
+    if (newScore > existingScore) {
+      fingerMap.set(fp, {
+        ...event,
+        syncedSources: [...sources],
+      });
+    } else {
+      existing.syncedSources = [...sources];
+    }
+  }
+
+  if (dupsFound > 0) {
+    logger.info({ dupsFound, total: events.length, after: fingerMap.size }, 'Calendar events deduplicated');
+  }
+
+  return [...fingerMap.values()];
+}
+
+/** Score an event's data richness (more fields = higher score). */
+function dataRichness(event: UnifiedCalendarEvent): number {
+  let score = 0;
+  if (event.description) score += event.description.length;
+  if (event.location) score += 10;
+  if (event.htmlLink) score += 5;
+  return score;
 }

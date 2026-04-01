@@ -30,7 +30,11 @@ export type SignalType =
   | 'pipeline_capacity'
   | 'content_sprint_mode'
   | 'reaction_opportunity'
-  | 'content_published';
+  | 'content_published'
+  // Cross-agent learning signals (v2)
+  | 'learning_digest'
+  | 'content_formula'
+  | 'audience_insight';
 
 export interface AgentSignal {
   id: number;
@@ -75,6 +79,10 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   content_sprint_mode: 7 * 24,      // default, can be overridden
   reaction_opportunity: 48,          // 48 hours — reactions lose value fast
   content_published: 30 * 24,        // 30 days — for performance tracking
+  // Cross-agent learning signals (v2)
+  learning_digest: 7 * 24,           // 7 days — weekly digest cycle
+  content_formula: 90 * 24,          // 90 days — validated formulas are durable
+  audience_insight: 30 * 24,         // 30 days — audience behavior shifts
 };
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
