@@ -101,8 +101,19 @@ const SECRETARY_SKILL: SkillDefinition = {
 const TRIATHLON_SKILL: SkillDefinition = {
   name: 'triathlon',
   description: 'Triathlon coaching — training plans, calendar, Garmin integration',
-  version: '1.0.0',
+  version: '2.0.0',
   subSkills: [
+    {
+      name: 'training-plans',
+      description: 'AI-generated periodized training plans with auto-adjustment',
+      enabledByDefault: true,
+      tools: [
+        'create_training_plan', 'add_training_week', 'add_training_session',
+        'get_training_plan', 'log_training_completion', 'update_training_session',
+        'link_session_calendar',
+      ],
+      cronJobs: ['training_plan_adjust'],
+    },
     {
       name: 'calendar',
       description: 'Calendar event management for training schedule',
