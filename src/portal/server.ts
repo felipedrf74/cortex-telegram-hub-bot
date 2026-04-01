@@ -67,6 +67,7 @@ import {
   enableSubSkill, disableSubSkill,
 } from '../skills/skill-manager';
 import type { DomainName } from '../domains/types';
+import { getErrorTrends } from '../services/error-monitor';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -1121,6 +1122,18 @@ export function createPortalServer(bot: Bot): http.Server {
         res.json({ ok: true, sprint: true, message: 'Sprint mode enabled' });
       }
       cachedSnapshot = null;
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── Error Monitoring API ──────────────────────────────────────────
+
+  // GET /api/errors — error trends and recent errors
+  app.get('/api/errors', (_req: Request, res: Response) => {
+    try {
+      const trends = getErrorTrends();
+      res.json({ ok: true, ...trends });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
