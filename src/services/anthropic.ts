@@ -325,10 +325,22 @@ Last assistant message: "${activeConversationContext.lastAssistantMessage.substr
 ${message}`;
     }
 
+    // Build classifier prompt: static base + dynamic hints from enabled skills
+    let systemPrompt = getClassifierSystemPrompt();
+    const { buildClassifierHints } = require('../router/classifier');
+    const dynamicHints = buildClassifierHints();
+    if (dynamicHints) {
+      // Replace the static domain list with dynamic hints
+      systemPrompt = systemPrompt.replace(
+        /Domains:\n(?:- ".*\n)*/m,
+        `Domains:\n${dynamicHints}\n`,
+      );
+    }
+
     const response = await trackedCreate(client, {
       model: config.anthropic.classifierModel,
       max_tokens: 100,
-      system: getClassifierSystemPrompt(),
+      system: systemPrompt,
       messages: [{ role: 'user', content: classifierInput }],
     }, 'classify_message');
 

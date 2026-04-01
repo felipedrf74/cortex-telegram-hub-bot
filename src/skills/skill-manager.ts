@@ -12,8 +12,11 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { DomainName } from '../domains/types';
-import { DEFAULT_SKILLS, getSkillDefinition } from './skill-config';
-import type { SkillDefinition } from './skill-config';
+import {
+  DEFAULT_SKILLS, getSkillDefinition,
+  getPatternRoutes, getKeywordRoutes, getClassificationHints,
+} from './skill-config';
+import type { SkillDefinition, PatternRoute, KeywordRoute, ClassificationHint } from './skill-config';
 import * as registry from './registry';
 import { logger } from '../utils/logger';
 
@@ -194,6 +197,35 @@ export function disableSkill(domain: DomainName): boolean {
   const result = registry.disable(domain);
   if (result) invalidateToolCache();
   return result;
+}
+
+// ── Dynamic Routing ─────────────────────────────────────────────
+
+/** Get the set of currently enabled skill names from the DB registry. */
+function getEnabledSkillNames(): Set<string> {
+  const enabled = registry.getEnabled();
+  return new Set(enabled.map(s => s.name));
+}
+
+/** Get pattern routes filtered by enabled skills. */
+export function getEnabledPatternRoutes(): PatternRoute[] {
+  return getPatternRoutes(getEnabledSkillNames());
+}
+
+/** Get keyword routes filtered by enabled skills, ordered by priority. */
+export function getEnabledKeywordRoutes(): KeywordRoute[] {
+  return getKeywordRoutes(getEnabledSkillNames());
+}
+
+/** Get classification hints for enabled skills (for the Haiku classifier prompt). */
+export function getEnabledClassificationHints(): ClassificationHint[] {
+  return getClassificationHints(getEnabledSkillNames());
+}
+
+/** Check if a domain/skill name is currently enabled. */
+export function isSkillEnabled(name: string): boolean {
+  const skill = registry.getByName(name);
+  return !!skill && skill.enabled === 1;
 }
 
 // ── Query API ────────────────────────────────────────────────────

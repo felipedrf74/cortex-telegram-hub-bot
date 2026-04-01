@@ -35,12 +35,13 @@ export async function routeMessage(
   activeContext?: ConversationContext | null,
 ): Promise<RouteResult> {
   // Step 1: Try pattern matching (explicit /commands always win)
+  // Routes are now built dynamically from enabled skills
   const patternDomain = patternMatch(message);
   if (patternDomain) {
     const stripped = message.replace(/^\/\S+\s*/, '').trim();
     logger.debug({ domain: patternDomain, method: 'pattern' }, 'Routed by pattern');
     return {
-      domain: patternDomain,
+      domain: patternDomain as DomainName,
       method: 'pattern',
       confidence: 1.0,
       strippedMessage: stripped || message,
@@ -65,11 +66,12 @@ export async function routeMessage(
   }
 
   // Step 3: No active conversation — try keyword matching (free, no API call)
+  // Routes are built dynamically, with non-secretary checked first for specificity
   const kwDomain = keywordMatch(message);
   if (kwDomain) {
     logger.debug({ domain: kwDomain, method: 'keyword' }, 'Routed by keyword');
     return {
-      domain: kwDomain,
+      domain: kwDomain as DomainName,
       method: 'keyword',
       confidence: 0.9,
       strippedMessage: message,
