@@ -3,82 +3,251 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nexus Hub Status Portal</title>
+<title>Nexus Hub — Status Portal</title>
 <style>
+  /* ── Design Tokens ────────────────────────── */
   :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #242834;
-    --border: #2d3140;
-    --text: #e4e6eb;
-    --text2: #8b8fa3;
-    --accent: #6c5ce7;
-    --green: #00b894;
-    --red: #e17055;
-    --yellow: #fdcb6e;
-    --blue: #74b9ff;
-    --orange: #e17055;
+    --bg: #0a0c10;
+    --bg2: #0f1117;
+    --surface: #151820;
+    --surface2: #1c2030;
+    --surface3: #242834;
+    --border: #2a2e3e;
+    --border2: #353a4d;
+    --text: #e8eaf0;
+    --text2: #8b90a6;
+    --text3: #5a5f75;
+    --accent: #7c6cf0;
+    --accent2: #9b8ffa;
+    --green: #34d399;
+    --green-dim: rgba(52,211,153,.12);
+    --red: #f87171;
+    --red-dim: rgba(248,113,113,.12);
+    --yellow: #fbbf24;
+    --yellow-dim: rgba(251,191,36,.12);
+    --blue: #60a5fa;
+    --blue-dim: rgba(96,165,250,.12);
+    --purple: #a78bfa;
+    --purple-dim: rgba(167,139,250,.12);
+    --orange: #fb923c;
+    --orange-dim: rgba(251,146,60,.12);
+    --sidebar-w: 220px;
+    --header-h: 56px;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --radius-xs: 4px;
+    --shadow-card: 0 1px 3px rgba(0,0,0,.3), 0 0 0 1px var(--border);
+    --shadow-hover: 0 4px 12px rgba(0,0,0,.4), 0 0 0 1px var(--border2);
+    --transition: 150ms cubic-bezier(.4,0,.2,1);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
     background: var(--bg);
     color: var(--text);
-    line-height: 1.5;
+    line-height: 1.55;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Sidebar ──────────────────────────────── */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: var(--sidebar-w);
+    height: 100vh;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    transition: transform var(--transition);
+  }
+
+  .sidebar-brand {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: var(--header-h);
+  }
+
+  .sidebar-brand h1 {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+  }
+
+  .sidebar-brand .logo {
+    width: 26px;
+    height: 26px;
+    background: linear-gradient(135deg, var(--accent), var(--blue));
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-nav {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 10px;
+  }
+
+  .nav-section {
+    margin-bottom: 16px;
+  }
+
+  .nav-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text3);
+    padding: 4px 10px 6px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
+    color: var(--text2);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition);
+    text-decoration: none;
+    user-select: none;
+  }
+
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: rgba(124,108,240,.12); color: var(--accent2); }
+  .nav-item .nav-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+  .nav-item .nav-badge {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--red-dim);
+    color: var(--red);
+  }
+
+  .sidebar-footer {
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text3);
+  }
+
+  .sidebar-footer .version { font-family: 'SF Mono', 'Fira Code', monospace; }
+
+  /* ── Mobile sidebar toggle ────────────────── */
+  .sidebar-toggle {
+    display: none;
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 300;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 18px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ── Main Content ─────────────────────────── */
+  .main {
+    margin-left: var(--sidebar-w);
     min-height: 100vh;
   }
 
-  .header {
-    background: var(--surface);
+  /* ── Top Bar ──────────────────────────────── */
+  .topbar {
+    height: var(--header-h);
+    background: var(--bg2);
     border-bottom: 1px solid var(--border);
-    padding: 16px 24px;
+    padding: 0 28px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     position: sticky;
     top: 0;
     z-index: 100;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
   }
 
-  .header h1 {
-    font-size: 20px;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .header-right {
+  .topbar-left {
     display: flex;
     align-items: center;
     gap: 16px;
-    font-size: 13px;
+  }
+
+  .topbar-left h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 12px;
     color: var(--text2);
   }
 
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    margin-right: 4px;
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--green-dim);
+    color: var(--green);
   }
 
-  .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-  .dot-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
-  .dot-yellow { background: var(--yellow); }
+  .status-pill.warn { background: var(--yellow-dim); color: var(--yellow); }
+  .status-pill.err { background: var(--red-dim); color: var(--red); }
 
-  /* ── Health Summary Bar ───────────────── */
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  .dot-green { background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,.5); }
+  .dot-red { background: var(--red); box-shadow: 0 0 8px rgba(248,113,113,.5); }
+  .dot-yellow { background: var(--yellow); box-shadow: 0 0 6px rgba(251,191,36,.4); }
+
+  /* ── Health Summary Bar ───────────────────── */
   .health-bar {
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    padding: 10px 24px;
+    padding: 10px 28px;
     display: flex;
     align-items: center;
-    gap: 24px;
-    font-size: 13px;
+    gap: 28px;
+    font-size: 12px;
     overflow-x: auto;
     white-space: nowrap;
   }
@@ -92,73 +261,149 @@
 
   .health-item .val {
     color: var(--text);
-    font-weight: 600;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
   }
 
   .health-sep {
     color: var(--border);
-    font-size: 16px;
+    font-size: 10px;
   }
 
+  /* ── Page Container ───────────────────────── */
   .container {
-    max-width: 1400px;
+    max-width: 1440px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 24px 28px 60px;
+  }
+
+  /* ── Section Headers ──────────────────────── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 32px 0 16px;
+    padding-top: 8px;
+  }
+
+  .section-header:first-child { margin-top: 0; }
+
+  .section-header h2 {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text2);
+  }
+
+  .section-header .section-line {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .section-header .section-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--surface2);
+    color: var(--text3);
+    font-weight: 600;
+  }
+
+  /* ── Card System ──────────────────────────── */
+  .grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
     gap: 16px;
   }
+
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-full { grid-template-columns: 1fr; }
 
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius);
     padding: 20px;
+    transition: box-shadow var(--transition);
   }
 
+  .card:hover { box-shadow: var(--shadow-hover); }
   .card-full { grid-column: 1 / -1; }
 
-  .card h2 {
-    font-size: 14px;
-    font-weight: 600;
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text2);
-    margin-bottom: 16px;
     display: flex;
     align-items: center;
     gap: 8px;
   }
 
-  /* ── Stats Grid ────────────────────────── */
-  .stats-grid {
+  .card-title .icon { font-size: 15px; }
+
+  .card-subtitle {
+    font-size: 11px;
+    color: var(--text3);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* ── Stat Boxes ───────────────────────────── */
+  .stats-row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 10px;
   }
 
   .stat-box {
     background: var(--surface2);
-    border-radius: 8px;
-    padding: 12px;
+    border-radius: var(--radius-sm);
+    padding: 14px 12px;
     text-align: center;
+    border: 1px solid transparent;
+    transition: border-color var(--transition);
   }
 
+  .stat-box:hover { border-color: var(--border2); }
+
   .stat-value {
-    font-size: 24px;
-    font-weight: 700;
+    font-size: 22px;
+    font-weight: 800;
+    font-feature-settings: 'tnum' 1;
+    letter-spacing: -0.5px;
     color: var(--text);
+    line-height: 1.2;
   }
 
   .stat-label {
-    font-size: 11px;
-    color: var(--text2);
+    font-size: 10px;
+    color: var(--text3);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
     margin-top: 4px;
+    font-weight: 600;
   }
 
-  /* ── Tables ────────────────────────────── */
+  /* ── Tables ───────────────────────────────── */
   table {
     width: 100%;
     border-collapse: collapse;
@@ -168,74 +413,85 @@
   th {
     text-align: left;
     padding: 8px 12px;
-    color: var(--text2);
-    font-weight: 500;
-    border-bottom: 1px solid var(--border);
-    font-size: 11px;
+    color: var(--text3);
+    font-weight: 600;
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid var(--border);
   }
 
   td {
     padding: 8px 12px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid rgba(42,46,62,.5);
     vertical-align: middle;
   }
 
   tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(28,32,48,.4); }
 
+  /* ── Badges ───────────────────────────────── */
   .badge {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.2px;
   }
 
-  .badge-success, .badge-sent { background: rgba(0,184,148,.15); color: var(--green); }
-  .badge-failed { background: rgba(225,112,85,.15); color: var(--red); }
-  .badge-running { background: rgba(116,185,255,.15); color: var(--blue); }
-  .badge-never { background: rgba(139,143,163,.15); color: var(--text2); }
-  .badge-configured { background: rgba(0,184,148,.15); color: var(--green); }
-  .badge-not-configured { background: rgba(139,143,163,.15); color: var(--text2); }
+  .badge-success, .badge-sent { background: var(--green-dim); color: var(--green); }
+  .badge-failed { background: var(--red-dim); color: var(--red); }
+  .badge-running { background: var(--blue-dim); color: var(--blue); }
+  .badge-never { background: rgba(90,95,117,.12); color: var(--text3); }
+  .badge-configured { background: var(--green-dim); color: var(--green); }
+  .badge-not-configured { background: rgba(90,95,117,.12); color: var(--text3); }
 
-  /* ── Domain Tags ───────────────────────── */
+  /* ── Domain Tags ──────────────────────────── */
   .domain-tag {
     display: inline-block;
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 9px;
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    vertical-align: middle;
+    letter-spacing: 0.4px;
   }
 
-  .domain-secretary  { background: rgba(116,185,255,.15); color: #74b9ff; }
-  .domain-triathlon  { background: rgba(0,184,148,.15);   color: #00b894; }
-  .domain-content    { background: rgba(253,203,110,.15); color: #fdcb6e; }
-  .domain-invoices   { background: rgba(162,155,254,.15); color: #a29bfe; }
-  .domain-system     { background: rgba(139,143,163,.1);  color: var(--text2); }
+  .domain-secretary  { background: var(--blue-dim);   color: var(--blue); }
+  .domain-triathlon  { background: var(--green-dim);   color: var(--green); }
+  .domain-content    { background: var(--yellow-dim);  color: var(--yellow); }
+  .domain-invoices   { background: var(--purple-dim);  color: var(--purple); }
+  .domain-system     { background: rgba(90,95,117,.1); color: var(--text2); }
 
-  /* ── Domain Handler Cards ────────────────── */
+  /* ── Domain Handler Cards ─────────────────── */
+  .domain-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill,minmax(320px,1fr));
+    gap: 12px;
+  }
+
   .domain-card {
     background: var(--surface2);
-    border-radius: 10px;
+    border-radius: var(--radius);
     padding: 16px;
-    border-left: 4px solid var(--accent);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+    border-left: 3px solid var(--accent);
+    transition: box-shadow var(--transition);
   }
+
+  .domain-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.3); }
 
   .domain-card-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    margin-bottom: 10px;
   }
 
   .domain-card-header h3 {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
     display: flex;
     align-items: center;
@@ -245,21 +501,18 @@
 
   .domain-card-stats {
     display: flex;
-    gap: 16px;
+    gap: 14px;
     font-size: 12px;
     color: var(--text2);
+    margin-bottom: 8px;
   }
 
-  .domain-card-stats .val {
-    color: var(--text);
-    font-weight: 600;
-  }
+  .domain-card-stats .val { color: var(--text); font-weight: 700; }
 
   .domain-card-details {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    font-size: 11px;
+    gap: 6px;
   }
 
   .domain-detail-chip {
@@ -267,183 +520,22 @@
     align-items: center;
     gap: 4px;
     padding: 3px 8px;
-    border-radius: 4px;
-    background: rgba(139,143,163,.08);
-    color: var(--text2);
-  }
-
-  .domain-detail-chip.ok { background: rgba(0,184,148,.1); color: var(--green); }
-  .domain-detail-chip.warn { background: rgba(225,112,85,.1); color: var(--red); }
-
-  /* ── Skill Toggle Switch ──────────────────── */
-  .toggle-switch {
-    position: relative;
-    width: 36px;
-    height: 20px;
-    flex-shrink: 0;
-  }
-
-  .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .toggle-slider {
-    position: absolute;
-    cursor: pointer;
-    inset: 0;
-    background: var(--border);
-    border-radius: 20px;
-    transition: background .2s;
-  }
-
-  .toggle-slider::before {
-    content: '';
-    position: absolute;
-    width: 14px;
-    height: 14px;
-    left: 3px;
-    bottom: 3px;
-    background: var(--text2);
-    border-radius: 50%;
-    transition: transform .2s, background .2s;
-  }
-
-  .toggle-switch input:checked + .toggle-slider {
-    background: var(--green);
-  }
-
-  .toggle-switch input:checked + .toggle-slider::before {
-    transform: translateX(16px);
-    background: #fff;
-  }
-
-  .toggle-switch input:disabled + .toggle-slider {
-    opacity: .4;
-    cursor: not-allowed;
-  }
-
-  /* ── Skill Cards ────────────────────────── */
-  .skill-card {
-    background: var(--surface2);
-    border-radius: 10px;
-    padding: 16px;
-    border-left: 4px solid var(--accent);
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .skill-card.disabled {
-    opacity: .55;
-    border-left-color: var(--text2);
-  }
-
-  .skill-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .skill-card-header h3 {
-    font-size: 15px;
-    font-weight: 600;
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .skill-card-desc {
-    font-size: 12px;
-    color: var(--text2);
-    margin-top: 2px;
-  }
-
-  .skill-submodules {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .submodule-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 10px;
-    border-radius: 6px;
-    background: rgba(139,143,163,.06);
-    font-size: 12px;
-  }
-
-  .submodule-row .sub-name {
-    font-weight: 500;
-    color: var(--text);
-  }
-
-  .submodule-row .sub-desc {
-    color: var(--text2);
-    margin-left: 6px;
-    font-weight: 400;
-  }
-
-  .submodule-row .sub-tools {
+    border-radius: var(--radius-xs);
     font-size: 11px;
-    color: var(--text2);
-    margin-left: auto;
-    margin-right: 10px;
-  }
-
-  /* ── Skill Package Cards ────────────────── */
-  .skill-package-card {
-    background: var(--surface2); border-radius: 8px; padding: 14px 16px;
-  }
-  .skill-package-card h3 {
-    font-size: 14px; margin: 0 0 4px; text-transform: capitalize;
-  }
-  .skill-version { font-weight: 400; font-size: 11px; color: var(--muted); }
-  .skill-desc { font-size: 12px; color: var(--muted); margin: 0 0 10px; display: block; }
-  .sub-skill-list { display: flex; flex-direction: column; gap: 6px; }
-  .sub-skill-card {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px; border-radius: 6px; cursor: pointer;
-    background: var(--surface); transition: opacity .2s;
-  }
-  .sub-skill-card.disabled { opacity: .45; }
-  .sub-skill-icon { font-size: 18px; flex-shrink: 0; }
-  .sub-skill-info { flex: 1; min-width: 0; }
-  .sub-skill-info strong { font-size: 12px; display: block; text-transform: capitalize; }
-  .sub-skill-desc { font-size: 11px; color: var(--muted); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sub-skill-meta { font-size: 10px; color: var(--muted); }
-  .sub-skill-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .sub-skill-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    background: rgba(139,143,163,.08);
+    background: rgba(90,95,117,.08);
     color: var(--text2);
   }
-  .sub-skill-chip.on { background: rgba(0,184,148,.1); color: var(--green); }
-  .sub-skill-chip.off { background: rgba(225,112,85,.08); color: var(--red); }
-  .sub-skill-tools { font-size: 10px; color: var(--text2); opacity: .7; }
 
-  /* ── Daily Timeline ─────────────────────── */
+  .domain-detail-chip.ok { background: var(--green-dim); color: var(--green); }
+  .domain-detail-chip.warn { background: var(--red-dim); color: var(--red); }
+
+  /* ── Timeline ─────────────────────────────── */
   .timeline-wrap {
     position: relative;
     height: 80px;
     background: var(--surface2);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     overflow: hidden;
-    margin-bottom: 12px;
   }
 
   .timeline-track {
@@ -462,14 +554,14 @@
     top: 0;
     bottom: 0;
     width: 1px;
-    background: rgba(45,49,64,.8);
+    background: rgba(42,46,62,.7);
   }
 
   .timeline-hour-label {
     position: absolute;
-    bottom: 2px;
+    bottom: 3px;
     font-size: 9px;
-    color: var(--text2);
+    color: var(--text3);
     transform: translateX(-50%);
     font-family: 'SF Mono', 'Fira Code', monospace;
   }
@@ -478,7 +570,7 @@
     position: absolute;
     top: 6px;
     height: 24px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     font-size: 10px;
     color: #fff;
     padding: 3px 6px;
@@ -507,11 +599,29 @@
     left: 4px;
     font-size: 8px;
     color: var(--red);
-    font-weight: 700;
+    font-weight: 800;
     letter-spacing: 0.5px;
   }
 
-  /* ── Monthly Calendar View ─────────────────── */
+  .timeline-legend {
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .timeline-legend-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 3px;
+  }
+
+  /* ── Calendar ─────────────────────────────── */
   .cal-header {
     display: flex;
     align-items: center;
@@ -520,74 +630,77 @@
   }
 
   .cal-header h3 {
-    font-size: 18px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 700;
     color: var(--text);
     margin: 0;
   }
 
   .cal-nav {
     display: flex;
-    gap: 6px;
+    gap: 4px;
   }
 
   .cal-nav button {
     background: var(--surface2);
     border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    padding: 4px 12px;
+    border-radius: var(--radius-sm);
+    color: var(--text2);
+    padding: 5px 12px;
     font-size: 12px;
     cursor: pointer;
     font-family: inherit;
+    font-weight: 500;
+    transition: all var(--transition);
   }
 
-  .cal-nav button:hover { border-color: var(--accent); }
-  .cal-nav button.active { background: var(--accent); border-color: var(--accent); }
+  .cal-nav button:hover { border-color: var(--accent); color: var(--text); }
+  .cal-nav button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .cal-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius);
     overflow: hidden;
   }
 
   .cal-dow {
     background: var(--surface2);
-    padding: 6px 4px;
+    padding: 8px 4px;
     text-align: center;
     font-size: 10px;
-    font-weight: 600;
-    color: var(--text2);
+    font-weight: 700;
+    color: var(--text3);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     border-bottom: 1px solid var(--border);
   }
 
   .cal-day {
-    min-height: 90px;
+    min-height: 88px;
     border-bottom: 1px solid var(--border);
     border-right: 1px solid var(--border);
     padding: 4px;
     background: var(--surface);
     position: relative;
+    transition: background var(--transition);
   }
 
   .cal-day:nth-child(7n) { border-right: none; }
-  .cal-day.outside { background: var(--bg); opacity: 0.4; }
-  .cal-day.today { background: rgba(108,92,231,.06); }
+  .cal-day.outside { background: var(--bg); opacity: 0.35; }
+  .cal-day.today { background: rgba(124,108,240,.05); }
 
   .cal-day-num {
     font-size: 12px;
-    font-weight: 600;
-    color: var(--text2);
+    font-weight: 700;
+    color: var(--text3);
     padding: 2px 4px;
     margin-bottom: 2px;
   }
 
   .cal-day.today .cal-day-num {
-    background: var(--red);
+    background: var(--accent);
     color: #fff;
     border-radius: 50%;
     width: 22px;
@@ -612,14 +725,14 @@
     border-left: 3px solid;
   }
 
-  .cal-event.success { background: rgba(0,184,148,.1); border-color: var(--green); color: var(--green); }
-  .cal-event.failed  { background: rgba(225,112,85,.1); border-color: var(--red); color: var(--red); }
-  .cal-event.scheduled { background: rgba(139,143,163,.08); border-color: var(--text2); color: var(--text2); }
+  .cal-event.success { background: var(--green-dim); border-color: var(--green); color: var(--green); }
+  .cal-event.failed  { background: var(--red-dim); border-color: var(--red); color: var(--red); }
+  .cal-event.scheduled { background: rgba(90,95,117,.08); border-color: var(--text3); color: var(--text3); }
 
-  .cal-event.domain-secretary  { border-color: #74b9ff; }
-  .cal-event.domain-triathlon  { border-color: #00b894; }
-  .cal-event.domain-content    { border-color: #fdcb6e; }
-  .cal-event.domain-invoices   { border-color: #a29bfe; }
+  .cal-event.domain-secretary  { border-color: var(--blue); }
+  .cal-event.domain-triathlon  { border-color: var(--green); }
+  .cal-event.domain-content    { border-color: var(--yellow); }
+  .cal-event.domain-invoices   { border-color: var(--purple); }
   .cal-event.domain-system     { border-color: var(--text2); }
 
   .cal-more {
@@ -651,7 +764,7 @@
     display: inline-block;
   }
 
-  /* ── Sparkline ──────────────────────────── */
+  /* ── Sparkline ────────────────────────────── */
   .sparkline {
     display: inline-flex;
     align-items: flex-end;
@@ -669,33 +782,46 @@
   .spark-bar.ok { background: var(--green); }
   .spark-bar.fail { background: var(--red); }
 
-  /* ── Action Buttons ────────────────────── */
+  /* ── Action Buttons ───────────────────────── */
   .actions-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 8px;
   }
 
   .action-btn {
     background: var(--surface2);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    padding: 9px 14px;
     color: var(--text);
     font-size: 13px;
     cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
+    transition: all var(--transition);
+    display: inline-flex;
     align-items: center;
     gap: 8px;
     font-family: inherit;
+    font-weight: 500;
   }
 
-  .action-btn:hover { border-color: var(--accent); background: rgba(108,92,231,.1); }
-  .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .action-btn .icon { font-size: 16px; }
+  .action-btn:hover { border-color: var(--accent); background: rgba(124,108,240,.08); }
+  .action-btn:active { transform: scale(.98); }
+  .action-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .action-btn .icon { font-size: 15px; }
 
-  /* ── Activity Log ──────────────────────── */
+  .action-group-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* ── Activity Log ─────────────────────────── */
   .activity-list {
     max-height: 400px;
     overflow-y: auto;
@@ -706,17 +832,17 @@
     align-items: flex-start;
     gap: 10px;
     padding: 6px 0;
-    border-bottom: 1px solid rgba(45,49,64,.5);
+    border-bottom: 1px solid rgba(42,46,62,.4);
     font-size: 13px;
   }
 
   .event-row:last-child { border-bottom: none; }
 
   .event-time {
-    color: var(--text2);
+    color: var(--text3);
     font-size: 11px;
     white-space: nowrap;
-    min-width: 60px;
+    min-width: 50px;
     font-family: 'SF Mono', 'Fira Code', monospace;
   }
 
@@ -729,52 +855,19 @@
   .event-summary {
     flex: 1;
     word-break: break-word;
+    color: var(--text2);
   }
 
-  /* ── Toast ─────────────────────────────── */
-  .toast {
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 20px;
-    font-size: 13px;
-    z-index: 200;
-    transition: opacity 0.3s;
-    max-width: 400px;
-  }
-
-  .toast.ok { border-color: var(--green); }
-  .toast.err { border-color: var(--red); }
-
-  /* ── Responsive ────────────────────────── */
-  @media (max-width: 900px) {
-    .container { grid-template-columns: 1fr; }
-    .health-bar { flex-wrap: wrap; gap: 12px; }
-  }
-
-  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
-  .text-green { color: var(--green); }
-  .text-red { color: var(--red); }
-  .text-yellow { color: var(--yellow); }
-  .text-muted { color: var(--text2); }
-  .text-right { text-align: right; }
-
-  /* ── Integration Health ─────────────────── */
-  .int-group {
-    margin-bottom: 14px;
-  }
-
+  /* ── Integration Health ───────────────────── */
+  .int-group { margin-bottom: 14px; }
   .int-group:last-child { margin-bottom: 0; }
 
   .int-group-label {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text2);
+    letter-spacing: 0.6px;
+    color: var(--text3);
     margin-bottom: 6px;
     display: flex;
     align-items: center;
@@ -785,8 +878,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 10px;
-    border-radius: 6px;
+    padding: 7px 12px;
+    border-radius: var(--radius-sm);
     background: var(--surface2);
     margin-bottom: 4px;
     font-size: 13px;
@@ -813,15 +906,15 @@
     align-items: center;
     gap: 4px;
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     font-size: 11px;
     font-weight: 600;
   }
 
-  .int-health.valid     { background: rgba(0,184,148,.15); color: var(--green); }
-  .int-health.expired   { background: rgba(225,112,85,.15); color: var(--red); }
-  .int-health.warning   { background: rgba(253,203,110,.15); color: var(--yellow); }
-  .int-health.not_configured { background: rgba(139,143,163,.1); color: var(--text2); }
+  .int-health.valid     { background: var(--green-dim); color: var(--green); }
+  .int-health.expired   { background: var(--red-dim); color: var(--red); }
+  .int-health.warning   { background: var(--yellow-dim); color: var(--yellow); }
+  .int-health.not_configured { background: rgba(90,95,117,.1); color: var(--text3); }
 
   .int-alert {
     display: inline-block;
@@ -839,7 +932,7 @@
     50% { opacity: 0.4; }
   }
 
-  /* ── AI Provider Cards ──────────────────── */
+  /* ── AI Provider Cards ────────────────────── */
   .provider-cards {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -849,15 +942,17 @@
 
   .provider-card {
     background: var(--surface2);
-    border-radius: 10px;
-    padding: 14px;
+    border-radius: var(--radius);
+    padding: 16px;
     border-top: 3px solid var(--accent);
     position: relative;
+    transition: box-shadow var(--transition);
   }
 
+  .provider-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.3); }
   .provider-card.primary { border-top-color: var(--green); }
   .provider-card.fallback { border-top-color: var(--yellow); }
-  .provider-card.unconfigured { border-top-color: var(--border); opacity: 0.6; }
+  .provider-card.unconfigured { border-top-color: var(--border); opacity: 0.5; }
 
   .provider-card-header {
     display: flex;
@@ -868,7 +963,7 @@
 
   .provider-card-header h3 {
     font-size: 14px;
-    font-weight: 600;
+    font-weight: 700;
     margin: 0;
     display: flex;
     align-items: center;
@@ -877,15 +972,15 @@
 
   .provider-role {
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    padding: 2px 6px;
-    border-radius: 3px;
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
   }
 
-  .provider-role.primary { background: rgba(0,184,148,.15); color: var(--green); }
-  .provider-role.fallback { background: rgba(253,203,110,.15); color: var(--yellow); }
+  .provider-role.primary { background: var(--green-dim); color: var(--green); }
+  .provider-role.fallback { background: var(--yellow-dim); color: var(--yellow); }
 
   .provider-meta {
     font-size: 11px;
@@ -899,27 +994,28 @@
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 11px;
     color: var(--text);
-    background: rgba(139,143,163,.08);
-    padding: 2px 6px;
-    border-radius: 3px;
+    background: rgba(90,95,117,.08);
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
     display: inline-block;
   }
 
   .provider-cost {
-    font-size: 18px;
-    font-weight: 700;
+    font-size: 20px;
+    font-weight: 800;
     color: var(--text);
-    margin-top: 8px;
+    margin-top: 10px;
+    letter-spacing: -0.5px;
   }
 
   .provider-cost-label {
     font-size: 10px;
-    color: var(--text2);
+    color: var(--text3);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
-  /* ── Fallback Chain ────────────────────────── */
+  /* ── Fallback Chain ───────────────────────── */
   .fallback-chains {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -929,16 +1025,16 @@
 
   .chain-card {
     background: var(--surface2);
-    border-radius: 8px;
-    padding: 12px;
+    border-radius: var(--radius-sm);
+    padding: 14px;
   }
 
   .chain-label {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text2);
+    letter-spacing: 0.6px;
+    color: var(--text3);
     margin-bottom: 10px;
   }
 
@@ -952,8 +1048,8 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 10px;
-    border-radius: 6px;
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
     font-size: 12px;
     font-weight: 600;
     border: 1px solid var(--border);
@@ -962,24 +1058,24 @@
 
   .chain-node.active { border-color: var(--green); color: var(--green); }
   .chain-node.standby { border-color: var(--border); color: var(--text2); }
-  .chain-node.disabled { border-color: var(--border); color: var(--border); opacity: 0.5; }
+  .chain-node.disabled { border-color: var(--border); color: var(--text3); opacity: 0.5; }
 
   .chain-arrow {
-    color: var(--text2);
+    color: var(--text3);
     font-size: 14px;
     flex-shrink: 0;
   }
 
   .chain-cb-info {
     font-size: 10px;
-    color: var(--text2);
+    color: var(--text3);
     margin-top: 8px;
   }
 
-  /* ── Cost Breakdown Bar ────────────────────── */
+  /* ── Cost Bar ─────────────────────────────── */
   .cost-bar-container {
     background: var(--surface2);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 14px;
   }
 
@@ -992,7 +1088,7 @@
 
   .cost-bar-track {
     height: 20px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
     display: flex;
     background: var(--border);
@@ -1026,509 +1122,671 @@
     display: inline-block;
   }
 
-  @media (max-width: 900px) {
+  /* ── Form Inputs ──────────────────────────── */
+  .input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color var(--transition);
+  }
+
+  .input:focus { border-color: var(--accent); }
+  .input::placeholder { color: var(--text3); }
+
+  /* ── Toast ────────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 20px;
+    font-size: 13px;
+    z-index: 500;
+    transition: all 0.3s ease;
+    max-width: 400px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  }
+
+  .toast.ok { border-color: var(--green); }
+  .toast.err { border-color: var(--red); }
+
+  /* ── Scrollbars ───────────────────────────── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border2); }
+
+  /* ── Utility Classes ──────────────────────── */
+  .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+  .text-green { color: var(--green); }
+  .text-red { color: var(--red); }
+  .text-yellow { color: var(--yellow); }
+  .text-blue { color: var(--blue); }
+  .text-muted { color: var(--text2); }
+  .text-dim { color: var(--text3); }
+  .text-right { text-align: right; }
+  .text-center { text-align: center; }
+  .fw-700 { font-weight: 700; }
+  .gap-sm { gap: 8px; }
+  .mb-12 { margin-bottom: 12px; }
+  .mb-16 { margin-bottom: 16px; }
+  .mt-12 { margin-top: 12px; }
+
+  /* ── Responsive ───────────────────────────── */
+  @media (max-width: 1100px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .grid-3 { grid-template-columns: 1fr; }
     .provider-cards { grid-template-columns: 1fr; }
     .fallback-chains { grid-template-columns: 1fr; }
   }
 
-  /* scrollbar */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  @media (max-width: 768px) {
+    .sidebar { transform: translateX(-100%); }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-toggle { display: flex; }
+    .main { margin-left: 0; }
+    .topbar { padding: 0 16px 0 56px; }
+    .health-bar { padding: 10px 16px; gap: 16px; }
+    .container { padding: 16px; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .actions-grid { grid-template-columns: 1fr; }
+    .domain-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Overlay for mobile sidebar ───────────── */
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 199;
+  }
+
+  .sidebar-overlay.open { display: block; }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <h1>🧠 Nexus Hub Status Portal</h1>
-  <div class="header-right">
-    <span id="uptime"></span>
-    <span id="poll-status"><span class="status-dot dot-yellow"></span> connecting…</span>
+<!-- Mobile sidebar toggle -->
+<button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+<div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<!-- ── Sidebar ────────────────────────────────── -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="logo">🧠</div>
+    <h1>Nexus Hub</h1>
   </div>
-</div>
-
-<!-- ── Feature #5: Health Summary Bar ──────── -->
-<div class="health-bar" id="health-bar">
-  <div class="health-item">⏱️ Jobs: <span class="val" id="hb-jobs">—</span></div>
-  <span class="health-sep">|</span>
-  <div class="health-item">📧 Emails today: <span class="val" id="hb-emails">—</span></div>
-  <span class="health-sep">|</span>
-  <div class="health-item">💰 API cost: <span class="val" id="hb-api">—</span></div>
-  <span class="health-sep">|</span>
-  <div class="health-item">🧾 Invoices: <span class="val" id="hb-invoices">—</span></div>
-  <span class="health-sep">|</span>
-  <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
-  <span class="health-sep" id="hb-queue-sep" style="display:none">|</span>
-  <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
-</div>
-
-<div class="container">
-
-  <!-- ── Feature #2: Daily Timeline ──────────── -->
-  <div class="card card-full">
-    <h2>📅 Today's Timeline</h2>
-    <div class="timeline-wrap" id="timeline">
-      <div class="timeline-hour-marks" id="timeline-hours"></div>
-      <div class="timeline-track" id="timeline-track"></div>
+  <nav class="sidebar-nav">
+    <div class="nav-section">
+      <div class="nav-section-label">Overview</div>
+      <a class="nav-item active" href="#overview" onclick="scrollToSection('overview')">
+        <span class="nav-icon">📊</span> Dashboard
+      </a>
+      <a class="nav-item" href="#timeline" onclick="scrollToSection('timeline')">
+        <span class="nav-icon">📅</span> Timeline
+      </a>
+      <a class="nav-item" href="#calendar" onclick="scrollToSection('calendar')">
+        <span class="nav-icon">🗓️</span> Calendar
+      </a>
     </div>
-    <div style="display:flex;gap:14px;font-size:11px;color:var(--text2);margin-top:4px;flex-wrap:wrap">
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#74b9ff;vertical-align:middle"></span> Secretary</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00b894;vertical-align:middle"></span> Triathlon</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#fdcb6e;vertical-align:middle"></span> Content</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#a29bfe;vertical-align:middle"></span> Invoices</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#8b8fa3;vertical-align:middle"></span> System</span>
-      <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--orange);vertical-align:middle"></span> Emails</span>
-      <span><span style="display:inline-block;width:2px;height:10px;background:var(--red);vertical-align:middle"></span> Now</span>
+    <div class="nav-section">
+      <div class="nav-section-label">System</div>
+      <a class="nav-item" href="#domains" onclick="scrollToSection('domains')">
+        <span class="nav-icon">🧩</span> Domains
+      </a>
+      <a class="nav-item" href="#jobs" onclick="scrollToSection('jobs')">
+        <span class="nav-icon">⏱️</span> Jobs
+      </a>
+      <a class="nav-item" href="#integrations" onclick="scrollToSection('integrations')">
+        <span class="nav-icon">🔗</span> Integrations
+      </a>
+      <a class="nav-item" href="#ai-providers" onclick="scrollToSection('ai-providers')">
+        <span class="nav-icon">🤖</span> AI Providers
+      </a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Data</div>
+      <a class="nav-item" href="#emails" onclick="scrollToSection('emails')">
+        <span class="nav-icon">📧</span> Emails
+      </a>
+      <a class="nav-item" href="#invoices" onclick="scrollToSection('invoices')">
+        <span class="nav-icon">🧾</span> Invoices
+      </a>
+      <a class="nav-item" href="#content" onclick="scrollToSection('content')">
+        <span class="nav-icon">📚</span> Content
+      </a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Agents</div>
+      <a class="nav-item" href="#agent-mesh" onclick="scrollToSection('agent-mesh')">
+        <span class="nav-icon">🕸️</span> Agent Mesh
+      </a>
+      <a class="nav-item" href="#books" onclick="scrollToSection('books')">
+        <span class="nav-icon">📖</span> Book Library
+      </a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Operations</div>
+      <a class="nav-item" href="#actions" onclick="scrollToSection('actions')">
+        <span class="nav-icon">⚡</span> Quick Actions
+      </a>
+      <a class="nav-item" href="#activity" onclick="scrollToSection('activity')">
+        <span class="nav-icon">📋</span> Activity Log
+      </a>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <span class="version" id="sidebar-uptime">—</span>
+  </div>
+</aside>
+
+<!-- ── Main Content ───────────────────────────── -->
+<div class="main">
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <h2>Status Portal</h2>
+    </div>
+    <div class="topbar-right">
+      <span id="uptime" class="text-dim"></span>
+      <span id="poll-status" class="status-pill warn"><span class="status-dot dot-yellow"></span> connecting…</span>
     </div>
   </div>
 
-  <!-- ── Monthly Calendar View ─────────────── -->
-  <div class="card card-full">
-    <h2>🗓️ Job Calendar</h2>
-    <div class="cal-header">
-      <h3 id="cal-title">March 2026</h3>
-      <div class="cal-nav">
-        <button onclick="calNavigate(-1)">&lt;</button>
-        <button onclick="calNavigate(0)" class="active">Today</button>
-        <button onclick="calNavigate(1)">&gt;</button>
+  <!-- Health Summary Bar -->
+  <div class="health-bar" id="health-bar">
+    <div class="health-item">⏱️ Jobs: <span class="val" id="hb-jobs">—</span></div>
+    <span class="health-sep">·</span>
+    <div class="health-item">📧 Emails: <span class="val" id="hb-emails">—</span></div>
+    <span class="health-sep">·</span>
+    <div class="health-item">💰 Cost: <span class="val" id="hb-api">—</span></div>
+    <span class="health-sep">·</span>
+    <div class="health-item">🧾 Invoices: <span class="val" id="hb-invoices">—</span></div>
+    <span class="health-sep" id="hb-queue-sep" style="display:none">·</span>
+    <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
+    <span class="health-sep">·</span>
+    <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
+  </div>
+
+  <div class="container">
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- OVERVIEW SECTION                            -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="overview">
+      <h2>Overview</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="grid grid-2">
+      <!-- Bot Status -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title"><span class="icon">🤖</span> Bot Status</span>
+        </div>
+        <div class="stats-row" id="bot-stats">
+          <div class="stat-box">
+            <div class="stat-value" id="bot-polling">—</div>
+            <div class="stat-label">Polling</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="bot-last-msg">—</div>
+            <div class="stat-label">Last Message</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="bot-uptime">—</div>
+            <div class="stat-label">Uptime</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- API Usage -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title"><span class="icon">📊</span> API Usage</span>
+        </div>
+        <div class="stats-row" id="api-stats">
+          <div class="stat-box">
+            <div class="stat-value" id="api-today-cost">—</div>
+            <div class="stat-label">Today Cost</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="api-today-calls">—</div>
+            <div class="stat-label">Today Calls</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="api-7d-cost">—</div>
+            <div class="stat-label">7-Day Cost</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="api-30d-cost">—</div>
+            <div class="stat-label">30-Day Cost</div>
+          </div>
+        </div>
+        <table class="mt-12" id="api-categories">
+          <thead><tr><th>Category (7d)</th><th class="text-right">Calls</th><th class="text-right">Cost</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
-    <div class="cal-grid" id="cal-grid"></div>
-    <div class="cal-legend">
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(0,184,148,.3)"></span> Success</span>
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(225,112,85,.3)"></span> Failed</span>
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(139,143,163,.2)"></span> Scheduled</span>
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #74b9ff;width:7px"></span> Secretary</span>
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #00b894;width:7px"></span> Triathlon</span>
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #fdcb6e;width:7px"></span> Content</span>
-      <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid #a29bfe;width:7px"></span> Invoices</span>
-    </div>
-  </div>
 
-  <!-- ── Bot & System ──────────────────────── -->
-  <div class="card">
-    <h2>🤖 Bot Status</h2>
-    <div class="stats-grid" id="bot-stats">
-      <div class="stat-box">
-        <div class="stat-value" id="bot-polling">—</div>
-        <div class="stat-label">Polling</div>
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- TIMELINE SECTION                            -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="timeline">
+      <h2>Today's Timeline</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="card">
+      <div class="timeline-wrap" id="timeline-view">
+        <div class="timeline-hour-marks" id="timeline-hours"></div>
+        <div class="timeline-track" id="timeline-track"></div>
       </div>
-      <div class="stat-box">
-        <div class="stat-value" id="bot-last-msg">—</div>
-        <div class="stat-label">Last Message</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="bot-uptime">—</div>
-        <div class="stat-label">Uptime</div>
+      <div class="timeline-legend">
+        <span><span class="timeline-legend-dot" style="background:var(--blue)"></span>Secretary</span>
+        <span><span class="timeline-legend-dot" style="background:var(--green)"></span>Triathlon</span>
+        <span><span class="timeline-legend-dot" style="background:var(--yellow)"></span>Content</span>
+        <span><span class="timeline-legend-dot" style="background:var(--purple)"></span>Invoices</span>
+        <span><span class="timeline-legend-dot" style="background:var(--text2)"></span>System</span>
+        <span><span class="timeline-legend-dot" style="background:var(--orange)"></span>Emails</span>
+        <span><span style="display:inline-block;width:2px;height:10px;background:var(--red);vertical-align:middle;margin-right:3px"></span>Now</span>
       </div>
     </div>
-  </div>
 
-  <!-- ── Skill Packages ────────────────────── -->
-  <div class="card card-full">
-    <h2>🧩 Skill Packages <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Sub-skill toggles</span></h2>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px" id="skill-packages"></div>
-  </div>
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- CALENDAR SECTION                            -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="calendar">
+      <h2>Job Calendar</h2>
+      <div class="section-line"></div>
+    </div>
 
-  <!-- ── Domain Handlers ───────────────────── -->
-  <div class="card card-full">
-    <h2>🔧 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Runtime status</span></h2>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="domain-handlers"></div>
-  </div>
-
-  <!-- ── Skill Management ──────────────────── -->
-  <div class="card card-full">
-    <h2>🔧 Skill Management</h2>
-    <p style="font-size:12px;color:var(--text2);margin:4px 0 12px">Enable or disable skills and sub-modules per domain. Changes take effect immediately.</p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px" id="skill-panel"></div>
-  </div>
-
-  <!-- ── Skill Module Status ──────────────────── -->
-  <div class="card card-full">
-    <h2>🔧 Skill Modules <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Installed skills &amp; sub-modules</span></h2>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="skill-modules"></div>
-  </div>
-
-  <!-- ── Error Monitoring ──────────────────── -->
-  <div class="card">
-    <h2>🚨 Error Monitor</h2>
-    <div class="stats-grid" id="error-stats">
-      <div class="stat-box">
-        <div class="stat-value" id="err-today">—</div>
-        <div class="stat-label">Today</div>
+    <div class="card">
+      <div class="cal-header">
+        <h3 id="cal-title">—</h3>
+        <div class="cal-nav">
+          <button onclick="calNavigate(-1)">‹ Prev</button>
+          <button onclick="calNavigate(0)" class="active">Today</button>
+          <button onclick="calNavigate(1)">Next ›</button>
+        </div>
       </div>
-      <div class="stat-box">
-        <div class="stat-value" id="err-7d">—</div>
-        <div class="stat-label">Last 7 Days</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="err-30d">—</div>
-        <div class="stat-label">Last 30 Days</div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div class="cal-legend">
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(52,211,153,.3)"></span> Success</span>
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(248,113,113,.3)"></span> Failed</span>
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="background:rgba(90,95,117,.2)"></span> Scheduled</span>
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid var(--blue);width:7px"></span> Secretary</span>
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid var(--green);width:7px"></span> Triathlon</span>
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid var(--yellow);width:7px"></span> Content</span>
+        <span class="cal-legend-item"><span class="cal-legend-dot" style="border-left:3px solid var(--purple);width:7px"></span> Invoices</span>
       </div>
     </div>
-    <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
-      <div style="flex:1;min-width:140px">
-        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Source (7d)</h4>
-        <div id="err-by-source" style="font-size:12px"></div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- DOMAINS SECTION                             -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="domains">
+      <h2>🧩 Domain Handlers</h2>
+      <div class="section-line"></div>
+      <span class="section-badge">Pre-skill modules</span>
+    </div>
+
+    <div class="card">
+      <div class="domain-grid" id="domain-handlers"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- JOBS SECTION                                -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="jobs">
+      <h2>Scheduled Jobs</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="grid grid-2">
+      <!-- Next Runs -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title"><span class="icon">🚀</span> Next Scheduled Runs</span>
+        </div>
+        <table id="next-runs-table">
+          <thead><tr><th>Job</th><th>Domain</th><th>Fires</th><th>Countdown</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
-      <div style="flex:1;min-width:140px">
-        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Level (7d)</h4>
-        <div id="err-by-level" style="font-size:12px"></div>
+
+      <!-- Job History -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title"><span class="icon">📝</span> Video Transcripts</span>
+        </div>
+        <div id="transcriptStats">
+          <div class="stats-row">
+            <div class="stat-box">
+              <div class="stat-value" id="transcriptCount">—</div>
+              <div class="stat-label">Cached Transcripts</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-value" id="studyCount">—</div>
+              <div class="stat-label">Video Studies</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-    <div style="margin-top:12px">
-      <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">Recent Errors</h4>
-      <table style="font-size:11px" id="err-recent">
-        <thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr></thead>
+
+    <!-- Full-width Jobs Table -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-header">
+        <span class="card-title"><span class="icon">⏱️</span> All Jobs</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="jobs-table">
+          <thead><tr><th>Job</th><th>Domain</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>History</th><th>Error</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- INTEGRATIONS SECTION                        -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="integrations">
+      <h2>Integrations</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="grid grid-2">
+      <!-- Integration Health -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🔗 Integration Health</span>
+        </div>
+        <div id="integration-health"></div>
+      </div>
+
+      <!-- Email Automations -->
+      <div class="card" id="emails">
+        <div class="card-header">
+          <span class="card-title"><span class="icon">📧</span> Email Automations</span>
+        </div>
+        <div class="stats-row mb-12">
+          <div class="stat-box">
+            <div class="stat-value text-green" id="email-sent-today">—</div>
+            <div class="stat-label">Sent Today</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value text-red" id="email-failed-today">—</div>
+            <div class="stat-label">Failed Today</div>
+          </div>
+        </div>
+        <table id="email-log-table">
+          <thead><tr><th>Recipient</th><th>Subject</th><th>Status</th><th>Time</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- AI PROVIDERS SECTION                        -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="ai-providers">
+      <h2>AI Providers & Fallback Chain</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="card">
+      <!-- Provider status cards -->
+      <div class="provider-cards" id="ai-provider-cards"></div>
+
+      <!-- Fallback chain visualization -->
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text3);margin-bottom:10px">Fallback Routing</div>
+      <div class="fallback-chains" id="ai-fallback-chains"></div>
+
+      <!-- Daily cost by provider -->
+      <div class="cost-bar-container" id="ai-cost-breakdown">
+        <div class="cost-bar-header">
+          <span style="font-size:12px;font-weight:700;color:var(--text)">Today's Cost by Provider</span>
+          <span style="font-size:12px;color:var(--text2);font-family:'SF Mono','Fira Code',monospace" id="ai-cost-total">$0.000</span>
+        </div>
+        <div class="cost-bar-track" id="ai-cost-bar"></div>
+        <div class="cost-bar-legend" id="ai-cost-legend"></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- INVOICES SECTION                            -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="invoices">
+      <h2>Invoices</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="card">
+      <div class="stats-row mb-12" style="max-width:300px">
+        <div class="stat-box">
+          <div class="stat-value" id="inv-this-month">—</div>
+          <div class="stat-label">This Month</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="inv-last-month">—</div>
+          <div class="stat-label">Last Month</div>
+        </div>
+      </div>
+      <table id="invoices-table">
+        <thead><tr><th>Vendor</th><th>Date</th><th>Amount</th><th>Status</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
-  </div>
 
-  <!-- ── API Usage ─────────────────────────── -->
-  <div class="card">
-    <h2>📊 API Usage</h2>
-    <div class="stats-grid" id="api-stats">
-      <div class="stat-box">
-        <div class="stat-value" id="api-today-cost">—</div>
-        <div class="stat-label">Today Cost</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="api-today-calls">—</div>
-        <div class="stat-label">Today Calls</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="api-7d-cost">—</div>
-        <div class="stat-label">7-Day Cost</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="api-30d-cost">—</div>
-        <div class="stat-label">30-Day Cost</div>
-      </div>
-    </div>
-    <table style="margin-top:12px" id="api-categories">
-      <thead><tr><th>Category (7d)</th><th class="text-right">Calls</th><th class="text-right">Cost</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Feature #3: Next Runs Panel ─────────── -->
-  <div class="card">
-    <h2>🚀 Next Scheduled Runs</h2>
-    <table id="next-runs-table">
-      <thead><tr><th>Job</th><th>Domain</th><th>Fires</th><th>Countdown</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Feature #1: Email Automations ────────── -->
-  <div class="card">
-    <h2>📧 Email Automations</h2>
-    <div class="stats-grid" style="margin-bottom:12px">
-      <div class="stat-box">
-        <div class="stat-value text-green" id="email-sent-today">—</div>
-        <div class="stat-label">Sent Today</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value text-red" id="email-failed-today">—</div>
-        <div class="stat-label">Failed Today</div>
-      </div>
-    </div>
-    <table id="email-log-table">
-      <thead><tr><th>Recipient</th><th>Subject</th><th>Status</th><th>Time</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Integration Health ──────────────────── -->
-  <div class="card">
-    <h2>🔗 Integration Health</h2>
-    <div id="integration-health"></div>
-  </div>
-
-  <!-- ── Usage Metering ─────────────────────── -->
-  <div class="card">
-    <h2>📈 Usage Metering (Today)</h2>
-    <div class="stats-grid" style="margin-bottom:12px">
-      <div class="stat-box">
-        <div class="stat-value" id="um-messages">—</div>
-        <div class="stat-label">Messages</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="um-tokens">—</div>
-        <div class="stat-label">Tokens</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="um-calls">—</div>
-        <div class="stat-label">API Calls</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="um-cost">—</div>
-        <div class="stat-label">Cost (USD)</div>
-      </div>
-    </div>
-    <table id="um-users-table">
-      <thead><tr><th>User ID</th><th>Messages</th><th>Tokens</th><th>API Calls</th><th>Cost</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Training Plans ─────────────────────── -->
-  <div class="card">
-    <h2>🏋️ Training Plans</h2>
-    <div class="stats-grid" style="margin-bottom:12px">
-      <div class="stat-box">
-        <div class="stat-value" id="tp-active">—</div>
-        <div class="stat-label">Active Plans</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="tp-completed">—</div>
-        <div class="stat-label">Sessions Done</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="tp-adherence">—</div>
-        <div class="stat-label">Week Adherence</div>
-      </div>
-    </div>
-    <div id="tp-plan-name" style="font-size:13px;color:var(--text2)"></div>
-  </div>
-
-  <!-- ── AI Providers ─────────────────────── -->
-  <div class="card card-full">
-    <h2>🤖 AI Providers & Fallback Chain</h2>
-
-    <!-- Provider status cards -->
-    <div class="provider-cards" id="ai-provider-cards"></div>
-
-    <!-- Fallback chain visualization -->
-    <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:8px">Fallback Routing</div>
-    <div class="fallback-chains" id="ai-fallback-chains"></div>
-
-    <!-- Daily cost by provider -->
-    <div class="cost-bar-container" id="ai-cost-breakdown">
-      <div class="cost-bar-header">
-        <span style="font-size:12px;font-weight:600;color:var(--text)">Today's Cost by Provider</span>
-        <span style="font-size:12px;color:var(--text2)" id="ai-cost-total">$0.000</span>
-      </div>
-      <div class="cost-bar-track" id="ai-cost-bar"></div>
-      <div class="cost-bar-legend" id="ai-cost-legend"></div>
-    </div>
-  </div>
-
-  <!-- ── Invoices ──────────────────────────── -->
-  <div class="card">
-    <h2>🧾 Invoices</h2>
-    <div class="stats-grid" style="margin-bottom:12px">
-      <div class="stat-box">
-        <div class="stat-value" id="inv-this-month">—</div>
-        <div class="stat-label">This Month</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="inv-last-month">—</div>
-        <div class="stat-label">Last Month</div>
-      </div>
-    </div>
-    <table id="invoices-table">
-      <thead><tr><th>Vendor</th><th>Date</th><th>Amount</th><th>Status</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Content References ──────────────── -->
-  <div class="card">
-    <h2>📚 Content References</h2>
-    <div class="stats-grid" style="margin-bottom:12px">
-      <div class="stat-box">
-        <div class="stat-value" id="ref-channels">—</div>
-        <div class="stat-label">Channels</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="ref-knowledge">—</div>
-        <div class="stat-label">Knowledge Areas</div>
-      </div>
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- CONTENT SECTION                             -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="content">
+      <h2>Content References</h2>
+      <div class="section-line"></div>
     </div>
 
-    <!-- Add channel form -->
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="ref-url-input" type="text" placeholder="https://www.youtube.com/@channel"
-        style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none"
-        onkeydown="if(event.key==='Enter')addRefChannel()">
-      <button class="action-btn" onclick="addRefChannel()" style="white-space:nowrap">
-        <span class="icon">➕</span> Learn
-      </button>
-    </div>
-    <div id="ref-add-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;display:none"></div>
-
-    <!-- Channel list -->
-    <table id="ref-channels-table">
-      <thead><tr><th>Channel</th><th>Status</th><th>Videos</th><th>Last Analyzed</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Video Transcripts ─────────────────── -->
-  <div class="card">
-    <h2>📝 Video Transcripts</h2>
-    <div id="transcriptStats">
-      <p>Cached transcripts: <strong id="transcriptCount">—</strong></p>
-      <p>Video studies: <strong id="studyCount">—</strong></p>
-    </div>
-  </div>
-
-  <!-- ── Scheduled Jobs (with sparklines) ───── -->
-  <div class="card card-full">
-    <h2>⏱️ Scheduled Jobs</h2>
-    <table id="jobs-table">
-      <thead><tr><th>Job</th><th>Domain</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>History</th><th>Error</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <!-- ── Quick Actions ─────────────────────── -->
-  <div class="card card-full">
-    <h2>⚡ Quick Actions</h2>
-
-    <!-- Secretary & Scheduling -->
-    <div style="margin-bottom:14px">
-      <div style="font-size:11px;color:var(--accent);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">📋 Secretary & Scheduling</div>
-      <div class="actions-grid">
-        <button class="action-btn" onclick="doAction('trigger-briefing')"><span class="icon">🌅</span> Morning Briefing</button>
-        <button class="action-btn" onclick="doAction('clear-history')"><span class="icon">🗑️</span> Clear History</button>
+    <div class="card">
+      <div class="stats-row mb-12" style="max-width:300px">
+        <div class="stat-box">
+          <div class="stat-value" id="ref-channels">—</div>
+          <div class="stat-label">Channels</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="ref-knowledge">—</div>
+          <div class="stat-label">Knowledge Areas</div>
+        </div>
       </div>
-    </div>
 
-    <!-- Triathlon & Health -->
-    <div style="margin-bottom:14px">
-      <div style="font-size:11px;color:var(--green);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🏋️ Triathlon & Health</div>
-      <div class="actions-grid">
-        <button class="action-btn" onclick="doAction('refresh-garmin')"><span class="icon">🏃</span> Refresh Garmin</button>
-        <button class="action-btn" onclick="doAction('trigger-coach')"><span class="icon">🏋️</span> Coach Report</button>
+      <!-- Add channel form -->
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input id="ref-url-input" type="text" placeholder="https://www.youtube.com/@channel" class="input" style="flex:1"
+          onkeydown="if(event.key==='Enter')addRefChannel()">
+        <button class="action-btn" onclick="addRefChannel()" style="white-space:nowrap">
+          <span class="icon">➕</span> Learn
+        </button>
       </div>
-    </div>
+      <div id="ref-add-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;display:none"></div>
 
-    <!-- Content Creation -->
-    <div style="margin-bottom:14px">
-      <div style="font-size:11px;color:var(--yellow);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🎬 Content Creation</div>
-      <div class="actions-grid">
-        <button class="action-btn" onclick="doAction('trigger-content')"><span class="icon">🔍</span> Run Discovery</button>
-        <button class="action-btn" onclick="doAction('resynthesize-knowledge')"><span class="icon">🧠</span> Re-synthesize Knowledge</button>
-        <button class="action-btn" onclick="doAction('run-reaction-radar')"><span class="icon">📡</span> Reaction Radar</button>
-        <button class="action-btn" onclick="doAction('run-seo-agent')"><span class="icon">🔎</span> SEO Agent</button>
-        <button class="action-btn" onclick="doAction('run-performance-agent')"><span class="icon">📊</span> Performance Agent</button>
-        <button class="action-btn" onclick="doAction('run-voice-evolution')"><span class="icon">🗣</span> Voice Evolution</button>
-        <button class="action-btn" onclick="doAction('run-pipeline-agent')"><span class="icon">🏗</span> Pipeline Agent</button>
-      </div>
-    </div>
-
-    <!-- System & Integrations -->
-    <div>
-      <div style="font-size:11px;color:var(--red);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">🔧 System & Integrations</div>
-      <div class="actions-grid">
-        <button class="action-btn" onclick="doAction('test-ssh')"><span class="icon">🔑</span> Test SSH</button>
-        <button class="action-btn" onclick="doAction('test-graph')"><span class="icon">📧</span> Test Graph</button>
-        <button class="action-btn" onclick="if(confirm('Restart bot polling?')) doAction('restart-polling')"><span class="icon">🔄</span> Restart Polling</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ── Mission Control: Content Agents ──────── -->
-  <div class="card card-full">
-    <h2>🤖 Content Agent Mesh
-      <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="mesh-status"></span>
-    </h2>
-
-    <!-- Metric cards row -->
-    <div class="stats-grid" style="margin-bottom:16px">
-      <div class="stat-box">
-        <div class="stat-value" id="mc-signals">—</div>
-        <div class="stat-label">Active Signals</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="mc-pipeline">—</div>
-        <div class="stat-label">Pipeline</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="mc-books">—</div>
-        <div class="stat-label">Books</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-value" id="mc-bottleneck">—</div>
-        <div class="stat-label">Bottleneck</div>
-      </div>
-    </div>
-
-    <!-- Agent Mesh Graph -->
-    <div style="background:var(--surface2);border-radius:10px;padding:16px;margin-bottom:16px;position:relative;overflow:hidden">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="font-size:13px;font-weight:600;color:var(--text)">Agent Communication Mesh</span>
-        <span style="font-size:11px;color:var(--text2)" id="mesh-pulse-count"></span>
-      </div>
-      <svg id="agent-mesh-svg" viewBox="0 0 800 420" style="width:100%;height:auto;max-height:420px">
-        <defs>
-          <!-- Glow filter for active nodes -->
-          <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-          <!-- Arrow marker -->
-          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent)" opacity="0.6"/></marker>
-          <marker id="arrow-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#00b894"/></marker>
-          <!-- Pulse animation -->
-          <radialGradient id="pulse-grad"><stop offset="0%" stop-color="#6c5ce7" stop-opacity="0.4"/><stop offset="100%" stop-color="#6c5ce7" stop-opacity="0"/></radialGradient>
-        </defs>
-        <!-- Connections drawn by JS -->
-        <g id="mesh-connections"></g>
-        <!-- Nodes drawn by JS -->
-        <g id="mesh-nodes"></g>
-      </svg>
-      <!-- Legend -->
-      <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--text2);flex-wrap:wrap">
-        <span>🟢 Active</span> <span>🟡 Idle</span> <span>🔴 Error</span>
-        <span style="margin-left:auto">Lines = signal flow · Pulse = active signals</span>
-      </div>
-    </div>
-
-    <!-- Agent cards 2x3 grid -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-bottom:16px" id="mc-agents"></div>
-
-    <!-- Sprint mode toggle -->
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px;background:var(--surface2);border-radius:8px">
-      <span>⚡ Content Sprint Mode</span>
-      <button class="action-btn" id="mc-sprint-btn" onclick="toggleSprint()" style="font-size:12px">OFF</button>
-      <span class="text-muted" style="font-size:11px" id="mc-sprint-status"></span>
-    </div>
-
-    <!-- Signal log table -->
-    <h3 style="font-size:14px;margin-bottom:8px;color:var(--text2)">Intelligence Bus</h3>
-    <div style="max-height:300px;overflow-y:auto">
-      <table class="table" style="font-size:12px">
-        <thead><tr><th>Source</th><th>Type</th><th>Summary</th><th>Age</th><th></th></tr></thead>
-        <tbody id="mc-signals-table"></tbody>
+      <table id="ref-channels-table">
+        <thead><tr><th>Channel</th><th>Status</th><th>Videos</th><th>Last Analyzed</th><th></th></tr></thead>
+        <tbody></tbody>
       </table>
     </div>
-  </div>
 
-  <!-- ── Book Library ──────────────────────── -->
-  <div class="card card-full">
-    <h2>📚 Book Library</h2>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="book-title-input" type="text" placeholder="Book title"
-        style="flex:2;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none">
-      <input id="book-author-input" type="text" placeholder="Author"
-        style="flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:13px;font-family:inherit;outline:none"
-        onkeydown="if(event.key==='Enter')addBookFromPortal()">
-      <button class="action-btn" onclick="addBookFromPortal()" style="white-space:nowrap">
-        <span class="icon">📖</span> Extract
-      </button>
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- AGENT MESH SECTION                          -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="agent-mesh">
+      <h2>Content Agent Mesh</h2>
+      <div class="section-line"></div>
+      <span class="section-badge" id="mesh-status"></span>
     </div>
-    <div id="book-add-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;display:none"></div>
-    <div id="mc-book-list" style="font-size:13px"></div>
-  </div>
 
-  <!-- ── Activity Log ──────────────────────── -->
-  <div class="card card-full">
-    <h2>📋 Activity Log <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="event-count"></span></h2>
-    <div class="activity-list" id="activity-log"></div>
-  </div>
+    <div class="card">
+      <!-- Metric cards row -->
+      <div class="stats-row mb-16">
+        <div class="stat-box">
+          <div class="stat-value" id="mc-signals">—</div>
+          <div class="stat-label">Active Signals</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="mc-pipeline">—</div>
+          <div class="stat-label">Pipeline</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="mc-books">—</div>
+          <div class="stat-label">Books</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-value" id="mc-bottleneck">—</div>
+          <div class="stat-label">Bottleneck</div>
+        </div>
+      </div>
 
-</div>
+      <!-- Agent Mesh Graph -->
+      <div style="background:var(--surface2);border-radius:var(--radius);padding:16px;margin-bottom:16px;position:relative;overflow:hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Agent Communication Mesh</span>
+          <span style="font-size:11px;color:var(--text2)" id="mesh-pulse-count"></span>
+        </div>
+        <svg id="agent-mesh-svg" viewBox="0 0 800 420" style="width:100%;height:auto;max-height:420px">
+          <defs>
+            <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent)" opacity="0.6"/></marker>
+            <marker id="arrow-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--green)"/></marker>
+            <radialGradient id="pulse-grad"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.4"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></radialGradient>
+          </defs>
+          <g id="mesh-connections"></g>
+          <g id="mesh-nodes"></g>
+        </svg>
+        <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--text2);flex-wrap:wrap">
+          <span>🟢 Active</span> <span>🟡 Idle</span> <span>🔴 Error</span>
+          <span style="margin-left:auto">Lines = signal flow · Pulse = active signals</span>
+        </div>
+      </div>
+
+      <!-- Agent cards grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-bottom:16px" id="mc-agents"></div>
+
+      <!-- Sprint mode toggle -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:12px;background:var(--surface2);border-radius:var(--radius-sm)">
+        <span style="font-weight:600;font-size:13px">⚡ Content Sprint Mode</span>
+        <button class="action-btn" id="mc-sprint-btn" onclick="toggleSprint()" style="font-size:12px;padding:4px 12px">OFF</button>
+        <span class="text-muted" style="font-size:11px" id="mc-sprint-status"></span>
+      </div>
+
+      <!-- Signal log table -->
+      <div class="card-header">
+        <span class="card-title">Intelligence Bus</span>
+      </div>
+      <div style="max-height:300px;overflow-y:auto">
+        <table style="font-size:12px">
+          <thead><tr><th>Source</th><th>Type</th><th>Summary</th><th>Age</th><th></th></tr></thead>
+          <tbody id="mc-signals-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- BOOK LIBRARY SECTION                        -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="books">
+      <h2>Book Library</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input id="book-title-input" type="text" placeholder="Book title" class="input" style="flex:2">
+        <input id="book-author-input" type="text" placeholder="Author" class="input" style="flex:1"
+          onkeydown="if(event.key==='Enter')addBookFromPortal()">
+        <button class="action-btn" onclick="addBookFromPortal()" style="white-space:nowrap">
+          <span class="icon">📖</span> Extract
+        </button>
+      </div>
+      <div id="book-add-status" style="font-size:12px;color:var(--text2);margin-bottom:8px;display:none"></div>
+      <div id="mc-book-list" style="font-size:13px"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- QUICK ACTIONS SECTION                       -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="actions">
+      <h2>Quick Actions</h2>
+      <div class="section-line"></div>
+    </div>
+
+    <div class="card">
+      <!-- Secretary & Scheduling -->
+      <div style="margin-bottom:18px">
+        <div class="action-group-label" style="color:var(--blue)">📋 Secretary & Scheduling</div>
+        <div class="actions-grid">
+          <button class="action-btn" onclick="doAction('trigger-briefing')"><span class="icon">🌅</span> Morning Briefing</button>
+          <button class="action-btn" onclick="doAction('clear-history')"><span class="icon">🗑️</span> Clear History</button>
+        </div>
+      </div>
+
+      <!-- Triathlon & Health -->
+      <div style="margin-bottom:18px">
+        <div class="action-group-label" style="color:var(--green)">🏋️ Triathlon & Health</div>
+        <div class="actions-grid">
+          <button class="action-btn" onclick="doAction('refresh-garmin')"><span class="icon">🏃</span> Refresh Garmin</button>
+          <button class="action-btn" onclick="doAction('trigger-coach')"><span class="icon">🏋️</span> Coach Report</button>
+        </div>
+      </div>
+
+      <!-- Content Creation -->
+      <div style="margin-bottom:18px">
+        <div class="action-group-label" style="color:var(--yellow)">🎬 Content Creation</div>
+        <div class="actions-grid">
+          <button class="action-btn" onclick="doAction('trigger-content')"><span class="icon">🔍</span> Run Discovery</button>
+          <button class="action-btn" onclick="doAction('resynthesize-knowledge')"><span class="icon">🧠</span> Re-synthesize Knowledge</button>
+          <button class="action-btn" onclick="doAction('run-reaction-radar')"><span class="icon">📡</span> Reaction Radar</button>
+          <button class="action-btn" onclick="doAction('run-seo-agent')"><span class="icon">🔎</span> SEO Agent</button>
+          <button class="action-btn" onclick="doAction('run-performance-agent')"><span class="icon">📊</span> Performance Agent</button>
+          <button class="action-btn" onclick="doAction('run-voice-evolution')"><span class="icon">🗣</span> Voice Evolution</button>
+          <button class="action-btn" onclick="doAction('run-pipeline-agent')"><span class="icon">🏗</span> Pipeline Agent</button>
+        </div>
+      </div>
+
+      <!-- System & Integrations -->
+      <div>
+        <div class="action-group-label" style="color:var(--red)">🔧 System & Integrations</div>
+        <div class="actions-grid">
+          <button class="action-btn" onclick="doAction('test-ssh')"><span class="icon">🔑</span> Test SSH</button>
+          <button class="action-btn" onclick="doAction('test-graph')"><span class="icon">📧</span> Test Graph</button>
+          <button class="action-btn" onclick="if(confirm('Restart bot polling?')) doAction('restart-polling')"><span class="icon">🔄</span> Restart Polling</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- ACTIVITY LOG SECTION                        -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div class="section-header" id="activity">
+      <h2>Activity Log</h2>
+      <div class="section-line"></div>
+      <span class="section-badge" id="event-count"></span>
+    </div>
+
+    <div class="card">
+      <div class="activity-list" id="activity-log"></div>
+    </div>
+
+  </div><!-- /container -->
+</div><!-- /main -->
 
 <!-- Toast container -->
 <div id="toast" class="toast" style="display:none"></div>
@@ -1538,6 +1796,38 @@
   const TOKEN = localStorage.getItem('portal_token') || '';
   const POLL_MS = 10_000;
   let pollTimer = null;
+
+  // ── Sidebar navigation ─────────────────────
+  window.toggleSidebar = function() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebar-overlay').classList.toggle('open');
+  };
+
+  window.scrollToSection = function(id) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Update active nav
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      const navItem = document.querySelector(`.nav-item[href="#${id}"]`);
+      if (navItem) navItem.classList.add('active');
+    }
+    // Close mobile sidebar
+    if (window.innerWidth <= 768) toggleSidebar();
+  };
+
+  // Intersection observer for nav highlighting
+  const sections = document.querySelectorAll('.section-header[id]');
+  const navObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        const navItem = document.querySelector(`.nav-item[href="#${entry.target.id}"]`);
+        if (navItem) navItem.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-80px 0px -70% 0px' });
+  sections.forEach(s => navObserver.observe(s));
 
   // ── Auth prompt ────────────────────────────
   function ensureToken() {
@@ -1604,76 +1894,11 @@
     return el.innerHTML;
   }
 
-  // ── Skill Packages rendering ────────────────
-  const skillIcons = {
-    tasks: '📋', calendar: '📅', email: '✉️', reminders: '⏰', notes: '📝',
-    'shared-memory': '🧠', briefings: '☀️', 'training-plans': '🏋️',
-    'research-pipeline': '🔬', 'script-generator': '📜', 'seo-tracker': '🔍',
-    'reaction-radar': '📡', 'voice-evolution': '🎙️', 'performance-intel': '📊',
-    'pipeline-tracker': '🚀', 'topic-scheduler': '📆', 'meme-scout': '🃏',
-  };
-  const domainSkillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
-
-  async function fetchSkillPackages() {
-    try {
-      const res = await fetch('/api/skills', { headers: authHeaders() });
-      if (!res.ok) return;
-      const skills = await res.json();
-      renderSkillPackages(skills);
-    } catch { /* ignore */ }
-  }
-
-  function renderSkillPackages(skills) {
-    const el = document.getElementById('skill-packages');
-    if (!el) return;
-    el.innerHTML = skills.map(skill => {
-      const color = domainSkillColors[skill.name] || 'var(--accent)';
-      const subCards = skill.subSkills.map(sub => {
-        const icon = skillIcons[sub.name] || '🔧';
-        const cls = sub.enabled ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
-        return `<div class="${cls}" data-domain="${skill.name}" data-sub="${sub.name}" onclick="toggleSubSkill(this)">
-          <span class="sub-skill-icon">${icon}</span>
-          <div class="sub-skill-info">
-            <strong>${esc(sub.name)}</strong>
-            <span class="sub-skill-desc">${esc(sub.description)}</span>
-            <span class="sub-skill-meta">${sub.toolCount} tools</span>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" ${sub.enabled ? 'checked' : ''} tabindex="-1">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>`;
-      }).join('');
-      return `<div class="skill-package-card" style="border-left:3px solid ${color}">
-        <h3>${esc(skill.name)} <span class="skill-version">v2.0.0</span></h3>
-        <p class="skill-desc">${esc(skill.description)}</p>
-        <div class="sub-skill-list">${subCards}</div>
-      </div>`;
-    }).join('');
-  }
-
-  async function toggleSubSkill(card) {
-    const domain = card.dataset.domain;
-    const subSkill = card.dataset.sub;
-    const checkbox = card.querySelector('input[type="checkbox"]');
-    const newState = !checkbox.checked;
-    checkbox.checked = newState;
-    card.className = newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
-    try {
-      await fetch('/api/skills/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ domain, subSkill, enabled: newState }),
-      });
-    } catch { checkbox.checked = !newState; card.className = !newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled'; }
-  }
-
   // ── Timeline rendering ─────────────────────
   function renderTimeline(snap) {
     const track = document.getElementById('timeline-track');
     const hoursEl = document.getElementById('timeline-hours');
 
-    // Render hour marks (every 3h)
     let hoursHtml = '';
     for (let h = 0; h <= 24; h += 3) {
       const pct = (h / 24) * 100;
@@ -1683,17 +1908,12 @@
     hoursEl.innerHTML = hoursHtml;
 
     let blocksHtml = '';
-
-    // Now marker
     const now = new Date();
     const nowPct = ((now.getHours() * 60 + now.getMinutes()) / 1440) * 100;
     blocksHtml += `<div class="timeline-now" style="left:${nowPct}%"></div>`;
 
-    // Calendar events (from today's briefing data if available in jobs/events)
-    // We use nextRuns to show cron job fire times
     const todayStr = now.toISOString().slice(0, 10);
 
-    // Cron job next runs that fire today (colored by domain)
     if (snap.nextRuns) {
       for (const nr of snap.nextRuns) {
         const fireDate = new Date(nr.nextFireAt);
@@ -1705,7 +1925,6 @@
       }
     }
 
-    // Show completed jobs from today (from recentEvents of type 'job')
     if (snap.recentEvents) {
       for (const ev of snap.recentEvents) {
         if (ev.type !== 'job' && ev.type !== 'error') continue;
@@ -1719,7 +1938,6 @@
       }
     }
 
-    // Email events from email log
     if (snap.emailLog && snap.emailLog.recentEmails) {
       for (const em of snap.emailLog.recentEmails) {
         const emDate = new Date(em.ts);
@@ -1737,14 +1955,13 @@
   // ── Sparkline rendering ────────────────────
   function sparkline(runs) {
     if (!runs || runs.length === 0) return '<span class="text-muted">—</span>';
-    // runs are newest-first, reverse to show left=oldest
     const reversed = [...runs].reverse();
     return '<span class="sparkline">' + reversed.map(r =>
       `<span class="spark-bar ${r.result === 'success' ? 'ok' : 'fail'}" style="height:${r.result === 'success' ? '16' : '8'}px" title="${r.result} at ${shortTime(r.ts)}"></span>`
     ).join('') + '</span>';
   }
 
-  // ── Domain color helper ─────────────────────
+  // ── Domain helpers ─────────────────────────
   const DOMAIN_COLORS = {
     secretary: '#74b9ff',
     triathlon: '#00b894',
@@ -1753,7 +1970,6 @@
     system: '#8b8fa3',
   };
 
-  // ── Domain tag helper ────────────────────────
   const DOMAIN_LABELS = {
     secretary: 'Secretary',
     triathlon: 'Triathlon',
@@ -1767,8 +1983,8 @@
     return `<span class="domain-tag domain-${domain}">${DOMAIN_LABELS[domain] || domain}</span>`;
   }
 
-  // ── Monthly Calendar rendering ──────────────
-  let calOffset = 0; // 0 = current month, -1 = prev, +1 = next
+  // ── Calendar rendering ─────────────────────
+  let calOffset = 0;
   let lastSnap = null;
 
   window.calNavigate = function(dir) {
@@ -1796,19 +2012,16 @@
                         'July','August','September','October','November','December'];
     titleEl.textContent = `${monthNames[month]} ${year}`;
 
-    // Build day-of-week headers (Mon-Sun)
     const dows = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     let html = dows.map(d => `<div class="cal-dow">${d}</div>`).join('');
 
-    // Find first Monday on or before the 1st of the month
     const firstDay = new Date(year, month, 1);
-    let startDow = firstDay.getDay(); // 0=Sun
-    startDow = startDow === 0 ? 6 : startDow - 1; // Convert to Mon=0
+    let startDow = firstDay.getDay();
+    startDow = startDow === 0 ? 6 : startDow - 1;
 
     const startDate = new Date(firstDay);
     startDate.setDate(startDate.getDate() - startDow);
 
-    // Build lookup of runs by day
     const runsByDay = {};
     for (const job of snap.calendarData.jobs) {
       for (const run of job.runs) {
@@ -1818,7 +2031,6 @@
       }
     }
 
-    // Build lookup of scheduled by day
     const schedByDay = {};
     for (const job of snap.calendarData.jobs) {
       for (const s of job.scheduled) {
@@ -1830,7 +2042,6 @@
 
     const todayStr = new Date().toISOString().slice(0, 10);
 
-    // Render 6 weeks (42 cells)
     for (let i = 0; i < 42; i++) {
       const cellDate = new Date(startDate);
       cellDate.setDate(startDate.getDate() + i);
@@ -1845,12 +2056,9 @@
 
       let inner = `<div class="cal-day-num">${dayNum}</div>`;
 
-      // Actual runs
       const runs = runsByDay[cellStr] || [];
-      // Scheduled (future only, skip if already ran at that hour)
       const scheds = schedByDay[cellStr] || [];
 
-      // Merge and sort by time
       const events = [];
       for (const r of runs) {
         const timeStr = r.ts.slice(11, 16);
@@ -1892,7 +2100,7 @@
     grid.innerHTML = html;
   }
 
-  // ── Integration Health rendering ────────────
+  // ── Integration Health rendering ───────────
   const GROUP_ICONS = { google: '🔵', microsoft: '🟠', garmin: '🟢', system: '⚙️' };
   const GROUP_LABELS = { google: 'Google (OAuth 2.0)', microsoft: 'Microsoft (MSAL)', garmin: 'Garmin (Session)', system: 'System' };
   const HEALTH_LABELS = { valid: '✓ Valid', expired: '✗ Expired', warning: '⚠ Stale', not_configured: '— Not configured' };
@@ -1901,7 +2109,6 @@
     const container = document.getElementById('integration-health');
     if (!container) return;
 
-    // Group integrations by group
     const groups = {};
     for (const i of integrations) {
       const g = i.group || 'system';
@@ -1915,7 +2122,6 @@
       const items = groups[g];
       if (!items || items.length === 0) continue;
 
-      // Check if any integration in this group has issues
       const hasAlert = items.some(i => i.tokenHealth === 'expired' || i.tokenHealth === 'warning');
       const alertDot = hasAlert
         ? ` <span class="int-alert ${items.find(i => i.tokenHealth === 'expired') ? 'expired' : 'warning'}"></span>`
@@ -1930,16 +2136,11 @@
         const lastCall = i.lastApiCall ? relativeTime(i.lastApiCall) : '—';
 
         html += `<div class="int-row">`;
-        html += `  <div class="int-left">`;
-        html += `    <span>${esc(i.name)}</span>`;
-        html += `  </div>`;
+        html += `  <div class="int-left"><span>${esc(i.name)}</span></div>`;
         html += `  <div class="int-right">`;
-        if (i.lastApiCall) {
-          html += `<span title="Last successful API call">🕐 ${lastCall}</span>`;
-        }
+        if (i.lastApiCall) html += `<span title="Last successful API call">🕐 ${lastCall}</span>`;
         html += `    <span class="int-health ${health}">${healthLabel}</span>`;
-        html += `  </div>`;
-        html += `</div>`;
+        html += `  </div></div>`;
       }
 
       html += `</div>`;
@@ -1948,10 +2149,10 @@
     container.innerHTML = html;
   }
 
-  // ── AI Provider rendering ───────────────────
+  // ── AI Provider rendering ──────────────────
   const PROVIDER_ICONS = { anthropic: '🟣', openai: '🟢', gemini: '🔵' };
   const PROVIDER_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini' };
-  const PROVIDER_COLORS = { anthropic: '#6c5ce7', openai: '#00b894', gemini: '#74b9ff', unknown: '#8b8fa3' };
+  const PROVIDER_COLORS = { anthropic: '#7c6cf0', openai: '#34d399', gemini: '#60a5fa', unknown: '#8b90a6' };
 
   function renderAiProviders(ai) {
     const cardsEl = document.getElementById('ai-provider-cards');
@@ -1960,7 +2161,6 @@
     const costLegendEl = document.getElementById('ai-cost-legend');
     const costTotalEl = document.getElementById('ai-cost-total');
 
-    // Build cost lookup
     const costMap = {};
     let totalCost = 0;
     for (const c of ai.costByProvider) {
@@ -1969,11 +2169,9 @@
     }
     costTotalEl.textContent = '$' + totalCost.toFixed(3);
 
-    // Provider cards
     cardsEl.innerHTML = ai.providers.map(p => {
       const icon = PROVIDER_ICONS[p.name] || '⚪';
       const label = PROVIDER_LABELS[p.name] || p.name;
-      const roleClass = p.role;
       const cardClass = !p.configured ? 'unconfigured' : p.role;
       const statusBadge = p.configured
         ? '<span class="badge badge-configured">Configured</span>'
@@ -1985,7 +2183,7 @@
       return `<div class="provider-card ${cardClass}">
         <div class="provider-card-header">
           <h3>${icon} ${label}</h3>
-          <span class="provider-role ${roleClass}">${p.role}</span>
+          <span class="provider-role ${p.role}">${p.role}</span>
         </div>
         <div class="provider-meta">
           <div>${statusBadge}</div>
@@ -1997,7 +2195,6 @@
       </div>`;
     }).join('');
 
-    // Fallback chain visualization
     const taskTypes = [
       { key: 'classify', label: 'Classification', icon: '🏷️' },
       { key: 'chat', label: 'Chat / Domains', icon: '💬' },
@@ -2012,10 +2209,8 @@
 
       const primaryConfigured = configuredSet.has(route.primary);
       const fallbackConfigured = configuredSet.has(route.fallback);
-
       const primaryClass = primaryConfigured ? 'active' : 'disabled';
       const fallbackClass = fallbackConfigured ? 'standby' : 'disabled';
-
       const primaryIcon = PROVIDER_ICONS[route.primary] || '⚪';
       const fallbackIcon = PROVIDER_ICONS[route.fallback] || '⚪';
       const primaryLabel = PROVIDER_LABELS[route.primary] || route.primary;
@@ -2032,7 +2227,6 @@
       </div>`;
     }).join('');
 
-    // Cost breakdown bar
     if (totalCost > 0) {
       costBarEl.innerHTML = ai.costByProvider.map(c => {
         const pct = (c.cost / totalCost) * 100;
@@ -2055,13 +2249,17 @@
   function render(snap) {
     // Header
     document.getElementById('uptime').textContent = `Up ${snap.uptime.human}`;
+    document.getElementById('sidebar-uptime').textContent = `Uptime: ${snap.uptime.human}`;
     const pollEl = document.getElementById('poll-status');
     if (snap.bot.polling) {
       pollEl.innerHTML = '<span class="status-dot dot-green"></span> polling';
+      pollEl.className = 'status-pill';
     } else if (snap.bot.restarting) {
       pollEl.innerHTML = '<span class="status-dot dot-yellow"></span> restarting…';
+      pollEl.className = 'status-pill warn';
     } else {
       pollEl.innerHTML = '<span class="status-dot dot-red"></span> stopped';
+      pollEl.className = 'status-pill err';
     }
 
     // Health summary bar
@@ -2072,7 +2270,6 @@
       document.getElementById('hb-emails').textContent = hs.emailsSentToday;
       document.getElementById('hb-api').textContent = '$' + hs.apiCostToday.toFixed(3);
       document.getElementById('hb-invoices').textContent = hs.invoicesThisMonth;
-      // Invoice queue indicator (only visible when queue has pending items)
       const queueCount = hs.invoiceQueuePending || 0;
       document.getElementById('hb-queue-wrap').style.display = queueCount > 0 ? '' : 'none';
       document.getElementById('hb-queue-sep').style.display = queueCount > 0 ? '' : 'none';
@@ -2086,13 +2283,10 @@
     document.getElementById('bot-last-msg').textContent = relativeTime(snap.bot.lastMessageAt);
     document.getElementById('bot-uptime').textContent = snap.uptime.human;
 
-    // Skill packages (sub-skill toggles)
-    fetchSkillPackages();
-
     // Domain handlers
     if (snap.domainStatus) {
-      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
-      const domainColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe', cooking: '#e17055' };
+      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+      const domainColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
       const domainEl = document.getElementById('domain-handlers');
       domainEl.innerHTML = snap.domainStatus.map(d => {
         const icon = domainIcons[d.domain] || '🧩';
@@ -2132,43 +2326,12 @@
       }).join('');
     }
 
-    // Skill module status
-    if (snap.skillStatus) {
-      const skillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e', finance: '#a29bfe', cooking: '#e17055' };
-      const skillIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
-      const skillEl = document.getElementById('skill-modules');
-      skillEl.innerHTML = snap.skillStatus.map(s => {
-        const color = skillColors[s.name] || 'var(--accent)';
-        const icon = skillIcons[s.name] || '🔌';
-        const statusDot = s.enabled
-          ? '<span class="status-dot dot-green"></span> Enabled'
-          : '<span class="status-dot dot-red"></span> Disabled';
-        const enabledCount = s.subSkills.filter(ss => ss.enabled).length;
-        const totalTools = s.subSkills.reduce((sum, ss) => sum + ss.toolCount, 0);
-        const subChips = s.subSkills.map(ss => {
-          const cls = ss.enabled ? 'on' : 'off';
-          const dot = ss.enabled ? '●' : '○';
-          return `<span class="sub-skill-chip ${cls}" title="${esc(ss.description)}">${dot} ${esc(ss.name)} <span class="sub-skill-tools">(${ss.toolCount})</span></span>`;
-        }).join('');
-
-        return `<div class="skill-card${s.enabled ? '' : ' disabled'}" style="border-left-color:${color}">
-          <div class="skill-card-header">
-            <h3>${icon} ${esc(s.name)}</h3>
-            <span style="font-size:12px">${statusDot}</span>
-          </div>
-          <div class="skill-card-desc">${esc(s.description)} &mdash; ${enabledCount}/${s.subSkills.length} sub-skills, ${totalTools} tools</div>
-          <div class="sub-skill-grid">${subChips}</div>
-        </div>`;
-      }).join('');
-    }
-
     // API usage
     document.getElementById('api-today-cost').textContent = '$' + snap.apiUsage.today.cost.toFixed(3);
     document.getElementById('api-today-calls').textContent = snap.apiUsage.today.calls;
     document.getElementById('api-7d-cost').textContent = '$' + snap.apiUsage.last7d.cost.toFixed(2);
     document.getElementById('api-30d-cost').textContent = '$' + snap.apiUsage.last30d.cost.toFixed(2);
 
-    // API categories table
     const catBody = document.querySelector('#api-categories tbody');
     catBody.innerHTML = snap.apiUsage.byCategory.map(c =>
       `<tr><td class="mono">${esc(c.category)}</td><td class="text-right">${c.calls}</td><td class="text-right mono">$${c.cost.toFixed(3)}</td></tr>`
@@ -2213,32 +2376,6 @@
     // Integration Health
     renderIntegrationHealth(snap.integrations);
 
-    // Usage Metering
-    if (snap.usageMetering) {
-      const um = snap.usageMetering;
-      document.getElementById('um-messages').textContent = um.today.messageCount;
-      document.getElementById('um-tokens').textContent = um.today.totalTokens.toLocaleString();
-      document.getElementById('um-calls').textContent = um.today.apiCalls;
-      document.getElementById('um-cost').textContent = '$' + um.today.costUsd.toFixed(4);
-      const umBody = document.querySelector('#um-users-table tbody');
-      umBody.innerHTML = um.byUser.map(u => `<tr>
-        <td class="mono">${u.userId}</td>
-        <td>${u.messageCount}</td>
-        <td>${u.totalTokens.toLocaleString()}</td>
-        <td>${u.apiCalls}</td>
-        <td>$${u.costUsd.toFixed(4)}</td>
-      </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No user activity today</td></tr>';
-    }
-
-    // Training Plans
-    if (snap.trainingPlans) {
-      const tp = snap.trainingPlans;
-      document.getElementById('tp-active').textContent = tp.activePlans;
-      document.getElementById('tp-completed').textContent = tp.totalCompletedSessions;
-      document.getElementById('tp-adherence').textContent = tp.currentWeekAdherence + '%';
-      document.getElementById('tp-plan-name').textContent = tp.currentPlanName ? `Active: ${tp.currentPlanName}` : 'No active plan';
-    }
-
     // AI Providers
     if (snap.aiProviders) renderAiProviders(snap.aiProviders);
 
@@ -2281,7 +2418,7 @@
       document.getElementById('studyCount').textContent = snap.transcriptStats.studies;
     }
 
-    // Jobs (with sparklines)
+    // Jobs table
     const jobBody = document.querySelector('#jobs-table tbody');
     jobBody.innerHTML = snap.jobs.map(j => {
       const cls = j.lastResult === 'success' ? 'badge-success' : j.lastResult === 'failed' ? 'badge-failed' : j.lastResult === 'running' ? 'badge-running' : 'badge-never';
@@ -2300,16 +2437,14 @@
       </tr>`;
     }).join('');
 
-    // Daily timeline
+    // Timeline & Calendar
     renderTimeline(snap);
-
-    // Monthly calendar view
     renderCalendar(snap);
 
     // Activity log
     const logEl = document.getElementById('activity-log');
     const events = snap.recentEvents.slice(0, 50);
-    document.getElementById('event-count').textContent = `(${snap.recentEvents.length} events in buffer)`;
+    document.getElementById('event-count').textContent = `${snap.recentEvents.length} events`;
     logEl.innerHTML = events.map(e =>
       `<div class="event-row">
         <span class="event-time">${shortTime(e.ts)}</span>
@@ -2330,6 +2465,7 @@
       console.error('Poll failed:', err);
       const pollEl = document.getElementById('poll-status');
       pollEl.innerHTML = '<span class="status-dot dot-red"></span> disconnected';
+      pollEl.className = 'status-pill err';
     }
   }
 
@@ -2343,7 +2479,6 @@
       const res = await apiFetch(`/api/action/${name}`, { method: 'POST' });
       const data = await res.json();
       showToast(data.message, data.ok);
-      // Refresh immediately
       await poll();
     } catch (err) {
       showToast(`Error: ${err.message}`, false);
@@ -2352,7 +2487,7 @@
     }
   };
 
-  // ── Content Reference Channel Management ────
+  // ── Content Reference Channel Management ───
   window.addRefChannel = async function() {
     const input = document.getElementById('ref-url-input');
     const statusEl = document.getElementById('ref-add-status');
@@ -2360,13 +2495,13 @@
     if (!url || !url.includes('youtube.com')) {
       statusEl.style.display = 'block';
       statusEl.style.color = 'var(--red)';
-      statusEl.textContent = '❌ Enter a valid YouTube channel URL';
+      statusEl.textContent = 'Enter a valid YouTube channel URL';
       return;
     }
 
     statusEl.style.display = 'block';
     statusEl.style.color = 'var(--text2)';
-    statusEl.textContent = '🔍 Analyzing channel… (30-60s)';
+    statusEl.textContent = 'Analyzing channel… (30-60s)';
     input.disabled = true;
 
     try {
@@ -2378,16 +2513,16 @@
       const data = await res.json();
       if (data.ok) {
         statusEl.style.color = 'var(--green)';
-        statusEl.textContent = `✅ ${data.channel.name || 'Channel'}: ${data.analysis.patternsFound} patterns from ${data.analysis.videosAnalyzed} videos`;
+        statusEl.textContent = `${data.channel.name || 'Channel'}: ${data.analysis.patternsFound} patterns from ${data.analysis.videosAnalyzed} videos`;
         input.value = '';
         await poll();
       } else {
         statusEl.style.color = 'var(--red)';
-        statusEl.textContent = `❌ ${data.analysis?.error || data.message || 'Failed'}`;
+        statusEl.textContent = data.analysis?.error || data.message || 'Failed';
       }
     } catch (err) {
       statusEl.style.color = 'var(--red)';
-      statusEl.textContent = `❌ Error: ${err.message}`;
+      statusEl.textContent = `Error: ${err.message}`;
     } finally {
       input.disabled = false;
       setTimeout(() => { statusEl.style.display = 'none'; }, 10000);
@@ -2405,7 +2540,7 @@
     }
   };
 
-  // ── Agent Mesh Graph ───────────────────
+  // ── Agent Mesh Graph ───────────────────────
   const MESH_AGENTS = [
     { id: 'channel-learner',  label: 'Channel\nLearner',     icon: '📺', x: 130, y: 60,  produces: ['channel_dna'] },
     { id: 'book-extractor',   label: 'Book\nExtractor',      icon: '📚', x: 400, y: 30,  produces: ['book_knowledge'] },
@@ -2418,7 +2553,6 @@
     { id: 'script-writer',    label: 'Script\nWriter',       icon: '✍️', x: 400, y: 210, produces: [], consumes: ['ALL'] },
   ];
 
-  // Signal flow connections: [from, to, signalType]
   const MESH_EDGES = [
     ['channel-learner',  'script-writer',    'channel_dna'],
     ['channel-learner',  'content-workflow',  'channel_dna'],
@@ -2440,28 +2574,24 @@
     const nodeG = document.getElementById('mesh-nodes');
     if (!svg) return;
 
-    // Build status lookup from agent stats
     const statusMap = {};
     (agentStats || []).forEach(a => { statusMap[a.agent] = a; });
 
-    // Build active signal types set
     const activeTypes = new Set();
     (signalData || []).filter(s => s.status === 'active').forEach(s => activeTypes.add(s.signal_type));
 
-    // Draw connections
     let connHtml = '';
     MESH_EDGES.forEach(([fromId, toId, sigType]) => {
       const from = MESH_AGENTS.find(a => a.id === fromId);
       const to = MESH_AGENTS.find(a => a.id === toId);
       if (!from || !to) return;
       const isActive = activeTypes.has(sigType);
-      const color = isActive ? '#00b894' : '#2d3140';
+      const color = isActive ? 'var(--green)' : '#2a2e3e';
       const width = isActive ? 2 : 1;
       const marker = isActive ? 'url(#arrow-active)' : 'url(#arrow)';
       const opacity = isActive ? 0.8 : 0.3;
       const dasharray = isActive ? '' : '4,4';
 
-      // Offset line endpoints to node border (radius ~28)
       const dx = to.x - from.x, dy = to.y - from.y;
       const dist = Math.sqrt(dx*dx + dy*dy);
       const r = 28;
@@ -2474,67 +2604,56 @@
       }
       connHtml += `</line>`;
 
-      // Signal pulse dot traveling along active connections
       if (isActive) {
-        connHtml += `<circle r="3" fill="#00b894" opacity="0.9">
+        connHtml += `<circle r="3" fill="var(--green)" opacity="0.9">
           <animateMotion dur="3s" repeatCount="indefinite" path="M${x1},${y1} L${x2},${y2}"/>
         </circle>`;
       }
     });
     connG.innerHTML = connHtml;
 
-    // Draw nodes
     let nodeHtml = '';
     MESH_AGENTS.forEach(agent => {
       const stat = statusMap[agent.id];
       const isActive = stat && stat.last_status === 'success';
       const isError = stat && stat.last_status === 'error';
-      const nodeColor = isError ? '#e17055' : isActive ? '#00b894' : '#fdcb6e';
+      const nodeColor = isError ? 'var(--red)' : isActive ? 'var(--green)' : 'var(--yellow)';
       const bgColor = isError ? '#2d1515' : isActive ? '#0d2d24' : '#2d2a15';
       const signals = stat ? stat.signals_produced : 0;
 
-      // Node circle
       nodeHtml += `<g class="mesh-node" style="cursor:pointer" data-agent="${agent.id}">`;
 
-      // Glow for active
       if (isActive && signals > 0) {
         nodeHtml += `<circle cx="${agent.x}" cy="${agent.y}" r="35" fill="url(#pulse-grad)">
           <animate attributeName="r" values="30;40;30" dur="3s" repeatCount="indefinite"/>
         </circle>`;
       }
 
-      // Main circle
       nodeHtml += `<circle cx="${agent.x}" cy="${agent.y}" r="28" fill="${bgColor}" stroke="${nodeColor}" stroke-width="2"/>`;
-
-      // Icon
       nodeHtml += `<text x="${agent.x}" y="${agent.y - 2}" text-anchor="middle" dominant-baseline="central" font-size="18">${agent.icon}</text>`;
 
-      // Label below
       const labelLines = agent.label.split('\n');
       labelLines.forEach((line, i) => {
-        nodeHtml += `<text x="${agent.x}" y="${agent.y + 36 + i * 13}" text-anchor="middle" font-size="10" fill="#8b8fa3" font-family="-apple-system,system-ui,sans-serif">${line}</text>`;
+        nodeHtml += `<text x="${agent.x}" y="${agent.y + 36 + i * 13}" text-anchor="middle" font-size="10" fill="var(--text2)" font-family="-apple-system,system-ui,sans-serif">${line}</text>`;
       });
 
-      // Signal count badge
       if (signals > 0) {
         nodeHtml += `<circle cx="${agent.x + 20}" cy="${agent.y - 20}" r="9" fill="${nodeColor}"/>`;
-        nodeHtml += `<text x="${agent.x + 20}" y="${agent.y - 20}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#0f1117" font-weight="bold">${signals}</text>`;
+        nodeHtml += `<text x="${agent.x + 20}" y="${agent.y - 20}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="var(--bg)" font-weight="bold">${signals}</text>`;
       }
 
       nodeHtml += `</g>`;
     });
 
-    // Central "Intelligence Bus" label
-    nodeHtml += `<text x="400" y="210" text-anchor="middle" dominant-baseline="central" font-size="10" fill="#6c5ce7" font-weight="600" opacity="0.5">INTELLIGENCE BUS</text>`;
+    nodeHtml += `<text x="400" y="210" text-anchor="middle" dominant-baseline="central" font-size="10" fill="var(--accent)" font-weight="600" opacity="0.5">INTELLIGENCE BUS</text>`;
 
     nodeG.innerHTML = nodeHtml;
 
-    // Update pulse count
     const activeCount = [...activeTypes].length;
     document.getElementById('mesh-pulse-count').textContent = `${activeCount} signal types active`;
   }
 
-  // ── Mission Control polling ─────────────
+  // ── Mission Control polling ────────────────
   async function pollMissionControl() {
     try {
       const [agentsRes, signalsRes, pipelineRes, booksRes] = await Promise.all([
@@ -2544,18 +2663,15 @@
         apiFetch('/api/books').then(r => r.json()),
       ]);
 
-      // Metric cards
       document.getElementById('mc-signals').textContent = signalsRes.activeCount || 0;
 
-      // Render agent mesh graph
       renderMeshGraph(agentsRes.agents || [], signalsRes.signals || []);
       document.getElementById('mc-books').textContent = (booksRes.books || []).filter(b => b.extraction_status === 'extracted').length;
       document.getElementById('mc-pipeline').textContent = pipelineRes.totalActive || 0;
       const bn = pipelineRes.bottleneck;
-      document.getElementById('mc-bottleneck').textContent = bn ? `${bn.stage} (${bn.count})` : 'Clear ✅';
+      document.getElementById('mc-bottleneck').textContent = bn ? `${bn.stage} (${bn.count})` : 'Clear';
       document.getElementById('mc-bottleneck').style.color = bn ? 'var(--yellow)' : 'var(--green)';
 
-      // Agent cards
       const agentEl = document.getElementById('mc-agents');
       const agents = agentsRes.agents || [];
       const agentActions = {
@@ -2570,7 +2686,7 @@
         const color = a.status === 'error' ? 'var(--red)' : a.status === 'success' ? 'var(--green)' : 'var(--text2)';
         const action = agentActions[a.agent] || '';
         const runBtn = action ? `<button class="action-btn" onclick="doAction('${action}')" style="font-size:11px;padding:3px 8px">▶ Run</button>` : '';
-        return `<div style="background:var(--surface2);border-radius:8px;padding:12px;border-left:3px solid ${color}">
+        return `<div style="background:var(--surface2);border-radius:var(--radius-sm);padding:12px;border-left:3px solid ${color}">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <b style="font-size:13px">${a.agent}</b>
             ${runBtn}
@@ -2582,7 +2698,6 @@
         </div>`;
       }).join('');
 
-      // Sprint mode
       const sprintSignal = (signalsRes.signals || []).find(s => s.signal_type === 'content_sprint_mode' && s.status === 'active');
       const sprintBtn = document.getElementById('mc-sprint-btn');
       const sprintStatus = document.getElementById('mc-sprint-status');
@@ -2598,7 +2713,6 @@
         sprintStatus.textContent = '';
       }
 
-      // Signal log table
       const sigTable = document.getElementById('mc-signals-table');
       const signals = (signalsRes.signals || []).filter(s => s.status === 'active').slice(0, 20);
       sigTable.innerHTML = signals.map(s => {
@@ -2617,20 +2731,19 @@
         </tr>`;
       }).join('');
 
-      // Book library
       const bookEl = document.getElementById('mc-book-list');
       const books = booksRes.books || [];
       if (books.length === 0) {
         bookEl.innerHTML = '<span class="text-muted">No books. Use /addbook in Telegram.</span>';
       } else {
-        bookEl.innerHTML = '<table class="table" style="font-size:12px"><thead><tr><th>Title</th><th>Author</th><th>Pillars</th><th>Frameworks</th><th>Referenced</th><th>Status</th></tr></thead><tbody>' +
+        bookEl.innerHTML = '<div style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th>Title</th><th>Author</th><th>Pillars</th><th>Frameworks</th><th>Referenced</th><th>Status</th></tr></thead><tbody>' +
           books.map(b => {
             const pillars = JSON.parse(b.pillar_mapping || '[]').join(', ') || '—';
             const fwCount = JSON.parse(b.key_frameworks || '[]').length;
             const statusIcon = b.extraction_status === 'extracted' ? '✅' : b.extraction_status === 'extracting' ? '⏳' : '❌';
             return `<tr><td><b>${b.title}</b></td><td>${b.author}</td><td>${pillars}</td><td>${fwCount}</td><td>${b.times_referenced}</td><td>${statusIcon}</td></tr>`;
           }).join('') +
-          '</tbody></table>';
+          '</tbody></table></div>';
       }
     } catch (err) {
       console.warn('Mission Control poll failed:', err);
@@ -2684,141 +2797,6 @@
     }
   };
 
-  // ── Skill Management ─────────────────────────
-  const SKILL_ICONS = { secretary: '📋', triathlon: '🏊', content: '🎬' };
-  const SKILL_COLORS = { secretary: '#6c5ce7', triathlon: '#00b894', content: '#fdcb6e' };
-
-  async function loadSkills() {
-    try {
-      const res = await apiFetch('/api/skills').then(r => r.json());
-      if (!res.ok) return;
-      renderSkills(res.skills);
-    } catch (err) {
-      console.warn('Skill load failed:', err);
-    }
-  }
-
-  function renderSkills(skills) {
-    const panel = document.getElementById('skill-panel');
-    if (!panel) return;
-
-    panel.innerHTML = skills.map(skill => {
-      const icon = SKILL_ICONS[skill.name] || '⚙️';
-      const color = SKILL_COLORS[skill.name] || 'var(--accent)';
-      const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
-      const enabledTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
-      const disabledClass = skill.enabled ? '' : ' disabled';
-
-      const subRows = skill.subSkills.map(sub => {
-        const subDisabled = !skill.enabled;
-        return `<div class="submodule-row">
-          <span>
-            <span class="sub-name">${esc(sub.name)}</span>
-            <span class="sub-desc">${esc(sub.description)}</span>
-          </span>
-          <span class="sub-tools">${sub.toolCount} tool${sub.toolCount !== 1 ? 's' : ''}</span>
-          <label class="toggle-switch">
-            <input type="checkbox" ${sub.enabled ? 'checked' : ''} ${subDisabled ? 'disabled' : ''}
-              onchange="toggleSubSkill('${skill.name}', '${sub.name}', this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>`;
-      }).join('');
-
-      return `<div class="skill-card${disabledClass}" style="border-left-color:${color}" id="skill-${skill.name}">
-        <div class="skill-card-header">
-          <div>
-            <h3>${icon} ${esc(skill.name)}</h3>
-            <div class="skill-card-desc">${esc(skill.description)} — ${enabledTools}/${totalTools} tools active</div>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" ${skill.enabled ? 'checked' : ''}
-              onchange="toggleSkill('${skill.name}', this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="skill-submodules">${subRows}</div>
-      </div>`;
-    }).join('');
-  }
-
-  window.toggleSkill = async function(name, enabled) {
-    try {
-      const action = enabled ? 'enable' : 'disable';
-      const res = await apiFetch(`/api/skills/${name}/${action}`, { method: 'POST' }).then(r => r.json());
-      if (!res.ok) { showToast(res.message, false); return; }
-      showToast(`Skill "${name}" ${action}d`, true);
-      await loadSkills();
-    } catch (err) {
-      showToast('Skill toggle failed: ' + err.message, false);
-      await loadSkills();
-    }
-  };
-
-  window.toggleSubSkill = async function(skill, sub, enabled) {
-    try {
-      const action = enabled ? 'enable' : 'disable';
-      const res = await apiFetch(`/api/skills/${skill}/subskills/${sub}/${action}`, { method: 'POST' }).then(r => r.json());
-      if (!res.ok) { showToast(res.message, false); return; }
-      showToast(`Sub-skill "${sub}" ${action}d`, true);
-      await loadSkills();
-    } catch (err) {
-      showToast('Sub-skill toggle failed: ' + err.message, false);
-      await loadSkills();
-    }
-  };
-
-  // Initial load + periodic refresh
-  loadSkills();
-  setInterval(loadSkills, 30_000);
-
-  // ── Error Monitoring ─────────────────────────
-  async function loadErrors() {
-    try {
-      const res = await apiFetch('/api/errors').then(r => r.json());
-      if (!res.ok) return;
-
-      document.getElementById('err-today').textContent = res.today;
-      document.getElementById('err-7d').textContent = res.last7d;
-      document.getElementById('err-30d').textContent = res.last30d;
-
-      // Color the today count
-      const todayEl = document.getElementById('err-today');
-      todayEl.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
-
-      // By source
-      const srcEl = document.getElementById('err-by-source');
-      srcEl.innerHTML = (res.bySource || []).map(s =>
-        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span class="mono">${esc(s.source)}</span><span class="val">${s.count}</span></div>`
-      ).join('') || '<span class="text-muted">No errors</span>';
-
-      // By level
-      const lvlEl = document.getElementById('err-by-level');
-      const lvlColors = { fatal: 'var(--red)', error: 'var(--orange)', warning: 'var(--yellow)' };
-      lvlEl.innerHTML = (res.byLevel || []).map(l =>
-        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:${lvlColors[l.level] || 'var(--text)'}">${esc(l.level)}</span><span class="val">${l.count}</span></div>`
-      ).join('') || '<span class="text-muted">No errors</span>';
-
-      // Recent errors table
-      const tbody = document.querySelector('#err-recent tbody');
-      tbody.innerHTML = (res.recent || []).slice(0, 10).map(e => {
-        const lvlColor = lvlColors[e.level] || 'var(--text)';
-        return `<tr>
-          <td class="mono">${shortTime(e.ts)}</td>
-          <td style="color:${lvlColor}">${esc(e.level)}</td>
-          <td class="mono">${esc(e.source)}</td>
-          <td title="${esc(e.message)}">${esc(e.message.slice(0, 80))}</td>
-        </tr>`;
-      }).join('') || '<tr><td colspan="4" class="text-muted">No recent errors ✅</td></tr>';
-    } catch (err) {
-      console.warn('Error monitor poll failed:', err);
-    }
-  }
-
-  loadErrors();
-  setInterval(loadErrors, 30_000);
-
-  // Poll mission control alongside main poll
   pollMissionControl();
   setInterval(pollMissionControl, 30_000);
 
@@ -2831,7 +2809,7 @@
     el._timer = setTimeout(() => el.style.display = 'none', 4000);
   }
 
-  // ── Init ───────────────────────────────────
+  // ── Init ──────────────────────────────────
   ensureToken();
   poll();
   pollTimer = setInterval(poll, POLL_MS);
