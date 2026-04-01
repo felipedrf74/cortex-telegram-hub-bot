@@ -324,6 +324,49 @@ async function main() {
   const task = JSON.parse(fs.readFileSync(taskFile, 'utf8'));
   console.log(`\n🔄 Agent "${agentDir}" completed: ${task.title}`);
 
+  // ─── Verify agent actually committed code (non-QA agents only) ──
+  if (agentDir !== 'qa') {
+    const { execSync } = require('child_process');
+    const worktree = path.join(WORKTREE_BASE, agentDir);
+    let hasNewCommits = false;
+    try {
+      // Check if there are commits ahead of the base (main)
+      const log = execSync(`git log origin/main..HEAD --oneline 2>/dev/null`, { cwd: worktree, encoding: 'utf8' }).trim();
+      hasNewCommits = log.split('\n').filter(Boolean).length > 0;
+    } catch {}
+
+    if (!hasNewCommits) {
+      console.log(`  ⚠️  No new commits found on ${agentDir} branch — agent did not push code.`);
+      console.log(`  ❌ Skipping QA chain — task moved back to To Do.`);
+      await updateTaskStatus(task.id, 'To Do');
+      await notify(`⚠️ <b>${agentDir}</b> completed without code changes\n<i>${task.title}</i>\n→ Moved back to To Do (no commits found)`);
+      // Clear task files
+      try { fs.unlinkSync(path.join(WORKTREE_BASE, agentDir, '.agent-task.json')); } catch {}
+      try { fs.unlinkSync(path.join(WORKTREE_BASE, agentDir, '.agent-prompt.md')); } catch {}
+      // Still try to fetch next task
+      const tasks = await fetchToDoTasks();
+      const myTasks = tasks.filter(t => { const target = AGENT_MAP[t.agent]; return target === agentDir; });
+      if (myTasks.length > 0) {
+        const next = myTasks[0];
+        await updateTaskStatus(next.id, 'In Progress');
+        writeAgentPrompt(next, agentDir);
+        await notify(`📋 <b>${agentDir}</b> auto-picked next task\n<i>${next.title}</i>`);
+      }
+      return;
+    }
+    console.log(`  ✅ Verified: ${agentDir} has new commits`);
+
+    // Also verify agent pushed to remote
+    try {
+      const unpushed = execSync(`git log origin/agent/${agentDir}..HEAD --oneline 2>/dev/null`, { cwd: worktree, encoding: 'utf8' }).trim();
+      if (unpushed) {
+        console.log(`  📤 Pushing unpushed commits...`);
+        execSync(`git push origin agent/${agentDir} 2>&1`, { cwd: worktree, encoding: 'utf8' });
+        console.log(`  ✅ Pushed to origin/agent/${agentDir}`);
+      }
+    } catch (e) { console.log(`  ⚠️  Push check/attempt: ${e.message}`); }
+  }
+
   // ─── QA agent finishing a validation ─────────────────────────────
   if (agentDir === 'qa' && verdict) {
     // Remove completed task from queue
