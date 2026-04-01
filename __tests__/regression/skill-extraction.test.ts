@@ -1010,14 +1010,23 @@ describe('REGRESSION: Skill config definitions are consistent', () => {
     expect(subNames).not.toContain('email');
   });
 
-  it('content has only notes and shared-memory', async () => {
+  it('content v2 has 11 granular sub-skills including agent mesh', async () => {
     const { getSkillDefinition } = await import('../../src/skills/skill-config');
     const content = getSkillDefinition('content');
     const subNames = content.subSkills.map(s => s.name);
 
     expect(subNames).toContain('notes');
     expect(subNames).toContain('shared-memory');
-    expect(subNames.length).toBe(2);
+    expect(subNames).toContain('research-pipeline');
+    expect(subNames).toContain('script-generator');
+    expect(subNames).toContain('seo-tracker');
+    expect(subNames).toContain('reaction-radar');
+    expect(subNames).toContain('voice-evolution');
+    expect(subNames).toContain('performance-intel');
+    expect(subNames).toContain('pipeline-tracker');
+    expect(subNames).toContain('topic-scheduler');
+    expect(subNames).toContain('meme-scout');
+    expect(subNames.length).toBe(11);
   });
 
   it('no tool name appears in conflicting sub-skills across domains', async () => {

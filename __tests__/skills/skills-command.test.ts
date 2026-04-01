@@ -129,23 +129,23 @@ describe('/skills command — getAllSkillStatuses()', () => {
     expect(triathlon.subSkills).toHaveLength(5);
   });
 
-  it('content has 2 sub-modules', () => {
+  it('content has 11 sub-modules (v2.0.0 with granular agent sub-skills)', () => {
     const skills = getAllSkillStatuses();
     const content = skills.find(s => s.name === 'content')!;
-    expect(content.subSkills).toHaveLength(2);
+    expect(content.subSkills).toHaveLength(11);
   });
 
-  it('sub-skills have toolCount >= 0 (briefings has no tools)', () => {
+  it('sub-skills have toolCount >= 0 (agent sub-skills may have no tools)', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       for (const sub of skill.subSkills) {
         expect(sub.toolCount).toBeGreaterThanOrEqual(0);
       }
     }
-    // Most sub-skills have tools
+    // Most sub-skills have tools; content v2 agent sub-skills are cron-driven with no tools
     const allSubs = skills.flatMap(s => s.subSkills);
     const withTools = allSubs.filter(s => s.toolCount > 0);
-    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.8);
+    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.6);
   });
 });
 
@@ -200,8 +200,13 @@ describe('skills command — formatting data correctness', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       const activeSubs = skill.subSkills.filter(s => s.enabled).length;
-      // All should be enabled by default
-      expect(activeSubs).toBe(skill.subSkills.length);
+      if (skill.name === 'content') {
+        // meme-scout is disabled by default → 10 of 11 enabled
+        expect(activeSubs).toBe(skill.subSkills.length - 1);
+      } else {
+        // All other skills have all sub-skills enabled by default
+        expect(activeSubs).toBe(skill.subSkills.length);
+      }
     }
   });
 
