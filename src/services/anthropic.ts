@@ -217,6 +217,69 @@ export const TOOLS: Anthropic.Tool[] = [
       month: { type: 'string', description: 'Month in YYYY-MM format' },
     }, required: ['month'] },
   },
+  // ── Cooking tools ──
+  {
+    name: 'cooking_add_recipe', description: 'Save a recipe with structured ingredients',
+    input_schema: { type: 'object' as const, properties: {
+      title: { type: 'string' },
+      ingredients: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, quantity: { type: 'string' }, unit: { type: 'string' } }, required: ['name', 'quantity', 'unit'] } },
+      instructions: { type: 'string' },
+      prep_time_min: { type: 'number' },
+      cook_time_min: { type: 'number' },
+      servings: { type: 'number' },
+      tags: { type: 'string', description: 'Comma-separated tags e.g. carnivore,quick,high-protein' },
+    }, required: ['title', 'ingredients'] },
+  },
+  {
+    name: 'cooking_get_recipes', description: 'Search saved recipes by tags or ingredient keywords',
+    input_schema: { type: 'object' as const, properties: {
+      tags: { type: 'string', description: 'Filter by tag' },
+      search: { type: 'string', description: 'Search title or ingredients' },
+      limit: { type: 'number' },
+    } },
+  },
+  {
+    name: 'cooking_delete_recipe', description: 'Delete a saved recipe',
+    input_schema: { type: 'object' as const, properties: {
+      recipe_id: { type: 'number' },
+    }, required: ['recipe_id'] },
+  },
+  {
+    name: 'cooking_set_meal', description: 'Plan a meal for a specific date and meal type',
+    input_schema: { type: 'object' as const, properties: {
+      date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      meal_type: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
+      title: { type: 'string', description: 'Meal description' },
+      recipe_id: { type: 'number', description: 'Optional link to saved recipe' },
+      notes: { type: 'string' },
+    }, required: ['date', 'meal_type', 'title'] },
+  },
+  {
+    name: 'cooking_get_meal_plan', description: 'Get meal plan for a date range',
+    input_schema: { type: 'object' as const, properties: {
+      start_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      end_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+    }, required: ['start_date', 'end_date'] },
+  },
+  {
+    name: 'cooking_delete_meal', description: 'Remove a planned meal',
+    input_schema: { type: 'object' as const, properties: {
+      date: { type: 'string' },
+      meal_type: { type: 'string', enum: ['breakfast', 'lunch', 'dinner', 'snack'] },
+    }, required: ['date', 'meal_type'] },
+  },
+  {
+    name: 'cooking_generate_shopping_list', description: 'Generate shopping list from meal plan for a week',
+    input_schema: { type: 'object' as const, properties: {
+      week_start: { type: 'string', description: 'ISO date YYYY-MM-DD (Monday of the week)' },
+    }, required: ['week_start'] },
+  },
+  {
+    name: 'cooking_get_shopping_list', description: 'Get existing shopping list for a week',
+    input_schema: { type: 'object' as const, properties: {
+      week_start: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+    }, required: ['week_start'] },
+  },
 ];
 
 // ─── Unified Image Classification & Extraction (uses Haiku — cheap vision) ──

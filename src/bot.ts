@@ -12,6 +12,7 @@ import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
 import { handleFinance } from './domains/finance';
+import { handleCooking } from './domains/cooking';
 import * as onboarding from './services/onboarding';
 import { getActiveReminders } from './state/reminders';
 import { clearConversation, clearAllConversations, addToConversation, getLastAssistantMessage } from './state/conversation';
@@ -260,6 +261,7 @@ const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Prom
   triathlon: handleTriathlon,
   content: handleContent,
   finance: handleFinance,
+  cooking: handleCooking,
 };
 
 // ─── Processing Queue (sequential per user) ─────────────────────────

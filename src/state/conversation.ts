@@ -11,6 +11,7 @@ const HISTORY_LIMITS: Record<string, number> = {
   triathlon: 6,
   content: 6,
   finance: 8,
+  cooking: 8,
 };
 
 export function getConversationHistory(domain: DomainName): DomainMessage[] {
