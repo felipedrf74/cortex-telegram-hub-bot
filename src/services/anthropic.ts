@@ -217,6 +217,12 @@ export const TOOLS: Anthropic.Tool[] = [
       month: { type: 'string', description: 'Month in YYYY-MM format' },
     }, required: ['month'] },
   },
+  {
+    name: 'finance_annual_summary', description: 'Get annual tax summary for IRPF declaration — totals for income, INSS, deductions, tax, payment status',
+    input_schema: { type: 'object' as const, properties: {
+      year: { type: 'number', description: 'Year (e.g. 2024)' },
+    }, required: ['year'] },
+  },
   // ── Cooking tools ──
   {
     name: 'cooking_add_recipe', description: 'Save a recipe with structured ingredients',

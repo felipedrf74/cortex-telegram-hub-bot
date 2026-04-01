@@ -5,6 +5,8 @@ Domains:
 - "secretary" — scheduling, calendar, appointments, to-do lists, reminders, email, time management, weekly planning, daily overview, general life coordination, invoices, general requests
 - "triathlon" — gym workouts, running, cycling, training plans, nutrition, carnivore diet, recovery, soreness, performance, body composition, supplements, electrolytes
 - "content" — YouTube, Instagram, video ideas, scripts, thumbnails, captions, Reels, content strategy, audience growth, brand, hashtags, content calendar
+- "finance" — expenses, budgets, income tax, DARF, Carnê-Leão, freelancer taxes, receipts, financial planning, deductions
+- "cooking" — recipes, meal planning, cooking, shopping lists, ingredient search, meal prep
 
 IMPORTANT: If [ACTIVE CONVERSATION] context is provided below, consider whether the new message is a FOLLOW-UP to that conversation or a NEW TOPIC.
 - If the message answers a question the assistant just asked, or continues the same topic → classify to the SAME domain as the active conversation.

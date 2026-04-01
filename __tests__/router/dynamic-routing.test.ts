@@ -74,6 +74,25 @@ describe('skill-config routing', () => {
       expect(content.patterns.some(p => p.test('/video idea'))).toBe(true);
       expect(content.patterns.some(p => p.test('/genscript about AI'))).toBe(true);
     });
+
+    it('finance patterns match expected commands', () => {
+      const routes = getPatternRoutes();
+      const finance = routes.find(r => r.domain === 'finance')!;
+      expect(finance.patterns.some(p => p.test('/finance'))).toBe(true);
+      expect(finance.patterns.some(p => p.test('/expense log 50'))).toBe(true);
+      expect(finance.patterns.some(p => p.test('/tax'))).toBe(true);
+      expect(finance.patterns.some(p => p.test('/darf'))).toBe(true);
+      expect(finance.patterns.some(p => p.test('/receipt'))).toBe(true);
+    });
+
+    it('cooking patterns match expected commands', () => {
+      const routes = getPatternRoutes();
+      const cooking = routes.find(r => r.domain === 'cooking')!;
+      expect(cooking.patterns.some(p => p.test('/cook something'))).toBe(true);
+      expect(cooking.patterns.some(p => p.test('/recipe chicken'))).toBe(true);
+      expect(cooking.patterns.some(p => p.test('/mealplan'))).toBe(true);
+      expect(cooking.patterns.some(p => p.test('/shopping'))).toBe(true);
+    });
   });
 
   describe('getKeywordRoutes', () => {
@@ -130,6 +149,25 @@ describe('skill-config routing', () => {
       const secretary = routes.find(r => r.domain === 'secretary')!;
       expect(secretary.pattern.test('my tasks for today')).toBe(true);
       expect(secretary.pattern.test('set a reminder')).toBe(true);
+    });
+
+    it('finance keyword matches tax and expense terms', () => {
+      const routes = getKeywordRoutes();
+      const finance = routes.find(r => r.domain === 'finance')!;
+      expect(finance.pattern.test('my expenses this month')).toBe(true);
+      expect(finance.pattern.test('carnê-leão calculation')).toBe(true);
+      expect(finance.pattern.test('calculate DARF')).toBe(true);
+      expect(finance.pattern.test('orçamento mensal')).toBe(true);
+      expect(finance.pattern.test('nota fiscal')).toBe(true);
+    });
+
+    it('cooking keyword matches recipe and meal terms', () => {
+      const routes = getKeywordRoutes();
+      const cooking = routes.find(r => r.domain === 'cooking')!;
+      expect(cooking.pattern.test('find me a recipe')).toBe(true);
+      expect(cooking.pattern.test('meal plan for the week')).toBe(true);
+      expect(cooking.pattern.test('shopping list')).toBe(true);
+      expect(cooking.pattern.test('receita de frango')).toBe(true);
     });
   });
 
@@ -192,6 +230,10 @@ describe('dynamic routing integration with classifier', () => {
     expect(patternMatch('/todo buy milk')).toBe('secretary');
     expect(patternMatch('/gym upper body')).toBe('triathlon');
     expect(patternMatch('/video idea')).toBe('content');
+    expect(patternMatch('/finance')).toBe('finance');
+    expect(patternMatch('/tax')).toBe('finance');
+    expect(patternMatch('/recipe chicken')).toBe('cooking');
+    expect(patternMatch('/mealplan')).toBe('cooking');
   });
 
   it('keywordMatch uses skill-config routes with priority', async () => {
@@ -199,6 +241,8 @@ describe('dynamic routing integration with classifier', () => {
     expect(keywordMatch('my workout was great')).toBe('triathlon');
     expect(keywordMatch('youtube strategy')).toBe('content');
     expect(keywordMatch('check my tasks')).toBe('secretary');
+    expect(keywordMatch('calculate DARF')).toBe('finance');
+    expect(keywordMatch('find a recipe')).toBe('cooking');
   });
 
   it('keywordMatch returns null for unmatched messages', async () => {
@@ -207,14 +251,18 @@ describe('dynamic routing integration with classifier', () => {
     expect(keywordMatch('good morning')).toBeNull();
   });
 
-  it('buildClassifierHints generates hint text from skills', async () => {
+  it('buildClassifierHints generates hint text from all skills', async () => {
     const { buildClassifierHints } = await import('../../src/router/classifier');
     const hints = buildClassifierHints();
     expect(hints).toContain('"secretary"');
     expect(hints).toContain('"triathlon"');
     expect(hints).toContain('"content"');
+    expect(hints).toContain('"finance"');
+    expect(hints).toContain('"cooking"');
     expect(hints).toContain('scheduling');
     expect(hints).toContain('gym workouts');
     expect(hints).toContain('YouTube');
+    expect(hints).toContain('DARF');
+    expect(hints).toContain('recipes');
   });
 });

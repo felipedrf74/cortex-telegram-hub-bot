@@ -69,6 +69,8 @@ import {
   calculateAndStoreTax,
   getTaxEvents,
   markTaxPaid,
+  getAnnualTaxSummary,
+  parseReceiptAmount,
   IRPF_BRACKETS,
 } from '../../src/services/finance-tracker';
 
@@ -340,5 +342,132 @@ describe('Tax event persistence', () => {
 
   it('markTaxPaid returns false for non-existent event', () => {
     expect(markTaxPaid(1, '2099-01')).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// ANNUAL TAX SUMMARY TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('getAnnualTaxSummary', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('aggregates all monthly tax events for a year', () => {
+    addTransaction(1, '2024-01-15', 'income', 8000);
+    calculateAndStoreTax(1, '2024-01');
+    addTransaction(1, '2024-02-15', 'income', 10000);
+    calculateAndStoreTax(1, '2024-02');
+    addTransaction(1, '2024-03-15', 'income', 6000);
+    addTransaction(1, '2024-03-20', 'deduction', 500);
+    calculateAndStoreTax(1, '2024-03');
+
+    const summary = getAnnualTaxSummary(1, 2024);
+    expect(summary.year).toBe(2024);
+    expect(summary.totalGrossIncome).toBe(24000);
+    expect(summary.totalDeductions).toBe(500);
+    expect(summary.totalInssDue).toBeGreaterThan(0);
+    expect(summary.totalTaxDue).toBeGreaterThan(0);
+    expect(summary.monthsPending).toBe(3);
+    expect(summary.monthsPaid).toBe(0);
+    expect(summary.months).toHaveLength(3);
+  });
+
+  it('tracks paid vs pending months', () => {
+    addTransaction(1, '2024-01-15', 'income', 8000);
+    calculateAndStoreTax(1, '2024-01');
+    markTaxPaid(1, '2024-01');
+
+    addTransaction(1, '2024-02-15', 'income', 10000);
+    calculateAndStoreTax(1, '2024-02');
+
+    const summary = getAnnualTaxSummary(1, 2024);
+    expect(summary.monthsPaid).toBe(1);
+    expect(summary.monthsPending).toBe(1);
+    expect(summary.totalPaid).toBeGreaterThan(0);
+    expect(summary.totalPending).toBeGreaterThan(0);
+  });
+
+  it('returns zeros for year with no data', () => {
+    const summary = getAnnualTaxSummary(1, 2099);
+    expect(summary.totalGrossIncome).toBe(0);
+    expect(summary.totalTaxDue).toBe(0);
+    expect(summary.monthsPaid).toBe(0);
+    expect(summary.monthsPending).toBe(0);
+    expect(summary.effectiveAnnualRate).toBe(0);
+  });
+
+  it('calculates effective annual rate correctly', () => {
+    addTransaction(1, '2024-06-15', 'income', 15000);
+    calculateAndStoreTax(1, '2024-06');
+
+    const summary = getAnnualTaxSummary(1, 2024);
+    expect(summary.effectiveAnnualRate).toBeGreaterThan(0);
+    expect(summary.effectiveAnnualRate).toBeLessThan(27.5);
+    const expected = Math.round((summary.totalTaxDue / summary.totalGrossIncome) * 10000) / 100;
+    expect(summary.effectiveAnnualRate).toBe(expected);
+  });
+
+  it('isolates data between users', () => {
+    addTransaction(1, '2024-06-15', 'income', 15000);
+    calculateAndStoreTax(1, '2024-06');
+    addTransaction(2, '2024-06-15', 'income', 5000);
+    calculateAndStoreTax(2, '2024-06');
+
+    const s1 = getAnnualTaxSummary(1, 2024);
+    const s2 = getAnnualTaxSummary(2, 2024);
+    expect(s1.totalGrossIncome).toBe(15000);
+    expect(s2.totalGrossIncome).toBe(5000);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// RECEIPT AMOUNT PARSING TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('parseReceiptAmount', () => {
+  it('parses BRL format: R$ 45,90', () => {
+    expect(parseReceiptAmount('R$ 45,90')).toBe(45.90);
+  });
+
+  it('parses BRL with thousands: R$ 1.234,56', () => {
+    expect(parseReceiptAmount('R$ 1.234,56')).toBe(1234.56);
+  });
+
+  it('parses euro format: € 45.90', () => {
+    expect(parseReceiptAmount('€ 45.90')).toBe(45.90);
+  });
+
+  it('parses plain number: 123.45', () => {
+    expect(parseReceiptAmount('123.45')).toBe(123.45);
+  });
+
+  it('parses BRL without spaces: R$500,00', () => {
+    expect(parseReceiptAmount('R$500,00')).toBe(500.00);
+  });
+
+  it('parses large BRL: R$ 12.345,67', () => {
+    expect(parseReceiptAmount('R$ 12.345,67')).toBe(12345.67);
+  });
+
+  it('returns null for null/undefined', () => {
+    expect(parseReceiptAmount(null)).toBeNull();
+    expect(parseReceiptAmount(undefined)).toBeNull();
+  });
+
+  it('returns null for empty string', () => {
+    expect(parseReceiptAmount('')).toBeNull();
+  });
+
+  it('returns null for zero or negative', () => {
+    expect(parseReceiptAmount('R$ 0,00')).toBeNull();
+    expect(parseReceiptAmount('-50')).toBeNull();
+  });
+
+  it('returns null for non-numeric string', () => {
+    expect(parseReceiptAmount('abc')).toBeNull();
   });
 });
