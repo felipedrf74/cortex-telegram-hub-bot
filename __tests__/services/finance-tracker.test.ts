@@ -59,6 +59,15 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
+vi.mock('../../src/config', () => ({
+  config: {
+    financeEncryption: {
+      enabled: true,
+      masterKey: 'test-master-key-for-finance-tests!',
+    },
+  },
+}));
+
 import { vi } from 'vitest';
 import {
   calculateMonthlyTax,
