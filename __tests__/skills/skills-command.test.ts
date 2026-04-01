@@ -87,11 +87,11 @@ afterEach(() => {
 // ── /skills command: getAllSkillStatuses() ───────────────────────
 
 describe('/skills command — getAllSkillStatuses()', () => {
-  it('returns all three skills after seeding', () => {
+  it('returns all five skills after seeding', () => {
     const skills = getAllSkillStatuses();
-    expect(skills).toHaveLength(3);
+    expect(skills).toHaveLength(5);
     const names = skills.map(s => s.name).sort();
-    expect(names).toEqual(['content', 'secretary', 'triathlon']);
+    expect(names).toEqual(['content', 'cooking', 'finance', 'secretary', 'triathlon']);
   });
 
   it('each skill has correct structure', () => {
@@ -115,18 +115,18 @@ describe('/skills command — getAllSkillStatuses()', () => {
     }
   });
 
-  it('secretary has 6 sub-modules', () => {
+  it('secretary has 7 sub-modules', () => {
     const skills = getAllSkillStatuses();
     const secretary = skills.find(s => s.name === 'secretary')!;
-    expect(secretary.subSkills).toHaveLength(6);
+    expect(secretary.subSkills).toHaveLength(7);
     const subNames = secretary.subSkills.map(s => s.name).sort();
-    expect(subNames).toEqual(['calendar', 'email', 'notes', 'reminders', 'shared-memory', 'tasks']);
+    expect(subNames).toEqual(['briefings', 'calendar', 'email', 'notes', 'reminders', 'shared-memory', 'tasks']);
   });
 
-  it('triathlon has 4 sub-modules', () => {
+  it('triathlon has 5 sub-modules', () => {
     const skills = getAllSkillStatuses();
     const triathlon = skills.find(s => s.name === 'triathlon')!;
-    expect(triathlon.subSkills).toHaveLength(4);
+    expect(triathlon.subSkills).toHaveLength(5);
   });
 
   it('content has 2 sub-modules', () => {
@@ -135,13 +135,17 @@ describe('/skills command — getAllSkillStatuses()', () => {
     expect(content.subSkills).toHaveLength(2);
   });
 
-  it('sub-skills have toolCount > 0', () => {
+  it('sub-skills have toolCount >= 0 (briefings has no tools)', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       for (const sub of skill.subSkills) {
-        expect(sub.toolCount).toBeGreaterThan(0);
+        expect(sub.toolCount).toBeGreaterThanOrEqual(0);
       }
     }
+    // Most sub-skills have tools
+    const allSubs = skills.flatMap(s => s.subSkills);
+    const withTools = allSubs.filter(s => s.toolCount > 0);
+    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.8);
   });
 });
 
@@ -221,7 +225,7 @@ describe('skills command — formatting data correctness', () => {
 
     const status = getSkillStatus('secretary');
     const activeSubs = status.subSkills.filter(s => s.enabled).length;
-    expect(activeSubs).toBe(5); // 6 - 1
+    expect(activeSubs).toBe(6); // 7 - 1
 
     const tasksStatus = status.subSkills.find(s => s.name === 'tasks')!;
     expect(tasksStatus.enabled).toBe(false);
@@ -233,8 +237,8 @@ describe('skills command — formatting data correctness', () => {
     testDb.exec('DELETE FROM installed_skills');
 
     const skills = getAllSkillStatuses();
-    // getAllSkillStatuses uses DEFAULT_SKILLS keys, so still returns 3 entries
-    expect(skills).toHaveLength(3);
+    // getAllSkillStatuses uses DEFAULT_SKILLS keys, so still returns 5 entries
+    expect(skills).toHaveLength(5);
     for (const skill of skills) {
       expect(skill.enabled).toBe(false);
     }
