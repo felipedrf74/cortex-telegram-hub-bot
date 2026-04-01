@@ -21,6 +21,7 @@ const SYSTEM_COMMANDS = [
   '/learnfrom', '/references', '/relearn', '/studyvideo', '/transcribe', '/script', '/repurpose',
   '/contenttopic', '/contentretro',
   '/onboard', '/profile',
+  '/skills', '/skill',
 ];
 
 export function isSystemCommand(message: string): string | null {
