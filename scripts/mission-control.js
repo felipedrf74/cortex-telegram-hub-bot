@@ -325,7 +325,40 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, {'Content-Type':'text/html'});
   res.end(PAGE + PAGE2 + PAGE3 + PAGE4 + PAGE5 + PAGE6);
 });
-server.listen(PORT, () => console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}\n`));
+server.listen(PORT, () => {
+  console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}\n`);
+
+  // ─── Server-side auto-assign loop (every 45s) ────────────────────
+  setInterval(async () => {
+    try {
+      const results = await autoAssignAll();
+      if (results.length > 0) {
+        console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
+        // Auto-launch offline agents that just received a task
+        for (const r of results) {
+          if (r.task && r.source) {
+            const agents = agentStatus();
+            const ag = agents.find(a => a.name === r.agent);
+            if (ag && !ag.running && ag.hasPrompt) {
+              console.log(`[auto-launch] Starting ${r.agent} (received task while offline)`);
+              const launcher = path.join(REPO, 'scripts/launch-agent.sh').replace(/ /g, '\\\\ ');
+              const script = `tell application "iTerm"
+activate
+tell current window
+create tab with default profile
+tell current session of current tab
+write text "${launcher} ${r.agent}"
+end tell
+end tell
+end tell`;
+              run(`osascript -e '${script.replace(/'/g,"'\\''")}'`);
+            }
+          }
+        }
+      }
+    } catch (e) { console.error('[auto-assign] Error:', e.message); }
+  }, 45000);
+});
 
 // ⚠️ TEMPLATE LITERAL ESCAPING: Use \\n (not \n) for JS newlines inside PAGE strings.
 // Single \n inside backticks becomes a real newline, breaking JS string syntax in the browser.
@@ -603,4 +636,5 @@ document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
   t.classList.add('on');TAB=t.dataset.t;render()
 }));
 refresh();
+setInterval(refresh, 30000); // Auto-refresh every 30s — no manual sync needed
 </script></body></html>`;
