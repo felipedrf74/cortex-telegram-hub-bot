@@ -275,6 +275,52 @@
   .domain-detail-chip.ok { background: rgba(0,184,148,.1); color: var(--green); }
   .domain-detail-chip.warn { background: rgba(225,112,85,.1); color: var(--red); }
 
+  /* ── Skill Module Status ─────────────────── */
+  .skill-card {
+    background: var(--surface2);
+    border-radius: 10px;
+    padding: 14px 16px;
+    border-left: 4px solid var(--accent);
+  }
+  .skill-card.disabled { opacity: .55; border-left-color: var(--text2); }
+  .skill-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .skill-card-header h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .skill-card-desc {
+    font-size: 11px;
+    color: var(--text2);
+    margin-bottom: 8px;
+  }
+  .sub-skill-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .sub-skill-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: rgba(139,143,163,.08);
+    color: var(--text2);
+  }
+  .sub-skill-chip.on { background: rgba(0,184,148,.1); color: var(--green); }
+  .sub-skill-chip.off { background: rgba(225,112,85,.08); color: var(--red); }
+  .sub-skill-tools { font-size: 10px; color: var(--text2); opacity: .7; }
+
   /* ── Daily Timeline ─────────────────────── */
   .timeline-wrap {
     position: relative;
@@ -775,6 +821,12 @@
   <div class="card card-full">
     <h2>🧩 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Pre-skill modules</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="domain-handlers"></div>
+  </div>
+
+  <!-- ── Skill Module Status ──────────────────── -->
+  <div class="card card-full">
+    <h2>🔧 Skill Modules <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Installed skills &amp; sub-modules</span></h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="skill-modules"></div>
   </div>
 
   <!-- ── API Usage ─────────────────────────── -->
@@ -1481,6 +1533,36 @@
             <span>Last: <span class="val">${relativeTime(d.lastMessageAt)}</span></span>
           </div>
           <div class="domain-card-details">${detailChips}</div>
+        </div>`;
+      }).join('');
+    }
+
+    // Skill module status
+    if (snap.skillStatus) {
+      const skillColors = { secretary: '#74b9ff', triathlon: '#00b894', content: '#fdcb6e' };
+      const skillIcons = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+      const skillEl = document.getElementById('skill-modules');
+      skillEl.innerHTML = snap.skillStatus.map(s => {
+        const color = skillColors[s.name] || 'var(--accent)';
+        const icon = skillIcons[s.name] || '🔌';
+        const statusDot = s.enabled
+          ? '<span class="status-dot dot-green"></span> Enabled'
+          : '<span class="status-dot dot-red"></span> Disabled';
+        const enabledCount = s.subSkills.filter(ss => ss.enabled).length;
+        const totalTools = s.subSkills.reduce((sum, ss) => sum + ss.toolCount, 0);
+        const subChips = s.subSkills.map(ss => {
+          const cls = ss.enabled ? 'on' : 'off';
+          const dot = ss.enabled ? '●' : '○';
+          return `<span class="sub-skill-chip ${cls}" title="${esc(ss.description)}">${dot} ${esc(ss.name)} <span class="sub-skill-tools">(${ss.toolCount})</span></span>`;
+        }).join('');
+
+        return `<div class="skill-card${s.enabled ? '' : ' disabled'}" style="border-left-color:${color}">
+          <div class="skill-card-header">
+            <h3>${icon} ${esc(s.name)}</h3>
+            <span style="font-size:12px">${statusDot}</span>
+          </div>
+          <div class="skill-card-desc">${esc(s.description)} &mdash; ${enabledCount}/${s.subSkills.length} sub-skills, ${totalTools} tools</div>
+          <div class="sub-skill-grid">${subChips}</div>
         </div>`;
       }).join('');
     }

@@ -62,6 +62,7 @@ import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { CronExpressionParser } from 'cron-parser';
+import { getAllSkillStatuses } from '../skills/skill-manager';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -139,6 +140,17 @@ interface SnapshotResponse {
     totalMessages: number;
     lastMessageAt: string | null;
     details: Record<string, string | number | boolean>;
+  }[];
+  skillStatus: {
+    name: string;
+    description: string;
+    enabled: boolean;
+    subSkills: {
+      name: string;
+      description: string;
+      enabled: boolean;
+      toolCount: number;
+    }[];
   }[];
 }
 
@@ -750,6 +762,7 @@ function buildSnapshot(): SnapshotResponse {
     contentReferences,
     transcriptStats,
     domainStatus,
+    skillStatus: getAllSkillStatuses(),
   };
 }
 
