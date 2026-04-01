@@ -202,7 +202,7 @@ async function handleAPI(req, res) {
     if (route === 'clear-stale') { await run(`rm -f "${WORKTREES}"/*/.agent-task.json "${WORKTREES}"/*/.agent-prompt.md`); return send(res, {ok:true,output:'Stale files cleared'}); }
     if (route === 'agent-done') { const b = await readBody(req); return send(res, await run(`node "${SCRIPT('agent-complete.js')}" --agent ${b.agent} --summary "${(b.summary||'done').replace(/"/g,'\\\\"')}"`)); }
     if (route === 'merge-develop') return send(res, await run('git fetch origin && git checkout develop && git pull origin develop && git merge origin/agent/backend --no-edit 2>/dev/null; git merge origin/agent/qa --no-edit 2>/dev/null; git merge origin/agent/devops --no-edit 2>/dev/null; git merge origin/agent/flex --no-edit 2>/dev/null; npx vitest run 2>&1 | tail -5 && git push origin develop && git checkout main'));
-    if (route === 'merge-main') return send(res, await run('git fetch origin && git checkout main && git pull origin main && git merge origin/develop --no-edit && npx vitest run 2>&1 | tail -5 && git push origin main'));
+    if (route === 'merge-main') return send(res, await run('git fetch origin && git checkout main && git pull origin main && git merge origin/develop --no-edit && npx vitest run 2>&1 | tail -5 && git-cliff --output CHANGELOG.md && git add CHANGELOG.md && git diff --cached --quiet CHANGELOG.md 2>/dev/null || git commit -m "docs: update changelog [skip ci]" && git push origin main && echo "\\n📝 CHANGELOG.md updated"'));
     if (route === 'deploy') return send(res, await run(`./scripts/deploy.sh`));
     if (route === 'git-status') return send(res, await run('git fetch --all 2>/dev/null; echo "=== Branch ===" && git branch --show-current && echo "=== Status ===" && git status --short && echo "=== Recent ===" && git log --oneline -8'));
     if (route === 'run-tests') return send(res, await run('npx vitest run 2>&1 | tail -40'));
@@ -613,7 +613,7 @@ function rDeploy(){
   const done=T.filter(t=>t.status==='Done').slice(0,12);
   return '<div class="sec"><h3>🚀 Merge + Deploy</h3><p style="font-size:11px;color:var(--t2);margin-bottom:10px">Sequential: agent branches → develop → main → production</p>'
     +cmdR('1. Merge agents → develop','git merge agent branches into develop','merge-develop','btn-blue')
-    +cmdR('2. Merge develop → main','Promote develop to main','merge-main','btn-purple')
+    +cmdR('2. Merge develop → main + changelog','Promote develop to main, generate CHANGELOG.md via git-cliff, push','merge-main','btn-purple')
     +cmdR('3. Deploy to production','Build, backup, rsync, PM2, health check','deploy','btn-green')
     +'<div class="out" id="pipe-out" style="display:none"></div></div>'
     +'<div class="sec"><h3>🛡 Server management</h3>'
