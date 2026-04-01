@@ -929,6 +929,42 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px" id="skill-panel"></div>
   </div>
 
+  <!-- ── Error Monitoring ──────────────────── -->
+  <div class="card">
+    <h2>🚨 Error Monitor</h2>
+    <div class="stats-grid" id="error-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="err-today">—</div>
+        <div class="stat-label">Today</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="err-7d">—</div>
+        <div class="stat-label">Last 7 Days</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="err-30d">—</div>
+        <div class="stat-label">Last 30 Days</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:140px">
+        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Source (7d)</h4>
+        <div id="err-by-source" style="font-size:12px"></div>
+      </div>
+      <div style="flex:1;min-width:140px">
+        <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">By Level (7d)</h4>
+        <div id="err-by-level" style="font-size:12px"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <h4 style="font-size:12px;color:var(--text2);margin-bottom:6px">Recent Errors</h4>
+      <table style="font-size:11px" id="err-recent">
+        <thead><tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ── API Usage ─────────────────────────── -->
   <div class="card">
     <h2>📊 API Usage</h2>
@@ -2278,6 +2314,52 @@
   // Initial load + periodic refresh
   loadSkills();
   setInterval(loadSkills, 30_000);
+
+  // ── Error Monitoring ─────────────────────────
+  async function loadErrors() {
+    try {
+      const res = await apiFetch('/api/errors').then(r => r.json());
+      if (!res.ok) return;
+
+      document.getElementById('err-today').textContent = res.today;
+      document.getElementById('err-7d').textContent = res.last7d;
+      document.getElementById('err-30d').textContent = res.last30d;
+
+      // Color the today count
+      const todayEl = document.getElementById('err-today');
+      todayEl.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
+
+      // By source
+      const srcEl = document.getElementById('err-by-source');
+      srcEl.innerHTML = (res.bySource || []).map(s =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span class="mono">${esc(s.source)}</span><span class="val">${s.count}</span></div>`
+      ).join('') || '<span class="text-muted">No errors</span>';
+
+      // By level
+      const lvlEl = document.getElementById('err-by-level');
+      const lvlColors = { fatal: 'var(--red)', error: 'var(--orange)', warning: 'var(--yellow)' };
+      lvlEl.innerHTML = (res.byLevel || []).map(l =>
+        `<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:${lvlColors[l.level] || 'var(--text)'}">${esc(l.level)}</span><span class="val">${l.count}</span></div>`
+      ).join('') || '<span class="text-muted">No errors</span>';
+
+      // Recent errors table
+      const tbody = document.querySelector('#err-recent tbody');
+      tbody.innerHTML = (res.recent || []).slice(0, 10).map(e => {
+        const lvlColor = lvlColors[e.level] || 'var(--text)';
+        return `<tr>
+          <td class="mono">${shortTime(e.ts)}</td>
+          <td style="color:${lvlColor}">${esc(e.level)}</td>
+          <td class="mono">${esc(e.source)}</td>
+          <td title="${esc(e.message)}">${esc(e.message.slice(0, 80))}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="4" class="text-muted">No recent errors ✅</td></tr>';
+    } catch (err) {
+      console.warn('Error monitor poll failed:', err);
+    }
+  }
+
+  loadErrors();
+  setInterval(loadErrors, 30_000);
 
   // Poll mission control alongside main poll
   pollMissionControl();
