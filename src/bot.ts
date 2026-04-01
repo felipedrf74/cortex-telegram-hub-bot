@@ -77,7 +77,7 @@ import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePubl
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
 import { handleAutoresearch, handleEvalScore } from './commands/autoresearch';
-import { handleSkillsList, handleSkillDetail } from './commands/skills';
+import { handleSkillsList, handleSkillCommand } from './commands/skills';
 import fs from 'fs';
 import path from 'path';
 
@@ -517,7 +517,7 @@ export function createBot(): Bot {
   });
 
   bot.command('skill', async (ctx) => {
-    await handleSkillDetail(ctx);
+    await handleSkillCommand(ctx);
   });
 
   bot.command('status', async (ctx) => {
@@ -4311,6 +4311,9 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 <b>🧩 SKILLS</b>
 /skills — List installed skills with status
 /skill [name] — Detail view of a skill
+/skill [name] enable|disable — Toggle a skill on/off
+/skill [name] modules — List sub-modules
+/skill [name] module [sub] enable|disable — Toggle a sub-module
 
 <b>🔧 SYSTEM</b>
 /help — This menu

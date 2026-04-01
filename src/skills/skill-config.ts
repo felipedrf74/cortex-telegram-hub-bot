@@ -19,6 +19,7 @@ export interface SubSkillDefinition {
   description: string;
   tools: string[];                  // tool names from TOOLS array in anthropic.ts
   enabledByDefault: boolean;
+  dependencies?: string[];          // names of other sub-skills within the same skill that must be enabled first
 }
 
 export interface ClassificationHint {
@@ -347,6 +348,23 @@ export function getAllToolNames(): string[] {
 export function getSubSkillNames(domain: string): string[] {
   const def = _skillRegistry.get(domain);
   return def ? def.subSkills.map(s => s.name) : [];
+}
+
+/** Get the dependencies of a sub-skill. Returns empty array if none or not found. */
+export function getSubSkillDependencies(domain: string, subSkillName: string): string[] {
+  const def = _skillRegistry.get(domain);
+  if (!def) return [];
+  const sub = def.subSkills.find(s => s.name === subSkillName);
+  return sub?.dependencies ?? [];
+}
+
+/** Get sub-skills that depend on a given sub-skill (reverse lookup). */
+export function getSubSkillDependents(domain: string, subSkillName: string): string[] {
+  const def = _skillRegistry.get(domain);
+  if (!def) return [];
+  return def.subSkills
+    .filter(s => s.dependencies?.includes(subSkillName))
+    .map(s => s.name);
 }
 
 // ── Dynamic Route Accessors ─────────────────────────────────────
