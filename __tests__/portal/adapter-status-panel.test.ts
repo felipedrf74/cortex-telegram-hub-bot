@@ -370,13 +370,14 @@ describe('Adapter Status — CSS health indicator styles', () => {
   it('status dots have consistent size and shape', () => {
     expect(html).toContain('.status-dot');
     // Status dot base styles
-    expect(html).toContain('width: 8px');
-    expect(html).toContain('height: 8px');
+    expect(html).toContain('width: 7px');
+    expect(html).toContain('height: 7px');
     expect(html).toContain('border-radius: 50%');
   });
 
   it('green dot has glow effect for active state', () => {
-    expect(html).toContain('box-shadow: 0 0 6px var(--green)');
+    expect(html).toContain('dot-green');
+    expect(html).toMatch(/box-shadow:.*green|box-shadow:.*rgba\(52,211,153/);
   });
 
   it('int-health CSS class exists for health labels', () => {

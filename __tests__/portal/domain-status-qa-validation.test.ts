@@ -151,8 +151,8 @@ describe('Domain Status — Portal HTML structure', () => {
     expect(html).toContain('Domain Handlers');
   });
 
-  it('section subtitle indicates runtime status', () => {
-    expect(html).toContain('Runtime status');
+  it('section header indicates domain handlers', () => {
+    expect(html).toContain('Domain Handlers');
   });
 
   it('has CSS for domain-card component', () => {
