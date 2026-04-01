@@ -191,12 +191,12 @@ describe('QA: /skills output formatting', () => {
     expect(skillsSource).toContain("parse_mode: 'HTML'");
   });
 
-  it('bot.ts delegates /skills to handleSkillsList', () => {
+  it('bot.ts delegates /skills to handleSkillsList and /skill to handleSkillCommand', () => {
     const botSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
     );
     expect(botSource).toContain('handleSkillsList(ctx)');
-    expect(botSource).toContain('handleSkillDetail(ctx)');
+    expect(botSource).toContain('handleSkillCommand(ctx)');
   });
 
   it('/skill detail view shows sub-module enabled/disabled indicator', () => {

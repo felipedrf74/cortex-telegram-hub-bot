@@ -91,7 +91,7 @@ import {
   getRegisteredDomainNames,
 } from '../../src/skills/skill-config';
 import type { SkillDefinition } from '../../src/skills/skill-config';
-import { formatSkillsList, formatSkillDetail, handleSkillsList, handleSkillDetail } from '../../src/commands/skills';
+import { formatSkillsList, formatSkillDetail, handleSkillsList, handleSkillCommand } from '../../src/commands/skills';
 import { resolveDependencies, validateManifest } from '../../src/skills/loader';
 import type { DomainName, DefaultDomainName } from '../../src/domains/types';
 
@@ -285,9 +285,9 @@ describe('E2E: /skill <name> command lifecycle', () => {
     expect(tasksLine).toContain('✅');
   });
 
-  it('handleSkillDetail replies with usage when no name given', async () => {
+  it('handleSkillCommand replies with usage when no name given', async () => {
     const ctx = createMockCtx('/skill', '');
-    await handleSkillDetail(ctx as any);
+    await handleSkillCommand(ctx as any);
 
     expect(ctx.reply).toHaveBeenCalledTimes(1);
     const [msg] = ctx.reply.mock.calls[0];
@@ -295,23 +295,19 @@ describe('E2E: /skill <name> command lifecycle', () => {
     expect(msg).toContain('/skill name');
   });
 
-  it('handleSkillDetail renders fallback for unknown skill (no definition in registry)', async () => {
-    // getSkillStatus returns { name: 'unknown', enabled: false, subSkills: [] } for unknown domains
-    // because it builds from getSkillDefinition which returns undefined — the handler
-    // shows a disabled skill with no sub-modules rather than "not found"
+  it('handleSkillCommand shows not-found for unknown skill', async () => {
     const ctx = createMockCtx('/skill unknown', 'unknown');
-    await handleSkillDetail(ctx as any);
+    await handleSkillCommand(ctx as any);
 
     expect(ctx.reply).toHaveBeenCalledTimes(1);
     const [msg] = ctx.reply.mock.calls[0];
+    expect(msg).toContain('not found');
     expect(msg).toContain('unknown');
-    expect(msg).toContain('Disabled');
-    expect(msg).toContain('No sub-modules configured');
   });
 
-  it('handleSkillDetail renders valid skill detail', async () => {
+  it('handleSkillCommand renders valid skill detail', async () => {
     const ctx = createMockCtx('/skill secretary', 'secretary');
-    await handleSkillDetail(ctx as any);
+    await handleSkillCommand(ctx as any);
 
     expect(ctx.reply).toHaveBeenCalledTimes(1);
     const [msg, opts] = ctx.reply.mock.calls[0];
@@ -321,9 +317,9 @@ describe('E2E: /skill <name> command lifecycle', () => {
     expect(msg).toContain('email');
   });
 
-  it('handleSkillDetail is case-insensitive', async () => {
+  it('handleSkillCommand is case-insensitive', async () => {
     const ctx = createMockCtx('/skill Secretary', 'Secretary');
-    await handleSkillDetail(ctx as any);
+    await handleSkillCommand(ctx as any);
 
     const [msg] = ctx.reply.mock.calls[0];
     expect(msg).toContain('secretary');
@@ -1013,7 +1009,7 @@ describe('E2E: complete user journey — /skills → toggle → /skill → verif
 
     // Step 4: User sends /skill cooking
     const ctx3 = createMockCtx('/skill cooking', 'cooking');
-    await handleSkillDetail(ctx3 as any);
+    await handleSkillCommand(ctx3 as any);
     const [detail] = ctx3.reply.mock.calls[0];
     expect(detail).toContain('Disabled');
 
@@ -1035,7 +1031,7 @@ describe('E2E: complete user journey — /skills → toggle → /skill → verif
 
     // Step 3: /skill secretary shows email as disabled
     const ctx = createMockCtx('/skill secretary', 'secretary');
-    await handleSkillDetail(ctx as any);
+    await handleSkillCommand(ctx as any);
     const [detail] = ctx.reply.mock.calls[0];
 
     // Check email sub-module line has ❌ (skip description line which also contains "email")
