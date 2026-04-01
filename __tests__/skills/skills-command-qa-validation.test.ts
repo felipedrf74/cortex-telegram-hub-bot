@@ -189,7 +189,7 @@ describe('QA: Tool counts are accurate', () => {
     expect(expenses).toBeTruthy();
     expect(tax).toBeTruthy();
     expect(expenses!.toolCount).toBe(4);
-    expect(tax!.toolCount).toBe(3);
+    expect(tax!.toolCount).toBe(4);
   });
 });
 
