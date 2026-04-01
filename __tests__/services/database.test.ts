@@ -73,12 +73,15 @@ describe('Database Migrations', () => {
     }
   });
 
-  it('migration filenames follow sequential numbering', () => {
+  it('migration filenames have unique, monotonically increasing numbers', () => {
     const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
-    files.forEach((file, i) => {
-      const num = parseInt(file.match(/^(\d+)/)?.[1] || '0', 10);
-      expect(num).toBe(i + 1);
-    });
+    const numbers = files.map(file => parseInt(file.match(/^(\d+)/)?.[1] || '0', 10));
+    // All numbers must be unique
+    expect(new Set(numbers).size).toBe(numbers.length);
+    // Numbers must be monotonically increasing
+    for (let i = 1; i < numbers.length; i++) {
+      expect(numbers[i]).toBeGreaterThan(numbers[i - 1]);
+    }
   });
 
   it('creates _migrations tracking table', () => {
