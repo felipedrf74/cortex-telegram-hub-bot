@@ -116,6 +116,7 @@ describe('Database Schema', () => {
     'agent_runs', 'book_library', 'content_pipeline',
     'installed_skills', 'skill_submodules',
     'skill_credentials', 'skill_migrations',
+    'usage_metering', 'usage_quotas',
   ];
 
   it.each(expectedTables)('table "%s" exists', (table) => {

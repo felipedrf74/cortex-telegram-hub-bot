@@ -689,6 +689,7 @@ describe('Integration: State context is passed to domain calls', () => {
       'test',               // message
       expect.stringContaining('Wednesday, April 01 2026'), // stateContext
       undefined,            // maxTokensOverride
+      123456789,            // userId
     );
   });
 });

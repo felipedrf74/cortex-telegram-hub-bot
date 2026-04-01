@@ -118,7 +118,7 @@ export async function handleSimpleDomain(
   const history = getConversationHistory(domain);
   const stateContext = await buildSimpleStateContext(domain, userId);
 
-  let result = await callDomain(domain, history, message, stateContext, maxTokensOverride);
+  let result = await callDomain(domain, history, message, stateContext, maxTokensOverride, userId);
   let finalText = result.text;
 
   const toolConversation: Anthropic.MessageParam[] = [];
@@ -143,7 +143,7 @@ export async function handleSimpleDomain(
       { role: 'assistant' as const, content: assistantContent },
       { role: 'user' as const, content: toolResults },
     );
-    result = await continueWithToolResults(domain, history, message, stateContext, toolConversation);
+    result = await continueWithToolResults(domain, history, message, stateContext, toolConversation, userId);
     finalText = result.text;
   }
 
