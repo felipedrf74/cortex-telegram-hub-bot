@@ -970,6 +970,39 @@ export function createPortalServer(bot: Bot): http.Server {
   const app = express();
   app.use(express.json());
 
+  // ── Health check endpoint (no auth — for uptime monitors) ──────
+  app.get('/health', (_req: Request, res: Response) => {
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+    let dbOk = false;
+    try {
+      const d = getDb();
+      const row = d.prepare('SELECT 1 as ok').get() as any;
+      dbOk = row?.ok === 1;
+    } catch { /* db not ready */ }
+
+    const mem = process.memoryUsage();
+    const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
+
+    res.status(status === 'healthy' ? 200 : 503).json({
+      status,
+      uptime: uptimeSec,
+      uptimeHuman: humanUptime(uptimeSec),
+      bot: {
+        polling: isBotPollingActive(),
+        restarting: isRestarting(),
+        lastMessageAt: getLastMessageAt(),
+      },
+      database: dbOk ? 'connected' : 'disconnected',
+      memory: {
+        rss: Math.round(mem.rss / 1024 / 1024),
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        external: Math.round(mem.external / 1024 / 1024),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // ── Auth middleware for /api/* ──────────────────────────────────
   const portalToken = config.portal.token;
 
