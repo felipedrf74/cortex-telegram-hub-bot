@@ -12,7 +12,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { DomainName } from '../domains/types';
-import { DEFAULT_SKILLS, getSkillDefinition } from './skill-config';
+import { DEFAULT_SKILLS, getSkillDefinition, getCronJobOwner } from './skill-config';
 import type { SkillDefinition } from './skill-config';
 import * as registry from './registry';
 import { logger } from '../utils/logger';
@@ -234,4 +234,15 @@ export function getSkillStatus(domain: DomainName): SkillStatus {
 /** Get status of all skills. */
 export function getAllSkillStatuses(): SkillStatus[] {
   return (Object.keys(DEFAULT_SKILLS) as DomainName[]).map(getSkillStatus);
+}
+
+/**
+ * Check whether a cron job should run based on its owning sub-skill's enabled state.
+ * Returns true if the job has no sub-skill owner (unmapped jobs always run)
+ * or if the owning sub-skill is enabled.
+ */
+export function isCronJobEnabled(jobId: string): boolean {
+  const owner = getCronJobOwner(jobId);
+  if (!owner) return true; // unmapped jobs always run
+  return registry.isSubmoduleEnabled(owner.domain, owner.subSkill);
 }

@@ -148,11 +148,11 @@ describe('Domain Status — Portal HTML structure', () => {
   });
 
   it('section title says Domain Handlers', () => {
-    expect(html).toContain('🧩 Domain Handlers');
+    expect(html).toContain('Domain Handlers');
   });
 
-  it('section subtitle indicates pre-skill modules', () => {
-    expect(html).toContain('Pre-skill modules');
+  it('section subtitle indicates runtime status', () => {
+    expect(html).toContain('Runtime status');
   });
 
   it('has CSS for domain-card component', () => {
