@@ -69,6 +69,10 @@ import {
   getByName,
   getAll,
   getSubmodules,
+  enableSubmodule,
+  disableSubmodule,
+  getEnabledSubmodules,
+  isSubmoduleEnabled,
 } from '../../src/skills/registry';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -499,5 +503,107 @@ describe('SkillRegistry — edge cases', () => {
       .all(skill.id) as any[];
     expect(subs).toHaveLength(1);
     expect(subs[0].version).toBe('3.0.0');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// SUBMODULE ENABLE / DISABLE TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('SkillRegistry — enableSubmodule() / disableSubmodule()', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('disables a submodule', () => {
+    install({
+      name: 'my-skill',
+      submodules: [{ module_name: 'mod-a' }, { module_name: 'mod-b' }],
+    });
+
+    const result = disableSubmodule('my-skill', 'mod-a');
+    expect(result).toBe(true);
+    expect(isSubmoduleEnabled('my-skill', 'mod-a')).toBe(false);
+    expect(isSubmoduleEnabled('my-skill', 'mod-b')).toBe(true);
+  });
+
+  it('re-enables a disabled submodule', () => {
+    install({
+      name: 'my-skill',
+      submodules: [{ module_name: 'mod-a' }],
+    });
+
+    disableSubmodule('my-skill', 'mod-a');
+    const result = enableSubmodule('my-skill', 'mod-a');
+    expect(result).toBe(true);
+    expect(isSubmoduleEnabled('my-skill', 'mod-a')).toBe(true);
+  });
+
+  it('returns false for non-existent skill', () => {
+    expect(disableSubmodule('ghost', 'mod-a')).toBe(false);
+    expect(enableSubmodule('ghost', 'mod-a')).toBe(false);
+  });
+
+  it('returns false for non-existent submodule', () => {
+    install({ name: 'my-skill', submodules: [{ module_name: 'mod-a' }] });
+    expect(disableSubmodule('my-skill', 'ghost-mod')).toBe(false);
+  });
+});
+
+describe('SkillRegistry — getEnabledSubmodules()', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('returns all enabled submodule names', () => {
+    install({
+      name: 'my-skill',
+      submodules: [{ module_name: 'mod-a' }, { module_name: 'mod-b' }, { module_name: 'mod-c' }],
+    });
+    disableSubmodule('my-skill', 'mod-b');
+
+    const enabled = getEnabledSubmodules('my-skill');
+    expect(enabled).toEqual(['mod-a', 'mod-c']);
+  });
+
+  it('returns empty array for non-existent skill', () => {
+    expect(getEnabledSubmodules('ghost')).toEqual([]);
+  });
+
+  it('returns empty array when all submodules disabled', () => {
+    install({
+      name: 'my-skill',
+      submodules: [{ module_name: 'mod-a' }],
+    });
+    disableSubmodule('my-skill', 'mod-a');
+
+    expect(getEnabledSubmodules('my-skill')).toEqual([]);
+  });
+});
+
+describe('SkillRegistry — isSubmoduleEnabled()', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('returns true for enabled submodule', () => {
+    install({ name: 'my-skill', submodules: [{ module_name: 'mod-a' }] });
+    expect(isSubmoduleEnabled('my-skill', 'mod-a')).toBe(true);
+  });
+
+  it('returns false for disabled submodule', () => {
+    install({ name: 'my-skill', submodules: [{ module_name: 'mod-a' }] });
+    disableSubmodule('my-skill', 'mod-a');
+    expect(isSubmoduleEnabled('my-skill', 'mod-a')).toBe(false);
+  });
+
+  it('returns false for non-existent skill/submodule', () => {
+    expect(isSubmoduleEnabled('ghost', 'mod-a')).toBe(false);
   });
 });
