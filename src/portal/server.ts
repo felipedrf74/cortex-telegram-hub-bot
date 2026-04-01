@@ -126,6 +126,15 @@ interface SnapshotResponse {
     knowledgeCategories: number;
   };
   transcriptStats: { transcripts: number; studies: number };
+  domainStatus: {
+    domain: string;
+    label: string;
+    active: boolean;
+    messagesToday: number;
+    totalMessages: number;
+    lastMessageAt: string | null;
+    details: Record<string, string | number | boolean>;
+  }[];
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -243,6 +252,14 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
       SELECT job_name, result, ts, duration_ms
       FROM job_history WHERE ts >= date('now', '-45 days')
       ORDER BY ts ASC`),
+    domainMessagesToday: db.prepare(`
+      SELECT domain, COUNT(*) as count
+      FROM conversations WHERE created_at >= date('now')
+      GROUP BY domain`),
+    domainMessagesTotal: db.prepare(`
+      SELECT domain, COUNT(*) as count, MAX(created_at) as last_at
+      FROM conversations
+      GROUP BY domain`),
   };
   return _stmts;
 }
@@ -604,6 +621,72 @@ function buildSnapshot(): SnapshotResponse {
     } catch { return { transcripts: 0, studies: 0 }; }
   })();
 
+  // ── Domain handler status ───────────────────────────────────────
+  let domainStatus: SnapshotResponse['domainStatus'] = [];
+  try {
+    const stmts = getStmts();
+    const todayRows = stmts.domainMessagesToday.all() as { domain: string; count: number }[];
+    const totalRows = stmts.domainMessagesTotal.all() as { domain: string; count: number; last_at: string | null }[];
+
+    const todayMap: Record<string, number> = {};
+    for (const r of todayRows) todayMap[r.domain] = r.count;
+
+    const totalMap: Record<string, { count: number; lastAt: string | null }> = {};
+    for (const r of totalRows) totalMap[r.domain] = { count: r.count, lastAt: r.last_at };
+
+    // Active agent count from intelligence bus
+    let activeAgentCount = 0;
+    let totalSignals = 0;
+    try {
+      const agentStats = getAgentStats();
+      activeAgentCount = agentStats.filter((a: any) => a.last_status === 'success').length;
+      totalSignals = getActiveSignalCount();
+    } catch { /* ignore — table may not exist */ }
+
+    const garminConnected = isGarminConfigured();
+    const graphConfigured = isMicrosoftConfigured();
+
+    domainStatus = [
+      {
+        domain: 'secretary',
+        label: 'Secretary',
+        active: true,
+        messagesToday: todayMap['secretary'] || 0,
+        totalMessages: totalMap['secretary']?.count || 0,
+        lastMessageAt: totalMap['secretary']?.lastAt || null,
+        details: {
+          graphConnected: graphConfigured,
+          garminConnected,
+        },
+      },
+      {
+        domain: 'triathlon',
+        label: 'Triathlon',
+        active: true,
+        messagesToday: todayMap['triathlon'] || 0,
+        totalMessages: totalMap['triathlon']?.count || 0,
+        lastMessageAt: totalMap['triathlon']?.lastAt || null,
+        details: {
+          garminConnected,
+        },
+      },
+      {
+        domain: 'content',
+        label: 'Content Creator',
+        active: true,
+        messagesToday: todayMap['content'] || 0,
+        totalMessages: totalMap['content']?.count || 0,
+        lastMessageAt: totalMap['content']?.lastAt || null,
+        details: {
+          activeAgents: activeAgentCount,
+          activeSignals: totalSignals,
+        },
+      },
+    ];
+  } catch (err) {
+    logger.warn({ err }, 'Portal: failed to query domain status');
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -624,6 +707,7 @@ function buildSnapshot(): SnapshotResponse {
     calendarData: { days: calendarDays, jobs: calendarJobs },
     contentReferences,
     transcriptStats,
+    domainStatus,
   };
 }
 
