@@ -69,6 +69,8 @@ import {
 } from './services/content-engine';
 import { isGarminConfigured, setMfaNotifier, isMfaPending, submitMfaCode } from './services/garmin';
 import { recordMessageProcessed } from './portal/telemetry';
+import { getAllSkillStatuses, getSkillStatus, enableSkill, disableSkill, enableSubSkill, disableSubSkill } from './skills/skill-manager';
+import { getSubSkillDependencies, getSubSkillDependents } from './skills/skill-config';
 import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePublishedStage } from './commands/pipeline';
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
@@ -2605,6 +2607,139 @@ export function createBot(): Bot {
         await ctx.reply(`⚠️ Coach briefing failed: ${escapeHtml(err.message || 'Unknown error')}`, { parse_mode: 'HTML' });
       }
     });
+  });
+
+  // ── Skill Management ──
+  bot.command('skill', async (ctx) => {
+    const args = ctx.match?.trim();
+    const DOMAINS = ['secretary', 'triathlon', 'content'] as const;
+
+    // /skill — list all skills
+    if (!args) {
+      const statuses = getAllSkillStatuses();
+      let msg = '<b>🧩 Skill Packages</b>\n\n';
+      for (const skill of statuses) {
+        const icon = skill.enabled ? '✅' : '❌';
+        msg += `${icon} <b>${escapeHtml(skill.name)}</b> — ${escapeHtml(skill.description)}\n`;
+        for (const sub of skill.subSkills) {
+          const si = sub.enabled ? '  ✓' : '  ✗';
+          const deps = getSubSkillDependencies(skill.name as DomainName, sub.name);
+          const depTag = deps.length > 0 ? ` <i>(needs ${deps.join(', ')})</i>` : '';
+          msg += `${si} <code>${escapeHtml(sub.name)}</code> — ${escapeHtml(sub.description)}${depTag}\n`;
+        }
+        msg += '\n';
+      }
+      msg += '<i>Usage: /skill &lt;name&gt; enable|disable\n/skill &lt;name&gt; modules\n/skill &lt;name&gt; module &lt;sub&gt; enable|disable</i>';
+      await ctx.reply(msg, { parse_mode: 'HTML' });
+      return;
+    }
+
+    const parts = args.split(/\s+/);
+    const domain = parts[0].toLowerCase();
+
+    if (!DOMAINS.includes(domain as typeof DOMAINS[number])) {
+      await ctx.reply(`⚠️ Unknown skill: <code>${escapeHtml(domain)}</code>\nAvailable: ${DOMAINS.join(', ')}`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    const domainName = domain as DomainName;
+    const action = parts[1]?.toLowerCase();
+
+    // /skill <name> — show skill status
+    if (!action) {
+      const status = getSkillStatus(domainName);
+      const icon = status.enabled ? '✅' : '❌';
+      let msg = `${icon} <b>${escapeHtml(status.name)}</b>\n${escapeHtml(status.description)}\n\n`;
+      for (const sub of status.subSkills) {
+        const si = sub.enabled ? '✓' : '✗';
+        const deps = getSubSkillDependencies(domainName, sub.name);
+        const depTag = deps.length > 0 ? ` <i>(needs ${deps.join(', ')})</i>` : '';
+        msg += `${si} <code>${escapeHtml(sub.name)}</code> — ${sub.toolCount} tools${depTag}\n`;
+      }
+      await ctx.reply(msg, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // /skill <name> enable|disable — toggle entire skill
+    if (action === 'enable') {
+      const ok = enableSkill(domainName);
+      await ctx.reply(ok ? `✅ <b>${escapeHtml(domain)}</b> enabled` : `⚠️ Could not enable ${escapeHtml(domain)}`, { parse_mode: 'HTML' });
+      return;
+    }
+    if (action === 'disable') {
+      const ok = disableSkill(domainName);
+      await ctx.reply(ok ? `❌ <b>${escapeHtml(domain)}</b> disabled` : `⚠️ Could not disable ${escapeHtml(domain)}`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // /skill <name> modules — list sub-modules
+    if (action === 'modules') {
+      const status = getSkillStatus(domainName);
+      let msg = `<b>🧩 ${escapeHtml(status.name)} modules</b>\n\n`;
+      for (const sub of status.subSkills) {
+        const si = sub.enabled ? '✓' : '✗';
+        const deps = getSubSkillDependencies(domainName, sub.name);
+        const depTag = deps.length > 0 ? ` <i>(needs ${deps.join(', ')})</i>` : '';
+        const dependents = getSubSkillDependents(domainName, sub.name);
+        const depByTag = dependents.length > 0 ? ` <i>(required by ${dependents.join(', ')})</i>` : '';
+        msg += `${si} <code>${escapeHtml(sub.name)}</code> — ${escapeHtml(sub.description)} (${sub.toolCount} tools)${depTag}${depByTag}\n`;
+      }
+      msg += '\n<i>Toggle: /skill ' + escapeHtml(domain) + ' module &lt;name&gt; enable|disable</i>';
+      await ctx.reply(msg, { parse_mode: 'HTML' });
+      return;
+    }
+
+    // /skill <name> module <sub> enable|disable — toggle sub-module
+    if (action === 'module') {
+      const subName = parts[2]?.toLowerCase();
+      const subAction = parts[3]?.toLowerCase();
+
+      if (!subName || !subAction || !['enable', 'disable'].includes(subAction)) {
+        await ctx.reply('Usage: /skill ' + escapeHtml(domain) + ' module &lt;name&gt; enable|disable', { parse_mode: 'HTML' });
+        return;
+      }
+
+      // Validate sub-module exists
+      const status = getSkillStatus(domainName);
+      const sub = status.subSkills.find(s => s.name === subName);
+      if (!sub) {
+        const available = status.subSkills.map(s => s.name).join(', ');
+        await ctx.reply(`⚠️ Unknown module: <code>${escapeHtml(subName)}</code>\nAvailable: ${available}`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      if (subAction === 'enable') {
+        const result = enableSubSkill(domainName, subName);
+        if (!result.ok) {
+          await ctx.reply(`⚠️ Cannot enable <code>${escapeHtml(subName)}</code>: ${escapeHtml(result.error || 'unknown error')}`, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(`✅ <code>${escapeHtml(subName)}</code> enabled for <b>${escapeHtml(domain)}</b>`, { parse_mode: 'HTML' });
+        }
+      } else {
+        const dependents = getSubSkillDependents(domainName, subName);
+        const result = disableSubSkill(domainName, subName);
+        let msg = `❌ <code>${escapeHtml(subName)}</code> disabled for <b>${escapeHtml(domain)}</b>`;
+        if (dependents.length > 0) {
+          msg += `\n⚠️ Also disabled: ${dependents.map(d => `<code>${escapeHtml(d)}</code>`).join(', ')}`;
+        }
+        if (result.ok) {
+          await ctx.reply(msg, { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(`⚠️ Could not disable <code>${escapeHtml(subName)}</code>`, { parse_mode: 'HTML' });
+        }
+      }
+      return;
+    }
+
+    await ctx.reply(
+      'Usage:\n' +
+      '/skill — list all\n' +
+      `/skill ${escapeHtml(domain)} — show status\n` +
+      `/skill ${escapeHtml(domain)} enable|disable\n` +
+      `/skill ${escapeHtml(domain)} modules\n` +
+      `/skill ${escapeHtml(domain)} module &lt;name&gt; enable|disable`,
+      { parse_mode: 'HTML' }
+    );
   });
 
   // ── Inline Keyboard Callback Handlers ──

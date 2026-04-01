@@ -1016,7 +1016,11 @@ export function createPortalServer(bot: Bot): http.Server {
         : disableSubSkill(domain as DomainName, subSkill);
       // Invalidate snapshot cache so next fetch reflects the toggle
       cachedSnapshot = null;
-      res.json({ ok: result, domain, subSkill, enabled });
+      if (!result.ok && result.error) {
+        res.status(409).json({ ok: false, message: result.error, domain, subSkill });
+        return;
+      }
+      res.json({ ok: result.ok, domain, subSkill, enabled });
     } catch (err) {
       logger.error({ err }, 'Portal: skill toggle failed');
       res.status(500).json({ ok: false, message: 'Toggle failed' });

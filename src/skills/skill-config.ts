@@ -20,6 +20,7 @@ export interface SubSkillDefinition {
   tools: string[];                  // tool names from TOOLS array in anthropic.ts
   enabledByDefault: boolean;
   cronJobs?: string[];              // cron job IDs owned by this sub-skill
+  depends?: string[];               // sub-skill names that must be enabled first
 }
 
 export interface SkillDefinition {
@@ -116,6 +117,7 @@ const TRIATHLON_SKILL: SkillDefinition = {
       enabledByDefault: true,
       tools: [],
       cronJobs: ['garmin_coach'],
+      depends: ['garmin-sync'],
     },
     {
       name: 'training-plans',
@@ -294,6 +296,21 @@ export function getCronJobOwner(jobId: string): { domain: DomainName; subSkill: 
     }
   }
   return null;
+}
+
+/** Get the dependencies for a sub-skill. Returns empty array if none. */
+export function getSubSkillDependencies(domain: DomainName, subSkillName: string): string[] {
+  const skill = DEFAULT_SKILLS[domain];
+  const sub = skill.subSkills.find(s => s.name === subSkillName);
+  return sub?.depends ?? [];
+}
+
+/** Get sub-skills that depend on the given sub-skill (reverse dependencies). */
+export function getSubSkillDependents(domain: DomainName, subSkillName: string): string[] {
+  const skill = DEFAULT_SKILLS[domain];
+  return skill.subSkills
+    .filter(s => s.depends?.includes(subSkillName))
+    .map(s => s.name);
 }
 
 /** Get all cron job IDs owned by sub-skills across all domains. */

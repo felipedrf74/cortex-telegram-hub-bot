@@ -12,7 +12,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { DomainName } from '../domains/types';
-import { DEFAULT_SKILLS, getSkillDefinition, getCronJobOwner } from './skill-config';
+import { DEFAULT_SKILLS, getSkillDefinition, getCronJobOwner, getSubSkillDependencies, getSubSkillDependents } from './skill-config';
 import type { SkillDefinition } from './skill-config';
 import * as registry from './registry';
 import { logger } from '../utils/logger';
@@ -166,20 +166,48 @@ function getEnabledToolNames(domain: DomainName): Set<string> {
   return toolNames;
 }
 
-// ── Toggle API (for portal UI) ───────────────────────────────────
+// ── Toggle API (for portal UI + /skill command) ─────────────────
 
-/** Enable a sub-skill for a domain. Invalidates tool cache. */
-export function enableSubSkill(domain: DomainName, subSkillName: string): boolean {
-  const result = registry.enableSubmodule(domain, subSkillName);
-  if (result) invalidateToolCache();
-  return result;
+export interface ToggleResult {
+  ok: boolean;
+  error?: string;
 }
 
-/** Disable a sub-skill for a domain. Invalidates tool cache. */
-export function disableSubSkill(domain: DomainName, subSkillName: string): boolean {
+/**
+ * Enable a sub-skill for a domain. Validates dependencies first.
+ * Returns { ok: true } on success, or { ok: false, error } if deps are unmet.
+ */
+export function enableSubSkill(domain: DomainName, subSkillName: string): ToggleResult {
+  // Check all dependencies are enabled
+  const deps = getSubSkillDependencies(domain, subSkillName);
+  const enabledSubs = new Set(registry.getEnabledSubmodules(domain));
+  const unmet = deps.filter(d => !enabledSubs.has(d));
+  if (unmet.length > 0) {
+    return { ok: false, error: `Requires ${unmet.join(', ')} to be enabled first` };
+  }
+
+  const result = registry.enableSubmodule(domain, subSkillName);
+  if (result) invalidateToolCache();
+  return { ok: result };
+}
+
+/**
+ * Disable a sub-skill for a domain. Cascades to dependents.
+ * Returns { ok: true } on success. Also disables any sub-skills that depend on this one.
+ */
+export function disableSubSkill(domain: DomainName, subSkillName: string): ToggleResult {
+  // Cascade-disable dependents first
+  const dependents = getSubSkillDependents(domain, subSkillName);
+  for (const dep of dependents) {
+    if (registry.isSubmoduleEnabled(domain, dep)) {
+      registry.disableSubmodule(domain, dep);
+      logger.info({ domain, subSkill: dep, reason: `${subSkillName} disabled` }, 'Cascade-disabled dependent sub-skill');
+    }
+  }
+
   const result = registry.disableSubmodule(domain, subSkillName);
   if (result) invalidateToolCache();
-  return result;
+  return { ok: result };
 }
 
 /** Enable an entire skill (domain). Invalidates tool cache. */
