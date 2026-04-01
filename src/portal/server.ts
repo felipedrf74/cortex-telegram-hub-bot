@@ -62,6 +62,11 @@ import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { CronExpressionParser } from 'cron-parser';
+import {
+  getAllSkillStatuses, enableSkill, disableSkill,
+  enableSubSkill, disableSubSkill,
+} from '../skills/skill-manager';
+import type { DomainName } from '../domains/types';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -1116,6 +1121,84 @@ export function createPortalServer(bot: Bot): http.Server {
         res.json({ ok: true, sprint: true, message: 'Sprint mode enabled' });
       }
       cachedSnapshot = null;
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── Skill Management API ─────────────────────────────────────────
+
+  // GET /api/skills — list all skills with sub-skill status
+  app.get('/api/skills', (_req: Request, res: Response) => {
+    try {
+      const skills = getAllSkillStatuses();
+      res.json({ ok: true, skills });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/enable — enable an entire skill
+  app.post('/api/skills/:name/enable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const result = enableSkill(name);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Skill "${name}" not found` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Skill "${name}" enabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/disable — disable an entire skill
+  app.post('/api/skills/:name/disable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const result = disableSkill(name);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Skill "${name}" not found` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Skill "${name}" disabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/subskills/:sub/enable — enable a sub-skill
+  app.post('/api/skills/:name/subskills/:sub/enable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const sub = String(req.params.sub);
+      const result = enableSubSkill(name, sub);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Sub-skill "${sub}" not found in "${name}"` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Sub-skill "${sub}" enabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/subskills/:sub/disable — disable a sub-skill
+  app.post('/api/skills/:name/subskills/:sub/disable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const sub = String(req.params.sub);
+      const result = disableSubSkill(name, sub);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Sub-skill "${sub}" not found in "${name}"` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Sub-skill "${sub}" disabled` });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
