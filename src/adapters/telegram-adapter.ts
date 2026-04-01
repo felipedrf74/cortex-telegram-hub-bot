@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 // ─── TelegramAdapter — Grammy-backed MessageAdapter ─────────────────
 
 import { Context, InlineKeyboard, InputFile } from 'grammy';

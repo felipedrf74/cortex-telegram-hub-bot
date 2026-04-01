@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+import path from 'path';
 import cron from 'node-cron';
 import { Bot } from 'grammy';
 import { config } from '../config';
@@ -31,6 +34,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
+import { runDatabaseBackup } from './backup';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -64,6 +68,10 @@ export function startScheduler(bot: Bot): void {
     const [h, m] = config.garmin.coachTime.split(':').map(Number);
     return `${m ?? 0} ${h ?? 21} * * *`;
   })();
+  const backupCron = (() => {
+    const [h, m] = config.backup.time.split(':').map(Number);
+    return `${m ?? 0} ${h ?? 3} * * *`;
+  })();
 
   // ── Register all jobs for portal tracking ──────────────────────────
   registerJob('reminders',          'Reminders',             '* * * * *',       'secretary');
@@ -92,6 +100,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
   registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
+  registerJob('db_backup',        'Database Backup',        backupCron,        'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -554,6 +563,23 @@ export function startScheduler(bot: Bot): void {
     }
   }), { timezone: tz });
 
+  // ── Database Backup (daily, configurable — default 03:00) ─────────
+  if (config.backup.enabled) {
+    cron.schedule(backupCron, wrapJob('db_backup', async () => {
+      const backupPath = await runDatabaseBackup();
+      const short = path.basename(backupPath);
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId,
+            `💾 <b>Database Backup</b>\n\nBackup complete: <code>${escapeHtml(short)}</code>`,
+            { parse_mode: 'HTML' });
+        } catch {
+          // swallow — notification is best-effort
+        }
+      }
+    }), { timezone: tz });
+  }
+
   // ── Signal Expiry Cleanup (hourly) ────────────────────────────────
   cron.schedule('0 * * * *', wrapJob('expire_signals', async () => {
     const expired = expireStaleSignals();
@@ -624,7 +650,7 @@ export function startScheduler(bot: Bot): void {
   });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

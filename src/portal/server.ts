@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Nexus Hub Status Portal — Express server.
  *
@@ -33,6 +35,12 @@ import { clearAllConversations } from '../state/conversation';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from '../services/garmin';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
+import { isGoogleCalendarConfigured } from '../services/google-calendar';
+import { isGmailConfigured } from '../services/google-gmail';
+import { isGoogleDriveEnabled } from '../services/google-drive';
+import { isOutlookCalendarConfigured } from '../services/outlook-calendar';
+import { isOutlookMailConfigured } from '../services/outlook-mail';
+import { isOutlookTodoConfigured } from '../services/microsoft-todo';
 import { getPendingCount as getInvoiceQueuePending } from '../services/invoice-queue';
 import { sendDailyBriefing } from '../services/scheduler';
 import { generateCoachBriefing } from '../services/garmin-coach';
@@ -70,6 +78,9 @@ interface SnapshotResponse {
     configured: boolean;
     status?: string;
     lastCheck?: string;
+    group?: string;
+    tokenHealth?: 'valid' | 'expired' | 'warning' | 'not_configured';
+    lastApiCall?: string | null;
   }[];
   jobs: ReturnType<typeof getJobStatuses>;
   jobHistory: Record<string, { result: string; ts: string }[]>;
@@ -115,6 +126,15 @@ interface SnapshotResponse {
     knowledgeCategories: number;
   };
   transcriptStats: { transcripts: number; studies: number };
+  domainStatus: {
+    domain: string;
+    label: string;
+    active: boolean;
+    messagesToday: number;
+    totalMessages: number;
+    lastMessageAt: string | null;
+    details: Record<string, string | number | boolean>;
+  }[];
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -216,6 +236,14 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
     jobHistoryRecent: db.prepare(`
       SELECT job_name, result, ts
       FROM job_history ORDER BY ts DESC LIMIT 200`),
+    lastSuccessForJob: db.prepare(`
+      SELECT ts FROM job_history
+      WHERE job_name = ? AND result = 'success'
+      ORDER BY ts DESC LIMIT 1`),
+    lastFailureForJob: db.prepare(`
+      SELECT ts FROM job_history
+      WHERE job_name = ? AND result = 'failed'
+      ORDER BY ts DESC LIMIT 1`),
     jobHistory7d: db.prepare(`
       SELECT job_name, result, ts, duration_ms
       FROM job_history WHERE ts >= date('now', '-7 days')
@@ -224,6 +252,14 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
       SELECT job_name, result, ts, duration_ms
       FROM job_history WHERE ts >= date('now', '-45 days')
       ORDER BY ts ASC`),
+    domainMessagesToday: db.prepare(`
+      SELECT domain, COUNT(*) as count
+      FROM conversations WHERE created_at >= date('now')
+      GROUP BY domain`),
+    domainMessagesTotal: db.prepare(`
+      SELECT domain, COUNT(*) as count, MAX(created_at) as last_at
+      FROM conversations
+      GROUP BY domain`),
   };
   return _stmts;
 }
@@ -235,34 +271,141 @@ function buildSnapshot(): SnapshotResponse {
   const garminStatus = getGarminRefreshStatus();
 
   // ── Integration status list ────────────────────────────────────
-  const integrations = [
+  // Helper: get last successful API call time for a job name (proxy for integration health)
+  function lastJobSuccess(jobName: string): string | null {
+    try {
+      const row = getStmts().lastSuccessForJob.get(jobName) as { ts: string } | undefined;
+      return row?.ts ?? null;
+    } catch { return null; }
+  }
+  function lastJobFailure(jobName: string): string | null {
+    try {
+      const row = getStmts().lastFailureForJob.get(jobName) as { ts: string } | undefined;
+      return row?.ts ?? null;
+    } catch { return null; }
+  }
+
+  // Determine token health based on configured + recent job success/failure
+  function inferTokenHealth(
+    configured: boolean,
+    lastSuccess: string | null,
+    lastFailure: string | null,
+  ): 'valid' | 'expired' | 'warning' | 'not_configured' {
+    if (!configured) return 'not_configured';
+    if (!lastSuccess && !lastFailure) return 'valid'; // configured but never ran — assume valid
+    const successTs = lastSuccess ? new Date(lastSuccess).getTime() : 0;
+    const failureTs = lastFailure ? new Date(lastFailure).getTime() : 0;
+    if (failureTs > successTs) {
+      // More recent failure than success → likely expired
+      const hoursSinceFailure = (Date.now() - failureTs) / 3_600_000;
+      return hoursSinceFailure < 24 ? 'expired' : 'warning';
+    }
+    // Last run was successful — check staleness
+    const hoursSinceSuccess = (Date.now() - successTs) / 3_600_000;
+    if (hoursSinceSuccess > 48) return 'warning';
+    return 'valid';
+  }
+
+  // Google integrations
+  const googleCalConfigured = isGoogleCalendarConfigured();
+  const gmailConfigured = isGmailConfigured();
+  const gdriveConfigured = isGoogleDriveEnabled();
+  const googleLastSuccess = lastJobSuccess('daily_briefing'); // briefing uses Google Calendar
+  const googleLastFailure = lastJobFailure('daily_briefing');
+
+  // Microsoft integrations
+  const msConfigured = isMicrosoftConfigured();
+  const outlookCalConfigured = isOutlookCalendarConfigured();
+  const outlookMailConfigured = isOutlookMailConfigured();
+  const outlookTodoConfigured = isOutlookTodoConfigured();
+  const msLastSuccess = lastJobSuccess('conflict_detection'); // uses Outlook Calendar
+  const msLastFailure = lastJobFailure('conflict_detection');
+
+  // Garmin
+  const garminConfigured = isGarminConfigured();
+  const garminLastSuccess = lastJobSuccess('garmin_keepalive');
+  const garminLastFailure = lastJobFailure('garmin_keepalive');
+
+  const integrations: SnapshotResponse['integrations'] = [
     {
       name: 'Telegram Bot',
+      group: 'system',
       configured: true,
       status: isBotPollingActive() ? 'polling' : isRestarting() ? 'restarting' : 'stopped',
+      tokenHealth: 'valid',
     },
     {
-      name: 'Microsoft Graph',
-      configured: isMicrosoftConfigured(),
-      status: isMicrosoftConfigured() ? 'configured' : 'not configured',
+      name: 'Google Calendar',
+      group: 'google',
+      configured: googleCalConfigured,
+      status: googleCalConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(googleCalConfigured, googleLastSuccess, googleLastFailure),
+      lastApiCall: googleLastSuccess,
+    },
+    {
+      name: 'Google Drive',
+      group: 'google',
+      configured: gdriveConfigured,
+      status: gdriveConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(gdriveConfigured, googleLastSuccess, googleLastFailure),
+      lastApiCall: googleLastSuccess,
+    },
+    {
+      name: 'Gmail',
+      group: 'google',
+      configured: gmailConfigured,
+      status: gmailConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(gmailConfigured, googleLastSuccess, googleLastFailure),
+      lastApiCall: googleLastSuccess,
+    },
+    {
+      name: 'Outlook Calendar',
+      group: 'microsoft',
+      configured: outlookCalConfigured,
+      status: outlookCalConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(outlookCalConfigured, msLastSuccess, msLastFailure),
+      lastApiCall: msLastSuccess,
+    },
+    {
+      name: 'Outlook Mail',
+      group: 'microsoft',
+      configured: outlookMailConfigured,
+      status: outlookMailConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(outlookMailConfigured, msLastSuccess, msLastFailure),
+      lastApiCall: msLastSuccess,
+    },
+    {
+      name: 'Microsoft To Do',
+      group: 'microsoft',
+      configured: outlookTodoConfigured,
+      status: outlookTodoConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(outlookTodoConfigured, msLastSuccess, msLastFailure),
+      lastApiCall: msLastSuccess,
     },
     {
       name: 'Garmin Connect',
-      configured: isGarminConfigured(),
+      group: 'garmin',
+      configured: garminConfigured,
       status: garminStatus.at
         ? `last refresh: ${garminStatus.ok ? '✓' : '✗'} at ${garminStatus.at}`
-        : isGarminConfigured() ? 'awaiting first refresh' : 'not configured',
+        : garminConfigured ? 'awaiting first refresh' : 'not configured',
       lastCheck: garminStatus.at ?? undefined,
+      tokenHealth: inferTokenHealth(garminConfigured, garminLastSuccess, garminLastFailure),
+      lastApiCall: garminLastSuccess,
     },
     {
       name: 'Invoice Filing (SSH)',
+      group: 'system',
       configured: isInvoiceFilingConfigured(),
       status: isInvoiceFilingConfigured() ? 'configured' : 'not configured',
+      tokenHealth: isInvoiceFilingConfigured() ? 'valid' : 'not_configured',
     },
     {
       name: 'Anthropic API',
+      group: 'system',
       configured: true,
       status: 'active',
+      tokenHealth: 'valid',
     },
   ];
 
@@ -478,6 +621,72 @@ function buildSnapshot(): SnapshotResponse {
     } catch { return { transcripts: 0, studies: 0 }; }
   })();
 
+  // ── Domain handler status ───────────────────────────────────────
+  let domainStatus: SnapshotResponse['domainStatus'] = [];
+  try {
+    const stmts = getStmts();
+    const todayRows = stmts.domainMessagesToday.all() as { domain: string; count: number }[];
+    const totalRows = stmts.domainMessagesTotal.all() as { domain: string; count: number; last_at: string | null }[];
+
+    const todayMap: Record<string, number> = {};
+    for (const r of todayRows) todayMap[r.domain] = r.count;
+
+    const totalMap: Record<string, { count: number; lastAt: string | null }> = {};
+    for (const r of totalRows) totalMap[r.domain] = { count: r.count, lastAt: r.last_at };
+
+    // Active agent count from intelligence bus
+    let activeAgentCount = 0;
+    let totalSignals = 0;
+    try {
+      const agentStats = getAgentStats();
+      activeAgentCount = agentStats.filter((a: any) => a.last_status === 'success').length;
+      totalSignals = getActiveSignalCount();
+    } catch { /* ignore — table may not exist */ }
+
+    const garminConnected = isGarminConfigured();
+    const graphConfigured = isMicrosoftConfigured();
+
+    domainStatus = [
+      {
+        domain: 'secretary',
+        label: 'Secretary',
+        active: true,
+        messagesToday: todayMap['secretary'] || 0,
+        totalMessages: totalMap['secretary']?.count || 0,
+        lastMessageAt: totalMap['secretary']?.lastAt || null,
+        details: {
+          graphConnected: graphConfigured,
+          garminConnected,
+        },
+      },
+      {
+        domain: 'triathlon',
+        label: 'Triathlon',
+        active: true,
+        messagesToday: todayMap['triathlon'] || 0,
+        totalMessages: totalMap['triathlon']?.count || 0,
+        lastMessageAt: totalMap['triathlon']?.lastAt || null,
+        details: {
+          garminConnected,
+        },
+      },
+      {
+        domain: 'content',
+        label: 'Content Creator',
+        active: true,
+        messagesToday: todayMap['content'] || 0,
+        totalMessages: totalMap['content']?.count || 0,
+        lastMessageAt: totalMap['content']?.lastAt || null,
+        details: {
+          activeAgents: activeAgentCount,
+          activeSignals: totalSignals,
+        },
+      },
+    ];
+  } catch (err) {
+    logger.warn({ err }, 'Portal: failed to query domain status');
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -498,6 +707,7 @@ function buildSnapshot(): SnapshotResponse {
     calendarData: { days: calendarDays, jobs: calendarJobs },
     contentReferences,
     transcriptStats,
+    domainStatus,
   };
 }
 

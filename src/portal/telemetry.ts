@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * In-process telemetry singleton for the Nexus Hub Status Portal.
  *

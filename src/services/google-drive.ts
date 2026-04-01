@@ -1,8 +1,10 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Google Drive Service — uploads content DOCX files to a shared Drive folder.
  *
  * Folder structure in Drive mirrors the local IDEAS structure:
- *   Cortex IDEAS/
+ *   Nexus Hub IDEAS/
  *     ├── RESEARCH/
  *     ├── IDEAS/
  *     ├── SCRIPTS/
@@ -20,7 +22,7 @@ import { google, drive_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
-const ROOT_FOLDER_NAME = 'Cortex IDEAS';
+const ROOT_FOLDER_NAME = 'Nexus Hub IDEAS';
 const SUBFOLDERS = ['RESEARCH', 'IDEAS', 'SCRIPTS', 'VISUALS', 'REPORTS'] as const;
 
 let driveClient: drive_v3.Drive | null = null;
@@ -96,7 +98,7 @@ async function getOrCreateFolder(name: string, parentId?: string): Promise<strin
 }
 
 /**
- * Resolve the root "Cortex IDEAS" folder ID.
+ * Resolve the root "Nexus Hub IDEAS" folder ID.
  * Uses GOOGLE_DRIVE_ROOT_FOLDER_ID env var when available to skip the API call.
  */
 async function getRootFolderId(): Promise<string> {
@@ -122,7 +124,7 @@ async function getRootFolderId(): Promise<string> {
 
 /**
  * Ensure the full folder tree exists in Drive:
- *   Cortex IDEAS/ → RESEARCH, IDEAS, SCRIPTS, VISUALS, REPORTS
+ *   Nexus Hub IDEAS/ → RESEARCH, IDEAS, SCRIPTS, VISUALS, REPORTS
  *
  * Call once at startup (optional) to pre-warm the cache.
  */
@@ -139,7 +141,7 @@ export async function ensureDriveFolders(): Promise<void> {
 }
 
 /**
- * Upload a DOCX file to Google Drive under Cortex IDEAS/<subfolder>/
+ * Upload a DOCX file to Google Drive under Nexus Hub IDEAS/<subfolder>/
  *
  * @param localPath  Absolute path to the local file
  * @param filename   The filename to use in Drive
@@ -156,7 +158,7 @@ export async function uploadToDrive(
   try {
     const drive = getDrive();
 
-    // Ensure folder structure: Cortex IDEAS/<subfolder>
+    // Ensure folder structure: Nexus Hub IDEAS/<subfolder>
     const rootId = await getRootFolderId();
     const folderId = await getOrCreateFolder(subfolder, rootId);
 

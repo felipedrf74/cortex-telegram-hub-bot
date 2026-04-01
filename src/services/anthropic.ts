@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -263,30 +265,32 @@ function repairTruncatedCalendarJson(text: string): ImageCalendarResult | null {
   }
 }
 
-// ─── Dynamic Tool Filtering (computed once at startup) ───────────────
+// ─── Dynamic Tool Filtering ─────────────────────────────────────────
 
-function buildFilteredTools(): Anthropic.Tool[] {
+import { getToolsForDomain } from '../skills/skill-manager';
+
+/** Service availability filter — removes tools for unconfigured services. */
+function serviceAvailabilityFilter(tool: Anthropic.Tool): boolean {
   const { isOutlookMailConfigured } = require('./outlook-mail');
   const { isAnyCalendarConfigured } = require('./unified-calendar');
-  const mailConfigured = isOutlookMailConfigured();
-  const calConfigured = isAnyCalendarConfigured();
 
-  const filtered: Anthropic.Tool[] = [];
-  for (const tool of TOOLS) {
-    if (tool.name.startsWith('search_outlook') || tool.name.startsWith('read_outlook') ||
-        tool.name.startsWith('send_outlook') || tool.name.startsWith('reply_outlook') ||
-        tool.name.startsWith('get_outlook')) {
-      if (!mailConfigured) continue;
-    }
-    if (tool.name.includes('calendar')) {
-      if (!calConfigured) continue;
-    }
-    filtered.push(tool);
+  if (tool.name.startsWith('search_outlook') || tool.name.startsWith('read_outlook') ||
+      tool.name.startsWith('send_outlook') || tool.name.startsWith('reply_outlook') ||
+      tool.name.startsWith('get_outlook')) {
+    return isOutlookMailConfigured();
   }
-  return filtered;
+  if (tool.name.includes('calendar')) {
+    return isAnyCalendarConfigured();
+  }
+  return true;
 }
 
-// Memoized at module level — config doesn't change at runtime, guarantees prompt cache hits
+/** Get per-domain filtered tools (sub-skill aware + service availability). */
+function getToolsForDomainCached(domain: DomainName): Anthropic.Tool[] {
+  return getToolsForDomain(domain, TOOLS, serviceAvailabilityFilter);
+}
+
+// Legacy fallback: global filtered tools for any code still using getCachedTools
 let _cachedToolsArray: Anthropic.Tool[] | null = null;
 
 // ─── Model selection helpers ─────────────────────────────────────────
@@ -354,16 +358,10 @@ export interface CallDomainResult {
   stopReason: string;
 }
 
-// Build cached tools array (cache_control on last tool for prefix caching)
-// Memoized: computed once, reused for all API calls to guarantee cache hits
+// Legacy getCachedTools — kept for backwards compatibility, delegates to secretary domain
 function getCachedTools(): Anthropic.Tool[] {
   if (_cachedToolsArray) return _cachedToolsArray;
-  const tools = buildFilteredTools();
-  _cachedToolsArray = tools.map((t, i) =>
-    i === tools.length - 1
-      ? { ...t, cache_control: { type: 'ephemeral' as const } }
-      : t
-  );
+  _cachedToolsArray = getToolsForDomainCached('secretary');
   return _cachedToolsArray;
 }
 
@@ -379,7 +377,9 @@ export async function callDomain(
     const knowledgeBlock = buildKnowledgePromptBlock();
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
-  const useTools = domain === 'secretary' || domain === 'triathlon';
+  // Per-domain tool filtering via sub-skill system
+  const domainTools = getToolsForDomainCached(domain);
+  const useTools = domainTools.length > 0;
 
   // Prompt caching: static system prompt cached, dynamic state in user message
   const system: Anthropic.TextBlockParam[] = [
@@ -400,7 +400,7 @@ export async function callDomain(
       max_tokens: maxTokensOverride || getMaxTokensForDomain(domain),
       system,
       messages,
-      ...(useTools ? { tools: getCachedTools() } : {}),
+      ...(useTools ? { tools: domainTools } : {}),
     }, `domain_${domain}`);
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in callDomain');
@@ -446,7 +446,8 @@ export async function continueWithToolResults(
     ...toolConversation,
   ];
 
-  const useTools = domain === 'secretary' || domain === 'triathlon';
+  const domainTools = getToolsForDomainCached(domain);
+  const useTools = domainTools.length > 0;
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
@@ -454,7 +455,7 @@ export async function continueWithToolResults(
       max_tokens: getMaxTokensForDomain(domain),
       system,
       messages,
-      ...(useTools ? { tools: getCachedTools() } : {}),
+      ...(useTools ? { tools: domainTools } : {}),
     }, 'tool_continuation');
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in continueWithToolResults');

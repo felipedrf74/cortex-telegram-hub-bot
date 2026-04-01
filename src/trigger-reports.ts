@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * One-off script to manually trigger reports.
  * Usage: npx tsx src/trigger-reports.ts [content] [coach] [evening] [briefing]

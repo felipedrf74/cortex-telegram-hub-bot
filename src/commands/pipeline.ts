@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Pipeline bot commands — /pipeline, /filmed, /editing, /published
  */

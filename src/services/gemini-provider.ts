@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Gemini Provider — AIProvider implementation backed by Google Gemini models.
  *

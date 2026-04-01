@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import * as googleCal from './google-calendar';
 import * as outlookCal from './outlook-calendar';
 import { logger } from '../utils/logger';

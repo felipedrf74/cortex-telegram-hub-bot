@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
@@ -135,6 +137,13 @@ export const config = {
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
     port: parseInt(process.env.CONTENT_ENGINE_PORT || '8100', 10),
+  },
+  // ── Database Backup ─────────────────────────────────────────────────
+  backup: {
+    enabled: (process.env.BACKUP_ENABLED || 'true') === 'true',
+    dir: process.env.BACKUP_DIR || './data/backups',
+    retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10),
+    time: process.env.BACKUP_TIME || '03:00',
   },
   // ── Status Portal ──────────────────────────────────────────────────
   portal: {

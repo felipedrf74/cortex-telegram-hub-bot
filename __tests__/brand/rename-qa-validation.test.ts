@@ -40,7 +40,7 @@ describe('QA: Cortex → Nexus Hub rename — source files', () => {
     // (but may reference it historically like "formerly Cortex")
     const lines = content.split('\n');
     const cortexLines = lines.filter(l =>
-      l.includes('Cortex') && !l.includes('formerly') && !l.includes('Cortex IDEAS')
+      l.includes('Cortex') && !l.includes('formerly') && !l.includes('Nexus Hub IDEAS')
     );
     expect(cortexLines).toEqual([]);
   });
@@ -57,11 +57,12 @@ describe('QA: Cortex → Nexus Hub rename — source files', () => {
     }
   });
 
-  it('google-drive.ts keeps "Cortex IDEAS" (external folder name)', () => {
+  it('google-drive.ts uses "Nexus Hub IDEAS" (renamed from Cortex IDEAS)', () => {
     if (fileExists('src/services/google-drive.ts')) {
       const content = readFile('src/services/google-drive.ts');
-      // This is an external Google Drive folder — should NOT be renamed
-      expect(content).toContain('Cortex IDEAS');
+      // Drive folder renamed to match brand — coordinated with actual folder rename
+      expect(content).toContain('Nexus Hub IDEAS');
+      expect(content).not.toContain('Cortex IDEAS');
     }
   });
 
@@ -75,16 +76,16 @@ describe('QA: Cortex → Nexus Hub rename — source files', () => {
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        // Skip: "Cortex IDEAS" (Google Drive), "formerly Cortex", comments referencing history
+        // Skip: "Nexus Hub IDEAS" (Google Drive), "formerly Cortex", comments referencing history
         if (
-          line.includes('Cortex IDEAS') ||
+          line.includes('Nexus Hub IDEAS') ||
           line.includes('formerly Cortex') ||
           line.includes('formerly') ||
           line.includes('cortex-telegram')  // repo name in URLs
         ) continue;
 
         // Check for standalone "Cortex" that looks like it refers to the project
-        if (/\bCortex\b/.test(line) && !line.includes('Cortex IDEAS')) {
+        if (/\bCortex\b/.test(line) && !line.includes('Nexus Hub IDEAS')) {
           violations.push(`${path.relative(ROOT, file)}:${i + 1}: ${line.trim()}`);
         }
       }

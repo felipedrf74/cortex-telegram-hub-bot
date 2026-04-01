@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { chromium, BrowserContext, Page, Browser } from 'playwright';
 import fs from 'fs';
 import path from 'path';

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Eval Criteria Registry — defines evaluation targets, criteria, and test inputs
  * for the autoresearch prompt optimization system.

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 import type { InstalledSkill, SkillSubmodule } from '../domains/types';
@@ -83,6 +85,52 @@ export function disable(name: string): boolean {
     "UPDATE installed_skills SET enabled = 0, updated_at = datetime('now') WHERE name = ?"
   ).run(name);
   return result.changes > 0;
+}
+
+// ── Submodule Enable / Disable ─────────────────────────────────────
+
+/** Enable a submodule by skill name and module name. Returns true if found and updated. */
+export function enableSubmodule(skillName: string, moduleName: string): boolean {
+  const db = getDb();
+  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
+  if (!skill) return false;
+  const result = db.prepare(
+    'UPDATE skill_submodules SET enabled = 1 WHERE skill_id = ? AND module_name = ?'
+  ).run(skill.id, moduleName);
+  return result.changes > 0;
+}
+
+/** Disable a submodule by skill name and module name. Returns true if found and updated. */
+export function disableSubmodule(skillName: string, moduleName: string): boolean {
+  const db = getDb();
+  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
+  if (!skill) return false;
+  const result = db.prepare(
+    'UPDATE skill_submodules SET enabled = 0 WHERE skill_id = ? AND module_name = ?'
+  ).run(skill.id, moduleName);
+  return result.changes > 0;
+}
+
+/** Get all enabled submodule names for a skill. */
+export function getEnabledSubmodules(skillName: string): string[] {
+  const db = getDb();
+  const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
+  if (!skill) return [];
+  const rows = db.prepare(
+    'SELECT module_name FROM skill_submodules WHERE skill_id = ? AND enabled = 1 ORDER BY module_name'
+  ).all(skill.id) as Array<{ module_name: string }>;
+  return rows.map(r => r.module_name);
+}
+
+/** Check if a specific submodule is enabled. */
+export function isSubmoduleEnabled(skillName: string, moduleName: string): boolean {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT sm.enabled FROM skill_submodules sm
+    JOIN installed_skills s ON s.id = sm.skill_id
+    WHERE s.name = ? AND sm.module_name = ?
+  `).get(skillName, moduleName) as { enabled: number } | undefined;
+  return row?.enabled === 1;
 }
 
 // ── Queries ────────────────────────────────────────────────────────
