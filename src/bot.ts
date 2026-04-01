@@ -12,6 +12,7 @@ import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
 import { handleFinance } from './domains/finance';
+import * as onboarding from './services/onboarding';
 import { getActiveReminders } from './state/reminders';
 import { clearConversation, clearAllConversations, addToConversation, getLastAssistantMessage } from './state/conversation';
 import {
@@ -384,6 +385,16 @@ interface PendingEdit {
 }
 
 const pendingEdits = new Map<number, PendingEdit>();
+
+// ─── Pending Onboarding Text Input (per user) ──────────────────────
+
+interface PendingOnboarding {
+  questionnaire: string;
+  step: onboarding.QuestionStep;
+  expires: number;
+}
+
+const pendingOnboarding = new Map<number, PendingOnboarding>();
 
 // ─── Last Active Domain (per user) ──────────────────────────────────
 
@@ -2609,7 +2620,128 @@ export function createBot(): Bot {
     });
   });
 
+  // ── Onboarding Command ──
+  bot.command('onboard', async (ctx) => {
+    const args = (ctx.message?.text || '').replace(/^\/onboard\s*/i, '').trim();
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const available = onboarding.getAvailableQuestionnaires();
+
+    if (!args) {
+      // Show available questionnaires
+      const keyboard = new InlineKeyboard();
+      for (const qId of available) {
+        const def = onboarding.getQuestionnaire(qId)!;
+        const ref = storeCallback({ action: 'start', questionnaire: qId }, 300_000);
+        keyboard.text(`${def.title}`, `ob:start:${ref}`).row();
+      }
+      await ctx.reply(
+        '📋 <b>Onboarding Questionnaires</b>\n\nChoose a profile to set up:',
+        { parse_mode: 'HTML', reply_markup: keyboard },
+      );
+      return;
+    }
+
+    // Start a specific questionnaire
+    const qId = args.toLowerCase();
+    if (!available.includes(qId)) {
+      await ctx.reply(`Unknown questionnaire: ${escapeHtml(qId)}. Available: ${available.join(', ')}`);
+      return;
+    }
+
+    const session = onboarding.startOrResume(userId, qId);
+    const def = onboarding.getQuestionnaire(qId)!;
+    const step = def.steps[session.current_step];
+    if (!step) return;
+
+    await sendOnboardingStep(ctx, qId, step, session.current_step, def.steps.length);
+  });
+
+  bot.command('profile', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const profiles = onboarding.getAllProfiles(userId);
+    if (profiles.length === 0) {
+      await ctx.reply('No profiles set up yet. Use /onboard to get started.');
+      return;
+    }
+
+    const lines = profiles.map(p => {
+      const data = p.data;
+      const entries = Object.entries(data).map(([k, v]) => `  <code>${k}</code>: ${escapeHtml(String(v))}`);
+      return `<b>${escapeHtml(p.profile_type)}</b>\n${entries.join('\n')}`;
+    });
+    await ctx.reply(`📋 <b>Your Profiles</b>\n\n${lines.join('\n\n')}`, { parse_mode: 'HTML' });
+  });
+
   // ── Inline Keyboard Callback Handlers ──
+
+  // Onboarding questionnaire callbacks
+  bot.callbackQuery(/^ob:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1];
+    const ref = parts[2];
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    const cbData = getCallback(ref);
+    if (!cbData) {
+      await ctx.editMessageText('⚠️ This action has expired. Use /onboard to start again.');
+      return;
+    }
+
+    switch (action) {
+      case 'start': {
+        const qId = cbData.questionnaire;
+        const session = onboarding.startOrResume(userId, qId);
+        const def = onboarding.getQuestionnaire(qId)!;
+        const step = def.steps[session.current_step];
+        if (!step) return;
+
+        await ctx.editMessageText(
+          `${def.title}\n\n${def.description}\n\nLet's begin! (${def.steps.length} questions)`,
+          { parse_mode: 'HTML' },
+        );
+        await sendOnboardingStep(ctx, qId, step, session.current_step, def.steps.length);
+        break;
+      }
+      case 'answer': {
+        const { questionnaire: qId, answer } = cbData;
+        try {
+          const result = onboarding.answerStep(userId, qId, answer);
+          if (!result.nextStep) {
+            // Questionnaire complete
+            const profile = onboarding.getProfile(userId, qId);
+            const entries = profile ? Object.entries(profile.data).map(([k, v]) =>
+              `  <code>${k}</code>: ${escapeHtml(String(v))}`
+            ).join('\n') : '';
+            await ctx.editMessageText(
+              `✅ <b>Profile Complete!</b>\n\n${entries}\n\nYour ${qId} profile is saved. The AI will use this for personalized responses.`,
+              { parse_mode: 'HTML' },
+            );
+          } else {
+            await ctx.editMessageText(`✅ Got it!`);
+            await sendOnboardingStep(ctx, qId, result.nextStep, result.session.current_step, onboarding.getQuestionnaire(qId)!.steps.length);
+          }
+        } catch (err: any) {
+          await ctx.editMessageText(`⚠️ ${escapeHtml(err.message)}`);
+        }
+        break;
+      }
+      case 'cancel': {
+        const qId = cbData.questionnaire;
+        onboarding.abandonSession(userId, qId);
+        await ctx.editMessageText('❌ Onboarding cancelled. Use /onboard to start again.');
+        break;
+      }
+    }
+  });
+
   bot.callbackQuery(/^td:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
     const parts = data.split(':');
@@ -3153,6 +3285,37 @@ export function createBot(): Bot {
     }
     pendingEdits.delete(userId); // clean up expired
 
+    // Check for pending onboarding text input
+    const pendingOb = pendingOnboarding.get(userId);
+    if (pendingOb && Date.now() < pendingOb.expires) {
+      pendingOnboarding.delete(userId);
+      enqueue(userId, async () => {
+        try {
+          const result = onboarding.answerStep(userId, pendingOb.questionnaire, text);
+          if (!result.nextStep) {
+            const profile = onboarding.getProfile(userId, pendingOb.questionnaire);
+            const entries = profile ? Object.entries(profile.data).map(([k, v]) =>
+              `  <code>${k}</code>: ${escapeHtml(String(v))}`
+            ).join('\n') : '';
+            await ctx.reply(
+              `✅ <b>Profile Complete!</b>\n\n${entries}\n\nYour ${pendingOb.questionnaire} profile is saved.`,
+              { parse_mode: 'HTML' },
+            );
+          } else {
+            await ctx.reply('✅ Got it!');
+            const def = onboarding.getQuestionnaire(pendingOb.questionnaire)!;
+            await sendOnboardingStep(ctx, pendingOb.questionnaire, result.nextStep, result.session.current_step, def.steps.length);
+          }
+        } catch (err: any) {
+          await ctx.reply(`⚠️ ${escapeHtml(err.message)}. Please try again.`);
+          // Re-set pending so user can retry
+          pendingOnboarding.set(userId, pendingOb);
+        }
+      });
+      return;
+    }
+    pendingOnboarding.delete(userId);
+
     enqueue(userId, async () => {
       await handleDomainMessage(ctx, text);
     });
@@ -3201,6 +3364,52 @@ function buildTaskListKeyboard(tasks: msTodo.TodoTask[], listId: string): Inline
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────
+
+async function sendOnboardingStep(
+  ctx: Context,
+  questionnaireId: string,
+  step: onboarding.QuestionStep,
+  stepIdx: number,
+  totalSteps: number,
+): Promise<void> {
+  const progress = `(${stepIdx + 1}/${totalSteps})`;
+  const prompt = `${progress} ${step.prompt}`;
+
+  if (step.type === 'choice' && step.options) {
+    const keyboard = new InlineKeyboard();
+    for (const option of step.options) {
+      const ref = storeCallback({ questionnaire: questionnaireId, answer: option }, 300_000);
+      keyboard.text(option, `ob:answer:${ref}`).row();
+    }
+    const cancelRef = storeCallback({ questionnaire: questionnaireId }, 300_000);
+    keyboard.text('❌ Cancel', `ob:cancel:${cancelRef}`);
+    await ctx.reply(prompt, { reply_markup: keyboard });
+  } else if (step.type === 'multi_choice' && step.options) {
+    // For multi_choice, present as individual buttons; user selects each
+    const keyboard = new InlineKeyboard();
+    for (const option of step.options) {
+      const ref = storeCallback({ questionnaire: questionnaireId, answer: option }, 300_000);
+      keyboard.text(option, `ob:answer:${ref}`).row();
+    }
+    const cancelRef = storeCallback({ questionnaire: questionnaireId }, 300_000);
+    keyboard.text('❌ Cancel', `ob:cancel:${cancelRef}`);
+    await ctx.reply(`${prompt}\n<i>(select one — you can update this later)</i>`, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+  } else {
+    // Text or number input — set up pending onboarding input
+    const userId = ctx.from?.id;
+    if (userId) {
+      pendingOnboarding.set(userId, {
+        questionnaire: questionnaireId,
+        step,
+        expires: Date.now() + 300_000,
+      });
+    }
+    await ctx.reply(`${prompt}\n<i>(type your answer)</i>`, { parse_mode: 'HTML' });
+  }
+}
 
 async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
   const systemCmd = isSystemCommand(text);
