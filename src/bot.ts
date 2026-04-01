@@ -11,6 +11,7 @@ import { DomainName } from './domains/types';
 import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
+import { handleFinance } from './domains/finance';
 import { getActiveReminders } from './state/reminders';
 import { clearConversation, clearAllConversations, addToConversation, getLastAssistantMessage } from './state/conversation';
 import {
@@ -253,10 +254,11 @@ function isRateLimited(userId: number): boolean {
 
 // ─── Domain Handler Map ──────────────────────────────────────────────
 
-const DOMAIN_HANDLERS: Record<DomainName, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> = {
+const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> = {
   secretary: handleSecretary,
   triathlon: handleTriathlon,
   content: handleContent,
+  finance: handleFinance,
 };
 
 // ─── Processing Queue (sequential per user) ─────────────────────────

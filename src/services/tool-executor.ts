@@ -6,11 +6,13 @@ import { setSharedMemory, removeSharedMemory } from '../state/shared-memory';
 import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
+import * as financeTracker from './finance-tracker';
 import { logger } from '../utils/logger';
 
 export async function executeToolCall(
   toolName: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  userId?: number,
 ): Promise<any> {
   logger.info({ tool: toolName, input }, 'Executing tool call');
 
@@ -265,6 +267,46 @@ export async function executeToolCall(
       case 'shared_memory_remove': {
         const removed = removeSharedMemory(input.key);
         return { success: removed, key: input.key };
+      }
+
+      // ── Finance tools ──
+      case 'finance_add_transaction': {
+        const uid = userId ?? 0;
+        const tx = financeTracker.addTransaction(uid, input.date, input.category, input.amount, {
+          subcategory: input.subcategory, description: input.description,
+        });
+        return { success: true, id: tx.id, date: tx.date, category: tx.category, amount: tx.amount };
+      }
+      case 'finance_get_transactions': {
+        const uid = userId ?? 0;
+        return financeTracker.getTransactions(uid, {
+          startDate: input.start_date, endDate: input.end_date,
+          category: input.category, limit: input.limit,
+        });
+      }
+      case 'finance_delete_transaction': {
+        const uid = userId ?? 0;
+        const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
+        return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
+      }
+      case 'finance_monthly_summary': {
+        const uid = userId ?? 0;
+        return financeTracker.getMonthlySummary(uid, input.month);
+      }
+      case 'finance_calculate_tax': {
+        const uid = userId ?? 0;
+        const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
+        const breakdown = financeTracker.calculateMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
+        return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
+      }
+      case 'finance_get_tax_events': {
+        const uid = userId ?? 0;
+        return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit });
+      }
+      case 'finance_mark_tax_paid': {
+        const uid = userId ?? 0;
+        const marked = financeTracker.markTaxPaid(uid, input.month);
+        return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
 
       default:

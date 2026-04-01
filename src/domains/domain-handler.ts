@@ -131,7 +131,7 @@ export async function handleSimpleDomain(
       result.toolCalls.map(async (tc) => ({
         type: 'tool_result' as const,
         tool_use_id: tc.id,
-        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>)),
+        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
       }))
     );
     toolConversation.push(

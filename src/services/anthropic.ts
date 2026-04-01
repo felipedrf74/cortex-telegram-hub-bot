@@ -89,6 +89,57 @@ export const TOOLS: Anthropic.Tool[] = [
   // ── Shared memory tools (cross-domain context) ──
   { name: 'shared_memory_set', description: 'Store a cross-domain fact visible to all domains (e.g. "marathon_date: March 15"). Use for info relevant across secretary/triathlon/content.', input_schema: { type: 'object' as const, properties: { key: { type: 'string', description: 'Short snake_case identifier' }, value: { type: 'string' }, expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' } }, required: ['key', 'value'] } },
   { name: 'shared_memory_remove', description: 'Remove a cross-domain fact by key', input_schema: { type: 'object' as const, properties: { key: { type: 'string' } }, required: ['key'] } },
+  // ── Finance tools ──
+  {
+    name: 'finance_add_transaction', description: 'Log a financial transaction (income, expense, or deduction)',
+    input_schema: { type: 'object' as const, properties: {
+      date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      category: { type: 'string', enum: ['income', 'expense', 'deduction'], description: 'Transaction type' },
+      amount: { type: 'number', description: 'Amount in BRL (always positive)' },
+      subcategory: { type: 'string', description: 'e.g. freelance, rent, software, health, education' },
+      description: { type: 'string', description: 'Brief description of the transaction' },
+    }, required: ['date', 'category', 'amount'] },
+  },
+  {
+    name: 'finance_get_transactions', description: 'Get financial transactions with optional filters',
+    input_schema: { type: 'object' as const, properties: {
+      start_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      end_date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+      category: { type: 'string', enum: ['income', 'expense', 'deduction'] },
+      limit: { type: 'number', description: 'Max results (default 50)' },
+    } },
+  },
+  {
+    name: 'finance_delete_transaction', description: 'Delete a transaction by ID',
+    input_schema: { type: 'object' as const, properties: {
+      transaction_id: { type: 'number', description: 'Transaction ID to delete' },
+    }, required: ['transaction_id'] },
+  },
+  {
+    name: 'finance_monthly_summary', description: 'Get monthly financial summary (income, expenses, deductions, net)',
+    input_schema: { type: 'object' as const, properties: {
+      month: { type: 'string', description: 'Month in YYYY-MM format' },
+    }, required: ['month'] },
+  },
+  {
+    name: 'finance_calculate_tax', description: 'Calculate Carnê-Leão / DARF tax for a month using IRPF progressive table',
+    input_schema: { type: 'object' as const, properties: {
+      month: { type: 'string', description: 'Month in YYYY-MM format. Uses stored transactions for income/deductions.' },
+    }, required: ['month'] },
+  },
+  {
+    name: 'finance_get_tax_events', description: 'Get tax calculation history',
+    input_schema: { type: 'object' as const, properties: {
+      year: { type: 'number', description: 'Filter by year (e.g. 2024)' },
+      limit: { type: 'number', description: 'Max results (default 12)' },
+    } },
+  },
+  {
+    name: 'finance_mark_tax_paid', description: 'Mark a monthly DARF as paid',
+    input_schema: { type: 'object' as const, properties: {
+      month: { type: 'string', description: 'Month in YYYY-MM format' },
+    }, required: ['month'] },
+  },
 ];
 
 // ─── Unified Image Classification & Extraction (uses Haiku — cheap vision) ──

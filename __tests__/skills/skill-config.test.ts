@@ -31,10 +31,11 @@ import { TOOLS } from '../../src/services/anthropic';
 // ═══════════════════════════════════════════════════════════════════
 
 describe('SkillConfig — structure', () => {
-  it('defines skills for all three domains', () => {
+  it('defines skills for all four domains', () => {
     expect(DEFAULT_SKILLS).toHaveProperty('secretary');
     expect(DEFAULT_SKILLS).toHaveProperty('triathlon');
     expect(DEFAULT_SKILLS).toHaveProperty('content');
+    expect(DEFAULT_SKILLS).toHaveProperty('finance');
   });
 
   it('each skill has required fields', () => {
@@ -166,6 +167,7 @@ describe('SkillConfig — content skill', () => {
   it('has the fewest sub-skills', () => {
     expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.triathlon.subSkills.length);
     expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.secretary.subSkills.length);
+    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.finance.subSkills.length);
   });
 });
 
@@ -178,6 +180,7 @@ describe('SkillConfig — getSkillDefinition()', () => {
     expect(getSkillDefinition('secretary')!.name).toBe('secretary');
     expect(getSkillDefinition('triathlon')!.name).toBe('triathlon');
     expect(getSkillDefinition('content')!.name).toBe('content');
+    expect(getSkillDefinition('finance')!.name).toBe('finance');
   });
 
   it('returns undefined for unknown skills', () => {
@@ -215,31 +218,31 @@ describe('SkillConfig — getSubSkillNames()', () => {
 // DYNAMIC SKILL REGISTRATION TESTS
 // ═══════════════════════════════════════════════════════════════════
 
-const FINANCE_SKILL: SkillDefinition = {
-  name: 'finance',
-  description: 'Personal finance tracking — budgets, expenses, invoices',
+const ACCOUNTING_SKILL: SkillDefinition = {
+  name: 'accounting',
+  description: 'Corporate accounting — ledgers, reconciliation, audits',
   version: '1.0.0',
   routing: {
-    patternRoutes: [/^\/(budget|expense|invoice)\b/i],
-    keywordRoute: /\b(budgets?|expenses?|invoices?|financial|spending|savings)\b/i,
+    patternRoutes: [/^\/(ledger|reconcile|audit)\b/i],
+    keywordRoute: /\b(ledgers?|reconciliation|audits?|accounting|bookkeeping)\b/i,
     classificationHint: {
-      label: 'finance',
-      description: 'budgets, expenses, invoices, financial planning',
-      examples: ['track my expenses', 'create a budget'],
+      label: 'accounting',
+      description: 'ledgers, reconciliation, audits, bookkeeping',
+      examples: ['reconcile the ledger', 'run an audit'],
     },
   },
   subSkills: [
     {
-      name: 'budgets',
-      description: 'Budget management',
+      name: 'ledgers',
+      description: 'Ledger management',
       enabledByDefault: true,
-      tools: ['create_budget', 'get_budgets'],
+      tools: ['create_ledger', 'get_ledgers'],
     },
     {
-      name: 'expenses',
-      description: 'Expense tracking',
+      name: 'audits',
+      description: 'Audit tracking',
       enabledByDefault: true,
-      tools: ['log_expense', 'get_expenses'],
+      tools: ['run_audit', 'get_audits'],
     },
   ],
 };
@@ -250,78 +253,78 @@ describe('SkillConfig — dynamic skill registration', () => {
   });
 
   it('registerSkill adds a new skill to the registry', () => {
-    registerSkill(FINANCE_SKILL);
-    expect(getSkillDefinition('finance')).toBeDefined();
-    expect(getSkillDefinition('finance')!.name).toBe('finance');
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getSkillDefinition('accounting')).toBeDefined();
+    expect(getSkillDefinition('accounting')!.name).toBe('accounting');
   });
 
   it('registered skill appears in getRegisteredDomainNames', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     const names = getRegisteredDomainNames();
-    expect(names).toContain('finance');
-    expect(names).toHaveLength(4);
+    expect(names).toContain('accounting');
+    expect(names).toHaveLength(5);
   });
 
   it('registered skill appears in getAllSkillDefinitions', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     const defs = getAllSkillDefinitions();
-    expect(defs).toHaveLength(4);
-    expect(defs.map(d => d.name)).toContain('finance');
+    expect(defs).toHaveLength(5);
+    expect(defs.map(d => d.name)).toContain('accounting');
   });
 
   it('registered skill appears in getPatternRoutes', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     const routes = getPatternRoutes();
-    expect(routes).toHaveLength(4);
-    const finance = routes.find(r => r.domain === 'finance')!;
-    expect(finance.patterns[0].test('/budget check')).toBe(true);
+    expect(routes).toHaveLength(5);
+    const accounting = routes.find(r => r.domain === 'accounting')!;
+    expect(accounting.patterns[0].test('/ledger check')).toBe(true);
   });
 
   it('registered skill appears in getKeywordRoutes', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     const routes = getKeywordRoutes();
-    expect(routes).toHaveLength(4);
-    const finance = routes.find(r => r.domain === 'finance')!;
-    expect(finance.pattern.test('track my expenses')).toBe(true);
-    expect(finance.priority).toBe(0); // non-secretary = high priority
+    expect(routes).toHaveLength(5);
+    const accounting = routes.find(r => r.domain === 'accounting')!;
+    expect(accounting.pattern.test('reconcile the ledger')).toBe(true);
+    expect(accounting.priority).toBe(0); // non-secretary = high priority
   });
 
   it('registered skill appears in getClassificationHints', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     const hints = getClassificationHints();
-    expect(hints).toHaveLength(4);
-    expect(hints.map(h => h.label)).toContain('finance');
+    expect(hints).toHaveLength(5);
+    expect(hints.map(h => h.label)).toContain('accounting');
   });
 
   it('registered skill tools appear in getAllToolNames', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     const tools = getAllToolNames();
-    expect(tools).toContain('create_budget');
-    expect(tools).toContain('log_expense');
+    expect(tools).toContain('create_ledger');
+    expect(tools).toContain('run_audit');
   });
 
   it('registered skill sub-skills appear in getSubSkillNames', () => {
-    registerSkill(FINANCE_SKILL);
-    const names = getSubSkillNames('finance');
-    expect(names).toEqual(['budgets', 'expenses']);
+    registerSkill(ACCOUNTING_SKILL);
+    const names = getSubSkillNames('accounting');
+    expect(names).toEqual(['ledgers', 'audits']);
   });
 
   it('enabledSkills filter works with dynamic skills', () => {
-    registerSkill(FINANCE_SKILL);
-    const routes = getPatternRoutes(new Set(['finance', 'secretary']));
+    registerSkill(ACCOUNTING_SKILL);
+    const routes = getPatternRoutes(new Set(['accounting', 'secretary']));
     expect(routes).toHaveLength(2);
-    expect(routes.map(r => r.domain)).toContain('finance');
+    expect(routes.map(r => r.domain)).toContain('accounting');
     expect(routes.map(r => r.domain)).toContain('secretary');
   });
 
   it('unregisterSkill removes a dynamic skill', () => {
-    registerSkill(FINANCE_SKILL);
-    expect(getSkillDefinition('finance')).toBeDefined();
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getSkillDefinition('accounting')).toBeDefined();
 
-    const removed = unregisterSkill('finance');
+    const removed = unregisterSkill('accounting');
     expect(removed).toBe(true);
-    expect(getSkillDefinition('finance')).toBeUndefined();
-    expect(getRegisteredDomainNames()).toHaveLength(3);
+    expect(getSkillDefinition('accounting')).toBeUndefined();
+    expect(getRegisteredDomainNames()).toHaveLength(4);
   });
 
   it('unregisterSkill returns false for default skills', () => {
@@ -334,25 +337,26 @@ describe('SkillConfig — dynamic skill registration', () => {
   });
 
   it('registerSkill can overwrite an existing dynamic skill', () => {
-    registerSkill(FINANCE_SKILL);
-    const updated = { ...FINANCE_SKILL, version: '2.0.0' };
+    registerSkill(ACCOUNTING_SKILL);
+    const updated = { ...ACCOUNTING_SKILL, version: '2.0.0' };
     registerSkill(updated);
-    expect(getSkillDefinition('finance')!.version).toBe('2.0.0');
+    expect(getSkillDefinition('accounting')!.version).toBe('2.0.0');
   });
 
   it('_resetRegistry restores defaults only', () => {
-    registerSkill(FINANCE_SKILL);
-    expect(getRegisteredDomainNames()).toHaveLength(4);
+    registerSkill(ACCOUNTING_SKILL);
+    expect(getRegisteredDomainNames()).toHaveLength(5);
     _resetRegistry();
-    expect(getRegisteredDomainNames()).toHaveLength(3);
-    expect(getSkillDefinition('finance')).toBeUndefined();
+    expect(getRegisteredDomainNames()).toHaveLength(4);
+    expect(getSkillDefinition('accounting')).toBeUndefined();
     expect(getSkillDefinition('secretary')).toBeDefined();
   });
 
   it('defaults are preserved after registering dynamic skills', () => {
-    registerSkill(FINANCE_SKILL);
+    registerSkill(ACCOUNTING_SKILL);
     expect(getSkillDefinition('secretary')!.name).toBe('secretary');
     expect(getSkillDefinition('triathlon')!.name).toBe('triathlon');
     expect(getSkillDefinition('content')!.name).toBe('content');
+    expect(getSkillDefinition('finance')!.name).toBe('finance');
   });
 });

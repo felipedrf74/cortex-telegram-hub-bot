@@ -100,13 +100,13 @@ describe('Domain Status — server.ts domain definitions', () => {
   });
 
   it('all domains are set to active: true', () => {
-    // There should be exactly 3 occurrences of active: true for domains
+    // There should be exactly 4 occurrences of active: true for domains
     const domainBlock = serverTs.slice(
       serverTs.indexOf('domainStatus = ['),
       serverTs.indexOf('];', serverTs.indexOf('domainStatus = [')),
     );
     const activeMatches = domainBlock.match(/active: true/g) || [];
-    expect(activeMatches.length).toBe(3);
+    expect(activeMatches.length).toBe(4);
   });
 });
 

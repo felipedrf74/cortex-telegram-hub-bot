@@ -191,18 +191,62 @@ const CONTENT_SKILL: SkillDefinition = {
   ],
 };
 
+const FINANCE_SKILL: SkillDefinition = {
+  name: 'finance',
+  description: 'Personal finance — expense tracking, DARF/Carnê-Leão tax calculation',
+  version: '1.0.0',
+  routing: {
+    patternRoutes: [
+      /^\/(finance|budget|expense|tax|darf|receipt|invoice)\b/i,
+    ],
+    keywordRoute: /\b(despesas?|gastos?|or[çc]amento|imposto|carn[eê]-le[aã]o|DARF|receita\s+federal|nota\s+fiscal|budget|expenses?|tax(?:es)?|income\s+tax|financial|freelancer?\s+tax|dedu[çc][aã]o|faturamento|NF(?:-?e)?)\b/i,
+    classificationHint: {
+      label: 'finance',
+      description: 'expenses, budgets, income tax, DARF, Carnê-Leão, freelancer taxes, receipts, financial planning, deductions',
+      examples: ['log an expense of R$50', 'calculate my tax this month', 'show my budget'],
+    },
+  },
+  subSkills: [
+    {
+      name: 'expenses',
+      description: 'Expense and income tracking',
+      enabledByDefault: true,
+      tools: ['finance_add_transaction', 'finance_get_transactions', 'finance_delete_transaction', 'finance_monthly_summary'],
+    },
+    {
+      name: 'tax',
+      description: 'DARF/Carnê-Leão tax calculation',
+      enabledByDefault: true,
+      tools: ['finance_calculate_tax', 'finance_get_tax_events', 'finance_mark_tax_paid'],
+    },
+    {
+      name: 'notes',
+      description: 'Financial notes and records',
+      enabledByDefault: true,
+      tools: ['save_note', 'search_notes'],
+    },
+    {
+      name: 'shared-memory',
+      description: 'Cross-domain shared facts (income targets, tax deadlines)',
+      enabledByDefault: true,
+      tools: ['shared_memory_set', 'shared_memory_remove'],
+    },
+  ],
+};
+
 // ── Exports ──────────────────────────────────────────────────────
 
-/** The three built-in skill definitions, keyed by default domain name. */
+/** The built-in skill definitions, keyed by default domain name. */
 export const DEFAULT_SKILLS: Record<DefaultDomainName, SkillDefinition> = {
   secretary: SECRETARY_SKILL,
   triathlon: TRIATHLON_SKILL,
   content: CONTENT_SKILL,
+  finance: FINANCE_SKILL,
 };
 
 // ── Runtime Skill Registry ──────────────────────────────────────
 //
-// Starts with the three defaults but accepts dynamically registered
+// Starts with the built-in defaults but accepts dynamically registered
 // skills at runtime (e.g. plugins, user-defined domains).
 
 const _skillRegistry = new Map<string, SkillDefinition>(

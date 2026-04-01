@@ -17,13 +17,14 @@ import type { PatternRoute, KeywordRoute, ClassificationHint } from '../../src/s
 describe('skill-config routing', () => {
 
   describe('getPatternRoutes', () => {
-    it('returns pattern routes for all three domains', () => {
+    it('returns pattern routes for all four domains', () => {
       const routes = getPatternRoutes();
-      expect(routes).toHaveLength(3);
+      expect(routes).toHaveLength(4);
       const domains = routes.map(r => r.domain);
       expect(domains).toContain('secretary');
       expect(domains).toContain('triathlon');
       expect(domains).toContain('content');
+      expect(domains).toContain('finance');
     });
 
     it('each route has at least one pattern', () => {
@@ -75,9 +76,9 @@ describe('skill-config routing', () => {
   });
 
   describe('getKeywordRoutes', () => {
-    it('returns keyword routes for all three domains', () => {
+    it('returns keyword routes for all four domains', () => {
       const routes = getKeywordRoutes();
-      expect(routes).toHaveLength(3);
+      expect(routes).toHaveLength(4);
     });
 
     it('non-secretary domains have lower priority (checked first)', () => {
@@ -132,9 +133,9 @@ describe('skill-config routing', () => {
   });
 
   describe('getClassificationHints', () => {
-    it('returns hints for all three domains', () => {
+    it('returns hints for all four domains', () => {
       const hints = getClassificationHints();
-      expect(hints).toHaveLength(3);
+      expect(hints).toHaveLength(4);
     });
 
     it('each hint has label, description, and examples', () => {
@@ -154,10 +155,10 @@ describe('skill-config routing', () => {
   });
 
   describe('getRegisteredDomainNames', () => {
-    it('returns all three domain names', () => {
+    it('returns all four domain names', () => {
       const names = getRegisteredDomainNames();
-      expect(names).toEqual(expect.arrayContaining(['secretary', 'triathlon', 'content']));
-      expect(names).toHaveLength(3);
+      expect(names).toEqual(expect.arrayContaining(['secretary', 'triathlon', 'content', 'finance']));
+      expect(names).toHaveLength(4);
     });
   });
 });

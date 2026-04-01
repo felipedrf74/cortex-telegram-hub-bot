@@ -223,7 +223,7 @@ describe('handleSimpleDomain', () => {
 
     const result = await handleSimpleDomain('triathlon', 'What is on my calendar?');
     expect(result.text).toBe('You have a team call this week.');
-    expect(mockExecuteTool).toHaveBeenCalledWith('get_calendar_events', { start_date: '2026-03-30', end_date: '2026-04-06' });
+    expect(mockExecuteTool).toHaveBeenCalledWith('get_calendar_events', { start_date: '2026-03-30', end_date: '2026-04-06' }, undefined);
     expect(mockContinue).toHaveBeenCalledOnce();
   });
 

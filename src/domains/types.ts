@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-/** The three built-in domains. Kept as a narrow type for domain handlers. */
-export type DefaultDomainName = 'secretary' | 'triathlon' | 'content';
+/** The built-in domains. Kept as a narrow type for domain handlers. */
+export type DefaultDomainName = 'secretary' | 'triathlon' | 'content' | 'finance';
 
 /**
  * Any domain/skill name — includes the three defaults plus any dynamically
