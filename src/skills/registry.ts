@@ -1,8 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import path from 'path';
 import { getDb } from '../services/database';
 import { logger } from '../utils/logger';
 import type { InstalledSkill, SkillSubmodule } from '../domains/types';
+import { runSkillMigrations, dropSkillTables, getSkillTables, getAppliedMigrations } from './skill-migrations';
+import type { SkillMigrationResult, SkillTableInfo } from './skill-migrations';
 
 // ── Install / Uninstall ────────────────────────────────────────────
 
@@ -13,6 +16,8 @@ export interface InstallSkillOptions {
   domain?: string;
   config?: Record<string, unknown>;
   submodules?: Array<{ module_name: string; version?: string; config?: Record<string, unknown> }>;
+  /** Absolute path to the skill's root directory (contains migrations/ subfolder). */
+  skillDir?: string;
 }
 
 /** Install a skill (or update if already installed). Returns the installed skill row. */
@@ -53,18 +58,54 @@ export function install(opts: InstallSkillOptions): InstalledSkill {
     }
   }
 
-  logger.info({ skill: opts.name, version: skill.version }, 'Skill installed');
+  // Run skill-level migrations if a skill directory is provided
+  let migrationResult: SkillMigrationResult | undefined;
+  if (opts.skillDir) {
+    const migrationsDir = path.join(opts.skillDir, 'migrations');
+    migrationResult = runSkillMigrations(db, opts.name, migrationsDir);
+    if (migrationResult.errors.length > 0) {
+      logger.warn({ skill: opts.name, errors: migrationResult.errors }, 'Some skill migrations failed');
+    }
+  }
+
+  logger.info({ skill: opts.name, version: skill.version, migrationsApplied: migrationResult?.applied.length ?? 0 }, 'Skill installed');
   return skill;
 }
 
+export interface UninstallOptions {
+  /** If true, drop all tables owned by the skill (matching skill_<name>_ prefix). */
+  dropTables?: boolean;
+}
+
 /** Uninstall a skill by name. Cascade-deletes submodules. Returns true if removed. */
-export function uninstall(name: string): boolean {
+export function uninstall(name: string, options?: UninstallOptions): boolean {
   const db = getDb();
+
+  // Optionally drop skill-owned tables before deleting the skill record
+  if (options?.dropTables) {
+    const dropped = dropSkillTables(db, name);
+    if (dropped.length > 0) {
+      logger.info({ skill: name, tables: dropped }, 'Skill tables dropped');
+    }
+  }
+
   const result = db.prepare('DELETE FROM installed_skills WHERE name = ?').run(name);
   if (result.changes > 0) {
     logger.info({ skill: name }, 'Skill uninstalled');
   }
   return result.changes > 0;
+}
+
+/** List tables owned by a skill (for user confirmation before dropping). */
+export function listSkillTables(name: string): SkillTableInfo[] {
+  const db = getDb();
+  return getSkillTables(db, name);
+}
+
+/** Get applied migrations for a skill. */
+export function listSkillMigrations(name: string): string[] {
+  const db = getDb();
+  return getAppliedMigrations(db, name);
 }
 
 // ── Enable / Disable ───────────────────────────────────────────────
