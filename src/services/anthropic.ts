@@ -7,6 +7,7 @@ import { DomainMessage, DomainName } from '../domains/types';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';
+import { buildSafeContextMessage } from '../utils/validators';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -464,11 +465,11 @@ export async function callDomain(
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ];
 
-  // State context prepended to user message (keeps system prompt cacheable)
-  const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+  // State context + user message wrapped in XML delimiters for prompt injection defense
+  const safeContent = buildSafeContextMessage(stateContext, currentMessage);
   const messages: Anthropic.MessageParam[] = [
     ...history.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    { role: 'user' as const, content: `${contextPrefix}${currentMessage}` },
+    { role: 'user' as const, content: safeContent },
   ];
 
   let response: Anthropic.Message;
@@ -518,10 +519,10 @@ export async function continueWithToolResults(
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ];
 
-  const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+  const safeContent = buildSafeContextMessage(stateContext, currentMessage);
   const messages: Anthropic.MessageParam[] = [
     ...history.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    { role: 'user', content: `${contextPrefix}${currentMessage}` },
+    { role: 'user', content: safeContent },
     ...toolConversation,
   ];
 

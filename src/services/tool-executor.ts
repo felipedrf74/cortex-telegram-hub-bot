@@ -8,6 +8,7 @@ import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
 import * as trainingPlans from './training-plans';
 import { logger } from '../utils/logger';
+import { sanitizeErrorMessage } from '../utils/validators';
 
 export async function executeToolCall(
   toolName: string,
@@ -373,7 +374,7 @@ export async function executeToolCall(
     }
   } catch (err) {
     logger.error({ err, tool: toolName }, 'Tool execution failed');
-    return { error: `Tool execution failed: ${(err as Error).message}` };
+    return { error: `Tool execution failed: ${sanitizeErrorMessage((err as Error).message)}` };
   }
 }
 

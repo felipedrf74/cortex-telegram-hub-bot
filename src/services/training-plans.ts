@@ -9,6 +9,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { validateColumnName } from '../utils/validators';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -253,6 +254,12 @@ export function getSessionById(sessionId: number): TrainingSession | null {
     .get(sessionId) as TrainingSession | undefined) ?? null;
 }
 
+// Explicit whitelist for dynamic column names in updateSession — defense-in-depth against SQL injection
+const SESSION_UPDATE_COLUMNS = [
+  'title', 'exercises_json', 'duration_minutes', 'intensity_text',
+  'description', 'status', 'calendar_event_id', 'calendar_source',
+] as const;
+
 export function updateSession(
   sessionId: number,
   updates: Partial<Pick<TrainingSession, 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source'>>,
@@ -263,6 +270,10 @@ export function updateSession(
 
   for (const [key, value] of Object.entries(updates)) {
     if (value !== undefined) {
+      if (!validateColumnName(key, SESSION_UPDATE_COLUMNS)) {
+        logger.warn({ key }, 'Rejected invalid column name in updateSession');
+        continue;
+      }
       setClauses.push(`${key} = ?`);
       values.push(value);
     }
