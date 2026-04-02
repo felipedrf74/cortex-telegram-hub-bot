@@ -343,6 +343,35 @@ server.listen(PORT, () => {
         console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
       }
 
+      // Step 1.5: Check QA queues — if QA agent is idle but has queued tasks, create prompt
+      const qaAgents = ['qa', 'qa2'];
+      for (const qaName of qaAgents) {
+        const qaPath = path.join(WORKTREES, qaName);
+        const hasTask = fs.existsSync(path.join(qaPath, '.agent-task.json'));
+        const hasPrompt = fs.existsSync(path.join(qaPath, '.agent-prompt.md'));
+        if (!hasTask && !hasPrompt) {
+          // QA agent is idle — check its queue
+          const queueDir = path.join(qaPath, '.qa-queue');
+          try {
+            const queueFiles = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort() : [];
+            if (queueFiles.length > 0) {
+              const nextTask = JSON.parse(fs.readFileSync(path.join(queueDir, queueFiles[0]), 'utf8'));
+              console.log(`[qa-queue] ${qaName} is idle with ${queueFiles.length} queued task(s) — dispatching: ${nextTask.title.substring(0,40)}`);
+              // Write prompt for QA agent
+              const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
+              const prompt = `# \ud83e\uddea QA Validation Task\n\n## Validating: ${nextTask.title}\n**Original agent:** ${nextTask.originAgent}\n**Priority:** ${nextTask.priority || 'Medium'}\n\n## Instructions\n1. Pull the latest code: \`git fetch origin && git merge origin/agent/${nextTask.originAgent} --no-edit\`\n2. Run all tests: \`npx vitest run\`\n3. Run type check: \`npx tsc --noEmit\`\n4. Review the changes: \`git log origin/main..HEAD --oneline\`\n5. Verify the implementation matches the task description\n6. If ALL checks pass: mark as PASS\n7. If ANY check fails: mark as FAIL with clear reason\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass --summary "describe what you validated"\n\`\`\`\nOr if FAIL:\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "describe the failure"\n\`\`\`\n\n## Notion Task ID\n${nextTask.id}`;
+              fs.writeFileSync(path.join(qaPath, '.agent-prompt.md'), prompt);
+              fs.writeFileSync(path.join(qaPath, '.agent-task.json'), JSON.stringify({
+                id: nextTask.id, title: nextTask.title, description: nextTask.description || '',
+                priority: nextTask.priority || '', phase: nextTask.phase || '',
+                tags: nextTask.tags || [], agent: qaName === 'qa' ? '\ud83e\uddea QA' : '\ud83e\uddea QA2',
+                originAgent: nextTask.originAgent
+              }, null, 2));
+            }
+          } catch (e) { console.error(`[qa-queue] Error checking ${qaName} queue:`, e.message); }
+        }
+      }
+
       // Step 2: Auto-launch ANY agent that has a prompt but isn't running
       const agents = agentStatus();
       for (const ag of agents) {
