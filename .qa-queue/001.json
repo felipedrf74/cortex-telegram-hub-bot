@@ -1,9 +1,0 @@
-{
-  "id": "336ad49d-23e7-819b-b329-f20ae15bc178",
-  "title": "BUG P0: Bot hallucinating context instead of executing commands",
-  "description": "BUG P0: Bot generates status reports and briefings instead of answering the actual user command.\n\nROOT CAUSE: System prompts inject too much context (Garmin history, training summary, To Do counts) causing Claude to generate a status report summarizing the injected context rather than executing the user's actual command.\n\nACCEPTANCE CRITERIA:\n- Send \"what is 2+2?\" -> bot responds \"4\", NOT a morning briefing\n- Send \"/expense add 30 cafe\" -> bot logs expense and confirms, NOT a finance report\n- Send \"receita de frango\" -> bot searches recipes, NOT summarizes training\n- buildStateContext() in secretary.ts returns compact context (under 500 tokens)\n- Classifier correctly identifies intent — tested with 10 ambiguous messages\n- Slash commands bypass AI completely (handled by bot.ts command handlers)\n- npx vitest run passes, npx tsc --noEmit passes\n\nFILES: src/domains/secretary.ts (buildStateContext — trim verbose sections), src/services/anthropic.ts (system prompts), src/router/classifier.ts, src/bot.ts\nDEPS: None — P0 bug fix",
-  "priority": "Critical",
-  "originAgent": "flex",
-  "tags": [],
-  "phase": ""
-}
