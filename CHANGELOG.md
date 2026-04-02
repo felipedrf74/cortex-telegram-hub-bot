@@ -3,6 +3,12 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [Unreleased]
+
+### Documentation
+
+- Update changelog for v4.5.0 ([`eba2e31`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/eba2e31dd5dd0732286b8704fddb4166d957b7a5))
+
 ## [4.5.0] — 2026-04-02
 
 ### Bug Fixes
