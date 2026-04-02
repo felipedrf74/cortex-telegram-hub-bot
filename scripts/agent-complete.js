@@ -60,14 +60,54 @@ if (!TG_TOKEN) {
   }
 }
 
+// ─── Notification Bot Identity ──────────────────────────────────────
+// Verify the notification bot token is valid and log which bot it resolves to.
+// This is a DIFFERENT bot from the user-facing bot (@Hlepreguica_bot).
+// The notification bot (typically @Nexushub94_bot) only SENDS messages — it
+// does NOT run long polling and will NOT respond to user messages in Telegram.
+let notificationBotVerified = false;
+let notificationBotUsername = '';
+
+async function verifyNotificationBot() {
+  if (!TG_TOKEN) {
+    console.log('  ℹ️  No TELEGRAM_BOT_TOKEN configured — notifications disabled');
+    return false;
+  }
+  if (!TG_CHAT_ID) {
+    console.log('  ⚠️  TELEGRAM_BOT_TOKEN set but TELEGRAM_CHAT_ID missing — notifications disabled');
+    return false;
+  }
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
+    const data = await resp.json();
+    if (!data.ok) {
+      console.error(`  ❌ Notification bot token INVALID: ${data.description || 'unknown error'}`);
+      console.error(`     Check TELEGRAM_BOT_TOKEN in .env.agents`);
+      return false;
+    }
+    notificationBotUsername = data.result.username;
+    notificationBotVerified = true;
+    console.log(`  🤖 Notification bot: @${notificationBotUsername} (ID: ${data.result.id})`);
+    console.log(`     This bot is notification-only — it sends messages but does NOT respond to users.`);
+    return true;
+  } catch (e) {
+    console.error(`  ❌ Failed to verify notification bot: ${e.message}`);
+    return false;
+  }
+}
+
 async function notify(msg) {
   if (!TG_TOKEN || !TG_CHAT_ID) return;
   try {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    const resp = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg, parse_mode: 'HTML' }),
     });
+    const data = await resp.json();
+    if (!data.ok) {
+      console.log(`  ⚠️ Telegram notify failed: ${data.description}`);
+    }
   } catch (e) { console.log(`  ⚠️ Telegram notify failed: ${e.message}`); }
 }
 
@@ -136,13 +176,35 @@ const AGENT_MAP = {
   '🔒 Security': 'flex',
   '♻️ Refactor': 'flex',
   '🏗️ Architect': 'backend',
+  '🎨 Frontend': 'frontend',
+  '🧪 QA2': 'qa2',
 };
 
 // Tasks that need QA validation (feature code changes)
-const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect'];
+// ALL agents go through QA — no exceptions
+const NEEDS_QA = [
+  '🔧 Backend', '♻️ Refactor', '🏗️ Architect', '🎨 Frontend',
+  '⚙️ DevOps', '🔒 Security',
+  // Worktree name aliases (safety net)
+  'backend', 'flex', 'frontend', 'devops',
+];
+
+// ─── QA Routing — which QA agent validates which origin agent ───────
+const QA_ROUTING = {
+  'backend': 'qa', 'frontend': 'qa',      // QA-1 validates code-heavy agents
+  'devops': 'qa2', 'flex': 'qa2',          // QA-2 validates infra/config agents
+};
+function getQAAgent(originAgent) {
+  return QA_ROUTING[originAgent] || 'qa'; // default to qa
+}
 
 // ─── QA Queue System ────────────────────────────────────────────────
-const QA_QUEUE_DIR = path.join(WORKTREE_BASE, 'qa', '.qa-queue');
+// Dynamic QA queue — each QA agent has its own queue
+function getQAQueueDir(qaAgent) {
+  return path.join(WORKTREE_BASE, qaAgent || 'qa', '.qa-queue');
+}
+// Legacy constant for backward compat (used when QA agent reads its OWN queue)
+const QA_QUEUE_DIR = path.join(WORKTREE_BASE, agentDir, '.qa-queue');
 
 function ensureQAQueue() {
   if (!fs.existsSync(QA_QUEUE_DIR)) fs.mkdirSync(QA_QUEUE_DIR, { recursive: true });
@@ -165,7 +227,8 @@ function nextQueueNumber() {
 }
 
 function writeQAPromptFromTask(task, originAgent) {
-  const qaPath = path.join(WORKTREE_BASE, 'qa');
+  const targetQA = getQAAgent(originAgent);
+  const qaPath = path.join(WORKTREE_BASE, targetQA);
   const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
   const prompt = `# 🧪 QA Validation Task
 
@@ -223,26 +286,29 @@ ${task.id}
 }
 
 function writeQAPrompt(task, originAgent) {
-  ensureQAQueue();
-  const qaPath = path.join(WORKTREE_BASE, 'qa');
+  const targetQA = getQAAgent(originAgent);
+  const targetQueueDir = getQAQueueDir(targetQA);
+  if (!fs.existsSync(targetQueueDir)) fs.mkdirSync(targetQueueDir, { recursive: true });
+
+  const qaPath = path.join(WORKTREE_BASE, targetQA);
   const qaTaskFile = path.join(qaPath, '.agent-task.json');
   const qaBusy = fs.existsSync(qaTaskFile);
 
-  // Add to queue
-  const queueFile = path.join(QA_QUEUE_DIR, `${nextQueueNumber()}.json`);
+  // Add to the correct QA agent's queue
+  const files = fs.readdirSync(targetQueueDir).filter(f => f.endsWith('.json')).sort();
+  const nextNum = files.length === 0 ? '001' : String(parseInt(files[files.length - 1].replace('.json', ''), 10) + 1).padStart(3, '0');
+  const queueFile = path.join(targetQueueDir, `${nextNum}.json`);
   fs.writeFileSync(queueFile, JSON.stringify({
     id: task.id, title: task.title, description: task.description,
     priority: task.priority, phase: task.phase, tags: task.tags || [],
-    originAgent, queuedAt: new Date().toISOString(),
+    originAgent, targetQA, queuedAt: new Date().toISOString(),
   }, null, 2));
 
   if (qaBusy) {
-    // QA is already working — task is queued, will be picked up automatically
-    console.log(`  📥 QA is busy — task queued (${getQueuedTasks().length} in queue)`);
+    console.log(`  📥 ${targetQA} is busy — task queued`);
   } else {
-    // QA is idle — write prompt immediately
     writeQAPromptFromTask(task, originAgent);
-    console.log(`  📋 QA prompt written → qa/.agent-prompt.md`);
+    console.log(`  📋 ${targetQA} prompt written → ${targetQA}/.agent-prompt.md`);
   }
 }
 
@@ -252,8 +318,10 @@ function writeAgentPrompt(task, agentDir) {
   const roleMap = {
     backend: { emoji: '🔧', name: 'Backend', commitPrefix: 'feat' },
     qa: { emoji: '🧪', name: 'QA', commitPrefix: 'test' },
+    qa2: { emoji: '🧪', name: 'QA2', commitPrefix: 'test' },
     devops: { emoji: '⚙️', name: 'DevOps', commitPrefix: 'ci' },
     flex: { emoji: '♻️', name: 'Flex', commitPrefix: 'refactor' },
+    frontend: { emoji: '🎨', name: 'Frontend', commitPrefix: 'feat' },
   };
   const role = roleMap[agentDir] || roleMap.backend;
 
@@ -294,7 +362,30 @@ ${task.id}
 - Always run tests before committing
 - Always call agent-complete.js when done — this chains to QA and fetches your next task
 `;
-  fs.writeFileSync(path.join(agentPath, '.agent-prompt.md'), prompt);
+  // Add file hints based on task content
+  const t = (task.title + ' ' + (task.description || '')).toLowerCase();
+  const hints = [];
+  if (t.includes('tool') || t.includes('json dump')) hints.push('src/services/anthropic.ts', 'src/services/tool-executor.ts', 'src/domains/domain-handler.ts');
+  if (t.includes('skill') || t.includes('enable')) hints.push('src/skills/skill-config.ts', 'src/skills/skill-manager.ts', 'src/commands/skills.ts');
+  if (t.includes('portal') || t.includes('health')) hints.push('src/portal/portal.html', 'src/portal/server.ts');
+  if (t.includes('finance') || t.includes('expense')) hints.push('src/services/finance-tracker.ts', 'src/domains/finance.ts');
+  if (t.includes('cooking') || t.includes('recipe')) hints.push('src/services/cooking-chef.ts', 'src/domains/cooking.ts');
+  if (t.includes('garmin') || t.includes('fitness')) hints.push('src/services/garmin.ts', 'src/services/training-plans.ts');
+  if (t.includes('calendar') || t.includes('secretary')) hints.push('src/services/unified-calendar.ts', 'src/domains/secretary.ts');
+  if (t.includes('onboarding')) hints.push('src/services/onboarding.ts', 'src/bot.ts');
+  if (t.includes('prompt') || t.includes('hallucin')) hints.push('src/services/anthropic.ts', 'src/router/classifier.ts');
+  if (t.includes('bot') || t.includes('command')) hints.push('src/bot.ts');
+  let enrichedPrompt = prompt;
+  if (hints.length > 0) {
+    enrichedPrompt += `\n## Files to Focus On\n${[...new Set(hints)].map(f => '- \`' + f + '\`').join('\n')}\n`;
+  }
+  // Add branch context
+  try {
+    const { execSync } = require('child_process');
+    const diffStat = execSync(`git diff origin/main..HEAD --stat 2>/dev/null`, { cwd: agentPath, encoding: 'utf8' }).trim();
+    if (diffStat) enrichedPrompt += `\n## Branch Context\n\`\`\`\n${diffStat}\n\`\`\`\n`;
+  } catch {}
+  fs.writeFileSync(path.join(agentPath, '.agent-prompt.md'), enrichedPrompt);
   fs.writeFileSync(path.join(agentPath, '.agent-task.json'), JSON.stringify({
     id: task.id, title: task.title, description: task.description,
     priority: task.priority, phase: task.phase, tags: task.tags,
@@ -305,6 +396,9 @@ ${task.id}
 
 // ─── Main ───────────────────────────────────────────────────────────
 async function main() {
+  // Verify notification bot token before doing anything
+  await verifyNotificationBot();
+
   // Look for task file in worktree OR current directory
   let taskFile = path.join(WORKTREE_BASE, agentDir, '.agent-task.json');
   if (!fs.existsSync(taskFile)) {
@@ -436,11 +530,20 @@ async function main() {
     console.log(`  🧪 QA agent should pick up validation automatically`);
     await notify(`🔄 <b>${agentDir}</b> finished\n<i>${task.title}</i>\n→ Sent to QA validation`);
   } else {
-    // DevOps/infra tasks skip QA → go straight to Done
-    console.log(`  ⚙️ Infrastructure task → skipping QA → Done`);
-    await updateTaskStatus(task.id, 'Done');
-    console.log(`  🎉 Task "${task.title}" is DONE`);
+    // Safety fallback: if somehow not in NEEDS_QA, still route to QA
+    console.log(`  ⚠️ Agent tag "${agentTag}" not in NEEDS_QA — routing to QA anyway`);
+    await updateTaskStatus(task.id, 'QA Validating');
+    writeQAPrompt(task, agentDir);
+    await notify(`🔄 <b>${agentDir}</b> finished\n<i>${task.title}</i>\n→ Sent to QA validation (fallback)`);
   }
+
+  // ─── Write Agent Memory (avoids re-reading on chained tasks) ────
+  const memoryFile = path.join(agentPath, '.agent-history.md');
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const entry = `- [${timestamp}] ${task.title} → ${needsQA ? 'QA' : 'Done'} (files: ${summary?.substring(0, 80) || 'n/a'})\n`;
+    fs.appendFileSync(memoryFile, entry);
+  } catch {}
 
   // ─── Fetch next task for this agent ──────────────────────────────
   console.log(`\n🔍 Looking for next task for ${agentDir}...`);
@@ -463,7 +566,7 @@ async function main() {
     try { fs.unlinkSync(path.join(agentPath, '.agent-task.json')); } catch {}
     try { fs.unlinkSync(path.join(agentPath, '.agent-prompt.md')); } catch {}
     console.log(`  💤 No more tasks for ${agentDir} — agent is idle`);
-    await notify(`💤 <b>${agentDir}</b> idle — no more tasks in To Do`);
+    // No idle notification — too spammy. Felipe sees it in Mission Control if needed.
   }
 }
 
