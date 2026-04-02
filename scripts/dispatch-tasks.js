@@ -525,6 +525,7 @@ async function cmdAssign() {
     phase: resp.properties.Phase?.select?.name || '',
     tags: (resp.properties.Tags?.multi_select || []).map(t => t.name),
     month: resp.properties.Month?.select?.name || '',
+    agent: resp.properties.Agent?.select?.name || '',
   };
 
   const { promptFile } = assignTaskToAgent(task, agentDir);

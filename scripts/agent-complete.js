@@ -141,7 +141,13 @@ const AGENT_MAP = {
 };
 
 // Tasks that need QA validation (feature code changes)
-const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect', '🎨 Frontend'];
+// ALL agents go through QA — no exceptions
+const NEEDS_QA = [
+  '🔧 Backend', '♻️ Refactor', '🏗️ Architect', '🎨 Frontend',
+  '⚙️ DevOps', '🔒 Security',
+  // Worktree name aliases (safety net)
+  'backend', 'flex', 'frontend', 'devops',
+];
 
 // ─── QA Routing — which QA agent validates which origin agent ───────
 const QA_ROUTING = {
@@ -456,10 +462,11 @@ async function main() {
     console.log(`  🧪 QA agent should pick up validation automatically`);
     await notify(`🔄 <b>${agentDir}</b> finished\n<i>${task.title}</i>\n→ Sent to QA validation`);
   } else {
-    // DevOps/infra tasks skip QA → go straight to Done
-    console.log(`  ⚙️ Infrastructure task → skipping QA → Done`);
-    await updateTaskStatus(task.id, 'Done');
-    console.log(`  🎉 Task "${task.title}" is DONE`);
+    // Safety fallback: if somehow not in NEEDS_QA, still route to QA
+    console.log(`  ⚠️ Agent tag "${agentTag}" not in NEEDS_QA — routing to QA anyway`);
+    await updateTaskStatus(task.id, 'QA Validating');
+    writeQAPrompt(task, agentDir);
+    await notify(`🔄 <b>${agentDir}</b> finished\n<i>${task.title}</i>\n→ Sent to QA validation (fallback)`);
   }
 
   // ─── Fetch next task for this agent ──────────────────────────────
