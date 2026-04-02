@@ -1,0 +1,194 @@
+/**
+ * Tests for training plan tool handlers in tool-executor.ts
+ *
+ * Verifies that tool executor correctly dispatches training plan
+ * operations and returns expected response shapes.
+ */
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+
+function createTestDb(): Database.Database {
+  const db = new Database(':memory:');
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  return db;
+}
+
+function applyMigrations(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      filename TEXT NOT NULL UNIQUE,
+      applied_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
+    db.exec(sql);
+    db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
+  }
+}
+
+let testDb: Database.Database;
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+// Mock external services that tool-executor imports
+vi.mock('../../src/state/notes', () => ({ saveNote: vi.fn(), searchNotes: vi.fn() }));
+vi.mock('../../src/state/reminders', () => ({ setReminder: vi.fn() }));
+vi.mock('../../src/state/shared-memory', () => ({ setSharedMemory: vi.fn(), removeSharedMemory: vi.fn() }));
+vi.mock('../../src/services/unified-calendar', () => ({
+  isAnyCalendarConfigured: vi.fn().mockReturnValue(false),
+  getEvents: vi.fn(), createEvent: vi.fn(), updateEvent: vi.fn(), deleteEvent: vi.fn(),
+}));
+vi.mock('../../src/services/outlook-mail', () => ({
+  isOutlookMailConfigured: vi.fn().mockReturnValue(false),
+  searchEmails: vi.fn(), readEmail: vi.fn(), sendEmail: vi.fn(), replyToEmail: vi.fn(), getUnreadEmails: vi.fn(),
+}));
+vi.mock('../../src/services/microsoft-todo', () => ({
+  isOutlookTodoConfigured: vi.fn().mockReturnValue(false),
+}));
+
+import { executeToolCall } from '../../src/services/tool-executor';
+
+beforeEach(() => {
+  testDb = createTestDb();
+  applyMigrations(testDb);
+});
+
+describe('Training Plan Tool Handlers', () => {
+  it('create_training_plan creates a plan and returns ID', async () => {
+    const result = await executeToolCall('create_training_plan', {
+      name: 'Test Plan', sport: 'strength', duration_weeks: 8,
+      start_date: '2026-04-01', end_date: '2026-05-27', goal: 'Build base',
+    });
+    expect(result.success).toBe(true);
+    expect(result.plan_id).toBe(1);
+    expect(result.name).toBe('Test Plan');
+  });
+
+  it('add_training_week creates a week', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    const result = await executeToolCall('add_training_week', {
+      plan_id: 1, week_number: 1, focus: 'hypertrophy', intensity_pct: 100, volume_sessions: 5,
+    });
+    expect(result.success).toBe(true);
+    expect(result.week_id).toBe(1);
+  });
+
+  it('add_training_session creates a session', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    const result = await executeToolCall('add_training_session', {
+      week_id: 1, plan_id: 1, day_of_week: 'Monday',
+      session_type: 'strength', title: 'Upper Body Push',
+      exercises_json: JSON.stringify([{ name: 'Bench Press', sets: 4, reps: 8 }]),
+      duration_minutes: 60, intensity_text: 'RPE 7',
+    });
+    expect(result.success).toBe(true);
+    expect(result.session_id).toBe(1);
+    expect(result.title).toBe('Upper Body Push');
+  });
+
+  it('get_training_plan returns plan with sessions', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + 28);
+
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: today, end_date: endDate.toISOString().slice(0, 10),
+    });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1, focus: 'hypertrophy' });
+    await executeToolCall('add_training_session', {
+      week_id: 1, plan_id: 1, day_of_week: 'Monday',
+      session_type: 'strength', title: 'Push Day',
+    });
+
+    const result = await executeToolCall('get_training_plan', { plan_id: 1 });
+    expect(result.plan.name).toBe('Plan');
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].title).toBe('Push Day');
+  });
+
+  it('get_training_plan returns error when not found', async () => {
+    const result = await executeToolCall('get_training_plan', { plan_id: 999 });
+    expect(result.error).toBeTruthy();
+  });
+
+  it('log_training_completion logs and returns completion', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_session', {
+      week_id: 1, plan_id: 1, day_of_week: 'Monday',
+      session_type: 'strength', title: 'Test',
+    });
+
+    const result = await executeToolCall('log_training_completion', {
+      session_id: 1, rpe_overall: 7, energy_level: 8,
+      soreness_level: 3, notes: 'Felt great',
+    });
+    expect(result.success).toBe(true);
+    expect(result.completion_id).toBe(1);
+  });
+
+  it('log_training_completion returns error for invalid session', async () => {
+    const result = await executeToolCall('log_training_completion', { session_id: 999 });
+    expect(result.error).toBeTruthy();
+  });
+
+  it('update_training_session updates fields', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_session', {
+      week_id: 1, plan_id: 1, day_of_week: 'Monday',
+      session_type: 'strength', title: 'Original',
+    });
+
+    const result = await executeToolCall('update_training_session', {
+      session_id: 1, title: 'Updated', intensity_text: 'RPE 9',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('link_session_calendar links session to calendar event', async () => {
+    await executeToolCall('create_training_plan', {
+      name: 'Plan', sport: 'strength', duration_weeks: 4,
+      start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
+    await executeToolCall('add_training_session', {
+      week_id: 1, plan_id: 1, day_of_week: 'Monday',
+      session_type: 'strength', title: 'Test',
+    });
+
+    const result = await executeToolCall('link_session_calendar', {
+      session_id: 1, calendar_event_id: 'AAMk456', calendar_source: 'outlook',
+    });
+    expect(result.success).toBe(true);
+  });
+});

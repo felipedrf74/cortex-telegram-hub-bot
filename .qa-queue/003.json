@@ -1,9 +1,14 @@
 {
-  "id": "332ad49d-23e7-81b8-be1d-dd0024582ce2",
-  "title": "Copyright headers (60+ files)",
-  "description": "MIT license header on all source files.",
-  "priority": "\ud83d\udfe0 High",
-  "phase": "Phase 0 \u2014 Foundation",
-  "tags": [],
-  "originAgent": "flex"
+  "id": "335ad49d-23e7-812f-8308-db7796b286c7",
+  "title": "Portal: Cron job health dashboard",
+  "description": "Enhance the existing job calendar in portal with: last run status per job (success/fail/skipped), execution duration, next scheduled run time, failure count (last 7 days), quick-action to trigger a job manually. Currently the portal shows the calendar but limited run status. Pull data from job_history table. Update: src/portal/portal.html",
+  "priority": "🟡 Medium",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [
+    "code",
+    "ux"
+  ],
+  "originAgent": "devops",
+  "targetQA": "qa2",
+  "queuedAt": "2026-04-01T20:54:48.064Z"
 }

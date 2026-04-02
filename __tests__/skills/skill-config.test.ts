@@ -43,7 +43,8 @@ describe('SkillConfig — structure', () => {
       for (const sub of skill.subSkills) {
         expect(sub.name).toBeTruthy();
         expect(sub.description).toBeTruthy();
-        expect(sub.tools.length).toBeGreaterThan(0);
+        // Sub-skills should have tools, cronJobs, or be placeholder sub-skills (e.g. meme-scout)
+        // Placeholder sub-skills act as feature flags for future functionality
         expect(typeof sub.enabledByDefault).toBe('boolean');
       }
     }
@@ -131,18 +132,42 @@ describe('SkillConfig — secretary skill', () => {
 describe('SkillConfig — triathlon skill', () => {
   const tri = DEFAULT_SKILLS.triathlon;
 
-  it('has calendar, reminders, notes, shared-memory sub-skills', () => {
+  it('has all 9 granular sub-skills', () => {
     const subNames = tri.subSkills.map(s => s.name);
-    expect(subNames).toContain('calendar');
-    expect(subNames).toContain('reminders');
-    expect(subNames).toContain('notes');
-    expect(subNames).toContain('shared-memory');
+    expect(subNames).toContain('garmin-sync');
+    expect(subNames).toContain('coach-briefing');
+    expect(subNames).toContain('training-plans');
+    expect(subNames).toContain('nutrition-diet');
+    expect(subNames).toContain('body-composition');
+    expect(subNames).toContain('running');
+    expect(subNames).toContain('cycling');
+    expect(subNames).toContain('swimming');
+    expect(subNames).toContain('recovery-sleep');
+    expect(tri.subSkills.length).toBe(9);
   });
 
-  it('does NOT have tasks or email sub-skills', () => {
+  it('does NOT have legacy generic sub-skills', () => {
     const subNames = tri.subSkills.map(s => s.name);
     expect(subNames).not.toContain('tasks');
     expect(subNames).not.toContain('email');
+    expect(subNames).not.toContain('calendar');
+    expect(subNames).not.toContain('reminders');
+  });
+
+  it('disabled sub-skills: nutrition-diet, body-composition, cycling, swimming', () => {
+    const disabled = tri.subSkills.filter(s => !s.enabledByDefault).map(s => s.name);
+    expect(disabled).toContain('nutrition-diet');
+    expect(disabled).toContain('body-composition');
+    expect(disabled).toContain('cycling');
+    expect(disabled).toContain('swimming');
+    expect(disabled.length).toBe(4);
+  });
+
+  it('garmin cron jobs are mapped to sub-skills', () => {
+    const garminSync = tri.subSkills.find(s => s.name === 'garmin-sync')!;
+    expect(garminSync.cronJobs).toContain('garmin_keepalive');
+    const coachBriefing = tri.subSkills.find(s => s.name === 'coach-briefing')!;
+    expect(coachBriefing.cronJobs).toContain('garmin_coach');
   });
 });
 
@@ -155,9 +180,62 @@ describe('SkillConfig — content skill', () => {
     expect(subNames).toContain('shared-memory');
   });
 
-  it('has the fewest sub-skills', () => {
-    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.triathlon.subSkills.length);
-    expect(cnt.subSkills.length).toBeLessThanOrEqual(DEFAULT_SKILLS.secretary.subSkills.length);
+  it('is version 2.0.0 with manifest v2 sub-skills', () => {
+    expect(cnt.version).toBe('2.0.0');
+  });
+
+  it('has all 11 granular sub-skills', () => {
+    const subNames = cnt.subSkills.map(s => s.name);
+    expect(subNames).toContain('notes');
+    expect(subNames).toContain('shared-memory');
+    expect(subNames).toContain('research-pipeline');
+    expect(subNames).toContain('script-generator');
+    expect(subNames).toContain('seo-tracker');
+    expect(subNames).toContain('reaction-radar');
+    expect(subNames).toContain('voice-evolution');
+    expect(subNames).toContain('performance-intel');
+    expect(subNames).toContain('pipeline-tracker');
+    expect(subNames).toContain('topic-scheduler');
+    expect(subNames).toContain('meme-scout');
+    expect(cnt.subSkills.length).toBe(11);
+  });
+
+  it('meme-scout is disabled by default', () => {
+    const meme = cnt.subSkills.find(s => s.name === 'meme-scout')!;
+    expect(meme).toBeDefined();
+    expect(meme.enabledByDefault).toBe(false);
+  });
+
+  it('all other content sub-skills are enabled by default', () => {
+    for (const sub of cnt.subSkills) {
+      if (sub.name === 'meme-scout') continue;
+      expect(sub.enabledByDefault).toBe(true);
+    }
+  });
+
+  it('agent sub-skills map to correct cron job IDs', () => {
+    const pipelineSub = cnt.subSkills.find(s => s.name === 'pipeline-tracker')!;
+    expect(pipelineSub.cronJobs).toContain('pipeline_agent');
+
+    const perfSub = cnt.subSkills.find(s => s.name === 'performance-intel')!;
+    expect(perfSub.cronJobs).toContain('performance_agent');
+
+    const voiceSub = cnt.subSkills.find(s => s.name === 'voice-evolution')!;
+    expect(voiceSub.cronJobs).toContain('voice_evolution');
+
+    const radarSub = cnt.subSkills.find(s => s.name === 'reaction-radar')!;
+    expect(radarSub.cronJobs).toContain('reaction_radar');
+
+    const seoSub = cnt.subSkills.find(s => s.name === 'seo-tracker')!;
+    expect(seoSub.cronJobs).toContain('seo_agent');
+
+    const topicSub = cnt.subSkills.find(s => s.name === 'topic-scheduler')!;
+    expect(topicSub.cronJobs).toContain('tuesday_reels');
+    expect(topicSub.cronJobs).toContain('thursday_youtube');
+    expect(topicSub.cronJobs).toContain('friday_weekly');
+
+    const researchSub = cnt.subSkills.find(s => s.name === 'research-pipeline')!;
+    expect(researchSub.cronJobs).toContain('channel_relearn');
   });
 });
 
@@ -191,6 +269,8 @@ describe('SkillConfig — getSubSkillNames()', () => {
   it('returns sub-skill names for content', () => {
     const names = getSubSkillNames('content');
     expect(names).toContain('notes');
-    expect(names.length).toBe(2);
+    expect(names).toContain('pipeline-tracker');
+    expect(names).toContain('reaction-radar');
+    expect(names.length).toBe(11);
   });
 });

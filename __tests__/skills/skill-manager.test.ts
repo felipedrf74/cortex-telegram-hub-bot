@@ -302,21 +302,21 @@ describe('SkillManager — toggle API', () => {
   });
   afterEach(() => { testDb.close(); });
 
-  it('enableSubSkill returns true for valid sub-skill', () => {
+  it('enableSubSkill returns { ok: true } for valid sub-skill', () => {
     disableSubSkill('secretary', 'email');
-    expect(enableSubSkill('secretary', 'email')).toBe(true);
+    expect(enableSubSkill('secretary', 'email')).toEqual({ ok: true });
   });
 
-  it('disableSubSkill returns true for valid sub-skill', () => {
-    expect(disableSubSkill('secretary', 'email')).toBe(true);
+  it('disableSubSkill returns { ok: true } for valid sub-skill', () => {
+    expect(disableSubSkill('secretary', 'email')).toEqual({ ok: true });
   });
 
-  it('enableSubSkill returns false for non-existent skill', () => {
-    expect(enableSubSkill('secretary' as any, 'nonexistent')).toBe(false);
+  it('enableSubSkill returns { ok: false } for non-existent skill', () => {
+    expect(enableSubSkill('secretary' as any, 'nonexistent').ok).toBe(false);
   });
 
-  it('disableSubSkill returns false for non-existent skill', () => {
-    expect(disableSubSkill('secretary' as any, 'nonexistent')).toBe(false);
+  it('disableSubSkill returns { ok: false } for non-existent skill', () => {
+    expect(disableSubSkill('secretary' as any, 'nonexistent').ok).toBe(false);
   });
 
   it('enableSkill returns true for valid skill', () => {

@@ -1,0 +1,92 @@
+{
+  "name": "content",
+  "version": "2.0.0",
+  "description": "Content creation — YouTube, Reels, scripts, research, autonomous agents",
+  "author": "Felipe Dominguez",
+  "domain": "content",
+  "manifestVersion": 2,
+  "subSkills": [
+    {
+      "module_name": "notes",
+      "description": "Content ideas and research notes",
+      "enabled_by_default": true,
+      "tools": ["save_note", "search_notes"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "shared-memory",
+      "description": "Cross-domain shared facts (filming days, content calendar)",
+      "enabled_by_default": true,
+      "tools": ["shared_memory_set", "shared_memory_remove"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "research-pipeline",
+      "description": "Channel re-learning and reference channel analysis",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["channel_relearn"]
+    },
+    {
+      "module_name": "script-generator",
+      "description": "AI script generation from approved topics",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "seo-tracker",
+      "description": "YouTube keyword rank tracking and opportunity detection",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["seo_agent"]
+    },
+    {
+      "module_name": "reaction-radar",
+      "description": "Monitors trending content and reference channels for reaction opportunities",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["reaction_radar"]
+    },
+    {
+      "module_name": "voice-evolution",
+      "description": "Compares AI scripts vs actual transcripts to learn voice patterns",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["voice_evolution"]
+    },
+    {
+      "module_name": "performance-intel",
+      "description": "Analyzes YouTube channel performance by pillar and format",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["performance_agent"]
+    },
+    {
+      "module_name": "pipeline-tracker",
+      "description": "Monitors content pipeline stages and detects bottlenecks",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["pipeline_agent"]
+    },
+    {
+      "module_name": "topic-scheduler",
+      "description": "Automated topic generation for Reels and YouTube videos",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["tuesday_reels", "thursday_youtube", "friday_weekly"]
+    },
+    {
+      "module_name": "meme-scout",
+      "description": "Discovers meme-worthy content for social engagement (experimental)",
+      "enabled_by_default": false,
+      "tools": [],
+      "cronJobs": []
+    }
+  ],
+  "requiredApiKeys": ["ANTHROPIC_API_KEY"],
+  "config": {
+    "stateContextTtl": 30000,
+    "maxToolIterations": 5
+  }
+}

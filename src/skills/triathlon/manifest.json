@@ -1,0 +1,86 @@
+{
+  "name": "triathlon",
+  "version": "2.0.0",
+  "description": "Triathlon coaching — training plans, Garmin sync, sport disciplines, recovery",
+  "author": "Felipe Dominguez",
+  "domain": "triathlon",
+  "manifestVersion": 2,
+  "subSkills": [
+    {
+      "module_name": "garmin-sync",
+      "description": "Garmin Connect session keep-alive and data pipeline",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["garmin_keepalive"]
+    },
+    {
+      "module_name": "coach-briefing",
+      "description": "Daily AI coach analysis from Garmin data (depends on garmin-sync)",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["garmin_coach"]
+    },
+    {
+      "module_name": "training-plans",
+      "description": "AI-generated periodized training plans with auto-adjustment",
+      "enabled_by_default": true,
+      "tools": [
+        "create_training_plan", "add_training_week", "add_training_session",
+        "get_training_plan", "log_training_completion", "update_training_session",
+        "link_session_calendar",
+        "get_calendar_events", "create_calendar_event",
+        "update_calendar_event", "delete_calendar_event",
+        "set_reminder", "save_note", "search_notes",
+        "shared_memory_set", "shared_memory_remove"
+      ],
+      "cronJobs": ["training_plan_adjust"]
+    },
+    {
+      "module_name": "nutrition-diet",
+      "description": "Carnivore diet tracking, macros, and meal planning",
+      "enabled_by_default": false,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "body-composition",
+      "description": "Body weight, body fat, and measurement tracking",
+      "enabled_by_default": false,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "running",
+      "description": "Running plans, pace zones, race preparation (5K–marathon)",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "cycling",
+      "description": "Cycling FTP tracking, interval sessions, and ride analysis",
+      "enabled_by_default": false,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "swimming",
+      "description": "Swim drills, technique tracking, and pool/open-water plans",
+      "enabled_by_default": false,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "recovery-sleep",
+      "description": "Sleep quality, HRV trends, and recovery recommendations",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    }
+  ],
+  "requiredApiKeys": ["ANTHROPIC_API_KEY"],
+  "config": {
+    "stateContextTtl": 30000,
+    "maxToolIterations": 5
+  }
+}

@@ -141,6 +141,12 @@ interface SnapshotResponse {
     knowledgeCategories: number;
   };
   transcriptStats: { transcripts: number; studies: number };
+  trainingPlans: {
+    activePlans: number;
+    totalCompletedSessions: number;
+    currentWeekAdherence: number;
+    currentPlanName: string | null;
+  } | null;
   domainStatus: {
     domain: string;
     label: string;
@@ -150,6 +156,10 @@ interface SnapshotResponse {
     lastMessageAt: string | null;
     details: Record<string, string | number | boolean>;
   }[];
+  usageMetering: {
+    today: { messageCount: number; totalTokens: number; apiCalls: number; costUsd: number };
+    byUser: { userId: number; messageCount: number; totalTokens: number; apiCalls: number; costUsd: number }[];
+  };
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -716,6 +726,45 @@ function buildSnapshot(): SnapshotResponse {
     logger.warn({ err }, 'Portal: failed to query domain status');
   }
 
+  // ── Training plan stats ──────────────────────────────────────────
+  let trainingPlans: { activePlans: number; totalCompletedSessions: number; currentWeekAdherence: number; currentPlanName: string | null } | null = null;
+  try {
+    const { getPlanStats } = require('../services/training-plans');
+    const userId = config.telegram.allowedUserIds[0];
+    if (userId) {
+      trainingPlans = getPlanStats(userId);
+    }
+  } catch { /* table may not exist yet */ }
+
+  // ── Usage metering stats ──────────────────────────────────────────
+  let usageMetering: SnapshotResponse['usageMetering'] = {
+    today: { messageCount: 0, totalTokens: 0, apiCalls: 0, costUsd: 0 },
+    byUser: [],
+  };
+  try {
+    const { getGlobalDailyUsage, getDailyUsage } = require('../services/usage-metering');
+    const global = getGlobalDailyUsage();
+    usageMetering.today = {
+      messageCount: global.messageCount,
+      totalTokens: global.totalTokens,
+      apiCalls: global.apiCalls,
+      costUsd: global.costUsd,
+    };
+    // Per-user breakdown for allowed users
+    for (const uid of config.telegram.allowedUserIds) {
+      const u = getDailyUsage(uid);
+      if (u.apiCalls > 0) {
+        usageMetering.byUser.push({
+          userId: uid,
+          messageCount: u.messageCount,
+          totalTokens: u.totalTokens,
+          apiCalls: u.apiCalls,
+          costUsd: u.costUsd,
+        });
+      }
+    }
+  } catch { /* table may not exist yet */ }
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -737,6 +786,8 @@ function buildSnapshot(): SnapshotResponse {
     contentReferences,
     transcriptStats,
     domainStatus,
+    trainingPlans,
+    usageMetering,
   };
 }
 
@@ -966,6 +1017,40 @@ export function createPortalServer(bot: Bot): http.Server {
     } catch (err) {
       logger.error({ err }, 'Portal: snapshot failed');
       res.status(500).json({ error: 'Failed to build snapshot' });
+    }
+  });
+
+  // ── GET /api/skills — all skill statuses with sub-skill toggles ──
+  app.get('/api/skills', (_req: Request, res: Response) => {
+    try {
+      res.json(getAllSkillStatuses());
+    } catch (err) {
+      logger.error({ err }, 'Portal: skills status failed');
+      res.status(500).json({ error: 'Failed to get skill statuses' });
+    }
+  });
+
+  // ── POST /api/skills/toggle — toggle a sub-skill on/off ──────
+  app.post('/api/skills/toggle', (req: Request, res: Response) => {
+    const { domain, subSkill, enabled } = req.body;
+    if (!domain || !subSkill || typeof enabled !== 'boolean') {
+      res.status(400).json({ ok: false, message: 'Required: domain, subSkill, enabled (boolean)' });
+      return;
+    }
+    try {
+      const result = enabled
+        ? enableSubSkill(domain as DomainName, subSkill)
+        : disableSubSkill(domain as DomainName, subSkill);
+      // Invalidate snapshot cache so next fetch reflects the toggle
+      cachedSnapshot = null;
+      if (!result.ok && result.error) {
+        res.status(409).json({ ok: false, message: result.error, domain, subSkill });
+        return;
+      }
+      res.json({ ok: result.ok, domain, subSkill, enabled });
+    } catch (err) {
+      logger.error({ err }, 'Portal: skill toggle failed');
+      res.status(500).json({ ok: false, message: 'Toggle failed' });
     }
   });
 
