@@ -139,7 +139,9 @@ const AGENT_MAP = {
 };
 
 // Tasks that need QA validation (feature code changes)
-const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect'];
+const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect', '🎨 Frontend',
+  // Worktree name aliases (safety net if Notion tag is missing)
+  'backend', 'flex', 'frontend'];
 
 // ─── QA Queue System ────────────────────────────────────────────────
 const QA_QUEUE_DIR = path.join(WORKTREE_BASE, 'qa', '.qa-queue');
@@ -313,12 +315,9 @@ async function main() {
     if (fs.existsSync(cwdTask)) {
       taskFile = cwdTask;
     } else {
-      console.error(`❌ No task file found in ${agentDir}/ or current directory`);
-      console.error(`   Tip: If you just finished a task, the file may have been cleared.`);
-      console.error(`   Creating a placeholder from the summary provided...`);
-      // Create minimal task from summary so the pipeline continues
-      const placeholder = { id: 'unknown', title: summary || 'Completed task', description: '', priority: '', phase: '', tags: [], agent: agentDir };
-      fs.writeFileSync(taskFile, JSON.stringify(placeholder, null, 2));
+      console.log(`  ℹ️  No task file in ${agentDir}/ — task was already completed by a previous call.`);
+      console.log(`  ⏭️  Skipping (no double-processing).`);
+      return;
     }
   }
   const task = JSON.parse(fs.readFileSync(taskFile, 'utf8'));

@@ -168,6 +168,7 @@ interface SnapshotResponse {
     today: { messageCount: number; totalTokens: number; apiCalls: number; costUsd: number };
     byUser: { userId: number; messageCount: number; totalTokens: number; apiCalls: number; costUsd: number }[];
   };
+  adapters?: { name: string; status: string; lastMessage?: string; lastMessageAt?: string | null; configured: boolean }[];
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -802,6 +803,37 @@ function buildSnapshot(): SnapshotResponse {
     trainingPlans,
     usageMetering,
   };
+}
+
+function buildAdapterStatus(): SnapshotResponse['adapters'] {
+  const polling = isBotPollingActive();
+  const lastMsg = getLastMessageAt();
+
+  // Determine Telegram status based on polling and recency of last message
+  let telegramStatus: 'connected' | 'idle' | 'error' = 'error';
+  if (polling) {
+    if (lastMsg) {
+      const ageMs = Date.now() - new Date(lastMsg).getTime();
+      telegramStatus = ageMs < 3_600_000 ? 'connected' : 'idle';
+    } else {
+      telegramStatus = 'idle'; // polling but no messages yet
+    }
+  }
+
+  return [
+    {
+      name: 'Telegram',
+      status: telegramStatus,
+      configured: true,
+      lastMessageAt: lastMsg,
+    },
+    {
+      name: 'WhatsApp',
+      status: 'planned',
+      configured: false,
+      lastMessageAt: null,
+    },
+  ];
 }
 
 // ─── Quick Actions ──────────────────────────────────────────────────
