@@ -8,6 +8,7 @@ import type { Context } from 'grammy';
 import { getDb } from '../services/database';
 import { writeSignal } from '../services/intelligence-bus';
 import { escapeHtml } from '../utils/telegram-formatter';
+import { sanitizeErrorMessage } from '../utils/validators';
 import { logger } from '../utils/logger';
 import { config } from '../config';
 
@@ -227,7 +228,7 @@ export async function handleAddBook(ctx: Context): Promise<void> {
   } catch (err: any) {
     clearInterval(typingInterval);
     logger.error({ err, title, author }, 'Book extraction failed');
-    await ctx.reply(`❌ Extraction failed: ${escapeHtml(err.message?.slice(0, 100) || 'Unknown error')}`, { parse_mode: 'HTML' });
+    await ctx.reply(`❌ Extraction failed: ${escapeHtml(sanitizeErrorMessage(err.message?.slice(0, 100) || 'Unknown error'))}`, { parse_mode: 'HTML' });
   }
 }
 

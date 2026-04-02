@@ -8,6 +8,7 @@ import type { Context } from 'grammy';
 import { runAutoresearch, runEvalOnly } from '../services/autoresearch';
 import { getEvalTarget, getAllTargets } from '../services/eval-criteria';
 import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
+import { sanitizeErrorMessage } from '../utils/validators';
 import { logger } from '../utils/logger';
 
 export async function handleAutoresearch(ctx: Context): Promise<void> {
@@ -71,7 +72,7 @@ export async function handleAutoresearch(ctx: Context): Promise<void> {
     }
   } catch (err: any) {
     logger.error({ err, targetId }, 'Autoresearch command failed');
-    await ctx.reply(`❌ Autoresearch failed: ${escapeHtml(err.message || 'Unknown error')}`, { parse_mode: 'HTML' });
+    await ctx.reply(`❌ Autoresearch failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`, { parse_mode: 'HTML' });
   }
 }
 
@@ -118,6 +119,6 @@ export async function handleEvalScore(ctx: Context): Promise<void> {
     }
   } catch (err: any) {
     logger.error({ err, targetId }, 'Evalscore command failed');
-    await ctx.reply(`❌ Eval failed: ${escapeHtml(err.message || 'Unknown error')}`, { parse_mode: 'HTML' });
+    await ctx.reply(`❌ Eval failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`, { parse_mode: 'HTML' });
   }
 }
