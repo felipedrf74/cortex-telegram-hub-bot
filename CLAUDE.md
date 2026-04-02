@@ -1,5 +1,7 @@
 # CLAUDE.md — Nexus Hub Development Instructions
 
+> **Also read:** CODEBASE.md (architecture map) + your AGENT-{ROLE}.md (role-specific rules)
+
 ## ⚡ AUTONOMOUS AGENT MODE
 
 You are part of a self-orchestrating dev team. You work independently and chain to the next step when done.

@@ -182,6 +182,44 @@ function getIdleAgents() {
   return getAgents().filter(a => !a.hasTask);
 }
 
+// ─── Branch Context Builder (saves tokens by showing agents what already changed) ───
+
+function buildBranchContext(agentDir) {
+  const { execSync } = require('child_process');
+  const worktree = path.join(WORKTREE_BASE, agentDir);
+  let context = '';
+  try {
+    const diffStat = execSync(`git diff origin/main..HEAD --stat 2>/dev/null`, { cwd: worktree, encoding: 'utf8' }).trim();
+    if (diffStat) context += `\n## Branch Context (already changed)\n\`\`\`\n${diffStat}\n\`\`\`\n`;
+    const commits = execSync(`git log origin/main..HEAD --oneline -5 2>/dev/null`, { cwd: worktree, encoding: 'utf8' }).trim();
+    if (commits) context += `\n## Recent Commits\n\`\`\`\n${commits}\n\`\`\`\n`;
+  } catch {}
+  return context;
+}
+
+// ─── File Hints (tells agents exactly which files to focus on) ───────
+
+function getFileHints(task) {
+  const t = (task.title + ' ' + task.description).toLowerCase();
+  const hints = [];
+  if (t.includes('tool') || t.includes('json dump') || t.includes('tool_use')) hints.push('src/services/anthropic.ts', 'src/services/tool-executor.ts', 'src/domains/domain-handler.ts');
+  if (t.includes('skill') || t.includes('enable') || t.includes('disable')) hints.push('src/skills/skill-config.ts', 'src/skills/skill-manager.ts', 'src/skills/registry.ts', 'src/commands/skills.ts');
+  if (t.includes('portal') || t.includes('dashboard') || t.includes('health')) hints.push('src/portal/portal.html', 'src/portal/server.ts', 'src/portal/telemetry.ts');
+  if (t.includes('finance') || t.includes('expense') || t.includes('darf')) hints.push('src/services/finance-tracker.ts', 'src/domains/finance.ts');
+  if (t.includes('cooking') || t.includes('recipe') || t.includes('meal')) hints.push('src/services/cooking-chef.ts', 'src/domains/cooking.ts');
+  if (t.includes('garmin') || t.includes('fitness') || t.includes('training')) hints.push('src/services/garmin.ts', 'src/services/training-plans.ts', 'src/domains/triathlon.ts');
+  if (t.includes('calendar') || t.includes('briefing') || t.includes('secretary')) hints.push('src/services/unified-calendar.ts', 'src/domains/secretary.ts', 'src/services/scheduler.ts');
+  if (t.includes('onboarding') || t.includes('quiz')) hints.push('src/services/onboarding.ts', 'src/bot.ts');
+  if (t.includes('invoice')) hints.push('src/services/invoice-filer.ts', 'src/services/invoice-collector.ts');
+  if (t.includes('telegram') || t.includes('message') || t.includes('html')) hints.push('src/utils/telegram-formatter.ts', 'src/utils/telegram-templates.ts');
+  if (t.includes('voice')) hints.push('src/bot.ts', 'src/services/anthropic.ts');
+  if (t.includes('prompt') || t.includes('hallucin') || t.includes('classif')) hints.push('src/services/anthropic.ts', 'src/router/classifier.ts');
+  if (t.includes('cron') || t.includes('backup')) hints.push('src/services/scheduler.ts', 'src/services/backup.ts');
+  if (t.includes('webhook')) hints.push('src/services/webhook-registry.ts', 'src/portal/server.ts');
+  if (t.includes('bot') || t.includes('command')) hints.push('src/bot.ts');
+  return [...new Set(hints)]; // dedupe
+}
+
 // ─── Task Assignment ────────────────────────────────────────────────
 
 function assignTaskToAgent(task, agentDir) {
@@ -357,6 +395,16 @@ ${task.id}
 - Do NOT merge to develop or main
 - Use \`os.homedir()\` for paths, never hardcode
 ${REVIEW_HANDOFF}`;
+  }
+
+  // Append branch context + file hints to reduce token waste
+  const branchCtx = buildBranchContext(agentDir);
+  const fileHints = getFileHints(task);
+  if (fileHints.length > 0) {
+    prompt += `\n\n## Files to Focus On (read these FIRST, skip everything else)\n${fileHints.map(f => '- `' + f + '`').join('\n')}\n`;
+  }
+  if (branchCtx) {
+    prompt += `\n${branchCtx}`;
   }
 
   fs.writeFileSync(taskFile, JSON.stringify(task, null, 2));

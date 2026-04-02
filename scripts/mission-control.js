@@ -349,6 +349,23 @@ server.listen(PORT, () => {
       // Fetch tasks once for Steps 1.5 and 1.6
       const allTasks = await fetchTasks();
 
+      // Step 1.4: Clear stale active tasks on QA agents (task is Done in Notion but agent still has it)
+      for (const qaName of ['qa', 'qa2']) {
+        const qaPath = path.join(WORKTREES, qaName);
+        const activeFile = path.join(qaPath, '.agent-task.json');
+        try {
+          if (fs.existsSync(activeFile)) {
+            const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+            const notionTask = allTasks.find(t => t.id === active.id);
+            if (!notionTask || notionTask.status !== 'QA Validating') {
+              fs.unlinkSync(activeFile);
+              try { fs.unlinkSync(path.join(qaPath, '.agent-prompt.md')); } catch {}
+              console.log(`[qa-stale] Cleared ${qaName} active task: "${active.title?.substring(0,30)}" (Notion: ${notionTask?.status || 'not found'})`);
+            }
+          }
+        } catch {}
+      }
+
       // Step 1.5: Clean QA queues (ALWAYS) + dispatch idle QA agents
       const qaAgents = ['qa', 'qa2'];
       for (const qaName of qaAgents) {
@@ -367,7 +384,7 @@ server.listen(PORT, () => {
               const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
               const notionTask = allTasks.find(t => t.id === qt.id);
               // Remove if: Done, Backlog, not in Notion, or is the currently active task
-              if (!notionTask || notionTask.status === 'Done' || notionTask.status === 'Backlog' || qt.id === activeTaskId) {
+              if (!notionTask || notionTask.status !== 'QA Validating' || qt.id === activeTaskId) {
                 fs.unlinkSync(path.join(queueDir, qf));
                 queueFiles = queueFiles.filter(f => f !== qf);
                 if (qt.id !== activeTaskId) {
@@ -399,30 +416,33 @@ server.listen(PORT, () => {
       }
 
       // Step 1.6: Recover orphaned QA Validating tasks from Notion
-      // If a task is QA Validating in Notion but has no queue file and no active QA agent, re-queue it
+      // Check BOTH QA agents globally to prevent duplicates
       const qaValidating = allTasks.filter(t => t.status === 'QA Validating');
       for (const task of qaValidating) {
         const originWorktree = AGENT_MAP[task.agent] || 'backend';
         const targetQA = QA_ROUTING[originWorktree] || (task.agent === '🔒 Security' ? 'qa2' : 'qa');
-        const qaPath = path.join(WORKTREES, targetQA);
-        const queueDir = path.join(qaPath, '.qa-queue');
-        // Check if already queued or actively being validated
+        // Check ALL QA agents (not just target) to prevent cross-agent duplicates
         let alreadyHandled = false;
-        try {
-          const activeFile = path.join(qaPath, '.agent-task.json');
-          if (fs.existsSync(activeFile)) {
-            const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
-            if (active.id === task.id) alreadyHandled = true;
-          }
-          if (!alreadyHandled && fs.existsSync(queueDir)) {
-            const qFiles = fs.readdirSync(queueDir).filter(f => f.endsWith('.json'));
-            for (const qf of qFiles) {
-              const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
-              if (qt.id === task.id) { alreadyHandled = true; break; }
+        for (const checkQA of ['qa', 'qa2']) {
+          if (alreadyHandled) break;
+          const checkPath = path.join(WORKTREES, checkQA);
+          try {
+            const activeFile = path.join(checkPath, '.agent-task.json');
+            if (fs.existsSync(activeFile)) {
+              const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+              if (active.id === task.id) { alreadyHandled = true; break; }
             }
-          }
-        } catch {}
+            const checkQueue = path.join(checkPath, '.qa-queue');
+            if (fs.existsSync(checkQueue)) {
+              for (const qf of fs.readdirSync(checkQueue).filter(f => f.endsWith('.json'))) {
+                const qt = JSON.parse(fs.readFileSync(path.join(checkQueue, qf), 'utf8'));
+                if (qt.id === task.id) { alreadyHandled = true; break; }
+              }
+            }
+          } catch {}
+        }
         if (!alreadyHandled) {
+          const queueDir = path.join(WORKTREES, targetQA, '.qa-queue');
           if (!fs.existsSync(queueDir)) fs.mkdirSync(queueDir, { recursive: true });
           const files = fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort();
           const nextNum = files.length === 0 ? 1 : parseInt(files[files.length - 1].replace('.json', ''), 10) + 1;

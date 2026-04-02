@@ -40,9 +40,22 @@ fi
 
 cd "$WORKTREE" || exit 1
 
+# ─── Model Selection (Opus for complex agents, Sonnet for procedural) ─────
+MODEL_FLAG=""
+AGENT_FILE=""
+case "$AGENT" in
+  backend)  MODEL_FLAG="--model opus" ; AGENT_FILE="AGENT-BACKEND.md" ;;
+  flex)     MODEL_FLAG="--model opus" ; AGENT_FILE="AGENT-FLEX.md" ;;
+  devops)   MODEL_FLAG=""             ; AGENT_FILE="AGENT-DEVOPS.md" ;;
+  frontend) MODEL_FLAG=""             ; AGENT_FILE="AGENT-FRONTEND.md" ;;
+  qa)       MODEL_FLAG=""             ; AGENT_FILE="AGENT-QA.md" ;;
+  qa2)      MODEL_FLAG=""             ; AGENT_FILE="AGENT-QA.md" ;;
+esac
+
 echo ""
 echo "╔═══════════════════════════════════════════════╗"
 echo "║  🤖 Nexus Hub — $AGENT Agent (auto-loop)      ║"
+echo "║  📦 Model: ${MODEL_FLAG:-sonnet (default)}              ║"
 echo "╚═══════════════════════════════════════════════╝"
 echo ""
 
@@ -68,8 +81,15 @@ except: print('unknown')
     echo ""
 
     # Run Claude with the task prompt
-    claude --dangerously-skip-permissions \
-      "Read CLAUDE.md first, then read .agent-prompt.md and execute the task described. \
+    claude $MODEL_FLAG --max-turns 50 --dangerously-skip-permissions \
+      "Read these files IN ORDER before doing anything: \
+1. CLAUDE.md (workflow rules) \
+2. CODEBASE.md (architecture map — tells you exactly which files to touch) \
+3. ${AGENT_FILE} (your role-specific instructions and file ownership) \
+4. .agent-history.md IF IT EXISTS (shows your previous tasks — skip re-reading files you already know) \
+5. .agent-prompt.md (the actual task) \
+Then execute the task. Do NOT explore the project — CODEBASE.md already maps everything. \
+If .agent-history.md shows you already worked on similar files, skip reading CODEBASE.md again. \
 When done: commit, push, then run the auto-chain command from the prompt. \
 After auto-chain, check if a new .agent-prompt.md was written. If yes, read and execute it immediately. \
 Never stop between tasks — keep chaining until no more .agent-prompt.md exists."

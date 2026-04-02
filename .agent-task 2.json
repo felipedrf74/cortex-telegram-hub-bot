@@ -1,0 +1,10 @@
+{
+  "id": "336ad49d-23e7-8199-a1e0-d7b2b24766b1",
+  "title": "BUG P1: Garmin sync not fetching today's activities",
+  "description": "Garmin sync not catching today's workout (gym recorded on watch but bot says no training). Garmin API credentials may need refresh, or the sync cron job may not be running. Also fitness data is not cross-referenced with calendar — training plan shows as separate from calendar events. Fix: verify Garmin API auth, check cron job status, integrate fitness data with calendar slots. Tests: #16 #17.",
+  "priority": "🟠 High",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [],
+  "agent": "🧪 QA2",
+  "originAgent": "devops"
+}
