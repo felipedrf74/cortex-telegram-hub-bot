@@ -171,9 +171,18 @@ async function buildStateContext(): Promise<string> {
   return result;
 }
 
-export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
+/**
+ * Build minimal state context for greetings and casual messages.
+ * Only includes date/time — NO API calls for tasks, calendar, email, or Garmin.
+ * This prevents the AI from hallucinating status briefings. (Bug P0)
+ */
+function buildLightweightContext(): string {
+  return `Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`;
+}
+
+export async function handleSecretary(message: string, userId?: number, lightweight?: boolean): Promise<DomainResponse> {
   const history = getConversationHistory(DOMAIN);
-  const stateContext = await buildStateContext();
+  const stateContext = lightweight ? buildLightweightContext() : await buildStateContext();
 
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;

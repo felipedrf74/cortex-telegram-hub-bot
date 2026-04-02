@@ -1,14 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DomainName } from '../domains/types';
-import { patternMatch, keywordMatch, classifyWithClaude, ConversationContext } from './classifier';
+import { patternMatch, keywordMatch, classifyWithClaude, isGreeting, ConversationContext } from './classifier';
 import { logger } from '../utils/logger';
 
 export { keywordMatch };
 
 export interface RouteResult {
   domain: DomainName;
-  method: 'pattern' | 'keyword' | 'classifier' | 'unknown_command';
+  method: 'pattern' | 'keyword' | 'classifier' | 'unknown_command' | 'greeting';
   confidence: number;
   strippedMessage: string;
 }
@@ -58,6 +58,20 @@ export async function routeMessage(
       domain: 'secretary',
       method: 'unknown_command',
       confidence: 0,
+      strippedMessage: message,
+    };
+  }
+
+  // Step 1.6: Greeting guard — simple greetings and casual acknowledgments
+  // should NOT trigger heavy state context building or AI classification.
+  // Route directly to secretary with minimal context. (Bug P0: "Hello" was
+  // causing the bot to fetch all tasks/calendar/Garmin data and hallucinate briefings.)
+  if (isGreeting(message)) {
+    logger.debug({ method: 'greeting' }, 'Greeting detected — skipping classifier');
+    return {
+      domain: 'secretary',
+      method: 'greeting',
+      confidence: 1.0,
       strippedMessage: message,
     };
   }

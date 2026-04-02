@@ -3422,8 +3422,13 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     // Track last active domain for photo routing and conversation continuity
     if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
 
+    // Greetings use lightweight context — skip heavy API calls for tasks/calendar/Garmin
+    // to prevent the AI from hallucinating status briefings (Bug P0)
+    const isLightweight = route.method === 'greeting';
     const handler = DOMAIN_HANDLERS[route.domain];
-    const response = await handler(route.strippedMessage, ctx.from?.id);
+    const response = isLightweight
+      ? await handleSecretary(route.strippedMessage, ctx.from?.id, true)
+      : await handler(route.strippedMessage, ctx.from?.id);
 
     const parts = splitMessage(response.text);
     for (const part of parts) {

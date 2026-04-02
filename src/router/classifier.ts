@@ -65,6 +65,35 @@ export function keywordMatch(message: string): DomainName | null {
   return null;
 }
 
+// ─── Greeting / casual message detection ───────────────────────────
+// Simple messages that should NOT trigger heavy state context loading
+// or AI classification. These get routed directly to secretary with
+// minimal context to prevent hallucinated briefings. (Bug P0 fix)
+
+const GREETING_PATTERNS = [
+  /^(?:h(?:ello|i|ey)|yo)\b[!.?\s]*$/i,                  // hello, hi, hey, yo
+  /^(?:hi|hey)\s+there[!.?\s]*$/i,                         // hi there, hey there
+  /^(?:good\s+(?:morning|afternoon|evening))[!.?\s]*$/i,   // good morning, etc.
+  /^(?:bom\s+dia|boa\s+(?:tarde|noite))[!.?\s]*$/i,       // PT-BR greetings
+  /^(?:ol[áa]|oi)[!.?\s]*$/i,                              // olá, oi
+  /^(?:thanks?(?:\s+you)?|obrigad[oa]|valeu)[!.?\s]*$/i,   // thanks, obrigado
+  /^(?:ok(?:ay)?|sure|alright|got\s+it|certo|entendi)[!.?\s]*$/i, // acknowledgments
+  /^(?:yes|no|sim|n[ãa]o|yep|nope|yeah|nah)[!.?\s]*$/i,   // yes/no responses
+];
+
+/**
+ * Detects whether a message is a simple greeting or casual acknowledgment.
+ * These messages should NOT trigger heavy state context building or AI classification,
+ * as that leads to hallucinated briefings (Bug P0).
+ *
+ * Only matches "pure" greetings — if the message contains additional content
+ * beyond the greeting (e.g., "hello can you check my calendar"), it's NOT a greeting.
+ */
+export function isGreeting(message: string): boolean {
+  const trimmed = message.trim();
+  return GREETING_PATTERNS.some((p) => p.test(trimmed));
+}
+
 // ─── Claude-based classification ────────────────────────────────────
 
 export async function classifyWithClaude(
