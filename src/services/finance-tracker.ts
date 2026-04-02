@@ -9,6 +9,76 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { config } from '../config';
+import { encryptNumber, decryptNumber, encryptValue, decryptValue } from '../utils/encryption';
+
+// ── Encryption Helpers ────────────────────────────────────────────
+
+function getEncryptionKey(): string | null {
+  const { enabled, masterKey } = config.financeEncryption;
+  if (!enabled || !masterKey) return null;
+  return masterKey;
+}
+
+function tryEncryptNum(value: number, userId: number): string | null {
+  const key = getEncryptionKey();
+  if (!key) return null;
+  return encryptNumber(value, key, userId);
+}
+
+function tryEncryptStr(value: string | null, userId: number): string | null {
+  const key = getEncryptionKey();
+  if (!key || !value) return null;
+  return encryptValue(value, key, userId);
+}
+
+function readEncryptedNum(encrypted: string | null, plaintext: number, userId: number): number {
+  if (!encrypted) return plaintext;
+  const key = getEncryptionKey();
+  if (!key) return plaintext;
+  try {
+    return decryptNumber(encrypted, key, userId);
+  } catch {
+    return plaintext;
+  }
+}
+
+function readEncryptedStr(encrypted: string | null, plaintext: string | null, userId: number): string | null {
+  if (!encrypted) return plaintext;
+  const key = getEncryptionKey();
+  if (!key) return plaintext;
+  try {
+    return decryptValue(encrypted, key, userId);
+  } catch {
+    return plaintext;
+  }
+}
+
+/** Decrypt a transaction row's encrypted fields in place. */
+function decryptTransaction(row: any): Transaction {
+  if (!row) return row;
+  const userId = row.user_id;
+  return {
+    ...row,
+    amount: readEncryptedNum(row.encrypted_amount, row.amount, userId),
+    description: readEncryptedStr(row.encrypted_description, row.description, userId),
+  };
+}
+
+/** Decrypt a tax event row's encrypted fields in place. */
+function decryptTaxEvent(row: any): TaxEvent {
+  if (!row) return row;
+  const userId = row.user_id;
+  return {
+    ...row,
+    gross_income: readEncryptedNum(row.encrypted_gross_income, row.gross_income, userId),
+    deductions: readEncryptedNum(row.encrypted_deductions, row.deductions, userId),
+    taxable_income: readEncryptedNum(row.encrypted_taxable_income, row.taxable_income, userId),
+    tax_due: readEncryptedNum(row.encrypted_tax_due, row.tax_due, userId),
+    inss_due: readEncryptedNum(row.encrypted_inss_due, row.inss_due, userId),
+    notes: readEncryptedStr(row.encrypted_notes, row.notes, userId),
+  };
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -142,9 +212,13 @@ export function addTransaction(
   opts?: { subcategory?: string; description?: string; currency?: string; receiptRef?: string },
 ): Transaction {
   const db = getDb();
+  const encAmt = tryEncryptNum(amount, userId);
+  const encDesc = tryEncryptStr(opts?.description ?? null, userId);
+
   const stmt = db.prepare(`
-    INSERT INTO finance_transactions (user_id, date, category, subcategory, amount, currency, description, receipt_ref)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO finance_transactions
+      (user_id, date, category, subcategory, amount, currency, description, receipt_ref, encrypted_amount, encrypted_description)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     userId, date, category,
@@ -153,10 +227,12 @@ export function addTransaction(
     opts?.currency ?? 'BRL',
     opts?.description ?? null,
     opts?.receiptRef ?? null,
+    encAmt,
+    encDesc,
   );
-  const row = db.prepare('SELECT * FROM finance_transactions WHERE rowid = last_insert_rowid()').get() as Transaction;
+  const row = db.prepare('SELECT * FROM finance_transactions WHERE rowid = last_insert_rowid()').get() as any;
   logger.info({ userId, category, amount }, 'Finance transaction added');
-  return row;
+  return decryptTransaction(row);
 }
 
 export function getTransactions(
@@ -175,7 +251,8 @@ export function getTransactions(
   const sql = `SELECT * FROM finance_transactions WHERE ${conditions.join(' AND ')} ORDER BY date DESC LIMIT ?`;
   params.push(limit);
 
-  return db.prepare(sql).all(...params) as Transaction[];
+  const rows = db.prepare(sql).all(...params) as any[];
+  return rows.map(decryptTransaction);
 }
 
 export function deleteTransaction(userId: number, transactionId: number): boolean {
@@ -231,32 +308,52 @@ export function calculateAndStoreTax(userId: number, month: string): TaxEvent {
 
   const db = getDb();
   db.prepare(`
-    INSERT INTO finance_tax_events (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, darf_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO finance_tax_events
+      (user_id, month, gross_income, deductions, taxable_income, tax_due, inss_due, darf_code,
+       encrypted_gross_income, encrypted_deductions, encrypted_taxable_income, encrypted_tax_due, encrypted_inss_due)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, month) DO UPDATE SET
       gross_income = excluded.gross_income,
       deductions = excluded.deductions,
       taxable_income = excluded.taxable_income,
       tax_due = excluded.tax_due,
       inss_due = excluded.inss_due,
+      encrypted_gross_income = excluded.encrypted_gross_income,
+      encrypted_deductions = excluded.encrypted_deductions,
+      encrypted_taxable_income = excluded.encrypted_taxable_income,
+      encrypted_tax_due = excluded.encrypted_tax_due,
+      encrypted_inss_due = excluded.encrypted_inss_due,
       updated_at = datetime('now')
-  `).run(userId, month, tax.grossIncome, tax.deductions, tax.taxableIncome, tax.taxDue, tax.inssDue, '0190');
+  `).run(
+    userId, month,
+    tax.grossIncome, tax.deductions, tax.taxableIncome, tax.taxDue, tax.inssDue,
+    '0190',
+    tryEncryptNum(tax.grossIncome, userId),
+    tryEncryptNum(tax.deductions, userId),
+    tryEncryptNum(tax.taxableIncome, userId),
+    tryEncryptNum(tax.taxDue, userId),
+    tryEncryptNum(tax.inssDue, userId),
+  );
 
-  return db.prepare('SELECT * FROM finance_tax_events WHERE user_id = ? AND month = ?').get(userId, month) as TaxEvent;
+  const row = db.prepare('SELECT * FROM finance_tax_events WHERE user_id = ? AND month = ?').get(userId, month) as any;
+  return decryptTaxEvent(row);
 }
 
 export function getTaxEvents(userId: number, opts?: { year?: number; limit?: number }): TaxEvent[] {
   const db = getDb();
+  let rows: any[];
   if (opts?.year) {
     const start = `${opts.year}-01`;
     const end = `${opts.year}-12`;
-    return db.prepare(
+    rows = db.prepare(
       'SELECT * FROM finance_tax_events WHERE user_id = ? AND month >= ? AND month <= ? ORDER BY month DESC',
-    ).all(userId, start, end) as TaxEvent[];
+    ).all(userId, start, end) as any[];
+  } else {
+    rows = db.prepare(
+      'SELECT * FROM finance_tax_events WHERE user_id = ? ORDER BY month DESC LIMIT ?',
+    ).all(userId, opts?.limit ?? 12) as any[];
   }
-  return db.prepare(
-    'SELECT * FROM finance_tax_events WHERE user_id = ? ORDER BY month DESC LIMIT ?',
-  ).all(userId, opts?.limit ?? 12) as TaxEvent[];
+  return rows.map(decryptTaxEvent);
 }
 
 export function markTaxPaid(userId: number, month: string): boolean {

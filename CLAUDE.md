@@ -19,7 +19,7 @@ If it exists, read it and execute the task. If not, wait for instructions.
 ### Step 3: Auto-chain when done
 Detect which worktree you're in and run the completion script:
 ```bash
-AGENT_DIR=$(basename $(pwd))
+AGENT_DIR=$(basename "$(pwd)")
 node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "brief description of what you did"
 ```
 This automatically:
@@ -44,7 +44,7 @@ If you are the QA agent and your prompt says "QA Validation Task":
 4. When done, run ONE of:
 ```bash
 # Everything passes:
-AGENT_DIR=$(basename $(pwd))
+AGENT_DIR=$(basename "$(pwd)")
 node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass
 # Something fails:
 node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "what failed"
