@@ -11,6 +11,8 @@ import type {
   InlineButton,
   SendInlineButtonsOptions,
   EditMessageOptions,
+  SendPhotoOptions,
+  SendVoiceOptions,
 } from './message-adapter';
 
 /** Configuration required to initialise the WhatsApp adapter */
@@ -176,6 +178,18 @@ export class WhatsAppAdapter implements MessageAdapter {
     throw new Error(
       'WhatsApp does not support editing messages after sending',
     );
+  }
+
+  async deleteMessage(_messageId: string): Promise<void> {
+    throw new Error('WhatsApp does not support deleting messages via Cloud API');
+  }
+
+  async sendPhoto(_photo: string | Buffer, _options?: SendPhotoOptions): Promise<string> {
+    throw new Error('WhatsApp sendPhoto not yet implemented');
+  }
+
+  async sendVoice(_audio: string | Buffer, _options?: SendVoiceOptions): Promise<string> {
+    throw new Error('WhatsApp sendVoice not yet implemented');
   }
 
   // ── Private helpers ─────────────────────────────────────────────────

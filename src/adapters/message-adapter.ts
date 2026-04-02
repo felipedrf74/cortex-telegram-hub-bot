@@ -44,6 +44,21 @@ export interface EditMessageOptions {
   parseMode?: 'HTML' | 'MarkdownV2';
 }
 
+/** Options for sending a photo */
+export interface SendPhotoOptions {
+  caption?: string;
+  parseMode?: 'HTML' | 'MarkdownV2';
+  replyToMessageId?: number;
+}
+
+/** Options for sending a voice message */
+export interface SendVoiceOptions {
+  caption?: string;
+  parseMode?: 'HTML' | 'MarkdownV2';
+  replyToMessageId?: number;
+  duration?: number;
+}
+
 /**
  * Platform-agnostic messaging interface.
  *
@@ -89,4 +104,24 @@ export interface MessageAdapter {
     newText: string,
     options?: EditMessageOptions,
   ): Promise<void>;
+
+  /**
+   * Delete a message by its ID.
+   * @param messageId - The ID returned by a previous send method.
+   */
+  deleteMessage(messageId: string): Promise<void>;
+
+  /**
+   * Send a photo to the current chat.
+   * @param photo - File path, URL, or Buffer.
+   * @returns The platform-specific message ID as a string.
+   */
+  sendPhoto(photo: string | Buffer, options?: SendPhotoOptions): Promise<string>;
+
+  /**
+   * Send a voice message to the current chat.
+   * @param audio - File path, URL, or Buffer.
+   * @returns The platform-specific message ID as a string.
+   */
+  sendVoice(audio: string | Buffer, options?: SendVoiceOptions): Promise<string>;
 }

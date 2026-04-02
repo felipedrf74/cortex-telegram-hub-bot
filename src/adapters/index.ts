@@ -6,6 +6,8 @@ export type {
   SendFileOptions,
   SendInlineButtonsOptions,
   EditMessageOptions,
+  SendPhotoOptions,
+  SendVoiceOptions,
   InlineButton,
 } from './message-adapter';
 export { TelegramAdapter } from './telegram-adapter';
