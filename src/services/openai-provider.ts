@@ -9,7 +9,7 @@
  */
 
 import OpenAI from 'openai';
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, getModelRouting } from './ai-provider';
+import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, ToolExecutorFn, getModelRouting } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -225,5 +225,50 @@ ${message}`;
       toolCalls: extractToolCalls(response.choices),
       stopReason: choice?.finish_reason || 'stop',
     };
+  }
+
+  async callDomainWithToolLoop(
+    domain: DomainName,
+    history: DomainMessage[],
+    currentMessage: string,
+    stateContext: string,
+    executor: ToolExecutorFn,
+    options?: { maxIterations?: number; userId?: number; maxTokensOverride?: number },
+  ): Promise<{ text: string; toolsUsed: string[] }> {
+    const maxIterations = options?.maxIterations ?? 5;
+
+    let result = await this.callDomain(domain, history, currentMessage, stateContext, options?.maxTokensOverride);
+    let finalText = result.text;
+    const toolConversation: AIToolResultMessage[] = [];
+    const toolsUsed: string[] = [];
+    let iterations = 0;
+
+    while (result.toolCalls.length > 0 && iterations < maxIterations) {
+      iterations++;
+      const assistantContent: Array<{ type: 'text'; text: string } | AIToolCall> = [];
+      if (result.text) assistantContent.push({ type: 'text' as const, text: result.text });
+      for (const tc of result.toolCalls) {
+        assistantContent.push(tc);
+        toolsUsed.push(tc.name);
+      }
+
+      const toolResults = await Promise.all(
+        result.toolCalls.map(async (tc) => ({
+          type: 'tool_result' as const,
+          tool_use_id: tc.id,
+          content: JSON.stringify(await executor(tc.name, tc.input, options?.userId)),
+        })),
+      );
+
+      toolConversation.push(
+        { role: 'assistant' as const, content: assistantContent as any },
+        { role: 'user' as const, content: toolResults },
+      );
+
+      result = await this.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation);
+      finalText = result.text;
+    }
+
+    return { text: finalText, toolsUsed: [...new Set(toolsUsed)] };
   }
 }

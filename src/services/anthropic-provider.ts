@@ -8,7 +8,7 @@
  * cost tracking) stays in anthropic.ts. The provider just bridges the interface.
  */
 
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage } from './ai-provider';
+import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, ToolExecutorFn } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import {
   classifyMessage,
@@ -72,5 +72,57 @@ export class AnthropicProvider implements AIProvider {
       domain, history, currentMessage, stateContext, anthropicConvo,
     );
     return toAICallResult(result);
+  }
+
+  async callDomainWithToolLoop(
+    domain: DomainName,
+    history: DomainMessage[],
+    currentMessage: string,
+    stateContext: string,
+    executor: ToolExecutorFn,
+    options?: { maxIterations?: number; userId?: number; maxTokensOverride?: number },
+  ): Promise<{ text: string; toolsUsed: string[] }> {
+    const maxIterations = options?.maxIterations ?? 5;
+
+    let result = await this.callDomain(domain, history, currentMessage, stateContext, options?.maxTokensOverride);
+    let finalText = result.text;
+    const toolConversation: AIToolResultMessage[] = [];
+    const toolsUsed: string[] = [];
+    let iterations = 0;
+
+    while (result.toolCalls.length > 0 && iterations < maxIterations) {
+      iterations++;
+
+      // Build assistant content (text + tool_use blocks)
+      const assistantContent: Array<{ type: 'text'; text: string } | AIToolCall> = [];
+      if (result.text) {
+        assistantContent.push({ type: 'text' as const, text: result.text });
+      }
+      for (const tc of result.toolCalls) {
+        assistantContent.push(tc);
+        toolsUsed.push(tc.name);
+      }
+
+      // Execute all tool calls in parallel
+      const toolResults = await Promise.all(
+        result.toolCalls.map(async (tc) => ({
+          type: 'tool_result' as const,
+          tool_use_id: tc.id,
+          content: JSON.stringify(await executor(tc.name, tc.input, options?.userId)),
+        })),
+      );
+
+      toolConversation.push(
+        { role: 'assistant' as const, content: assistantContent as any },
+        { role: 'user' as const, content: toolResults },
+      );
+
+      result = await this.continueWithToolResults(
+        domain, history, currentMessage, stateContext, toolConversation,
+      );
+      finalText = result.text;
+    }
+
+    return { text: finalText, toolsUsed: [...new Set(toolsUsed)] };
   }
 }
