@@ -18,12 +18,17 @@ echo "🔧 Installing Git hooks..."
 cat > "$HOOKS_DIR/pre-commit" << 'HOOK'
 #!/usr/bin/env bash
 set -e
+
 echo "🔍 Pre-commit: Type checking..."
 npx tsc --noEmit 2>/dev/null
 echo "✅ Type check passed"
+
+echo "🧪 Pre-commit: Running tests..."
+npx vitest run --reporter=dot 2>/dev/null
+echo "✅ Tests passed"
 HOOK
 chmod +x "$HOOKS_DIR/pre-commit"
-echo "   ✅ pre-commit hook installed"
+echo "   ✅ pre-commit hook installed (tsc + vitest)"
 
 # ── Pre-push hook ────────────────────────────────────
 cat > "$HOOKS_DIR/pre-push" << 'HOOK'

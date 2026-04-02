@@ -1040,6 +1040,48 @@
     </table>
   </div>
 
+  <!-- ── Task Execution Costs ──────────────────── -->
+  <div class="card">
+    <h2>🏭 Task Execution Costs (7d)</h2>
+    <div class="stats-grid" id="task-metrics-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="tm-total-cost">—</div>
+        <div class="stat-label">Total Cost</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tm-total-tasks">—</div>
+        <div class="stat-label">Tasks</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tm-avg-duration">—</div>
+        <div class="stat-label">Avg Duration</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tm-failure-rate">—</div>
+        <div class="stat-label">Failure Rate</div>
+      </div>
+    </div>
+    <table style="margin-top:12px" id="task-metrics-table">
+      <thead><tr><th>Task</th><th>Agent</th><th>Status</th><th class="text-right">Cost</th><th class="text-right">Duration</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Quality Scores by Agent ──────────────── -->
+  <div class="card">
+    <h2>📊 Agent Quality Scores (30d)</h2>
+    <table id="quality-scores-table">
+      <thead><tr><th>Agent</th><th class="text-right">Avg Score</th><th class="text-right">Tasks</th><th class="text-right">Pass Rate</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- ── Error Distribution ────────────────────── -->
+  <div class="card">
+    <h2>🔍 Agent Error Distribution (7d)</h2>
+    <div id="error-dist-content" class="text-muted" style="font-size:13px">Loading...</div>
+  </div>
+
   <!-- ── Feature #3: Next Runs Panel ─────────── -->
   <div class="card">
     <h2>🚀 Next Scheduled Runs</h2>
@@ -2610,6 +2652,98 @@
   // Poll mission control alongside main poll
   pollMissionControl();
   setInterval(pollMissionControl, 30_000);
+
+  // Quality scores by agent
+  async function loadQualityScores() {
+    try {
+      const r = await fetch('/api/quality-scores', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok) return;
+      const tbody = document.querySelector('#quality-scores-table tbody');
+      const agents = d.byAgent || [];
+      tbody.innerHTML = agents.map(a => {
+        const scoreColor = a.avgScore >= 80 ? 'var(--green,#2dd4a0)' : a.avgScore >= 50 ? 'var(--amber,#f5a623)' : 'var(--red,#f25757)';
+        const passColor = a.passRate >= 0.9 ? 'var(--green,#2dd4a0)' : a.passRate >= 0.6 ? 'var(--amber,#f5a623)' : 'var(--red,#f25757)';
+        return `<tr>
+          <td class="mono">${esc(a.agent)}</td>
+          <td class="text-right mono" style="color:${scoreColor}">${a.avgScore.toFixed(0)}</td>
+          <td class="text-right">${a.totalTasks}</td>
+          <td class="text-right mono" style="color:${passColor}">${(a.passRate * 100).toFixed(0)}%</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="4" class="text-muted">No quality scores yet</td></tr>';
+    } catch (err) {
+      console.warn('Quality scores poll failed:', err);
+    }
+  }
+  loadQualityScores();
+  setInterval(loadQualityScores, 30_000);
+
+  // Error distribution
+  async function loadErrorDist() {
+    try {
+      const r = await fetch('/api/error-distribution', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok) return;
+      const dist = d.distribution || {};
+      const el = document.getElementById('error-dist-content');
+      const entries = Object.entries(dist);
+      if (entries.length === 0) {
+        el.innerHTML = '<span class="text-muted">No categorized agent errors in last 7 days</span>';
+        return;
+      }
+      const total = entries.reduce((s, [,c]) => s + c, 0);
+      el.innerHTML = entries.sort((a,b) => b[1] - a[1]).map(([cat, count]) => {
+        const pct = ((count / total) * 100).toFixed(0);
+        const colors = { syntax: '#e17055', test_failure: '#fdcb6e', rate_limit: '#a29bfe', timeout: '#74b9ff', integration: '#00b894', context_overflow: '#fd79a8', unknown: '#636e72' };
+        const color = colors[cat] || '#636e72';
+        return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+          <span class="mono" style="min-width:120px;color:${color}">${esc(cat)}</span>
+          <div style="flex:1;height:16px;background:var(--bg2);border-radius:4px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${color};border-radius:4px"></div>
+          </div>
+          <span class="mono" style="min-width:40px;text-align:right">${count}</span>
+        </div>`;
+      }).join('');
+    } catch (err) {
+      console.warn('Error dist poll failed:', err);
+    }
+  }
+  loadErrorDist();
+  setInterval(loadErrorDist, 30_000);
+
+  // Task execution metrics
+  async function loadTaskMetrics() {
+    try {
+      const r = await fetch('/api/task-metrics', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok) return;
+      const s = d.summary;
+      document.getElementById('tm-total-cost').textContent = '$' + s.totalCost.toFixed(2);
+      document.getElementById('tm-total-tasks').textContent = s.totalTasks;
+      const avgMin = s.avgDurationMs > 0 ? (s.avgDurationMs / 60000).toFixed(1) + 'm' : '—';
+      document.getElementById('tm-avg-duration').textContent = avgMin;
+      document.getElementById('tm-failure-rate').textContent = (s.failureRate * 100).toFixed(0) + '%';
+      const tbody = document.querySelector('#task-metrics-table tbody');
+      tbody.innerHTML = (d.recent || []).slice(0, 10).map(t => {
+        const dur = t.durationMs ? (t.durationMs / 60000).toFixed(1) + 'm' : '—';
+        const cls = t.status === 'success' ? 'badge-sent' : t.status === 'failed' ? 'badge-failed' : '';
+        return `<tr>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(t.taskTitle)}</td>
+          <td class="mono">${esc(t.agent)}</td>
+          <td><span class="badge ${cls}">${t.status}</span></td>
+          <td class="text-right mono">$${t.costUsd.toFixed(3)}</td>
+          <td class="text-right">${dur}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="5" class="text-muted">No task executions yet</td></tr>';
+    } catch (err) {
+      console.warn('Task metrics poll failed:', err);
+    }
+  }
+  loadTaskMetrics();
+  setInterval(loadTaskMetrics, 30_000);
 
   function showToast(msg, ok) {
     const el = document.getElementById('toast');

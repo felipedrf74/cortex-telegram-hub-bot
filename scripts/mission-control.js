@@ -93,6 +93,7 @@ async function autoAssignAll() {
       const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
       const assignableTasks = allTasks.filter(t =>
         matchingTags.includes(t.agent) && (t.status === 'To Do' || t.status === 'In Progress')
+        && !isTaskBlocked(t, allTasks)
       );
       if (assignableTasks.length > 0) {
         const next = assignableTasks[0];
@@ -132,10 +133,24 @@ async function fetchTasks() {
         agent: p.properties.Agent?.select?.name || '',
         status, phase: p.properties.Phase?.select?.name || '',
         month: p.properties.Month?.select?.name || '',
+        blockedBy: (p.properties?.['Blocked By']?.relation || []).map(r => r.id),
       });
     }
   }
   return all;
+}
+
+// ─── Dependency check ────────────────────────────────────────────────
+function isTaskBlocked(task, allTasks) {
+  if (!task.blockedBy || task.blockedBy.length === 0) return false;
+  for (const blockerId of task.blockedBy) {
+    const blocker = allTasks.find(t => t.id === blockerId);
+    if (!blocker || blocker.status !== 'Done') {
+      console.log(`  ⏸ "${task.title}" blocked by "${blocker?.title || blockerId}" (${blocker?.status || 'unknown'})`);
+      return true;
+    }
+  }
+  return false;
 }
 
 function run(cmd, cwd = REPO) {

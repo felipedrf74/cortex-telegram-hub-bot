@@ -1403,6 +1403,40 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/error-distribution — categorized agent error breakdown
+  app.get('/api/error-distribution', (_req: Request, res: Response) => {
+    try {
+      const { getErrorDistribution } = require('../services/error-categorizer');
+      const distribution = getErrorDistribution(7);
+      res.json({ ok: true, distribution });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/quality-scores — agent quality scoring data
+  app.get('/api/quality-scores', (_req: Request, res: Response) => {
+    try {
+      const { getQualityByAgent } = require('../services/quality-scorer');
+      const byAgent = getQualityByAgent(30);
+      res.json({ ok: true, byAgent });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/task-metrics — task execution cost and duration data
+  app.get('/api/task-metrics', (_req: Request, res: Response) => {
+    try {
+      const { getTaskExecutionSummary, getRecentExecutions } = require('../services/task-metrics');
+      const summary = getTaskExecutionSummary(7);
+      const recent = getRecentExecutions(20);
+      res.json({ ok: true, summary, recent });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Skill Management API ─────────────────────────────────────────
 
   // GET /api/skills — list all skills with sub-skill status
