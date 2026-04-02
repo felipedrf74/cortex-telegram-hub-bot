@@ -3,6 +3,6 @@
 import { DomainResponse } from './types';
 import { handleSimpleDomain } from './domain-handler';
 
-export async function handleContent(message: string, _userId?: number): Promise<DomainResponse> {
-  return handleSimpleDomain('content', message, 5);
+export async function handleContent(message: string, userId?: number, maxTokensOverride?: number): Promise<DomainResponse> {
+  return handleSimpleDomain('content', message, 5, userId, maxTokensOverride);
 }
