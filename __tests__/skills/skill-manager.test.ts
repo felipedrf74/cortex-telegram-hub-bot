@@ -330,6 +330,68 @@ describe('SkillManager — toggle API', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// BUG FIX REGRESSION TESTS — enable/disable false-positive errors
+// ═══════════════════════════════════════════════════════════════════
+
+describe('SkillManager — enable/disable false-positive bug (#4 #5 #6)', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+    invalidateToolCache();
+    seedDefaultSkills();
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('#4: enableSkill returns true for already-enabled skill (no false negative)', () => {
+    // After seeding, skills are enabled by default.
+    // Calling enable on an already-enabled skill should return true, not false.
+    const result = enableSkill('secretary');
+    expect(result).toBe(true);
+  });
+
+  it('#5: disableSkill returns true for already-disabled skill (no false negative)', () => {
+    disableSkill('secretary');
+    // Calling disable again on an already-disabled skill should return true, not false.
+    const result = disableSkill('secretary');
+    expect(result).toBe(true);
+  });
+
+  it('#6: all skills are enabled after seedDefaultSkills runs', () => {
+    const statuses = getAllSkillStatuses();
+    for (const skill of statuses) {
+      expect(skill.enabled).toBe(true);
+    }
+  });
+
+  it('enableSubSkill returns true for already-enabled sub-skill', () => {
+    // All sub-skills are enabled by default after seeding
+    const result = enableSubSkill('secretary', 'email');
+    expect(result).toBe(true);
+  });
+
+  it('disableSubSkill returns true for already-disabled sub-skill', () => {
+    disableSubSkill('secretary', 'email');
+    const result = disableSubSkill('secretary', 'email');
+    expect(result).toBe(true);
+  });
+
+  it('enableSkill returns false for non-existent skill', () => {
+    expect(enableSkill('nonexistent' as any)).toBe(false);
+  });
+
+  it('disableSkill returns false for non-existent skill', () => {
+    expect(disableSkill('nonexistent' as any)).toBe(false);
+  });
+
+  it('enable then status shows enabled', () => {
+    disableSkill('triathlon');
+    expect(getSkillStatus('triathlon').enabled).toBe(false);
+    enableSkill('triathlon');
+    expect(getSkillStatus('triathlon').enabled).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // STATUS QUERY TESTS
 // ═══════════════════════════════════════════════════════════════════
 

@@ -15,6 +15,7 @@ import {
 } from './services/error-monitor';
 import { init as initSentry, flush as flushSentry } from './services/error-tracker';
 import { escapeHtml } from './utils/telegram-formatter';
+import { seedDefaultSkills } from './skills/skill-manager';
 import type http from 'http';
 
 const MAX_RETRIES = 5;
@@ -33,6 +34,9 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase();
+
+  // Seed default skills into DB (idempotent — safe on every startup)
+  seedDefaultSkills();
 
   // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());

@@ -110,46 +110,62 @@ export function listSkillMigrations(name: string): string[] {
 
 // ── Enable / Disable ───────────────────────────────────────────────
 
-/** Enable a skill by name. Returns true if the skill was found and updated. */
+/** Enable a skill by name. Returns true if the skill exists (even if already enabled). */
 export function enable(name: string): boolean {
   const db = getDb();
-  const result = db.prepare(
+  const skill = db.prepare('SELECT enabled FROM installed_skills WHERE name = ?').get(name) as { enabled: number } | undefined;
+  if (!skill) return false;
+  if (skill.enabled === 1) return true; // already enabled — success
+  db.prepare(
     "UPDATE installed_skills SET enabled = 1, updated_at = datetime('now') WHERE name = ?"
   ).run(name);
-  return result.changes > 0;
+  return true;
 }
 
-/** Disable a skill by name. Returns true if the skill was found and updated. */
+/** Disable a skill by name. Returns true if the skill exists (even if already disabled). */
 export function disable(name: string): boolean {
   const db = getDb();
-  const result = db.prepare(
+  const skill = db.prepare('SELECT enabled FROM installed_skills WHERE name = ?').get(name) as { enabled: number } | undefined;
+  if (!skill) return false;
+  if (skill.enabled === 0) return true; // already disabled — success
+  db.prepare(
     "UPDATE installed_skills SET enabled = 0, updated_at = datetime('now') WHERE name = ?"
   ).run(name);
-  return result.changes > 0;
+  return true;
 }
 
 // ── Submodule Enable / Disable ─────────────────────────────────────
 
-/** Enable a submodule by skill name and module name. Returns true if found and updated. */
+/** Enable a submodule by skill name and module name. Returns true if the submodule exists. */
 export function enableSubmodule(skillName: string, moduleName: string): boolean {
   const db = getDb();
   const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
   if (!skill) return false;
-  const result = db.prepare(
+  const sub = db.prepare(
+    'SELECT enabled FROM skill_submodules WHERE skill_id = ? AND module_name = ?'
+  ).get(skill.id, moduleName) as { enabled: number } | undefined;
+  if (!sub) return false;
+  if (sub.enabled === 1) return true; // already enabled
+  db.prepare(
     'UPDATE skill_submodules SET enabled = 1 WHERE skill_id = ? AND module_name = ?'
   ).run(skill.id, moduleName);
-  return result.changes > 0;
+  return true;
 }
 
-/** Disable a submodule by skill name and module name. Returns true if found and updated. */
+/** Disable a submodule by skill name and module name. Returns true if the submodule exists. */
 export function disableSubmodule(skillName: string, moduleName: string): boolean {
   const db = getDb();
   const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
   if (!skill) return false;
-  const result = db.prepare(
+  const sub = db.prepare(
+    'SELECT enabled FROM skill_submodules WHERE skill_id = ? AND module_name = ?'
+  ).get(skill.id, moduleName) as { enabled: number } | undefined;
+  if (!sub) return false;
+  if (sub.enabled === 0) return true; // already disabled
+  db.prepare(
     'UPDATE skill_submodules SET enabled = 0 WHERE skill_id = ? AND module_name = ?'
   ).run(skill.id, moduleName);
-  return result.changes > 0;
+  return true;
 }
 
 /** Get all enabled submodule names for a skill. */
