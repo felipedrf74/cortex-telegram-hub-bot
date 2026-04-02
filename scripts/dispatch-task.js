@@ -135,6 +135,26 @@ async function updateTaskStatus(taskId, status) {
   });
 }
 
+// ─── Dependency check ────────────────────────────────────────────────
+async function isTaskBlocked(taskOrId) {
+  // Accept either a full task object (with id) or a page ID string
+  const pageId = typeof taskOrId === 'string' ? taskOrId : taskOrId.id;
+  const page = await notionFetch(`/pages/${pageId}`);
+  const blockedByRelation = page.properties?.['Blocked By']?.relation || [];
+  if (blockedByRelation.length === 0) return false;
+
+  for (const ref of blockedByRelation) {
+    const blockerPage = await notionFetch(`/pages/${ref.id}`);
+    const blockerStatus = blockerPage.properties?.Status?.select?.name;
+    const blockerTitle = blockerPage.properties?.Task?.title?.[0]?.plain_text || ref.id;
+    if (blockerStatus !== 'Done') {
+      console.log(`  ⏸ Blocked by "${blockerTitle}" (status: ${blockerStatus})`);
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── Prompt writers ──────────────────────────────────────────────────
 function writeRegularPrompt(task, agentDir) {
   const prefix = COMMIT_PREFIX[agentDir] || 'feat';
@@ -281,6 +301,13 @@ async function main() {
   console.log(`  Status:   ${task.status}`);
   console.log(`  Priority: ${task.priority}`);
   console.log(`  Agent:    ${task.agent || '(none)'}`);
+
+  // Check for unresolved blockers
+  if (await isTaskBlocked(taskId)) {
+    console.log(`\n⏸ Task is blocked by incomplete dependencies. Skipping dispatch.`);
+    console.log(`  Resolve blocked tasks first, then re-dispatch.`);
+    process.exit(0);
+  }
 
   // Determine target agent
   let targetAgent = forceAgent;
