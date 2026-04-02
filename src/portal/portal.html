@@ -101,6 +101,25 @@
     font-size: 16px;
   }
 
+  /* ── Uptime Sparkline Chart ──────────── */
+  .uptime-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 1px;
+    height: 18px;
+    margin-left: 4px;
+  }
+  .uptime-bar {
+    width: 3px;
+    border-radius: 1px;
+    min-height: 2px;
+    transition: height 0.3s;
+  }
+  .uptime-bar.ok { background: var(--green); }
+  .uptime-bar.degraded { background: var(--yellow); }
+  .uptime-bar.down { background: var(--red); }
+  .uptime-bar.pending { background: var(--border); }
+
   .container {
     max-width: 1400px;
     margin: 0 auto;
@@ -868,7 +887,7 @@
   <span class="health-sep">|</span>
   <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
   <span class="health-sep" id="hb-queue-sep" style="display:none">|</span>
-  <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
+  <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span> <span class="uptime-chart" id="uptime-chart" title="Last 30 health checks"></span></div>
 </div>
 
 <div class="container">
@@ -1785,6 +1804,38 @@
     container.innerHTML = html;
   }
 
+  // ── Uptime History (last 30 polls) ──────────
+  const UPTIME_HISTORY_SIZE = 30;
+  const uptimeHistory = []; // 'ok' | 'degraded' | 'down'
+
+  function recordUptimeCheck(snap) {
+    const isHealthy = snap.bot.polling && snap.healthSummary && snap.healthSummary.jobsOk >= 0;
+    const jobsAllOk = snap.healthSummary && snap.healthSummary.jobsOk === snap.healthSummary.jobsTotal;
+    const st = !snap.bot.polling ? 'down' : (jobsAllOk ? 'ok' : 'degraded');
+    uptimeHistory.push(st);
+    if (uptimeHistory.length > UPTIME_HISTORY_SIZE) uptimeHistory.shift();
+  }
+
+  function renderUptimeChart() {
+    const chart = document.getElementById('uptime-chart');
+    if (!chart) return;
+    let html = '';
+    // Pad with pending bars if fewer than UPTIME_HISTORY_SIZE entries
+    const padCount = UPTIME_HISTORY_SIZE - uptimeHistory.length;
+    for (let i = 0; i < padCount; i++) {
+      html += '<span class="uptime-bar pending" style="height:18px"></span>';
+    }
+    for (const st of uptimeHistory) {
+      const h = st === 'ok' ? 18 : st === 'degraded' ? 12 : 4;
+      html += `<span class="uptime-bar ${st}" style="height:${h}px"></span>`;
+    }
+    chart.innerHTML = html;
+    // Tooltip with uptime %
+    const okCount = uptimeHistory.filter(s => s === 'ok').length;
+    const pct = uptimeHistory.length > 0 ? Math.round((okCount / uptimeHistory.length) * 100) : 100;
+    chart.title = `Uptime: ${pct}% (last ${uptimeHistory.length} checks)`;
+  }
+
   // ── Render snapshot ────────────────────────
   function render(snap) {
     // Header
@@ -1813,6 +1864,10 @@
       document.getElementById('hb-queue').textContent = queueCount;
       document.getElementById('hb-uptime').textContent = snap.uptime.human;
     }
+
+    // Uptime sparkline
+    recordUptimeCheck(snap);
+    renderUptimeChart();
 
     // Bot stats
     document.getElementById('bot-polling').textContent = snap.bot.polling ? '✓' : snap.bot.restarting ? '⟳' : '✗';

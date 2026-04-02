@@ -1,0 +1,368 @@
+/**
+ * Health Endpoint Tests
+ *
+ * Validates:
+ * - GET /health — public, returns status/uptime/bot/db/memory
+ * - GET /health/detailed — auth-protected via ?token=HEALTH_TOKEN
+ * - /health/detailed includes cron statuses, integration health, error counts
+ * - Correct HTTP status codes (200 healthy, 503 degraded, 401 unauthorized)
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import http from 'http';
+
+// ── Mock telemetry ──────────────────────────────────────────────────
+
+let mockPolling = true;
+let mockRestarting = false;
+let mockLastMessage: string | null = new Date().toISOString();
+let mockJobStatuses: any[] = [];
+let mockRecentEvents: any[] = [];
+
+vi.mock('../../src/portal/telemetry', () => ({
+  isBotPollingActive: () => mockPolling,
+  isRestarting: () => mockRestarting,
+  getLastMessageAt: () => mockLastMessage,
+  getJobStatuses: () => mockJobStatuses,
+  getRecentEvents: () => mockRecentEvents,
+  getBotRef: () => null,
+  setBotRef: vi.fn(),
+  setBotPollingActive: vi.fn(),
+  setIsRestarting: vi.fn(),
+  pushEvent: vi.fn(),
+  registerJob: vi.fn(),
+  wrapJob: vi.fn((name: string, fn: any) => fn),
+  recordMessageProcessed: vi.fn(),
+  getGarminRefreshStatus: () => ({ at: null, ok: false }),
+  setDbProvider: vi.fn(),
+  seedJobLastRunFromHistory: vi.fn(),
+  setJobFailureNotifier: vi.fn(),
+  getJobMap: () => new Map(),
+}));
+
+// ── Mock database ───────────────────────────────────────────────────
+
+let mockDbOk = true;
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => {
+    if (!mockDbOk) throw new Error('DB not ready');
+    return {
+      prepare: () => ({
+        get: (..._args: any[]) => ({ ok: 1, calls: 0, cost: 0, tokens: 0, c: 0, messages: 0 }),
+        all: () => [],
+        run: vi.fn(),
+      }),
+    };
+  },
+  initDatabase: vi.fn(),
+}));
+
+// ── Mock config (port 0 = OS-assigned random port) ──────────────────
+
+let healthToken = 'test-health-secret';
+
+vi.mock('../../src/config', () => ({
+  config: {
+    portal: { enabled: true, port: 0, bind: '127.0.0.1', token: '' },
+    get health() { return { token: healthToken }; },
+    telegram: { botToken: 'test:token', allowedUserIds: [123] },
+    app: { timezone: 'UTC', databasePath: ':memory:' },
+    google: { clientId: '', clientSecret: '', refreshToken: '' },
+    outlook: { clientId: '', clientSecret: '', tenantId: '', refreshToken: '' },
+    garmin: { email: '', password: '', tokenPath: '', coachEnabled: false, coachTime: '' },
+    invoices: { enabled: false, sshHost: '', sshPort: '', sshUser: '', sshKeyPath: '', remotePath: '' },
+    contentEngine: { enabled: false, port: 8100 },
+    googleDrive: { enabled: false, rootFolderId: '' },
+  },
+}));
+
+// ── Mock service dependencies ───────────────────────────────────────
+
+vi.mock('../../src/services/garmin', () => ({
+  isGarminConfigured: () => false,
+  keepAlive: vi.fn(),
+}));
+vi.mock('../../src/services/microsoft-auth', () => ({
+  isMicrosoftConfigured: () => false,
+}));
+vi.mock('../../src/services/invoice-filer', () => ({
+  isInvoiceFilingConfigured: () => false,
+}));
+vi.mock('../../src/services/google-calendar', () => ({
+  isGoogleCalendarConfigured: () => false,
+}));
+vi.mock('../../src/services/google-gmail', () => ({
+  isGmailConfigured: () => false,
+}));
+vi.mock('../../src/services/google-drive', () => ({
+  isGoogleDriveEnabled: () => false,
+}));
+vi.mock('../../src/services/outlook-calendar', () => ({
+  isOutlookCalendarConfigured: () => false,
+}));
+vi.mock('../../src/services/outlook-mail', () => ({
+  isOutlookMailConfigured: () => false,
+}));
+vi.mock('../../src/services/microsoft-todo', () => ({
+  isOutlookTodoConfigured: () => false,
+}));
+vi.mock('../../src/services/invoice-queue', () => ({
+  getPendingCount: () => 0,
+}));
+vi.mock('../../src/services/scheduler', () => ({
+  sendDailyBriefing: vi.fn(),
+}));
+vi.mock('../../src/services/garmin-coach', () => ({
+  generateCoachBriefing: vi.fn(),
+}));
+vi.mock('../../src/services/content-discovery', () => ({
+  runContentDiscovery: vi.fn(),
+}));
+vi.mock('../../src/state/conversation', () => ({
+  clearAllConversations: vi.fn(),
+}));
+vi.mock('../../src/state/content-references', () => ({
+  getAllChannels: () => [],
+  removeChannel: vi.fn(),
+  getAllKnowledge: () => [],
+}));
+vi.mock('../../src/services/channel-learner', () => ({
+  addAndAnalyzeChannel: vi.fn(),
+  synthesizeKnowledge: vi.fn(),
+}));
+vi.mock('../../src/utils/telegram-formatter', () => ({
+  escapeHtml: (s: string) => s,
+  splitMessage: (s: string) => [s],
+}));
+vi.mock('../../src/services/intelligence-bus', () => ({
+  getActiveSignalCount: () => 0,
+  getSignalLog: () => [],
+  getAgentStats: () => [],
+  dismissSignal: vi.fn(),
+  writeSignal: vi.fn(),
+}));
+vi.mock('../../src/agents/pipeline-agent', () => ({
+  getPipelineStats: () => ({ total: 0, published: 0 }),
+  runPipelineAgent: vi.fn(),
+}));
+vi.mock('../../src/agents/seo-agent', () => ({ runSEOAgent: vi.fn() }));
+vi.mock('../../src/agents/reaction-radar-agent', () => ({ runReactionRadar: vi.fn() }));
+vi.mock('../../src/agents/performance-agent', () => ({ runPerformanceAgent: vi.fn() }));
+vi.mock('../../src/agents/voice-evolution-agent', () => ({ runVoiceEvolutionAgent: vi.fn() }));
+vi.mock('../../src/skills/skill-manager', () => ({
+  getAllSkillStatuses: () => [],
+}));
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
+// ── Helper: create server and wait for listen ──────────────────────
+
+async function startServer(): Promise<{ server: http.Server; port: number }> {
+  const { createPortalServer } = await import('../../src/portal/server');
+  const { Bot } = await import('grammy');
+  const bot = new Bot('test:token');
+  const server = createPortalServer(bot as any);
+  // Wait for 'listening' event since port 0 is async-assigned
+  await new Promise<void>((resolve) => {
+    if (server.listening) return resolve();
+    server.on('listening', resolve);
+  });
+  const addr = server.address() as any;
+  return { server, port: addr.port };
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+let activeServer: http.Server | null = null;
+
+afterEach(() => {
+  if (activeServer) {
+    activeServer.close();
+    activeServer = null;
+  }
+});
+
+describe('GET /health', () => {
+  beforeEach(() => {
+    mockPolling = true;
+    mockRestarting = false;
+    mockLastMessage = new Date().toISOString();
+    mockDbOk = true;
+    mockJobStatuses = [];
+    mockRecentEvents = [];
+    healthToken = 'test-health-secret';
+  });
+
+  it('returns 200 with healthy status when bot is polling and DB is up', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.status).toBe('healthy');
+    expect(typeof body.uptime).toBe('number');
+    expect(typeof body.uptimeHuman).toBe('string');
+    expect(body.bot).toHaveProperty('polling', true);
+    expect(body.bot).toHaveProperty('restarting', false);
+    expect(body.database).toBe('connected');
+    expect(body.memory).toHaveProperty('rss');
+    expect(body.memory).toHaveProperty('heapUsed');
+    expect(body.memory).toHaveProperty('heapTotal');
+    expect(body.memory).toHaveProperty('external');
+    expect(body.timestamp).toBeDefined();
+  });
+
+  it('returns 503 with degraded status when bot is not polling', async () => {
+    mockPolling = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.status).toBe('degraded');
+    expect(body.bot.polling).toBe(false);
+  });
+
+  it('returns 503 when database is down', async () => {
+    mockDbOk = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.status).toBe('degraded');
+    expect(body.database).toBe('disconnected');
+  });
+});
+
+describe('GET /health/detailed', () => {
+  beforeEach(() => {
+    mockPolling = true;
+    mockRestarting = false;
+    mockLastMessage = new Date().toISOString();
+    mockDbOk = true;
+    healthToken = 'test-health-secret';
+    mockJobStatuses = [
+      {
+        name: 'daily_briefing',
+        label: 'Daily Briefing',
+        cronExpression: '0 6 * * *',
+        domain: 'secretary',
+        lastRunAt: new Date().toISOString(),
+        lastResult: 'success',
+        lastDurationMs: 1200,
+        lastError: null,
+      },
+      {
+        name: 'garmin_keepalive',
+        label: 'Garmin Keep-Alive',
+        cronExpression: '*/30 * * * *',
+        domain: 'system',
+        lastRunAt: new Date().toISOString(),
+        lastResult: 'failed',
+        lastDurationMs: 500,
+        lastError: 'Connection timeout',
+      },
+    ];
+    mockRecentEvents = [
+      { ts: new Date().toISOString(), type: 'error', summary: 'Test error 1' },
+      { ts: new Date().toISOString(), type: 'error', summary: 'Test error 2' },
+      { ts: new Date(Date.now() - 7_200_000).toISOString(), type: 'error', summary: 'Old error' },
+      { ts: new Date().toISOString(), type: 'message', summary: 'Normal message' },
+    ];
+  });
+
+  it('returns 401 without token when HEALTH_TOKEN is set', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 with wrong token', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed?token=wrong`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 200 with correct token and full detailed response', async () => {
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed?token=test-health-secret`);
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+
+    // Basic fields (same as /health)
+    expect(body.status).toBe('healthy');
+    expect(typeof body.uptime).toBe('number');
+    expect(body.bot.polling).toBe(true);
+    expect(body.database).toBe('connected');
+    expect(body.memory).toHaveProperty('rss');
+
+    // Cron statuses
+    expect(body.crons).toBeDefined();
+    expect(Array.isArray(body.crons)).toBe(true);
+    expect(body.crons.length).toBe(2);
+    expect(body.crons[0]).toHaveProperty('name', 'daily_briefing');
+    expect(body.crons[0]).toHaveProperty('lastResult', 'success');
+    expect(body.crons[1]).toHaveProperty('name', 'garmin_keepalive');
+    expect(body.crons[1]).toHaveProperty('lastError', 'Connection timeout');
+
+    // Integration health
+    expect(body.integrations).toBeDefined();
+    expect(Array.isArray(body.integrations)).toBe(true);
+    expect(body.integrations.length).toBeGreaterThan(0);
+    expect(body.integrations[0]).toHaveProperty('name');
+    expect(body.integrations[0]).toHaveProperty('configured');
+    expect(body.integrations[0]).toHaveProperty('tokenHealth');
+
+    // Error counts
+    expect(body.errors).toBeDefined();
+    expect(body.errors.total).toBe(3); // 3 error events
+    expect(body.errors.lastHour).toBe(2); // 2 within last hour
+  });
+
+  it('returns 503 when system is degraded even with valid token', async () => {
+    mockPolling = false;
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed?token=test-health-secret`);
+    expect(res.status).toBe(503);
+
+    const body = await res.json();
+    expect(body.status).toBe('degraded');
+    expect(body.crons).toBeDefined();
+    expect(body.integrations).toBeDefined();
+    expect(body.errors).toBeDefined();
+  });
+
+  it('allows access without token when HEALTH_TOKEN is empty', async () => {
+    healthToken = '';
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`);
+    expect(res.status).toBe(200);
+  });
+});
