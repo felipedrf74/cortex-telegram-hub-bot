@@ -60,7 +60,7 @@ async function buildStateContext(): Promise<string> {
       : Promise.resolve(null),
   ]);
 
-  // Microsoft To Do — compact summary (details available via tools)
+  // Microsoft To Do — compact counts only (model can call ms_todo_get_tasks for details)
   if (todoResult) {
     if (todoResult.success && todoResult.data.length > 0) {
       const tasks = todoResult.data;
@@ -74,21 +74,7 @@ async function buildStateContext(): Promise<string> {
         return due >= todayStart && due <= todayEnd;
       });
 
-      // Group by list with IDs (so model can skip ms_todo_get_lists)
-      const byList = new Map<string, { id: string; count: number }>();
-      for (const t of tasks) {
-        const entry = byList.get(t.listName) || { id: t.listId, count: 0 };
-        entry.count++;
-        byList.set(t.listName, entry);
-      }
-      const listSummary = [...byList.entries()]
-        .map(([name, { id, count }]) => `${name}(${count}) list_id:${id}`)
-        .join(' | ');
-
-      parts.push(`\nTo Do: ${tasks.length} pending, ${overdue.length} overdue, ${dueToday.length} due today.\nLists: ${listSummary}`);
-      if (overdue.length > 0) {
-        parts.push(`Overdue: ${overdue.slice(0, 5).map((t) => t.title).join(', ')}`);
-      }
+      parts.push(`\nTo Do: ${tasks.length} pending, ${overdue.length} overdue, ${dueToday.length} due today`);
     } else if (!todoResult.success) {
       parts.push('\nTo Do: API error');
     }
@@ -105,61 +91,45 @@ async function buildStateContext(): Promise<string> {
     parts.push(`\nOutlook: ${unreadResult} unread`);
   }
 
-  // Garmin training summary (last 3 days)
+  // Garmin training — compact 1-line summary (details available via Garmin tools)
   if (garminActivities.length > 0 || garminBodyBattery) {
-    parts.push('\n[GARMIN TRAINING SUMMARY]');
+    const garminParts: string[] = [];
 
     if (garminActivities.length > 0) {
-      // Group by date
-      const byDate = new Map<string, GarminActivity[]>();
+      // Count activity types and total duration
+      const typeCounts = new Map<string, number>();
+      let totalMinutes = 0;
       for (const a of garminActivities) {
-        const date = a.startTimeLocal?.substring(0, 10) || 'unknown';
-        const list = byDate.get(date) || [];
-        list.push(a);
-        byDate.set(date, list);
+        const type = a.activityType?.typeKey || 'other';
+        typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+        if (a.duration) totalMinutes += Math.round(a.duration / 60);
       }
+      const typesSummary = [...typeCounts.entries()]
+        .map(([type, count]) => `${count}×${type}`)
+        .join(', ');
 
-      for (const [date, activities] of [...byDate.entries()].sort()) {
-        const summaries = activities.map((a) => {
-          const type = a.activityType?.typeKey || a.activityName || 'activity';
-          const dur = a.duration ? `${Math.round(a.duration / 60)}min` : '';
-          const dist = a.distance ? `${(a.distance / 1000).toFixed(1)}km` : '';
-          const hr = a.averageHR ? `avgHR:${a.averageHR}` : '';
-          const cal = a.calories ? `${a.calories}cal` : '';
-          return `${type} ${[dur, dist, hr, cal].filter(Boolean).join(' ')}`;
-        });
-        parts.push(`  ${date}: ${summaries.join(' | ')}`);
-      }
+      // Count active days vs missing days
+      const activityDates = new Set(garminActivities.map((a) => a.startTimeLocal?.substring(0, 10)).filter(Boolean));
+      const restDays = [0, 1, 2].filter((i) => !activityDates.has(today.minus({ days: i }).toFormat('yyyy-MM-dd'))).length;
 
-      // Check for missing training days
-      const activityDates = new Set(byDate.keys());
-      for (let i = 0; i < 3; i++) {
-        const d = today.minus({ days: i }).toFormat('yyyy-MM-dd');
-        if (!activityDates.has(d)) {
-          parts.push(`  ${d}: No training logged`);
-        }
-      }
+      garminParts.push(`${garminActivities.length} sessions (${typesSummary}) ${totalMinutes}min total`);
+      if (restDays > 0) garminParts.push(`${restDays} rest day${restDays > 1 ? 's' : ''}`);
     } else {
-      parts.push('  No activities in the last 3 days');
+      garminParts.push('No activities (3 days)');
     }
 
-    // Body battery
+    // Body battery — single value
     if (garminBodyBattery && typeof garminBodyBattery === 'object') {
       const bb = garminBodyBattery as Record<string, unknown>;
       const events = bb.bodyBatteryValuesArray ?? bb.bodyBatteryEvents;
       if (Array.isArray(events) && events.length > 0) {
-        // Get the latest value
         const latest = events[events.length - 1];
         const val = Array.isArray(latest) ? latest[1] : (latest as Record<string, unknown>)?.bodyBatteryLevel;
-        if (val != null) parts.push(`  Body Battery: ${val}/100`);
-      }
-      // Try charged/drained from daily summary fields
-      const charged = bb.bodyBatteryChargedValue ?? bb.totalCharged;
-      const drained = bb.bodyBatteryDrainedValue ?? bb.totalDrained;
-      if (charged != null || drained != null) {
-        parts.push(`  Charged: ${charged ?? '?'} | Drained: ${drained ?? '?'}`);
+        if (val != null) garminParts.push(`BB:${val}/100`);
       }
     }
+
+    parts.push(`\nGarmin (3d): ${garminParts.join(' | ')}`);
   }
 
   // Cross-domain shared context

@@ -86,6 +86,8 @@ import { isOutlookTodoConfigured, getAllPendingTasks } from '../../src/services/
 import { isAnyCalendarConfigured, getEvents } from '../../src/services/unified-calendar';
 import { isOutlookMailConfigured, getUnreadCount } from '../../src/services/outlook-mail';
 import { getRemindersForToday } from '../../src/state/reminders';
+import { isGarminConfigured, getActivitiesByDate, getBodyBatteryEvents } from '../../src/services/garmin';
+import { getSharedMemorySummary } from '../../src/state/shared-memory';
 
 const mockCallDomain = vi.mocked(callDomain);
 const mockContinue = vi.mocked(continueWithToolResults);
@@ -271,7 +273,6 @@ describe('Secretary state context', () => {
     const stateCtx = mockCallDomain.mock.calls[0][3] as string;
     expect(stateCtx).toContain('To Do: 1 pending');
     expect(stateCtx).toContain('1 overdue');
-    expect(stateCtx).toContain('Work(1)');
   });
 
   it('includes unread email count when Outlook is configured', async () => {
@@ -323,5 +324,96 @@ describe('Secretary state context', () => {
     // Should not throw — all external calls have .catch() guards
     const result = await handleSecretary('Overview');
     expect(result.text).toBe('OK');
+  });
+
+  // ─── Bug P0: buildStateContext must stay compact (<500 tokens ≈ <2000 chars) ───
+  // When all data sources are active with realistic data, the context was
+  // previously 800+ tokens due to verbose Garmin per-activity breakdowns,
+  // causing Claude to hallucinate status briefings instead of answering questions.
+
+  it('stays under 2000 characters even with all data sources active (Bug P0)', async () => {
+    // Enable ALL data sources with realistic volumes
+    vi.mocked(isOutlookTodoConfigured).mockReturnValue(true);
+    vi.mocked(getAllPendingTasks).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 't1', listId: 'l1', listName: 'Work', title: 'Deploy v5', importance: 'high', status: 'notStarted', dueDateTime: '2026-03-29T09:00:00', isReminderOn: false, createdDateTime: '2026-03-28' },
+        { id: 't2', listId: 'l1', listName: 'Work', title: 'Code review', importance: 'normal', status: 'notStarted', dueDateTime: '2026-03-30T09:00:00', isReminderOn: false, createdDateTime: '2026-03-28' },
+        { id: 't3', listId: 'l2', listName: 'Personal', title: 'Buy groceries', importance: 'low', status: 'notStarted', dueDateTime: '2026-03-30T18:00:00', isReminderOn: false, createdDateTime: '2026-03-28' },
+        { id: 't4', listId: 'l3', listName: 'Content', title: 'Record video', importance: 'high', status: 'notStarted', dueDateTime: '2026-03-31T10:00:00', isReminderOn: false, createdDateTime: '2026-03-28' },
+        { id: 't5', listId: 'l3', listName: 'Content', title: 'Edit thumbnail', importance: 'normal', status: 'notStarted', dueDateTime: '2026-04-01T10:00:00', isReminderOn: false, createdDateTime: '2026-03-28' },
+      ],
+    } as any);
+
+    vi.mocked(isAnyCalendarConfigured).mockReturnValue(true);
+    vi.mocked(getEvents).mockResolvedValue([
+      { summary: 'Team standup', start: '2026-03-30T09:00:00', end: '2026-03-30T09:30:00' },
+      { summary: 'Client call', start: '2026-03-30T11:00:00', end: '2026-03-30T12:00:00' },
+      { summary: 'Gym session', start: '2026-03-30T17:00:00', end: '2026-03-30T18:30:00' },
+    ] as any);
+
+    vi.mocked(isOutlookMailConfigured).mockReturnValue(true);
+    vi.mocked(getUnreadCount).mockResolvedValue(12);
+
+    vi.mocked(getRemindersForToday).mockReturnValue([
+      { id: 1, message: 'Call dentist', remind_at: '2026-03-30T14:00:00', recurring: null, status: 'active', created_at: '' },
+      { id: 2, message: 'Submit tax return', remind_at: '2026-03-30T16:00:00', recurring: null, status: 'active', created_at: '' },
+    ] as any);
+
+    // Garmin: 3 days of activities with realistic volumes (the main source of bloat)
+    vi.mocked(isGarminConfigured).mockReturnValue(true);
+    vi.mocked(getActivitiesByDate).mockResolvedValue([
+      { activityId: 1, activityName: 'Morning Run', activityType: { typeKey: 'running' }, startTimeLocal: '2026-03-30T07:00:00', duration: 2700, distance: 5000, averageHR: 145, calories: 350 },
+      { activityId: 2, activityName: 'Strength Training Upper Body', activityType: { typeKey: 'strength_training' }, startTimeLocal: '2026-03-30T17:00:00', duration: 3600, averageHR: 120, calories: 280 },
+      { activityId: 3, activityName: 'Easy Recovery Run', activityType: { typeKey: 'running' }, startTimeLocal: '2026-03-29T07:30:00', duration: 1800, distance: 3000, averageHR: 135, calories: 220 },
+      { activityId: 4, activityName: 'Long Endurance Cycling Session', activityType: { typeKey: 'cycling' }, startTimeLocal: '2026-03-29T16:00:00', duration: 5400, distance: 30000, averageHR: 140, calories: 600 },
+      { activityId: 5, activityName: 'Strength Training Lower Body', activityType: { typeKey: 'strength_training' }, startTimeLocal: '2026-03-29T18:00:00', duration: 3000, averageHR: 125, calories: 300 },
+      { activityId: 6, activityName: 'Morning Yoga Flow', activityType: { typeKey: 'yoga' }, startTimeLocal: '2026-03-28T08:00:00', duration: 2400, calories: 150 },
+      { activityId: 7, activityName: 'Tempo Run with Intervals', activityType: { typeKey: 'running' }, startTimeLocal: '2026-03-28T16:00:00', duration: 3300, distance: 8000, averageHR: 160, calories: 520 },
+      { activityId: 8, activityName: 'Evening Swim Open Water', activityType: { typeKey: 'open_water_swimming' }, startTimeLocal: '2026-03-28T18:00:00', duration: 2700, distance: 1500, averageHR: 130, calories: 350 },
+    ] as any);
+    vi.mocked(getBodyBatteryEvents).mockResolvedValue({
+      bodyBatteryValuesArray: [[1711800000000, 72]],
+      bodyBatteryChargedValue: 45,
+      bodyBatteryDrainedValue: 38,
+    });
+
+    vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] marathon_date: April 15 | rest_day: false');
+
+    mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
+    await handleSecretary('What is 2+2?');
+
+    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+
+    // Bug P0 fix: context must stay under 2000 chars (~500 tokens)
+    // to prevent Claude from hallucinating status briefings
+    expect(stateCtx.length).toBeLessThan(2000);
+
+    // Must still contain essential info (just compact)
+    expect(stateCtx).toContain('To Do:');
+    expect(stateCtx).toContain('Calendar today');
+    expect(stateCtx).toContain('Outlook:');
+  });
+
+  it('Garmin summary uses compact format, not per-activity breakdown', async () => {
+    vi.mocked(isGarminConfigured).mockReturnValue(true);
+    vi.mocked(getActivitiesByDate).mockResolvedValue([
+      { activityId: 1, activityName: 'Morning Run', activityType: { typeKey: 'running' }, startTimeLocal: '2026-03-30T07:00:00', duration: 2700, distance: 5000, averageHR: 145, calories: 350 },
+      { activityId: 2, activityName: 'Strength', activityType: { typeKey: 'strength_training' }, startTimeLocal: '2026-03-29T17:00:00', duration: 3600, averageHR: 120, calories: 280 },
+    ] as any);
+    vi.mocked(getBodyBatteryEvents).mockResolvedValue({
+      bodyBatteryValuesArray: [[1711800000000, 65]],
+    });
+
+    mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
+    await handleSecretary('How am I doing?');
+
+    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+
+    // Should NOT contain per-activity details (the verbose format)
+    expect(stateCtx).not.toMatch(/avgHR:\d+/);
+    expect(stateCtx).not.toMatch(/\d+cal/);
+    // Should contain compact summary
+    expect(stateCtx).toContain('Garmin');
   });
 });
