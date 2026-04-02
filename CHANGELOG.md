@@ -7,17 +7,39 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 
 ### Bug Fixes
 
+- **agents**: QA agents now check Notion QA Validating column as fallback ([`a90635d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a90635d2653982c069ceb58d66751d11dc222ad0))
+- **agents**: QA agents now auto-chain from .qa-queue after completing validation ([`1cc8d57`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/1cc8d57ad26923feb362e4466329c4a71ee3a063))
+- **agents**: QA queue only valid for QA Validating tasks — remove all others ([`c949b53`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/c949b535c85003198c22b2f776137fdc96906b32))
+- **agents**: AgentPath not defined in agent-complete.js — agents were crashing after task completion ([`8535e80`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/8535e80fd82463670fae0bd1acbd3ec4c1676bb0))
+- Restore execute permission on launch-agent.sh ([`86f8fef`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/86f8fef34f7e8a2343353c900ce177eec11fdd78))
+- **agents**: Prevent QA duplicate tasks + clear stale active tasks + agent memory ([`c1753f0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/c1753f01b17da079f07f3aba4ec022d022bcd934))
+- **agents**: ALL tasks go through QA, fix missing agent field in dispatch ([`24620c6`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/24620c69f998b4c2bb7192aae5399693b280b1b0))
+- **agents**: Remove fallback dispatch, enforce strict agent routing ([`dd9ccdb`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/dd9ccdb50bd5eb9e01477d80e0c10cb637c3b151))
 - Resolve merge — remove duplicate financeEncryption, fix tests ([`4763421`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/4763421501b3e4cb66d3844e15ce30619838dbaa))
 - **agents**: Fix allTasks scope — fetch once for Steps 1.5 + 1.6 ([`9eebd36`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9eebd36eed7e2cc6a3522d719f5fc7d9d6985165))
 - **agents**: Add orphan recovery — re-queue QA Validating tasks with no queue file ([`82f537a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/82f537ab0a416887a13f3f82f62937c3a8ee7029))
 - **agents**: Quote pwd in CLAUDE.md, fix placeholder bug, resolve type errors ([`a33f445`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a33f44505c2348b5c9f78d6af74ec5fe2bae25aa))
 
+### Chores
+
+- Bump version to 4.5.2 [deploy] ([`83fea13`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/83fea1380baa064b2eed1c7295549f6af00b2f2a))
+- Bump version to 4.5.1 [deploy] ([`f3273b2`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/f3273b2111905d5581015b1af403728738a158c9))
+
 ### Documentation
 
+- Add Software Factory implementation plan + board utility scripts ([`1173474`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/1173474dfe9502eeb254ed379614657544956b49))
+- Update changelog [skip ci] ([`339e0f6`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/339e0f6c739ecd7d2f2233966269946f6b4769b2))
 - Update changelog for v4.5.0 ([`eba2e31`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/eba2e31dd5dd0732286b8704fddb4166d957b7a5))
 
 ### Features
 
+- **quality**: Agent output quality scoring per task execution ([`a722fa4`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a722fa4205bc640dda73c4576a8fbd6a7b647c78))
+- **errors**: Structured error categorization with retry strategies ([`2df5531`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/2df5531ca4803966ce547cae173d8dca6071a08b))
+- **metrics**: Add per-task cost and duration tracking ([`aa3ad60`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/aa3ad60ac01d89db9e48eee40600d9b7ffc49a01))
+- **dispatch**: Add blocked-by dependency check before task dispatch ([`78b7e79`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/78b7e7910f577c4b61d795f13c9a869211ffa32b))
+- **hooks**: Shift QA left — enforce vitest + tsc on pre-commit ([`7f6dc4b`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/7f6dc4b2b35d56b1a8558fa568518022436b256d))
+- **agents**: Add branch context, file hints, and max-turns to reduce token waste ([`b6e806a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/b6e806af669b7d80e7efeda6e9c71a5dd5cb1900))
+- **agents**: Add CODEBASE.md architecture map, agent-specific instructions, Opus for backend/flex ([`1e0fda5`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/1e0fda559515a422de8446106f7be1cb231f63c7))
 - **infra**: Add health check endpoint + uptime monitoring ([`53109b3`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/53109b3e0cbc3b4f66e7b35a7e626111f957aeca))
 - **portal**: Add adapter status panel (Telegram active, WhatsApp planned) ([`0c58483`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/0c584833cdcf2e97d0a3ee909696dd3ff9407068))
 - **finance**: Add per-user data isolation + AES-256-GCM encryption for financial data ([`d2c559d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/d2c559d3ff4c09dafa6c7789a3fd39864feeda63))
