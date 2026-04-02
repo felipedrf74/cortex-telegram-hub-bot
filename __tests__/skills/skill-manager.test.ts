@@ -366,13 +366,13 @@ describe('SkillManager — enable/disable false-positive bug (#4 #5 #6)', () => 
   it('enableSubSkill returns true for already-enabled sub-skill', () => {
     // All sub-skills are enabled by default after seeding
     const result = enableSubSkill('secretary', 'email');
-    expect(result).toBe(true);
+    expect(result).toEqual({ ok: true });
   });
 
   it('disableSubSkill returns true for already-disabled sub-skill', () => {
     disableSubSkill('secretary', 'email');
     const result = disableSubSkill('secretary', 'email');
-    expect(result).toBe(true);
+    expect(result).toEqual({ ok: true });
   });
 
   it('enableSkill returns false for non-existent skill', () => {
