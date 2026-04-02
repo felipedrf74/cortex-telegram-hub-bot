@@ -1,9 +1,0 @@
-{
-  "id": "336ad49d-23e7-8131-bf6c-c9759dda34b9",
-  "title": "BUG P1: @Nexushub94_bot completely unresponsive",
-  "description": "BUG P1: @Nexushub94_bot unresponsive — used for agent notifications via Mission Control.\n\nCONTEXT: User-facing bot is @Hlepreguica_bot. @Nexushub94_bot is used by MC for agent lifecycle notifications.\n\nACCEPTANCE CRITERIA:\n- Clarify: is @Nexushub94_bot token configured in .env.agents as TELEGRAM_BOT_TOKEN or NOTIFY_BOT_TOKEN?\n- If separate bot: verify NOTIFY_BOT_TOKEN is set and valid (test with bot.api.getMe())\n- MC notify() function in mission-control.js sends messages successfully\n- Test: manually trigger notification -> message appears in Felipe's Telegram\n- Add bot identity check on startup: log which bot is running (username + id)\n- Document in README which bot tokens are needed and for what\n\nFILES: scripts/mission-control.js (notify), .env.agents, src/config.ts, README.md\nDEPS: None",
-  "priority": "High",
-  "originAgent": "devops",
-  "tags": [],
-  "phase": ""
-}

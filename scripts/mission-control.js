@@ -14,14 +14,54 @@ const WORKTREES = path.resolve(REPO, '../nexushub-worktrees');
 const SCRIPT = p => path.join(REPO, 'scripts', p);
 
 let NOTION_TOKEN = process.env.NOTION_TOKEN || '';
-if (!NOTION_TOKEN) {
-  try {
-    const f = fs.readFileSync(path.join(REPO, '.env.agents'), 'utf8');
-    const m = f.match(/NOTION_TOKEN=(.+)/);
-    if (m) NOTION_TOKEN = m[1].trim();
-  } catch {}
+let TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+let TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+{
+  const envPaths = [
+    path.join(REPO, '.env.agents'),
+    path.join(process.cwd(), '.env.agents'),
+  ];
+  for (const p of envPaths) {
+    try {
+      const f = fs.readFileSync(p, 'utf8');
+      if (!NOTION_TOKEN) { const m = f.match(/NOTION_TOKEN=(.+)/); if (m) NOTION_TOKEN = m[1].trim(); }
+      if (!TG_TOKEN) { const m = f.match(/TELEGRAM_BOT_TOKEN=(.+)/); if (m) TG_TOKEN = m[1].trim(); }
+      if (!TG_CHAT_ID) { const m = f.match(/TELEGRAM_CHAT_ID=(.+)/); if (m) TG_CHAT_ID = m[1].trim(); }
+    } catch {}
+  }
 }
 const DB_ID = '332ad49d-23e7-81aa-831e-d5a3ceff20c1';
+
+// ─── Telegram Notification (send-only via @Nexushub94_bot) ─────────
+async function notify(msg) {
+  if (!TG_TOKEN || !TG_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg, parse_mode: 'HTML' }),
+    });
+  } catch (e) { console.log(`  ⚠️ Telegram notify failed: ${e.message}`); }
+}
+
+async function verifyBotIdentity() {
+  if (!TG_TOKEN) {
+    console.log('  ⚠️ Notification bot: TELEGRAM_BOT_TOKEN not set in .env.agents — notifications disabled');
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
+    const data = await res.json();
+    if (data.ok) {
+      console.log(`  🤖 Notification bot: @${data.result.username} (ID: ${data.result.id})`);
+      console.log(`  📬 Chat ID: ${TG_CHAT_ID || '❌ not set'}`);
+    } else {
+      console.log(`  ❌ Notification bot: token invalid — ${data.description || 'unknown error'}`);
+    }
+  } catch (e) {
+    console.log(`  ⚠️ Notification bot: cannot reach Telegram API — ${e.message}`);
+  }
+}
 const QA_QUEUE_DIR = path.join(WORKTREES, 'qa', '.qa-queue');
 
 // ─── Agent→Worktree mapping for auto-assign ────────────────────────
@@ -324,6 +364,19 @@ return "not found"`;
     }
     if (route === 'agent-branches') { const b = await readBody(req); return send(res, await run(`git log origin/agent/${b.agent||'backend'} --oneline -10 2>/dev/null || echo 'No branch found'`)); }
     if (route === 'sync-server') return send(res, await run('./scripts/sync-from-server.sh --dry-run 2>&1'));
+    if (route === 'test-notify') {
+      if (!TG_TOKEN || !TG_CHAT_ID) return send(res, { ok: false, output: 'Notification bot not configured (check .env.agents)' });
+      await notify('🧪 <b>MC test notification</b>\nMission Control is sending notifications correctly.');
+      return send(res, { ok: true, output: 'Test notification sent' });
+    }
+    if (route === 'bot-status') {
+      if (!TG_TOKEN) return send(res, { ok: false, bot: null, reason: 'TELEGRAM_BOT_TOKEN not set' });
+      try {
+        const r2 = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
+        const d = await r2.json();
+        return send(res, { ok: d.ok, bot: d.ok ? d.result : null, chatId: TG_CHAT_ID || null });
+      } catch (e) { return send(res, { ok: false, bot: null, reason: e.message }); }
+    }
     return send(res, {ok:false,error:'Unknown route'}, 404);
   } catch(e) { return send(res, {ok:false,error:e.message}, 500); }
 }
@@ -334,8 +387,10 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, {'Content-Type':'text/html'});
   res.end(PAGE + PAGE2 + PAGE3 + PAGE4 + PAGE5 + PAGE6);
 });
-server.listen(PORT, () => {
-  console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}\n`);
+server.listen(PORT, async () => {
+  console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}`);
+  await verifyBotIdentity();
+  console.log('');
 
   // ─── Server-side auto-assign loop (every 45s) ────────────────────
   setInterval(async () => {
@@ -343,7 +398,121 @@ server.listen(PORT, () => {
       // Step 1: Auto-assign idle agents (dispatch To Do / QA queue)
       const results = await autoAssignAll();
       if (results.length > 0) {
-        console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
+        const summary = results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ');
+        console.log(`[auto-assign] ${summary}`);
+        const assigned = results.filter(r => r.task);
+        if (assigned.length > 0) {
+          await notify(`📋 <b>Auto-assigned</b>\n${assigned.map(r => `• <b>${r.agent}</b> → ${r.task}`).join('\n')}`);
+        }
+      }
+
+      // Fetch tasks once for Steps 1.5 and 1.6
+      const allTasks = await fetchTasks();
+
+      // Step 1.4: Clear stale active tasks on QA agents (task is Done in Notion but agent still has it)
+      for (const qaName of ['qa', 'qa2']) {
+        const qaPath = path.join(WORKTREES, qaName);
+        const activeFile = path.join(qaPath, '.agent-task.json');
+        try {
+          if (fs.existsSync(activeFile)) {
+            const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+            const notionTask = allTasks.find(t => t.id === active.id);
+            if (!notionTask || notionTask.status !== 'QA Validating') {
+              fs.unlinkSync(activeFile);
+              try { fs.unlinkSync(path.join(qaPath, '.agent-prompt.md')); } catch {}
+              console.log(`[qa-stale] Cleared ${qaName} active task: "${active.title?.substring(0,30)}" (Notion: ${notionTask?.status || 'not found'})`);
+            }
+          }
+        } catch {}
+      }
+
+      // Step 1.5: Clean QA queues (ALWAYS) + dispatch idle QA agents
+      const qaAgents = ['qa', 'qa2'];
+      for (const qaName of qaAgents) {
+        const qaPath = path.join(WORKTREES, qaName);
+        const queueDir = path.join(qaPath, '.qa-queue');
+        try {
+          let queueFiles = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort() : [];
+
+          // ALWAYS clean stale items (runs every cycle, even when QA is busy)
+          const activeTaskFile = path.join(qaPath, '.agent-task.json');
+          let activeTaskId = null;
+          try { activeTaskId = JSON.parse(fs.readFileSync(activeTaskFile, 'utf8')).id; } catch {}
+
+          for (const qf of [...queueFiles]) {
+            try {
+              const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
+              const notionTask = allTasks.find(t => t.id === qt.id);
+              // Remove if: Done, Backlog, not in Notion, or is the currently active task
+              if (!notionTask || notionTask.status !== 'QA Validating' || qt.id === activeTaskId) {
+                fs.unlinkSync(path.join(queueDir, qf));
+                queueFiles = queueFiles.filter(f => f !== qf);
+                if (qt.id !== activeTaskId) {
+                  console.log(`[qa-queue] Removed stale ${qf}: "${qt.title.substring(0,30)}" (Notion: ${notionTask?.status || 'not found'})`);
+                }
+              }
+            } catch {}
+          }
+
+          // Dispatch if QA agent is idle and has waiting tasks
+          const hasTask = fs.existsSync(activeTaskFile);
+          const hasPrompt = fs.existsSync(path.join(qaPath, '.agent-prompt.md'));
+          if (!hasTask && !hasPrompt && queueFiles.length > 0) {
+            const nextTask = JSON.parse(fs.readFileSync(path.join(queueDir, queueFiles[0]), 'utf8'));
+            console.log(`[qa-queue] ${qaName} idle, ${queueFiles.length} waiting — dispatching: ${nextTask.title.substring(0,40)}`);
+            const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
+            const prompt = `# \ud83e\uddea QA Validation Task\n\n## Validating: ${nextTask.title}\n**Original agent:** ${nextTask.originAgent}\n**Priority:** ${nextTask.priority || 'Medium'}\n\n## Instructions\n1. Pull the latest code: \`git fetch origin && git merge origin/agent/${nextTask.originAgent} --no-edit\`\n2. Run all tests: \`npx vitest run\`\n3. Run type check: \`npx tsc --noEmit\`\n4. Review the changes: \`git log origin/main..HEAD --oneline\`\n5. Verify the implementation matches the task description\n6. If ALL checks pass: mark as PASS\n7. If ANY check fails: mark as FAIL with clear reason\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass --summary "describe what you validated"\n\`\`\`\nOr if FAIL:\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "describe the failure"\n\`\`\`\n\n## Notion Task ID\n${nextTask.id}`;
+            fs.writeFileSync(path.join(qaPath, '.agent-prompt.md'), prompt);
+            fs.writeFileSync(path.join(qaPath, '.agent-task.json'), JSON.stringify({
+              id: nextTask.id, title: nextTask.title, description: nextTask.description || '',
+              priority: nextTask.priority || '', phase: nextTask.phase || '',
+              tags: nextTask.tags || [], agent: qaName === 'qa' ? '\ud83e\uddea QA' : '\ud83e\uddea QA2',
+              originAgent: nextTask.originAgent
+            }, null, 2));
+            // Remove dispatched item from queue
+            fs.unlinkSync(path.join(queueDir, queueFiles[0]));
+          }
+        } catch (e) { console.error(`[qa-queue] Error processing ${qaName}:`, e.message); }
+      }
+
+      // Step 1.6: Recover orphaned QA Validating tasks from Notion
+      // Check BOTH QA agents globally to prevent duplicates
+      const qaValidating = allTasks.filter(t => t.status === 'QA Validating');
+      for (const task of qaValidating) {
+        const originWorktree = AGENT_MAP[task.agent] || 'backend';
+        const targetQA = QA_ROUTING[originWorktree] || (task.agent === '🔒 Security' ? 'qa2' : 'qa');
+        // Check ALL QA agents (not just target) to prevent cross-agent duplicates
+        let alreadyHandled = false;
+        for (const checkQA of ['qa', 'qa2']) {
+          if (alreadyHandled) break;
+          const checkPath = path.join(WORKTREES, checkQA);
+          try {
+            const activeFile = path.join(checkPath, '.agent-task.json');
+            if (fs.existsSync(activeFile)) {
+              const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+              if (active.id === task.id) { alreadyHandled = true; break; }
+            }
+            const checkQueue = path.join(checkPath, '.qa-queue');
+            if (fs.existsSync(checkQueue)) {
+              for (const qf of fs.readdirSync(checkQueue).filter(f => f.endsWith('.json'))) {
+                const qt = JSON.parse(fs.readFileSync(path.join(checkQueue, qf), 'utf8'));
+                if (qt.id === task.id) { alreadyHandled = true; break; }
+              }
+            }
+          } catch {}
+        }
+        if (!alreadyHandled) {
+          const queueDir = path.join(WORKTREES, targetQA, '.qa-queue');
+          if (!fs.existsSync(queueDir)) fs.mkdirSync(queueDir, { recursive: true });
+          const files = fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort();
+          const nextNum = files.length === 0 ? 1 : parseInt(files[files.length - 1].replace('.json', ''), 10) + 1;
+          fs.writeFileSync(path.join(queueDir, String(nextNum).padStart(3, '0') + '.json'), JSON.stringify({
+            id: task.id, title: task.title, description: task.description || '',
+            priority: task.priority || '', phase: task.phase || '', tags: task.tags || [],
+            originAgent: originWorktree, targetQA, queuedAt: new Date().toISOString(),
+          }, null, 2));
+          console.log(`[qa-orphan] Re-queued orphaned task to ${targetQA}: "${task.title.substring(0,40)}"`);
+        }
       }
 
       // Fetch tasks once for Steps 1.5 and 1.6
@@ -470,9 +639,13 @@ write text "\\\"${launcherPath}\\\" ${ag.name}"
 end tell
 end tell
 end tell`;
-          exec(`osascript -e '${applescript.replace(/'/g,"'\\''")}'`, (err) => {
-            if (err) console.error(`[auto-launch] Failed for ${ag.name}:`, err.message);
-            else console.log(`[auto-launch] ✅ ${ag.name} launched in iTerm`);
+          exec(`osascript -e '${applescript.replace(/'/g,"'\\''")}'`, async (err) => {
+            if (err) {
+              console.error(`[auto-launch] Failed for ${ag.name}:`, err.message);
+            } else {
+              console.log(`[auto-launch] ✅ ${ag.name} launched in iTerm`);
+              await notify(`▶️ <b>${ag.name}</b> auto-launched in iTerm`);
+            }
           });
           await new Promise(r => setTimeout(r, 2000)); // Stagger launches
         }
