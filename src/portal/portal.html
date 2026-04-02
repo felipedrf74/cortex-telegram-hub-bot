@@ -828,6 +828,12 @@
   <div class="health-item" id="hb-sentry-wrap"><span id="hb-sentry-dot" class="status-dot dot-yellow"></span> Sentry: <span class="val" id="hb-sentry">—</span></div>
   <span class="health-sep">|</span>
   <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item"><span id="hb-health-dot" class="status-dot dot-yellow"></span> Health: <span class="val" id="hb-health-status">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">💾 DB: <span class="val" id="hb-db-status">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">🧠 Mem: <span class="val" id="hb-mem">—</span></div>
 </div>
 
 <div class="container">
@@ -2300,6 +2306,46 @@
 
   loadErrors();
   setInterval(loadErrors, 30_000);
+
+  // ── Health Endpoint Polling ──────────────────
+  async function pollHealth() {
+    try {
+      const res = await fetch('/health');
+      const data = await res.json();
+      const dot = document.getElementById('hb-health-dot');
+      const statusEl = document.getElementById('hb-health-status');
+      const dbEl = document.getElementById('hb-db-status');
+      const memEl = document.getElementById('hb-mem');
+
+      if (data.status === 'healthy') {
+        dot.className = 'status-dot dot-green';
+        statusEl.textContent = 'healthy';
+        statusEl.style.color = 'var(--green)';
+      } else {
+        dot.className = 'status-dot dot-red';
+        statusEl.textContent = data.status;
+        statusEl.style.color = 'var(--red)';
+      }
+
+      dbEl.textContent = data.db || '—';
+      dbEl.style.color = data.db === 'ok' ? 'var(--green)' : 'var(--red)';
+
+      if (data.memory) {
+        memEl.textContent = `${data.memory.heapUsed}/${data.memory.heapTotal} MB`;
+        const pct = data.memory.heapUsed / data.memory.heapTotal;
+        memEl.style.color = pct > 0.85 ? 'var(--red)' : pct > 0.70 ? 'var(--yellow)' : 'var(--green)';
+      }
+    } catch {
+      const dot = document.getElementById('hb-health-dot');
+      const statusEl = document.getElementById('hb-health-status');
+      dot.className = 'status-dot dot-red';
+      statusEl.textContent = 'unreachable';
+      statusEl.style.color = 'var(--red)';
+    }
+  }
+
+  pollHealth();
+  setInterval(pollHealth, 15_000);
 
   // Poll mission control alongside main poll
   pollMissionControl();

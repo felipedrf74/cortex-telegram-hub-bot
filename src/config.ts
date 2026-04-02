@@ -151,6 +151,7 @@ export const config = {
     port: parseInt(process.env.PORTAL_PORT || '8200', 10),
     bind: process.env.PORTAL_BIND || '0.0.0.0',
     token: process.env.PORTAL_TOKEN || '',
+    healthToken: process.env.HEALTH_TOKEN || process.env.PORTAL_TOKEN || '',
   },
   // ── Webhook Infrastructure ─────────────────────────────────────────
   webhooks: {

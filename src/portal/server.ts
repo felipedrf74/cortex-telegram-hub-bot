@@ -927,6 +927,125 @@ export function createPortalServer(bot: Bot): http.Server {
   const app = express();
   app.use(express.json());
 
+  // ── GET /health — lightweight liveness probe (no auth) ─────────
+  // Used by: Docker HEALTHCHECK, UptimeRobot, PM2 health script.
+  // Must stay fast — only in-memory checks + a trivial DB ping.
+  app.get('/health', (_req: Request, res: Response) => {
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+    let dbOk = false;
+    try {
+      const row = getDb().prepare('SELECT 1 AS ok').get() as { ok: number } | undefined;
+      dbOk = row?.ok === 1;
+    } catch { /* db unreachable */ }
+
+    const botOk = isBotPollingActive();
+    const memUsage = process.memoryUsage();
+    const healthy = dbOk && botOk;
+
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? 'healthy' : 'degraded',
+      uptime: uptimeSec,
+      db: dbOk ? 'ok' : 'unreachable',
+      bot: botOk ? 'polling' : isRestarting() ? 'restarting' : 'stopped',
+      memory: {
+        rss: Math.round(memUsage.rss / 1048576),           // MB
+        heapUsed: Math.round(memUsage.heapUsed / 1048576), // MB
+        heapTotal: Math.round(memUsage.heapTotal / 1048576),
+      },
+    });
+  });
+
+  // ── GET /health/detailed — full health check (auth via ?token=) ─
+  // Used by: monitoring dashboards, alerting integrations.
+  app.get('/health/detailed', (req: Request, res: Response) => {
+    const healthToken = config.portal.healthToken;
+    if (healthToken) {
+      const providedToken = req.query.token as string | undefined;
+      if (!providedToken || providedToken !== healthToken) {
+        res.status(401).json({ error: 'Unauthorized — provide ?token=HEALTH_TOKEN' });
+        return;
+      }
+    }
+
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+
+    // Database health
+    let dbOk = false;
+    let dbSizeBytes: number | null = null;
+    try {
+      const row = getDb().prepare('SELECT 1 AS ok').get() as { ok: number } | undefined;
+      dbOk = row?.ok === 1;
+      const pageCount = (getDb().prepare('PRAGMA page_count').get() as any)?.page_count ?? 0;
+      const pageSize = (getDb().prepare('PRAGMA page_size').get() as any)?.page_size ?? 0;
+      dbSizeBytes = pageCount * pageSize;
+    } catch { /* db unreachable */ }
+
+    // Cron job statuses
+    const jobs = getJobStatuses();
+    const jobsOk = jobs.filter(j => j.lastResult === 'success' || j.lastResult === 'never').length;
+    const jobsFailed = jobs.filter(j => j.lastResult === 'failed');
+
+    // Error counts
+    let errorCounts = { today: 0, last7d: 0, last30d: 0 };
+    try {
+      const trends = getErrorTrends();
+      errorCounts = { today: trends.today, last7d: trends.last7d, last30d: trends.last30d };
+    } catch { /* error monitor not initialized */ }
+
+    // Integration health summary
+    const integrationChecks = [
+      { name: 'google_calendar', configured: isGoogleCalendarConfigured() },
+      { name: 'gmail', configured: isGmailConfigured() },
+      { name: 'google_drive', configured: isGoogleDriveEnabled() },
+      { name: 'outlook_calendar', configured: isOutlookCalendarConfigured() },
+      { name: 'outlook_mail', configured: isOutlookMailConfigured() },
+      { name: 'outlook_todo', configured: isOutlookTodoConfigured() },
+      { name: 'garmin', configured: isGarminConfigured() },
+      { name: 'invoice_filing', configured: isInvoiceFilingConfigured() },
+      { name: 'sentry', configured: isSentryEnabled() },
+    ];
+
+    const memUsage = process.memoryUsage();
+    const botOk = isBotPollingActive();
+    const healthy = dbOk && botOk && jobsFailed.length === 0;
+    const degraded = dbOk && botOk && jobsFailed.length > 0;
+
+    res.status(healthy ? 200 : degraded ? 200 : 503).json({
+      status: healthy ? 'healthy' : degraded ? 'degraded' : 'unhealthy',
+      uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
+      bot: {
+        polling: botOk,
+        restarting: isRestarting(),
+        lastMessageAt: getLastMessageAt(),
+      },
+      db: {
+        status: dbOk ? 'ok' : 'unreachable',
+        sizeBytes: dbSizeBytes,
+        sizeMB: dbSizeBytes !== null ? Math.round(dbSizeBytes / 1048576 * 100) / 100 : null,
+      },
+      memory: {
+        rss: Math.round(memUsage.rss / 1048576),
+        heapUsed: Math.round(memUsage.heapUsed / 1048576),
+        heapTotal: Math.round(memUsage.heapTotal / 1048576),
+        external: Math.round(memUsage.external / 1048576),
+      },
+      crons: {
+        total: jobs.length,
+        ok: jobsOk,
+        failed: jobsFailed.map(j => ({
+          name: j.name,
+          label: j.label,
+          lastError: j.lastError,
+          lastRunAt: j.lastRunAt,
+        })),
+      },
+      errors: errorCounts,
+      integrations: integrationChecks,
+      sentry: isSentryEnabled(),
+      generatedAt: new Date().toISOString(),
+    });
+  });
+
   // ── Auth middleware for /api/* ──────────────────────────────────
   const portalToken = config.portal.token;
 
