@@ -343,6 +343,9 @@ server.listen(PORT, () => {
         console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
       }
 
+      // Fetch tasks once for Steps 1.5 and 1.6
+      const allTasks = await fetchTasks();
+
       // Step 1.5: Clean QA queues (ALWAYS) + dispatch idle QA agents
       const qaAgents = ['qa', 'qa2'];
       for (const qaName of qaAgents) {
