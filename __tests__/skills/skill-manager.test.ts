@@ -504,11 +504,182 @@ describe('SkillManager — bug regression: enable/disable after seeding', () => 
     }
   });
 
-  it('all core submodules are enabled by default after seeding', () => {
+  it('submodules respect enabledByDefault after seeding', () => {
     for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
+      const def = DEFAULT_SKILLS[domain];
       const status = getSkillStatus(domain)!;
-      const allEnabled = status.subSkills.every(s => s.enabled);
-      expect(allEnabled).toBe(true);
+      for (const sub of status.subSkills) {
+        const subDef = def.subSkills.find(s => s.name === sub.name);
+        expect(sub.enabled).toBe(subDef?.enabledByDefault ?? true);
+      }
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// QA VALIDATION: skill enable/disable false positive bug fix
+// ═══════════════════════════════════════════════════════════════════
+
+describe('QA Validation — skill enable/disable false positive fix', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+    invalidateToolCache();
+  });
+  afterEach(() => { testDb.close(); });
+
+  // ── Root cause: unseeded DB returns false ──
+
+  it('enable returns false on unseeded DB — confirms root cause', () => {
+    // Without seeding, there are no rows in installed_skills
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
+      expect(enableSkill(domain)).toBe(false);
+    }
+  });
+
+  it('disable returns false on unseeded DB — confirms root cause', () => {
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
+      expect(disableSkill(domain)).toBe(false);
+    }
+  });
+
+  it('getSkillStatus shows disabled for unseeded skills', () => {
+    const status = getSkillStatus('cooking');
+    expect(status.enabled).toBe(false);
+    // subSkills still come from the config definition, but all show disabled
+    // because there are no DB rows to match against
+    for (const sub of status.subSkills) {
+      expect(sub.enabled).toBe(false);
+    }
+  });
+
+  // ── Fix: seeding makes enable/disable work ──
+
+  it('seedDefaultSkills populates all 5 domains', () => {
+    seedDefaultSkills();
+    const all = getAllSkillStatuses();
+    expect(all).toHaveLength(5);
+    for (const s of all) {
+      expect(s.enabled).toBe(true);
+    }
+  });
+
+  it('seedDefaultSkills is idempotent — calling twice preserves state', () => {
+    seedDefaultSkills();
+    disableSkill('cooking');
+    expect(getSkillStatus('cooking').enabled).toBe(false);
+
+    // Seed again — should NOT re-enable cooking
+    seedDefaultSkills();
+    expect(getSkillStatus('cooking').enabled).toBe(false);
+  });
+
+  it('seedDefaultSkills preserves submodule toggle state', () => {
+    seedDefaultSkills();
+    const sub = getSkillStatus('secretary').subSkills[0];
+    disableSubSkill('secretary', sub.name);
+    expect(getSkillStatus('secretary').subSkills.find(s => s.name === sub.name)!.enabled).toBe(false);
+
+    // Re-seed — submodule should remain disabled
+    seedDefaultSkills();
+    expect(getSkillStatus('secretary').subSkills.find(s => s.name === sub.name)!.enabled).toBe(false);
+  });
+
+  // ── Enable/disable correctness after seeding ──
+
+  it('enable on already-enabled skill returns true (UPDATE matches the row)', () => {
+    seedDefaultSkills();
+    // Skill is enabled by default — enable should still return true (row matched)
+    expect(enableSkill('cooking')).toBe(true);
+    expect(getSkillStatus('cooking').enabled).toBe(true);
+  });
+
+  it('disable then enable round-trip preserves all submodules', () => {
+    seedDefaultSkills();
+    const beforeSubs = getSkillStatus('finance').subSkills.map(s => s.name);
+
+    disableSkill('finance');
+    enableSkill('finance');
+
+    const afterSubs = getSkillStatus('finance').subSkills.map(s => s.name);
+    expect(afterSubs).toEqual(beforeSubs);
+  });
+
+  it('disabling skill does not delete submodule rows', () => {
+    seedDefaultSkills();
+    const subCountBefore = getSkillStatus('triathlon').subSkills.length;
+    expect(subCountBefore).toBeGreaterThan(0);
+
+    disableSkill('triathlon');
+
+    // Submodules still exist — just the skill-level flag is off
+    const subCountAfter = getSkillStatus('triathlon').subSkills.length;
+    expect(subCountAfter).toBe(subCountBefore);
+  });
+
+  // ── Tool filtering with seeded skills ──
+
+  it('getToolsForDomain returns empty when skill is disabled', () => {
+    seedDefaultSkills();
+    disableSkill('cooking');
+
+    const tools = getToolsForDomain('cooking', FAKE_TOOLS);
+    expect(tools).toHaveLength(0);
+  });
+
+  it('getToolsForDomain returns tools when skill is re-enabled', () => {
+    seedDefaultSkills();
+    disableSkill('secretary');
+    enableSkill('secretary');
+
+    const tools = getToolsForDomain('secretary', FAKE_TOOLS);
+    expect(tools.length).toBeGreaterThan(0);
+  });
+
+  // ── Submodule toggles after seeding ──
+
+  it('enableSubSkill and disableSubSkill work after seeding', () => {
+    seedDefaultSkills();
+    const sub = getSkillStatus('cooking').subSkills[0];
+
+    expect(disableSubSkill('cooking', sub.name)).toBe(true);
+    expect(getSkillStatus('cooking').subSkills.find(s => s.name === sub.name)!.enabled).toBe(false);
+
+    expect(enableSubSkill('cooking', sub.name)).toBe(true);
+    expect(getSkillStatus('cooking').subSkills.find(s => s.name === sub.name)!.enabled).toBe(true);
+  });
+
+  it('enableSubSkill returns false for nonexistent submodule', () => {
+    seedDefaultSkills();
+    expect(enableSubSkill('cooking', 'nonexistent-module')).toBe(false);
+  });
+
+  // ── meme-scout specific: enabledByDefault=false ──
+
+  it('meme-scout submodule is disabled by default after seeding', () => {
+    seedDefaultSkills();
+    const contentStatus = getSkillStatus('content');
+    const memeScout = contentStatus.subSkills.find(s => s.name === 'meme-scout');
+    expect(memeScout).toBeDefined();
+    expect(memeScout!.enabled).toBe(false);
+  });
+
+  it('meme-scout can be explicitly enabled after seeding', () => {
+    seedDefaultSkills();
+    expect(enableSubSkill('content', 'meme-scout')).toBe(true);
+    const memeScout = getSkillStatus('content').subSkills.find(s => s.name === 'meme-scout');
+    expect(memeScout!.enabled).toBe(true);
+  });
+
+  // ── Edge case: enable/disable unknown domain ──
+
+  it('enableSkill returns false for unknown domain', () => {
+    seedDefaultSkills();
+    expect(enableSkill('nonexistent' as any)).toBe(false);
+  });
+
+  it('disableSkill returns false for unknown domain', () => {
+    seedDefaultSkills();
+    expect(disableSkill('nonexistent' as any)).toBe(false);
   });
 });
