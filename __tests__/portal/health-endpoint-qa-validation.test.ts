@@ -305,9 +305,11 @@ describe('QA: Health endpoint security', () => {
       path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
     );
     const healthStart = source.indexOf("app.get('/health'");
-    // Slice only the health handler — ends at the closing `});` before auth middleware
-    const healthEnd = source.indexOf('// ── Auth middleware', healthStart);
-    const healthBlock = source.slice(healthStart, healthEnd > 0 ? healthEnd : healthStart + 800);
+    // Slice only the basic /health handler — ends before the detailed health check comment
+    const detailedComment = source.indexOf('// ── Detailed health check', healthStart);
+    const authComment = source.indexOf('// ── Auth middleware', healthStart);
+    const healthEnd = detailedComment > 0 ? detailedComment : (authComment > 0 ? authComment : healthStart + 800);
+    const healthBlock = source.slice(healthStart, healthEnd);
     // Should not expose tokens, passwords, or env vars
     expect(healthBlock).not.toContain('token');
     expect(healthBlock).not.toContain('password');
