@@ -59,6 +59,12 @@ Then check for the next queued validation task.
 - **Always call agent-complete.js when done** — this is how the pipeline chains
 - **Always update the Status Portal** — if your feature adds cron jobs, new commands, new integrations, or user-facing functionality, update `src/portal/portal.html` to include it (timeline category, job calendar entry, action button, or status indicator). The portal is the user's dashboard at port 8200.
 
+### QA LEFT-SHIFT POLICY
+- **Pre-commit hooks enforce tests** — `vitest run` + `tsc --noEmit` run automatically on every commit
+- **QA agent handles integration/E2E testing only** — unit test failures are the committing agent's responsibility
+- **Do NOT use `--no-verify`** unless explicitly authorized by Felipe
+- If tests fail, fix them before committing. Do not skip.
+
 ---
 
 ## Project
