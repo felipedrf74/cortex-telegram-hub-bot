@@ -1460,6 +1460,9 @@
       html += `    <span class="badge ${a.status === 'connected' ? 'badge-success' : a.status === 'idle' ? 'badge-running' : a.status === 'planned' ? 'badge-never' : 'badge-failed'}">${label}</span>`;
       html += `  </div>`;
       html += `  <div class="int-right" style="display:flex;align-items:center;gap:12px">`;
+      if (a.features && a.features.length) {
+        html += a.features.map(f => `<span class="badge badge-success" style="font-size:10px;padding:1px 6px">${esc(f)}</span>`).join('');
+      }
       if (a.configured && a.lastMessageAt) {
         html += `<span title="Last message" style="font-size:12px;color:var(--muted)">🕐 ${lastMsg}</span>`;
       }

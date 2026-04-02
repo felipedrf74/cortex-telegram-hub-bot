@@ -154,6 +154,9 @@ vi.mock('../../src/agents/voice-evolution-agent', () => ({ runVoiceEvolutionAgen
 vi.mock('../../src/skills/skill-manager', () => ({
   getAllSkillStatuses: () => [],
 }));
+vi.mock('../../src/services/transcription', () => ({
+  isTranscriptionAvailable: () => false,
+}));
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),

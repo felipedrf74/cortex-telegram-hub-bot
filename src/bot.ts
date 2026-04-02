@@ -73,6 +73,7 @@ import {
 } from './services/content-engine';
 import { isGarminConfigured, setMfaNotifier, isMfaPending, submitMfaCode } from './services/garmin';
 import { recordMessageProcessed } from './portal/telemetry';
+import { transcribeAudio, isTranscriptionAvailable } from './services/transcription';
 import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePublishedStage } from './commands/pipeline';
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
@@ -3206,9 +3207,11 @@ export function createBot(): Bot {
     });
   });
 
-  // ── Unsupported media types ──
+  // ── Voice message handler: transcribe → route as text ──
   bot.on('message:voice', async (ctx) => {
-    await ctx.reply('🎤 Voice messages are not supported yet. Please type your message instead.');
+    enqueue(ctx.from.id, async () => {
+      await handleVoiceMessage(ctx);
+    });
   });
   bot.on('message:video', async (ctx) => {
     await ctx.reply('🎥 Video messages are not supported yet. You can send a photo or type a description.');
@@ -3680,6 +3683,54 @@ async function handlePhotoMessage(ctx: Context): Promise<void> {
   } catch (err) {
     logger.error({ err }, 'Failed to process photo message');
     await ctx.reply('⚠️ Falha ao processar a imagem. Tente novamente.');
+  }
+}
+
+/**
+ * Handle voice message: download OGG → transcribe via Whisper → route as text.
+ */
+async function handleVoiceMessage(ctx: Context): Promise<void> {
+  try {
+    if (!isTranscriptionAvailable()) {
+      await ctx.reply('🎤 Voice messages are not supported yet. Please type your message instead.');
+      return;
+    }
+
+    const voice = ctx.message?.voice;
+    if (!voice) return;
+
+    await ctx.replyWithChatAction('typing');
+
+    // Download OGG file from Telegram
+    const file = await ctx.api.getFile(voice.file_id);
+    // SECURITY: fileUrl contains bot token — never log this variable
+    const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
+    logger.debug({ filePath: file.file_path, duration: voice.duration }, 'Downloading voice message');
+
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      logger.error({ status: response.status }, 'Failed to download voice file from Telegram');
+      await ctx.reply('⚠️ Failed to download voice message. Please try again.');
+      return;
+    }
+    const audioBuffer = Buffer.from(await response.arrayBuffer());
+
+    // Transcribe to text
+    const transcribedText = await transcribeAudio(audioBuffer);
+
+    if (!transcribedText) {
+      await ctx.reply('🎤 Could not understand the voice message. Please try again or type your message.');
+      return;
+    }
+
+    // Show the transcription so the user can verify
+    await ctx.reply(`🎤 <i>${escapeHtml(transcribedText)}</i>`, { parse_mode: 'HTML' });
+
+    // Route the transcribed text through the normal domain pipeline
+    await handleDomainMessage(ctx, transcribedText);
+  } catch (err) {
+    logger.error({ err }, 'Failed to process voice message');
+    await ctx.reply('⚠️ Failed to process voice message. Please try again or type your message.');
   }
 }
 
