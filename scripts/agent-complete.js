@@ -60,54 +60,14 @@ if (!TG_TOKEN) {
   }
 }
 
-// ─── Notification Bot Identity ──────────────────────────────────────
-// Verify the notification bot token is valid and log which bot it resolves to.
-// This is a DIFFERENT bot from the user-facing bot (@Hlepreguica_bot).
-// The notification bot (typically @Nexushub94_bot) only SENDS messages — it
-// does NOT run long polling and will NOT respond to user messages in Telegram.
-let notificationBotVerified = false;
-let notificationBotUsername = '';
-
-async function verifyNotificationBot() {
-  if (!TG_TOKEN) {
-    console.log('  ℹ️  No TELEGRAM_BOT_TOKEN configured — notifications disabled');
-    return false;
-  }
-  if (!TG_CHAT_ID) {
-    console.log('  ⚠️  TELEGRAM_BOT_TOKEN set but TELEGRAM_CHAT_ID missing — notifications disabled');
-    return false;
-  }
-  try {
-    const resp = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
-    const data = await resp.json();
-    if (!data.ok) {
-      console.error(`  ❌ Notification bot token INVALID: ${data.description || 'unknown error'}`);
-      console.error(`     Check TELEGRAM_BOT_TOKEN in .env.agents`);
-      return false;
-    }
-    notificationBotUsername = data.result.username;
-    notificationBotVerified = true;
-    console.log(`  🤖 Notification bot: @${notificationBotUsername} (ID: ${data.result.id})`);
-    console.log(`     This bot is notification-only — it sends messages but does NOT respond to users.`);
-    return true;
-  } catch (e) {
-    console.error(`  ❌ Failed to verify notification bot: ${e.message}`);
-    return false;
-  }
-}
-
 async function notify(msg) {
   if (!TG_TOKEN || !TG_CHAT_ID) return;
   try {
-    const resp = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg, parse_mode: 'HTML' }),
     });
-    const data = await resp.json();
-    if (!data.ok) {
-      console.log(`  ⚠️ Telegram notify failed: ${data.description}`);
-    }
   } catch (e) { console.log(`  ⚠️ Telegram notify failed: ${e.message}`); }
 }
 
@@ -396,9 +356,6 @@ ${task.id}
 
 // ─── Main ───────────────────────────────────────────────────────────
 async function main() {
-  // Verify notification bot token before doing anything
-  await verifyNotificationBot();
-
   // Look for task file in worktree OR current directory
   let taskFile = path.join(WORKTREE_BASE, agentDir, '.agent-task.json');
   if (!fs.existsSync(taskFile)) {
@@ -538,7 +495,8 @@ async function main() {
   }
 
   // ─── Write Agent Memory (avoids re-reading on chained tasks) ────
-  const memoryFile = path.join(WORKTREE_BASE, agentDir, '.agent-history.md');
+  const agentMemoryPath = path.join(WORKTREE_BASE, agentDir);
+  const memoryFile = path.join(agentMemoryPath, '.agent-history.md');
   try {
     const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
     const entry = `- [${timestamp}] ${task.title} → ${needsQA ? 'QA' : 'Done'} (files: ${summary?.substring(0, 80) || 'n/a'})\n`;

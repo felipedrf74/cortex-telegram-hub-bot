@@ -182,6 +182,44 @@ function getIdleAgents() {
   return getAgents().filter(a => !a.hasTask);
 }
 
+// ─── Branch Context Builder (saves tokens by showing agents what already changed) ───
+
+function buildBranchContext(agentDir) {
+  const { execSync } = require('child_process');
+  const worktree = path.join(WORKTREE_BASE, agentDir);
+  let context = '';
+  try {
+    const diffStat = execSync(`git diff origin/main..HEAD --stat 2>/dev/null`, { cwd: worktree, encoding: 'utf8' }).trim();
+    if (diffStat) context += `\n## Branch Context (already changed)\n\`\`\`\n${diffStat}\n\`\`\`\n`;
+    const commits = execSync(`git log origin/main..HEAD --oneline -5 2>/dev/null`, { cwd: worktree, encoding: 'utf8' }).trim();
+    if (commits) context += `\n## Recent Commits\n\`\`\`\n${commits}\n\`\`\`\n`;
+  } catch {}
+  return context;
+}
+
+// ─── File Hints (tells agents exactly which files to focus on) ───────
+
+function getFileHints(task) {
+  const t = (task.title + ' ' + task.description).toLowerCase();
+  const hints = [];
+  if (t.includes('tool') || t.includes('json dump') || t.includes('tool_use')) hints.push('src/services/anthropic.ts', 'src/services/tool-executor.ts', 'src/domains/domain-handler.ts');
+  if (t.includes('skill') || t.includes('enable') || t.includes('disable')) hints.push('src/skills/skill-config.ts', 'src/skills/skill-manager.ts', 'src/skills/registry.ts', 'src/commands/skills.ts');
+  if (t.includes('portal') || t.includes('dashboard') || t.includes('health')) hints.push('src/portal/portal.html', 'src/portal/server.ts', 'src/portal/telemetry.ts');
+  if (t.includes('finance') || t.includes('expense') || t.includes('darf')) hints.push('src/services/finance-tracker.ts', 'src/domains/finance.ts');
+  if (t.includes('cooking') || t.includes('recipe') || t.includes('meal')) hints.push('src/services/cooking-chef.ts', 'src/domains/cooking.ts');
+  if (t.includes('garmin') || t.includes('fitness') || t.includes('training')) hints.push('src/services/garmin.ts', 'src/services/training-plans.ts', 'src/domains/triathlon.ts');
+  if (t.includes('calendar') || t.includes('briefing') || t.includes('secretary')) hints.push('src/services/unified-calendar.ts', 'src/domains/secretary.ts', 'src/services/scheduler.ts');
+  if (t.includes('onboarding') || t.includes('quiz')) hints.push('src/services/onboarding.ts', 'src/bot.ts');
+  if (t.includes('invoice')) hints.push('src/services/invoice-filer.ts', 'src/services/invoice-collector.ts');
+  if (t.includes('telegram') || t.includes('message') || t.includes('html')) hints.push('src/utils/telegram-formatter.ts', 'src/utils/telegram-templates.ts');
+  if (t.includes('voice')) hints.push('src/bot.ts', 'src/services/anthropic.ts');
+  if (t.includes('prompt') || t.includes('hallucin') || t.includes('classif')) hints.push('src/services/anthropic.ts', 'src/router/classifier.ts');
+  if (t.includes('cron') || t.includes('backup')) hints.push('src/services/scheduler.ts', 'src/services/backup.ts');
+  if (t.includes('webhook')) hints.push('src/services/webhook-registry.ts', 'src/portal/server.ts');
+  if (t.includes('bot') || t.includes('command')) hints.push('src/bot.ts');
+  return [...new Set(hints)]; // dedupe
+}
+
 // ─── Task Assignment ────────────────────────────────────────────────
 
 function assignTaskToAgent(task, agentDir) {
@@ -189,8 +227,9 @@ function assignTaskToAgent(task, agentDir) {
   const promptFile = path.join(WORKTREE_BASE, agentDir, '.agent-prompt.md');
 
   const isBugAgent = agentDir === 'flex' && (task.agent === '♻️ Refactor' || task.agent === '🔒 Security');
-  const isTestAgent = agentDir === 'qa';
+  const isTestAgent = agentDir === 'qa' || agentDir === 'qa2';
   const isDevOps = agentDir === 'devops';
+  const isFrontend = agentDir === 'frontend';
 
   let prompt;
   if (isBugAgent) {
@@ -286,6 +325,44 @@ ${task.id}
 - Do NOT modify feature code or domain handlers
 - Do NOT merge to develop or main
 ${REVIEW_HANDOFF}`;
+  } else if (isFrontend) {
+    prompt = `# 🎨 Frontend Agent Task
+
+## Task: ${task.title}
+**Priority:** ${task.priority}
+**Phase:** ${task.phase}
+**Tags:** ${task.tags.join(', ')}
+
+## Description
+${task.description}
+
+## Instructions
+1. Read CLAUDE.md for project context and your role as Frontend Agent
+2. You specialize in: portal.html, landing page, dashboard, Telegram HTML templates, chart generation, CSS/HTML/React
+3. Your primary files: \`src/portal/portal.html\`, \`src/templates/\`, any \`.html\`, \`.css\`, \`.jsx\` files
+4. For Telegram message templates: use ONLY supported HTML tags (<b>, <i>, <u>, <code>, <pre>, <a>, <blockquote>)
+5. For charts/images: use chartjs-node-canvas to render server-side PNG
+6. Run: \`npx vitest run\` and \`npx tsc --noEmit\`
+7. Commit: \`git commit -m "feat(ui): ${task.title.toLowerCase().substring(0, 50)}"\`
+8. Push: \`git push origin $(git branch --show-current)\`
+9. Run auto-chain:
+\`\`\`bash
+AGENT_DIR=$(basename "$(pwd)")
+node ~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "describe what you built"
+\`\`\`
+
+## Notion Task ID
+${task.id}
+
+## Rules
+- Focus on UI/UX quality: clean design, mobile-responsive, dark mode compatible
+- Follow the existing portal design system (CSS variables: --bg, --bg2, --t1, --t2, --blue, --green, etc.)
+- For portal changes: update src/portal/portal.html directly
+- Always escape user data with escapeHtml() in Telegram messages
+- Telegram message limit: 4096 chars — auto-split if needed
+- Do NOT modify backend services, database, or domain handlers
+- Do NOT merge to develop or main
+${REVIEW_HANDOFF}`;
   } else {
     prompt = `# ⚡ Feature Agent Task
 
@@ -320,6 +397,16 @@ ${task.id}
 ${REVIEW_HANDOFF}`;
   }
 
+  // Append branch context + file hints to reduce token waste
+  const branchCtx = buildBranchContext(agentDir);
+  const fileHints = getFileHints(task);
+  if (fileHints.length > 0) {
+    prompt += `\n\n## Files to Focus On (read these FIRST, skip everything else)\n${fileHints.map(f => '- `' + f + '`').join('\n')}\n`;
+  }
+  if (branchCtx) {
+    prompt += `\n${branchCtx}`;
+  }
+
   fs.writeFileSync(taskFile, JSON.stringify(task, null, 2));
   fs.writeFileSync(promptFile, prompt);
 
@@ -346,6 +433,8 @@ function matchTaskToAgent(task, agents) {
     '🔒 Security': 'flex',
     '♻️ Refactor': 'flex',
     '🏗️ Architect': 'backend',  // Architect tasks go to Backend for implementation
+    '🎨 Frontend': 'frontend',
+    '🧪 QA2': 'qa2',
   };
 
   const targetDir = AGENT_MAP[agentTag];
@@ -355,8 +444,9 @@ function matchTaskToAgent(task, agents) {
     if (match) return match;
   }
 
-  // Fallback: any idle agent
-  return agents.find(a => !a.hasTask) || null;
+  // No fallback — task waits until its designated agent is free
+  // Sending backend work to frontend/devops wastes tokens and produces bad results
+  return null;
 }
 
 // ─── Commands ───────────────────────────────────────────────────────
@@ -483,6 +573,7 @@ async function cmdAssign() {
     phase: resp.properties.Phase?.select?.name || '',
     tags: (resp.properties.Tags?.multi_select || []).map(t => t.name),
     month: resp.properties.Month?.select?.name || '',
+    agent: resp.properties.Agent?.select?.name || '',
   };
 
   const { promptFile } = assignTaskToAgent(task, agentDir);
