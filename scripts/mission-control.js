@@ -28,6 +28,12 @@ const QA_QUEUE_DIR = path.join(WORKTREES, 'qa', '.qa-queue');
 const AGENT_MAP = {
   '🔧 Backend': 'backend', '🧪 QA': 'qa', '⚙️ DevOps': 'devops',
   '🔒 Security': 'flex', '♻️ Refactor': 'flex', '🏗️ Architect': 'backend',
+  '🎨 Frontend': 'frontend', '🧪 QA2': 'qa2',
+};
+// QA routing: which QA agent validates which agent's work
+const QA_ROUTING = {
+  'backend': 'qa', 'frontend': 'qa',      // QA-1 validates code-heavy agents
+  'devops': 'qa2', 'flex': 'qa2',          // QA-2 validates infra/config agents
 };
 
 async function autoAssignAll() {
@@ -41,7 +47,7 @@ async function autoAssignAll() {
       const notionTask = allTasks.find(t => t.id === a.task.id);
       const staleStatuses = ['Done', 'Review', 'QA Validating'];
       // If task is done/review in Notion (or doesn't exist), clear the stale files
-      if (!notionTask || (a.name !== 'qa' && staleStatuses.includes(notionTask.status)) || (notionTask.status === 'Done')) {
+      if (!notionTask || (a.name !== 'qa' && a.name !== 'qa2' && staleStatuses.includes(notionTask.status)) || (notionTask.status === 'Done')) {
         try {
           fs.unlinkSync(path.join(WORKTREES, a.name, '.agent-task.json'));
           fs.unlinkSync(path.join(WORKTREES, a.name, '.agent-prompt.md'));
@@ -88,22 +94,25 @@ async function autoAssignAll() {
     }
 
     // All agents: check Notion for tasks needing dispatch ("To Do" or orphaned "In Progress")
-    try {
-      const worktreeName = a.name;
-      const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
-      const assignableTasks = allTasks.filter(t =>
-        matchingTags.includes(t.agent) && (t.status === 'To Do' || t.status === 'In Progress')
-      );
-      if (assignableTasks.length > 0) {
-        const next = assignableTasks[0];
-        // If task is orphaned In Progress (agent has no files), move back to To Do first
-        if (next.status === 'In Progress') {
-          await notionFetch(`/pages/${next.id}`, 'PATCH', {properties:{Status:{select:{name:'To Do'}}}});
+    // ONLY dispatch if this specific agent is idle AND has a matching task
+    if (!a.task && !a.hasPrompt) {
+      try {
+        const worktreeName = a.name;
+        const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
+        const assignableTasks = allTasks.filter(t =>
+          matchingTags.includes(t.agent) && (t.status === 'To Do' || t.status === 'In Progress')
+        );
+        if (assignableTasks.length > 0) {
+          const next = assignableTasks[0];
+          if (next.status === 'In Progress') {
+            await notionFetch(`/pages/${next.id}`, 'PATCH', {properties:{Status:{select:{name:'To Do'}}}});
+          }
+          // Dispatch ONLY this agent's tasks (--assign single task to specific agent)
+          const r = await run(`node "${SCRIPT('dispatch-tasks.js')}" --assign ${next.id} ${worktreeName}`);
+          results.push({ agent: worktreeName, task: next.title, source: 'notion-todo' });
         }
-        const r = await run(`node "${SCRIPT('dispatch-tasks.js')}"`);
-        results.push({ agent: worktreeName, task: next.title, source: next.status === 'To Do' ? 'notion-todo' : 'notion-recover' });
-      }
-    } catch (e) { results.push({ agent: a.name, error: e.message }); }
+      } catch (e) { results.push({ agent: a.name, error: e.message }); }
+    }
   }
   return results;
 }
@@ -158,7 +167,7 @@ function agentStatus() {
     }
   } catch {}
 
-  return ['backend','qa','devops','flex'].map(name => {
+  return ['backend','qa','devops','flex','frontend','qa2'].map(name => {
     let task = null, hasPrompt = false, running = false, pid = null;
     try { task = JSON.parse(fs.readFileSync(path.join(WORKTREES, name, '.agent-task.json'), 'utf8')); } catch {}
     try { hasPrompt = fs.existsSync(path.join(WORKTREES, name, '.agent-prompt.md')); } catch {}
@@ -173,11 +182,11 @@ function agentStatus() {
     else if (task) status = 'has-task';
     else if (hasPrompt) status = 'has-prompt';
     
-    // QA queue count
+    // QA queue count (both qa and qa2 have queues)
     let queueCount = 0;
-    if (name === 'qa') {
+    if (name === 'qa' || name === 'qa2') {
       try {
-        const qd = path.join(WORKTREES, 'qa', '.qa-queue');
+        const qd = path.join(WORKTREES, name, '.qa-queue');
         if (fs.existsSync(qd)) queueCount = fs.readdirSync(qd).filter(f => f.endsWith('.json')).length;
       } catch {}
     }
@@ -201,7 +210,7 @@ async function handleAPI(req, res) {
     if (route === 'auto-assign') { const results = await autoAssignAll(); return send(res, { ok: true, assigned: results, msg: results.length ? `Auto-assigned ${results.length} agent(s)` : 'All agents busy or no tasks' }); }
     if (route === 'clear-stale') { await run(`rm -f "${WORKTREES}"/*/.agent-task.json "${WORKTREES}"/*/.agent-prompt.md`); return send(res, {ok:true,output:'Stale files cleared'}); }
     if (route === 'agent-done') { const b = await readBody(req); return send(res, await run(`node "${SCRIPT('agent-complete.js')}" --agent ${b.agent} --summary "${(b.summary||'done').replace(/"/g,'\\\\"')}"`)); }
-    if (route === 'merge-develop') return send(res, await run('git fetch origin && git checkout develop && git pull origin develop && git merge origin/agent/backend --no-edit 2>/dev/null; git merge origin/agent/qa --no-edit 2>/dev/null; git merge origin/agent/devops --no-edit 2>/dev/null; git merge origin/agent/flex --no-edit 2>/dev/null; npx vitest run 2>&1 | tail -5 && git push origin develop && git checkout main'));
+    if (route === 'merge-develop') return send(res, await run('git fetch origin && git checkout develop && git pull origin develop && git merge origin/agent/backend --no-edit 2>/dev/null; git merge origin/agent/qa --no-edit 2>/dev/null; git merge origin/agent/devops --no-edit 2>/dev/null; git merge origin/agent/flex --no-edit 2>/dev/null; git merge origin/agent/frontend --no-edit 2>/dev/null; git merge origin/agent/qa2 --no-edit 2>/dev/null; npx vitest run 2>&1 | tail -5 && git push origin develop && git checkout main'));
     if (route === 'merge-main') return send(res, await run('git fetch origin && git checkout main && git pull origin main && git merge origin/develop --no-edit && npx vitest run 2>&1 | tail -5 && git-cliff --output CHANGELOG.md && git add CHANGELOG.md && git diff --cached --quiet CHANGELOG.md 2>/dev/null || git commit -m "docs: update changelog [skip ci]" && git push origin main && echo "\\n📝 CHANGELOG.md updated"'));
     if (route === 'deploy') return send(res, await run(`./scripts/deploy.sh`));
     if (route === 'git-status') return send(res, await run('git fetch --all 2>/dev/null; echo "=== Branch ===" && git branch --show-current && echo "=== Status ===" && git status --short && echo "=== Recent ===" && git log --oneline -8'));
@@ -337,6 +346,95 @@ server.listen(PORT, () => {
         console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
       }
 
+      // Fetch tasks once for Steps 1.5 and 1.6
+      const allTasks = await fetchTasks();
+
+      // Step 1.5: Clean QA queues (ALWAYS) + dispatch idle QA agents
+      const qaAgents = ['qa', 'qa2'];
+      for (const qaName of qaAgents) {
+        const qaPath = path.join(WORKTREES, qaName);
+        const queueDir = path.join(qaPath, '.qa-queue');
+        try {
+          let queueFiles = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort() : [];
+
+          // ALWAYS clean stale items (runs every cycle, even when QA is busy)
+          const activeTaskFile = path.join(qaPath, '.agent-task.json');
+          let activeTaskId = null;
+          try { activeTaskId = JSON.parse(fs.readFileSync(activeTaskFile, 'utf8')).id; } catch {}
+
+          for (const qf of [...queueFiles]) {
+            try {
+              const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
+              const notionTask = allTasks.find(t => t.id === qt.id);
+              // Remove if: Done, Backlog, not in Notion, or is the currently active task
+              if (!notionTask || notionTask.status === 'Done' || notionTask.status === 'Backlog' || qt.id === activeTaskId) {
+                fs.unlinkSync(path.join(queueDir, qf));
+                queueFiles = queueFiles.filter(f => f !== qf);
+                if (qt.id !== activeTaskId) {
+                  console.log(`[qa-queue] Removed stale ${qf}: "${qt.title.substring(0,30)}" (Notion: ${notionTask?.status || 'not found'})`);
+                }
+              }
+            } catch {}
+          }
+
+          // Dispatch if QA agent is idle and has waiting tasks
+          const hasTask = fs.existsSync(activeTaskFile);
+          const hasPrompt = fs.existsSync(path.join(qaPath, '.agent-prompt.md'));
+          if (!hasTask && !hasPrompt && queueFiles.length > 0) {
+            const nextTask = JSON.parse(fs.readFileSync(path.join(queueDir, queueFiles[0]), 'utf8'));
+            console.log(`[qa-queue] ${qaName} idle, ${queueFiles.length} waiting — dispatching: ${nextTask.title.substring(0,40)}`);
+            const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
+            const prompt = `# \ud83e\uddea QA Validation Task\n\n## Validating: ${nextTask.title}\n**Original agent:** ${nextTask.originAgent}\n**Priority:** ${nextTask.priority || 'Medium'}\n\n## Instructions\n1. Pull the latest code: \`git fetch origin && git merge origin/agent/${nextTask.originAgent} --no-edit\`\n2. Run all tests: \`npx vitest run\`\n3. Run type check: \`npx tsc --noEmit\`\n4. Review the changes: \`git log origin/main..HEAD --oneline\`\n5. Verify the implementation matches the task description\n6. If ALL checks pass: mark as PASS\n7. If ANY check fails: mark as FAIL with clear reason\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass --summary "describe what you validated"\n\`\`\`\nOr if FAIL:\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "describe the failure"\n\`\`\`\n\n## Notion Task ID\n${nextTask.id}`;
+            fs.writeFileSync(path.join(qaPath, '.agent-prompt.md'), prompt);
+            fs.writeFileSync(path.join(qaPath, '.agent-task.json'), JSON.stringify({
+              id: nextTask.id, title: nextTask.title, description: nextTask.description || '',
+              priority: nextTask.priority || '', phase: nextTask.phase || '',
+              tags: nextTask.tags || [], agent: qaName === 'qa' ? '\ud83e\uddea QA' : '\ud83e\uddea QA2',
+              originAgent: nextTask.originAgent
+            }, null, 2));
+            // Remove dispatched item from queue
+            fs.unlinkSync(path.join(queueDir, queueFiles[0]));
+          }
+        } catch (e) { console.error(`[qa-queue] Error processing ${qaName}:`, e.message); }
+      }
+
+      // Step 1.6: Recover orphaned QA Validating tasks from Notion
+      // If a task is QA Validating in Notion but has no queue file and no active QA agent, re-queue it
+      const qaValidating = allTasks.filter(t => t.status === 'QA Validating');
+      for (const task of qaValidating) {
+        const originWorktree = AGENT_MAP[task.agent] || 'backend';
+        const targetQA = QA_ROUTING[originWorktree] || (task.agent === '🔒 Security' ? 'qa2' : 'qa');
+        const qaPath = path.join(WORKTREES, targetQA);
+        const queueDir = path.join(qaPath, '.qa-queue');
+        // Check if already queued or actively being validated
+        let alreadyHandled = false;
+        try {
+          const activeFile = path.join(qaPath, '.agent-task.json');
+          if (fs.existsSync(activeFile)) {
+            const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+            if (active.id === task.id) alreadyHandled = true;
+          }
+          if (!alreadyHandled && fs.existsSync(queueDir)) {
+            const qFiles = fs.readdirSync(queueDir).filter(f => f.endsWith('.json'));
+            for (const qf of qFiles) {
+              const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
+              if (qt.id === task.id) { alreadyHandled = true; break; }
+            }
+          }
+        } catch {}
+        if (!alreadyHandled) {
+          if (!fs.existsSync(queueDir)) fs.mkdirSync(queueDir, { recursive: true });
+          const files = fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort();
+          const nextNum = files.length === 0 ? 1 : parseInt(files[files.length - 1].replace('.json', ''), 10) + 1;
+          fs.writeFileSync(path.join(queueDir, String(nextNum).padStart(3, '0') + '.json'), JSON.stringify({
+            id: task.id, title: task.title, description: task.description || '',
+            priority: task.priority || '', phase: task.phase || '', tags: task.tags || [],
+            originAgent: originWorktree, targetQA, queuedAt: new Date().toISOString(),
+          }, null, 2));
+          console.log(`[qa-orphan] Re-queued orphaned task to ${targetQA}: "${task.title.substring(0,40)}"`);
+        }
+      }
+
       // Step 2: Auto-launch ANY agent that has a prompt but isn't running
       const agents = agentStatus();
       for (const ag of agents) {
@@ -433,8 +531,8 @@ const PAGE2 = `<script>
 let T=[],AG=[],L=[],TAB='board';
 const S=['Backlog','To Do','In Progress','Review','QA Validating','Done'];
 const SC={Backlog:'#555d75','To Do':'#4a9eff','In Progress':'#f5a623',Review:'#b07cf5','QA Validating':'#ff8533',Done:'#2dd4a0'};
-const AC={'🔧 Backend':'#4a9eff','🧪 QA':'#2dd4a0','⚙️ DevOps':'#f5a623','🔒 Security':'#f25757','♻️ Refactor':'#b07cf5','🏗️ Architect':'#f06'};
-const AI={backend:{e:'🔧',n:'Backend',c:'#4a9eff',r:'Features, services, handlers'},qa:{e:'🧪',n:'QA',c:'#2dd4a0',r:'Validates other agents work'},devops:{e:'⚙️',n:'DevOps',c:'#f5a623',r:'CI/CD, infra, migrations'},flex:{e:'🔒/♻️',n:'Flex',c:'#b07cf5',r:'Security or Refactor'}};
+const AC={'🔧 Backend':'#4a9eff','🧪 QA':'#2dd4a0','⚙️ DevOps':'#f5a623','🔒 Security':'#f25757','♻️ Refactor':'#b07cf5','🏗️ Architect':'#f06','🎨 Frontend':'#f06','🧪 QA2':'#20c9b0'};
+const AI={backend:{e:'🔧',n:'Backend',c:'#4a9eff',r:'Features, services, handlers'},qa:{e:'🧪',n:'QA',c:'#2dd4a0',r:'Validates Backend + Frontend'},devops:{e:'⚙️',n:'DevOps',c:'#f5a623',r:'CI/CD, infra, migrations'},flex:{e:'🔒/♻️',n:'Flex',c:'#b07cf5',r:'Security or Refactor'},frontend:{e:'🎨',n:'Frontend',c:'#f06',r:'UI/UX, portal, dashboard, templates'},qa2:{e:'🧪',n:'QA2',c:'#20c9b0',r:'Validates DevOps + Flex'}};
 
 function log(m,t='info'){L.push({time:new Date().toLocaleTimeString(),m,t});if(L.length>60)L=L.slice(-60);rlog()}
 function rlog(){document.getElementById('log').innerHTML=L.map(l=>'<div style="color:'+({error:'#f25757',success:'#2dd4a0',warn:'#f5a623'}[l.t]||'#8e95ab')+'"><span style="opacity:.4">'+l.time+'</span> '+l.m+'</div>').join('');document.getElementById('log').scrollTop=9999}
@@ -455,7 +553,7 @@ async function refresh(){
   // Auto-assign: dispatch To Do tasks AND pick up QA queue for all idle agents
   var hasIdle=(AG||[]).some(function(a){return !a.task&&!a.hasPrompt});
   var hasTodo=T.some(function(t){return t.status==='To Do'&&t.agent});
-  var hasQAQueue=(AG||[]).some(function(a){return a.name==='qa'&&a.queueCount>0&&!a.task});
+  var hasQAQueue=(AG||[]).some(function(a){return (a.name==='qa'||a.name==='qa2')&&a.queueCount>0&&!a.task});
   if(hasIdle&&(hasTodo||hasQAQueue)){
     log('Auto-assigning idle agents...','warn');
     var dd=await api('auto-assign');
@@ -506,7 +604,7 @@ function rAgents(){
     h+='<div style="font-size:10px;color:var(--t2);margin-top:2px">'+i.r+(a.pid?" PID:"+a.pid:"")+'</div>';
     if(a.task){h+='<div class="tk"><b>'+a.task.title+'</b><div style="color:var(--t3);margin-top:2px">'+(a.task.priority||"")+'</div></div>';}
     else{h+='<div class="tk" style="color:var(--t3)">No task — auto-assign checks every 45s</div>';}
-    if(a.name==="qa"&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for QA (auto-pickup)</div>";}
+    if((a.name==="qa"||a.name==="qa2")&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for "+i.n+" (auto-pickup)</div>";}
     h+='<div class="btns">';
     if(a.status==="online"){h+='<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">\\u23F9 Stop</button>';}
     else if(a.status==="has-task"||a.status==="has-prompt"){h+='<span style="font-size:10px;color:var(--amber);padding:4px 8px">Auto-launching in next cycle...</span>';}
@@ -546,10 +644,10 @@ async function startAgent(n){log("Launching "+n+" (auto-loop)...");var d=await a
 async function stopAgent(n){log("Stopping "+n+"...");var d=await api("stop-agent",{agent:n});showOut(n,d.output||"Stopped");setTimeout(refreshAgents,2000)}
 async function checkAgent(n){var d=await api("agent-log",{agent:n});showOut(n,d.output||"No task files")}
 async function agentGitLog(n){var d=await api("agent-branches",{agent:n});showOut(n,d.output||"No commits")}
-async function startAllAgents(){for(var n of["backend","qa","devops","flex"]){await startAgent(n);await new Promise(function(r){setTimeout(r,2000)})}}
+async function startAllAgents(){for(var n of["backend","qa","devops","flex","frontend","qa2"]){await startAgent(n);await new Promise(function(r){setTimeout(r,2000)})}}
 async function stopAll(){
   log("Stopping all agents...");
-  await Promise.all(["backend","qa","devops","flex"].map(n=>stopAgent(n)));
+  await Promise.all(["backend","qa","devops","flex","frontend","qa2"].map(n=>stopAgent(n)));
   setTimeout(refreshAgents,2500);
 }
 async function refreshAgents(){var d=await api("agents");if(d.ok){AG=d.agents;render()}}

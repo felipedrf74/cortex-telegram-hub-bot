@@ -396,8 +396,9 @@ function matchTaskToAgent(task, agents) {
     if (match) return match;
   }
 
-  // Fallback: any idle agent
-  return agents.find(a => !a.hasTask) || null;
+  // No fallback — task waits until its designated agent is free
+  // Sending backend work to frontend/devops wastes tokens and produces bad results
+  return null;
 }
 
 // ─── Commands ───────────────────────────────────────────────────────
@@ -524,6 +525,7 @@ async function cmdAssign() {
     phase: resp.properties.Phase?.select?.name || '',
     tags: (resp.properties.Tags?.multi_select || []).map(t => t.name),
     month: resp.properties.Month?.select?.name || '',
+    agent: resp.properties.Agent?.select?.name || '',
   };
 
   const { promptFile } = assignTaskToAgent(task, agentDir);
