@@ -8,7 +8,7 @@ import { getDb } from './services/database';
 import { logger } from './utils/logger';
 import { routeMessage, isSystemCommand, keywordMatch } from './router';
 import { DomainName } from './domains/types';
-import { validateMessage, validateCaption } from './utils/validators';
+import { validateMessage, validateCaption, sanitizeErrorMessage } from './utils/validators';
 import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
@@ -153,7 +153,7 @@ async function handleScriptCommand(ctx: Context): Promise<void> {
   } catch (err: any) {
     clearInterval(typingInterval);
     logger.error({ err }, 'Script generation failed');
-    await ctx.reply(`❌ Script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+    await ctx.reply(`❌ Script failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
   }
 }
 
@@ -175,7 +175,7 @@ async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'plat
     } catch (err: any) {
       clearInterval(typingInterval);
       logger.error({ err }, 'Hot news failed');
-      await ctx.reply(`❌ Discover (news) failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      await ctx.reply(`❌ Discover (news) failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
     }
   } else if (mode === 'platform') {
     // /trending behavior
@@ -191,7 +191,7 @@ async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'plat
     } catch (err: any) {
       clearInterval(typingInterval);
       logger.error({ err }, 'Trending failed');
-      await ctx.reply(`❌ Discover (platform) failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      await ctx.reply(`❌ Discover (platform) failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
     }
   } else {
     // Full discovery (original /discover behavior)
@@ -227,7 +227,7 @@ async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'plat
     } catch (err: any) {
       clearInterval(typingInterval);
       logger.error({ err }, 'Content discovery failed');
-      await ctx.reply(`❌ Content discovery failed: ${escapeHtml(err.message || 'Unknown error')}`);
+      await ctx.reply(`❌ Content discovery failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
     }
   }
 }
@@ -1302,7 +1302,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Deep search failed');
-        await ctx.reply(`❌ Deep search failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Deep search failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1325,7 +1325,7 @@ export function createBot(): Bot {
         await sendOrSave(ctx, msg, 'sources', query, true);
       } catch (err: any) {
         logger.error({ err }, 'Sources fetch failed');
-        await ctx.reply(`❌ Sources failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Sources failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1388,7 +1388,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Reaction search failed');
-        await ctx.reply(`❌ Reaction search failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Reaction search failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1410,7 +1410,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Hooks generation failed');
-        await ctx.reply(`❌ Hooks failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Hooks failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1438,7 +1438,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Titles generation failed');
-        await ctx.reply(`❌ Titles failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Titles failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1458,7 +1458,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Thumbnail generation failed');
-        await ctx.reply(`❌ Thumbnail failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Thumbnail failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1478,7 +1478,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Caption generation failed');
-        await ctx.reply(`❌ Caption failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Caption failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1500,7 +1500,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Competitor analysis failed');
-        await ctx.reply(`❌ Competitor analysis failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Competitor analysis failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1519,7 +1519,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Gap analysis failed');
-        await ctx.reply(`❌ Gap analysis failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Gap analysis failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1605,7 +1605,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'SEO analysis failed');
-        await ctx.reply(`❌ SEO failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ SEO failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1654,7 +1654,7 @@ export function createBot(): Bot {
           await sendOrSave(ctx, msg + autoNote, 'feedback', videoUrl);
         } catch (err: any) {
           logger.error({ err }, 'Feedback logging failed');
-          await ctx.reply(`❌ Feedback failed: ${escapeHtml(err.message || 'Unknown error')}`);
+          await ctx.reply(`❌ Feedback failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
         }
         return;
       }
@@ -1685,7 +1685,7 @@ export function createBot(): Bot {
         await sendOrSave(ctx, msg, 'feedback', videoUrl);
       } catch (err: any) {
         logger.error({ err }, 'Feedback logging failed');
-        await ctx.reply(`❌ Feedback failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Feedback failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1704,7 +1704,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Report generation failed');
-        await ctx.reply(`❌ Report failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Report failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1755,7 +1755,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Channel learning failed');
-        await ctx.reply(`❌ Analysis failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Analysis failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1815,7 +1815,7 @@ export function createBot(): Bot {
         await ctx.reply(msg, { parse_mode: 'HTML' });
       } catch (err: any) {
         clearInterval(typingInterval);
-        await ctx.reply(`❌ Re-learning failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Re-learning failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1905,7 +1905,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         logger.error({ err, url }, '/transcribe failed');
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-          `❌ Failed to fetch transcript: ${escapeHtml(err.message || 'Unknown error')}`);
+          `❌ Failed to fetch transcript: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1951,7 +1951,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         logger.error({ err, url }, '/studyvideo failed');
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-          `❌ Video study failed: ${escapeHtml(err.message || 'Unknown error')}`);
+          `❌ Video study failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -1989,7 +1989,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Reel script generation failed');
-        await ctx.reply(`❌ Reel script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Reel script failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -2020,7 +2020,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Build script generation failed');
-        await ctx.reply(`❌ Build script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Build script failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -2060,7 +2060,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Calendar generation failed');
-        await ctx.reply(`❌ Calendar failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Calendar failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -2117,7 +2117,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Brand check failed');
-        await ctx.reply(`❌ Brand check failed: ${escapeHtml(err.message || 'Unknown error')}`);
+        await ctx.reply(`❌ Brand check failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -2150,7 +2150,7 @@ export function createBot(): Bot {
         } catch (err: any) {
           clearInterval(typingInterval);
           logger.error({ err }, '/repurpose (text) failed');
-          await ctx.reply(`❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
+          await ctx.reply(`❌ Repurpose failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
         }
         return;
       }
@@ -2228,7 +2228,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         logger.error({ err }, '/repurpose failed');
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-          `❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
+          `❌ Repurpose failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
       }
     });
   });
@@ -2605,7 +2605,7 @@ export function createBot(): Bot {
       } catch (err: any) {
         clearInterval(typingInterval);
         logger.error({ err }, 'Coach briefing failed (manual)');
-        await ctx.reply(`⚠️ Coach briefing failed: ${escapeHtml(err.message || 'Unknown error')}`, { parse_mode: 'HTML' });
+        await ctx.reply(`⚠️ Coach briefing failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`, { parse_mode: 'HTML' });
       }
     });
   });
@@ -2978,7 +2978,7 @@ export function createBot(): Bot {
         } catch (err: any) {
           logger.error({ err, feedbackId }, 'Content workflow script generation failed');
           await ctx.api.editMessageText(ctx.chat!.id, statusMsg.message_id,
-            `❌ Script failed: ${escapeHtml(err.message || 'Unknown error')}`);
+            `❌ Script failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
         }
       });
 
@@ -3248,7 +3248,7 @@ export function createBot(): Bot {
         } catch (err: any) {
           logger.error({ err }, '/repurpose (document caption) failed');
           await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
-            `❌ Repurpose failed: ${escapeHtml(err.message || 'Unknown error')}`);
+            `❌ Repurpose failed: ${escapeHtml(sanitizeErrorMessage(err.message || 'Unknown error'))}`);
         }
       });
       return;

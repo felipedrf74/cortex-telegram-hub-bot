@@ -107,9 +107,9 @@ export function validateColumnName(name: string, allowedColumns: readonly string
 /** Patterns that may leak sensitive info in error messages */
 const SENSITIVE_ERROR_PATTERNS = [
   /sk-ant-[a-zA-Z0-9-]+/g,           // Anthropic API keys
-  /sk-[a-zA-Z0-9]{20,}/g,            // OpenAI API keys
+  /sk-[a-zA-Z0-9_-]{20,}/g,          // OpenAI API keys (sk-proj-*, sk-org-*, etc.)
   /AIza[a-zA-Z0-9_-]{35}/g,          // Google API keys
-  /bot\d+:[a-zA-Z0-9_-]{35}/gi,      // Telegram bot tokens
+  /bot\d+:[a-zA-Z0-9_-]{20,}/gi,     // Telegram bot tokens (variable length)
   /(?:\/home\/|\/Users\/)[^\s'"]+/g,  // File system paths
   /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, // Email addresses
   /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, // IP addresses
