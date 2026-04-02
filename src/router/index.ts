@@ -20,7 +20,7 @@ const SYSTEM_COMMANDS = [
   '/competitor', '/gaps', '/seo', '/repurpose', '/feedback', '/report',
   '/learnfrom', '/references', '/relearn', '/studyvideo', '/transcribe', '/script', '/repurpose',
   '/contenttopic', '/contentretro',
-  '/onboard', '/profile',
+  '/onboarding', '/onboard', '/profile',
   '/skills', '/skill',
 ];
 

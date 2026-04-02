@@ -2634,8 +2634,8 @@ export function createBot(): Bot {
   });
 
   // ── Onboarding Command ──
-  bot.command('onboard', async (ctx) => {
-    const args = (ctx.message?.text || '').replace(/^\/onboard\s*/i, '').trim();
+  bot.command(['onboard', 'onboarding'], async (ctx) => {
+    const args = (ctx.message?.text || '').replace(/^\/(onboard|onboarding)\s*/i, '').trim();
     const userId = ctx.from?.id;
     if (!userId) return;
 

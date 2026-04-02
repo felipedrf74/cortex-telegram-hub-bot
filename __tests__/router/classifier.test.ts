@@ -423,6 +423,14 @@ describe('isSystemCommand', () => {
     expect(isSystemCommand('  /help  ')).toBe('/help');
   });
 
+  it('recognizes /onboarding as system command (alias for /onboard)', () => {
+    expect(isSystemCommand('/onboard')).toBe('/onboard');
+    expect(isSystemCommand('/onboard fitness')).toBe('/onboard');
+    expect(isSystemCommand('/onboarding')).toBe('/onboarding');
+    expect(isSystemCommand('/onboarding fitness')).toBe('/onboarding');
+    expect(isSystemCommand('/onboarding diet')).toBe('/onboarding');
+  });
+
   it('returns null for non-system commands', () => {
     expect(isSystemCommand('/todo buy milk')).toBeNull();
     expect(isSystemCommand('/gym')).toBeNull();
