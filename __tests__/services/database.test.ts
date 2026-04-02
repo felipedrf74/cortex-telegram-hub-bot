@@ -118,6 +118,8 @@ describe('Database Schema', () => {
     'skill_credentials', 'skill_migrations',
     'invoice_nlp_rules', 'invoice_collection_schedule',
     'usage_metering', 'usage_quotas',
+    'fitness_training_plans', 'training_weeks',
+    'training_sessions', 'training_completions',
   ];
 
   it.each(expectedTables)('table "%s" exists', (table) => {
