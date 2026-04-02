@@ -159,6 +159,10 @@ export const config = {
     maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10), // 1MB default
     eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
   },
+  // ── Health Check ──────────────────────────────────────────────────
+  health: {
+    token: process.env.HEALTH_TOKEN || '',
+  },
   // ── Finance Data Encryption ─────────────────────────────────────
   financeEncryption: {
     enabled: (process.env.FINANCE_ENCRYPTION_ENABLED || 'true') === 'true',
