@@ -63,6 +63,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { CronExpressionParser } from 'cron-parser';
 import { getAllSkillStatuses } from '../skills/skill-manager';
+import { isTranscriptionAvailable } from '../services/transcription';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -157,6 +158,7 @@ interface SnapshotResponse {
     status: 'connected' | 'idle' | 'planned' | 'error';
     configured: boolean;
     lastMessageAt: string | null;
+    features?: string[];
   }[];
 }
 
@@ -806,12 +808,16 @@ function buildAdapterStatus(): SnapshotResponse['adapters'] {
     }
   }
 
+  const telegramFeatures = ['Text', 'Photos'];
+  if (isTranscriptionAvailable()) telegramFeatures.push('Voice');
+
   return [
     {
       name: 'Telegram',
       status: telegramStatus,
       configured: true,
       lastMessageAt: lastMsg,
+      features: telegramFeatures,
     },
     {
       name: 'WhatsApp',
