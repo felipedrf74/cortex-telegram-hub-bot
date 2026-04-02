@@ -23,6 +23,7 @@ import {
   getRecentEvents,
   getJobStatuses,
   getBotRef,
+  getBotIdentity,
   isBotPollingActive,
   getLastMessageAt,
   getGarminRefreshStatus,
@@ -85,6 +86,8 @@ interface SnapshotResponse {
     polling: boolean;
     restarting: boolean;
     lastMessageAt: string | null;
+    username: string | null;
+    id: number | null;
   };
   integrations: {
     name: string;
@@ -344,7 +347,7 @@ function buildSnapshot(): SnapshotResponse {
 
   const integrations: SnapshotResponse['integrations'] = [
     {
-      name: 'Telegram Bot',
+      name: getBotIdentity() ? `Telegram Bot (@${getBotIdentity()!.username})` : 'Telegram Bot',
       group: 'system',
       configured: true,
       status: isBotPollingActive() ? 'polling' : isRestarting() ? 'restarting' : 'stopped',
@@ -724,6 +727,8 @@ function buildSnapshot(): SnapshotResponse {
       polling: isBotPollingActive(),
       restarting: isRestarting(),
       lastMessageAt: getLastMessageAt(),
+      username: getBotIdentity()?.username ?? null,
+      id: getBotIdentity()?.id ?? null,
     },
     integrations,
     jobs,
@@ -941,12 +946,15 @@ export function createPortalServer(bot: Bot): http.Server {
     const botOk = isBotPollingActive();
     const memUsage = process.memoryUsage();
     const healthy = dbOk && botOk;
+    const identity = getBotIdentity();
 
     res.status(healthy ? 200 : 503).json({
       status: healthy ? 'healthy' : 'degraded',
       uptime: uptimeSec,
       db: dbOk ? 'ok' : 'unreachable',
       bot: botOk ? 'polling' : isRestarting() ? 'restarting' : 'stopped',
+      botUsername: identity?.username ?? null,
+      botId: identity?.id ?? null,
       memory: {
         rss: Math.round(memUsage.rss / 1048576),           // MB
         heapUsed: Math.round(memUsage.heapUsed / 1048576), // MB
@@ -1010,6 +1018,8 @@ export function createPortalServer(bot: Bot): http.Server {
     const healthy = dbOk && botOk && jobsFailed.length === 0;
     const degraded = dbOk && botOk && jobsFailed.length > 0;
 
+    const identity = getBotIdentity();
+
     res.status(healthy ? 200 : degraded ? 200 : 503).json({
       status: healthy ? 'healthy' : degraded ? 'degraded' : 'unhealthy',
       uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -1017,6 +1027,9 @@ export function createPortalServer(bot: Bot): http.Server {
         polling: botOk,
         restarting: isRestarting(),
         lastMessageAt: getLastMessageAt(),
+        username: identity?.username ?? null,
+        id: identity?.id ?? null,
+        firstName: identity?.firstName ?? null,
       },
       db: {
         status: dbOk ? 'ok' : 'unreachable',

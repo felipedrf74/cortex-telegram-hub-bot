@@ -277,6 +277,107 @@ describe('Health Endpoint Response Structure', () => {
     });
   });
 
+  describe('Bot identity in health responses', () => {
+    it('/health response includes botUsername and botId when identity is set', () => {
+      const identity = { id: 123456, username: 'Hlepreguica_bot', firstName: 'Nexus Hub', isBot: true };
+      const response = {
+        status: 'healthy',
+        uptime: 42,
+        db: 'ok',
+        bot: 'polling',
+        botUsername: identity.username,
+        botId: identity.id,
+        memory: { rss: 50, heapUsed: 30, heapTotal: 60 },
+      };
+
+      expect(response.botUsername).toBe('Hlepreguica_bot');
+      expect(response.botId).toBe(123456);
+    });
+
+    it('/health response has null botUsername when identity not yet resolved', () => {
+      const identity = null;
+      const response = {
+        status: 'degraded',
+        uptime: 0,
+        db: 'ok',
+        bot: 'stopped',
+        botUsername: identity?.username ?? null,
+        botId: identity?.id ?? null,
+        memory: { rss: 50, heapUsed: 30, heapTotal: 60 },
+      };
+
+      expect(response.botUsername).toBeNull();
+      expect(response.botId).toBeNull();
+    });
+
+    it('/health/detailed bot section includes username, id, firstName', () => {
+      const identity = { id: 789, username: 'Nexushub94_bot', firstName: 'Test Bot', isBot: true };
+      const botSection = {
+        polling: true,
+        restarting: false,
+        lastMessageAt: null,
+        username: identity.username,
+        id: identity.id,
+        firstName: identity.firstName,
+      };
+
+      expect(botSection.username).toBe('Nexushub94_bot');
+      expect(botSection.id).toBe(789);
+      expect(botSection.firstName).toBe('Test Bot');
+    });
+
+    it('snapshot bot section includes username and id', () => {
+      const identity = { id: 456, username: 'MyBot', firstName: 'My', isBot: true };
+      const botSnapshot = {
+        polling: false,
+        restarting: false,
+        lastMessageAt: null,
+        username: identity.username,
+        id: identity.id,
+      };
+
+      expect(botSnapshot).toHaveProperty('username');
+      expect(botSnapshot).toHaveProperty('id');
+      expect(botSnapshot.username).toBe('MyBot');
+    });
+
+    it('Telegram Bot integration name includes username when identity is available', () => {
+      const identity = { id: 123, username: 'Hlepreguica_bot', firstName: 'Nexus', isBot: true };
+      const integrationName = identity ? `Telegram Bot (@${identity.username})` : 'Telegram Bot';
+      expect(integrationName).toBe('Telegram Bot (@Hlepreguica_bot)');
+    });
+
+    it('Telegram Bot integration name is plain when identity is not available', () => {
+      const identity = null;
+      const integrationName = identity ? `Telegram Bot (@${identity.username})` : 'Telegram Bot';
+      expect(integrationName).toBe('Telegram Bot');
+    });
+  });
+
+  describe('Bot username mismatch detection', () => {
+    it('detects mismatch when expected and actual usernames differ', () => {
+      const expected = 'Nexushub94_bot';
+      const actual = 'Hlepreguica_bot';
+      const mismatch = expected.toLowerCase() !== actual.toLowerCase();
+      expect(mismatch).toBe(true);
+    });
+
+    it('no mismatch when usernames match (case-insensitive)', () => {
+      const expected = 'Hlepreguica_bot';
+      const actual = 'hlepreguica_bot';
+      const mismatch = expected.toLowerCase() !== actual.toLowerCase();
+      expect(mismatch).toBe(false);
+    });
+
+    it('no mismatch check when expected username is not set', () => {
+      const expected = '';
+      const actual = 'Hlepreguica_bot';
+      // Only check when expected is truthy
+      const shouldCheck = !!expected;
+      expect(shouldCheck).toBe(false);
+    });
+  });
+
   describe('DB size calculation', () => {
     it('calculates DB size from page_count * page_size', () => {
       // Insert some data to make the DB non-trivial

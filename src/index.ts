@@ -5,7 +5,7 @@ import { logger } from './utils/logger';
 import { initDatabase, closeDatabase, getDb } from './services/database';
 import { createBot } from './bot';
 import { startScheduler } from './services/scheduler';
-import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
+import { setBotRef, setBotPollingActive, setDbProvider, setBotIdentity } from './portal/telemetry';
 import { setDbProvider as setBusDbProvider } from './services/intelligence-bus';
 import { createPortalServer } from './portal/server';
 import {
@@ -46,8 +46,20 @@ async function main(): Promise<void> {
   // Install process-level error handlers (unhandledRejection, uncaughtException)
   installProcessHandlers();
 
-  // Create bot
+  // Create bot and verify identity
   const bot = createBot();
+  await bot.init();
+  const me = bot.botInfo;
+  logger.info({ botId: me.id, botUsername: me.username, botFirstName: me.first_name },
+    `Bot identity verified: @${me.username} (ID: ${me.id})`);
+  setBotIdentity({ id: me.id, username: me.username, firstName: me.first_name, isBot: me.is_bot });
+
+  // Warn if TELEGRAM_BOT_USERNAME is set and doesn't match (token/bot mismatch)
+  const expectedUsername = process.env.TELEGRAM_BOT_USERNAME;
+  if (expectedUsername && expectedUsername.toLowerCase() !== me.username.toLowerCase()) {
+    logger.error({ expected: expectedUsername, actual: me.username },
+      `⚠️ BOT USERNAME MISMATCH: expected @${expectedUsername} but token resolves to @${me.username}`);
+  }
 
   // Store bot reference for portal restart action
   setBotRef(bot);
@@ -97,7 +109,7 @@ async function main(): Promise<void> {
         onStart: () => {
           logger.info('Bot is running!');
           setBotPollingActive(true);
-          console.log('🤖 Telegram Hub Bot is online!');
+          console.log(`🤖 Telegram Hub Bot is online! (@${me.username})`);
         },
       };
       if (attempt > 1) {
