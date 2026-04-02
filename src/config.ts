@@ -152,6 +152,14 @@ export const config = {
     bind: process.env.PORTAL_BIND || '0.0.0.0',
     token: process.env.PORTAL_TOKEN || '',
   },
+  // ── WhatsApp Cloud API (optional) ──────────────────────────────────
+  whatsapp: {
+    phoneNumberId: process.env.WHATSAPP_PHONE_ID || '',
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || '',
+    apiVersion: process.env.WHATSAPP_API_VERSION || 'v21.0',
+    enabled: !!process.env.WHATSAPP_PHONE_ID && !!process.env.WHATSAPP_ACCESS_TOKEN,
+  },
   // ── Webhook Infrastructure ─────────────────────────────────────────
   webhooks: {
     enabled: (process.env.WEBHOOKS_ENABLED || 'true') === 'true',

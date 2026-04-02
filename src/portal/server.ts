@@ -1515,6 +1515,80 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── WhatsApp Webhook Routes ───────────────────────────────────────
+  // These MUST come before the universal /api/webhooks/:provider route
+
+  // GET /api/webhooks/whatsapp — Meta webhook verification
+  app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    const verifyToken = config.whatsapp?.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN;
+
+    if (mode === 'subscribe' && token === verifyToken) {
+      logger.info('WhatsApp webhook verified');
+      res.status(200).send(challenge);
+    } else {
+      logger.warn({ mode, tokenMatch: token === verifyToken }, 'WhatsApp webhook verification failed');
+      res.status(403).send('Forbidden');
+    }
+  });
+
+  // POST /api/webhooks/whatsapp — Incoming WhatsApp messages
+  app.post('/api/webhooks/whatsapp', express.json(), (req: Request, res: Response) => {
+    // Always respond 200 immediately (WhatsApp retries on non-200)
+    res.status(200).send('OK');
+
+    const body = req.body;
+    if (body?.object !== 'whatsapp_business_account') return;
+
+    const entries = body.entry ?? [];
+    for (const entry of entries) {
+      const changes = entry.changes ?? [];
+      for (const change of changes) {
+        if (change.field !== 'messages') continue;
+
+        const value = change.value;
+        const messages = value?.messages ?? [];
+        const contacts = value?.contacts ?? [];
+
+        for (const msg of messages) {
+          const senderPhone = msg.from;
+          const senderName = contacts.find((c: { wa_id: string; profile?: { name?: string } }) =>
+            c.wa_id === senderPhone)?.profile?.name ?? 'Unknown';
+
+          pushEvent({
+            ts: new Date().toISOString(),
+            type: 'message',
+            summary: `WhatsApp from ${senderName}: ${(msg.text?.body ?? msg.type).slice(0, 60)}`,
+            detail: JSON.stringify(msg),
+            domain: 'whatsapp',
+          });
+
+          logger.info({
+            from: senderPhone,
+            name: senderName,
+            type: msg.type,
+            msgId: msg.id,
+          }, 'WhatsApp incoming message');
+
+          // TODO: Route incoming WhatsApp messages to bot domains
+        }
+
+        // Handle status updates (sent, delivered, read)
+        const statuses = value?.statuses ?? [];
+        for (const status of statuses) {
+          logger.debug({
+            msgId: status.id,
+            status: status.status,
+            recipientId: status.recipient_id,
+          }, 'WhatsApp message status update');
+        }
+      }
+    }
+  });
+
   // ── Webhook Infrastructure API ──────────────────────────────────────
 
   // POST /api/webhooks/:provider — universal webhook receiver
