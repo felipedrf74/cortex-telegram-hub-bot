@@ -540,17 +540,57 @@ async function main() {
         fs.unlinkSync(nextFile);
         console.log(`\n  👉 QA Agent: read .agent-prompt.md and validate`);
         await notify(`🔍 <b>${agentDir}</b> auto-picked QA task\n<i>${nextTask.title}</i>`);
-      } else {
-        const agentPath2 = path.join(WORKTREE_BASE, agentDir);
-        try { fs.unlinkSync(path.join(agentPath2, '.agent-task.json')); } catch {}
-        try { fs.unlinkSync(path.join(agentPath2, '.agent-prompt.md')); } catch {}
-        console.log(`  💤 No more QA tasks in queue for ${agentDir}`);
       }
-    } else {
-      const agentPath3 = path.join(WORKTREE_BASE, agentDir);
-      try { fs.unlinkSync(path.join(agentPath3, '.agent-task.json')); } catch {}
-      try { fs.unlinkSync(path.join(agentPath3, '.agent-prompt.md')); } catch {}
-      console.log(`  💤 No more tasks for ${agentDir} — agent is idle`);
+    }
+    // Fallback: if queue was empty, check Notion "QA Validating" column directly
+    const agentQAPath2 = path.join(WORKTREE_BASE, agentDir);
+    if (!fs.existsSync(path.join(agentQAPath2, '.agent-prompt.md'))) {
+      console.log(`  🔍 Checking Notion QA Validating column...`);
+      // Reverse routing: which origin agents does this QA validate?
+      const myOrigins = agentDir === 'qa' ? ['backend', 'frontend'] : ['devops', 'flex'];
+      const REVERSE_AGENT = { '🔧 Backend': 'backend', '🎨 Frontend': 'frontend', '⚙️ DevOps': 'devops', '♻️ Refactor': 'flex', '🔒 Security': 'flex', '🏗️ Architect': 'backend' };
+      try {
+        const qaData = await notionFetch(`/databases/${NOTION_DB_ID}/query`, 'POST', {
+          filter: { property: 'Status', select: { equals: 'QA Validating' } },
+          sorts: [{ property: 'Priority', direction: 'ascending' }],
+        });
+        const qaPages = (qaData.results || []).map(p => ({
+          id: p.id,
+          title: p.properties.Task?.title?.[0]?.plain_text || '',
+          description: p.properties.Description?.rich_text?.[0]?.plain_text || '',
+          priority: p.properties.Priority?.select?.name || 'Medium',
+          agent: p.properties.Agent?.select?.name || '',
+        }));
+        // Find tasks whose origin agent routes to this QA
+        const myQATasks = qaPages.filter(t => {
+          const origin = REVERSE_AGENT[t.agent] || 'backend';
+          return myOrigins.includes(origin);
+        });
+        if (myQATasks.length > 0) {
+          const next = myQATasks[0];
+          const origin = REVERSE_AGENT[next.agent] || 'backend';
+          console.log(`  ✅ Found QA task in Notion: "${next.title}" (from ${origin})`);
+          const repoEsc2 = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
+          const prompt2 = `# 🧪 QA Validation Task\n\n## Validating: ${next.title}\n**Original agent:** ${origin}\n**Priority:** ${next.priority}\n\n## Description\n${next.description || 'See Notion task.'}\n\n## Instructions\n1. Pull the latest code: \`git fetch origin && git merge origin/agent/${origin} --no-edit\`\n2. Run all tests: \`npx vitest run\`\n3. Run type check: \`npx tsc --noEmit\`\n4. Review the changes: \`git log origin/main..HEAD --oneline\`\n5. Verify implementation matches task description\n6. If ALL checks pass: mark as PASS\n7. If ANY check fails: mark as FAIL with reason\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc2}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass --summary "describe what you validated"\n\`\`\`\nOr if FAIL:\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc2}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "describe the failure"\n\`\`\`\n\n## Notion Task ID\n${next.id}`;
+          fs.writeFileSync(path.join(agentQAPath2, '.agent-prompt.md'), prompt2);
+          fs.writeFileSync(path.join(agentQAPath2, '.agent-task.json'), JSON.stringify({
+            id: next.id, title: next.title, description: next.description,
+            priority: next.priority, phase: '', tags: [],
+            agent: agentDir === 'qa' ? '🧪 QA' : '🧪 QA2',
+            originAgent: origin
+          }, null, 2));
+          console.log(`\n  👉 QA Agent: read .agent-prompt.md and validate`);
+          await notify(`🔍 <b>${agentDir}</b> picked QA task from Notion\n<i>${next.title}</i>`);
+        } else {
+          try { fs.unlinkSync(path.join(agentQAPath2, '.agent-task.json')); } catch {}
+          try { fs.unlinkSync(path.join(agentQAPath2, '.agent-prompt.md')); } catch {}
+          console.log(`  💤 No QA Validating tasks in Notion for ${agentDir}`);
+        }
+      } catch (e) {
+        console.error(`  ⚠️ Error checking Notion QA column:`, e.message);
+        try { fs.unlinkSync(path.join(agentQAPath2, '.agent-task.json')); } catch {}
+        try { fs.unlinkSync(path.join(agentQAPath2, '.agent-prompt.md')); } catch {}
+      }
     }
   } else {
     // Clear task files — agent is idle
