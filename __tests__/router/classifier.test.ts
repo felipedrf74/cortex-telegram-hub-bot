@@ -530,11 +530,12 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
     });
 
     it('completely ambiguous message still returns a result', async () => {
-      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.3 });
-
+      // "ok" is now caught by the greeting detector (Bug P0 fix) — it routes
+      // directly to secretary without hitting the classifier, preventing
+      // hallucinated briefings for simple acknowledgments.
       const result = await routeMessage('ok');
       expect(result.domain).toBe('secretary');
-      expect(result.method).toBe('classifier');
+      expect(result.method).toBe('greeting');
     });
   });
 

@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { patternMatch } from '../../src/router/classifier';
+import { patternMatch, isGreeting } from '../../src/router/classifier';
 import { routeMessage, isSystemCommand } from '../../src/router/index';
 
 // Mock the anthropic service
@@ -139,6 +139,62 @@ describe('BUG P0: Bot hallucinating context instead of executing commands', () =
     it('preserves the original message in strippedMessage', async () => {
       const result = await routeMessage('/expense add 45.50');
       expect(result.strippedMessage).toBe('/expense add 45.50');
+    });
+  });
+
+  describe('Greeting detection — prevents heavy context injection for simple messages', () => {
+    it.each([
+      'hello', 'Hello', 'HELLO',
+      'hi', 'Hi there',
+      'hey', 'Hey!',
+      'bom dia', 'Bom dia!',
+      'boa tarde', 'Boa tarde',
+      'boa noite', 'Boa noite!',
+      'oi', 'Oi!',
+      'olá', 'Olá!',
+      'good morning', 'Good morning!',
+      'thanks', 'Thanks!', 'thank you',
+      'obrigado', 'Obrigado!', 'obrigada',
+      'ok', 'Ok!', 'OK', 'okay',
+      'yes', 'no', 'sim', 'não',
+      'got it', 'sure', 'alright',
+    ])('detects "%s" as a greeting/casual message', (msg) => {
+      expect(isGreeting(msg)).toBe(true);
+    });
+
+    it.each([
+      'what do I have today',
+      'show me my tasks',
+      'plan my week',
+      'add a task to buy groceries',
+      'remind me to call the dentist',
+      'schedule a meeting at 3pm',
+      'what\'s my workout today',
+      'hello can you check my calendar',
+      'hi, schedule a meeting',
+    ])('does NOT detect "%s" as a greeting', (msg) => {
+      expect(isGreeting(msg)).toBe(false);
+    });
+
+    it('greetings route as greeting method to skip heavy state context', async () => {
+      const result = await routeMessage('Hello');
+      // Should NOT call the classifier for a simple greeting
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('greeting');
+      expect(result.confidence).toBe(1.0);
+    });
+
+    it('Portuguese greetings also route as greeting method', async () => {
+      const result = await routeMessage('Bom dia!');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+      expect(result.method).toBe('greeting');
+    });
+
+    it('bare acknowledgments route as greeting method', async () => {
+      const result = await routeMessage('ok');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+      expect(result.method).toBe('greeting');
     });
   });
 });
