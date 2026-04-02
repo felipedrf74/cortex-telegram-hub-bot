@@ -14,14 +14,54 @@ const WORKTREES = path.resolve(REPO, '../nexushub-worktrees');
 const SCRIPT = p => path.join(REPO, 'scripts', p);
 
 let NOTION_TOKEN = process.env.NOTION_TOKEN || '';
-if (!NOTION_TOKEN) {
-  try {
-    const f = fs.readFileSync(path.join(REPO, '.env.agents'), 'utf8');
-    const m = f.match(/NOTION_TOKEN=(.+)/);
-    if (m) NOTION_TOKEN = m[1].trim();
-  } catch {}
+let TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+let TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+{
+  const envPaths = [
+    path.join(REPO, '.env.agents'),
+    path.join(process.cwd(), '.env.agents'),
+  ];
+  for (const p of envPaths) {
+    try {
+      const f = fs.readFileSync(p, 'utf8');
+      if (!NOTION_TOKEN) { const m = f.match(/NOTION_TOKEN=(.+)/); if (m) NOTION_TOKEN = m[1].trim(); }
+      if (!TG_TOKEN) { const m = f.match(/TELEGRAM_BOT_TOKEN=(.+)/); if (m) TG_TOKEN = m[1].trim(); }
+      if (!TG_CHAT_ID) { const m = f.match(/TELEGRAM_CHAT_ID=(.+)/); if (m) TG_CHAT_ID = m[1].trim(); }
+    } catch {}
+  }
 }
 const DB_ID = '332ad49d-23e7-81aa-831e-d5a3ceff20c1';
+
+// ─── Telegram Notification (send-only via @Nexushub94_bot) ─────────
+async function notify(msg) {
+  if (!TG_TOKEN || !TG_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT_ID, text: msg, parse_mode: 'HTML' }),
+    });
+  } catch (e) { console.log(`  ⚠️ Telegram notify failed: ${e.message}`); }
+}
+
+async function verifyBotIdentity() {
+  if (!TG_TOKEN) {
+    console.log('  ⚠️ Notification bot: TELEGRAM_BOT_TOKEN not set in .env.agents — notifications disabled');
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
+    const data = await res.json();
+    if (data.ok) {
+      console.log(`  🤖 Notification bot: @${data.result.username} (ID: ${data.result.id})`);
+      console.log(`  📬 Chat ID: ${TG_CHAT_ID || '❌ not set'}`);
+    } else {
+      console.log(`  ❌ Notification bot: token invalid — ${data.description || 'unknown error'}`);
+    }
+  } catch (e) {
+    console.log(`  ⚠️ Notification bot: cannot reach Telegram API — ${e.message}`);
+  }
+}
 const QA_QUEUE_DIR = path.join(WORKTREES, 'qa', '.qa-queue');
 
 // ─── Agent→Worktree mapping for auto-assign ────────────────────────
@@ -324,6 +364,19 @@ return "not found"`;
     }
     if (route === 'agent-branches') { const b = await readBody(req); return send(res, await run(`git log origin/agent/${b.agent||'backend'} --oneline -10 2>/dev/null || echo 'No branch found'`)); }
     if (route === 'sync-server') return send(res, await run('./scripts/sync-from-server.sh --dry-run 2>&1'));
+    if (route === 'test-notify') {
+      if (!TG_TOKEN || !TG_CHAT_ID) return send(res, { ok: false, output: 'Notification bot not configured (check .env.agents)' });
+      await notify('🧪 <b>MC test notification</b>\nMission Control is sending notifications correctly.');
+      return send(res, { ok: true, output: 'Test notification sent' });
+    }
+    if (route === 'bot-status') {
+      if (!TG_TOKEN) return send(res, { ok: false, bot: null, reason: 'TELEGRAM_BOT_TOKEN not set' });
+      try {
+        const r2 = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getMe`);
+        const d = await r2.json();
+        return send(res, { ok: d.ok, bot: d.ok ? d.result : null, chatId: TG_CHAT_ID || null });
+      } catch (e) { return send(res, { ok: false, bot: null, reason: e.message }); }
+    }
     return send(res, {ok:false,error:'Unknown route'}, 404);
   } catch(e) { return send(res, {ok:false,error:e.message}, 500); }
 }
@@ -334,8 +387,10 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, {'Content-Type':'text/html'});
   res.end(PAGE + PAGE2 + PAGE3 + PAGE4 + PAGE5 + PAGE6);
 });
-server.listen(PORT, () => {
-  console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}\n`);
+server.listen(PORT, async () => {
+  console.log(`\n🚀 Mission Control → http://localhost:${PORT}\n   Notion: ${NOTION_TOKEN?'✅':'❌'}  Repo: ${REPO}`);
+  await verifyBotIdentity();
+  console.log('');
 
   // ─── Server-side auto-assign loop (every 45s) ────────────────────
   setInterval(async () => {
@@ -343,7 +398,12 @@ server.listen(PORT, () => {
       // Step 1: Auto-assign idle agents (dispatch To Do / QA queue)
       const results = await autoAssignAll();
       if (results.length > 0) {
-        console.log(`[auto-assign] ${results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ')}`);
+        const summary = results.map(r => r.agent + ':' + (r.task||r.action||'').substring(0,30)).join(', ');
+        console.log(`[auto-assign] ${summary}`);
+        const assigned = results.filter(r => r.task);
+        if (assigned.length > 0) {
+          await notify(`📋 <b>Auto-assigned</b>\n${assigned.map(r => `• <b>${r.agent}</b> → ${r.task}`).join('\n')}`);
+        }
       }
 
       // Fetch tasks once for Steps 1.5 and 1.6
@@ -470,9 +530,13 @@ write text "\\\"${launcherPath}\\\" ${ag.name}"
 end tell
 end tell
 end tell`;
-          exec(`osascript -e '${applescript.replace(/'/g,"'\\''")}'`, (err) => {
-            if (err) console.error(`[auto-launch] Failed for ${ag.name}:`, err.message);
-            else console.log(`[auto-launch] ✅ ${ag.name} launched in iTerm`);
+          exec(`osascript -e '${applescript.replace(/'/g,"'\\''")}'`, async (err) => {
+            if (err) {
+              console.error(`[auto-launch] Failed for ${ag.name}:`, err.message);
+            } else {
+              console.log(`[auto-launch] ✅ ${ag.name} launched in iTerm`);
+              await notify(`▶️ <b>${ag.name}</b> auto-launched in iTerm`);
+            }
           });
           await new Promise(r => setTimeout(r, 2000)); // Stagger launches
         }
