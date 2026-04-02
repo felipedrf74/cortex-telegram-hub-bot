@@ -90,6 +90,15 @@ function buildPair(primaryName: string, fallbackName: string): TaskProviderPair 
   return { primary, fallback };
 }
 
+// ─── Active provider singleton ─────────────────────────────────
+
+let _activeProvider: TaskRoutingProvider | null = null;
+
+/** Get the active routing provider instance (set by createRoutingProvider). */
+export function getActiveProvider(): TaskRoutingProvider | null {
+  return _activeProvider;
+}
+
 // ─── Factory ───────────────────────────────────────────────────────
 
 /**
@@ -112,6 +121,7 @@ export function createRoutingProvider(
   };
 
   const provider = new TaskRoutingProvider(routingConfig, onFallback || defaultFallbackHandler);
+  _activeProvider = provider;
 
   logger.info(
     {
@@ -142,4 +152,5 @@ function defaultFallbackHandler(event: FallbackEvent): void {
 /** Clear cached provider instances (for testing). */
 export function clearProviderCache(): void {
   providers.clear();
+  _activeProvider = null;
 }

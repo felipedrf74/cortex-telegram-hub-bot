@@ -146,6 +146,22 @@ export interface TaskRoutingConfig {
   circuitBreaker: CircuitBreakerOptions;
 }
 
+/** Per-provider usage metrics (in-memory, resets on restart). */
+export interface ProviderMetrics {
+  /** Total API calls attempted */
+  usageCount: number;
+  /** Total failed calls */
+  failureCount: number;
+  /** Number of times this provider was used as a fallback */
+  fallbackTriggerCount: number;
+  /** Number of times this provider's circuit opened */
+  circuitOpenCount: number;
+  /** Timestamp of last successful call */
+  lastSuccessAt: string | null;
+  /** Timestamp of last failure */
+  lastFailureAt: string | null;
+}
+
 /**
  * Callback when a fallback is used.
  * Includes the task type and error that triggered the fallback.
@@ -165,6 +181,7 @@ export interface FallbackEvent {
 export class TaskRoutingProvider implements AIProvider {
   readonly name: string;
   private breakers = new Map<string, CircuitBreaker>();
+  private metrics = new Map<string, ProviderMetrics>();
   private onFallback?: (event: FallbackEvent) => void;
 
   constructor(
@@ -191,6 +208,22 @@ export class TaskRoutingProvider implements AIProvider {
     return breaker;
   }
 
+  private getMetrics(providerName: string): ProviderMetrics {
+    let m = this.metrics.get(providerName);
+    if (!m) {
+      m = {
+        usageCount: 0,
+        failureCount: 0,
+        fallbackTriggerCount: 0,
+        circuitOpenCount: 0,
+        lastSuccessAt: null,
+        lastFailureAt: null,
+      };
+      this.metrics.set(providerName, m);
+    }
+    return m;
+  }
+
   /**
    * Execute a task with fallback logic:
    * 1. Check primary's circuit breaker — if open, go straight to fallback
@@ -210,11 +243,21 @@ export class TaskRoutingProvider implements AIProvider {
       try {
         const result = await fn(pair.primary);
         primaryBreaker.recordSuccess();
+        const pm = this.getMetrics(pair.primary.name);
+        pm.usageCount++;
+        pm.lastSuccessAt = new Date().toISOString();
         return result;
       } catch (err) {
         primaryBreaker.recordFailure();
+        const pm = this.getMetrics(pair.primary.name);
+        pm.usageCount++;
+        pm.failureCount++;
+        pm.lastFailureAt = new Date().toISOString();
 
         if (pair.fallback) {
+          const fm = this.getMetrics(pair.fallback.name);
+          fm.fallbackTriggerCount++;
+
           this.onFallback?.({
             taskType,
             error: err as Error,
@@ -238,6 +281,11 @@ export class TaskRoutingProvider implements AIProvider {
           `Provider ${pair.primary.name} circuit is open and no fallback configured for task type "${taskType}"`,
         );
       }
+      const pm = this.getMetrics(pair.primary.name);
+      pm.circuitOpenCount++;
+      const fm = this.getMetrics(pair.fallback.name);
+      fm.fallbackTriggerCount++;
+
       this.onFallback?.({
         taskType,
         error: new Error(`Circuit open for ${pair.primary.name}`),
@@ -251,8 +299,20 @@ export class TaskRoutingProvider implements AIProvider {
       );
     }
 
-    // Try fallback
-    return fn(pair.fallback!);
+    // Try fallback (track its own success/failure)
+    try {
+      const result = await fn(pair.fallback!);
+      const fm = this.getMetrics(pair.fallback!.name);
+      fm.usageCount++;
+      fm.lastSuccessAt = new Date().toISOString();
+      return result;
+    } catch (fallbackErr) {
+      const fm = this.getMetrics(pair.fallback!.name);
+      fm.usageCount++;
+      fm.failureCount++;
+      fm.lastFailureAt = new Date().toISOString();
+      throw fallbackErr;
+    }
   }
 
   // ─── AIProvider interface ─────────────────────────────────────────
@@ -311,5 +371,40 @@ export class TaskRoutingProvider implements AIProvider {
   /** Manually reset a provider's circuit breaker. */
   resetCircuit(providerName: string): void {
     this.breakers.get(providerName)?.reset();
+  }
+
+  /** Get all provider metrics (for /health/detailed). */
+  getAllMetrics(): Record<string, ProviderMetrics> {
+    const result: Record<string, ProviderMetrics> = {};
+    for (const [name, m] of this.metrics) {
+      result[name] = { ...m };
+    }
+    return result;
+  }
+
+  /** Combined circuit states + metrics for dashboards. */
+  getProviderHealth(): Record<string, {
+    circuit: { state: CircuitState; failures: number };
+    metrics: ProviderMetrics;
+  }> {
+    const result: Record<string, {
+      circuit: { state: CircuitState; failures: number };
+      metrics: ProviderMetrics;
+    }> = {};
+    const allNames = new Set([...this.breakers.keys(), ...this.metrics.keys()]);
+    for (const name of allNames) {
+      const breaker = this.breakers.get(name);
+      const metrics = this.metrics.get(name);
+      result[name] = {
+        circuit: breaker
+          ? { state: breaker.getState(), failures: breaker.getFailureCount() }
+          : { state: CircuitState.CLOSED, failures: 0 },
+        metrics: metrics ?? {
+          usageCount: 0, failureCount: 0, fallbackTriggerCount: 0,
+          circuitOpenCount: 0, lastSuccessAt: null, lastFailureAt: null,
+        },
+      };
+    }
+    return result;
   }
 }

@@ -1109,6 +1109,16 @@ export function createPortalServer(bot: Bot): http.Server {
       }));
     } catch { /* snapshot build may fail during startup */ }
 
+    // Provider circuit breaker + metrics
+    let providerHealth: Record<string, unknown> = {};
+    try {
+      const { getActiveProvider } = require('../services/provider-registry');
+      const activeProvider = getActiveProvider();
+      if (activeProvider) {
+        providerHealth = activeProvider.getProviderHealth();
+      }
+    } catch { /* provider not initialized yet */ }
+
     const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
 
     res.status(status === 'healthy' ? 200 : 503).json({
@@ -1129,6 +1139,7 @@ export function createPortalServer(bot: Bot): http.Server {
       },
       crons: jobs,
       integrations: integrationHealth,
+      providers: providerHealth,
       errors: {
         total: errorCount,
         lastHour: errorsLast1h,
