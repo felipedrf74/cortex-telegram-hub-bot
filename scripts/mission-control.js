@@ -94,22 +94,25 @@ async function autoAssignAll() {
     }
 
     // All agents: check Notion for tasks needing dispatch ("To Do" or orphaned "In Progress")
-    try {
-      const worktreeName = a.name;
-      const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
-      const assignableTasks = allTasks.filter(t =>
-        matchingTags.includes(t.agent) && (t.status === 'To Do' || t.status === 'In Progress')
-      );
-      if (assignableTasks.length > 0) {
-        const next = assignableTasks[0];
-        // If task is orphaned In Progress (agent has no files), move back to To Do first
-        if (next.status === 'In Progress') {
-          await notionFetch(`/pages/${next.id}`, 'PATCH', {properties:{Status:{select:{name:'To Do'}}}});
+    // ONLY dispatch if this specific agent is idle AND has a matching task
+    if (!a.task && !a.hasPrompt) {
+      try {
+        const worktreeName = a.name;
+        const matchingTags = Object.entries(AGENT_MAP).filter(([,v]) => v === worktreeName).map(([k]) => k);
+        const assignableTasks = allTasks.filter(t =>
+          matchingTags.includes(t.agent) && (t.status === 'To Do' || t.status === 'In Progress')
+        );
+        if (assignableTasks.length > 0) {
+          const next = assignableTasks[0];
+          if (next.status === 'In Progress') {
+            await notionFetch(`/pages/${next.id}`, 'PATCH', {properties:{Status:{select:{name:'To Do'}}}});
+          }
+          // Dispatch ONLY this agent's tasks (--assign single task to specific agent)
+          const r = await run(`node "${SCRIPT('dispatch-tasks.js')}" --assign ${next.id} ${worktreeName}`);
+          results.push({ agent: worktreeName, task: next.title, source: 'notion-todo' });
         }
-        const r = await run(`node "${SCRIPT('dispatch-tasks.js')}"`);
-        results.push({ agent: worktreeName, task: next.title, source: next.status === 'To Do' ? 'notion-todo' : 'notion-recover' });
-      }
-    } catch (e) { results.push({ agent: a.name, error: e.message }); }
+      } catch (e) { results.push({ agent: a.name, error: e.message }); }
+    }
   }
   return results;
 }

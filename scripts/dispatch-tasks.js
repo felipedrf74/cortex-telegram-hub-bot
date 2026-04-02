@@ -396,8 +396,9 @@ function matchTaskToAgent(task, agents) {
     if (match) return match;
   }
 
-  // Fallback: any idle agent
-  return agents.find(a => !a.hasTask) || null;
+  // No fallback — task waits until its designated agent is free
+  // Sending backend work to frontend/devops wastes tokens and produces bad results
+  return null;
 }
 
 // ─── Commands ───────────────────────────────────────────────────────
