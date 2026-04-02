@@ -12,6 +12,13 @@ import { DomainName, DomainMessage, ClassificationResult } from '../domains/type
 
 // ─── Core Types ─────────────────────────────────────────────────────
 
+/** Function that executes a tool call and returns the result. */
+export type ToolExecutorFn = (
+  toolName: string,
+  input: Record<string, unknown>,
+  userId?: number,
+) => Promise<unknown>;
+
 export interface AICallResult {
   text: string;
   toolCalls: AIToolCall[];
@@ -125,6 +132,21 @@ export interface AIProvider {
     stateContext: string,
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult>;
+
+  /**
+   * Call a domain and automatically execute any tool calls in a loop.
+   * Returns the final text response after all tools have been resolved.
+   * This is the primary method consumers should use — it handles the full
+   * tool-use cycle so callers never see raw tool_use blocks.
+   */
+  callDomainWithToolLoop(
+    domain: DomainName,
+    history: DomainMessage[],
+    currentMessage: string,
+    stateContext: string,
+    executor: ToolExecutorFn,
+    options?: { maxIterations?: number; userId?: number; maxTokensOverride?: number },
+  ): Promise<{ text: string; toolsUsed: string[] }>;
 }
 
 // ─── Fallback Provider ──────────────────────────────────────────────
@@ -183,6 +205,22 @@ export class FallbackProvider implements AIProvider {
     } catch (err) {
       this.onFallback?.(err as Error, 'continueWithToolResults');
       return this.fallback.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation);
+    }
+  }
+
+  async callDomainWithToolLoop(
+    domain: DomainName,
+    history: DomainMessage[],
+    currentMessage: string,
+    stateContext: string,
+    executor: ToolExecutorFn,
+    options?: { maxIterations?: number; userId?: number; maxTokensOverride?: number },
+  ): Promise<{ text: string; toolsUsed: string[] }> {
+    try {
+      return await this.primary.callDomainWithToolLoop(domain, history, currentMessage, stateContext, executor, options);
+    } catch (err) {
+      this.onFallback?.(err as Error, 'callDomainWithToolLoop');
+      return this.fallback.callDomainWithToolLoop(domain, history, currentMessage, stateContext, executor, options);
     }
   }
 }

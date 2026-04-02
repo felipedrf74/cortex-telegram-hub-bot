@@ -10,7 +10,7 @@
  * - Half-open recovery: after cooldown, probe the primary once to check recovery
  */
 
-import { AIProvider, AICallResult, AIToolResultMessage } from './ai-provider';
+import { AIProvider, AICallResult, AIToolResultMessage, ToolExecutorFn } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
 
@@ -289,6 +289,20 @@ export class TaskRoutingProvider implements AIProvider {
     const taskType = resolveTaskType(domain);
     return this.executeWithFallback(taskType, (p) =>
       p.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation),
+    );
+  }
+
+  async callDomainWithToolLoop(
+    domain: DomainName,
+    history: DomainMessage[],
+    currentMessage: string,
+    stateContext: string,
+    executor: ToolExecutorFn,
+    options?: { maxIterations?: number; userId?: number; maxTokensOverride?: number },
+  ): Promise<{ text: string; toolsUsed: string[] }> {
+    const taskType = resolveTaskType(domain);
+    return this.executeWithFallback(taskType, (p) =>
+      p.callDomainWithToolLoop(domain, history, currentMessage, stateContext, executor, options),
     );
   }
 

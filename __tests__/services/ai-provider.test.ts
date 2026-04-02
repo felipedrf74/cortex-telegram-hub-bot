@@ -16,12 +16,14 @@ function createMockProvider(name: string): AIProvider & {
   classify: ReturnType<typeof vi.fn>;
   callDomain: ReturnType<typeof vi.fn>;
   continueWithToolResults: ReturnType<typeof vi.fn>;
+  callDomainWithToolLoop: ReturnType<typeof vi.fn>;
 } {
   return {
     name,
     classify: vi.fn(),
     callDomain: vi.fn(),
     continueWithToolResults: vi.fn(),
+    callDomainWithToolLoop: vi.fn(),
   };
 }
 
@@ -122,6 +124,27 @@ describe('FallbackProvider', () => {
       const result = await provider.continueWithToolResults('secretary', [], 'hi', '', []);
       expect(result).toEqual(mockResult);
       expect(onFallback).toHaveBeenCalledWith(expect.any(Error), 'continueWithToolResults');
+    });
+  });
+
+  describe('callDomainWithToolLoop', () => {
+    it('uses primary when it succeeds', async () => {
+      primary.callDomainWithToolLoop.mockResolvedValue({ text: 'Done!', toolsUsed: ['list_todos'] });
+      const executor = vi.fn();
+
+      const result = await provider.callDomainWithToolLoop('secretary', [], 'tasks', '', executor);
+      expect(result).toEqual({ text: 'Done!', toolsUsed: ['list_todos'] });
+      expect(fallback.callDomainWithToolLoop).not.toHaveBeenCalled();
+    });
+
+    it('falls back when primary throws', async () => {
+      primary.callDomainWithToolLoop.mockRejectedValue(new Error('timeout'));
+      fallback.callDomainWithToolLoop.mockResolvedValue({ text: 'Fallback result', toolsUsed: [] });
+      const executor = vi.fn();
+
+      const result = await provider.callDomainWithToolLoop('secretary', [], 'tasks', '', executor);
+      expect(result).toEqual({ text: 'Fallback result', toolsUsed: [] });
+      expect(onFallback).toHaveBeenCalledWith(expect.any(Error), 'callDomainWithToolLoop');
     });
   });
 
@@ -255,6 +278,208 @@ describe('AnthropicProvider', () => {
         'secretary', [], 'create task', 'state', toolConvo,
       );
       expect(result.text).toBe('Task created!');
+    });
+  });
+
+  describe('callDomainWithToolLoop', () => {
+    it('returns text directly when no tool calls are returned', async () => {
+      mockCallDomain.mockResolvedValue({
+        text: 'Here is your answer.',
+        toolCalls: [],
+        stopReason: 'end_turn',
+      });
+
+      const executor = vi.fn();
+      const result = await provider.callDomainWithToolLoop(
+        'content', [], 'question', 'ctx', executor,
+      );
+
+      expect(result.text).toBe('Here is your answer.');
+      expect(result.toolsUsed).toEqual([]);
+      expect(executor).not.toHaveBeenCalled();
+      expect(mockContinue).not.toHaveBeenCalled();
+    });
+
+    it('executes a single tool call and returns the final text', async () => {
+      mockCallDomain.mockResolvedValue({
+        text: '',
+        toolCalls: [{
+          type: 'tool_use',
+          id: 'toolu_01',
+          name: 'get_calendar_events',
+          input: { start_date: '2026-04-01', end_date: '2026-04-01' },
+        }] as any,
+        stopReason: 'tool_use',
+      });
+
+      const executor = vi.fn().mockResolvedValue({
+        events: [{ title: 'Meeting', start: '10:00', end: '11:00' }],
+      });
+
+      mockContinue.mockResolvedValue({
+        text: 'You have 1 event today: Meeting at 10:00.',
+        toolCalls: [],
+        stopReason: 'end_turn',
+      });
+
+      const result = await provider.callDomainWithToolLoop(
+        'secretary', [], 'what is my schedule?', 'ctx', executor,
+      );
+
+      expect(result.text).toBe('You have 1 event today: Meeting at 10:00.');
+      expect(result.toolsUsed).toEqual(['get_calendar_events']);
+      expect(executor).toHaveBeenCalledWith(
+        'get_calendar_events',
+        { start_date: '2026-04-01', end_date: '2026-04-01' },
+        undefined,
+      );
+      expect(mockContinue).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles multi-step tool calls across iterations', async () => {
+      mockCallDomain.mockResolvedValue({
+        text: 'Checking tasks...',
+        toolCalls: [{
+          type: 'tool_use', id: 'toolu_01', name: 'ms_todo_get_tasks',
+          input: { list_id: 'abc', list_name: 'Work' },
+        }] as any,
+        stopReason: 'tool_use',
+      });
+
+      const executor = vi.fn()
+        .mockResolvedValueOnce({ success: true, data: [{ title: 'Review PR' }] })
+        .mockResolvedValueOnce({ success: true, message: 'Reminder set' });
+
+      mockContinue
+        .mockResolvedValueOnce({
+          text: 'Found a task. Setting a reminder...',
+          toolCalls: [{
+            type: 'tool_use', id: 'toolu_02', name: 'set_reminder',
+            input: { message: 'Review PR', remind_at: '2026-04-01T14:00:00' },
+          }] as any,
+          stopReason: 'tool_use',
+        })
+        .mockResolvedValueOnce({
+          text: 'You have 1 task: Review PR. Reminder set for 2 PM.',
+          toolCalls: [],
+          stopReason: 'end_turn',
+        });
+
+      const result = await provider.callDomainWithToolLoop(
+        'secretary', [], 'check tasks and remind me', 'ctx', executor,
+      );
+
+      expect(result.text).toBe('You have 1 task: Review PR. Reminder set for 2 PM.');
+      expect(result.toolsUsed).toEqual(['ms_todo_get_tasks', 'set_reminder']);
+      expect(executor).toHaveBeenCalledTimes(2);
+      expect(mockContinue).toHaveBeenCalledTimes(2);
+    });
+
+    it('respects maxIterations to prevent infinite tool loops', async () => {
+      const infiniteToolResponse = {
+        text: '',
+        toolCalls: [{
+          type: 'tool_use', id: 'toolu_loop', name: 'ms_todo_get_tasks',
+          input: { list_id: 'x', list_name: 'Y' },
+        }] as any,
+        stopReason: 'tool_use',
+      };
+
+      mockCallDomain.mockResolvedValue(infiniteToolResponse);
+      mockContinue.mockResolvedValue(infiniteToolResponse);
+      const executor = vi.fn().mockResolvedValue({ data: [] });
+
+      const result = await provider.callDomainWithToolLoop(
+        'secretary', [], 'test', '', executor,
+        { maxIterations: 3 },
+      );
+
+      expect(mockContinue).toHaveBeenCalledTimes(3);
+      expect(executor).toHaveBeenCalledTimes(3);
+    });
+
+    it('passes userId to the tool executor', async () => {
+      mockCallDomain.mockResolvedValue({
+        text: '',
+        toolCalls: [{
+          type: 'tool_use', id: 'toolu_01', name: 'finance_get_transactions',
+          input: { limit: 5 },
+        }] as any,
+        stopReason: 'tool_use',
+      });
+
+      const executor = vi.fn().mockResolvedValue({ data: [] });
+
+      mockContinue.mockResolvedValue({
+        text: 'No transactions found.',
+        toolCalls: [],
+        stopReason: 'end_turn',
+      });
+
+      await provider.callDomainWithToolLoop(
+        'secretary', [], 'show transactions', 'ctx', executor,
+        { userId: 12345 },
+      );
+
+      expect(executor).toHaveBeenCalledWith(
+        'finance_get_transactions',
+        { limit: 5 },
+        12345,
+      );
+    });
+
+    it('deduplicates tool names in toolsUsed', async () => {
+      mockCallDomain.mockResolvedValue({
+        text: '',
+        toolCalls: [
+          { type: 'tool_use', id: 'toolu_a', name: 'ms_todo_get_tasks', input: { list_id: '1', list_name: 'A' } },
+          { type: 'tool_use', id: 'toolu_b', name: 'ms_todo_get_tasks', input: { list_id: '2', list_name: 'B' } },
+        ] as any,
+        stopReason: 'tool_use',
+      });
+
+      const executor = vi.fn().mockResolvedValue({ data: [] });
+
+      mockContinue.mockResolvedValue({
+        text: 'No tasks in either list.',
+        toolCalls: [],
+        stopReason: 'end_turn',
+      });
+
+      const result = await provider.callDomainWithToolLoop(
+        'secretary', [], 'all tasks', '', executor,
+      );
+
+      expect(result.toolsUsed).toEqual(['ms_todo_get_tasks']);
+    });
+
+    it('executes parallel tool calls in a single round', async () => {
+      mockCallDomain.mockResolvedValue({
+        text: 'Checking...',
+        toolCalls: [
+          { type: 'tool_use', id: 'toolu_a', name: 'get_calendar_events', input: { start_date: '2026-04-01', end_date: '2026-04-01' } },
+          { type: 'tool_use', id: 'toolu_b', name: 'ms_todo_get_tasks', input: { list_id: '1', list_name: 'Work' } },
+        ] as any,
+        stopReason: 'tool_use',
+      });
+
+      const executor = vi.fn()
+        .mockResolvedValueOnce({ events: [] })
+        .mockResolvedValueOnce({ data: [{ title: 'Task 1' }] });
+
+      mockContinue.mockResolvedValue({
+        text: 'No events, 1 task.',
+        toolCalls: [],
+        stopReason: 'end_turn',
+      });
+
+      const result = await provider.callDomainWithToolLoop(
+        'secretary', [], 'briefing', '', executor,
+      );
+
+      expect(result.text).toBe('No events, 1 task.');
+      expect(result.toolsUsed).toEqual(['get_calendar_events', 'ms_todo_get_tasks']);
+      expect(executor).toHaveBeenCalledTimes(2);
     });
   });
 });
