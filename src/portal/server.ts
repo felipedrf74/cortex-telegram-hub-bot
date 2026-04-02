@@ -1414,6 +1414,17 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/quality-scores — agent quality scoring data
+  app.get('/api/quality-scores', (_req: Request, res: Response) => {
+    try {
+      const { getQualityByAgent } = require('../services/quality-scorer');
+      const byAgent = getQualityByAgent(30);
+      res.json({ ok: true, byAgent });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/task-metrics — task execution cost and duration data
   app.get('/api/task-metrics', (_req: Request, res: Response) => {
     try {
