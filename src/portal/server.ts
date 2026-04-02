@@ -1055,6 +1055,88 @@ export function createPortalServer(bot: Bot): http.Server {
     });
   });
 
+  // ── Detailed health check (auth-protected via ?token=HEALTH_TOKEN) ──
+  app.get('/health/detailed', (req: Request, res: Response) => {
+    const healthToken = config.health.token;
+    if (healthToken && req.query.token !== healthToken) {
+      res.status(401).json({ error: 'Unauthorized — provide ?token=HEALTH_TOKEN' });
+      return;
+    }
+
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+
+    // Database check
+    let dbOk = false;
+    try {
+      const d = getDb();
+      const row = d.prepare('SELECT 1 as ok').get() as any;
+      dbOk = row?.ok === 1;
+    } catch { /* db not ready */ }
+
+    // Memory
+    const mem = process.memoryUsage();
+
+    // Cron job statuses
+    const jobs = getJobStatuses().map(j => ({
+      name: j.name,
+      label: j.label,
+      cronExpression: j.cronExpression,
+      domain: j.domain,
+      lastRunAt: j.lastRunAt,
+      lastResult: j.lastResult,
+      lastDurationMs: j.lastDurationMs,
+      lastError: j.lastError,
+    }));
+
+    // Error count from recent events (in-memory ring buffer)
+    const recentEvents = getRecentEvents();
+    const errorCount = recentEvents.filter(e => e.type === 'error').length;
+    const errorsLast1h = recentEvents.filter(e => {
+      if (e.type !== 'error') return false;
+      const ageMs = Date.now() - new Date(e.ts).getTime();
+      return ageMs < 3_600_000;
+    }).length;
+
+    // Integration health (lightweight version of buildSnapshot integrations)
+    let integrationHealth: { name: string; status: string; configured: boolean; tokenHealth: string }[] = [];
+    try {
+      const snap = buildSnapshot();
+      integrationHealth = snap.integrations.map(i => ({
+        name: i.name,
+        status: i.status ?? 'unknown',
+        configured: i.configured,
+        tokenHealth: i.tokenHealth ?? 'unknown',
+      }));
+    } catch { /* snapshot build may fail during startup */ }
+
+    const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
+
+    res.status(status === 'healthy' ? 200 : 503).json({
+      status,
+      uptime: uptimeSec,
+      uptimeHuman: humanUptime(uptimeSec),
+      bot: {
+        polling: isBotPollingActive(),
+        restarting: isRestarting(),
+        lastMessageAt: getLastMessageAt(),
+      },
+      database: dbOk ? 'connected' : 'disconnected',
+      memory: {
+        rss: Math.round(mem.rss / 1024 / 1024),
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        external: Math.round(mem.external / 1024 / 1024),
+      },
+      crons: jobs,
+      integrations: integrationHealth,
+      errors: {
+        total: errorCount,
+        lastHour: errorsLast1h,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // ── Auth middleware for /api/* ──────────────────────────────────
   const portalToken = config.portal.token;
 

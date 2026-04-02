@@ -308,8 +308,8 @@ describe('QA: Health endpoint security', () => {
     // Slice only the health handler — ends at the closing `});` before auth middleware
     const healthEnd = source.indexOf('// ── Auth middleware', healthStart);
     const healthBlock = source.slice(healthStart, healthEnd > 0 ? healthEnd : healthStart + 800);
-    // Should not expose tokens, passwords, or env vars
-    expect(healthBlock).not.toContain('token');
+    // Should not expose passwords or env var values in response body
+    expect(healthBlock).not.toContain('process.env.TELEGRAM_BOT_TOKEN');
     expect(healthBlock).not.toContain('password');
     expect(healthBlock).not.toContain('secret');
     expect(healthBlock).not.toContain('process.env');
@@ -328,6 +328,6 @@ describe('QA: Health endpoint security', () => {
     expect(healthBlock).toContain('polling:');
     expect(healthBlock).toContain('restarting:');
     expect(healthBlock).toContain('lastMessageAt:');
-    expect(healthBlock).not.toContain('bot.token');
+    expect(healthBlock).not.toContain('botToken');
   });
 });

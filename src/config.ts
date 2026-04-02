@@ -155,16 +155,21 @@ export const config = {
   // ── Webhook Infrastructure ─────────────────────────────────────────
   webhooks: {
     enabled: (process.env.WEBHOOKS_ENABLED || 'true') === 'true',
-    secret: process.env.WEBHOOK_SECRET || '',        // HMAC-SHA256 signing secret (shared with providers)
-    maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10), // 1MB default
+    secret: process.env.WEBHOOK_SECRET || '',
+    maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10),
     eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
+  },
+  // ── Health Check ──────────────────────────────────────────────────
+  health: {
+    token: process.env.HEALTH_TOKEN || '',
+  },
+  // ── Finance Data Encryption ─────────────────────────────────────
+  financeEncryption: {
+    enabled: (process.env.FINANCE_ENCRYPTION_ENABLED || 'true') === 'true',
+    masterKey: process.env.FINANCE_ENCRYPTION_KEY || '',
   },
   rateLimit: {
     maxMessagesPerMinute: 30,
-  },
-  financeEncryption: {
-    enabled: process.env.ENCRYPTION_MASTER_KEY ? true : false,
-    masterKey: process.env.ENCRYPTION_MASTER_KEY || '',
   },
 } as const;
 

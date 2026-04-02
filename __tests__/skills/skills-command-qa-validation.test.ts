@@ -196,7 +196,7 @@ describe('QA: /skills output formatting', () => {
       path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
     );
     expect(botSource).toContain('handleSkillsList(ctx)');
-    expect(botSource).toContain('handleSkillDetail(ctx)');
+    expect(botSource).toContain('handleSkillCommand');
   });
 
   it('/skill detail view shows sub-module enabled/disabled indicator', () => {
