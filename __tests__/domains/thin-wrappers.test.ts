@@ -45,11 +45,16 @@ describe('handleContent', () => {
   it('delegates to handleSimpleDomain with domain "content"', async () => {
     mockHandler.mockResolvedValue({ text: 'hook draft', domain: 'content' });
     await handleContent('Write a hook');
-    expect(mockHandler).toHaveBeenCalledWith('content', 'Write a hook', 5, undefined);
+    expect(mockHandler).toHaveBeenCalledWith('content', 'Write a hook', 5, undefined, undefined);
   });
 
   it('passes userId to handleSimpleDomain', async () => {
     await handleContent('Script idea', 99);
-    expect(mockHandler).toHaveBeenCalledWith('content', 'Script idea', 5, 99);
+    expect(mockHandler).toHaveBeenCalledWith('content', 'Script idea', 5, 99, undefined);
+  });
+
+  it('passes maxTokensOverride to handleSimpleDomain', async () => {
+    await handleContent('Generate calendar', 42, 4096);
+    expect(mockHandler).toHaveBeenCalledWith('content', 'Generate calendar', 5, 42, 4096);
   });
 });

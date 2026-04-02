@@ -2077,7 +2077,7 @@ export function createBot(): Bot {
           `- Output as HTML table with <b> tags for headers\n` +
           `- Language: PT-BR for topics`;
 
-        const contentResponse = await handleContent(calendarPrompt, 4096);
+        const contentResponse = await handleContent(calendarPrompt, ctx.from?.id, 4096);
         clearInterval(typingInterval);
         const msg = `📅 <b>CONTENT CALENDAR — Next ${days} days</b>\n\n${contentResponse.text}`;
         await sendOrSave(ctx, msg, 'calendar', `${days}-day-plan`);
@@ -2134,7 +2134,7 @@ export function createBot(): Bot {
           `3. Exactly 3 specific topic suggestions for each underrepresented pillar\n\n` +
           `Format as clean HTML with <b> tags for headers. Be direct and actionable. Language: PT-BR.`;
 
-        const contentResponse = await handleContent(analysisPrompt, 4096);
+        const contentResponse = await handleContent(analysisPrompt, ctx.from?.id, 4096);
         clearInterval(typingInterval);
         const msg = `📊 <b>BRAND CHECK — Pillar Balance (30 days)</b>\n\n${contentResponse.text}`;
         await sendOrSave(ctx, msg, 'brandcheck', 'pillar-analysis');
@@ -2164,7 +2164,7 @@ export function createBot(): Bot {
             `2. **1 STORIES SEQUENCE** (5-7 stories) — text + poll/question stickers suggestions.\n\n` +
             `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
             `Topic: ${textTopic}`;
-          const contentResponse = await handleContent(repurposePrompt, 8192);
+          const contentResponse = await handleContent(repurposePrompt, ctx.from?.id, 8192);
           clearInterval(typingInterval);
           const filePath = await saveScriptAsDocx(`Repurpose — ${textTopic}`, contentResponse.text);
           await ctx.replyWithDocument(new InputFile(filePath), {
@@ -2228,7 +2228,7 @@ export function createBot(): Bot {
           `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
           `━━━ ORIGINAL SCRIPT ━━━\n\n${scriptText}`;
 
-        const contentResponse = await handleContent(repurposePrompt, 8192);
+        const contentResponse = await handleContent(repurposePrompt, ctx.from?.id, 8192);
 
         await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
           '📄 Saving as Word document...');
@@ -3249,7 +3249,7 @@ export function createBot(): Bot {
             `Everything in PT-BR. Make each format self-contained and optimized for its platform.\n\n` +
             `━━━ ORIGINAL SCRIPT ━━━\n\n${scriptText}`;
 
-          const contentResponse = await handleContent(repurposePrompt, 8192);
+          const contentResponse = await handleContent(repurposePrompt, ctx.from?.id, 8192);
 
           await ctx.api.editMessageText(ctx.chat.id, statusMsg.message_id,
             '📄 Saving as Word document...');
