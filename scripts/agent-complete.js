@@ -278,8 +278,10 @@ function writeAgentPrompt(task, agentDir) {
   const roleMap = {
     backend: { emoji: '🔧', name: 'Backend', commitPrefix: 'feat' },
     qa: { emoji: '🧪', name: 'QA', commitPrefix: 'test' },
+    qa2: { emoji: '🧪', name: 'QA2', commitPrefix: 'test' },
     devops: { emoji: '⚙️', name: 'DevOps', commitPrefix: 'ci' },
     flex: { emoji: '♻️', name: 'Flex', commitPrefix: 'refactor' },
+    frontend: { emoji: '🎨', name: 'Frontend', commitPrefix: 'feat' },
   };
   const role = roleMap[agentDir] || roleMap.backend;
 
@@ -320,7 +322,30 @@ ${task.id}
 - Always run tests before committing
 - Always call agent-complete.js when done — this chains to QA and fetches your next task
 `;
-  fs.writeFileSync(path.join(agentPath, '.agent-prompt.md'), prompt);
+  // Add file hints based on task content
+  const t = (task.title + ' ' + (task.description || '')).toLowerCase();
+  const hints = [];
+  if (t.includes('tool') || t.includes('json dump')) hints.push('src/services/anthropic.ts', 'src/services/tool-executor.ts', 'src/domains/domain-handler.ts');
+  if (t.includes('skill') || t.includes('enable')) hints.push('src/skills/skill-config.ts', 'src/skills/skill-manager.ts', 'src/commands/skills.ts');
+  if (t.includes('portal') || t.includes('health')) hints.push('src/portal/portal.html', 'src/portal/server.ts');
+  if (t.includes('finance') || t.includes('expense')) hints.push('src/services/finance-tracker.ts', 'src/domains/finance.ts');
+  if (t.includes('cooking') || t.includes('recipe')) hints.push('src/services/cooking-chef.ts', 'src/domains/cooking.ts');
+  if (t.includes('garmin') || t.includes('fitness')) hints.push('src/services/garmin.ts', 'src/services/training-plans.ts');
+  if (t.includes('calendar') || t.includes('secretary')) hints.push('src/services/unified-calendar.ts', 'src/domains/secretary.ts');
+  if (t.includes('onboarding')) hints.push('src/services/onboarding.ts', 'src/bot.ts');
+  if (t.includes('prompt') || t.includes('hallucin')) hints.push('src/services/anthropic.ts', 'src/router/classifier.ts');
+  if (t.includes('bot') || t.includes('command')) hints.push('src/bot.ts');
+  let enrichedPrompt = prompt;
+  if (hints.length > 0) {
+    enrichedPrompt += `\n## Files to Focus On\n${[...new Set(hints)].map(f => '- \`' + f + '\`').join('\n')}\n`;
+  }
+  // Add branch context
+  try {
+    const { execSync } = require('child_process');
+    const diffStat = execSync(`git diff origin/main..HEAD --stat 2>/dev/null`, { cwd: agentPath, encoding: 'utf8' }).trim();
+    if (diffStat) enrichedPrompt += `\n## Branch Context\n\`\`\`\n${diffStat}\n\`\`\`\n`;
+  } catch {}
+  fs.writeFileSync(path.join(agentPath, '.agent-prompt.md'), enrichedPrompt);
   fs.writeFileSync(path.join(agentPath, '.agent-task.json'), JSON.stringify({
     id: task.id, title: task.title, description: task.description,
     priority: task.priority, phase: task.phase, tags: task.tags,
@@ -468,6 +493,14 @@ async function main() {
     writeQAPrompt(task, agentDir);
     await notify(`🔄 <b>${agentDir}</b> finished\n<i>${task.title}</i>\n→ Sent to QA validation (fallback)`);
   }
+
+  // ─── Write Agent Memory (avoids re-reading on chained tasks) ────
+  const memoryFile = path.join(agentPath, '.agent-history.md');
+  try {
+    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const entry = `- [${timestamp}] ${task.title} → ${needsQA ? 'QA' : 'Done'} (files: ${summary?.substring(0, 80) || 'n/a'})\n`;
+    fs.appendFileSync(memoryFile, entry);
+  } catch {}
 
   // ─── Fetch next task for this agent ──────────────────────────────
   console.log(`\n🔍 Looking for next task for ${agentDir}...`);

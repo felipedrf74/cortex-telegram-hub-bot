@@ -86,8 +86,10 @@ except: print('unknown')
 1. CLAUDE.md (workflow rules) \
 2. CODEBASE.md (architecture map — tells you exactly which files to touch) \
 3. ${AGENT_FILE} (your role-specific instructions and file ownership) \
-4. .agent-prompt.md (the actual task) \
+4. .agent-history.md IF IT EXISTS (shows your previous tasks — skip re-reading files you already know) \
+5. .agent-prompt.md (the actual task) \
 Then execute the task. Do NOT explore the project — CODEBASE.md already maps everything. \
+If .agent-history.md shows you already worked on similar files, skip reading CODEBASE.md again. \
 When done: commit, push, then run the auto-chain command from the prompt. \
 After auto-chain, check if a new .agent-prompt.md was written. If yes, read and execute it immediately. \
 Never stop between tasks — keep chaining until no more .agent-prompt.md exists."
