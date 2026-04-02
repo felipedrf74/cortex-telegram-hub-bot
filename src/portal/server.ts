@@ -1403,6 +1403,18 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/task-metrics — task execution cost and duration data
+  app.get('/api/task-metrics', (_req: Request, res: Response) => {
+    try {
+      const { getTaskExecutionSummary, getRecentExecutions } = require('../services/task-metrics');
+      const summary = getTaskExecutionSummary(7);
+      const recent = getRecentExecutions(20);
+      res.json({ ok: true, summary, recent });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Skill Management API ─────────────────────────────────────────
 
   // GET /api/skills — list all skills with sub-skill status

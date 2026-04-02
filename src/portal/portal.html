@@ -1040,6 +1040,33 @@
     </table>
   </div>
 
+  <!-- ── Task Execution Costs ──────────────────── -->
+  <div class="card">
+    <h2>🏭 Task Execution Costs (7d)</h2>
+    <div class="stats-grid" id="task-metrics-stats">
+      <div class="stat-box">
+        <div class="stat-value" id="tm-total-cost">—</div>
+        <div class="stat-label">Total Cost</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tm-total-tasks">—</div>
+        <div class="stat-label">Tasks</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tm-avg-duration">—</div>
+        <div class="stat-label">Avg Duration</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-value" id="tm-failure-rate">—</div>
+        <div class="stat-label">Failure Rate</div>
+      </div>
+    </div>
+    <table style="margin-top:12px" id="task-metrics-table">
+      <thead><tr><th>Task</th><th>Agent</th><th>Status</th><th class="text-right">Cost</th><th class="text-right">Duration</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- ── Feature #3: Next Runs Panel ─────────── -->
   <div class="card">
     <h2>🚀 Next Scheduled Runs</h2>
@@ -2610,6 +2637,38 @@
   // Poll mission control alongside main poll
   pollMissionControl();
   setInterval(pollMissionControl, 30_000);
+
+  // Task execution metrics
+  async function loadTaskMetrics() {
+    try {
+      const r = await fetch('/api/task-metrics', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok) return;
+      const s = d.summary;
+      document.getElementById('tm-total-cost').textContent = '$' + s.totalCost.toFixed(2);
+      document.getElementById('tm-total-tasks').textContent = s.totalTasks;
+      const avgMin = s.avgDurationMs > 0 ? (s.avgDurationMs / 60000).toFixed(1) + 'm' : '—';
+      document.getElementById('tm-avg-duration').textContent = avgMin;
+      document.getElementById('tm-failure-rate').textContent = (s.failureRate * 100).toFixed(0) + '%';
+      const tbody = document.querySelector('#task-metrics-table tbody');
+      tbody.innerHTML = (d.recent || []).slice(0, 10).map(t => {
+        const dur = t.durationMs ? (t.durationMs / 60000).toFixed(1) + 'm' : '—';
+        const cls = t.status === 'success' ? 'badge-sent' : t.status === 'failed' ? 'badge-failed' : '';
+        return `<tr>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(t.taskTitle)}</td>
+          <td class="mono">${esc(t.agent)}</td>
+          <td><span class="badge ${cls}">${t.status}</span></td>
+          <td class="text-right mono">$${t.costUsd.toFixed(3)}</td>
+          <td class="text-right">${dur}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="5" class="text-muted">No task executions yet</td></tr>';
+    } catch (err) {
+      console.warn('Task metrics poll failed:', err);
+    }
+  }
+  loadTaskMetrics();
+  setInterval(loadTaskMetrics, 30_000);
 
   function showToast(msg, ok) {
     const el = document.getElementById('toast');
