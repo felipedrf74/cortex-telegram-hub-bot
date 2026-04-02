@@ -7,17 +7,25 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 
 ### Bug Fixes
 
+- **agents**: ALL tasks go through QA, fix missing agent field in dispatch ([`24620c6`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/24620c69f998b4c2bb7192aae5399693b280b1b0))
+- **agents**: Remove fallback dispatch, enforce strict agent routing ([`dd9ccdb`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/dd9ccdb50bd5eb9e01477d80e0c10cb637c3b151))
 - Resolve merge — remove duplicate financeEncryption, fix tests ([`4763421`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/4763421501b3e4cb66d3844e15ce30619838dbaa))
 - **agents**: Fix allTasks scope — fetch once for Steps 1.5 + 1.6 ([`9eebd36`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9eebd36eed7e2cc6a3522d719f5fc7d9d6985165))
 - **agents**: Add orphan recovery — re-queue QA Validating tasks with no queue file ([`82f537a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/82f537ab0a416887a13f3f82f62937c3a8ee7029))
 - **agents**: Quote pwd in CLAUDE.md, fix placeholder bug, resolve type errors ([`a33f445`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a33f44505c2348b5c9f78d6af74ec5fe2bae25aa))
 
+### Chores
+
+- Bump version to 4.5.1 [deploy] ([`f3273b2`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/f3273b2111905d5581015b1af403728738a158c9))
+
 ### Documentation
 
+- Update changelog [skip ci] ([`339e0f6`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/339e0f6c739ecd7d2f2233966269946f6b4769b2))
 - Update changelog for v4.5.0 ([`eba2e31`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/eba2e31dd5dd0732286b8704fddb4166d957b7a5))
 
 ### Features
 
+- **agents**: Add CODEBASE.md architecture map, agent-specific instructions, Opus for backend/flex ([`1e0fda5`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/1e0fda559515a422de8446106f7be1cb231f63c7))
 - **infra**: Add health check endpoint + uptime monitoring ([`53109b3`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/53109b3e0cbc3b4f66e7b35a7e626111f957aeca))
 - **portal**: Add adapter status panel (Telegram active, WhatsApp planned) ([`0c58483`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/0c584833cdcf2e97d0a3ee909696dd3ff9407068))
 - **finance**: Add per-user data isolation + AES-256-GCM encryption for financial data ([`d2c559d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/d2c559d3ff4c09dafa6c7789a3fd39864feeda63))
