@@ -8,7 +8,7 @@ export { keywordMatch };
 
 export interface RouteResult {
   domain: DomainName;
-  method: 'pattern' | 'keyword' | 'classifier';
+  method: 'pattern' | 'keyword' | 'classifier' | 'unknown_command';
   confidence: number;
   strippedMessage: string;
 }
@@ -44,6 +44,21 @@ export async function routeMessage(
       method: 'pattern',
       confidence: 1.0,
       strippedMessage: stripped || message,
+    };
+  }
+
+  // Step 1.5: Slash command guard — if the message starts with / but wasn't matched
+  // by patternMatch, it's an unregistered command. Reject it immediately instead of
+  // sending it to the classifier, which would misclassify it and cause hallucinations.
+  // (Bug P0: /expense add 45.50 was falling through to Claude, which hallucinated a status report)
+  if (message.trim().startsWith('/')) {
+    const cmd = message.trim().split(/\s/)[0];
+    logger.debug({ cmd }, 'Unregistered slash command — rejected before classifier');
+    return {
+      domain: 'secretary',
+      method: 'unknown_command',
+      confidence: 0,
+      strippedMessage: message,
     };
   }
 

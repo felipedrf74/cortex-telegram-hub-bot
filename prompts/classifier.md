@@ -6,6 +6,10 @@ Domains:
 - "triathlon" — gym workouts, running, cycling, training plans, nutrition, carnivore diet, recovery, soreness, performance, body composition, supplements, electrolytes
 - "content" — YouTube, Instagram, video ideas, scripts, thumbnails, captions, Reels, content strategy, audience growth, brand, hashtags, content calendar
 
+IMPORTANT: If the message starts with "/" (a slash command), classify it to the most relevant domain based on context. Slash commands are pre-routed — you should only see ones that already matched a domain pattern.
+
+IMPORTANT: For casual messages (greetings like "hello", "hi", "bom dia", "thanks", "ok"), classify as "secretary" with confidence 0.9. These are simple interactions, NOT requests for status reports or task overviews.
+
 IMPORTANT: If [ACTIVE CONVERSATION] context is provided below, consider whether the new message is a FOLLOW-UP to that conversation or a NEW TOPIC.
 - If the message answers a question the assistant just asked, or continues the same topic → classify to the SAME domain as the active conversation.
 - If the message is clearly about a DIFFERENT subject → classify to the appropriate domain.

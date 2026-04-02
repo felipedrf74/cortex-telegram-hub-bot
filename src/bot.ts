@@ -3412,6 +3412,13 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     const route = await routeMessage(text, activeContext);
     logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
 
+    // Reject unregistered slash commands with a helpful error instead of hallucinating
+    if (route.method === 'unknown_command') {
+      const cmd = text.trim().split(/\s/)[0];
+      await ctx.reply(`❌ Unknown command: <code>${cmd}</code>\n\nType /help to see available commands.`, { parse_mode: 'HTML' });
+      return;
+    }
+
     // Track last active domain for photo routing and conversation continuity
     if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
 
