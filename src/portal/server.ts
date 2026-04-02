@@ -68,6 +68,7 @@ import {
 } from '../skills/skill-manager';
 import type { DomainName } from '../domains/types';
 import { getErrorTrends } from '../services/error-monitor';
+import { isEnabled as isSentryEnabled } from '../services/error-tracker';
 import {
   verifySignature, receiveWebhookEvent, getSubscriptions, registerSubscription,
   removeSubscription, getWebhookStats, getRecentEvents as getRecentWebhookEvents,
@@ -1156,7 +1157,7 @@ export function createPortalServer(bot: Bot): http.Server {
   app.get('/api/errors', (_req: Request, res: Response) => {
     try {
       const trends = getErrorTrends();
-      res.json({ ok: true, ...trends });
+      res.json({ ok: true, ...trends, sentryEnabled: isSentryEnabled() });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }

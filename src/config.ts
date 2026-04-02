@@ -159,6 +159,13 @@ export const config = {
     maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10), // 1MB default
     eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
   },
+  // ── Sentry Error Tracking ────────────────────────────────────────────
+  sentry: {
+    dsn: process.env.SENTRY_DSN || '',
+    environment: optional('SENTRY_ENVIRONMENT', 'development'),
+    release: process.env.SENTRY_RELEASE || '',
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0'),
+  },
   // ── Data Encryption ─────────────────────────────────────────────────
   encryption: {
     dataKey: process.env.DATA_ENCRYPTION_KEY || '',  // 64 hex chars (256-bit AES key)

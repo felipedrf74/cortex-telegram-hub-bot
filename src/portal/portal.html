@@ -823,6 +823,10 @@
   <span class="health-sep">|</span>
   <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
   <span class="health-sep" id="hb-queue-sep" style="display:none">|</span>
+  <div class="health-item">🐛 Errors today: <span class="val" id="hb-errors">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item" id="hb-sentry-wrap"><span id="hb-sentry-dot" class="status-dot dot-yellow"></span> Sentry: <span class="val" id="hb-sentry">—</span></div>
+  <span class="health-sep">|</span>
   <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
 </div>
 
@@ -2249,6 +2253,21 @@
       // Color the today count
       const todayEl = document.getElementById('err-today');
       todayEl.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
+
+      // Update health bar — errors today + Sentry status
+      const hbErrors = document.getElementById('hb-errors');
+      hbErrors.textContent = res.today;
+      hbErrors.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
+
+      const hbSentry = document.getElementById('hb-sentry');
+      const hbSentryDot = document.getElementById('hb-sentry-dot');
+      if (res.sentryEnabled) {
+        hbSentry.textContent = 'active';
+        hbSentryDot.className = 'status-dot dot-green';
+      } else {
+        hbSentry.textContent = 'off';
+        hbSentryDot.className = 'status-dot dot-yellow';
+      }
 
       // By source
       const srcEl = document.getElementById('err-by-source');

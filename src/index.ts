@@ -13,6 +13,7 @@ import {
   setAlertCallback,
   installProcessHandlers,
 } from './services/error-monitor';
+import { init as initSentry, flush as flushSentry } from './services/error-tracker';
 import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
 
@@ -21,6 +22,14 @@ const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release
 
 async function main(): Promise<void> {
   logger.info('Starting Telegram Hub Bot...');
+
+  // Initialize Sentry first — must be before any other init to capture startup errors
+  initSentry({
+    dsn: config.sentry.dsn,
+    environment: config.sentry.environment,
+    release: config.sentry.release || undefined,
+    tracesSampleRate: config.sentry.tracesSampleRate,
+  });
 
   // Initialize database
   initDatabase();
@@ -66,6 +75,7 @@ async function main(): Promise<void> {
     if (portalServer) {
       portalServer.close();
     }
+    await flushSentry(2000);
     closeDatabase();
     process.exit(0);
   };

@@ -14,6 +14,7 @@
 
 import { logger } from '../utils/logger';
 import { pushEvent } from '../portal/telemetry';
+import { captureException as sentryCaptureException, isEnabled as isSentryEnabled } from './error-tracker';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -110,6 +111,20 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
     } catch (err) {
       logger.warn({ err }, 'Error monitor: failed to persist error');
     }
+  }
+
+  // Forward to Sentry (if configured)
+  if (isSentryEnabled()) {
+    const sentryLevel = record.level === 'fatal' ? 'fatal' : record.level === 'warning' ? 'warning' : 'error';
+    sentryCaptureException(
+      record.stack ? Object.assign(new Error(record.message), { stack: record.stack }) : record.message,
+      {
+        level: sentryLevel,
+        source: record.source,
+        extra: record.context,
+        tags: { source: record.source, level: record.level },
+      },
+    );
   }
 
   // Push to in-memory telemetry ring buffer
