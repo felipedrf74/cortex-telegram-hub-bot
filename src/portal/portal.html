@@ -823,6 +823,8 @@
   <span class="health-sep">|</span>
   <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
   <span class="health-sep" id="hb-queue-sep" style="display:none">|</span>
+  <div class="health-item"><span id="hb-garmin-dot" class="status-dot dot-yellow"></span> Garmin: <span class="val" id="hb-garmin">—</span></div>
+  <span class="health-sep">|</span>
   <div class="health-item">🐛 Errors today: <span class="val" id="hb-errors">—</span></div>
   <span class="health-sep">|</span>
   <div class="health-item" id="hb-sentry-wrap"><span id="hb-sentry-dot" class="status-dot dot-yellow"></span> Sentry: <span class="val" id="hb-sentry">—</span></div>
@@ -1569,6 +1571,18 @@
         html += `<div class="int-row">`;
         html += `  <div class="int-left">`;
         html += `    <span>${esc(i.name)}</span>`;
+        // Garmin sync health details
+        if (i.syncHealth) {
+          const sh = i.syncHealth;
+          const details = [];
+          if (sh.rateLimited) details.push(`<span style="color:var(--red)">⛔ Rate limited${sh.rateLimitedUntil ? ' until ' + shortTime(sh.rateLimitedUntil) : ''}</span>`);
+          if (sh.consecutiveKeepaliveFailures > 0) details.push(`<span style="color:${sh.consecutiveKeepaliveFailures >= 3 ? 'var(--red)' : 'var(--yellow)'}">🔄 ${sh.consecutiveKeepaliveFailures} keepalive failures</span>`);
+          if (sh.lastActivityFetchAt) details.push(`<span>📊 Last fetch: ${relativeTime(sh.lastActivityFetchAt)} (${sh.lastActivityCount} activities${sh.lastActivityFetchOk ? '' : ' ⚠ failed'})</span>`);
+          if (sh.lastFetchError) details.push(`<span style="color:var(--red)" title="${esc(sh.lastFetchError)}">❌ ${esc(sh.lastFetchError.slice(0, 60))}</span>`);
+          if (details.length > 0) {
+            html += `<div style="font-size:0.78em;margin-top:3px;display:flex;flex-wrap:wrap;gap:8px">${details.join('')}</div>`;
+          }
+        }
         html += `  </div>`;
         html += `  <div class="int-right">`;
         if (i.lastApiCall) {
@@ -1612,6 +1626,39 @@
       document.getElementById('hb-queue-sep').style.display = queueCount > 0 ? '' : 'none';
       document.getElementById('hb-queue').textContent = queueCount;
       document.getElementById('hb-uptime').textContent = snap.uptime.human;
+    }
+
+    // Garmin sync health bar
+    const garminInt = (snap.integrations || []).find(i => i.group === 'garmin');
+    const hbGarmin = document.getElementById('hb-garmin');
+    const hbGarminDot = document.getElementById('hb-garmin-dot');
+    if (garminInt && garminInt.configured) {
+      const sh = garminInt.syncHealth;
+      if (!sh) {
+        hbGarmin.textContent = 'no data';
+        hbGarminDot.className = 'status-dot dot-yellow';
+      } else if (sh.rateLimited) {
+        hbGarmin.textContent = 'rate limited';
+        hbGarminDot.className = 'status-dot dot-red';
+      } else if (sh.consecutiveKeepaliveFailures >= 3) {
+        hbGarmin.textContent = 'session dead';
+        hbGarminDot.className = 'status-dot dot-red';
+      } else if (!sh.sessionAlive && sh.consecutiveKeepaliveFailures > 0) {
+        hbGarmin.textContent = 'degraded';
+        hbGarminDot.className = 'status-dot dot-yellow';
+      } else if (sh.lastActivityFetchOk) {
+        hbGarmin.textContent = sh.lastActivityCount + ' activities';
+        hbGarminDot.className = 'status-dot dot-green';
+      } else if (sh.sessionAlive) {
+        hbGarmin.textContent = 'session ok';
+        hbGarminDot.className = 'status-dot dot-green';
+      } else {
+        hbGarmin.textContent = 'unknown';
+        hbGarminDot.className = 'status-dot dot-yellow';
+      }
+    } else if (garminInt) {
+      hbGarmin.textContent = 'not configured';
+      hbGarminDot.className = 'status-dot dot-yellow';
     }
 
     // Bot stats
