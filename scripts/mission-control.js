@@ -47,7 +47,7 @@ async function autoAssignAll() {
       const notionTask = allTasks.find(t => t.id === a.task.id);
       const staleStatuses = ['Done', 'Review', 'QA Validating'];
       // If task is done/review in Notion (or doesn't exist), clear the stale files
-      if (!notionTask || (a.name !== 'qa' && staleStatuses.includes(notionTask.status)) || (notionTask.status === 'Done')) {
+      if (!notionTask || (a.name !== 'qa' && a.name !== 'qa2' && staleStatuses.includes(notionTask.status)) || (notionTask.status === 'Done')) {
         try {
           fs.unlinkSync(path.join(WORKTREES, a.name, '.agent-task.json'));
           fs.unlinkSync(path.join(WORKTREES, a.name, '.agent-prompt.md'));
@@ -490,7 +490,7 @@ async function refresh(){
   // Auto-assign: dispatch To Do tasks AND pick up QA queue for all idle agents
   var hasIdle=(AG||[]).some(function(a){return !a.task&&!a.hasPrompt});
   var hasTodo=T.some(function(t){return t.status==='To Do'&&t.agent});
-  var hasQAQueue=(AG||[]).some(function(a){return a.name==='qa'&&a.queueCount>0&&!a.task});
+  var hasQAQueue=(AG||[]).some(function(a){return (a.name==='qa'||a.name==='qa2')&&a.queueCount>0&&!a.task});
   if(hasIdle&&(hasTodo||hasQAQueue)){
     log('Auto-assigning idle agents...','warn');
     var dd=await api('auto-assign');
@@ -541,7 +541,7 @@ function rAgents(){
     h+='<div style="font-size:10px;color:var(--t2);margin-top:2px">'+i.r+(a.pid?" PID:"+a.pid:"")+'</div>';
     if(a.task){h+='<div class="tk"><b>'+a.task.title+'</b><div style="color:var(--t3);margin-top:2px">'+(a.task.priority||"")+'</div></div>';}
     else{h+='<div class="tk" style="color:var(--t3)">No task — auto-assign checks every 45s</div>';}
-    if(a.name==="qa"&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for QA (auto-pickup)</div>";}
+    if((a.name==="qa"||a.name==="qa2")&&a.queueCount>0){h+='<div style="font-size:10px;padding:4px 8px;border-radius:4px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);color:#ff8533;margin-bottom:6px">'+a.queueCount+" queued for "+i.n+" (auto-pickup)</div>';}
     h+='<div class="btns">';
     if(a.status==="online"){h+='<button class="btn btn-red" onclick="stopAgent(&#39;'+a.name+'&#39;)">\\u23F9 Stop</button>';}
     else if(a.status==="has-task"||a.status==="has-prompt"){h+='<span style="font-size:10px;color:var(--amber);padding:4px 8px">Auto-launching in next cycle...</span>';}
