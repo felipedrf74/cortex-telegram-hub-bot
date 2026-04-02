@@ -152,6 +152,10 @@ export const config = {
     bind: process.env.PORTAL_BIND || '0.0.0.0',
     token: process.env.PORTAL_TOKEN || '',
   },
+  // ── Health Check ──────────────────────────────────────────────────
+  health: {
+    token: process.env.HEALTH_TOKEN || '',
+  },
   // ── Finance Data Encryption ─────────────────────────────────────
   financeEncryption: {
     enabled: (process.env.FINANCE_ENCRYPTION_ENABLED || 'true') === 'true',
