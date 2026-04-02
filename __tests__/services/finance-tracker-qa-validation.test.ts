@@ -28,7 +28,7 @@ function applyMigrations(db: Database.Database): void {
     );
   `);
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');

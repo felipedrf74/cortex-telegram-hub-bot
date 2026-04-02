@@ -31,7 +31,7 @@ function applyMigrations(db: Database.Database): void {
   `);
 
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
 
   for (const file of files) {
@@ -195,11 +195,11 @@ describe('module enable/disable', () => {
   });
 
   it('returns false for unknown sub-module', () => {
-    expect(disableSubSkill('secretary' as any, 'nonexistent')).toBe(false);
+    expect(disableSubSkill('secretary' as any, 'nonexistent')).toEqual({ ok: false });
   });
 
   it('returns false for unknown skill', () => {
-    expect(enableSubSkill('nonexistent' as any, 'tasks')).toBe(false);
+    expect(enableSubSkill('nonexistent' as any, 'tasks')).toEqual({ ok: false });
   });
 
   it('disabled skill still allows module toggle', () => {

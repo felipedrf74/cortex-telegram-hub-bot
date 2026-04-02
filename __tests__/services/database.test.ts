@@ -32,7 +32,7 @@ function applyMigrations(db: Database.Database): string[] {
   `);
 
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
 
   const applied: string[] = [];
@@ -67,14 +67,14 @@ describe('Database Migrations', () => {
       db.prepare('SELECT filename FROM _migrations').all()
         .map((row: any) => row.filename)
     );
-    const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+    const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && !f.includes(' 2')).sort();
     for (const file of files) {
       expect(applied.has(file)).toBe(true);
     }
   });
 
   it('migration filenames follow non-decreasing numbering', () => {
-    const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+    const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && !f.includes(' 2')).sort();
     let prevNum = 0;
     for (const file of files) {
       const num = parseInt(file.match(/^(\d+)/)?.[1] || '0', 10);
@@ -115,7 +115,10 @@ describe('Database Schema', () => {
     'agent_runs', 'book_library', 'content_pipeline',
     'installed_skills', 'skill_submodules',
     'skill_credentials', 'skill_migrations',
+    'invoice_nlp_rules', 'invoice_collection_schedule',
     'usage_metering', 'usage_quotas',
+    'fitness_training_plans', 'training_weeks',
+    'training_sessions', 'training_completions',
   ];
 
   it.each(expectedTables)('table "%s" exists', (table) => {
@@ -238,6 +241,96 @@ describe('Database CRUD Operations', () => {
       expect(() => {
         db.prepare('INSERT INTO book_library (title, author) VALUES (?, ?)').run('The Law', 'Bastiat');
       }).toThrow();
+    });
+  });
+
+  describe('invoice_nlp_rules table', () => {
+    it('inserts and retrieves NLP rules', () => {
+      db.prepare(`
+        INSERT INTO invoice_nlp_rules (name, description, vendor_pattern, sender_pattern, action, confidence_threshold)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run('MEO invoices', 'save attachments from meo.pt as MEO invoices', 'MEO', 'meo.pt', 'file', 0.8);
+
+      const rule = db.prepare('SELECT * FROM invoice_nlp_rules WHERE name = ?').get('MEO invoices') as any;
+      expect(rule.vendor_pattern).toBe('MEO');
+      expect(rule.sender_pattern).toBe('meo.pt');
+      expect(rule.confidence_threshold).toBe(0.8);
+      expect(rule.enabled).toBe(1);
+      expect(rule.match_count).toBe(0);
+    });
+
+    it('enforces unique name constraint', () => {
+      db.prepare('INSERT INTO invoice_nlp_rules (name, action) VALUES (?, ?)').run('Test Rule', 'file');
+      expect(() => {
+        db.prepare('INSERT INTO invoice_nlp_rules (name, action) VALUES (?, ?)').run('Test Rule', 'notify');
+      }).toThrow();
+    });
+
+    it('increments match_count', () => {
+      db.prepare('INSERT INTO invoice_nlp_rules (name, action) VALUES (?, ?)').run('Counter Rule', 'file');
+      db.prepare('UPDATE invoice_nlp_rules SET match_count = match_count + 1, last_matched_at = datetime(\'now\') WHERE name = ?').run('Counter Rule');
+      const rule = db.prepare('SELECT match_count FROM invoice_nlp_rules WHERE name = ?').get('Counter Rule') as any;
+      expect(rule.match_count).toBe(1);
+    });
+
+    it('filters by enabled and priority', () => {
+      db.prepare('INSERT INTO invoice_nlp_rules (name, action, enabled, priority) VALUES (?, ?, ?, ?)').run('High', 'file', 1, 10);
+      db.prepare('INSERT INTO invoice_nlp_rules (name, action, enabled, priority) VALUES (?, ?, ?, ?)').run('Low', 'file', 1, 1);
+      db.prepare('INSERT INTO invoice_nlp_rules (name, action, enabled, priority) VALUES (?, ?, ?, ?)').run('Disabled', 'file', 0, 100);
+
+      const active = db.prepare('SELECT name FROM invoice_nlp_rules WHERE enabled = 1 ORDER BY priority DESC').all() as any[];
+      expect(active).toHaveLength(2);
+      expect(active[0].name).toBe('High');
+      expect(active[1].name).toBe('Low');
+    });
+  });
+
+  describe('invoice_collection_schedule table', () => {
+    it('inserts and retrieves collection schedules', () => {
+      db.prepare(`
+        INSERT INTO invoice_collection_schedule (collector_type, vendor_name, cron_expression, config_json)
+        VALUES (?, ?, ?, ?)
+      `).run('email', 'MEO', '0 9 1 * *', JSON.stringify({ sender: 'meo.pt' }));
+
+      const schedule = db.prepare('SELECT * FROM invoice_collection_schedule WHERE vendor_name = ?').get('MEO') as any;
+      expect(schedule.collector_type).toBe('email');
+      expect(schedule.cron_expression).toBe('0 9 1 * *');
+      expect(JSON.parse(schedule.config_json).sender).toBe('meo.pt');
+      expect(schedule.enabled).toBe(1);
+      expect(schedule.run_count).toBe(0);
+    });
+
+    it('enforces unique collector_type + vendor_name', () => {
+      db.prepare('INSERT INTO invoice_collection_schedule (collector_type, vendor_name, cron_expression) VALUES (?, ?, ?)').run('email', 'MEO', '0 9 1 * *');
+      expect(() => {
+        db.prepare('INSERT INTO invoice_collection_schedule (collector_type, vendor_name, cron_expression) VALUES (?, ?, ?)').run('email', 'MEO', '0 10 1 * *');
+      }).toThrow();
+    });
+
+    it('tracks run results', () => {
+      db.prepare('INSERT INTO invoice_collection_schedule (collector_type, cron_expression) VALUES (?, ?)').run('amazon', '15 9 1 * *');
+      db.prepare(`
+        UPDATE invoice_collection_schedule
+        SET last_run_at = datetime('now'), last_result = 'success', run_count = run_count + 1
+        WHERE collector_type = ?
+      `).run('amazon');
+
+      const schedule = db.prepare('SELECT * FROM invoice_collection_schedule WHERE collector_type = ?').get('amazon') as any;
+      expect(schedule.last_result).toBe('success');
+      expect(schedule.run_count).toBe(1);
+    });
+
+    it('finds due schedules', () => {
+      db.prepare('INSERT INTO invoice_collection_schedule (collector_type, cron_expression, next_run_at, enabled) VALUES (?, ?, ?, ?)').run('email', '0 9 1 * *', '2020-01-01T00:00:00', 1);
+      db.prepare('INSERT INTO invoice_collection_schedule (collector_type, vendor_name, cron_expression, next_run_at, enabled) VALUES (?, ?, ?, ?, ?)').run('uber', 'Uber', '30 9 1 * *', '2099-01-01T00:00:00', 1);
+      db.prepare('INSERT INTO invoice_collection_schedule (collector_type, vendor_name, cron_expression, enabled) VALUES (?, ?, ?, ?)').run('amazon', 'Amazon', '15 9 1 * *', 0);
+
+      const due = db.prepare(`
+        SELECT * FROM invoice_collection_schedule
+        WHERE enabled = 1 AND (next_run_at IS NULL OR next_run_at <= datetime('now'))
+      `).all() as any[];
+      expect(due).toHaveLength(1);
+      expect(due[0].collector_type).toBe('email');
     });
   });
 

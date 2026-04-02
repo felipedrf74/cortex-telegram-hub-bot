@@ -35,7 +35,7 @@ function applyMigrations(db: Database.Database): void {
   `);
 
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
 
   for (const file of files) {
@@ -105,13 +105,13 @@ describe('Skill Management QA Validation', () => {
 
     it('enabling an already-enabled sub-skill returns true', () => {
       const result = enableSubSkill('secretary', 'tasks');
-      expect(result).toBe(true);
+      expect(result).toEqual({ ok: true });
     });
 
     it('disabling an already-disabled sub-skill returns true', () => {
       disableSubSkill('secretary', 'email');
       const result = disableSubSkill('secretary', 'email');
-      expect(result).toBe(true);
+      expect(result).toEqual({ ok: true });
     });
   });
 

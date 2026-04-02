@@ -24,7 +24,7 @@ function createTestDb(): Database.Database {
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && !f.includes(' 2')).sort();
   for (const file of files) {
     const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
     if (!applied) {

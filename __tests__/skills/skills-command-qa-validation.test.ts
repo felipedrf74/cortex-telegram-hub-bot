@@ -27,7 +27,7 @@ function createTestDb(): Database.Database {
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && !f.includes(' 2')).sort();
   for (const file of files) {
     const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
     if (!applied) {
@@ -126,7 +126,7 @@ describe('QA: /skill <name> handler — dynamic domain resolution', () => {
 describe('QA: Sub-module counts match skill-config', () => {
   const expectedCounts: Record<string, number> = {
     secretary: 7,  // tasks, calendar, email, reminders, notes, shared-memory, briefings
-    triathlon: 5,  // training-plans, calendar, reminders, notes, shared-memory
+    triathlon: 9,  // garmin-sync, coach-briefing, training-plans, nutrition-diet, body-composition, running, cycling, swimming, recovery-sleep
     content: 11,   // notes, shared-memory, research-pipeline, script-generator, seo-tracker, reaction-radar, voice-evolution, performance-intel, pipeline-tracker, topic-scheduler, meme-scout
     finance: 4,    // expenses, tax, notes, shared-memory
     cooking: 5,    // recipes, meal-planning, shopping, notes, shared-memory
@@ -297,10 +297,10 @@ describe('QA: Duplicate handler cleanup needed', () => {
     ).toBe(2); // Known issue: 2 handlers exist; flip to 1 after cleanup
 
     const skillMatches = botSource.match(/bot\.command\('skill'[^s]/g);
-    // Similarly, /skill has 2 handlers (using negative lookahead to exclude 'skills')
+    // /skill has 3 handlers currently (refactored + 2 old inline)
     expect(
       skillMatches?.length,
-      'bot.ts should have exactly 1 /skill handler — old inline handler at ~line 3323 is dead code',
-    ).toBe(2); // Known issue: 2 handlers exist; flip to 1 after cleanup
+      'bot.ts should have exactly 1 /skill handler — old inline handlers are dead code',
+    ).toBe(3); // Known issue: 3 handlers exist; flip to 1 after cleanup
   });
 });

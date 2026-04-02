@@ -35,7 +35,7 @@ function applyMigrations(db: Database.Database): void {
   `);
 
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
 
   for (const file of files) {
@@ -304,21 +304,21 @@ describe('SkillManager — toggle API', () => {
   });
   afterEach(() => { testDb.close(); });
 
-  it('enableSubSkill returns true for valid sub-skill', () => {
+  it('enableSubSkill returns { ok: true } for valid sub-skill', () => {
     disableSubSkill('secretary', 'email');
-    expect(enableSubSkill('secretary', 'email')).toBe(true);
+    expect(enableSubSkill('secretary', 'email')).toEqual({ ok: true });
   });
 
-  it('disableSubSkill returns true for valid sub-skill', () => {
-    expect(disableSubSkill('secretary', 'email')).toBe(true);
+  it('disableSubSkill returns { ok: true } for valid sub-skill', () => {
+    expect(disableSubSkill('secretary', 'email')).toEqual({ ok: true });
   });
 
-  it('enableSubSkill returns false for non-existent skill', () => {
-    expect(enableSubSkill('secretary' as any, 'nonexistent')).toBe(false);
+  it('enableSubSkill returns { ok: false } for non-existent skill', () => {
+    expect(enableSubSkill('secretary' as any, 'nonexistent').ok).toBe(false);
   });
 
-  it('disableSubSkill returns false for non-existent skill', () => {
-    expect(disableSubSkill('secretary' as any, 'nonexistent')).toBe(false);
+  it('disableSubSkill returns { ok: false } for non-existent skill', () => {
+    expect(disableSubSkill('secretary' as any, 'nonexistent').ok).toBe(false);
   });
 
   it('enableSkill returns true for valid skill', () => {
@@ -328,6 +328,68 @@ describe('SkillManager — toggle API', () => {
 
   it('disableSkill returns true for valid skill', () => {
     expect(disableSkill('secretary')).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// BUG FIX REGRESSION TESTS — enable/disable false-positive errors
+// ═══════════════════════════════════════════════════════════════════
+
+describe('SkillManager — enable/disable false-positive bug (#4 #5 #6)', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+    invalidateToolCache();
+    seedDefaultSkills();
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('#4: enableSkill returns true for already-enabled skill (no false negative)', () => {
+    // After seeding, skills are enabled by default.
+    // Calling enable on an already-enabled skill should return true, not false.
+    const result = enableSkill('secretary');
+    expect(result).toBe(true);
+  });
+
+  it('#5: disableSkill returns true for already-disabled skill (no false negative)', () => {
+    disableSkill('secretary');
+    // Calling disable again on an already-disabled skill should return true, not false.
+    const result = disableSkill('secretary');
+    expect(result).toBe(true);
+  });
+
+  it('#6: all skills are enabled after seedDefaultSkills runs', () => {
+    const statuses = getAllSkillStatuses();
+    for (const skill of statuses) {
+      expect(skill.enabled).toBe(true);
+    }
+  });
+
+  it('enableSubSkill returns true for already-enabled sub-skill', () => {
+    // All sub-skills are enabled by default after seeding
+    const result = enableSubSkill('secretary', 'email');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('disableSubSkill returns true for already-disabled sub-skill', () => {
+    disableSubSkill('secretary', 'email');
+    const result = disableSubSkill('secretary', 'email');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('enableSkill returns false for non-existent skill', () => {
+    expect(enableSkill('nonexistent' as any)).toBe(false);
+  });
+
+  it('disableSkill returns false for non-existent skill', () => {
+    expect(disableSkill('nonexistent' as any)).toBe(false);
+  });
+
+  it('enable then status shows enabled', () => {
+    disableSkill('triathlon');
+    expect(getSkillStatus('triathlon').enabled).toBe(false);
+    enableSkill('triathlon');
+    expect(getSkillStatus('triathlon').enabled).toBe(true);
   });
 });
 
@@ -642,16 +704,16 @@ describe('QA Validation — skill enable/disable false positive fix', () => {
     seedDefaultSkills();
     const sub = getSkillStatus('cooking').subSkills[0];
 
-    expect(disableSubSkill('cooking', sub.name)).toBe(true);
+    expect(disableSubSkill('cooking', sub.name)).toEqual({ ok: true });
     expect(getSkillStatus('cooking').subSkills.find(s => s.name === sub.name)!.enabled).toBe(false);
 
-    expect(enableSubSkill('cooking', sub.name)).toBe(true);
+    expect(enableSubSkill('cooking', sub.name)).toEqual({ ok: true });
     expect(getSkillStatus('cooking').subSkills.find(s => s.name === sub.name)!.enabled).toBe(true);
   });
 
   it('enableSubSkill returns false for nonexistent submodule', () => {
     seedDefaultSkills();
-    expect(enableSubSkill('cooking', 'nonexistent-module')).toBe(false);
+    expect(enableSubSkill('cooking', 'nonexistent-module')).toEqual({ ok: false });
   });
 
   // ── meme-scout specific: enabledByDefault=false ──
@@ -666,7 +728,7 @@ describe('QA Validation — skill enable/disable false positive fix', () => {
 
   it('meme-scout can be explicitly enabled after seeding', () => {
     seedDefaultSkills();
-    expect(enableSubSkill('content', 'meme-scout')).toBe(true);
+    expect(enableSubSkill('content', 'meme-scout')).toEqual({ ok: true });
     const memeScout = getSkillStatus('content').subSkills.find(s => s.name === 'meme-scout');
     expect(memeScout!.enabled).toBe(true);
   });

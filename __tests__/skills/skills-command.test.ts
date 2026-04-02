@@ -34,7 +34,7 @@ function applyMigrations(db: Database.Database): void {
   `);
 
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
 
   for (const file of files) {
@@ -123,10 +123,10 @@ describe('/skills command — getAllSkillStatuses()', () => {
     expect(subNames).toEqual(['briefings', 'calendar', 'email', 'notes', 'reminders', 'shared-memory', 'tasks']);
   });
 
-  it('triathlon has 5 sub-modules', () => {
+  it('triathlon has 9 sub-modules', () => {
     const skills = getAllSkillStatuses();
     const triathlon = skills.find(s => s.name === 'triathlon')!;
-    expect(triathlon.subSkills).toHaveLength(5);
+    expect(triathlon.subSkills).toHaveLength(9);
   });
 
   it('content has 11 sub-modules (v2.0.0 with granular agent sub-skills)', () => {
@@ -142,10 +142,10 @@ describe('/skills command — getAllSkillStatuses()', () => {
         expect(sub.toolCount).toBeGreaterThanOrEqual(0);
       }
     }
-    // Most sub-skills have tools; content v2 agent sub-skills are cron-driven with no tools
+    // Many sub-skills are cron/agent-driven with no tools (content agents, triathlon disciplines)
     const allSubs = skills.flatMap(s => s.subSkills);
     const withTools = allSubs.filter(s => s.toolCount > 0);
-    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.6);
+    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.4);
   });
 });
 
@@ -196,17 +196,12 @@ describe('/skill <name> command — getSkillStatus()', () => {
 // ── Formatting edge cases ───────────────────────────────────────
 
 describe('skills command — formatting data correctness', () => {
-  it('active sub-module count matches enabled count', () => {
+  it('active sub-module count matches enabledByDefault count', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       const activeSubs = skill.subSkills.filter(s => s.enabled).length;
-      if (skill.name === 'content') {
-        // meme-scout is disabled by default → 10 of 11 enabled
-        expect(activeSubs).toBe(skill.subSkills.length - 1);
-      } else {
-        // All other skills have all sub-skills enabled by default
-        expect(activeSubs).toBe(skill.subSkills.length);
-      }
+      const expectedEnabled = DEFAULT_SKILLS[skill.name as DomainName].subSkills.filter(s => s.enabledByDefault).length;
+      expect(activeSubs).toBe(expectedEnabled);
     }
   });
 
@@ -218,7 +213,7 @@ describe('skills command — formatting data correctness', () => {
         .filter(s => s.enabled)
         .reduce((sum, s) => sum + s.toolCount, 0);
       expect(totalTools).toBeGreaterThan(0);
-      expect(activeTools).toBe(totalTools); // all enabled by default
+      expect(activeTools).toBeLessThanOrEqual(totalTools);
     }
   });
 

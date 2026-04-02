@@ -533,7 +533,7 @@ function applyMigrations(db: Database.Database): void {
       applied_at TEXT DEFAULT (datetime('now'))
     );
   `);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && !f.includes(' 2')).sort();
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
     db.exec(sql);
@@ -796,7 +796,9 @@ describe('REGRESSION: Tool execution through skill interface', () => {
 
       seedDefaultSkills();
 
+      // training-plans sub-skill now includes calendar, reminder, notes, and shared-memory tools
       const fakeTools = [
+        { name: 'create_training_plan', description: 'Plan', input_schema: { type: 'object' as const, properties: {} } },
         { name: 'get_calendar_events', description: 'Cal', input_schema: { type: 'object' as const, properties: {} } },
         { name: 'create_calendar_event', description: 'Create', input_schema: { type: 'object' as const, properties: {} } },
         { name: 'set_reminder', description: 'Remind', input_schema: { type: 'object' as const, properties: {} } },
@@ -806,14 +808,15 @@ describe('REGRESSION: Tool execution through skill interface', () => {
       let tools = getToolsForDomain('triathlon', fakeTools as any);
       expect(tools.map(t => t.name)).toContain('get_calendar_events');
 
-      disableSubSkill('triathlon', 'calendar');
+      // training-plans sub-skill now owns calendar, reminder, notes tools
+      disableSubSkill('triathlon', 'training-plans');
 
       tools = getToolsForDomain('triathlon', fakeTools as any);
       expect(tools.map(t => t.name)).not.toContain('get_calendar_events');
       expect(tools.map(t => t.name)).not.toContain('create_calendar_event');
-      // Notes and reminders should remain
-      expect(tools.map(t => t.name)).toContain('set_reminder');
-      expect(tools.map(t => t.name)).toContain('save_note');
+      // All tools in training-plans are removed together
+      expect(tools.map(t => t.name)).not.toContain('set_reminder');
+      expect(tools.map(t => t.name)).not.toContain('save_note');
     });
   });
 
@@ -996,15 +999,16 @@ describe('REGRESSION: Skill config definitions are consistent', () => {
     expect(subNames).toContain('shared-memory');
   });
 
-  it('triathlon has calendar, reminders, notes, shared-memory', async () => {
+  it('triathlon has training-plans, garmin-sync, coach-briefing, and sport disciplines', async () => {
     const { getSkillDefinition } = await import('../../src/skills/skill-config');
     const tri = getSkillDefinition('triathlon');
     const subNames = tri.subSkills.map(s => s.name);
 
-    expect(subNames).toContain('calendar');
-    expect(subNames).toContain('reminders');
-    expect(subNames).toContain('notes');
-    expect(subNames).toContain('shared-memory');
+    expect(subNames).toContain('training-plans');
+    expect(subNames).toContain('garmin-sync');
+    expect(subNames).toContain('coach-briefing');
+    expect(subNames).toContain('running');
+    expect(subNames).toContain('recovery-sleep');
     // Triathlon should NOT have tasks or email
     expect(subNames).not.toContain('tasks');
     expect(subNames).not.toContain('email');
@@ -1084,7 +1088,578 @@ describe('REGRESSION: Skill config definitions are consistent', () => {
     const { getSubSkillNames } = await import('../../src/skills/skill-config');
 
     expect(getSubSkillNames('secretary')).toContain('tasks');
-    expect(getSubSkillNames('triathlon')).toContain('calendar');
+    expect(getSubSkillNames('triathlon')).toContain('training-plans');
     expect(getSubSkillNames('content')).toContain('notes');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 6 — FINANCE & COOKING DOMAIN ROUTING
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Finance commands route correctly', () => {
+  beforeEach(() => mockClassifyMessage.mockReset());
+
+  describe('Pattern-based finance commands (Tier 1)', () => {
+    const commands = [
+      '/finance summary',
+      '/budget this month',
+      '/expense 50 uber',
+      '/tax calculate',
+      '/darf generate',
+      '/receipt upload',
+      '/invoice list',
+    ];
+
+    it.each(commands)('"%s" → finance (pattern)', (cmd) => {
+      expect(patternMatch(cmd)).toBe('finance');
+    });
+  });
+
+  describe('Keyword-based finance (Tier 2 EN)', () => {
+    const messages = [
+      'how much did I spend on expenses?',
+      'calculate my tax this month',
+      'what is my budget for March?',
+      'income tax deductions',
+      'financial planning help',
+      'freelancer tax obligations',
+    ];
+
+    it.each(messages)('EN "%s" → finance (keyword)', (msg) => {
+      expect(keywordMatch(msg)).toBe('finance');
+    });
+  });
+
+  describe('Keyword-based finance (Tier 2 PT-BR)', () => {
+    const messages = [
+      'minhas despesas do mês',
+      'gastos com transporte',
+      'orçamento de março',
+      'preciso pagar o imposto',
+      'carnê-leão atrasado',
+      'gerar DARF do mês',
+      'receita federal prazo',
+      'nota fiscal pendente',
+      'dedução fiscal',
+      'qual o faturamento?',
+    ];
+
+    it.each(messages)('PT-BR "%s" → finance (keyword)', (msg) => {
+      expect(keywordMatch(msg)).toBe('finance');
+    });
+  });
+});
+
+describe('REGRESSION: Cooking commands route correctly', () => {
+  beforeEach(() => mockClassifyMessage.mockReset());
+
+  describe('Pattern-based cooking commands (Tier 1)', () => {
+    const commands = [
+      '/cook chicken parmesan',
+      '/recipe find pasta',
+      '/mealplan week',
+      '/shopping list',
+    ];
+
+    it.each(commands)('"%s" → cooking (pattern)', (cmd) => {
+      expect(patternMatch(cmd)).toBe('cooking');
+    });
+  });
+
+  describe('Keyword-based cooking (Tier 2 EN)', () => {
+    const messages = [
+      'find me a recipe with chicken',
+      'what should I cook tonight?',
+      'meal plan for the week',
+      'shopping list for dinner',
+      'cooking tips for beginners',
+      'meal prep ideas',
+      'groceries for the week',
+      'what to eat for breakfast?',
+      'dinner ideas please',
+    ];
+
+    it.each(messages)('EN "%s" → cooking (keyword)', (msg) => {
+      expect(keywordMatch(msg)).toBe('cooking');
+    });
+  });
+
+  describe('Keyword-based cooking (Tier 2 PT-BR)', () => {
+    const messages = [
+      'preciso de uma receita',
+      'o que cozinhar hoje?',
+      'lista de compras do jantar',
+      'cardápio da semana',
+      'preparo para refeição',
+    ];
+
+    it.each(messages)('PT-BR "%s" → cooking (keyword)', (msg) => {
+      expect(keywordMatch(msg)).toBe('cooking');
+    });
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 7 — UNKNOWN COMMAND GUARD (P0 BUG FIX VALIDATION)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Unknown command guard (P0 fix)', () => {
+  beforeEach(() => mockClassifyMessage.mockReset());
+
+  it('/expense routes to finance via pattern (not unknown_command)', async () => {
+    const result = await routeMessage('/expense add 45.50');
+    expect(result.method).toBe('pattern');
+    expect(result.domain).toBe('finance');
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
+  });
+
+  it('unregistered /foo command is caught before classifier', async () => {
+    const result = await routeMessage('/foo bar baz');
+    expect(result.method).toBe('unknown_command');
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
+  });
+
+  it('unregistered /randomcmd defaults to secretary domain', async () => {
+    const result = await routeMessage('/randomcmd test');
+    expect(result.domain).toBe('secretary');
+    expect(result.method).toBe('unknown_command');
+  });
+
+  it('registered commands are NOT blocked by the guard', async () => {
+    // /todo is registered → pattern match, not unknown_command
+    const result = await routeMessage('/todo buy groceries');
+    expect(result.method).toBe('pattern');
+    expect(result.domain).toBe('secretary');
+  });
+
+  it('slash-only message is caught by guard', async () => {
+    const result = await routeMessage('/');
+    expect(result.method).toBe('unknown_command');
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 8 — SUB-SKILL DEPENDENCY CASCADE
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Sub-skill dependency cascade', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('disabling garmin-sync cascades to coach-briefing', async () => {
+    const { seedDefaultSkills, disableSubSkill, getSkillStatus } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+
+    // Both should be enabled by default
+    let status = getSkillStatus('triathlon');
+    expect(status.subSkills.find(s => s.name === 'garmin-sync')?.enabled).toBe(true);
+    expect(status.subSkills.find(s => s.name === 'coach-briefing')?.enabled).toBe(true);
+
+    // Disable garmin-sync → coach-briefing depends on it and should cascade-disable
+    disableSubSkill('triathlon', 'garmin-sync');
+
+    status = getSkillStatus('triathlon');
+    expect(status.subSkills.find(s => s.name === 'garmin-sync')?.enabled).toBe(false);
+    expect(status.subSkills.find(s => s.name === 'coach-briefing')?.enabled).toBe(false);
+  });
+
+  it('enabling coach-briefing fails when garmin-sync is disabled', async () => {
+    const { seedDefaultSkills, enableSubSkill, disableSubSkill } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+    disableSubSkill('triathlon', 'garmin-sync');
+
+    const result = enableSubSkill('triathlon', 'coach-briefing');
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('garmin-sync');
+  });
+
+  it('enabling coach-briefing succeeds when garmin-sync is enabled', async () => {
+    const { seedDefaultSkills, enableSubSkill, disableSubSkill } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+    // Disable then re-enable garmin-sync
+    disableSubSkill('triathlon', 'garmin-sync');
+    enableSubSkill('triathlon', 'garmin-sync');
+
+    const result = enableSubSkill('triathlon', 'coach-briefing');
+    expect(result.ok).toBe(true);
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 9 — DYNAMIC SKILL REGISTRATION
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Dynamic skill registration', () => {
+  afterEach(async () => {
+    // Reset the registry to defaults after each test
+    const { _resetRegistry } = await import('../../src/skills/skill-config');
+    _resetRegistry();
+  });
+
+  it('registerSkill adds a new skill to the registry', async () => {
+    const { registerSkill, getSkillDefinition, getRegisteredDomainNames } = await import('../../src/skills/skill-config');
+
+    registerSkill({
+      name: 'custom-domain',
+      description: 'A test custom domain',
+      version: '1.0.0',
+      subSkills: [{ name: 'main', description: 'Main module', tools: ['custom_tool'], enabledByDefault: true }],
+      routing: {
+        patternRoutes: [/^\/custom\b/i],
+        keywordRoute: /\bcustom\b/i,
+        classificationHint: { label: 'custom-domain', description: 'Custom test domain', examples: ['custom test'] },
+      },
+    });
+
+    expect(getSkillDefinition('custom-domain')).toBeDefined();
+    expect(getRegisteredDomainNames()).toContain('custom-domain');
+  });
+
+  it('unregisterSkill removes dynamic skills but NOT defaults', async () => {
+    const { registerSkill, unregisterSkill, getSkillDefinition } = await import('../../src/skills/skill-config');
+
+    registerSkill({
+      name: 'removable',
+      description: 'Removable',
+      version: '1.0.0',
+      subSkills: [],
+      routing: { patternRoutes: [], keywordRoute: null, classificationHint: { label: 'removable', description: 'test', examples: [] } },
+    });
+
+    expect(unregisterSkill('removable')).toBe(true);
+    expect(getSkillDefinition('removable')).toBeUndefined();
+
+    // Cannot unregister default skills
+    expect(unregisterSkill('secretary')).toBe(false);
+    expect(getSkillDefinition('secretary')).toBeDefined();
+  });
+
+  it('_resetRegistry restores only defaults', async () => {
+    const { registerSkill, _resetRegistry, getRegisteredDomainNames } = await import('../../src/skills/skill-config');
+
+    registerSkill({
+      name: 'temp-skill',
+      description: 'Temp',
+      version: '1.0.0',
+      subSkills: [],
+      routing: { patternRoutes: [], keywordRoute: null, classificationHint: { label: 'temp', description: 'temp', examples: [] } },
+    });
+
+    expect(getRegisteredDomainNames()).toContain('temp-skill');
+
+    _resetRegistry();
+
+    expect(getRegisteredDomainNames()).not.toContain('temp-skill');
+    expect(getRegisteredDomainNames()).toContain('secretary');
+    expect(getRegisteredDomainNames()).toContain('triathlon');
+    expect(getRegisteredDomainNames()).toContain('content');
+    expect(getRegisteredDomainNames()).toContain('finance');
+    expect(getRegisteredDomainNames()).toContain('cooking');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 10 — CRON JOB OWNERSHIP MAPPING
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Cron job ownership mapping', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('getCronJobOwner maps known cron jobs to correct domain+sub-skill', async () => {
+    const { getCronJobOwner } = await import('../../src/skills/skill-config');
+
+    const garminOwner = getCronJobOwner('garmin_keepalive');
+    expect(garminOwner).toEqual({ domain: 'triathlon', subSkill: 'garmin-sync' });
+
+    const briefingOwner = getCronJobOwner('daily_briefing');
+    expect(briefingOwner).toEqual({ domain: 'secretary', subSkill: 'briefings' });
+
+    const coachOwner = getCronJobOwner('garmin_coach');
+    expect(coachOwner).toEqual({ domain: 'triathlon', subSkill: 'coach-briefing' });
+
+    const reminderOwner = getCronJobOwner('reminders');
+    expect(reminderOwner).toEqual({ domain: 'secretary', subSkill: 'reminders' });
+  });
+
+  it('getCronJobOwner returns null for unmapped jobs', async () => {
+    const { getCronJobOwner } = await import('../../src/skills/skill-config');
+    expect(getCronJobOwner('nonexistent_job')).toBeNull();
+  });
+
+  it('getAllCronJobMappings returns all mapped cron jobs', async () => {
+    const { getAllCronJobMappings } = await import('../../src/skills/skill-config');
+
+    const mappings = getAllCronJobMappings();
+    expect(mappings.size).toBeGreaterThan(0);
+
+    // Verify specific mappings exist
+    expect(mappings.has('garmin_keepalive')).toBe(true);
+    expect(mappings.has('daily_briefing')).toBe(true);
+    expect(mappings.has('end_of_day')).toBe(true);
+    expect(mappings.has('conflict_detection')).toBe(true);
+  });
+
+  it('isCronJobEnabled reflects sub-skill state', async () => {
+    const { seedDefaultSkills, isCronJobEnabled, disableSubSkill } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+
+    // garmin_keepalive should be enabled (garmin-sync is enabled by default)
+    expect(isCronJobEnabled('garmin_keepalive')).toBe(true);
+
+    // Disable garmin-sync
+    disableSubSkill('triathlon', 'garmin-sync');
+
+    expect(isCronJobEnabled('garmin_keepalive')).toBe(false);
+
+    // Unmapped jobs always run
+    expect(isCronJobEnabled('nonexistent_job')).toBe(true);
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 11 — CLASSIFICATION HINTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Classification hints generation', () => {
+  it('getClassificationHints returns hints for all default domains', async () => {
+    const { getClassificationHints } = await import('../../src/skills/skill-config');
+
+    const hints = getClassificationHints();
+    expect(hints.length).toBe(5); // secretary, triathlon, content, finance, cooking
+
+    const labels = hints.map(h => h.label);
+    expect(labels).toContain('secretary');
+    expect(labels).toContain('triathlon');
+    expect(labels).toContain('content');
+    expect(labels).toContain('finance');
+    expect(labels).toContain('cooking');
+  });
+
+  it('each hint has description and examples', async () => {
+    const { getClassificationHints } = await import('../../src/skills/skill-config');
+
+    const hints = getClassificationHints();
+    for (const hint of hints) {
+      expect(hint.description).toBeTruthy();
+      expect(hint.examples.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('getClassificationHints filters by enabled skills', async () => {
+    const { getClassificationHints } = await import('../../src/skills/skill-config');
+
+    const enabledOnly = new Set(['secretary', 'triathlon']);
+    const hints = getClassificationHints(enabledOnly);
+    expect(hints.length).toBe(2);
+    expect(hints.map(h => h.label)).toEqual(expect.arrayContaining(['secretary', 'triathlon']));
+  });
+
+  it('buildClassifierHints generates formatted text', async () => {
+    const { buildClassifierHints } = await import('../../src/router/classifier');
+    const hintsText = buildClassifierHints();
+
+    expect(hintsText).toContain('secretary');
+    expect(hintsText).toContain('triathlon');
+    expect(hintsText).toContain('content');
+    expect(hintsText).toContain('finance');
+    expect(hintsText).toContain('cooking');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 12 — FINANCE & COOKING SKILL CONFIG
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Finance and cooking skill config integrity', () => {
+  it('finance has expected sub-skills', async () => {
+    const { getSkillDefinition } = await import('../../src/skills/skill-config');
+    const fin = getSkillDefinition('finance');
+    const subNames = fin!.subSkills.map(s => s.name);
+
+    expect(subNames).toContain('expenses');
+    expect(subNames).toContain('tax');
+    expect(subNames).toContain('notes');
+    expect(subNames).toContain('shared-memory');
+    expect(subNames.length).toBe(4);
+  });
+
+  it('cooking has expected sub-skills', async () => {
+    const { getSkillDefinition } = await import('../../src/skills/skill-config');
+    const cook = getSkillDefinition('cooking');
+    const subNames = cook!.subSkills.map(s => s.name);
+
+    expect(subNames).toContain('recipes');
+    expect(subNames).toContain('meal-planning');
+    expect(subNames).toContain('shopping');
+    expect(subNames).toContain('notes');
+    expect(subNames).toContain('shared-memory');
+    expect(subNames.length).toBe(5);
+  });
+
+  it('finance tools are correctly mapped to sub-skills', async () => {
+    const { getSkillDefinition } = await import('../../src/skills/skill-config');
+    const fin = getSkillDefinition('finance');
+    const expenses = fin!.subSkills.find(s => s.name === 'expenses');
+    const tax = fin!.subSkills.find(s => s.name === 'tax');
+
+    expect(expenses!.tools).toContain('finance_add_transaction');
+    expect(expenses!.tools).toContain('finance_monthly_summary');
+    expect(tax!.tools).toContain('finance_calculate_tax');
+    expect(tax!.tools).toContain('finance_annual_summary');
+  });
+
+  it('cooking tools are correctly mapped to sub-skills', async () => {
+    const { getSkillDefinition } = await import('../../src/skills/skill-config');
+    const cook = getSkillDefinition('cooking');
+    const recipes = cook!.subSkills.find(s => s.name === 'recipes');
+    const shopping = cook!.subSkills.find(s => s.name === 'shopping');
+
+    expect(recipes!.tools).toContain('cooking_add_recipe');
+    expect(shopping!.tools).toContain('cooking_generate_shopping_list');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 13 — FINANCE & COOKING TOOL ISOLATION
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Finance & cooking tool domain isolation', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('finance tools are only available in finance domain', async () => {
+    const { seedDefaultSkills, getToolsForDomain, invalidateToolCache } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+    invalidateToolCache();
+
+    const fakeTools = [
+      { name: 'finance_add_transaction', description: 'Add expense', input_schema: { type: 'object' as const, properties: {} } },
+      { name: 'finance_calculate_tax', description: 'Tax', input_schema: { type: 'object' as const, properties: {} } },
+      { name: 'ms_todo_get_tasks', description: 'Tasks', input_schema: { type: 'object' as const, properties: {} } },
+    ];
+
+    const finTools = getToolsForDomain('finance', fakeTools as any);
+    expect(finTools.map(t => t.name)).toContain('finance_add_transaction');
+
+    // Finance tools should NOT be in secretary
+    invalidateToolCache();
+    const secTools = getToolsForDomain('secretary', fakeTools as any);
+    expect(secTools.map(t => t.name)).not.toContain('finance_add_transaction');
+    expect(secTools.map(t => t.name)).not.toContain('finance_calculate_tax');
+  });
+
+  it('cooking tools are only available in cooking domain', async () => {
+    const { seedDefaultSkills, getToolsForDomain, invalidateToolCache } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+    invalidateToolCache();
+
+    const fakeTools = [
+      { name: 'cooking_add_recipe', description: 'Recipe', input_schema: { type: 'object' as const, properties: {} } },
+      { name: 'cooking_generate_shopping_list', description: 'Shopping', input_schema: { type: 'object' as const, properties: {} } },
+      { name: 'ms_todo_get_tasks', description: 'Tasks', input_schema: { type: 'object' as const, properties: {} } },
+    ];
+
+    const cookTools = getToolsForDomain('cooking', fakeTools as any);
+    expect(cookTools.map(t => t.name)).toContain('cooking_add_recipe');
+
+    // Cooking tools should NOT be in triathlon
+    invalidateToolCache();
+    const triTools = getToolsForDomain('triathlon', fakeTools as any);
+    expect(triTools.map(t => t.name)).not.toContain('cooking_add_recipe');
+  });
+
+  it('disabling finance expense sub-skill removes expense tools', async () => {
+    const { seedDefaultSkills, getToolsForDomain, disableSubSkill, invalidateToolCache } = await import('../../src/skills/skill-manager');
+
+    seedDefaultSkills();
+    invalidateToolCache();
+
+    const fakeTools = [
+      { name: 'finance_add_transaction', description: 'Add', input_schema: { type: 'object' as const, properties: {} } },
+      { name: 'finance_calculate_tax', description: 'Tax', input_schema: { type: 'object' as const, properties: {} } },
+    ];
+
+    let tools = getToolsForDomain('finance', fakeTools as any);
+    expect(tools.map(t => t.name)).toContain('finance_add_transaction');
+    expect(tools.map(t => t.name)).toContain('finance_calculate_tax');
+
+    disableSubSkill('finance', 'expenses');
+
+    tools = getToolsForDomain('finance', fakeTools as any);
+    expect(tools.map(t => t.name)).not.toContain('finance_add_transaction');
+    // Tax should still be available
+    expect(tools.map(t => t.name)).toContain('finance_calculate_tax');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SECTION 14 — DOMAIN KEYWORD SPECIFICITY (CROSS-DOMAIN CONFLICTS)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('REGRESSION: Cross-domain keyword specificity', () => {
+  it('cooking "meal prep" matches cooking (more specific than secretary)', () => {
+    // "meal prep" matches cooking's keyword pattern
+    expect(keywordMatch('I need to do meal prep for the week')).toBe('cooking');
+  });
+
+  it('finance "budget" beats secretary (more specific)', () => {
+    expect(keywordMatch('what is my budget')).toBe('finance');
+  });
+
+  it('triathlon "training" beats content for workout messages', () => {
+    expect(keywordMatch('I need a training plan for running')).toBe('triathlon');
+  });
+
+  it('content "youtube" beats secretary for content messages', () => {
+    expect(keywordMatch('plan my youtube content calendar')).toBe('content');
+  });
+
+  it('secretary only matches when no other domain claims the message', () => {
+    // These should go to secretary — no specific domain claims them
+    expect(keywordMatch('check my emails')).toBe('secretary');
+    expect(keywordMatch('overdue items')).toBe('secretary');
+    expect(keywordMatch('due today')).toBe('secretary');
+  });
+
+  it('completely ambiguous messages return null', () => {
+    expect(keywordMatch('how are you?')).toBeNull();
+    expect(keywordMatch('tell me something interesting')).toBeNull();
+    expect(keywordMatch('ok')).toBeNull();
   });
 });

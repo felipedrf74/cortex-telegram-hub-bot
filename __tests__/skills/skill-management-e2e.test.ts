@@ -37,7 +37,7 @@ function applyMigrations(db: Database.Database): void {
     );
   `);
   const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
+    .filter(f => f.endsWith('.sql') && !f.includes(' 2'))
     .sort();
   for (const file of files) {
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf-8');
@@ -435,7 +435,7 @@ describe('E2E: sub-module toggle lifecycle', () => {
   it('enable already-enabled sub-skill returns true (idempotent)', () => {
     // Tasks is enabled by default
     const result = enableSubSkill('secretary', 'tasks');
-    expect(result).toBe(true);
+    expect(result).toEqual({ ok: true });
 
     const status = getSkillStatus('secretary');
     const tasks = status.subSkills.find(s => s.name === 'tasks')!;
@@ -445,7 +445,7 @@ describe('E2E: sub-module toggle lifecycle', () => {
   it('disable already-disabled sub-skill returns true (row exists)', () => {
     disableSubSkill('secretary', 'email');
     const result = disableSubSkill('secretary', 'email');
-    expect(result).toBe(true);
+    expect(result).toEqual({ ok: true });
 
     const status = getSkillStatus('secretary');
     const email = status.subSkills.find(s => s.name === 'email')!;
@@ -453,13 +453,13 @@ describe('E2E: sub-module toggle lifecycle', () => {
   });
 
   it('enable/disable non-existent sub-module returns false', () => {
-    expect(enableSubSkill('secretary', 'nonexistent')).toBe(false);
-    expect(disableSubSkill('secretary', 'nonexistent')).toBe(false);
+    expect(enableSubSkill('secretary', 'nonexistent')).toEqual({ ok: false });
+    expect(disableSubSkill('secretary', 'nonexistent')).toEqual({ ok: false });
   });
 
   it('toggle sub-skill for non-existent skill returns false', () => {
-    expect(enableSubSkill('nonexistent' as DomainName, 'tasks')).toBe(false);
-    expect(disableSubSkill('nonexistent' as DomainName, 'tasks')).toBe(false);
+    expect(enableSubSkill('nonexistent' as DomainName, 'tasks')).toEqual({ ok: false });
+    expect(disableSubSkill('nonexistent' as DomainName, 'tasks')).toEqual({ ok: false });
   });
 
   it('disable all sub-skills → tool array empty, even though skill is enabled', () => {
@@ -560,8 +560,8 @@ describe('E2E: tools register/unregister when skills are toggled', () => {
     expect(names).not.toContain('add_training_week');
     expect(names).not.toContain('get_training_plan');
 
-    // Calendar tools still present
-    expect(names).toContain('get_calendar_events');
+    // Calendar tools are now part of training-plans, so they are also removed
+    expect(names).not.toContain('get_calendar_events');
   });
 
   it('shared tools (notes, shared-memory) are per-domain — disabling in one domain keeps them in another', () => {

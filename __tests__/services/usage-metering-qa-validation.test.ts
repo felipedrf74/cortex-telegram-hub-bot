@@ -29,7 +29,7 @@ function createTestDb(): Database.Database {
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))`);
-  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql') && !f.includes(' 2')).sort();
   for (const file of files) {
     const applied = db.prepare('SELECT 1 FROM _migrations WHERE name = ?').get(file);
     if (!applied) {
@@ -351,14 +351,16 @@ describe('QA: Portal snapshot includes metering', () => {
 // ── Migration numbering ──────────────────────────────────────────
 
 describe('QA: Migration numbering note', () => {
-  it('024 prefix is shared between cooking and metering (known collision)', () => {
-    const migrationFiles = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.startsWith('024'));
+  it('024 prefix is shared between cooking and data_isolation (known collision)', () => {
+    const migrationFiles = fs.readdirSync(MIGRATIONS_DIR)
+      .filter(f => f.startsWith('024') && !f.includes(' 2'));
     // Note: this is a known issue from parallel agent development
     // Both files create independent tables, so no runtime conflict
+    // Finder duplicates (" 2" suffix) are excluded
     expect(migrationFiles).toHaveLength(2);
     expect(migrationFiles.sort()).toEqual([
       '024_cooking_tables.sql',
-      '024_usage_metering.sql',
+      '024_data_isolation.sql',
     ]);
   });
 });
