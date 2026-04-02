@@ -392,6 +392,43 @@ server.listen(PORT, () => {
         } catch (e) { console.error(`[qa-queue] Error processing ${qaName}:`, e.message); }
       }
 
+      // Step 1.6: Recover orphaned QA Validating tasks from Notion
+      // If a task is QA Validating in Notion but has no queue file and no active QA agent, re-queue it
+      const qaValidating = allTasks.filter(t => t.status === 'QA Validating');
+      for (const task of qaValidating) {
+        const originWorktree = AGENT_MAP[task.agent] || 'backend';
+        const targetQA = QA_ROUTING[originWorktree] || (task.agent === '🔒 Security' ? 'qa2' : 'qa');
+        const qaPath = path.join(WORKTREES, targetQA);
+        const queueDir = path.join(qaPath, '.qa-queue');
+        // Check if already queued or actively being validated
+        let alreadyHandled = false;
+        try {
+          const activeFile = path.join(qaPath, '.agent-task.json');
+          if (fs.existsSync(activeFile)) {
+            const active = JSON.parse(fs.readFileSync(activeFile, 'utf8'));
+            if (active.id === task.id) alreadyHandled = true;
+          }
+          if (!alreadyHandled && fs.existsSync(queueDir)) {
+            const qFiles = fs.readdirSync(queueDir).filter(f => f.endsWith('.json'));
+            for (const qf of qFiles) {
+              const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
+              if (qt.id === task.id) { alreadyHandled = true; break; }
+            }
+          }
+        } catch {}
+        if (!alreadyHandled) {
+          if (!fs.existsSync(queueDir)) fs.mkdirSync(queueDir, { recursive: true });
+          const files = fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort();
+          const nextNum = files.length === 0 ? 1 : parseInt(files[files.length - 1].replace('.json', ''), 10) + 1;
+          fs.writeFileSync(path.join(queueDir, String(nextNum).padStart(3, '0') + '.json'), JSON.stringify({
+            id: task.id, title: task.title, description: task.description || '',
+            priority: task.priority || '', phase: task.phase || '', tags: task.tags || [],
+            originAgent: originWorktree, targetQA, queuedAt: new Date().toISOString(),
+          }, null, 2));
+          console.log(`[qa-orphan] Re-queued orphaned task to ${targetQA}: "${task.title.substring(0,40)}"`);
+        }
+      }
+
       // Step 2: Auto-launch ANY agent that has a prompt but isn't running
       const agents = agentStatus();
       for (const ag of agents) {
