@@ -68,6 +68,8 @@ vi.mock('../../src/config', () => ({
     get health() { return { token: healthToken }; },
     telegram: { botToken: 'test:token', allowedUserIds: [123] },
     app: { timezone: 'UTC', databasePath: ':memory:' },
+    webhooks: { enabled: false, secret: '', maxPayloadBytes: 1048576, eventRetentionDays: 30 },
+    financeEncryption: { enabled: false, masterKey: '' },
     google: { clientId: '', clientSecret: '', refreshToken: '' },
     outlook: { clientId: '', clientSecret: '', tenantId: '', refreshToken: '' },
     garmin: { email: '', password: '', tokenPath: '', coachEnabled: false, coachTime: '' },

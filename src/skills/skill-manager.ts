@@ -183,6 +183,11 @@ export function disableSubSkill(domain: DomainName, subSkillName: string): boole
 }
 
 /** Enable an entire skill (domain). Invalidates tool cache. */
+export function isSkillEnabled(domain: DomainName): boolean {
+  const status = getSkillStatus(domain);
+  return status.enabled;
+}
+
 export function enableSkill(domain: DomainName): boolean {
   const result = registry.enable(domain);
   if (result) invalidateToolCache();

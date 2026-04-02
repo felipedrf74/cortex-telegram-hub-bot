@@ -171,10 +171,6 @@ export const config = {
   rateLimit: {
     maxMessagesPerMinute: 30,
   },
-  financeEncryption: {
-    enabled: process.env.ENCRYPTION_MASTER_KEY ? true : false,
-    masterKey: process.env.ENCRYPTION_MASTER_KEY || '',
-  },
 } as const;
 
 // Fail-fast: empty allowedUserIds would silently reject all messages
