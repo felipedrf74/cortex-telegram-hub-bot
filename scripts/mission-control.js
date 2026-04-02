@@ -353,7 +353,19 @@ server.listen(PORT, () => {
           // QA agent is idle — check its queue
           const queueDir = path.join(qaPath, '.qa-queue');
           try {
-            const queueFiles = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort() : [];
+            let queueFiles = fs.existsSync(queueDir) ? fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort() : [];
+            // Clean stale queue items: remove tasks that are Done or not in QA Validating
+            for (const qf of [...queueFiles]) {
+              try {
+                const qt = JSON.parse(fs.readFileSync(path.join(queueDir, qf), 'utf8'));
+                const notionTask = allTasks.find(t => t.id === qt.id);
+                if (!notionTask || notionTask.status === 'Done' || notionTask.status === 'Backlog') {
+                  fs.unlinkSync(path.join(queueDir, qf));
+                  queueFiles = queueFiles.filter(f => f !== qf);
+                  console.log(`[qa-queue] Removed stale ${qf}: "${qt.title.substring(0,30)}" (Notion: ${notionTask?.status || 'not found'})`);
+                }
+              } catch {}
+            }
             if (queueFiles.length > 0) {
               const nextTask = JSON.parse(fs.readFileSync(path.join(queueDir, queueFiles[0]), 'utf8'));
               console.log(`[qa-queue] ${qaName} is idle with ${queueFiles.length} queued task(s) — dispatching: ${nextTask.title.substring(0,40)}`);
