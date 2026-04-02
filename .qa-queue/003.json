@@ -1,0 +1,11 @@
+{
+  "id": "332ad49d-23e7-81b8-be1d-dd0024582ce2",
+  "title": "Copyright headers (60+ files)",
+  "description": "Add MIT copyright headers to all 60+ source files. Format: \"// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.\" as first line of every .ts file in src/, scripts/, tests/. Skip: node_modules, dist, .git, data/. Script: scripts/add-headers.sh using sed or node script to prepend header if not already present. Verify: grep -rL \"Copyright\" src/ shows zero results after running. Also update LICENSE file to full MIT license text with \"Felipe Dominguez\" as copyright holder. Files: all .ts files in src/, scripts/, tests/. Idempotent: running twice does not add duplicate headers.",
+  "priority": "🟠 High",
+  "phase": "Phase 0 — Foundation",
+  "tags": [],
+  "originAgent": "flex",
+  "targetQA": "qa2",
+  "queuedAt": "2026-04-02T20:06:49.836Z"
+}
