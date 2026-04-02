@@ -19,6 +19,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
 import * as fs from 'fs';
+import { recordGarminActivityFetch, recordGarminRateLimit, recordGarminSessionStatus } from '../portal/telemetry';
 
 // ─── Garmin Connect API base URLs ────────────────────────────────────
 const API = 'https://connectapi.garmin.com';
@@ -182,8 +183,12 @@ function _loadRateLimitedUntil(): number {
 
 let _rateLimitedUntil = _loadRateLimitedUntil();
 
-function isRateLimited(): boolean {
+export function isRateLimited(): boolean {
   return Date.now() < _rateLimitedUntil;
+}
+
+export function getRateLimitedUntil(): number {
+  return _rateLimitedUntil;
 }
 
 function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
@@ -193,6 +198,7 @@ function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(RATE_LIMIT_FILE, String(_rateLimitedUntil));
   } catch { /* best-effort */ }
+  recordGarminRateLimit(true, new Date(_rateLimitedUntil).toISOString());
   logger.warn({ backoffMinutes: durationMs / 60000, until: new Date(_rateLimitedUntil).toISOString() }, 'Garmin: rate-limited by Cloudflare, backing off');
 }
 
@@ -667,6 +673,7 @@ export async function keepAlive(): Promise<boolean> {
   if (!isGarminConfigured()) return false;
   if (isRateLimited()) {
     logger.info('Garmin: skipping keep-alive, SSO rate-limited');
+    recordGarminSessionStatus(false);
     return false;
   }
   if (isMfaPending()) {
@@ -680,6 +687,11 @@ export async function keepAlive(): Promise<boolean> {
     try {
       const client = await getClient();
       await client.getUserSettings();
+      recordGarminSessionStatus(true);
+      // Clear rate limit if we were previously limited
+      if (_rateLimitedUntil > 0 && Date.now() >= _rateLimitedUntil) {
+        recordGarminRateLimit(false);
+      }
       return true;
     } catch {
       logger.warn('Garmin: OAuth2 refresh succeeded but validation failed, trying re-login');
@@ -690,7 +702,9 @@ export async function keepAlive(): Promise<boolean> {
   if (isRateLimited() || isMfaPending()) return false;
 
   // Step 2: Try full re-login (only once — may trigger MFA)
-  return attemptReLogin();
+  const result = await attemptReLogin();
+  recordGarminSessionStatus(result);
+  return result;
 }
 
 /**
@@ -886,8 +900,13 @@ export async function getRhr(date: string): Promise<unknown> {
 export async function getActivitiesByDate(startDate: string, endDate: string): Promise<GarminActivity[]> {
   try {
     const result = await safeGet<GarminActivity[]>(URLS.activitiesByDate(startDate, endDate));
-    return Array.isArray(result) ? result : [];
-  } catch { return []; }
+    const activities = Array.isArray(result) ? result : [];
+    recordGarminActivityFetch(activities.length, true);
+    return activities;
+  } catch (err) {
+    recordGarminActivityFetch(0, false, (err as Error)?.message);
+    return [];
+  }
 }
 
 export async function getActivityDetails(activityId: number): Promise<unknown> {

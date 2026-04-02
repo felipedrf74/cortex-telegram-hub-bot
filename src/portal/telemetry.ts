@@ -238,14 +238,71 @@ export function getLastMessageAt(): string | null {
 
 let _lastGarminRefreshAt: string | null = null;
 let _lastGarminRefreshOk = false;
+let _garminConsecutiveFailures = 0;
 
 export function recordGarminRefresh(ok: boolean): void {
   _lastGarminRefreshAt = new Date().toISOString();
   _lastGarminRefreshOk = ok;
+  if (ok) {
+    _garminConsecutiveFailures = 0;
+  } else {
+    _garminConsecutiveFailures++;
+  }
 }
 
 export function getGarminRefreshStatus(): { at: string | null; ok: boolean } {
   return { at: _lastGarminRefreshAt, ok: _lastGarminRefreshOk };
+}
+
+// ─── Garmin Sync Health (activity fetch tracking) ───────────────────
+
+export interface GarminSyncHealth {
+  lastActivityFetchAt: string | null;
+  lastActivityFetchOk: boolean;
+  lastActivityCount: number;
+  lastFetchError: string | null;
+  consecutiveKeepaliveFailures: number;
+  rateLimited: boolean;
+  rateLimitedUntil: string | null;
+  sessionAlive: boolean;
+}
+
+let _lastActivityFetchAt: string | null = null;
+let _lastActivityFetchOk = false;
+let _lastActivityCount = 0;
+let _lastFetchError: string | null = null;
+let _garminRateLimited = false;
+let _garminRateLimitedUntil: string | null = null;
+let _garminSessionAlive = false;
+
+export function recordGarminActivityFetch(count: number, ok: boolean, error?: string): void {
+  _lastActivityFetchAt = new Date().toISOString();
+  _lastActivityFetchOk = ok;
+  _lastActivityCount = count;
+  _lastFetchError = ok ? null : (error ?? 'unknown error');
+  if (ok) _garminSessionAlive = true;
+}
+
+export function recordGarminRateLimit(limited: boolean, untilIso?: string): void {
+  _garminRateLimited = limited;
+  _garminRateLimitedUntil = limited ? (untilIso ?? null) : null;
+}
+
+export function recordGarminSessionStatus(alive: boolean): void {
+  _garminSessionAlive = alive;
+}
+
+export function getGarminSyncHealth(): GarminSyncHealth {
+  return {
+    lastActivityFetchAt: _lastActivityFetchAt,
+    lastActivityFetchOk: _lastActivityFetchOk,
+    lastActivityCount: _lastActivityCount,
+    lastFetchError: _lastFetchError,
+    consecutiveKeepaliveFailures: _garminConsecutiveFailures,
+    rateLimited: _garminRateLimited,
+    rateLimitedUntil: _garminRateLimitedUntil,
+    sessionAlive: _garminSessionAlive,
+  };
 }
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────

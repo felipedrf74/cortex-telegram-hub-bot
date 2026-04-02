@@ -33,7 +33,8 @@ import {
   pushEvent,
 } from './telemetry';
 import { clearAllConversations } from '../state/conversation';
-import { isGarminConfigured, keepAlive as garminKeepAlive } from '../services/garmin';
+import { isGarminConfigured, isRateLimited as isGarminRateLimited, getRateLimitedUntil, keepAlive as garminKeepAlive } from '../services/garmin';
+import { getGarminSyncHealth } from './telemetry';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
 import { isGoogleCalendarConfigured } from '../services/google-calendar';
@@ -97,6 +98,7 @@ interface SnapshotResponse {
     group?: string;
     tokenHealth?: 'valid' | 'expired' | 'warning' | 'not_configured';
     lastApiCall?: string | null;
+    syncHealth?: import('./telemetry').GarminSyncHealth;
   }[];
   jobs: ReturnType<typeof getJobStatuses>;
   jobHistory: Record<string, { result: string; ts: string }[]>;
@@ -421,6 +423,7 @@ function buildSnapshot(): SnapshotResponse {
       lastCheck: garminStatus.at ?? undefined,
       tokenHealth: inferTokenHealth(garminConfigured, garminLastSuccess, garminLastFailure),
       lastApiCall: garminLastSuccess,
+      syncHealth: garminConfigured ? getGarminSyncHealth() : undefined,
     },
     {
       name: 'Invoice Filing (SSH)',
@@ -1106,6 +1109,12 @@ export function createPortalServer(bot: Bot): http.Server {
       errors: errorCounts,
       integrations: integrationChecks,
       sentry: isSentryEnabled(),
+      garmin: isGarminConfigured() ? {
+        configured: true,
+        rateLimited: isGarminRateLimited(),
+        rateLimitedUntil: isGarminRateLimited() ? new Date(getRateLimitedUntil()).toISOString() : null,
+        syncHealth: getGarminSyncHealth(),
+      } : { configured: false },
       generatedAt: new Date().toISOString(),
     });
   });
