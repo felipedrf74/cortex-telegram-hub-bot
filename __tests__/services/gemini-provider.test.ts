@@ -1,8 +1,9 @@
 /**
  * Gemini Provider Tests
  *
- * Tests the GeminiProvider adapter: classify, callDomain, continueWithToolResults.
- * The Google Generative AI SDK is fully mocked — no real API calls.
+ * Tests the GeminiProvider adapter: classify, callDomain, continueWithToolResults,
+ * plus token tracking, cost calculation, error handling with retry, error mapping
+ * for FallbackProvider, and format edge cases.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -57,9 +58,25 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
+// ─── Mock database and telemetry ────────────────────────────────────
+
+const mockDbRun = vi.fn();
+vi.mock('../../src/services/database', () => ({
+  getDb: () => ({
+    prepare: () => ({ run: mockDbRun }),
+  }),
+}));
+
+vi.mock('../../src/portal/telemetry', () => ({
+  pushEvent: vi.fn(),
+}));
+
 // ─── Imports ─────────────────────────────────────────────────────────
 
 import { GeminiProvider } from '../../src/services/gemini-provider';
+import { pushEvent } from '../../src/portal/telemetry';
+
+const mockPushEvent = vi.mocked(pushEvent);
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -69,6 +86,11 @@ function mockGeminiResponse(text: string, functionCalls?: any[], finishReason = 
       text: () => text,
       functionCalls: () => functionCalls || [],
       candidates: [{ finishReason }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        totalTokenCount: 150,
+      },
     },
   });
 }
@@ -79,6 +101,26 @@ function mockGeminiResponseNoText(functionCalls: any[], finishReason = 'STOP') {
       text: () => { throw new Error('No text parts'); },
       functionCalls: () => functionCalls,
       candidates: [{ finishReason }],
+      usageMetadata: {
+        promptTokenCount: 80,
+        candidatesTokenCount: 30,
+        totalTokenCount: 110,
+      },
+    },
+  });
+}
+
+function mockGeminiResponseWithUsage(text: string, promptTokens: number, completionTokens: number) {
+  mockGenerateContent.mockResolvedValue({
+    response: {
+      text: () => text,
+      functionCalls: () => [],
+      candidates: [{ finishReason: 'STOP' }],
+      usageMetadata: {
+        promptTokenCount: promptTokens,
+        candidatesTokenCount: completionTokens,
+        totalTokenCount: promptTokens + completionTokens,
+      },
     },
   });
 }
@@ -130,13 +172,13 @@ describe('GeminiProvider', () => {
       });
 
       const call = mockGenerateContent.mock.calls[0][0];
-      // Gemini receives the message as a string or content object
       const userMsg = typeof call === 'string' ? call : JSON.stringify(call);
       expect(userMsg).toContain('ACTIVE CONVERSATION');
     });
 
     it('defaults to secretary on error', async () => {
-      mockGenerateContent.mockRejectedValue(new Error('Quota exceeded'));
+      const error = Object.assign(new Error('Quota exceeded'), { status: 400 });
+      mockGenerateContent.mockRejectedValue(error);
 
       const result = await provider.classify('hello');
       expect(result).toEqual({ domain: 'secretary', confidence: 0 });
@@ -164,7 +206,6 @@ describe('GeminiProvider', () => {
       expect(result.toolCalls[0].name).toBe('set_reminder');
       expect(result.toolCalls[0].input).toEqual({ message: 'Call coach' });
       expect(result.toolCalls[0].type).toBe('tool_use');
-      // Gemini generates synthetic IDs
       expect(result.toolCalls[0].id).toMatch(/^gemini_tc_/);
     });
 
@@ -181,15 +222,8 @@ describe('GeminiProvider', () => {
       mockGeminiResponse('Long output.');
 
       await provider.callDomain('content', [], 'Full script', '', 4096);
-      // Verify generateContent was called (model configured with maxOutputTokens)
       expect(mockGenerateContent).toHaveBeenCalledOnce();
     });
-
-    // ── Smart model routing ──────────────────────────────────────
-    // Note: Gemini's getGenerativeModel is mocked, so we can't directly assert
-    // the model name. Instead we verify the routing logic via the shared
-    // getModelRouting tests in ai-provider.test.ts, and here confirm the provider
-    // calls generateContent (which means routing was applied before the call).
 
     it('routes secretary through expensive model path', async () => {
       mockGeminiResponse('Tasks checked.');
@@ -230,11 +264,9 @@ describe('GeminiProvider', () => {
       );
       expect(result.text).toBe('Reminder set for tomorrow.');
 
-      // Verify the contents array includes function call + function response
       const callArg = mockGenerateContent.mock.calls[0][0];
       const contents = callArg.contents;
 
-      // Should have: user message + model (functionCall) + user (functionResponse)
       const modelMsg = contents.find((c: any) =>
         c.role === 'model' && c.parts.some((p: any) => p.functionCall),
       );
@@ -244,6 +276,272 @@ describe('GeminiProvider', () => {
         c.role === 'user' && c.parts.some((p: any) => p.functionResponse),
       );
       expect(responseMsg).toBeDefined();
+    });
+  });
+
+  // ── Token usage tracking ──────────────────────────────────────────
+
+  describe('token usage tracking', () => {
+    it('logs to api_usage table after classify', async () => {
+      mockGeminiResponse('{"domain":"secretary","confidence":0.9}');
+
+      await provider.classify('hello');
+
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'gemini_classify',
+        'gemini-2.0-flash',
+        100,
+        50,
+        expect.any(Number),
+        expect.any(Number),
+      );
+    });
+
+    it('logs to api_usage table after callDomain with correct category', async () => {
+      mockGeminiResponse('Tasks done.');
+
+      await provider.callDomain('secretary', [], 'check tasks', '');
+
+      expect(mockDbRun).toHaveBeenCalledWith(
+        'gemini_domain_secretary',
+        expect.any(String),
+        100,
+        50,
+        expect.any(Number),
+        expect.any(Number),
+      );
+    });
+
+    it('pushes telemetry event', async () => {
+      mockGeminiResponse('ok');
+
+      await provider.callDomain('content', [], 'test', '');
+
+      expect(mockPushEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'api_call',
+          summary: expect.stringContaining('Gemini'),
+        }),
+      );
+    });
+
+    it('computes cost correctly for gemini-2.0-flash', async () => {
+      mockGeminiResponseWithUsage('ok', 1000000, 0);
+
+      await provider.classify('hello');
+
+      // gemini-2.0-flash: 1M input × $0.10/MTK = $0.10
+      const costArg = mockDbRun.mock.calls[0]?.[4];
+      expect(costArg).toBeCloseTo(0.10, 2);
+    });
+
+    it('handles missing usageMetadata gracefully', async () => {
+      mockGenerateContent.mockResolvedValue({
+        response: {
+          text: () => '{"domain":"secretary","confidence":0.9}',
+          functionCalls: () => [],
+          candidates: [{ finishReason: 'STOP' }],
+          usageMetadata: undefined,
+        },
+      });
+
+      const result = await provider.classify('hello');
+      expect(result.domain).toBe('secretary');
+      // No crash, no DB call
+      expect(mockDbRun).not.toHaveBeenCalled();
+    });
+
+    it('continues normally if database write fails', async () => {
+      mockDbRun.mockImplementationOnce(() => { throw new Error('DB error'); });
+      mockGeminiResponse('works');
+
+      const result = await provider.callDomain('content', [], 'test', '');
+      expect(result.text).toBe('works');
+    });
+  });
+
+  // ── Error handling and retry ──────────────────────────────────────
+
+  describe('error handling and retry', () => {
+    it('retries on 429 RESOURCE_EXHAUSTED', async () => {
+      const error429 = Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+      mockGenerateContent
+        .mockRejectedValueOnce(error429)
+        .mockResolvedValueOnce({
+          response: {
+            text: () => 'Recovered',
+            functionCalls: () => [],
+            candidates: [{ finishReason: 'STOP' }],
+            usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 20, totalTokenCount: 70 },
+          },
+        });
+
+      const result = await provider.callDomain('secretary', [], 'hello', '');
+      expect(result.text).toBe('Recovered');
+      expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries on 503 UNAVAILABLE', async () => {
+      const error503 = Object.assign(new Error('UNAVAILABLE'), { status: 503 });
+      mockGenerateContent
+        .mockRejectedValueOnce(error503)
+        .mockResolvedValueOnce({
+          response: {
+            text: () => 'Back',
+            functionCalls: () => [],
+            candidates: [{ finishReason: 'STOP' }],
+            usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 10, totalTokenCount: 50 },
+          },
+        });
+
+      const result = await provider.callDomain('content', [], 'test', '');
+      expect(result.text).toBe('Back');
+    });
+
+    it('does NOT retry on 400 bad request', async () => {
+      const error400 = Object.assign(new Error('Bad request'), { status: 400 });
+      mockGenerateContent.mockRejectedValue(error400);
+
+      await expect(provider.callDomain('content', [], 'test', '')).rejects.toThrow('Gemini API error');
+      expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws mapped error with provider/status/retryable after max retries', async () => {
+      const error503 = Object.assign(new Error('UNAVAILABLE'), { status: 503 });
+      mockGenerateContent.mockRejectedValue(error503);
+
+      await expect(provider.callDomain('secretary', [], 'hello', ''))
+        .rejects.toMatchObject({
+          message: expect.stringContaining('Gemini API error'),
+          provider: 'gemini',
+          status: 503,
+          retryable: true,
+        });
+    });
+
+    it('classify returns secretary fallback after all retries exhausted', async () => {
+      const error429 = Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+      mockGenerateContent.mockRejectedValue(error429);
+
+      const result = await provider.classify('hello');
+      expect(result).toEqual({ domain: 'secretary', confidence: 0 });
+    });
+  });
+
+  // ── Format mapping edge cases ─────────────────────────────────────
+
+  describe('format mapping edge cases', () => {
+    it('handles plain string assistant messages in toolConversation', async () => {
+      mockGeminiResponse('Done.');
+
+      const toolConvo = [
+        { role: 'assistant' as const, content: 'Let me think about that...' },
+        {
+          role: 'assistant' as const,
+          content: [
+            { type: 'tool_use', id: 'tc_x', name: 'set_reminder', input: { message: 'test' } },
+          ],
+        },
+        {
+          role: 'user' as const,
+          content: [
+            { type: 'tool_result', tool_use_id: 'tc_x', content: '{"ok":true}' },
+          ],
+        },
+      ];
+
+      const result = await provider.continueWithToolResults('secretary', [], 'do it', '', toolConvo);
+      expect(result.text).toBe('Done.');
+
+      // Verify the plain text assistant message was included as model role
+      const contents = mockGenerateContent.mock.calls[0][0].contents;
+      const plainModelMsg = contents.find((c: any) =>
+        c.role === 'model' && c.parts.some((p: any) => p.text === 'Let me think about that...'),
+      );
+      expect(plainModelMsg).toBeDefined();
+    });
+
+    it('maps tool_use_id to correct function name in functionResponse', async () => {
+      mockGeminiResponse('Reminder set.');
+
+      const toolConvo = [
+        {
+          role: 'assistant' as const,
+          content: [
+            { type: 'tool_use', id: 'tc_42', name: 'set_reminder', input: { message: 'Test' } },
+          ],
+        },
+        {
+          role: 'user' as const,
+          content: [
+            { type: 'tool_result', tool_use_id: 'tc_42', content: '{"id":1}' },
+          ],
+        },
+      ];
+
+      await provider.continueWithToolResults('secretary', [], 'remind', '', toolConvo);
+
+      const contents = mockGenerateContent.mock.calls[0][0].contents;
+      const responseMsg = contents.find((c: any) =>
+        c.role === 'user' && c.parts.some((p: any) => p.functionResponse),
+      );
+      // Should use the function name 'set_reminder', not the tool_use_id 'tc_42'
+      expect(responseMsg.parts[0].functionResponse.name).toBe('set_reminder');
+    });
+
+    it('handles missing function args (uses empty object)', async () => {
+      mockGeminiResponseNoText([
+        { name: 'get_todos', args: undefined },
+      ]);
+
+      const result = await provider.callDomain('secretary', [], 'show todos', '');
+      expect(result.toolCalls[0].input).toEqual({});
+    });
+
+    it('handles malformed tool_result content via safeParse', async () => {
+      mockGeminiResponse('OK');
+
+      const toolConvo = [
+        {
+          role: 'assistant' as const,
+          content: [
+            { type: 'tool_use', id: 'tc_1', name: 'set_reminder', input: {} },
+          ],
+        },
+        {
+          role: 'user' as const,
+          content: [
+            { type: 'tool_result', tool_use_id: 'tc_1', content: 'not valid json at all' },
+          ],
+        },
+      ];
+
+      await provider.continueWithToolResults('secretary', [], 'test', '', toolConvo);
+
+      const contents = mockGenerateContent.mock.calls[0][0].contents;
+      const responseMsg = contents.find((c: any) =>
+        c.role === 'user' && c.parts.some((p: any) => p.functionResponse),
+      );
+      // safeParse wraps non-JSON in { result: ... }
+      expect(responseMsg.parts[0].functionResponse.response).toEqual({ result: 'not valid json at all' });
+    });
+
+    it('generates deterministic tool call IDs (counter-based)', async () => {
+      mockGeminiResponseNoText([{ name: 'set_reminder', args: { message: 'A' } }]);
+      const r1 = await provider.callDomain('secretary', [], 'first', '');
+      const id1 = r1.toolCalls[0].id;
+
+      mockGeminiResponseNoText([{ name: 'set_reminder', args: { message: 'B' } }]);
+      const r2 = await provider.callDomain('secretary', [], 'second', '');
+      const id2 = r2.toolCalls[0].id;
+
+      // Counter-based: sequential, not Date.now-based
+      expect(id1).toMatch(/^gemini_tc_\d+$/);
+      expect(id2).toMatch(/^gemini_tc_\d+$/);
+      // IDs should be different and sequential
+      const num1 = parseInt(id1.replace('gemini_tc_', ''));
+      const num2 = parseInt(id2.replace('gemini_tc_', ''));
+      expect(num2).toBe(num1 + 1);
     });
   });
 });
