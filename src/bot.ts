@@ -8,6 +8,7 @@ import { getDb } from './services/database';
 import { logger } from './utils/logger';
 import { routeMessage, isSystemCommand, keywordMatch } from './router';
 import { DomainName } from './domains/types';
+import { validateMessage, validateCaption } from './utils/validators';
 import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
@@ -3197,7 +3198,7 @@ export function createBot(): Bot {
   });
   bot.on('message:document', async (ctx) => {
     const doc = ctx.message?.document;
-    const caption = ctx.message?.caption?.trim() || '';
+    const caption = validateCaption(ctx.message?.caption);
 
     // Handle /repurpose as caption on a document upload
     if (caption.startsWith('/repurpose') && doc?.file_name?.endsWith('.docx')) {
@@ -3267,7 +3268,7 @@ export function createBot(): Bot {
 
   // ── Catch-all: Route to domain ──
   bot.on('message:text', async (ctx) => {
-    const text = ctx.message.text;
+    const text = validateMessage(ctx.message.text);
     if (!text) return;
 
     // Check for pending scraper 2FA reply (OTP code or CAPTCHA answer)
