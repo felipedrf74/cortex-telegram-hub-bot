@@ -1,0 +1,14 @@
+{
+  "id": "335ad49d-23e7-81eb-85ba-e5d0e409a5be",
+  "title": "Portal: Adapter status panel (Telegram active, WhatsApp planned)",
+  "description": "Add adapter status section to portal.html showing: Telegram (active, connected, last message timestamp), WhatsApp (planned/not configured). Show connection health indicator. Future: toggle to enable/disable adapters. Update: src/portal/portal.html",
+  "priority": "🟡 Medium",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [
+    "code",
+    "ux"
+  ],
+  "originAgent": "backend",
+  "targetQA": "qa",
+  "queuedAt": "2026-04-01T21:19:54.950Z"
+}

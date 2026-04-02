@@ -370,8 +370,8 @@ describe('Adapter Status — CSS health indicator styles', () => {
   it('status dots have consistent size and shape', () => {
     expect(html).toContain('.status-dot');
     // Status dot base styles
-    expect(html).toContain('width: 7px');
-    expect(html).toContain('height: 7px');
+    expect(html).toContain('width: 8px');
+    expect(html).toContain('height: 8px');
     expect(html).toContain('border-radius: 50%');
   });
 

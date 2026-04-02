@@ -136,13 +136,29 @@ const AGENT_MAP = {
   '🔒 Security': 'flex',
   '♻️ Refactor': 'flex',
   '🏗️ Architect': 'backend',
+  '🎨 Frontend': 'frontend',
+  '🧪 QA2': 'qa2',
 };
 
 // Tasks that need QA validation (feature code changes)
-const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect'];
+const NEEDS_QA = ['🔧 Backend', '♻️ Refactor', '🏗️ Architect', '🎨 Frontend'];
+
+// ─── QA Routing — which QA agent validates which origin agent ───────
+const QA_ROUTING = {
+  'backend': 'qa', 'frontend': 'qa',      // QA-1 validates code-heavy agents
+  'devops': 'qa2', 'flex': 'qa2',          // QA-2 validates infra/config agents
+};
+function getQAAgent(originAgent) {
+  return QA_ROUTING[originAgent] || 'qa'; // default to qa
+}
 
 // ─── QA Queue System ────────────────────────────────────────────────
-const QA_QUEUE_DIR = path.join(WORKTREE_BASE, 'qa', '.qa-queue');
+// Dynamic QA queue — each QA agent has its own queue
+function getQAQueueDir(qaAgent) {
+  return path.join(WORKTREE_BASE, qaAgent || 'qa', '.qa-queue');
+}
+// Legacy constant for backward compat (used when QA agent reads its OWN queue)
+const QA_QUEUE_DIR = path.join(WORKTREE_BASE, agentDir, '.qa-queue');
 
 function ensureQAQueue() {
   if (!fs.existsSync(QA_QUEUE_DIR)) fs.mkdirSync(QA_QUEUE_DIR, { recursive: true });
@@ -165,7 +181,8 @@ function nextQueueNumber() {
 }
 
 function writeQAPromptFromTask(task, originAgent) {
-  const qaPath = path.join(WORKTREE_BASE, 'qa');
+  const targetQA = getQAAgent(originAgent);
+  const qaPath = path.join(WORKTREE_BASE, targetQA);
   const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
   const prompt = `# 🧪 QA Validation Task
 
@@ -223,26 +240,29 @@ ${task.id}
 }
 
 function writeQAPrompt(task, originAgent) {
-  ensureQAQueue();
-  const qaPath = path.join(WORKTREE_BASE, 'qa');
+  const targetQA = getQAAgent(originAgent);
+  const targetQueueDir = getQAQueueDir(targetQA);
+  if (!fs.existsSync(targetQueueDir)) fs.mkdirSync(targetQueueDir, { recursive: true });
+
+  const qaPath = path.join(WORKTREE_BASE, targetQA);
   const qaTaskFile = path.join(qaPath, '.agent-task.json');
   const qaBusy = fs.existsSync(qaTaskFile);
 
-  // Add to queue
-  const queueFile = path.join(QA_QUEUE_DIR, `${nextQueueNumber()}.json`);
+  // Add to the correct QA agent's queue
+  const files = fs.readdirSync(targetQueueDir).filter(f => f.endsWith('.json')).sort();
+  const nextNum = files.length === 0 ? '001' : String(parseInt(files[files.length - 1].replace('.json', ''), 10) + 1).padStart(3, '0');
+  const queueFile = path.join(targetQueueDir, `${nextNum}.json`);
   fs.writeFileSync(queueFile, JSON.stringify({
     id: task.id, title: task.title, description: task.description,
     priority: task.priority, phase: task.phase, tags: task.tags || [],
-    originAgent, queuedAt: new Date().toISOString(),
+    originAgent, targetQA, queuedAt: new Date().toISOString(),
   }, null, 2));
 
   if (qaBusy) {
-    // QA is already working — task is queued, will be picked up automatically
-    console.log(`  📥 QA is busy — task queued (${getQueuedTasks().length} in queue)`);
+    console.log(`  📥 ${targetQA} is busy — task queued`);
   } else {
-    // QA is idle — write prompt immediately
     writeQAPromptFromTask(task, originAgent);
-    console.log(`  📋 QA prompt written → qa/.agent-prompt.md`);
+    console.log(`  📋 ${targetQA} prompt written → ${targetQA}/.agent-prompt.md`);
   }
 }
 
