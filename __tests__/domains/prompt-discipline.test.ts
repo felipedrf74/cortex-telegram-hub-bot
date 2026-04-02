@@ -108,7 +108,7 @@ describe('Secretary prompt — conditional briefing templates', () => {
 describe('Prompt size limits', () => {
   const MAX_PROMPT_CHARS: Record<string, number> = {
     secretary: 4500,   // includes briefing templates + tool instructions
-    triathlon: 2000,   // includes response discipline block
+    triathlon: 3200,   // includes response discipline block (grew with anti-hallucination guards)
     content: 6000,     // legitimately large (SFX library, accuracy rules, script rules)
     classifier: 2000,  // includes JSON format examples
   };
