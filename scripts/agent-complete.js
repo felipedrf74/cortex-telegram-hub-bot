@@ -518,13 +518,46 @@ async function main() {
     writeAgentPrompt(next, agentDir);
     console.log(`\n  👉 Agent: read .agent-prompt.md and continue working`);
     await notify(`📋 <b>${agentDir}</b> auto-picked next task\n<i>${next.title}</i>`);
+  } else if (agentDir === 'qa' || agentDir === 'qa2') {
+    // QA agents: check .qa-queue/ for pending validations (they don't come from Notion To Do)
+    const queueDir = path.join(WORKTREE_BASE, agentDir, '.qa-queue');
+    if (fs.existsSync(queueDir)) {
+      const queueFiles = fs.readdirSync(queueDir).filter(f => f.endsWith('.json')).sort();
+      if (queueFiles.length > 0) {
+        const nextFile = path.join(queueDir, queueFiles[0]);
+        const nextTask = JSON.parse(fs.readFileSync(nextFile, 'utf8'));
+        console.log(`  ✅ Next QA task from queue: "${nextTask.title}"`);
+        const repoEsc = '~/Desktop/Custom\\\\ Connectors/Cortex/cortex-telegram-hub-bot';
+        const prompt = `# 🧪 QA Validation Task\n\n## Validating: ${nextTask.title}\n**Original agent:** ${nextTask.originAgent}\n**Priority:** ${nextTask.priority || 'Medium'}\n\n## Description\n${nextTask.description || 'See Notion task for details.'}\n\n## Instructions\n1. Pull the latest code: \`git fetch origin && git merge origin/agent/${nextTask.originAgent} --no-edit\`\n2. Run all tests: \`npx vitest run\`\n3. Run type check: \`npx tsc --noEmit\`\n4. Review the changes: \`git log origin/main..HEAD --oneline\`\n5. Verify the implementation matches the task description\n6. If ALL checks pass: mark as PASS\n7. If ANY check fails: mark as FAIL with clear reason\n\n## Auto-chain (MANDATORY)\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass --summary "describe what you validated"\n\`\`\`\nOr if FAIL:\n\`\`\`bash\nAGENT_DIR=$(basename "$(pwd)")\nnode ${repoEsc}/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "describe the failure"\n\`\`\`\n\n## Notion Task ID\n${nextTask.id}`;
+        const agentQAPath = path.join(WORKTREE_BASE, agentDir);
+        fs.writeFileSync(path.join(agentQAPath, '.agent-prompt.md'), prompt);
+        fs.writeFileSync(path.join(agentQAPath, '.agent-task.json'), JSON.stringify({
+          id: nextTask.id, title: nextTask.title, description: nextTask.description || '',
+          priority: nextTask.priority || '', phase: nextTask.phase || '',
+          tags: nextTask.tags || [], agent: agentDir === 'qa' ? '🧪 QA' : '🧪 QA2',
+          originAgent: nextTask.originAgent
+        }, null, 2));
+        fs.unlinkSync(nextFile);
+        console.log(`\n  👉 QA Agent: read .agent-prompt.md and validate`);
+        await notify(`🔍 <b>${agentDir}</b> auto-picked QA task\n<i>${nextTask.title}</i>`);
+      } else {
+        const agentPath2 = path.join(WORKTREE_BASE, agentDir);
+        try { fs.unlinkSync(path.join(agentPath2, '.agent-task.json')); } catch {}
+        try { fs.unlinkSync(path.join(agentPath2, '.agent-prompt.md')); } catch {}
+        console.log(`  💤 No more QA tasks in queue for ${agentDir}`);
+      }
+    } else {
+      const agentPath3 = path.join(WORKTREE_BASE, agentDir);
+      try { fs.unlinkSync(path.join(agentPath3, '.agent-task.json')); } catch {}
+      try { fs.unlinkSync(path.join(agentPath3, '.agent-prompt.md')); } catch {}
+      console.log(`  💤 No more tasks for ${agentDir} — agent is idle`);
+    }
   } else {
     // Clear task files — agent is idle
     const agentPath = path.join(WORKTREE_BASE, agentDir);
     try { fs.unlinkSync(path.join(agentPath, '.agent-task.json')); } catch {}
     try { fs.unlinkSync(path.join(agentPath, '.agent-prompt.md')); } catch {}
     console.log(`  💤 No more tasks for ${agentDir} — agent is idle`);
-    // No idle notification — too spammy. Felipe sees it in Mission Control if needed.
   }
 }
 
