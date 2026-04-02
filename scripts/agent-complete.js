@@ -495,7 +495,8 @@ async function main() {
   }
 
   // ─── Write Agent Memory (avoids re-reading on chained tasks) ────
-  const memoryFile = path.join(agentPath, '.agent-history.md');
+  const agentMemoryPath = path.join(WORKTREE_BASE, agentDir);
+  const memoryFile = path.join(agentMemoryPath, '.agent-history.md');
   try {
     const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
     const entry = `- [${timestamp}] ${task.title} → ${needsQA ? 'QA' : 'Done'} (files: ${summary?.substring(0, 80) || 'n/a'})\n`;
