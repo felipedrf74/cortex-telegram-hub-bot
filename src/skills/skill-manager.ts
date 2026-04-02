@@ -148,7 +148,7 @@ function getEnabledToolNames(domain: DomainName): Set<string> {
   const skill = registry.getByName(domain);
 
   // If skill not in DB or disabled, return empty set (no tools)
-  if (!skill || !skill.enabled) {
+  if (!skill || skill.enabled !== 1) {
     return new Set();
   }
 

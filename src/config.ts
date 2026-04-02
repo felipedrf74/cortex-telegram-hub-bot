@@ -151,6 +151,7 @@ export const config = {
     port: parseInt(process.env.PORTAL_PORT || '8200', 10),
     bind: process.env.PORTAL_BIND || '0.0.0.0',
     token: process.env.PORTAL_TOKEN || '',
+    healthToken: process.env.HEALTH_TOKEN || process.env.PORTAL_TOKEN || '',
   },
   // ── Webhook Infrastructure ─────────────────────────────────────────
   webhooks: {
@@ -158,6 +159,13 @@ export const config = {
     secret: process.env.WEBHOOK_SECRET || '',        // HMAC-SHA256 signing secret (shared with providers)
     maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10), // 1MB default
     eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
+  },
+  // ── Sentry Error Tracking ────────────────────────────────────────────
+  sentry: {
+    dsn: process.env.SENTRY_DSN || '',
+    environment: optional('SENTRY_ENVIRONMENT', 'development'),
+    release: process.env.SENTRY_RELEASE || '',
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0'),
   },
   // ── Data Encryption ─────────────────────────────────────────────────
   encryption: {

@@ -845,7 +845,17 @@
   <span class="health-sep">|</span>
   <div class="health-item" id="hb-queue-wrap" style="display:none">📥 Queue: <span class="val text-yellow" id="hb-queue">0</span></div>
   <span class="health-sep" id="hb-queue-sep" style="display:none">|</span>
+  <div class="health-item">🐛 Errors today: <span class="val" id="hb-errors">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item" id="hb-sentry-wrap"><span id="hb-sentry-dot" class="status-dot dot-yellow"></span> Sentry: <span class="val" id="hb-sentry">—</span></div>
+  <span class="health-sep">|</span>
   <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item"><span id="hb-health-dot" class="status-dot dot-yellow"></span> Health: <span class="val" id="hb-health-status">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">💾 DB: <span class="val" id="hb-db-status">—</span></div>
+  <span class="health-sep">|</span>
+  <div class="health-item">🧠 Mem: <span class="val" id="hb-mem">—</span></div>
 </div>
 
 <div class="container">
@@ -2421,6 +2431,21 @@
       const todayEl = document.getElementById('err-today');
       todayEl.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
 
+      // Update health bar — errors today + Sentry status
+      const hbErrors = document.getElementById('hb-errors');
+      hbErrors.textContent = res.today;
+      hbErrors.style.color = res.today > 0 ? 'var(--red)' : 'var(--green)';
+
+      const hbSentry = document.getElementById('hb-sentry');
+      const hbSentryDot = document.getElementById('hb-sentry-dot');
+      if (res.sentryEnabled) {
+        hbSentry.textContent = 'active';
+        hbSentryDot.className = 'status-dot dot-green';
+      } else {
+        hbSentry.textContent = 'off';
+        hbSentryDot.className = 'status-dot dot-yellow';
+      }
+
       // By source
       const srcEl = document.getElementById('err-by-source');
       srcEl.innerHTML = (res.bySource || []).map(s =>
@@ -2452,6 +2477,46 @@
 
   loadErrors();
   setInterval(loadErrors, 30_000);
+
+  // ── Health Endpoint Polling ──────────────────
+  async function pollHealth() {
+    try {
+      const res = await fetch('/health');
+      const data = await res.json();
+      const dot = document.getElementById('hb-health-dot');
+      const statusEl = document.getElementById('hb-health-status');
+      const dbEl = document.getElementById('hb-db-status');
+      const memEl = document.getElementById('hb-mem');
+
+      if (data.status === 'healthy') {
+        dot.className = 'status-dot dot-green';
+        statusEl.textContent = 'healthy';
+        statusEl.style.color = 'var(--green)';
+      } else {
+        dot.className = 'status-dot dot-red';
+        statusEl.textContent = data.status;
+        statusEl.style.color = 'var(--red)';
+      }
+
+      dbEl.textContent = data.db || '—';
+      dbEl.style.color = data.db === 'ok' ? 'var(--green)' : 'var(--red)';
+
+      if (data.memory) {
+        memEl.textContent = `${data.memory.heapUsed}/${data.memory.heapTotal} MB`;
+        const pct = data.memory.heapUsed / data.memory.heapTotal;
+        memEl.style.color = pct > 0.85 ? 'var(--red)' : pct > 0.70 ? 'var(--yellow)' : 'var(--green)';
+      }
+    } catch {
+      const dot = document.getElementById('hb-health-dot');
+      const statusEl = document.getElementById('hb-health-status');
+      dot.className = 'status-dot dot-red';
+      statusEl.textContent = 'unreachable';
+      statusEl.style.color = 'var(--red)';
+    }
+  }
+
+  pollHealth();
+  setInterval(pollHealth, 15_000);
 
   // Poll mission control alongside main poll
   pollMissionControl();

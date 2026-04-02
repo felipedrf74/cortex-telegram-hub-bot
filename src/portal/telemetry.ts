@@ -194,6 +194,25 @@ export function setIsRestarting(v: boolean): void {
   _isRestarting = v;
 }
 
+// ─── Bot Identity (resolved via getMe at startup) ───────────────────
+
+export interface BotIdentity {
+  id: number;
+  username: string;
+  firstName: string;
+  isBot: boolean;
+}
+
+let _botIdentity: BotIdentity | null = null;
+
+export function setBotIdentity(identity: BotIdentity): void {
+  _botIdentity = identity;
+}
+
+export function getBotIdentity(): BotIdentity | null {
+  return _botIdentity;
+}
+
 // ─── Bot Polling Status ──────────────────────────────────────────────
 
 let _botPollingActive = false;
