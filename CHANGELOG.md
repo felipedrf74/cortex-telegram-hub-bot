@@ -12,8 +12,13 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 - **agents**: Add orphan recovery — re-queue QA Validating tasks with no queue file ([`82f537a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/82f537ab0a416887a13f3f82f62937c3a8ee7029))
 - **agents**: Quote pwd in CLAUDE.md, fix placeholder bug, resolve type errors ([`a33f445`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a33f44505c2348b5c9f78d6af74ec5fe2bae25aa))
 
+### Chores
+
+- Bump version to 4.5.1 [deploy] ([`f3273b2`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/f3273b2111905d5581015b1af403728738a158c9))
+
 ### Documentation
 
+- Update changelog [skip ci] ([`339e0f6`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/339e0f6c739ecd7d2f2233966269946f6b4769b2))
 - Update changelog for v4.5.0 ([`eba2e31`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/eba2e31dd5dd0732286b8704fddb4166d957b7a5))
 
 ### Features
