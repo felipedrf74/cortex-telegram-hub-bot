@@ -1067,6 +1067,12 @@
     </table>
   </div>
 
+  <!-- ── Error Distribution ────────────────────── -->
+  <div class="card">
+    <h2>🔍 Agent Error Distribution (7d)</h2>
+    <div id="error-dist-content" class="text-muted" style="font-size:13px">Loading...</div>
+  </div>
+
   <!-- ── Feature #3: Next Runs Panel ─────────── -->
   <div class="card">
     <h2>🚀 Next Scheduled Runs</h2>
@@ -2637,6 +2643,40 @@
   // Poll mission control alongside main poll
   pollMissionControl();
   setInterval(pollMissionControl, 30_000);
+
+  // Error distribution
+  async function loadErrorDist() {
+    try {
+      const r = await fetch('/api/error-distribution', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok) return;
+      const dist = d.distribution || {};
+      const el = document.getElementById('error-dist-content');
+      const entries = Object.entries(dist);
+      if (entries.length === 0) {
+        el.innerHTML = '<span class="text-muted">No categorized agent errors in last 7 days</span>';
+        return;
+      }
+      const total = entries.reduce((s, [,c]) => s + c, 0);
+      el.innerHTML = entries.sort((a,b) => b[1] - a[1]).map(([cat, count]) => {
+        const pct = ((count / total) * 100).toFixed(0);
+        const colors = { syntax: '#e17055', test_failure: '#fdcb6e', rate_limit: '#a29bfe', timeout: '#74b9ff', integration: '#00b894', context_overflow: '#fd79a8', unknown: '#636e72' };
+        const color = colors[cat] || '#636e72';
+        return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+          <span class="mono" style="min-width:120px;color:${color}">${esc(cat)}</span>
+          <div style="flex:1;height:16px;background:var(--bg2);border-radius:4px;overflow:hidden">
+            <div style="width:${pct}%;height:100%;background:${color};border-radius:4px"></div>
+          </div>
+          <span class="mono" style="min-width:40px;text-align:right">${count}</span>
+        </div>`;
+      }).join('');
+    } catch (err) {
+      console.warn('Error dist poll failed:', err);
+    }
+  }
+  loadErrorDist();
+  setInterval(loadErrorDist, 30_000);
 
   // Task execution metrics
   async function loadTaskMetrics() {

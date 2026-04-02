@@ -1403,6 +1403,17 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/error-distribution — categorized agent error breakdown
+  app.get('/api/error-distribution', (_req: Request, res: Response) => {
+    try {
+      const { getErrorDistribution } = require('../services/error-categorizer');
+      const distribution = getErrorDistribution(7);
+      res.json({ ok: true, distribution });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/task-metrics — task execution cost and duration data
   app.get('/api/task-metrics', (_req: Request, res: Response) => {
     try {
