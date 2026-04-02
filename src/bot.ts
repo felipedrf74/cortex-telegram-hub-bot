@@ -75,7 +75,6 @@ import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePubl
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
 import { handleAutoresearch, handleEvalScore } from './commands/autoresearch';
-import { getAllSkillStatuses, type SkillStatus } from './skills/skill-manager';
 import fs from 'fs';
 import path from 'path';
 

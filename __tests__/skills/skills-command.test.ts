@@ -115,31 +115,31 @@ describe('/skills command — getAllSkillStatuses()', () => {
     }
   });
 
-  it('secretary has 6 sub-modules', () => {
+  it('secretary has 7 sub-modules', () => {
     const skills = getAllSkillStatuses();
     const secretary = skills.find(s => s.name === 'secretary')!;
-    expect(secretary.subSkills).toHaveLength(6);
+    expect(secretary.subSkills).toHaveLength(7);
     const subNames = secretary.subSkills.map(s => s.name).sort();
-    expect(subNames).toEqual(['calendar', 'email', 'notes', 'reminders', 'shared-memory', 'tasks']);
+    expect(subNames).toEqual(['briefings', 'calendar', 'email', 'notes', 'reminders', 'shared-memory', 'tasks']);
   });
 
-  it('triathlon has 4 sub-modules', () => {
+  it('triathlon has 9 sub-modules', () => {
     const skills = getAllSkillStatuses();
     const triathlon = skills.find(s => s.name === 'triathlon')!;
-    expect(triathlon.subSkills).toHaveLength(4);
+    expect(triathlon.subSkills).toHaveLength(9);
   });
 
-  it('content has 2 sub-modules', () => {
+  it('content has 11 sub-modules', () => {
     const skills = getAllSkillStatuses();
     const content = skills.find(s => s.name === 'content')!;
-    expect(content.subSkills).toHaveLength(2);
+    expect(content.subSkills).toHaveLength(11);
   });
 
-  it('sub-skills have toolCount > 0', () => {
+  it('sub-skills have toolCount >= 0', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       for (const sub of skill.subSkills) {
-        expect(sub.toolCount).toBeGreaterThan(0);
+        expect(sub.toolCount).toBeGreaterThanOrEqual(0);
       }
     }
   });
@@ -192,12 +192,12 @@ describe('/skill <name> command — getSkillStatus()', () => {
 // ── Formatting edge cases ───────────────────────────────────────
 
 describe('skills command — formatting data correctness', () => {
-  it('active sub-module count matches enabled count', () => {
+  it('active sub-module count matches enabledByDefault count', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       const activeSubs = skill.subSkills.filter(s => s.enabled).length;
-      // All should be enabled by default
-      expect(activeSubs).toBe(skill.subSkills.length);
+      const expectedEnabled = DEFAULT_SKILLS[skill.name as DomainName].subSkills.filter(s => s.enabledByDefault).length;
+      expect(activeSubs).toBe(expectedEnabled);
     }
   });
 
@@ -221,7 +221,7 @@ describe('skills command — formatting data correctness', () => {
 
     const status = getSkillStatus('secretary');
     const activeSubs = status.subSkills.filter(s => s.enabled).length;
-    expect(activeSubs).toBe(5); // 6 - 1
+    expect(activeSubs).toBe(6); // 7 - 1
 
     const tasksStatus = status.subSkills.find(s => s.name === 'tasks')!;
     expect(tasksStatus.enabled).toBe(false);

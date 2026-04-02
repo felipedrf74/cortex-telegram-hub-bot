@@ -166,7 +166,7 @@ describe('Portal Skill Management', () => {
   describe('POST /api/skills/:name/subskills/:sub/disable — disableSubSkill()', () => {
     it('disables a sub-skill', () => {
       const result = disableSubSkill('secretary', 'email');
-      expect(result).toBe(true);
+      expect(result).toEqual({ ok: true });
 
       const skills = getAllSkillStatuses();
       const secretary = skills.find(s => s.name === 'secretary')!;
@@ -183,14 +183,14 @@ describe('Portal Skill Management', () => {
       expect(tasks.enabled).toBe(true);
     });
 
-    it('returns false for non-existent sub-skill', () => {
+    it('returns ok:false for non-existent sub-skill', () => {
       const result = disableSubSkill('secretary', 'nonexistent');
-      expect(result).toBe(false);
+      expect(result.ok).toBe(false);
     });
 
-    it('returns false for non-existent parent skill', () => {
+    it('returns ok:false for non-existent parent skill', () => {
       const result = disableSubSkill('nonexistent' as any, 'tasks');
-      expect(result).toBe(false);
+      expect(result.ok).toBe(false);
     });
   });
 
@@ -198,7 +198,7 @@ describe('Portal Skill Management', () => {
     it('re-enables a disabled sub-skill', () => {
       disableSubSkill('secretary', 'notes');
       const result = enableSubSkill('secretary', 'notes');
-      expect(result).toBe(true);
+      expect(result).toEqual({ ok: true });
 
       const skills = getAllSkillStatuses();
       const secretary = skills.find(s => s.name === 'secretary')!;

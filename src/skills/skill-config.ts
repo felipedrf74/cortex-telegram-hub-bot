@@ -308,6 +308,7 @@ export function getSubSkillDependencies(domain: DomainName, subSkillName: string
 /** Get sub-skills that depend on the given sub-skill (reverse dependencies). */
 export function getSubSkillDependents(domain: DomainName, subSkillName: string): string[] {
   const skill = DEFAULT_SKILLS[domain];
+  if (!skill) return [];
   return skill.subSkills
     .filter(s => s.depends?.includes(subSkillName))
     .map(s => s.name);
