@@ -81,7 +81,7 @@ except: print('unknown')
     echo ""
 
     # Run Claude with the task prompt
-    claude $MODEL_FLAG --dangerously-skip-permissions \
+    claude $MODEL_FLAG --max-turns 50 --dangerously-skip-permissions \
       "Read these files IN ORDER before doing anything: \
 1. CLAUDE.md (workflow rules) \
 2. CODEBASE.md (architecture map — tells you exactly which files to touch) \
