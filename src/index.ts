@@ -8,6 +8,7 @@ import { startScheduler } from './services/scheduler';
 import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
 import { setDbProvider as setBusDbProvider } from './services/intelligence-bus';
 import { createPortalServer } from './portal/server';
+import { seedDefaultSkills } from './skills/skill-manager';
 import type http from 'http';
 
 const MAX_RETRIES = 5;
@@ -18,6 +19,9 @@ async function main(): Promise<void> {
 
   // Initialize database
   initDatabase();
+
+  // Seed default skills into DB (idempotent — preserves user toggles)
+  seedDefaultSkills();
 
   // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());

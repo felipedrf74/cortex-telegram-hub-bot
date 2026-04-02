@@ -444,4 +444,75 @@ describe('SkillManager — edge cases', () => {
     expect(received).not.toContain('ms_todo_get_tasks');
     expect(received).toContain('save_note');
   });
+
+  // BUG: enableSkill returns false on unseeded DB (row doesn't exist)
+  it('enableSkill returns false when skills not seeded (bug repro)', () => {
+    // No seedDefaultSkills() — simulates the production bug
+    const result = enableSkill('cooking');
+    expect(result).toBe(false);
+  });
+
+  // BUG: disableSkill returns false on unseeded DB
+  it('disableSkill returns false when skills not seeded (bug repro)', () => {
+    const result = disableSkill('cooking');
+    expect(result).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// BUG REGRESSION: skill enable/disable false positive error
+// ═══════════════════════════════════════════════════════════════════
+
+describe('SkillManager — bug regression: enable/disable after seeding', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+    invalidateToolCache();
+    seedDefaultSkills();
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('all skills are enabled by default after seeding', () => {
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
+      const status = getSkillStatus(domain)!;
+      expect(status.enabled).toBe(true);
+    }
+  });
+
+  it('enableSkill returns true after disabling a seeded skill', () => {
+    disableSkill('cooking');
+    const status = getSkillStatus('cooking')!;
+    expect(status.enabled).toBe(false);
+
+    const result = enableSkill('cooking');
+    expect(result).toBe(true);
+
+    const statusAfter = getSkillStatus('cooking')!;
+    expect(statusAfter.enabled).toBe(true);
+  });
+
+  it('disableSkill returns true for a seeded skill', () => {
+    const result = disableSkill('cooking');
+    expect(result).toBe(true);
+
+    const status = getSkillStatus('cooking')!;
+    expect(status.enabled).toBe(false);
+  });
+
+  it('enable/disable round-trip works for all domains', () => {
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
+      expect(disableSkill(domain)).toBe(true);
+      expect(getSkillStatus(domain)!.enabled).toBe(false);
+      expect(enableSkill(domain)).toBe(true);
+      expect(getSkillStatus(domain)!.enabled).toBe(true);
+    }
+  });
+
+  it('all core submodules are enabled by default after seeding', () => {
+    for (const domain of ['secretary', 'triathlon', 'content', 'finance', 'cooking'] as const) {
+      const status = getSkillStatus(domain)!;
+      const allEnabled = status.subSkills.every(s => s.enabled);
+      expect(allEnabled).toBe(true);
+    }
+  });
 });
