@@ -42,6 +42,12 @@ export function initDatabase(): Database.Database {
     setConfigProvider(dbConfig);
   } catch { /* config-provider not yet available — non-critical */ }
 
+  // Seed owner user from TELEGRAM_ALLOWED_USER_IDS or OWNER_TELEGRAM_ID
+  try {
+    const { seedOwnerUser } = require('./user-service');
+    seedOwnerUser();
+  } catch { /* user-service not yet available — non-critical */ }
+
   logger.info({ path: config.app.databasePath }, 'Database initialized');
   return db;
 }

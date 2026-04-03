@@ -1076,6 +1076,21 @@
     </table>
   </div>
 
+  <!-- ── Users ────────────────────────────────── -->
+  <div class="card">
+    <h2>👥 Users</h2>
+    <div id="users-content" style="font-size:13px">Loading...</div>
+  </div>
+
+  <!-- ── Invite Codes ────────────────────────── -->
+  <div class="card">
+    <h2>🎟️ Invite Codes</h2>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button class="btn btn-blue" onclick="createInviteCode()">+ New Code</button>
+    </div>
+    <div id="invite-codes-content" style="font-size:13px">Loading...</div>
+  </div>
+
   <!-- ── Settings ─────────────────────────────── -->
   <div class="card">
     <h2>⚙️ Settings</h2>
@@ -2666,6 +2681,77 @@
 
   loadErrors();
   setInterval(loadErrors, 30_000);
+
+  // Users
+  async function loadUsers() {
+    try {
+      const r = await fetch('/api/users', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      const el = document.getElementById('users-content');
+      const users = d.users || [];
+      if (users.length === 0) { el.innerHTML = '<span class="text-muted">No users registered</span>'; return; }
+      const tierColors = { owner: 'var(--accent)', pro: '#f5a623', free: 'var(--t2)' };
+      const statusIcons = { active: '🟢', suspended: '🔴', banned: '⛔' };
+      el.innerHTML = '<table style="width:100%"><thead><tr><th>User</th><th>Tier</th><th>Status</th><th>Messages</th><th>Last Active</th><th>Actions</th></tr></thead><tbody>'
+        + users.map(u => {
+          const name = u.first_name || u.username || u.telegram_id;
+          const lastActive = u.last_active_at ? new Date(u.last_active_at).toLocaleDateString() : 'Never';
+          const tierBadge = `<span class="mono" style="color:${tierColors[u.tier]||'var(--t2)'}">${u.tier}</span>`;
+          const statusIcon = statusIcons[u.status] || '❓';
+          const actions = u.tier === 'owner' ? '' : u.status === 'active'
+            ? `<button class="btn" style="font-size:10px;padding:1px 4px" onclick="suspendUser(${u.telegram_id})">Suspend</button>`
+            : `<button class="btn" style="font-size:10px;padding:1px 4px" onclick="activateUser(${u.telegram_id})">Activate</button>`;
+          return `<tr><td>${esc(String(name))} <span class="text-muted mono" style="font-size:10px">${u.telegram_id}</span></td><td>${tierBadge}</td><td>${statusIcon}</td><td class="mono">${u.daily_message_limit === 0 ? '∞' : u.daily_message_limit}/day</td><td class="text-muted">${lastActive}</td><td>${actions}</td></tr>`;
+        }).join('')
+        + '</tbody></table>';
+    } catch (err) { console.warn('Users poll failed:', err); }
+  }
+  async function suspendUser(id) {
+    await fetch('/api/users/' + id + '/suspend', { method: 'POST', headers: authHeaders() });
+    showToast('User suspended', true); loadUsers();
+  }
+  async function activateUser(id) {
+    await fetch('/api/users/' + id + '/activate', { method: 'POST', headers: authHeaders() });
+    showToast('User activated', true); loadUsers();
+  }
+  loadUsers();
+  setInterval(loadUsers, 30_000);
+
+  // Invite codes
+  async function loadInviteCodes() {
+    try {
+      const r = await fetch('/api/invite-codes', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      const el = document.getElementById('invite-codes-content');
+      const codes = d.codes || [];
+      if (codes.length === 0) { el.innerHTML = '<span class="text-muted">No invite codes</span>'; return; }
+      el.innerHTML = codes.map(c => {
+        const expired = c.expires_at && new Date(c.expires_at) < new Date();
+        const exhausted = c.used_count >= c.max_uses;
+        const status = expired ? '⏰ Expired' : exhausted ? '✅ Used' : '🟢 Active';
+        return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding:4px;border-radius:4px;background:var(--bg2)">
+          <code style="font-size:13px;font-weight:600;letter-spacing:1px">${esc(c.code)}</code>
+          <span class="text-muted" style="font-size:11px">${c.used_count}/${c.max_uses} uses</span>
+          <span style="font-size:11px">${status}</span>
+          <button class="btn" style="font-size:10px;padding:1px 4px;margin-left:auto" onclick="deleteInviteCode('${esc(c.code)}')">🗑</button>
+        </div>`;
+      }).join('');
+    } catch (err) { console.warn('Invite codes poll failed:', err); }
+  }
+  async function createInviteCode() {
+    const r = await fetch('/api/invite-codes', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ maxUses: 1 }) });
+    const d = await r.json();
+    if (d.ok) showToast('Code: ' + d.code, true);
+    loadInviteCodes();
+  }
+  async function deleteInviteCode(code) {
+    await fetch('/api/invite-codes/' + code, { method: 'DELETE', headers: authHeaders() });
+    showToast('Code deleted', true); loadInviteCodes();
+  }
+  loadInviteCodes();
+  setInterval(loadInviteCodes, 30_000);
 
   // Settings
   async function loadSettings() {

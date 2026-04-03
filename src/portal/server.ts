@@ -1481,6 +1481,88 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── User Management API ────────────────────────────────────────────
+
+  app.get('/api/users', (_req: Request, res: Response) => {
+    try {
+      const { listUsers } = require('../services/user-service');
+      res.json({ users: listUsers() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/users/:telegramId/suspend', (req: Request, res: Response) => {
+    try {
+      const { setUserStatus } = require('../services/user-service');
+      setUserStatus(Number(req.params.telegramId), 'suspended');
+      res.json({ ok: true, message: 'User suspended' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/users/:telegramId/activate', (req: Request, res: Response) => {
+    try {
+      const { setUserStatus } = require('../services/user-service');
+      setUserStatus(Number(req.params.telegramId), 'active');
+      res.json({ ok: true, message: 'User activated' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.put('/api/users/:telegramId/tier', express.json(), (req: Request, res: Response) => {
+    try {
+      const { setUserTier } = require('../services/user-service');
+      setUserTier(Number(req.params.telegramId), req.body.tier);
+      res.json({ ok: true, message: `Tier set to ${req.body.tier}` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.put('/api/users/:telegramId/limits', express.json(), (req: Request, res: Response) => {
+    try {
+      const { setUserLimits } = require('../services/user-service');
+      setUserLimits(Number(req.params.telegramId), req.body);
+      res.json({ ok: true, message: 'Limits updated' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── Invite Code API ───────────────────────────────────────────────
+
+  app.get('/api/invite-codes', (_req: Request, res: Response) => {
+    try {
+      const { listInviteCodes } = require('../services/user-service');
+      res.json({ codes: listInviteCodes() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/invite-codes', express.json(), (req: Request, res: Response) => {
+    try {
+      const { createInviteCode } = require('../services/user-service');
+      const code = createInviteCode(0, req.body.maxUses ?? 1, req.body.expiresInDays);
+      res.json({ ok: true, code });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.delete('/api/invite-codes/:code', (req: Request, res: Response) => {
+    try {
+      const { deleteInviteCode } = require('../services/user-service');
+      deleteInviteCode(req.params.code);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/settings — current settings for portal display
   app.get('/api/settings', (_req: Request, res: Response) => {
     try {

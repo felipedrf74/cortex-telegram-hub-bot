@@ -449,13 +449,49 @@ export function setLastActiveDomain(userId: number, domain: DomainName): void {
 export function createBot(): Bot {
   const bot = new Bot(config.telegram.botToken);
 
-  // ── Auth Middleware ──
+  // ── Auth Middleware (DB-backed with legacy whitelist fallback) ──
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
-    if (!userId || !config.telegram.allowedUserIds.includes(userId)) {
-      logger.warn({ userId, username: ctx.from?.username }, 'Unauthorized access attempt');
+    if (!userId) return;
+
+    // Allow /start through for unregistered users (registration flow)
+    const text = (ctx.message && 'text' in ctx.message ? ctx.message.text : '') ?? '';
+    if (text.startsWith('/start')) {
+      await next();
       return;
     }
+
+    // Check DB-registered user
+    let authorized = false;
+    try {
+      const { getUserByTelegramId, touchUser: touch } = require('./services/user-service');
+      const { t } = require('./utils/i18n');
+      const user = getUserByTelegramId(userId);
+
+      if (user) {
+        if (user.status !== 'active') {
+          await ctx.reply(t('suspended', user.language));
+          return;
+        }
+        authorized = true;
+        touch(userId); // Update last_active_at (non-blocking)
+      }
+    } catch {
+      // user-service not loaded yet (startup race) — fall through to legacy
+    }
+
+    // Legacy fallback: TELEGRAM_ALLOWED_USER_IDS still works
+    if (!authorized && config.telegram.allowedUserIds.includes(userId)) {
+      authorized = true;
+    }
+
+    if (!authorized) {
+      const { t, detectLanguageFromTelegram } = require('./utils/i18n');
+      const lang = detectLanguageFromTelegram(ctx.from?.language_code);
+      await ctx.reply(t('need_invite', lang));
+      return;
+    }
+
     await next();
   });
 
@@ -488,10 +524,69 @@ export function createBot(): Bot {
 
   // ── System Commands ──
   bot.command('start', async (ctx) => {
-    await ctx.reply(
-      '👋 Hey Felipe! Your command hub is online.\n\nType /help to see all available commands.',
-      { parse_mode: 'HTML' }
-    );
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const { getUserByTelegramId, getOrCreateUser, validateAndConsumeInviteCode } = require('./services/user-service');
+    const { t, detectLanguageFromTelegram } = require('./utils/i18n');
+
+    const existing = getUserByTelegramId(userId);
+    if (existing) {
+      await ctx.reply(t('welcome_back', existing.language), { parse_mode: 'HTML' });
+      return;
+    }
+
+    // Extract invite code from /start INVITE_CODE (deep link)
+    const args = ctx.message?.text?.split(' ').slice(1) ?? [];
+    const inviteCode = args[0];
+    const registrationOpen = process.env.REGISTRATION_OPEN === 'true';
+
+    // Check if registration is allowed
+    if (!registrationOpen && !inviteCode) {
+      // Also allow if they're in the legacy whitelist
+      if (!config.telegram.allowedUserIds.includes(userId)) {
+        const lang = detectLanguageFromTelegram(ctx.from?.language_code);
+        await ctx.reply(t('need_invite', lang));
+        return;
+      }
+    }
+
+    // Validate invite code if provided
+    if (inviteCode && !validateAndConsumeInviteCode(inviteCode)) {
+      const lang = detectLanguageFromTelegram(ctx.from?.language_code);
+      await ctx.reply(t('invalid_invite', lang));
+      return;
+    }
+
+    // Create the user
+    getOrCreateUser(userId, {
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+      lastName: ctx.from?.last_name,
+      inviteCode,
+    });
+
+    // Language selection
+    await ctx.reply(t('choose_language', 'en-US'), {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🇧🇷 Português', callback_data: 'lang:pt-BR' },
+          { text: '🇬🇧 English', callback_data: 'lang:en-US' },
+        ]],
+      },
+    });
+  });
+
+  // Handle language selection callback from registration
+  bot.callbackQuery(/^lang:/, async (ctx) => {
+    const { setUserLanguage } = require('./services/user-service');
+    const { t } = require('./utils/i18n');
+    const lang = ctx.callbackQuery.data?.replace('lang:', '') as 'pt-BR' | 'en-US';
+    if (!lang || !['pt-BR', 'en-US'].includes(lang)) return;
+
+    setUserLanguage(ctx.from.id, lang);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(t('language_set', lang), { parse_mode: 'HTML' });
   });
 
   bot.command('version', async (ctx) => {
