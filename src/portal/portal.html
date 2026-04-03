@@ -890,10 +890,27 @@
   <div class="health-item">⬆️ <span class="val" id="hb-uptime">—</span> <span class="uptime-chart" id="uptime-chart" title="Last 30 health checks"></span></div>
 </div>
 
+<!-- ── Tab Navigation ────────────────────────── -->
+<div style="display:flex;gap:4px;padding:6px 12px;background:var(--bg);border-bottom:1px solid var(--bdr);overflow-x:auto;position:sticky;top:0;z-index:100">
+  <button class="tab-btn active" onclick="switchTab('dashboard')">📊 Dashboard</button>
+  <button class="tab-btn" onclick="switchTab('users')">👥 Users</button>
+  <button class="tab-btn" onclick="switchTab('ai')">🤖 AI</button>
+  <button class="tab-btn" onclick="switchTab('skills')">🧩 Skills</button>
+  <button class="tab-btn" onclick="switchTab('settings')">⚙️ Settings</button>
+  <button class="tab-btn" onclick="switchTab('integrations')">🔌 Integrations</button>
+  <button class="tab-btn" onclick="switchTab('content')">🎬 Content</button>
+  <button class="tab-btn" onclick="switchTab('actions')">⚡ Actions</button>
+</div>
+<style>
+.tab-btn{background:var(--bg2);border:1px solid var(--bdr);border-radius:6px;padding:5px 12px;color:var(--t2);cursor:pointer;font:inherit;font-size:12px;white-space:nowrap;transition:all .15s}
+.tab-btn:hover{background:var(--bdr);color:var(--t1)}
+.tab-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+</style>
+
 <div class="container">
 
   <!-- ── Feature #2: Daily Timeline ──────────── -->
-  <div class="card card-full">
+  <div data-tab="dashboard" class="card card-full">
     <h2>📅 Today's Timeline</h2>
     <div class="timeline-wrap" id="timeline">
       <div class="timeline-hour-marks" id="timeline-hours"></div>
@@ -911,7 +928,7 @@
   </div>
 
   <!-- ── Monthly Calendar View ─────────────── -->
-  <div class="card card-full">
+  <div data-tab="dashboard" class="card card-full">
     <h2>🗓️ Job Calendar</h2>
     <div class="cal-header">
       <h3 id="cal-title">March 2026</h3>
@@ -934,7 +951,7 @@
   </div>
 
   <!-- ── Bot & System ──────────────────────── -->
-  <div class="card">
+  <div data-tab="dashboard" class="card">
     <h2>🤖 Bot Status</h2>
     <div class="stats-grid" id="bot-stats">
       <div class="stat-box">
@@ -953,32 +970,32 @@
   </div>
 
   <!-- ── Skill Packages ────────────────────── -->
-  <div class="card card-full">
+  <div data-tab="skills" class="card card-full">
     <h2>🧩 Skill Packages <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Sub-skill toggles</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px" id="skill-packages"></div>
   </div>
 
   <!-- ── Domain Handlers ───────────────────── -->
-  <div class="card card-full">
+  <div data-tab="skills" class="card card-full">
     <h2>🔧 Domain Handlers <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Runtime status</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="domain-handlers"></div>
   </div>
 
   <!-- ── Skill Management ──────────────────── -->
-  <div class="card card-full">
+  <div data-tab="skills" class="card card-full">
     <h2>🔧 Skill Management</h2>
     <p style="font-size:12px;color:var(--text2);margin:4px 0 12px">Enable or disable skills and sub-modules per domain. Changes take effect immediately.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px" id="skill-panel"></div>
   </div>
 
   <!-- ── Skill Module Status ──────────────────── -->
-  <div class="card card-full">
+  <div data-tab="skills" class="card card-full">
     <h2>🔧 Skill Modules <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">Installed skills &amp; sub-modules</span></h2>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px" id="skill-modules"></div>
   </div>
 
   <!-- ── Error Monitoring ──────────────────── -->
-  <div class="card">
+  <div data-tab="dashboard" class="card">
     <h2>🚨 Error Monitor</h2>
     <div class="stats-grid" id="error-stats">
       <div class="stat-box">
@@ -1014,7 +1031,7 @@
   </div>
 
   <!-- ── API Usage ─────────────────────────── -->
-  <div class="card">
+  <div data-tab="ai" class="card">
     <h2>📊 API Usage</h2>
     <div class="stats-grid" id="api-stats">
       <div class="stat-box">
@@ -1041,7 +1058,7 @@
   </div>
 
   <!-- ── Task Execution Costs ──────────────────── -->
-  <div class="card">
+  <div data-tab="ai" class="card">
     <h2>🏭 Task Execution Costs (7d)</h2>
     <div class="stats-grid" id="task-metrics-stats">
       <div class="stat-box">
@@ -1068,7 +1085,7 @@
   </div>
 
   <!-- ── Quality Scores by Agent ──────────────── -->
-  <div class="card">
+  <div data-tab="ai" class="card">
     <h2>📊 Agent Quality Scores (30d)</h2>
     <table id="quality-scores-table">
       <thead><tr><th>Agent</th><th class="text-right">Avg Score</th><th class="text-right">Tasks</th><th class="text-right">Pass Rate</th></tr></thead>
@@ -1077,7 +1094,7 @@
   </div>
 
   <!-- ── Users ────────────────────────────────── -->
-  <div class="card">
+  <div data-tab="users" class="card">
     <h2>👥 Users</h2>
     <div id="users-content" style="font-size:13px">Loading...</div>
   </div>
@@ -1091,7 +1108,7 @@
   </div>
 
   <!-- ── Invite Codes ────────────────────────── -->
-  <div class="card">
+  <div data-tab="users" class="card">
     <h2>🎟️ Invite Codes</h2>
     <div style="display:flex;gap:6px;margin-bottom:8px">
       <button class="btn btn-blue" onclick="createInviteCode()">+ New Code</button>
@@ -1100,31 +1117,31 @@
   </div>
 
   <!-- ── Settings ─────────────────────────────── -->
-  <div class="card">
+  <div data-tab="settings" class="card">
     <h2>⚙️ Settings</h2>
     <div id="settings-content" style="font-size:13px">Loading...</div>
   </div>
 
   <!-- ── Model Configuration ──────────────────── -->
-  <div class="card">
+  <div data-tab="ai" class="card">
     <h2>🤖 Model Configuration</h2>
     <div id="model-config-content" style="font-size:13px">Loading...</div>
   </div>
 
   <!-- ── Provider Health ─────────────────────── -->
-  <div class="card">
+  <div data-tab="ai" class="card">
     <h2>🔌 Provider Health</h2>
     <div id="provider-health-content" style="font-size:13px">Loading...</div>
   </div>
 
   <!-- ── Error Distribution ────────────────────── -->
-  <div class="card">
+  <div data-tab="ai" class="card">
     <h2>🔍 Agent Error Distribution (7d)</h2>
     <div id="error-dist-content" class="text-muted" style="font-size:13px">Loading...</div>
   </div>
 
   <!-- ── Feature #3: Next Runs Panel ─────────── -->
-  <div class="card">
+  <div data-tab="integrations" class="card">
     <h2>🚀 Next Scheduled Runs</h2>
     <table id="next-runs-table">
       <thead><tr><th>Job</th><th>Domain</th><th>Fires</th><th>Countdown</th></tr></thead>
@@ -1133,7 +1150,7 @@
   </div>
 
   <!-- ── Feature #1: Email Automations ────────── -->
-  <div class="card">
+  <div data-tab="integrations" class="card">
     <h2>📧 Email Automations</h2>
     <div class="stats-grid" style="margin-bottom:12px">
       <div class="stat-box">
@@ -1152,19 +1169,19 @@
   </div>
 
   <!-- ── Adapter Status ──────────────────────── -->
-  <div class="card">
+  <div data-tab="integrations" class="card">
     <h2>📡 Adapter Status</h2>
     <div id="adapter-status"></div>
   </div>
 
   <!-- ── Integration Health ──────────────────── -->
-  <div class="card">
+  <div data-tab="integrations" class="card">
     <h2>🔗 Integration Health</h2>
     <div id="integration-health"></div>
   </div>
 
   <!-- ── Usage Metering ─────────────────────── -->
-  <div class="card">
+  <div data-tab="settings" class="card">
     <h2>📈 Usage Metering (Today)</h2>
     <div class="stats-grid" style="margin-bottom:12px">
       <div class="stat-box">
@@ -1191,7 +1208,7 @@
   </div>
 
   <!-- ── Training Plans ─────────────────────── -->
-  <div class="card">
+  <div data-tab="integrations" class="card">
     <h2>🏋️ Training Plans</h2>
     <div class="stats-grid" style="margin-bottom:12px">
       <div class="stat-box">
@@ -1211,7 +1228,7 @@
   </div>
 
   <!-- ── Invoices ──────────────────────────── -->
-  <div class="card">
+  <div data-tab="integrations" class="card">
     <h2>🧾 Invoices</h2>
     <div class="stats-grid" style="margin-bottom:12px">
       <div class="stat-box">
@@ -1230,7 +1247,7 @@
   </div>
 
   <!-- ── Content References ──────────────── -->
-  <div class="card">
+  <div data-tab="content" class="card">
     <h2>📚 Content References</h2>
     <div class="stats-grid" style="margin-bottom:12px">
       <div class="stat-box">
@@ -1262,7 +1279,7 @@
   </div>
 
   <!-- ── Video Transcripts ─────────────────── -->
-  <div class="card">
+  <div data-tab="content" class="card">
     <h2>📝 Video Transcripts</h2>
     <div id="transcriptStats">
       <p>Cached transcripts: <strong id="transcriptCount">—</strong></p>
@@ -1271,7 +1288,7 @@
   </div>
 
   <!-- ── Scheduled Jobs (with sparklines) ───── -->
-  <div class="card card-full">
+  <div data-tab="actions" class="card card-full">
     <h2>⏱️ Scheduled Jobs</h2>
     <table id="jobs-table">
       <thead><tr><th>Job</th><th>Domain</th><th>Schedule</th><th>Last Run</th><th>Duration</th><th>Result</th><th>History</th><th>Error</th></tr></thead>
@@ -1280,7 +1297,7 @@
   </div>
 
   <!-- ── Quick Actions ─────────────────────── -->
-  <div class="card card-full">
+  <div data-tab="actions" class="card card-full">
     <h2>⚡ Quick Actions</h2>
 
     <!-- Secretary & Scheduling -->
@@ -1327,7 +1344,7 @@
   </div>
 
   <!-- ── Mission Control: Content Agents ──────── -->
-  <div class="card card-full">
+  <div data-tab="content" class="card card-full">
     <h2>🤖 Content Agent Mesh
       <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="mesh-status"></span>
     </h2>
@@ -1401,7 +1418,7 @@
   </div>
 
   <!-- ── Book Library ──────────────────────── -->
-  <div class="card card-full">
+  <div data-tab="content" class="card card-full">
     <h2>📚 Book Library</h2>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <input id="book-title-input" type="text" placeholder="Book title"
@@ -1418,7 +1435,7 @@
   </div>
 
   <!-- ── Activity Log ──────────────────────── -->
-  <div class="card card-full">
+  <div data-tab="dashboard" class="card card-full">
     <h2>📋 Activity Log <span class="text-muted" style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0" id="event-count"></span></h2>
     <div class="activity-list" id="activity-log"></div>
   </div>
@@ -1429,6 +1446,32 @@
 <div id="toast" class="toast" style="display:none"></div>
 
 <script>
+// ── Tab switching (global, called from onclick) ──
+function switchTab(tabName) {
+  // Hide all cards that don't match the selected tab
+  document.querySelectorAll('[data-tab]').forEach(el => {
+    el.style.display = el.getAttribute('data-tab') === tabName ? '' : 'none';
+  });
+  // Update active tab button
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase().includes(tabName) ||
+      btn.getAttribute('onclick')?.includes("'" + tabName + "'"));
+  });
+  // Store active tab
+  localStorage.setItem('portal_active_tab', tabName);
+}
+
+// Apply saved tab on load
+document.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('portal_active_tab') || 'dashboard';
+  switchTab(saved);
+  // Update button active state
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    if (btn.getAttribute('onclick')?.includes("'" + saved + "'")) btn.classList.add('active');
+    else btn.classList.remove('active');
+  });
+});
+
 (function() {
   const TOKEN = localStorage.getItem('portal_token') || '';
   const POLL_MS = 10_000;
@@ -2798,10 +2841,14 @@
     } catch (err) { console.warn('Invite codes poll failed:', err); }
   }
   async function createInviteCode() {
-    const r = await apiFetch('/api/invite-codes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxUses: 1 }) });
-    const d = await r.json();
-    if (d.ok) showToast('Code: ' + d.code, true);
-    loadInviteCodes();
+    try {
+      const r = await apiFetch('/api/invite-codes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxUses: 1 }) });
+      if (!r.ok) { showToast('Failed to create code: ' + r.status, false); return; }
+      const d = await r.json();
+      if (d.ok) showToast('Code: ' + d.code, true);
+      else showToast(d.error || 'Failed', false);
+      loadInviteCodes();
+    } catch (err) { showToast('Error creating code', false); }
   }
   async function deleteInviteCode(code) {
     await apiFetch('/api/invite-codes/' + code, { method: 'DELETE' });

@@ -115,7 +115,16 @@ export function disableSubmodule(skillName: string, moduleName: string): boolean
 export function getEnabledSubmodules(skillName: string): string[] {
   const db = getDb();
   const skill = db.prepare('SELECT id FROM installed_skills WHERE name = ?').get(skillName) as { id: number } | undefined;
-  if (!skill) return [];
+  if (!skill) {
+    // Skill not in DB — default ALL sub-skills to enabled
+    // Return all sub-skill names from DEFAULT_SKILLS definition
+    try {
+      const { DEFAULT_SKILLS } = require('./skill-config');
+      const def = DEFAULT_SKILLS[skillName];
+      if (def?.subSkills) return def.subSkills.map((s: any) => s.name);
+    } catch { /* skill-config not loaded */ }
+    return [];
+  }
   const rows = db.prepare(
     'SELECT module_name FROM skill_submodules WHERE skill_id = ? AND enabled = 1 ORDER BY module_name'
   ).all(skill.id) as Array<{ module_name: string }>;
@@ -130,7 +139,18 @@ export function isSubmoduleEnabled(skillName: string, moduleName: string): boole
     JOIN installed_skills s ON s.id = sm.skill_id
     WHERE s.name = ? AND sm.module_name = ?
   `).get(skillName, moduleName) as { enabled: number } | undefined;
-  return row?.enabled === 1;
+  if (row) return row.enabled === 1;
+  // Not in DB — check if it's a known skill from DEFAULT_SKILLS
+  try {
+    const { DEFAULT_SKILLS } = require('./skill-config');
+    const def = DEFAULT_SKILLS[skillName];
+    if (def) {
+      // Known skill, not in DB → default to enabled
+      const sub = def.subSkills?.find((s: any) => s.name === moduleName);
+      return !!sub; // true if sub-skill exists in the definition
+    }
+  } catch { /* skill-config not loaded */ }
+  return false; // Truly unknown skill → disabled
 }
 
 // ── Queries ────────────────────────────────────────────────────────

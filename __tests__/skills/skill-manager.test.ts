@@ -410,11 +410,11 @@ describe('SkillManager — edge cases', () => {
     expect(tools).toHaveLength(0);
   });
 
-  it('getSkillStatus works even if skill not in DB', () => {
-    // No seedDefaultSkills() called
+  it('getSkillStatus defaults to enabled when skill not in DB', () => {
+    // No seedDefaultSkills() called — skills default to enabled (fail-open)
     const status = getSkillStatus('secretary');
-    expect(status.enabled).toBe(false);
-    expect(status.subSkills.every(s => !s.enabled)).toBe(true);
+    expect(status.enabled).toBe(true);
+    expect(status.subSkills.every(s => s.enabled)).toBe(true);
   });
 
   it('disabling all sub-skills results in no tools', () => {

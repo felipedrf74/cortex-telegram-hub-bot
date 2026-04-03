@@ -226,11 +226,11 @@ export function getSkillStatus(domain: DomainName): SkillStatus {
   return {
     name: def?.name ?? domain,
     description: def?.description ?? '',
-    enabled: skill?.enabled === 1,
+    enabled: skill ? skill.enabled === 1 : true, // Default to enabled if not in DB
     subSkills: (def?.subSkills ?? []).map(sub => ({
       name: sub.name,
       description: sub.description,
-      enabled: enabledSubs.has(sub.name),
+      enabled: skill ? enabledSubs.has(sub.name) : true, // Default to enabled if skill not in DB
       toolCount: sub.tools.length,
     })),
   };

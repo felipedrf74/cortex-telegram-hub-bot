@@ -236,16 +236,15 @@ describe('skills command — formatting data correctness', () => {
     expect(tasksStatus.enabled).toBe(false);
   });
 
-  it('empty database returns all skills disabled with no enabled subs', () => {
-    // Clear the skills table
+  it('empty database defaults all skills to ENABLED (fail-open)', () => {
+    // Clear the skills table — skills should default to enabled, not disabled
     testDb.exec('DELETE FROM skill_submodules');
     testDb.exec('DELETE FROM installed_skills');
 
     const skills = getAllSkillStatuses();
-    // getAllSkillStatuses uses DEFAULT_SKILLS keys, so still returns 5 entries
     expect(skills).toHaveLength(5);
     for (const skill of skills) {
-      expect(skill.enabled).toBe(false);
+      expect(skill.enabled).toBe(true); // Default to enabled when not in DB
     }
   });
 });
