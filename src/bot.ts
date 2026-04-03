@@ -3743,6 +3743,17 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     // Track last active domain for photo routing and conversation continuity
     if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
 
+    // Check if the user has access to this skill
+    try {
+      const { isSkillEnabled } = require('./services/user-skill-access');
+      if (userId && !isSkillEnabled(userId, route.domain)) {
+        const { getUserLanguage } = require('./services/user-service');
+        const { t } = require('./utils/i18n');
+        await ctx.reply(t('skill_disabled', getUserLanguage(userId)), { parse_mode: 'HTML' });
+        return;
+      }
+    } catch { /* skill access not loaded — allow */ }
+
     const handler = DOMAIN_HANDLERS[route.domain];
     const response = await handler(route.strippedMessage, ctx.from?.id);
 

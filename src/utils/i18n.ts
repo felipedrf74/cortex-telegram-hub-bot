@@ -82,6 +82,10 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'pt-BR': '⚠️ {provider} não está conectado. Use /connect {provider} para configurar.',
     'en-US': '⚠️ {provider} is not connected. Use /connect {provider} to set up.',
   },
+  'subskill_disabled': {
+    'pt-BR': '🔒 A funcionalidade <b>{skill}</b> não está habilitada para sua conta.',
+    'en-US': '🔒 The <b>{skill}</b> feature is not enabled for your account.',
+  },
 };
 
 /**

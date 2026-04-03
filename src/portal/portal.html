@@ -1082,6 +1082,14 @@
     <div id="users-content" style="font-size:13px">Loading...</div>
   </div>
 
+  <!-- ── User Skill Management ────────────────── -->
+  <div class="card" id="skill-management-card" style="display:none">
+    <h2>🧩 Skill Management — <span id="skill-user-name"></span></h2>
+    <div id="skill-grid-content" style="font-size:13px">Loading...</div>
+    <button class="btn" style="margin-top:8px" onclick="resetUserSkills()">Reset All to Default</button>
+    <button class="btn" style="margin-top:8px;margin-left:4px" onclick="closeSkillGrid()">Close</button>
+  </div>
+
   <!-- ── Invite Codes ────────────────────────── -->
   <div class="card">
     <h2>🎟️ Invite Codes</h2>
@@ -2699,9 +2707,10 @@
           const lastActive = u.last_active_at ? new Date(u.last_active_at).toLocaleDateString() : 'Never';
           const tierBadge = `<span class="mono" style="color:${tierColors[u.tier]||'var(--t2)'}">${u.tier}</span>`;
           const statusIcon = statusIcons[u.status] || '❓';
-          const actions = u.tier === 'owner' ? '' : u.status === 'active'
+          const skillBtn = `<button class="btn btn-blue" style="font-size:10px;padding:1px 4px" onclick="openSkillGrid(${u.telegram_id},'${esc(String(name))}')">🧩 Skills</button> `;
+          const actions = skillBtn + (u.tier === 'owner' ? '' : u.status === 'active'
             ? `<button class="btn" style="font-size:10px;padding:1px 4px" onclick="suspendUser(${u.telegram_id})">Suspend</button>`
-            : `<button class="btn" style="font-size:10px;padding:1px 4px" onclick="activateUser(${u.telegram_id})">Activate</button>`;
+            : `<button class="btn" style="font-size:10px;padding:1px 4px" onclick="activateUser(${u.telegram_id})">Activate</button>`);
           return `<tr><td>${esc(String(name))} <span class="text-muted mono" style="font-size:10px">${u.telegram_id}</span></td><td>${tierBadge}</td><td>${statusIcon}</td><td class="mono">${u.daily_message_limit === 0 ? '∞' : u.daily_message_limit}/day</td><td class="text-muted">${lastActive}</td><td>${actions}</td></tr>`;
         }).join('')
         + '</tbody></table>';
@@ -2717,6 +2726,54 @@
   }
   loadUsers();
   setInterval(loadUsers, 30_000);
+
+  // Skill management for a specific user
+  let _skillUserId = null;
+  async function openSkillGrid(telegramId, name) {
+    _skillUserId = telegramId;
+    document.getElementById('skill-user-name').textContent = name;
+    document.getElementById('skill-management-card').style.display = '';
+    try {
+      const r = await fetch('/api/users/' + telegramId + '/skills', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      const el = document.getElementById('skill-grid-content');
+      const skills = d.skills || [];
+      const skillIcons = { secretary: '📋', triathlon: '🏋️', content: '🎬', cooking: '🍳', finance: '💰' };
+      el.innerHTML = skills.map(s => {
+        const icon = skillIcons[s.skill] || '⚙️';
+        const oauthBadge = s.requiresOAuth ? (s.connected ? ' <span style="font-size:10px;color:var(--green,#2dd4a0)">🔗 Connected</span>' : ' <span style="font-size:10px;color:var(--red,#f25757)">🔗 Not connected</span>') : '';
+        const parentToggle = `<label style="cursor:pointer"><input type="checkbox" ${s.enabled ? 'checked' : ''} onchange="toggleSkill(${telegramId},'${s.skill}',null,this.checked)"> ${s.enabled ? '✅' : '⬜'}</label>`;
+        const subRows = s.subSkills.map(sub => {
+          const subToggle = `<label style="cursor:pointer;opacity:${s.enabled ? 1 : 0.4}"><input type="checkbox" ${sub.enabled ? 'checked' : ''} ${!s.enabled ? 'disabled' : ''} onchange="toggleSkill(${telegramId},'${s.skill}','${sub.id}',this.checked)"> ${sub.enabled ? '✅' : '⬜'}</label>`;
+          return `<div style="margin-left:20px;display:flex;align-items:center;gap:6px;padding:2px 0">
+            ${subToggle} <span style="font-size:12px">${esc(sub.label)}</span>
+          </div>`;
+        }).join('');
+        return `<div style="margin-bottom:8px;padding:6px;border-radius:6px;background:var(--bg2);border:1px solid var(--bdr)">
+          <div style="display:flex;align-items:center;gap:8px">
+            ${parentToggle} <span style="font-weight:600">${icon} ${esc(s.label)}</span>${oauthBadge}
+          </div>
+          ${subRows}
+        </div>`;
+      }).join('');
+    } catch (err) { console.warn('Skill grid failed:', err); }
+  }
+  async function toggleSkill(telegramId, skill, subSkill, enabled) {
+    await fetch('/api/users/' + telegramId + '/skills', {
+      method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skill, subSkill, enabled }),
+    });
+    showToast(skill + (subSkill ? ':' + subSkill : '') + (enabled ? ' enabled' : ' disabled'), true);
+    openSkillGrid(telegramId, document.getElementById('skill-user-name').textContent);
+  }
+  async function resetUserSkills() {
+    if (!_skillUserId) return;
+    await fetch('/api/users/' + _skillUserId + '/skills/reset', { method: 'POST', headers: authHeaders() });
+    showToast('Skills reset to defaults', true);
+    openSkillGrid(_skillUserId, document.getElementById('skill-user-name').textContent);
+  }
+  function closeSkillGrid() { document.getElementById('skill-management-card').style.display = 'none'; _skillUserId = null; }
 
   // Invite codes
   async function loadInviteCodes() {

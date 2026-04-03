@@ -1630,6 +1630,40 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── Per-User Skill Access API ──────────────────────────────────────
+
+  app.get('/api/users/:telegramId/skills', (req: Request, res: Response) => {
+    try {
+      const { getUserSkillState } = require('../services/user-skill-access');
+      const telegramId = parseInt(String(req.params.telegramId), 10);
+      res.json({ skills: getUserSkillState(telegramId) });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.put('/api/users/:telegramId/skills', express.json(), (req: Request, res: Response) => {
+    try {
+      const { setSkillAccess, getUserSkillState } = require('../services/user-skill-access');
+      const telegramId = parseInt(String(req.params.telegramId), 10);
+      const { skill, subSkill, enabled, reason } = req.body;
+      setSkillAccess(telegramId, skill, enabled, { subSkill: subSkill || undefined, reason });
+      res.json({ ok: true, skills: getUserSkillState(telegramId) });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/users/:telegramId/skills/reset', (req: Request, res: Response) => {
+    try {
+      const { resetUserSkillOverrides } = require('../services/user-skill-access');
+      resetUserSkillOverrides(parseInt(String(req.params.telegramId), 10));
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/settings — current settings for portal display
   app.get('/api/settings', (_req: Request, res: Response) => {
     try {
