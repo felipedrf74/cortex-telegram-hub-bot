@@ -1,6 +1,6 @@
 module.exports = {
   apps: [{
-    name: 'telegram-hub-bot',
+    name: 'nexus-hub',
     script: 'dist/index.js',
     cwd: __dirname,
     exec_mode: 'fork',

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub
 # ─────────────────────────────────────────────────────
 # sync-from-server.sh — Safely pull production changes
 #                       into a git branch for review

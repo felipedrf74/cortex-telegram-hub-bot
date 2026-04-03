@@ -18,7 +18,7 @@
 #
 # Structure:
 #   ~/Desktop/Custom Connectors/Cortex/
-#   ├── cortex-telegram-hub-bot/              ← main repo (main branch)
+#   ├── nexus-hub/              ← main repo (main branch)
 #   └── nexushub-worktrees/
 #       ├── feature-aiprovider/               ← feature/NH-001-aiprovider
 #       ├── feature-message-adapter/          ← feature/NH-002-message-adapter

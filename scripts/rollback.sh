@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────
 # rollback.sh — Rollback Nexus Hub to a previous version
+# TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub
 #
 # Usage:
 #   ./scripts/rollback.sh              # List available backups
@@ -97,7 +98,7 @@ echo "   ✅ Pre-rollback backup saved"
 # ── 2. Stop services ────────────────────────────────
 echo ""
 echo "🛑 Stopping services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop telegram-hub-bot 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
 
 # ── 3. Restore backup ───────────────────────────────
 echo ""
@@ -114,14 +115,14 @@ echo "   ✅ Dependencies installed"
 # ── 5. Start services ───────────────────────────────
 echo ""
 echo "🟢 Starting services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 start content-engine 2>/dev/null; $PM2 start telegram-hub-bot; $PM2 save; echo '   ✅ Running'"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 start content-engine 2>/dev/null; $PM2 start nexus-hub; $PM2 save; echo '   ✅ Running'"
 
 # ── 6. Health check ─────────────────────────────────
 echo ""
 echo "🏥 Health check..."
 sleep 5
 RESTORED_VERSION=$(ssh "$SERVER" "node -p \"require('$REMOTE_DIR/package.json').version\"" 2>/dev/null || echo "unknown")
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 list | grep -E 'telegram-hub-bot|content-engine'"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 list | grep -E 'nexus-hub|content-engine'"
 
 echo ""
 echo "═══════════════════════════════════════════════"

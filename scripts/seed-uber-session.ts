@@ -1,4 +1,5 @@
 /**
+// TODO: Rename server directory ~/telegram-hub-bot → ~/nexus-hub when server dir is renamed
  * Uber Session Seeder — run locally with a visible browser to:
  * 1. Log in to Uber (solve CAPTCHA, enter OTP, etc.)
  * 2. Save the session to a JSON file

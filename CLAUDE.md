@@ -20,6 +20,7 @@ If it exists, read it and execute the task. If not, wait for instructions.
 
 ### Step 3: Auto-chain when done
 Detect which worktree you're in and run the completion script:
+<!-- NOTE: Local path references old folder name. Update when folder is renamed. -->
 ```bash
 AGENT_DIR=$(basename "$(pwd)")
 node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "brief description of what you did"
@@ -44,6 +45,7 @@ If you are the QA agent and your prompt says "QA Validation Task":
 2. Run tests, type check, review code
 3. Write additional validation tests if needed
 4. When done, run ONE of:
+<!-- NOTE: Local path references old folder name. Update when folder is renamed. -->
 ```bash
 # Everything passes:
 AGENT_DIR=$(basename "$(pwd)")
@@ -75,7 +77,7 @@ Nexus Hub (formerly Cortex) — AI-powered creator operating system built with T
 
 ## Repository
 
-- **GitHub:** felipedrf74/cortex-telegram-hub-bot
+- **GitHub:** felipedrf74/nexus-hub
 - **Owner:** Felipe Dominguez
 - **License:** MIT (planned)
 
@@ -212,7 +214,7 @@ npx vitest                # Watch mode
 ## Server Info (DO NOT attempt to connect)
 
 - Server: `dominguez@serverdominguez` (IPv6-only, local resolution only)
-- Path: `/home/dominguez/telegram-hub-bot`
+- Path: `/home/dominguez/telegram-hub-bot`  <!-- TODO: rename server directory to nexus-hub -->
 - Backups: `/home/dominguez/backups/nexushub/` (last 10)
 - Deploy: Felipe only, via `./scripts/deploy.sh` from Mac
 

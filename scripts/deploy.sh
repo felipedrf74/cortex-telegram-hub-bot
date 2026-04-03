@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────
-# deploy.sh — Deploy telegram-hub-bot + content-engine
+# deploy.sh — Deploy nexus-hub + content-engine
+# TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub
 #              to the Linux server via rsync/scp
 #
 # PRESERVES on the server (never overwritten):
@@ -8,7 +9,7 @@
 #
 # Environment:
 #   DEPLOY_SERVER   — SSH connection (default: dominguez@serverdominguez)
-#   DEPLOY_PATH     — Remote path (default: /home/dominguez/telegram-hub-bot)
+#   DEPLOY_PATH     — Remote path (default: /home/dominguez/telegram-hub-bot)  # TODO: rename to nexus-hub
 #   NOTION_TOKEN    — Notion API token (optional, for release logging)
 #   NOTION_RELEASES_DB — Notion Releases DB ID (optional)
 #
@@ -63,7 +64,9 @@ ssh "$SERVER" "
 # ── 3. Stop services on server ───────────────────────
 echo ""
 echo "🛑 Stopping services on server..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop telegram-hub-bot 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
+# ── Handle PM2 process rename (one-time migration) ──
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 delete telegram-hub-bot 2>/dev/null || true"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
 
 # ── 4. Sync files (excluding protected paths) ────────
 echo ""
@@ -137,7 +140,7 @@ ssh "$SERVER" "mkdir -p $REMOTE_DIR/data/garmin-tokens $REMOTE_DIR/logs $REMOTE_
 # ── 7. Start services ────────────────────────────────
 echo ""
 echo "🟢 Starting services..."
-ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 set telegram-hub-bot env GIT_COMMIT $COMMIT 2>/dev/null; $PM2 start content-engine 2>/dev/null && $PM2 start telegram-hub-bot 2>/dev/null && $PM2 save && echo '   ✅ All services running'"
+ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 set nexus-hub env GIT_COMMIT $COMMIT 2>/dev/null; $PM2 start content-engine 2>/dev/null && $PM2 start nexus-hub 2>/dev/null && $PM2 save && echo '   ✅ All services running'"
 
 # ── 8. Health check (with retry) ─────────────────────
 echo ""
@@ -158,19 +161,19 @@ else
 fi
 
 # Bot status with retry
-BOT_STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='telegram-hub-bot')?.pm2_env?.status\"" 2>/dev/null || echo "unknown")
+BOT_STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='nexus-hub')?.pm2_env?.status\"" 2>/dev/null || echo "unknown")
 
 if [ "$BOT_STATUS" != "online" ]; then
   echo " ⏳ Bot not ready yet, retrying in 5s..."
   sleep 5
-  BOT_STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='telegram-hub-bot')?.pm2_env?.status\"" 2>/dev/null || echo "unknown")
+  BOT_STATUS=$(ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 jlist 2>/dev/null | node -pe \"JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='nexus-hub')?.pm2_env?.status\"" 2>/dev/null || echo "unknown")
 fi
 
 if [ "$BOT_STATUS" = "online" ]; then
   echo " ✅ Bot: online"
 else
   echo " ❌ Bot: $BOT_STATUS"
-  echo "    Check logs: ssh $SERVER '$PM2 logs telegram-hub-bot --lines 30 --nostream'"
+  echo "    Check logs: ssh $SERVER '$PM2 logs nexus-hub --lines 30 --nostream'"
   DEPLOY_STATUS="❌ Failed"
   HEALTH_OK=false
 fi

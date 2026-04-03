@@ -1,6 +1,6 @@
 # Development Best Practices & CI/CD Process
 
-> **telegram-hub-bot** — Development workflow, release process, and Claude Code conventions.
+> **nexus-hub** — Development workflow, release process, and Claude Code conventions.
 > Owner: Felipe Dominguez | Last updated: 2026-03-10
 
 ---
@@ -89,7 +89,7 @@ ci: add GitHub Actions build + lint pipeline
 Create a `CLAUDE.md` at the project root. Claude Code reads this automatically for context:
 
 ```markdown
-# CLAUDE.md — telegram-hub-bot
+# CLAUDE.md — nexus-hub
 
 ## Project
 TypeScript Telegram bot. Personal command center with multi-domain AI routing.
@@ -303,8 +303,8 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -f docker/Dockerfile -t telegram-hub-bot:${{ github.ref_name }} .
-          docker tag telegram-hub-bot:${{ github.ref_name }} telegram-hub-bot:latest
+          docker build -f docker/Dockerfile -t nexus-hub:${{ github.ref_name }} .
+          docker tag nexus-hub:${{ github.ref_name }} nexus-hub:latest
 
       - name: Deploy to server
         env:
@@ -332,7 +332,7 @@ jobs:
 | `DEPLOY_HOST` | Server IP or hostname |
 | `DEPLOY_USER` | SSH username |
 | `DEPLOY_SSH_KEY` | Private key for deployment |
-| `DEPLOY_PATH` | Remote path (e.g., `/opt/telegram-hub-bot`) |
+| `DEPLOY_PATH` | Remote path (e.g., `/opt/nexus-hub`) |
 
 ---
 
@@ -471,13 +471,13 @@ npm run build && npm test
 
 ```bash
 # Live logs
-pm2 logs telegram-hub-bot
+pm2 logs nexus-hub
 
 # Status
 pm2 status
 
 # Restart
-pm2 restart telegram-hub-bot
+pm2 restart nexus-hub
 ```
 
 ### Recommended Additions

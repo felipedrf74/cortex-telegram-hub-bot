@@ -2,7 +2,7 @@
 
 > **Owner:** Felipe Dominguez  
 > **Executor:** Claude Code (single agent, sequential)  
-> **Repo:** `cortex-telegram-hub-bot`  
+> **Repo:** `nexus-hub`  
 > **Branch strategy:** Create `feature/software-factory` from `develop`. One commit per task (SF-01 through SF-05).
 
 ⚠️ **Read CLAUDE.md and CODEBASE.md before starting. Follow all existing conventions: copyright headers, logger usage, SQLite via `getDb()`, telemetry via `pushEvent()`.**

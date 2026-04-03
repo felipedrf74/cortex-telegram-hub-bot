@@ -12,7 +12,7 @@ Felipe only sees a clean summary on Telegram. The creative detail lives in the f
 
 ## Project Context
 
-Nexus Hub is a Telegram bot (`telegram-hub-bot/`). Key architecture:
+Nexus Hub is a Telegram bot (`nexus-hub/`). Key architecture:
 - `src/services/anthropic.ts` — Anthropic SDK client, `DOMAIN_SYSTEM_PROMPTS`, `callDomain()`, model constants
 - `src/domains/content-creator.ts` — content domain handler with `handleContent()`, uses `callDomain('content', ...)`
 - `src/services/scheduler.ts` — node-cron jobs, sends Telegram messages via `bot.api.sendMessage()`
@@ -308,7 +308,7 @@ const SYSTEM_COMMANDS = ['/help', '/status', '/clear', '/start', '/discover'];
 
 ### 5. Ensure `data/content-ideas/` directory is created
 
-The code creates it if it doesn't exist. The folder lives under `data/` which is already in `.gitignore`. On the Linux server, the path will be `~/telegram-hub-bot/data/content-ideas/`.
+The code creates it if it doesn't exist. The folder lives under `data/` which is already in `.gitignore`. On the Linux server, the path will be `~/nexus-hub/data/content-ideas/`.
 
 ### 6. File naming and access on the server
 

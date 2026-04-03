@@ -1,4 +1,5 @@
 # Nexus Hub — Technical & Functional Documentation
+<!-- TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub -->
 
 > **Version:** 4.0.0 | **Platform:** Node.js + TypeScript + Python | **AI:** Claude Sonnet/Haiku (Anthropic) | **Database:** SQLite
 
@@ -100,8 +101,8 @@ A multi-domain AI-powered Telegram personal assistant that unifies task manageme
 ### Installation
 
 ```bash
-git clone git@github.com:felipedrf74/cortex-telegram-hub-bot.git
-cd telegram-hub-bot
+git clone git@github.com:felipedrf74/nexus-hub.git
+cd nexus-hub
 npm install
 cp .env.example .env
 # Edit .env with your credentials
@@ -137,7 +138,7 @@ sudo env PATH=$PATH:/path/to/node pm2 startup systemd -u dominguez --hp /home/do
 pm2 save
 ```
 
-Both `telegram-hub-bot` and `content-engine` will auto-restart on server reboot.
+Both `nexus-hub` and `content-engine` will auto-restart on server reboot.
 
 ---
 
@@ -1046,7 +1047,7 @@ The deploy script:
 3. **Stops** services on the server via PM2
 4. **Syncs** files via rsync (excludes `.env`, `data/`, `logs/`, `node_modules/`)
 5. **Installs** dependencies on server (`npm ci --production`)
-6. **Starts** both services (telegram-hub-bot + content-engine)
+6. **Starts** both services (nexus-hub + content-engine)
 7. **Health checks** Content Engine (port 8100) and Status Portal (port 8200)
 
 ### Protected Paths (Never Overwritten by Deploy)
@@ -1237,7 +1238,7 @@ The telemetry module (`src/portal/telemetry.ts`) has zero project imports — it
 
 1. Check `/status` in Telegram for system state
 2. Check the portal at `http://server:8200` for polling status
-3. Check logs: `pm2 logs telegram-hub-bot`
+3. Check logs: `pm2 logs nexus-hub`
 4. Common cause: Telegram 409 conflict (another instance polling). Wait 40s or restart.
 
 ### Microsoft Auth Expired
@@ -1252,7 +1253,7 @@ If Outlook/Calendar/To Do commands fail:
 1. The bot auto-recovers via OAuth2 refresh (every 30 min)
 2. If MFA is required, the bot sends a Telegram message — reply with `/garminmfa <code>`
 3. Use the portal Quick Action "Refresh Garmin" to force a refresh
-4. For persistent issues: check `pm2 logs telegram-hub-bot` for rate-limit backoff
+4. For persistent issues: check `pm2 logs nexus-hub` for rate-limit backoff
 
 ### Transcripts Not Working
 
@@ -1263,7 +1264,7 @@ If Outlook/Calendar/To Do commands fail:
 ### Channel Learning Returns 0 Patterns
 
 1. Check if `max_tokens` is sufficient (should be 8192 for extraction)
-2. Check logs for JSON truncation errors: `pm2 logs telegram-hub-bot | grep "Failed to parse"`
+2. Check logs for JSON truncation errors: `pm2 logs nexus-hub | grep "Failed to parse"`
 3. The channel will still be marked active but with 0 patterns — `/relearn` to retry
 
 ### Invoice Filing Fails

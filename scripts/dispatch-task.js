@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /**
+// NOTE: Local path references old folder name (cortex-telegram-hub-bot). Update when folder is renamed.
  * Nexus Hub — Manual Task Dispatcher
  *
  * Bootstraps any agent with a specific Notion task, bypassing the auto-chain.

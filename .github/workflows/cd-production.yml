@@ -13,7 +13,7 @@ on:
 
 env:
   SERVER: dominguez@serverdominguez
-  REMOTE_DIR: /home/dominguez/telegram-hub-bot
+  REMOTE_DIR: /home/dominguez/telegram-hub-bot  # TODO: rename to nexus-hub
   PM2: /home/dominguez/.npm-global/bin/pm2
 
 jobs:
@@ -97,7 +97,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             export PATH=$PATH:$(dirname ${{ env.PM2 }})
-            ${{ env.PM2 }} stop telegram-hub-bot 2>/dev/null || true
+            ${{ env.PM2 }} stop nexus-hub 2>/dev/null || true
             ${{ env.PM2 }} stop content-engine 2>/dev/null || true
 
       - name: Sync files
@@ -121,7 +121,7 @@ jobs:
             cd ${{ env.REMOTE_DIR }}
             npm ci --production
             ${{ env.PM2 }} start content-engine 2>/dev/null || true
-            ${{ env.PM2 }} start telegram-hub-bot
+            ${{ env.PM2 }} start nexus-hub
             ${{ env.PM2 }} save
 
   health-check:
@@ -140,11 +140,11 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             export PATH=$PATH:$(dirname ${{ env.PM2 }})
-            BOT_STATUS=$(${{ env.PM2 }} jlist | node -pe "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='telegram-hub-bot')?.pm2_env?.status" 2>/dev/null)
+            BOT_STATUS=$(${{ env.PM2 }} jlist | node -pe "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).find(p=>p.name==='nexus-hub')?.pm2_env?.status" 2>/dev/null)
             if [ "$BOT_STATUS" = "online" ]; then
-              echo "✅ telegram-hub-bot: online"
+              echo "✅ nexus-hub: online"
             else
-              echo "❌ telegram-hub-bot: $BOT_STATUS"
+              echo "❌ nexus-hub: $BOT_STATUS"
               exit 1
             fi
 

@@ -1,4 +1,5 @@
 # Nexus Hub — Deploy & CI/CD Context for Claude Code Agents
+<!-- TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub -->
 
 ## Current CI/CD Status
 
@@ -25,6 +26,7 @@
 
 **DO NOT** rely on GitHub Actions CD for deployment. Use the local deploy script from Felipe's Mac:
 
+<!-- NOTE: Local path references old folder name. Update when folder is renamed. -->
 ```bash
 cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
 ./scripts/deploy.sh
@@ -42,7 +44,7 @@ This script:
 ### Deploy Target
 - **Server:** `dominguez@serverdominguez` (resolves locally, not from cloud)
 - **Path:** `/home/dominguez/telegram-hub-bot`
-- **Process Manager:** PM2 (telegram-hub-bot + content-engine)
+- **Process Manager:** PM2 (nexus-hub + content-engine)
 - **Backups:** `/home/dominguez/backups/nexushub/` (last 10 kept)
 
 ### Rollback
