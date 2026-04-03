@@ -8,6 +8,15 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 ### Bug Fixes
 
 - **portal**: Replace undefined authHeaders() with existing apiFetch() ([`4e9df61`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/4e9df61ba536ae43899b3a3a085cc9fcf59be064))
+
+### Chores
+
+- Bump version to 4.7.1 [deploy] ([`801fe3b`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/801fe3bbbb00c26983484c7a4d4981229163953b))
+
+## [4.7.0] — 2026-04-03
+
+### Bug Fixes
+
 - **portal**: Handle EADDRINUSE gracefully — don't crash the bot ([`329d877`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/329d877312af8ea33038d18841af598adbac059b))
 
 ### Chores
