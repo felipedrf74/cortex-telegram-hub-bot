@@ -1380,7 +1380,7 @@
           <!-- Glow filter for active nodes -->
           <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
           <!-- Arrow marker -->
-          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="var(--accent)" opacity="0.6"/></marker>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#4a5068" opacity="0.8"/></marker>
           <marker id="arrow-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#00b894"/></marker>
           <!-- Pulse animation -->
           <radialGradient id="pulse-grad"><stop offset="0%" stop-color="#6c5ce7" stop-opacity="0.4"/><stop offset="100%" stop-color="#6c5ce7" stop-opacity="0"/></radialGradient>
@@ -2370,29 +2370,37 @@ document.addEventListener('DOMContentLoaded', () => {
       const to = MESH_AGENTS.find(a => a.id === toId);
       if (!from || !to) return;
       const isActive = activeTypes.has(sigType);
-      const color = isActive ? '#00b894' : '#2d3140';
-      const width = isActive ? 2 : 1;
-      const marker = isActive ? 'url(#arrow-active)' : 'url(#arrow)';
-      const opacity = isActive ? 0.8 : 0.3;
-      const dasharray = isActive ? '' : '4,4';
+      const color = isActive ? '#00b894' : '#4a5068';
+      const width = isActive ? 2.5 : 1.2;
+      const opacity = isActive ? 0.9 : 0.5;
+      const dasharray = isActive ? '' : '6,4';
 
       // Offset line endpoints to node border (radius ~28)
       const dx = to.x - from.x, dy = to.y - from.y;
       const dist = Math.sqrt(dx*dx + dy*dy);
-      const r = 28;
+      const r = 30;
       const x1 = from.x + (dx/dist)*r, y1 = from.y + (dy/dist)*r;
       const x2 = to.x - (dx/dist)*r, y2 = to.y - (dy/dist)*r;
 
-      connHtml += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dasharray}" opacity="${opacity}" marker-end="${marker}">`;
+      // Curved path (quadratic bezier through midpoint offset)
+      const mx = (x1+x2)/2, my = (y1+y2)/2;
+      const nx = -(y2-y1), ny = (x2-x1); // perpendicular
+      const nd = Math.sqrt(nx*nx+ny*ny) || 1;
+      const curve = 20; // curve amount
+      const cx = mx + (nx/nd)*curve, cy = my + (ny/nd)*curve;
+      const pathD = `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`;
+
+      const marker = isActive ? 'url(#arrow-active)' : 'url(#arrow)';
+      connHtml += `<path d="${pathD}" fill="none" stroke="${color}" stroke-width="${width}" stroke-dasharray="${dasharray}" opacity="${opacity}" marker-end="${marker}">`;
       if (isActive) {
-        connHtml += `<animate attributeName="opacity" values="0.4;0.9;0.4" dur="2s" repeatCount="indefinite"/>`;
+        connHtml += `<animate attributeName="opacity" values="0.5;1;0.5" dur="2s" repeatCount="indefinite"/>`;
       }
-      connHtml += `</line>`;
+      connHtml += `</path>`;
 
       // Signal pulse dot traveling along active connections
       if (isActive) {
-        connHtml += `<circle r="3" fill="#00b894" opacity="0.9">
-          <animateMotion dur="3s" repeatCount="indefinite" path="M${x1},${y1} L${x2},${y2}"/>
+        connHtml += `<circle r="4" fill="#00b894" opacity="0.9">
+          <animateMotion dur="2.5s" repeatCount="indefinite" path="${pathD}"/>
         </circle>`;
       }
     });
@@ -2404,8 +2412,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const stat = statusMap[agent.id];
       const isActive = stat && stat.last_status === 'success';
       const isError = stat && stat.last_status === 'error';
-      const nodeColor = isError ? '#e17055' : isActive ? '#00b894' : '#fdcb6e';
-      const bgColor = isError ? '#2d1515' : isActive ? '#0d2d24' : '#2d2a15';
+      const nodeColor = isError ? '#e17055' : isActive ? '#00b894' : '#a29bfe';
+      const bgColor = isError ? '#2d1515' : isActive ? '#0d2d24' : '#1a1a2e';
       const signals = stat ? stat.signals_produced : 0;
 
       // Node circle
