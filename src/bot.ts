@@ -589,6 +589,62 @@ export function createBot(): Bot {
     await ctx.editMessageText(t('language_set', lang), { parse_mode: 'HTML' });
   });
 
+  // ── /connect — OAuth account linking ──
+  bot.command('connect', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const { getUserLanguage } = require('./services/user-service');
+    const { t } = require('./utils/i18n');
+    const { getOAuthUrl } = require('./services/oauth-flow');
+
+    const provider = ctx.message?.text?.split(' ')[1]?.toLowerCase();
+    const lang = getUserLanguage(userId);
+
+    if (!provider || !['google', 'outlook'].includes(provider)) {
+      await ctx.reply(t('connect_help', lang), { parse_mode: 'HTML' });
+      return;
+    }
+
+    try {
+      const url = getOAuthUrl(provider, userId);
+      await ctx.reply(t('connect_prompt', lang, { provider: provider.charAt(0).toUpperCase() + provider.slice(1) }), {
+        reply_markup: {
+          inline_keyboard: [[{ text: `🔗 Connect ${provider.charAt(0).toUpperCase() + provider.slice(1)}`, url }]],
+        },
+      });
+    } catch (err: any) {
+      await ctx.reply(`❌ ${err.message}`);
+    }
+  });
+
+  // ── /connections — list connected accounts ──
+  bot.command('connections', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const { getUserLanguage } = require('./services/user-service');
+    const { t } = require('./utils/i18n');
+    const { getUserConnections } = require('./services/oauth-store');
+
+    const lang = getUserLanguage(userId);
+    const connections = getUserConnections(userId);
+
+    if (connections.length === 0) {
+      await ctx.reply(t('connections_none', lang), { parse_mode: 'HTML' });
+      return;
+    }
+
+    const providerIcons: Record<string, string> = { google: '🟢', outlook: '🔵' };
+    let msg = t('connections_header', lang);
+    for (const c of connections) {
+      const icon = providerIcons[c.provider] || '📡';
+      msg += `\n${icon} <b>${c.provider.charAt(0).toUpperCase() + c.provider.slice(1)}</b> — connected ${c.connectedAt?.split('T')[0] ?? 'unknown'}`;
+      if (c.scopes.length > 0) {
+        msg += `\n   <i>${c.scopes.length} scopes</i>`;
+      }
+    }
+    await ctx.reply(msg, { parse_mode: 'HTML' });
+  });
+
   bot.command('version', async (ctx) => {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
     const commitHash = process.env.GIT_COMMIT || 'dev';

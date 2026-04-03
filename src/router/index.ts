@@ -22,6 +22,7 @@ const SYSTEM_COMMANDS = [
   '/contenttopic', '/contentretro',
   '/onboard', '/profile',
   '/skills', '/skill',
+  '/connect', '/connections',
 ];
 
 export function isSystemCommand(message: string): string | null {

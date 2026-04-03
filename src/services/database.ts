@@ -48,6 +48,12 @@ export function initDatabase(): Database.Database {
     seedOwnerUser();
   } catch { /* user-service not yet available — non-critical */ }
 
+  // Migrate owner's OAuth tokens from .env to per-user storage
+  try {
+    const { migrateOwnerTokens } = require('./oauth-store');
+    migrateOwnerTokens();
+  } catch { /* oauth-store not yet available — non-critical */ }
+
   logger.info({ path: config.app.databasePath }, 'Database initialized');
   return db;
 }

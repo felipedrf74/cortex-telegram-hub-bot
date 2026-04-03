@@ -1024,6 +1024,73 @@ export function createPortalServer(bot: Bot): http.Server {
   app.use(express.json());
 
   // ── Health check endpoint (no auth — for uptime monitors) ──────
+  // ── OAuth Callback Routes (no auth — public redirect targets) ──────
+
+  app.get('/oauth/google/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('google', code, userId);
+      storeTokens(userId, 'google', tokens);
+
+      // Notify user via Telegram
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Google' }));
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Google account linked. You can close this window and return to Telegram.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Google OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect google in Telegram.</p></body></html>');
+    }
+  });
+
+  app.get('/oauth/outlook/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('outlook', code, userId);
+      storeTokens(userId, 'outlook', tokens);
+
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Outlook' }));
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Outlook account linked. You can close this window and return to Telegram.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Outlook OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect outlook in Telegram.</p></body></html>');
+    }
+  });
+
+  // ── Health Check ──────────────────────────────────────────────────
+
   app.get('/health', (_req: Request, res: Response) => {
     const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
     let dbOk = false;

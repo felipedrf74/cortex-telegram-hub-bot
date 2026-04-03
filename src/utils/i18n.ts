@@ -54,6 +54,34 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'pt-BR': '🔐 O registro está fechado no momento. Peça um código de convite ao administrador.',
     'en-US': '🔐 Registration is currently closed. Ask an admin for an invite code.',
   },
+  'connect_help': {
+    'pt-BR': '🔗 Para conectar suas contas:\n\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do',
+    'en-US': '🔗 To connect your accounts:\n\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do',
+  },
+  'connect_prompt': {
+    'pt-BR': '🔗 Clique no botão abaixo para autorizar o acesso ao {provider}:',
+    'en-US': '🔗 Click the button below to authorize {provider} access:',
+  },
+  'oauth_connected': {
+    'pt-BR': '✅ {provider} conectado com sucesso! Suas integrações estão prontas.',
+    'en-US': '✅ {provider} connected successfully! Your integrations are ready.',
+  },
+  'oauth_failed': {
+    'pt-BR': '❌ Falha ao conectar {provider}. Tente novamente com /connect {provider}.',
+    'en-US': '❌ Failed to connect {provider}. Try again with /connect {provider}.',
+  },
+  'connections_none': {
+    'pt-BR': '📡 Nenhuma conta conectada.\n\nUse /connect google ou /connect outlook para começar.',
+    'en-US': '📡 No accounts connected.\n\nUse /connect google or /connect outlook to get started.',
+  },
+  'connections_header': {
+    'pt-BR': '📡 <b>Contas conectadas:</b>\n',
+    'en-US': '📡 <b>Connected accounts:</b>\n',
+  },
+  'provider_not_connected': {
+    'pt-BR': '⚠️ {provider} não está conectado. Use /connect {provider} para configurar.',
+    'en-US': '⚠️ {provider} is not connected. Use /connect {provider} to set up.',
+  },
 };
 
 /**
