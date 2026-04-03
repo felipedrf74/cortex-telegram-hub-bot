@@ -531,10 +531,10 @@ export function createBot(): Bot {
   bot.command('clear', async (ctx) => {
     const domain = ctx.match?.trim();
     if (domain && ['secretary', 'triathlon', 'content'].includes(domain)) {
-      clearConversation(domain as DomainName);
+      clearConversation(ctx.from?.id ?? 0, domain as DomainName);
       await ctx.reply(`🗑 Cleared conversation history for <b>${domain}</b>.`, { parse_mode: 'HTML' });
     } else if (domain === 'all') {
-      clearAllConversations();
+      clearAllConversations(ctx.from?.id ?? 0);
       await ctx.reply('🗑 Cleared all conversation histories.', { parse_mode: 'HTML' });
     } else {
       await ctx.reply('Usage: /clear [secretary|triathlon|content|all]');
@@ -2586,7 +2586,7 @@ export function createBot(): Bot {
         }
 
         // Save to triathlon conversation history so follow-ups have context
-        addToConversation('triathlon', 'assistant', result.message);
+        addToConversation(ctx.from?.id ?? 0, 'triathlon', 'assistant', result.message);
 
         // Send the human-readable briefing
         const chunks = splitMessage(result.message);
@@ -3579,7 +3579,7 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
     if (userId && !text.startsWith('/')) {
       const lastState = lastActiveDomain.get(userId);
       if (lastState && Date.now() - lastState.timestamp < CONTINUITY_WINDOW_MS) {
-        const lastMsg = getLastAssistantMessage(lastState.domain);
+        const lastMsg = getLastAssistantMessage(userId, lastState.domain);
         if (lastMsg) {
           activeContext = { domain: lastState.domain, lastAssistantMessage: lastMsg };
         }
@@ -4175,7 +4175,7 @@ async function handleStatus(ctx: Context): Promise<void> {
     msg += '📋 Microsoft To Do: not configured\n';
   }
 
-  const reminders = getActiveReminders();
+  const reminders = getActiveReminders(ctx.from?.id ?? 0);
   msg += `⏰ Active reminders: ${reminders.length}\n`;
 
   if (isAnyCalendarConfigured()) {

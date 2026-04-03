@@ -3,7 +3,7 @@
 import { getDb } from '../services/database';
 import { Todo } from '../domains/types';
 
-export function createTodo(data: {
+export function createTodo(userId: number, data: {
   title: string;
   description?: string;
   domain?: string;
@@ -13,10 +13,11 @@ export function createTodo(data: {
 }): Todo {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO todos (title, description, domain, priority, due_date, tags)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO todos (user_id, title, description, domain, priority, due_date, tags)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
+    userId,
     data.title,
     data.description || null,
     data.domain || 'general',
@@ -24,22 +25,22 @@ export function createTodo(data: {
     data.due_date || null,
     data.tags || null
   );
-  return getTodoById(result.lastInsertRowid as number)!;
+  return getTodoById(userId, result.lastInsertRowid as number)!;
 }
 
-export function getTodoById(id: number): Todo | undefined {
+export function getTodoById(userId: number, id: number): Todo | undefined {
   const db = getDb();
-  return db.prepare('SELECT * FROM todos WHERE id = ?').get(id) as Todo | undefined;
+  return db.prepare('SELECT * FROM todos WHERE user_id = ? AND id = ?').get(userId, id) as Todo | undefined;
 }
 
-export function listTodos(filters?: {
+export function listTodos(userId: number, filters?: {
   domain?: string;
   status?: string;
   priority?: string;
 }): Todo[] {
   const db = getDb();
-  let query = 'SELECT * FROM todos WHERE 1=1';
-  const params: any[] = [];
+  let query = 'SELECT * FROM todos WHERE user_id = ?';
+  const params: any[] = [userId];
 
   if (filters?.domain) {
     query += ' AND domain = ?';
@@ -61,30 +62,30 @@ export function listTodos(filters?: {
   return db.prepare(query).all(...params) as Todo[];
 }
 
-export function completeTodo(id: number): Todo | undefined {
+export function completeTodo(userId: number, id: number): Todo | undefined {
   const db = getDb();
   db.prepare(`
     UPDATE todos SET status = 'done', completed_at = datetime('now'), updated_at = datetime('now')
-    WHERE id = ?
-  `).run(id);
-  return getTodoById(id);
+    WHERE user_id = ? AND id = ?
+  `).run(userId, id);
+  return getTodoById(userId, id);
 }
 
-export function deleteTodo(id: number): boolean {
+export function deleteTodo(userId: number, id: number): boolean {
   const db = getDb();
   db.prepare(`
     UPDATE todos SET status = 'cancelled', updated_at = datetime('now')
-    WHERE id = ?
-  `).run(id);
+    WHERE user_id = ? AND id = ?
+  `).run(userId, id);
   return true;
 }
 
-export function countCompletedThisWeek(): number {
+export function countCompletedThisWeek(userId: number): number {
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM todos
-    WHERE status = 'done'
+    WHERE user_id = ? AND status = 'done'
     AND completed_at >= datetime('now', 'weekday 0', '-7 days')
-  `).get() as { count: number };
+  `).get(userId) as { count: number };
   return row.count;
 }

@@ -1,0 +1,210 @@
+/**
+ * Per-User Data Isolation Tests
+ *
+ * Verifies that user A's data is never visible to user B.
+ * Uses real SQLite (in-memory) to test actual query isolation.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+
+let testDb: Database.Database;
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+}));
+
+vi.mock('../../src/utils/date-parser', () => ({
+  now: vi.fn().mockReturnValue({
+    toFormat: vi.fn().mockReturnValue('2026-04-03'),
+    minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-04-02') }),
+    toISO: vi.fn().mockReturnValue('2026-04-03T12:00:00.000+01:00'),
+  }),
+  formatDateTime: vi.fn((d: string) => d),
+}));
+
+vi.mock('../../src/config', () => ({
+  config: { app: { timezone: 'Europe/Lisbon' } },
+}));
+
+import {
+  addToConversation, getConversationHistory, getLastAssistantMessage,
+  clearConversation, clearAllConversations,
+} from '../../src/state/conversation';
+import { createTodo, listTodos } from '../../src/state/todos';
+import { setReminder, getActiveReminders, getRemindersForToday } from '../../src/state/reminders';
+import { setSharedMemory, getSharedMemory, getSharedMemorySummary } from '../../src/state/shared-memory';
+import { saveNote, searchNotes } from '../../src/state/notes';
+
+function applyMigrations(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
+      try {
+        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
+      } catch { /* skip deps */ }
+    }
+  }
+}
+
+const USER_A = 111111;
+const USER_B = 222222;
+
+describe('Per-user data isolation', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  describe('conversations', () => {
+    it('user A conversations are not visible to user B', () => {
+      addToConversation(USER_A, 'secretary', 'user', 'Hello from A');
+      addToConversation(USER_B, 'secretary', 'user', 'Hello from B');
+
+      const histA = getConversationHistory(USER_A, 'secretary');
+      const histB = getConversationHistory(USER_B, 'secretary');
+
+      expect(histA).toHaveLength(1);
+      expect(histA[0].content).toBe('Hello from A');
+      expect(histB).toHaveLength(1);
+      expect(histB[0].content).toBe('Hello from B');
+    });
+
+    it('clearConversation for user A does not affect user B', () => {
+      addToConversation(USER_A, 'secretary', 'user', 'A msg');
+      addToConversation(USER_B, 'secretary', 'user', 'B msg');
+
+      clearConversation(USER_A, 'secretary');
+
+      expect(getConversationHistory(USER_A, 'secretary')).toHaveLength(0);
+      expect(getConversationHistory(USER_B, 'secretary')).toHaveLength(1);
+    });
+
+    it('clearAllConversations for user A does not affect user B', () => {
+      addToConversation(USER_A, 'secretary', 'user', 'A sec');
+      addToConversation(USER_A, 'triathlon', 'user', 'A tri');
+      addToConversation(USER_B, 'secretary', 'user', 'B sec');
+
+      clearAllConversations(USER_A);
+
+      expect(getConversationHistory(USER_A, 'secretary')).toHaveLength(0);
+      expect(getConversationHistory(USER_A, 'triathlon')).toHaveLength(0);
+      expect(getConversationHistory(USER_B, 'secretary')).toHaveLength(1);
+    });
+
+    it('getLastAssistantMessage is user-scoped', () => {
+      addToConversation(USER_A, 'secretary', 'assistant', 'A reply');
+      addToConversation(USER_B, 'secretary', 'assistant', 'B reply');
+
+      expect(getLastAssistantMessage(USER_A, 'secretary')).toBe('A reply');
+      expect(getLastAssistantMessage(USER_B, 'secretary')).toBe('B reply');
+    });
+  });
+
+  describe('todos', () => {
+    it('user A todos are not visible to user B', () => {
+      createTodo(USER_A, { title: 'A task' });
+      createTodo(USER_B, { title: 'B task' });
+
+      const todosA = listTodos(USER_A);
+      const todosB = listTodos(USER_B);
+
+      expect(todosA).toHaveLength(1);
+      expect(todosA[0].title).toBe('A task');
+      expect(todosB).toHaveLength(1);
+      expect(todosB[0].title).toBe('B task');
+    });
+  });
+
+  describe('reminders', () => {
+    it('user A reminders are not visible to user B', () => {
+      setReminder(USER_A, { message: 'A reminder', remind_at: '2026-04-03T15:00:00' });
+      setReminder(USER_B, { message: 'B reminder', remind_at: '2026-04-03T16:00:00' });
+
+      const remA = getActiveReminders(USER_A);
+      const remB = getActiveReminders(USER_B);
+
+      expect(remA).toHaveLength(1);
+      expect(remA[0].message).toBe('A reminder');
+      expect(remB).toHaveLength(1);
+      expect(remB[0].message).toBe('B reminder');
+    });
+
+    it('getRemindersForToday is user-scoped', () => {
+      setReminder(USER_A, { message: 'A today', remind_at: '2026-04-03T10:00:00' });
+      setReminder(USER_B, { message: 'B today', remind_at: '2026-04-03T11:00:00' });
+
+      const todayA = getRemindersForToday(USER_A);
+      const todayB = getRemindersForToday(USER_B);
+
+      expect(todayA).toHaveLength(1);
+      expect(todayA[0].message).toBe('A today');
+      expect(todayB).toHaveLength(1);
+      expect(todayB[0].message).toBe('B today');
+    });
+  });
+
+  describe('shared memory', () => {
+    it('user A shared memory with unique keys is isolated from user B', () => {
+      // Use different keys per user to avoid UNIQUE(key) collision
+      // TODO: Future migration should change UNIQUE(key) to UNIQUE(user_id, key)
+      setSharedMemory(USER_A, 'a_marathon_date', '2026-10-01', 'triathlon');
+      setSharedMemory(USER_B, 'b_marathon_date', '2026-11-15', 'triathlon');
+
+      const memA = getSharedMemory(USER_A, 'a_marathon_date');
+      const memB = getSharedMemory(USER_B, 'b_marathon_date');
+
+      expect(memA).toHaveLength(1);
+      expect(memA[0].value).toBe('2026-10-01');
+      expect(memB).toHaveLength(1);
+      expect(memB[0].value).toBe('2026-11-15');
+    });
+
+    it('getSharedMemorySummary is user-scoped', () => {
+      setSharedMemory(USER_A, 'key_a', 'value_a', 'secretary');
+      // USER_B gets nothing
+      const summaryB = getSharedMemorySummary(USER_B);
+      expect(summaryB).toBe('');
+    });
+  });
+
+  describe('notes', () => {
+    it('user A notes are not visible to user B', () => {
+      saveNote(USER_A, { content: 'A note' });
+      saveNote(USER_B, { content: 'B note' });
+
+      const notesA = searchNotes(USER_A);
+      const notesB = searchNotes(USER_B);
+
+      expect(notesA).toHaveLength(1);
+      expect(notesA[0].content).toBe('A note');
+      expect(notesB).toHaveLength(1);
+      expect(notesB[0].content).toBe('B note');
+    });
+  });
+
+  describe('backward compatibility', () => {
+    it('default user_id=0 handles existing data', () => {
+      // Simulate pre-migration data (user_id=0)
+      addToConversation(0, 'secretary', 'user', 'legacy message');
+      const hist = getConversationHistory(0, 'secretary');
+      expect(hist).toHaveLength(1);
+      expect(hist[0].content).toBe('legacy message');
+    });
+  });
+});

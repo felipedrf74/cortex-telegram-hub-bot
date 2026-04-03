@@ -129,8 +129,8 @@ describe('Integration: Pattern match → domain handler', () => {
     expect(response.text).toBe('Here is your training plan for the week.');
 
     // Step 3: Verify conversation was stored
-    expect(mockAddToConversation).toHaveBeenCalledWith('triathlon', 'user', 'upper body push day');
-    expect(mockAddToConversation).toHaveBeenCalledWith('triathlon', 'assistant', 'Here is your training plan for the week.');
+    expect(mockAddToConversation).toHaveBeenCalledWith(expect.any(Number), 'triathlon', 'user', 'upper body push day');
+    expect(mockAddToConversation).toHaveBeenCalledWith(expect.any(Number), 'triathlon', 'assistant', 'Here is your training plan for the week.');
   });
 
   it('routes /todo command through secretary domain end-to-end', async () => {
@@ -358,7 +358,7 @@ describe('Integration: Domain handler with tool calls', () => {
 
     // Verify conversation stored with tool annotation
     expect(mockAddToConversation).toHaveBeenCalledWith(
-      'secretary', 'assistant',
+      expect.any(Number), 'secretary', 'assistant',
       expect.stringContaining('[Tools: list_todos]'),
     );
   });
@@ -601,8 +601,8 @@ describe('Integration: Conversation history management', () => {
     await handleTriathlon('plan my run for tomorrow', 123456789);
 
     expect(mockAddToConversation).toHaveBeenCalledTimes(2);
-    expect(mockAddToConversation).toHaveBeenNthCalledWith(1, 'triathlon', 'user', 'plan my run for tomorrow');
-    expect(mockAddToConversation).toHaveBeenNthCalledWith(2, 'triathlon', 'assistant', 'Your training is set for tomorrow.');
+    expect(mockAddToConversation).toHaveBeenNthCalledWith(1, expect.any(Number), 'triathlon', 'user', 'plan my run for tomorrow');
+    expect(mockAddToConversation).toHaveBeenNthCalledWith(2, expect.any(Number), 'triathlon', 'assistant', 'Your training is set for tomorrow.');
   });
 
   it('stores tool annotations in assistant messages when tools were used', async () => {
@@ -629,11 +629,11 @@ describe('Integration: Conversation history management', () => {
 
     // Assistant message should have tool annotation
     const assistantCall = mockAddToConversation.mock.calls.find(
-      (c) => c[1] === 'assistant'
+      (c) => c[2] === 'assistant'
     );
     expect(assistantCall).toBeDefined();
-    expect(assistantCall![2]).toContain('[Tools: create_todo]');
-    expect(assistantCall![2]).toContain('Task created!');
+    expect(assistantCall![3]).toContain('[Tools: create_todo]');
+    expect(assistantCall![3]).toContain('Task created!');
   });
 
   it('deduplicates tool names in stored annotation', async () => {
@@ -657,10 +657,10 @@ describe('Integration: Conversation history management', () => {
     await handleSimpleDomain('secretary', 'check tasks');
 
     const assistantCall = mockAddToConversation.mock.calls.find(
-      (c) => c[1] === 'assistant'
+      (c) => c[2] === 'assistant'
     );
     // Should deduplicate "list_todos" — only appear once
-    expect(assistantCall![2]).toBe('[Tools: list_todos]\nNo tasks found.');
+    expect(assistantCall![3]).toBe('[Tools: list_todos]\nNo tasks found.');
   });
 });
 
@@ -1150,11 +1150,11 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
 
     // Stored assistant message must be the human text, not JSON
     const assistantCall = mockAddToConversation.mock.calls.find(
-      (c) => c[1] === 'assistant'
+      (c) => c[2] === 'assistant'
     );
     expect(assistantCall).toBeDefined();
-    expect(assistantCall![2]).toContain('no pending tasks');
-    expect(assistantCall![2]).not.toContain('"success"');
-    expect(assistantCall![2]).not.toContain('"data"');
+    expect(assistantCall![3]).toContain('no pending tasks');
+    expect(assistantCall![3]).not.toContain('"success"');
+    expect(assistantCall![3]).not.toContain('"data"');
   });
 });

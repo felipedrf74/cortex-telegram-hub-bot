@@ -422,7 +422,8 @@ export function startScheduler(bot: Bot): void {
       const chunks = splitMessage(result.message);
 
       // Save coach briefing to triathlon conversation history so follow-up replies have context
-      addToConversation('triathlon', 'assistant', result.message);
+      // Uses userId 0 (default/owner) — scheduler doesn't have per-user context yet
+      addToConversation(0, 'triathlon', 'assistant', result.message);
 
       for (const userId of config.telegram.allowedUserIds) {
         // Set conversation continuity to triathlon so follow-up replies stay in context
@@ -804,7 +805,8 @@ export async function sendDailyBriefing(bot: Bot): Promise<void> {
     }
   }
 
-  const reminders = getRemindersForToday();
+  // Use userId 0 (default/owner) for the daily briefing — per-user briefings in v1.1
+  const reminders = getRemindersForToday(0);
   data.reminders = reminders.map((r) => ({
     message: r.message,
     time: formatTime(r.remind_at),

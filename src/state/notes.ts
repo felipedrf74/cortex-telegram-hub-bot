@@ -3,27 +3,27 @@
 import { getDb } from '../services/database';
 import { Note } from '../domains/types';
 
-export function saveNote(data: {
+export function saveNote(userId: number, data: {
   content: string;
   domain?: string;
   tags?: string;
 }): Note {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO notes (content, domain, tags) VALUES (?, ?, ?)
+    INSERT INTO notes (user_id, content, domain, tags) VALUES (?, ?, ?, ?)
   `);
-  const result = stmt.run(data.content, data.domain || 'general', data.tags || null);
+  const result = stmt.run(userId, data.content, data.domain || 'general', data.tags || null);
   return db.prepare('SELECT * FROM notes WHERE id = ?').get(result.lastInsertRowid) as Note;
 }
 
-export function searchNotes(filters?: {
+export function searchNotes(userId: number, filters?: {
   query?: string;
   domain?: string;
   tag?: string;
 }): Note[] {
   const db = getDb();
-  let query = 'SELECT * FROM notes WHERE 1=1';
-  const params: any[] = [];
+  let query = 'SELECT * FROM notes WHERE user_id = ?';
+  const params: any[] = [userId];
 
   if (filters?.query) {
     query += ' AND content LIKE ?';

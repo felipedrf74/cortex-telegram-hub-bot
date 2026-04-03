@@ -130,8 +130,8 @@ describe('handleSecretary', () => {
     } as any);
 
     await handleSecretary('Check email');
-    expect(addToConversation).toHaveBeenCalledWith('secretary', 'user', 'Check email');
-    expect(addToConversation).toHaveBeenCalledWith('secretary', 'assistant', 'Done.');
+    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'user', 'Check email');
+    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'assistant', 'Done.');
   });
 
   it('executes tool calls and returns final text', async () => {
@@ -149,7 +149,7 @@ describe('handleSecretary', () => {
 
     const result = await handleSecretary('Show my lists');
     expect(result.text).toBe('You have no task lists.');
-    expect(mockExecuteTool).toHaveBeenCalledWith('ms_todo_get_lists', {});
+    expect(mockExecuteTool).toHaveBeenCalledWith('ms_todo_get_lists', {}, undefined);
   });
 
   it('truncates tool results larger than 2000 characters', async () => {
@@ -236,9 +236,9 @@ describe('handleSecretary', () => {
     await handleSecretary('Get tasks');
 
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
-      (c) => c[1] === 'assistant',
+      (c) => c[2] === 'assistant',
     );
-    expect(storedCall![2]).toBe('[Tools: ms_todo_get_tasks]\nHere are your tasks.');
+    expect(storedCall![3]).toBe('[Tools: ms_todo_get_tasks]\nHere are your tasks.');
   });
 });
 

@@ -519,7 +519,7 @@ describe('executeToolCall — Reminders', () => {
       recurring: 'weekly',
     });
     expect(result).toEqual(reminder);
-    expect(setReminder).toHaveBeenCalledWith({
+    expect(setReminder).toHaveBeenCalledWith(0, {
       message: 'Call coach',
       remind_at: '2026-04-01T08:00:00',
       recurring: 'weekly',
@@ -542,7 +542,7 @@ describe('executeToolCall — Notes', () => {
       tags: ['pr', 'swim'],
     });
     expect(result).toEqual(note);
-    expect(saveNote).toHaveBeenCalledWith({
+    expect(saveNote).toHaveBeenCalledWith(0, {
       content: 'Swim PR: 1:02:30',
       domain: 'triathlon',
       tags: ['pr', 'swim'],
@@ -559,7 +559,7 @@ describe('executeToolCall — Notes', () => {
       tag: 'pr',
     });
     expect(result).toEqual(notes);
-    expect(searchNotes).toHaveBeenCalledWith({
+    expect(searchNotes).toHaveBeenCalledWith(0, {
       query: 'swim',
       domain: 'triathlon',
       tag: 'pr',
@@ -679,7 +679,7 @@ describe('executeToolCall — Shared Memory', () => {
       expires_at: undefined,
     });
     expect(result).toEqual({ success: true, key: 'active_race', value: 'Ironman 2026' });
-    expect(setSharedMemory).toHaveBeenCalledWith('active_race', 'Ironman 2026', 'secretary', undefined);
+    expect(setSharedMemory).toHaveBeenCalledWith(0, 'active_race', 'Ironman 2026', 'secretary', undefined);
   });
 
   it('shared_memory_remove — returns { success: true, key } when entry exists', async () => {
@@ -687,7 +687,7 @@ describe('executeToolCall — Shared Memory', () => {
 
     const result = await executeToolCall('shared_memory_remove', { key: 'active_race' });
     expect(result).toEqual({ success: true, key: 'active_race' });
-    expect(removeSharedMemory).toHaveBeenCalledWith('active_race');
+    expect(removeSharedMemory).toHaveBeenCalledWith(0, 'active_race');
   });
 
   it('shared_memory_remove — returns { success: false, key } when entry does not exist', async () => {

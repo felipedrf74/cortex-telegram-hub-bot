@@ -45,7 +45,7 @@ async function buildStateContext(): Promise<string> {
     tasksEnabled && isOutlookTodoConfigured()
       ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
-    remindersEnabled ? Promise.resolve(getRemindersForToday()) : Promise.resolve([]),
+    remindersEnabled ? Promise.resolve(getRemindersForToday(0)) : Promise.resolve([]),
     calendarEnabled && isAnyCalendarConfigured()
       ? getEvents(startOfDay(), endOfDay()).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
@@ -163,7 +163,7 @@ async function buildStateContext(): Promise<string> {
   }
 
   // Cross-domain shared context
-  const sharedCtx = getSharedMemorySummary();
+  const sharedCtx = getSharedMemorySummary(0); // TODO: pass userId when buildStateContext receives it
   if (sharedCtx) parts.push(sharedCtx);
 
   const result = parts.join('\n');
@@ -172,7 +172,8 @@ async function buildStateContext(): Promise<string> {
 }
 
 export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
-  const history = getConversationHistory(DOMAIN);
+  const uid = userId ?? 0;
+  const history = getConversationHistory(uid, DOMAIN);
   const stateContext = await buildStateContext();
 
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
@@ -200,7 +201,7 @@ export async function handleSecretary(message: string, userId?: number): Promise
     // Execute all tool calls in parallel, truncate large results
     const toolResults = await Promise.all(
       result.toolCalls.map(async (tc) => {
-        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>);
+        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
         let content = JSON.stringify(toolResult);
         if (content.length > 2000) {
           content = content.slice(0, 2000) + '...(truncated)';
@@ -231,11 +232,11 @@ export async function handleSecretary(message: string, userId?: number): Promise
   }
 
   // Store conversation — include tool summary so future turns have context
-  addToConversation(DOMAIN, 'user', message);
+  addToConversation(uid, DOMAIN, 'user', message);
   const storedText = toolsUsed.length > 0
     ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
     : finalText;
-  addToConversation(DOMAIN, 'assistant', storedText);
+  addToConversation(uid, DOMAIN, 'assistant', storedText);
 
   return { text: finalText, domain: DOMAIN };
 }

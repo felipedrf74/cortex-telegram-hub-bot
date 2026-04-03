@@ -197,8 +197,8 @@ describe('handleSimpleDomain', () => {
     } as any);
 
     await handleSimpleDomain('content', 'Write a hook');
-    expect(addToConversation).toHaveBeenCalledWith('content', 'user', 'Write a hook');
-    expect(addToConversation).toHaveBeenCalledWith('content', 'assistant', 'Here is your plan.');
+    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'content', 'user', 'Write a hook');
+    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'content', 'assistant', 'Here is your plan.');
   });
 
   it('executes tool calls and returns final text', async () => {
@@ -239,10 +239,10 @@ describe('handleSimpleDomain', () => {
     await handleSimpleDomain('triathlon', 'Save this note');
 
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
-      (c) => c[1] === 'assistant',
+      (c) => c[2] === 'assistant',
     );
-    expect(storedCall![2]).toContain('[Tools: save_note]');
-    expect(storedCall![2]).toContain('Note saved.');
+    expect(storedCall![3]).toContain('[Tools: save_note]');
+    expect(storedCall![3]).toContain('Note saved.');
   });
 
   it('deduplicates tool names in the prefix', async () => {
@@ -265,10 +265,10 @@ describe('handleSimpleDomain', () => {
     await handleSimpleDomain('triathlon', 'Find my notes');
 
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
-      (c) => c[1] === 'assistant',
+      (c) => c[2] === 'assistant',
     );
     // search_notes should appear only once despite being called twice
-    expect(storedCall![2]).toBe('[Tools: search_notes]\nFound notes.');
+    expect(storedCall![3]).toBe('[Tools: search_notes]\nFound notes.');
   });
 
   it('stops at maxIterations even if tools keep returning', async () => {

@@ -14,31 +14,31 @@ const HISTORY_LIMITS: Record<string, number> = {
   cooking: 8,
 };
 
-export function getConversationHistory(domain: DomainName): DomainMessage[] {
+export function getConversationHistory(userId: number, domain: DomainName): DomainMessage[] {
   const db = getDb();
   const limit = HISTORY_LIMITS[domain] ?? 8;
   const rows = db.prepare(`
     SELECT role, content FROM conversations
-    WHERE domain = ?
+    WHERE user_id = ? AND domain = ?
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(domain, limit) as DomainMessage[];
+  `).all(userId, domain, limit) as DomainMessage[];
   return rows.reverse();
 }
 
-export function addToConversation(domain: DomainName, role: 'user' | 'assistant', content: string): void {
+export function addToConversation(userId: number, domain: DomainName, role: 'user' | 'assistant', content: string): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO conversations (domain, role, content) VALUES (?, ?, ?)
-  `).run(domain, role, content);
+    INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)
+  `).run(userId, domain, role, content);
 
   // Prune old rows beyond 2× the read limit to keep the table bounded
   const maxKeep = (HISTORY_LIMITS[domain] ?? 8) * 2;
   db.prepare(`
-    DELETE FROM conversations WHERE domain = ? AND id NOT IN (
-      SELECT id FROM conversations WHERE domain = ? ORDER BY created_at DESC LIMIT ?
+    DELETE FROM conversations WHERE user_id = ? AND domain = ? AND id NOT IN (
+      SELECT id FROM conversations WHERE user_id = ? AND domain = ? ORDER BY created_at DESC LIMIT ?
     )
-  `).run(domain, domain, maxKeep);
+  `).run(userId, domain, userId, domain, maxKeep);
 }
 
 /**
@@ -46,25 +46,25 @@ export function addToConversation(domain: DomainName, role: 'user' | 'assistant'
  * Returns null if the last message was from the user (conversation already answered).
  * Used by the router to provide conversation context to the classifier.
  */
-export function getLastAssistantMessage(domain: DomainName): string | null {
+export function getLastAssistantMessage(userId: number, domain: DomainName): string | null {
   const db = getDb();
   const row = db.prepare(`
     SELECT role, content FROM conversations
-    WHERE domain = ?
+    WHERE user_id = ? AND domain = ?
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(domain) as DomainMessage | undefined;
+  `).get(userId, domain) as DomainMessage | undefined;
 
   if (!row || row.role !== 'assistant') return null;
   return row.content;
 }
 
-export function clearConversation(domain: DomainName): void {
+export function clearConversation(userId: number, domain: DomainName): void {
   const db = getDb();
-  db.prepare('DELETE FROM conversations WHERE domain = ?').run(domain);
+  db.prepare('DELETE FROM conversations WHERE user_id = ? AND domain = ?').run(userId, domain);
 }
 
-export function clearAllConversations(): void {
+export function clearAllConversations(userId: number): void {
   const db = getDb();
-  db.prepare('DELETE FROM conversations').run();
+  db.prepare('DELETE FROM conversations WHERE user_id = ?').run(userId);
 }

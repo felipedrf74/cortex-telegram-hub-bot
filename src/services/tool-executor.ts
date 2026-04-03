@@ -196,7 +196,7 @@ export async function executeToolCall(
 
       // ── Reminder tools ──
       case 'set_reminder':
-        return setReminder({
+        return setReminder(userId ?? 0, {
           message: input.message,
           remind_at: input.remind_at,
           recurring: input.recurring,
@@ -204,14 +204,14 @@ export async function executeToolCall(
 
       // ── Note tools ──
       case 'save_note':
-        return saveNote({
+        return saveNote(userId ?? 0, {
           content: input.content,
           domain: input.domain,
           tags: input.tags,
         });
 
       case 'search_notes':
-        return searchNotes({
+        return searchNotes(userId ?? 0, {
           query: input.query,
           domain: input.domain,
           tag: input.tag,
@@ -262,12 +262,12 @@ export async function executeToolCall(
 
       // ── Shared memory tools (cross-domain context) ──
       case 'shared_memory_set': {
-        const entry = setSharedMemory(input.key, input.value, 'secretary', input.expires_at);
+        const entry = setSharedMemory(userId ?? 0, input.key, input.value, 'secretary', input.expires_at);
         return { success: true, key: entry.key, value: entry.value };
       }
 
       case 'shared_memory_remove': {
-        const removed = removeSharedMemory(input.key);
+        const removed = removeSharedMemory(userId ?? 0, input.key);
         return { success: removed, key: input.key };
       }
 

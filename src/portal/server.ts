@@ -895,7 +895,7 @@ async function handleAction(
 
     // 5. Clear conversation history
     case 'clear-history': {
-      clearAllConversations();
+      clearAllConversations(0); // Clears default/owner user's conversations
       pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Conversation history cleared' });
       return { ok: true, message: 'All conversation history cleared' };
     }

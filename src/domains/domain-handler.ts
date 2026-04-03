@@ -42,7 +42,7 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
-  const todos = listTodos({ domain, status: 'pending' });
+  const todos = listTodos(userId ?? 0, { domain, status: 'pending' });
   if (todos.length > 0) {
     const label = domain.charAt(0).toUpperCase() + domain.slice(1);
     parts.push(`\n${label} to-dos (${todos.length}):`);
@@ -98,7 +98,7 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
   }
 
   // Cross-domain shared context
-  const sharedCtx = getSharedMemorySummary();
+  const sharedCtx = getSharedMemorySummary(userId ?? 0);
   if (sharedCtx) parts.push(sharedCtx);
 
   return parts.join('\n');
@@ -115,7 +115,7 @@ export async function handleSimpleDomain(
   userId?: number,
   maxTokensOverride?: number,
 ): Promise<DomainResponse> {
-  const history = getConversationHistory(domain);
+  const history = getConversationHistory(userId ?? 0, domain);
   const stateContext = await buildSimpleStateContext(domain, userId);
 
   let result = await callDomain(domain, history, message, stateContext, maxTokensOverride, userId);
@@ -147,11 +147,11 @@ export async function handleSimpleDomain(
     finalText = result.text;
   }
 
-  addToConversation(domain, 'user', message);
+  addToConversation(userId ?? 0, domain, 'user', message);
   const storedText = toolsUsed.length > 0
     ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
     : finalText;
-  addToConversation(domain, 'assistant', storedText);
+  addToConversation(userId ?? 0, domain, 'assistant', storedText);
 
   return { text: finalText, domain };
 }
