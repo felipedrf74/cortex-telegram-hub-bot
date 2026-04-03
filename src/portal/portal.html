@@ -1375,7 +1375,7 @@
         <span style="font-size:13px;font-weight:600;color:var(--text)">Agent Communication Mesh</span>
         <span style="font-size:11px;color:var(--text2)" id="mesh-pulse-count"></span>
       </div>
-      <svg id="agent-mesh-svg" viewBox="0 0 800 420" style="width:100%;height:auto;max-height:420px">
+      <svg id="agent-mesh-svg" viewBox="0 0 800 480" style="width:100%;height:auto;max-height:480px">
         <defs>
           <!-- Glow filter for active nodes -->
           <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
@@ -2322,9 +2322,9 @@ document.addEventListener('DOMContentLoaded', () => {
     { id: 'seo-agent',        label: 'SEO\nAgent',           icon: '🔍', x: 670, y: 60,  produces: ['keyword_rank_change', 'keyword_opportunity'] },
     { id: 'reaction-radar',   label: 'Reaction\nRadar',      icon: '📡', x: 70,  y: 210, produces: ['reaction_opportunity'] },
     { id: 'performance-agent',label: 'Performance\nAgent',   icon: '📊', x: 730, y: 210, produces: ['pillar_performance', 'retention_pattern', 'hook_effectiveness'] },
-    { id: 'voice-evolution',  label: 'Voice\nEvolution',     icon: '🗣', x: 130, y: 360, produces: ['voice_pattern', 'voice_phrase_trend'] },
-    { id: 'content-workflow', label: 'Content\nWorkflow',    icon: '📝', x: 400, y: 390, produces: [], consumes: ['book_knowledge', 'channel_dna', 'keyword_rank_change'] },
-    { id: 'pipeline-agent',   label: 'Pipeline\nAgent',      icon: '🏗', x: 670, y: 360, produces: ['pipeline_bottleneck'] },
+    { id: 'voice-evolution',  label: 'Voice\nEvolution',     icon: '🗣', x: 130, y: 350, produces: ['voice_pattern', 'voice_phrase_trend'] },
+    { id: 'content-workflow', label: 'Content\nWorkflow',    icon: '📝', x: 400, y: 370, produces: [], consumes: ['book_knowledge', 'channel_dna', 'keyword_rank_change'] },
+    { id: 'pipeline-agent',   label: 'Pipeline\nAgent',      icon: '🏗', x: 670, y: 350, produces: ['pipeline_bottleneck'] },
     { id: 'script-writer',    label: 'Script\nWriter',       icon: '✍️', x: 400, y: 210, produces: [], consumes: ['ALL'] },
   ];
 
@@ -2337,6 +2337,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ['seo-agent',        'script-writer',    'keyword_rank_change'],
     ['seo-agent',        'content-workflow',  'keyword_rank_change'],
     ['reaction-radar',   'content-workflow',  'reaction_opportunity'],
+    ['reaction-radar',   'script-writer',    'reaction_opportunity'],
     ['performance-agent','script-writer',    'retention_pattern'],
     ['performance-agent','content-workflow',  'pillar_performance'],
     ['voice-evolution',  'script-writer',    'voice_pattern'],
@@ -2457,7 +2458,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const [agentsRes, signalsRes, pipelineRes, booksRes] = await Promise.all([
         apiFetch('/api/agents').then(r => r.json()),
-        apiFetch('/api/signals?limit=30').then(r => r.json()),
+        apiFetch('/api/signals?limit=200').then(r => r.json()),
         apiFetch('/api/pipeline').then(r => r.json()),
         apiFetch('/api/books').then(r => r.json()),
       ]);
