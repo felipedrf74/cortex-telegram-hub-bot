@@ -1426,6 +1426,61 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/provider-health — circuit breaker states + metrics
+  app.get('/api/provider-health', (_req: Request, res: Response) => {
+    try {
+      const { getActiveProvider } = require('../services/provider-registry');
+      const active = getActiveProvider();
+      res.json({ providers: active ? active.getProviderHealth() : {} });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/model-config — current model state for all providers
+  app.get('/api/model-config', (_req: Request, res: Response) => {
+    try {
+      const { getAllModelStates, MODEL_OPTIONS } = require('../services/model-config');
+      res.json({ states: getAllModelStates(), options: MODEL_OPTIONS });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // PUT /api/model-config — update a model for a provider+role
+  app.put('/api/model-config', express.json(), (req: Request, res: Response) => {
+    try {
+      const { provider, role, model } = req.body;
+      const validProviders = ['anthropic', 'openai', 'gemini'];
+      const validRoles = ['chat', 'classifier'];
+      if (!validProviders.includes(provider) || !validRoles.includes(role) || !model) {
+        res.status(400).json({ error: 'Invalid provider, role, or model' });
+        return;
+      }
+      const { setActiveModel } = require('../services/model-config');
+      setActiveModel(provider, role, model);
+      res.json({ ok: true, provider, role, model, message: 'Model updated. Active immediately — no restart needed.' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // DELETE /api/model-config — reset a model to default
+  app.delete('/api/model-config', express.json(), (req: Request, res: Response) => {
+    try {
+      const { provider, role } = req.body;
+      if (!provider || !role) {
+        res.status(400).json({ error: 'provider and role required' });
+        return;
+      }
+      const { clearModelOverride, getAllModelStates } = require('../services/model-config');
+      clearModelOverride(provider, role);
+      res.json({ ok: true, states: getAllModelStates() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/quality-scores — agent quality scoring data
   app.get('/api/quality-scores', (_req: Request, res: Response) => {
     try {

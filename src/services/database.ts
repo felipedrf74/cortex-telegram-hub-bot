@@ -27,6 +27,13 @@ export function initDatabase(): Database.Database {
   db = storage.raw();
 
   runMigrations();
+
+  // Load persisted model overrides from kv_store (after migrations create the table)
+  try {
+    const { loadModelOverrides } = require('./model-config');
+    loadModelOverrides();
+  } catch { /* model-config not yet available — non-critical */ }
+
   logger.info({ path: config.app.databasePath }, 'Database initialized');
   return db;
 }

@@ -25,8 +25,8 @@ export const config = {
   },
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
-    model: 'claude-sonnet-4-6' as const,
-    classifierModel: 'claude-haiku-4-5-20251001' as const,
+    model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
+    classifierModel: process.env.ANTHROPIC_CLASSIFIER_MODEL || 'claude-haiku-4-5-20251001',
     maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
     secretaryMaxTokens: 2048,   // needs headroom for parallel tool calls
   },

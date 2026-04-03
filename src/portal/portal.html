@@ -1076,6 +1076,18 @@
     </table>
   </div>
 
+  <!-- ── Model Configuration ──────────────────── -->
+  <div class="card">
+    <h2>🤖 Model Configuration</h2>
+    <div id="model-config-content" style="font-size:13px">Loading...</div>
+  </div>
+
+  <!-- ── Provider Health ─────────────────────── -->
+  <div class="card">
+    <h2>🔌 Provider Health</h2>
+    <div id="provider-health-content" style="font-size:13px">Loading...</div>
+  </div>
+
   <!-- ── Error Distribution ────────────────────── -->
   <div class="card">
     <h2>🔍 Agent Error Distribution (7d)</h2>
@@ -2652,6 +2664,108 @@
   // Poll mission control alongside main poll
   pollMissionControl();
   setInterval(pollMissionControl, 30_000);
+
+  // Model configuration
+  async function loadModelConfig() {
+    try {
+      const r = await fetch('/api/model-config', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      const el = document.getElementById('model-config-content');
+      const states = d.states || [];
+      const options = d.options || {};
+      const providerIcons = { anthropic: '🟣', openai: '🟢', gemini: '🔵' };
+      el.innerHTML = states.map(s => {
+        const icon = providerIcons[s.provider] || '⚪';
+        const chatOpts = (options[s.provider]?.chat || []).map(m =>
+          `<option value="${esc(m)}"${m === s.chat.model ? ' selected' : ''}>${esc(m)}</option>`
+        ).join('');
+        const clsOpts = (options[s.provider]?.classifier || []).map(m =>
+          `<option value="${esc(m)}"${m === s.classifier.model ? ' selected' : ''}>${esc(m)}</option>`
+        ).join('');
+        const chatBadge = s.chat.source === 'override' ? '<span class="badge badge-sent" style="margin-left:4px">override</span>' : '';
+        const clsBadge = s.classifier.source === 'override' ? '<span class="badge badge-sent" style="margin-left:4px">override</span>' : '';
+        return `<div style="margin-bottom:12px;padding:8px;border-radius:6px;background:var(--bg2);border:1px solid var(--bdr)">
+          <div style="font-weight:600;margin-bottom:6px">${icon} ${esc(s.provider)}</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+            <span style="min-width:70px;color:var(--t2)">Chat:</span>
+            <select style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px"
+              onchange="updateModel('${s.provider}','chat',this.value)">${chatOpts}</select>
+            ${chatBadge}
+            ${s.chat.source === 'override' ? `<button class="btn" style="font-size:10px;padding:2px 6px" onclick="resetModel('${s.provider}','chat')">Reset</button>` : ''}
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="min-width:70px;color:var(--t2)">Classifier:</span>
+            <select style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px"
+              onchange="updateModel('${s.provider}','classifier',this.value)">${clsOpts}</select>
+            ${clsBadge}
+            ${s.classifier.source === 'override' ? `<button class="btn" style="font-size:10px;padding:2px 6px" onclick="resetModel('${s.provider}','classifier')">Reset</button>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+    } catch (err) {
+      console.warn('Model config poll failed:', err);
+    }
+  }
+  async function updateModel(provider, role, model) {
+    try {
+      const r = await fetch('/api/model-config', { method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role, model }) });
+      const d = await r.json();
+      if (d.ok) showToast(provider + ' ' + role + ' → ' + model, true);
+      else showToast('Failed: ' + (d.error || 'unknown'), false);
+      loadModelConfig();
+    } catch (err) { showToast('Error updating model', false); }
+  }
+  async function resetModel(provider, role) {
+    try {
+      const r = await fetch('/api/model-config', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role }) });
+      const d = await r.json();
+      if (d.ok) showToast(provider + ' ' + role + ' reset to default', true);
+      loadModelConfig();
+    } catch (err) { showToast('Error resetting model', false); }
+  }
+  loadModelConfig();
+  setInterval(loadModelConfig, 30_000);
+
+  // Provider health
+  async function loadProviderHealth() {
+    try {
+      const r = await fetch('/api/provider-health', { headers: authHeaders() });
+      if (!r.ok) return;
+      const d = await r.json();
+      const el = document.getElementById('provider-health-content');
+      const providers = d.providers || {};
+      const entries = Object.entries(providers);
+      if (entries.length === 0) {
+        el.innerHTML = '<span class="text-muted">No provider data yet</span>';
+        return;
+      }
+      const stateColors = { CLOSED: 'var(--green,#2dd4a0)', OPEN: 'var(--red,#f25757)', HALF_OPEN: 'var(--amber,#f5a623)' };
+      el.innerHTML = entries.map(([name, p]) => {
+        const sc = stateColors[p.circuit.state] || '#636e72';
+        const m = p.metrics;
+        const lastOk = m.lastSuccessAt ? new Date(m.lastSuccessAt).toLocaleTimeString() : '—';
+        const lastFail = m.lastFailureAt ? new Date(m.lastFailureAt).toLocaleTimeString() : '—';
+        return `<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:var(--bg2);border:1px solid var(--bdr)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-weight:600">${esc(name)}</span>
+            <span class="mono" style="color:${sc};font-size:11px">● ${p.circuit.state}</span>
+          </div>
+          <div style="display:flex;gap:12px;font-size:11px;color:var(--t2)">
+            <span>Usage: <b style="color:var(--t1)">${m.usageCount}</b></span>
+            <span>Failures: <b style="color:${m.failureCount > 0 ? 'var(--red,#f25757)' : 'var(--t1)'}">${m.failureCount}</b></span>
+            <span>Fallbacks: <b>${m.fallbackTriggerCount}</b></span>
+            <span>CB Opens: <b>${m.circuitOpenCount}</b></span>
+          </div>
+          <div style="font-size:10px;color:var(--t2);margin-top:2px">Last OK: ${lastOk} · Last fail: ${lastFail}</div>
+        </div>`;
+      }).join('');
+    } catch (err) {
+      console.warn('Provider health poll failed:', err);
+    }
+  }
+  loadProviderHealth();
+  setInterval(loadProviderHealth, 30_000);
 
   // Quality scores by agent
   async function loadQualityScores() {
