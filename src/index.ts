@@ -57,14 +57,14 @@ async function main(): Promise<void> {
     portalServer = createPortalServer(bot);
   }
 
-  // Graceful shutdown — stop polling before exiting so the next instance starts clean
+  // Graceful shutdown — stop polling and release port before exiting so the next instance starts clean
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
     try {
       bot.stop();
     } catch { /* already stopped */ }
     if (portalServer) {
-      portalServer.close();
+      await new Promise<void>((resolve) => portalServer!.close(() => resolve()));
     }
     closeDatabase();
     process.exit(0);
