@@ -15,6 +15,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -1109,6 +1110,16 @@ export function createPortalServer(bot: Bot): http.Server {
       }));
     } catch { /* snapshot build may fail during startup */ }
 
+    // Provider circuit breaker + metrics
+    let providerHealth: Record<string, unknown> = {};
+    try {
+      const { getActiveProvider } = require('../services/provider-registry');
+      const activeProvider = getActiveProvider();
+      if (activeProvider) {
+        providerHealth = activeProvider.getProviderHealth();
+      }
+    } catch { /* provider not initialized yet */ }
+
     const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
 
     res.status(status === 'healthy' ? 200 : 503).json({
@@ -1129,6 +1140,7 @@ export function createPortalServer(bot: Bot): http.Server {
       },
       crons: jobs,
       integrations: integrationHealth,
+      providers: providerHealth,
       errors: {
         total: errorCount,
         lastHour: errorsLast1h,
@@ -1515,6 +1527,121 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── WhatsApp Webhook Routes ───────────────────────────────────────
+  // These MUST come before the universal /api/webhooks/:provider route
+
+  // GET /api/webhooks/whatsapp — Meta webhook verification
+  app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
+    const verifyToken = config.whatsapp?.verifyToken;
+
+    // Reject if WhatsApp is not configured or verify token is not set
+    if (!config.whatsapp?.enabled || !verifyToken) {
+      res.status(403).send('Forbidden');
+      return;
+    }
+
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && typeof token === 'string') {
+      // Timing-safe comparison to prevent token oracle attacks
+      const tokenBuf = Buffer.from(token);
+      const expectedBuf = Buffer.from(verifyToken);
+      if (tokenBuf.length === expectedBuf.length &&
+          crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+        logger.info('WhatsApp webhook verified');
+        res.status(200).send(challenge);
+        return;
+      }
+    }
+
+    logger.warn({ mode }, 'WhatsApp webhook verification failed');
+    res.status(403).send('Forbidden');
+  });
+
+  // POST /api/webhooks/whatsapp — Incoming WhatsApp messages
+  app.post('/api/webhooks/whatsapp',
+    express.raw({ type: 'application/json', limit: '1mb' }),
+    (req: Request, res: Response) => {
+    // HMAC signature verification (when WHATSAPP_APP_SECRET is configured)
+    const appSecret = config.whatsapp?.appSecret;
+    if (appSecret) {
+      const sig = req.headers['x-hub-signature-256'] as string | undefined;
+      if (!sig) {
+        res.status(403).send('Forbidden');
+        return;
+      }
+      const expected = 'sha256=' + crypto
+        .createHmac('sha256', appSecret)
+        .update(req.body as Buffer)
+        .digest('hex');
+      const sigBuf = Buffer.from(sig);
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        logger.warn('WhatsApp webhook HMAC verification failed');
+        res.status(403).send('Forbidden');
+        return;
+      }
+    }
+
+    // Respond 200 immediately after verification (WhatsApp retries on non-200)
+    res.status(200).send('OK');
+
+    let body: any;
+    try {
+      body = typeof req.body === 'string' ? JSON.parse(req.body)
+        : Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString('utf-8'))
+        : req.body;
+    } catch { return; }
+    if (body?.object !== 'whatsapp_business_account') return;
+
+    const entries = body.entry ?? [];
+    for (const entry of entries) {
+      const changes = entry.changes ?? [];
+      for (const change of changes) {
+        if (change.field !== 'messages') continue;
+
+        const value = change.value;
+        const messages = value?.messages ?? [];
+        const contacts = value?.contacts ?? [];
+
+        for (const msg of messages) {
+          const senderPhone = msg.from;
+          const senderName = contacts.find((c: { wa_id: string; profile?: { name?: string } }) =>
+            c.wa_id === senderPhone)?.profile?.name ?? 'Unknown';
+
+          pushEvent({
+            ts: new Date().toISOString(),
+            type: 'message',
+            summary: `WhatsApp from ${senderName}: ${(msg.text?.body ?? msg.type).slice(0, 60)}`,
+            detail: JSON.stringify(msg),
+            domain: 'whatsapp',
+          });
+
+          logger.info({
+            from: senderPhone,
+            name: senderName,
+            type: msg.type,
+            msgId: msg.id,
+          }, 'WhatsApp incoming message');
+
+          // TODO: Route incoming WhatsApp messages to bot domains
+        }
+
+        // Handle status updates (sent, delivered, read)
+        const statuses = value?.statuses ?? [];
+        for (const status of statuses) {
+          logger.debug({
+            msgId: status.id,
+            status: status.status,
+            recipientId: status.recipient_id,
+          }, 'WhatsApp message status update');
+        }
+      }
+    }
+  });
+
   // ── Webhook Infrastructure API ──────────────────────────────────────
 
   // POST /api/webhooks/:provider — universal webhook receiver
@@ -1707,6 +1834,9 @@ export function createPortalServer(bot: Bot): http.Server {
     logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
     if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {
       logger.warn('Portal is listening on a non-loopback address without PORTAL_TOKEN — API is unauthenticated!');
+    }
+    if (!config.health.token && bind !== '127.0.0.1' && bind !== 'localhost') {
+      logger.warn('HEALTH_TOKEN is not set — /health/detailed is publicly accessible!');
     }
   });
 

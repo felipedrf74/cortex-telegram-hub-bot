@@ -140,10 +140,14 @@ describe('QA Validation: TelegramAdapter', () => {
       expect(ctx.api.sendMessage).toHaveBeenCalledWith(12345, '', expect.anything());
     });
 
-    it('handles very long text (Telegram limit is 4096 chars)', async () => {
+    it('handles very long text (Telegram limit is 4096 chars) by splitting', async () => {
       const longText = 'x'.repeat(5000);
       await adapter.sendText(longText);
-      expect(ctx.api.sendMessage).toHaveBeenCalledWith(12345, longText, expect.anything());
+      // Message splitting: 5000 chars → 2 chunks (4096 + 904)
+      expect(ctx.api.sendMessage).toHaveBeenCalledTimes(2);
+      const firstChunk = ctx.api.sendMessage.mock.calls[0][1];
+      const secondChunk = ctx.api.sendMessage.mock.calls[1][1];
+      expect(firstChunk.length + secondChunk.length).toBe(5000);
     });
 
     it('handles text with special characters and unicode', async () => {

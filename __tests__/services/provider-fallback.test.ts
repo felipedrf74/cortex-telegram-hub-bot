@@ -444,3 +444,154 @@ describe('TaskRoutingProvider', () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ProviderMetrics tracking
+// ═══════════════════════════════════════════════════════════════════
+
+describe('ProviderMetrics tracking', () => {
+  let primary: ReturnType<typeof createMockProvider>;
+  let fallback: ReturnType<typeof createMockProvider>;
+  let provider: TaskRoutingProvider;
+
+  beforeEach(() => {
+    primary = createMockProvider('anthropic');
+    fallback = createMockProvider('openai');
+    provider = new TaskRoutingProvider({
+      classify: { primary, fallback },
+      chat: { primary, fallback },
+      'tool-use': { primary, fallback },
+      circuitBreaker: { failureThreshold: 3, cooldownMs: 60000 },
+    });
+  });
+
+  it('increments usageCount on successful primary call', async () => {
+    primary.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('hello');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.usageCount).toBe(1);
+    expect(health['anthropic'].metrics.failureCount).toBe(0);
+    expect(health['anthropic'].metrics.lastSuccessAt).not.toBeNull();
+  });
+
+  it('increments usageCount AND failureCount on primary failure', async () => {
+    primary.classify.mockRejectedValue(new Error('API down'));
+    fallback.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('hello');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.usageCount).toBe(1);
+    expect(health['anthropic'].metrics.failureCount).toBe(1);
+    expect(health['anthropic'].metrics.lastFailureAt).not.toBeNull();
+  });
+
+  it('increments fallbackTriggerCount when fallback is used', async () => {
+    primary.classify.mockRejectedValue(new Error('down'));
+    fallback.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('hello');
+
+    const health = provider.getProviderHealth();
+    expect(health['openai'].metrics.fallbackTriggerCount).toBe(1);
+  });
+
+  it('tracks fallback usageCount when fallback executes', async () => {
+    primary.classify.mockRejectedValue(new Error('down'));
+    fallback.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('hello');
+
+    const health = provider.getProviderHealth();
+    expect(health['openai'].metrics.usageCount).toBe(1);
+    expect(health['openai'].metrics.lastSuccessAt).not.toBeNull();
+  });
+
+  it('tracks fallback failureCount when fallback also fails', async () => {
+    primary.classify.mockRejectedValue(new Error('primary down'));
+    fallback.classify.mockRejectedValue(new Error('fallback down'));
+
+    await expect(provider.classify('hello')).rejects.toThrow('fallback down');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.failureCount).toBe(1);
+    expect(health['openai'].metrics.failureCount).toBe(1);
+    expect(health['openai'].metrics.usageCount).toBe(1);
+  });
+
+  it('increments circuitOpenCount when circuit skips to fallback', async () => {
+    // Fail 3 times to open circuit
+    primary.classify.mockRejectedValue(new Error('down'));
+    fallback.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('1');
+    await provider.classify('2');
+    await provider.classify('3');
+
+    // Circuit now open — 4th call skips primary entirely
+    await provider.classify('4');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.circuitOpenCount).toBeGreaterThanOrEqual(1);
+    expect(health['anthropic'].circuit.state).toBe('OPEN');
+  });
+
+  it('sets lastSuccessAt timestamp on success', async () => {
+    primary.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('test');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.lastSuccessAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('sets lastFailureAt timestamp on failure', async () => {
+    primary.classify.mockRejectedValue(new Error('fail'));
+    fallback.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('test');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.lastFailureAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('getAllMetrics returns all tracked providers', async () => {
+    primary.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('test');
+
+    const metrics = provider.getAllMetrics();
+    expect(metrics).toHaveProperty('anthropic');
+    expect(metrics['anthropic'].usageCount).toBe(1);
+  });
+
+  it('getProviderHealth merges circuit state with metrics', async () => {
+    primary.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('test');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].circuit).toBeDefined();
+    expect(health['anthropic'].circuit.state).toBe('CLOSED');
+    expect(health['anthropic'].circuit.failures).toBe(0);
+    expect(health['anthropic'].metrics).toBeDefined();
+    expect(health['anthropic'].metrics.usageCount).toBe(1);
+  });
+
+  it('accumulates metrics across multiple calls', async () => {
+    primary.classify.mockResolvedValue(CLASSIFY_OK);
+    await provider.classify('1');
+    await provider.classify('2');
+    await provider.classify('3');
+
+    const health = provider.getProviderHealth();
+    expect(health['anthropic'].metrics.usageCount).toBe(3);
+  });
+
+  it('tracks metrics independently across task types', async () => {
+    primary.classify.mockRejectedValue(new Error('classify fail'));
+    fallback.classify.mockResolvedValue(CLASSIFY_OK);
+    primary.callDomain.mockResolvedValue(OK_RESULT);
+
+    await provider.classify('test');
+    await provider.callDomain('secretary', [], 'msg', '');
+
+    const health = provider.getProviderHealth();
+    // Primary failed classify but succeeded callDomain: 2 usage, 1 failure
+    expect(health['anthropic'].metrics.usageCount).toBe(2);
+    expect(health['anthropic'].metrics.failureCount).toBe(1);
+  });
+});

@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import type {
   MessageAdapter,
   SendTextOptions,
@@ -11,6 +12,8 @@ import type {
   InlineButton,
   SendInlineButtonsOptions,
   EditMessageOptions,
+  SendPhotoOptions,
+  SendVoiceOptions,
 } from './message-adapter';
 
 /** Configuration required to initialise the WhatsApp adapter */
@@ -35,7 +38,9 @@ type FetchFn = (url: string, init: RequestInit) => Promise<{ ok: boolean; status
  * WhatsApp limitations vs Telegram:
  * - Interactive buttons are limited to 3 per message
  * - Messages cannot be edited after sending (editMessage throws)
- * - File sending requires uploading media first, then referencing the media ID
+ * - Messages cannot be deleted for recipients (deleteMessage throws)
+ * - File/photo/voice sending requires uploading media first, then referencing the media ID
+ * - Outbound conversation initiation requires pre-approved templates (sendTemplate)
  */
 export class WhatsAppAdapter implements MessageAdapter {
   readonly platform = 'whatsapp' as const;
@@ -67,6 +72,8 @@ export class WhatsAppAdapter implements MessageAdapter {
     this.fetchFn = fetchFn ?? (globalThis.fetch as unknown as FetchFn);
   }
 
+  // ─── Core MessageAdapter methods ──────────────────────────────────
+
   async sendText(text: string, _options?: SendTextOptions): Promise<string> {
     const body = {
       messaging_product: 'whatsapp',
@@ -91,10 +98,8 @@ export class WhatsAppAdapter implements MessageAdapter {
   }
 
   async sendFile(filePath: string, options?: SendFileOptions): Promise<string> {
-    // Step 1: Upload the media
     const mediaId = await this.uploadMedia(filePath);
 
-    // Step 2: Send the document message referencing the media ID
     const body: Record<string, unknown> = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -126,7 +131,6 @@ export class WhatsAppAdapter implements MessageAdapter {
     buttons: InlineButton[][],
     _options?: SendInlineButtonsOptions,
   ): Promise<string> {
-    // WhatsApp interactive buttons: max 3 buttons, no grid layout
     const flatButtons = buttons.flat();
     if (flatButtons.length > 3) {
       throw new Error(
@@ -143,11 +147,11 @@ export class WhatsAppAdapter implements MessageAdapter {
         type: 'button',
         body: { text },
         action: {
-          buttons: flatButtons.map((btn, i) => ({
+          buttons: flatButtons.map((btn) => ({
             type: 'reply',
             reply: {
               id: btn.callbackData,
-              title: btn.text.slice(0, 20), // WhatsApp title limit: 20 chars
+              title: btn.text.slice(0, 20),
             },
           })),
         },
@@ -178,15 +182,146 @@ export class WhatsAppAdapter implements MessageAdapter {
     );
   }
 
-  // ── Private helpers ─────────────────────────────────────────────────
+  async deleteMessage(_messageId: string): Promise<void> {
+    // WhatsApp Cloud API does not support deleting messages for recipients.
+    // Consider sending a correction message instead.
+    throw new Error(
+      'WhatsApp Cloud API does not support deleting messages. ' +
+      'Consider sending a correction message instead.'
+    );
+  }
+
+  // ─── Media methods ────────────────────────────────────────────────
+
+  async sendPhoto(photo: string | Buffer, options?: SendPhotoOptions): Promise<string> {
+    let mediaId: string;
+
+    if (Buffer.isBuffer(photo)) {
+      const tmpPath = path.join('/tmp', `nexus-wa-photo-${Date.now()}-${randomBytes(8).toString('hex')}.jpg`);
+      fs.writeFileSync(tmpPath, photo);
+      try {
+        mediaId = await this.uploadMedia(tmpPath);
+      } finally {
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup errors */ }
+      }
+    } else {
+      mediaId = await this.uploadMedia(photo);
+    }
+
+    const body: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: this.recipientPhone,
+      type: 'image',
+      image: {
+        id: mediaId,
+        caption: options?.caption,
+      },
+    };
+
+    const res = await this.fetchFn(`${this.baseUrl}/messages`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      throw new Error(`WhatsApp API error: ${res.status}`);
+    }
+
+    const data = await res.json();
+    return data.messages[0].id;
+  }
+
+  async sendVoice(audio: string | Buffer, options?: SendVoiceOptions): Promise<string> {
+    let mediaId: string;
+
+    if (Buffer.isBuffer(audio)) {
+      const tmpPath = path.join('/tmp', `nexus-wa-voice-${Date.now()}-${randomBytes(8).toString('hex')}.ogg`);
+      fs.writeFileSync(tmpPath, audio);
+      try {
+        mediaId = await this.uploadMedia(tmpPath);
+      } finally {
+        try { fs.unlinkSync(tmpPath); } catch { /* ignore cleanup errors */ }
+      }
+    } else {
+      mediaId = await this.uploadMedia(audio);
+    }
+
+    const body: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: this.recipientPhone,
+      type: 'audio',
+      audio: { id: mediaId },
+    };
+
+    const res = await this.fetchFn(`${this.baseUrl}/messages`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      throw new Error(`WhatsApp API error: ${res.status}`);
+    }
+
+    const data = await res.json();
+    return data.messages[0].id;
+  }
+
+  // ─── WhatsApp-specific methods (not part of MessageAdapter) ───────
+
+  /**
+   * Send a pre-approved message template (required for outbound initiation).
+   * WhatsApp requires templates for the first message in a conversation
+   * (24h session window rule).
+   */
+  async sendTemplate(
+    templateName: string,
+    languageCode: string = 'en_US',
+    components?: Array<{
+      type: 'body' | 'header' | 'button';
+      parameters: Array<{ type: 'text'; text: string } | { type: 'image'; image: { link: string } }>;
+    }>,
+  ): Promise<string> {
+    const body: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: this.recipientPhone,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        ...(components ? { components } : {}),
+      },
+    };
+
+    const res = await this.fetchFn(`${this.baseUrl}/messages`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(`WhatsApp template error: ${res.status} — ${JSON.stringify(err)}`);
+    }
+
+    const data = await res.json();
+    return data.messages[0].id;
+  }
+
+  // ─── Private helpers ─────────────────────────────────────────────────
 
   private async uploadMedia(filePath: string): Promise<string> {
     const fileBuffer = fs.readFileSync(filePath);
     const fileName = path.basename(filePath);
     const mimeType = this.guessMimeType(fileName);
 
-    // FormData-style upload via JSON with base64 (simplified)
-    // In production, use multipart/form-data upload
+    // WhatsApp Cloud API media upload
+    // TODO: Switch to multipart/form-data when test infra supports FormData+Blob mocking.
+    // For now, use JSON with base64-encoded file content (works with injected fetch mocks).
     const body = {
       messaging_product: 'whatsapp',
       type: mimeType,
@@ -201,7 +336,8 @@ export class WhatsAppAdapter implements MessageAdapter {
     });
 
     if (!res.ok) {
-      throw new Error(`WhatsApp media upload error: ${res.status}`);
+      const err = await res.json().catch(() => ({}));
+      throw new Error(`WhatsApp media upload error: ${res.status} — ${JSON.stringify(err)}`);
     }
 
     const data = await res.json();
@@ -221,8 +357,12 @@ export class WhatsAppAdapter implements MessageAdapter {
       '.png': 'image/png',
       '.jpg': 'image/jpeg',
       '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
       '.mp4': 'video/mp4',
       '.mp3': 'audio/mpeg',
+      '.ogg': 'audio/ogg',
+      '.amr': 'audio/amr',
     };
     return mimeMap[ext] ?? 'application/octet-stream';
   }

@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WhatsAppAdapter } from '../../src/adapters/whatsapp-adapter';
 import type { WhatsAppConfig } from '../../src/adapters/whatsapp-adapter';
 
-// ─── Mock fs.readFileSync for file upload tests ─────────────────────
+// ─── Mock fs for file upload tests ────────────────────────────────
 vi.mock('fs', () => ({
   readFileSync: vi.fn().mockReturnValue(Buffer.from('fake-file-content')),
+  writeFileSync: vi.fn(),
+  unlinkSync: vi.fn(),
 }));
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -29,6 +31,13 @@ function createErrorFetch(status = 401) {
     status,
     json: vi.fn().mockResolvedValue({ error: { message: 'Unauthorized' } }),
   });
+}
+
+/** Creates a two-step fetch mock: first call uploads media, second sends message */
+function createMediaThenMessageFetch(mediaId = 'media-id-123', messageId = 'wamid.photo789') {
+  return vi.fn()
+    .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ id: mediaId }) })
+    .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ messages: [{ id: messageId }] }) });
 }
 
 describe('WhatsAppAdapter', () => {
@@ -71,7 +80,6 @@ describe('WhatsAppAdapter', () => {
         { accessToken: 'tok', phoneNumberId: '123' },
         mockFetch,
       );
-      // Verify by sending a message and checking the URL
       adapterNoVersion.sendText('test');
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining('v21.0'),
@@ -120,21 +128,14 @@ describe('WhatsAppAdapter', () => {
 
   describe('sendFile', () => {
     it('uploads media then sends document message', async () => {
-      // First call = media upload, second call = send document
-      const fetchSequence = vi.fn()
-        .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ id: 'media-id-123' }) })
-        .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.doc456' }] }) });
-
+      const fetchSequence = createMediaThenMessageFetch('media-id-123', 'wamid.doc456');
       const fileAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
       const id = await fileAdapter.sendFile('/tmp/report.pdf');
 
       expect(id).toBe('wamid.doc456');
       expect(fetchSequence).toHaveBeenCalledTimes(2);
-
-      // First call: media upload
       expect(fetchSequence.mock.calls[0][0]).toContain('/media');
 
-      // Second call: document message
       const docBody = JSON.parse(fetchSequence.mock.calls[1][1].body as string);
       expect(docBody.type).toBe('document');
       expect(docBody.document.id).toBe('media-id-123');
@@ -142,10 +143,7 @@ describe('WhatsAppAdapter', () => {
     });
 
     it('passes caption in document message', async () => {
-      const fetchSequence = vi.fn()
-        .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ id: 'media-1' }) })
-        .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.x' }] }) });
-
+      const fetchSequence = createMediaThenMessageFetch();
       const fileAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
       await fileAdapter.sendFile('/tmp/file.csv', { caption: 'Monthly report' });
 
@@ -230,6 +228,150 @@ describe('WhatsAppAdapter', () => {
     });
   });
 
+  // ─── deleteMessage ──────────────────────────────────────────────────
+
+  describe('deleteMessage', () => {
+    it('throws descriptive error (WhatsApp limitation)', async () => {
+      await expect(adapter.deleteMessage('wamid.abc')).rejects.toThrow(
+        'WhatsApp Cloud API does not support deleting messages',
+      );
+    });
+
+    it('error message suggests correction message as alternative', async () => {
+      await expect(adapter.deleteMessage('wamid.abc')).rejects.toThrow(
+        'Consider sending a correction message instead',
+      );
+    });
+  });
+
+  // ─── sendPhoto ──────────────────────────────────────────────────────
+
+  describe('sendPhoto', () => {
+    it('uploads media then sends image message', async () => {
+      const fetchSequence = createMediaThenMessageFetch('img-media-1', 'wamid.photo1');
+      const photoAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      const id = await photoAdapter.sendPhoto('/tmp/photo.jpg');
+
+      expect(id).toBe('wamid.photo1');
+      expect(fetchSequence).toHaveBeenCalledTimes(2);
+
+      // First call: media upload
+      expect(fetchSequence.mock.calls[0][0]).toContain('/media');
+
+      // Second call: image message
+      const body = JSON.parse(fetchSequence.mock.calls[1][1].body as string);
+      expect(body.type).toBe('image');
+      expect(body.image.id).toBe('img-media-1');
+    });
+
+    it('returns WhatsApp message ID', async () => {
+      const fetchSequence = createMediaThenMessageFetch('m1', 'wamid.photo42');
+      const photoAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      const id = await photoAdapter.sendPhoto('/tmp/pic.png');
+      expect(id).toBe('wamid.photo42');
+    });
+
+    it('includes caption in image message', async () => {
+      const fetchSequence = createMediaThenMessageFetch();
+      const photoAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      await photoAdapter.sendPhoto('/tmp/pic.png', { caption: 'Check this out' });
+
+      const body = JSON.parse(fetchSequence.mock.calls[1][1].body as string);
+      expect(body.image.caption).toBe('Check this out');
+    });
+
+    it('handles Buffer input', async () => {
+      const fetchSequence = createMediaThenMessageFetch('buf-media', 'wamid.bufphoto');
+      const photoAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      const buf = Buffer.from('fake-image-data');
+      const id = await photoAdapter.sendPhoto(buf);
+      expect(id).toBe('wamid.bufphoto');
+      expect(fetchSequence).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws on API error', async () => {
+      const errorAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, createErrorFetch(500));
+      await expect(errorAdapter.sendPhoto('/tmp/fail.jpg')).rejects.toThrow('WhatsApp media upload error: 500');
+    });
+  });
+
+  // ─── sendVoice ──────────────────────────────────────────────────────
+
+  describe('sendVoice', () => {
+    it('uploads media then sends audio message', async () => {
+      const fetchSequence = createMediaThenMessageFetch('voice-media-1', 'wamid.voice1');
+      const voiceAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      const id = await voiceAdapter.sendVoice('/tmp/voice.ogg');
+
+      expect(id).toBe('wamid.voice1');
+      const body = JSON.parse(fetchSequence.mock.calls[1][1].body as string);
+      expect(body.type).toBe('audio');
+      expect(body.audio.id).toBe('voice-media-1');
+    });
+
+    it('returns WhatsApp message ID', async () => {
+      const fetchSequence = createMediaThenMessageFetch('v1', 'wamid.v42');
+      const voiceAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      const id = await voiceAdapter.sendVoice('/tmp/audio.mp3');
+      expect(id).toBe('wamid.v42');
+    });
+
+    it('handles Buffer input', async () => {
+      const fetchSequence = createMediaThenMessageFetch('buf-voice', 'wamid.bufvoice');
+      const voiceAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, fetchSequence);
+      const buf = Buffer.from('fake-audio-data');
+      const id = await voiceAdapter.sendVoice(buf);
+      expect(id).toBe('wamid.bufvoice');
+    });
+  });
+
+  // ─── sendTemplate ───────────────────────────────────────────────────
+
+  describe('sendTemplate', () => {
+    it('sends template with name and language code', async () => {
+      const id = await adapter.sendTemplate('hello_world', 'en_US');
+      expect(id).toBe('wamid.abc123');
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.type).toBe('template');
+      expect(body.template.name).toBe('hello_world');
+      expect(body.template.language.code).toBe('en_US');
+    });
+
+    it('sends template with component parameters', async () => {
+      const components = [{
+        type: 'body' as const,
+        parameters: [{ type: 'text' as const, text: 'Felipe' }],
+      }];
+      await adapter.sendTemplate('welcome', 'pt_BR', components);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.template.components).toEqual(components);
+      expect(body.template.language.code).toBe('pt_BR');
+    });
+
+    it('returns message ID', async () => {
+      const id = await adapter.sendTemplate('test_template');
+      expect(id).toBe('wamid.abc123');
+    });
+
+    it('throws on API error with details', async () => {
+      const errorFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: vi.fn().mockResolvedValue({ error: { message: 'Template not found', code: 132000 } }),
+      });
+      const errorAdapter = new WhatsAppAdapter('+351912345678', defaultConfig, errorFetch);
+      await expect(errorAdapter.sendTemplate('nonexistent')).rejects.toThrow('WhatsApp template error: 400');
+    });
+
+    it('defaults language to en_US', async () => {
+      await adapter.sendTemplate('hello_world');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.template.language.code).toBe('en_US');
+    });
+  });
+
   // ─── Interface compliance ───────────────────────────────────────────
 
   describe('MessageAdapter contract', () => {
@@ -238,6 +380,13 @@ describe('WhatsAppAdapter', () => {
       expect(typeof adapter.sendFile).toBe('function');
       expect(typeof adapter.sendInlineButtons).toBe('function');
       expect(typeof adapter.editMessage).toBe('function');
+      expect(typeof adapter.deleteMessage).toBe('function');
+      expect(typeof adapter.sendPhoto).toBe('function');
+      expect(typeof adapter.sendVoice).toBe('function');
+    });
+
+    it('has WhatsApp-specific sendTemplate method', () => {
+      expect(typeof adapter.sendTemplate).toBe('function');
     });
 
     it('has a platform property', () => {
