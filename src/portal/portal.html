@@ -1569,42 +1569,37 @@ document.addEventListener('DOMContentLoaded', () => {
       const subCards = skill.subSkills.map(sub => {
         const icon = skillIcons[sub.name] || '🔧';
         const cls = sub.enabled ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
-        return `<div class="${cls}" data-domain="${skill.name}" data-sub="${sub.name}" onclick="toggleSubSkill(this)">
+        const checked = sub.enabled ? 'checked' : '';
+        return `<div class="${cls}" data-domain="${skill.name}" data-sub="${sub.name}">
           <span class="sub-skill-icon">${icon}</span>
           <div class="sub-skill-info">
             <strong>${esc(sub.name)}</strong>
             <span class="sub-skill-desc">${esc(sub.description)}</span>
             <span class="sub-skill-meta">${sub.toolCount} tools</span>
           </div>
-          <label class="toggle-switch">
-            <input type="checkbox" ${sub.enabled ? 'checked' : ''} tabindex="-1">
+          <label class="toggle-switch" onclick="event.stopPropagation()">
+            <input type="checkbox" ${checked} onchange="toggleSubSkill('${esc(skill.name)}','${esc(sub.name)}',this.checked)">
             <span class="toggle-slider"></span>
           </label>
         </div>`;
       }).join('');
-      return `<div class="skill-package-card" style="border-left:3px solid ${color}">
-        <h3>${esc(skill.name)} <span class="skill-version">v2.0.0</span></h3>
+      const skillChecked = skill.enabled ? 'checked' : '';
+      const skillOpacity = skill.enabled ? '1' : '0.5';
+      return `<div class="skill-package-card" style="border-left:3px solid ${color};opacity:${skillOpacity}">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h3>${esc(skill.name)} <span class="skill-version">v2.0.0</span></h3>
+          <label class="toggle-switch" onclick="event.stopPropagation()" title="Enable/disable entire skill">
+            <input type="checkbox" ${skillChecked} onchange="toggleSkillMaster('${esc(skill.name)}',this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
         <p class="skill-desc">${esc(skill.description)}</p>
         <div class="sub-skill-list">${subCards}</div>
       </div>`;
     }).join('');
   }
 
-  async function toggleSubSkill(card) {
-    const domain = card.dataset.domain;
-    const subSkill = card.dataset.sub;
-    const checkbox = card.querySelector('input[type="checkbox"]');
-    const newState = !checkbox.checked;
-    checkbox.checked = newState;
-    card.className = newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
-    try {
-      await apiFetch('/api/skills/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain, subSkill, enabled: newState }),
-      });
-    } catch { checkbox.checked = !newState; card.className = !newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled'; }
-  }
+  // toggleSubSkill is now exposed via window.toggleSubSkill (see bottom of IIFE)
 
   // ── Timeline rendering ─────────────────────
   function renderTimeline(snap) {
@@ -2688,6 +2683,20 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (err) {
       showToast('Sub-skill toggle failed: ' + err.message, false);
       await loadSkills();
+    }
+  };
+
+  window.toggleSkillMaster = async function(skill, enabled) {
+    try {
+      const action = enabled ? 'enable' : 'disable';
+      const res = await apiFetch(`/api/skills/${skill}/${action}`, { method: 'POST' }).then(r => r.json());
+      if (!res.ok) { showToast(res.message || 'Failed', false); return; }
+      showToast(`Skill "${skill}" ${action}d`, true);
+      await fetchSkillPackages();
+      await loadSkills();
+    } catch (err) {
+      showToast('Skill toggle failed: ' + err.message, false);
+      await fetchSkillPackages();
     }
   };
 
