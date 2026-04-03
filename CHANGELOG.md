@@ -4,51 +4,38 @@ All notable changes to Cortex Telegram Hub Bot are documented in this file.
 
 ---
 
-## [4.4.1] — 2026-03-29
+## [4.6.1] — 2026-04-03
 
-### Bug Fixes & DST Recovery
+### Bug Fixes, DST Recovery & Calendar UX
 
 #### Fix: Content domain max_tokens overflow
 - `handleContent()` received Telegram user ID as `maxTokensOverride` parameter, sending `max_tokens: 7807541475` to the Anthropic API (Haiku limit: 64K)
-- Caused 400 errors on every content domain message routed through the unified handler
-- Fix: aligned `handleContent` signature with other domain handlers (`_userId?` instead of `maxTokensOverride?`)
+- Fix: aligned `handleContent` signature with other domain handlers
 
 #### Fix: JSON parsing failures in channel knowledge synthesis
-- `synthesizeKnowledge()` and `extractPatterns()` used a naive regex (`^```json...```$`) to strip markdown fences — failed when LLM added any text before/after the JSON block
-- All 9 knowledge categories fell back to raw concatenation instead of Claude-refined synthesis
-- Fix: robust JSON extraction that first tries regex fence matching, then falls back to finding `{`...`}` boundaries
+- `synthesizeKnowledge()` and `extractPatterns()` used a naive regex to strip markdown fences — failed when LLM added text around the JSON block
+- Fix: robust JSON extraction with fence matching + `{`...`}` boundary fallback
 
 #### New: DST Watchdog — automatic recovery for missed cron jobs
-- `node-cron` silently skips fixed-time jobs during DST transitions (Europe/Lisbon spring forward: last Sunday of March)
-- New `*/15` interval cron (DST-safe) checks all registered jobs against their expected schedule using `cron-parser`
-- If a job was expected to run but didn't (within a 3-hour grace window), it fires the job and logs a warning
-- Covers both spring forward (skipped hour) and any future clock-change edge cases
-- Affected jobs: `daily_briefing`, `reaction_radar`, `channel_relearn`, `performance_agent`, `garmin_coach`, and all other fixed-time crons
-
-Triggered by: Morning briefing and 5+ scheduled jobs missed on 2026-03-29 DST transition day.
-
-## [4.4.2] — 2026-03-30
-
-### DST Watchdog Hardening & Calendar UX Improvements
-
-#### Fix: DST watchdog firing duplicates on restart and at cron boundaries
-- Watchdog ran at `*/15` (minute :00) — same time as normal crons, causing race conditions and duplicate job executions
-- On restart, in-memory `lastRunAt` was null for all jobs, so watchdog re-fired everything within the 3-hour window
-- Fix: changed watchdog schedule to `2,17,32,47` (offset by 2 min) with 2-minute minimum overdue threshold
-- Fix: `seedJobLastRunFromHistory()` loads last successful run times from `job_history` table on startup
+- `node-cron` silently skips fixed-time jobs during DST transitions (Europe/Lisbon spring forward)
+- Watchdog runs at `:02/:17/:32/:47` (offset from normal crons) with 2-min minimum overdue threshold
+- Seeds `lastRunAt` from `job_history` table on startup so restarts don't re-fire jobs
+- 3-hour max window prevents stale recovery
 
 #### Fix: Calendar image events created on past dates
 - When user sends a calendar screenshot showing last week's dates, events were created in the past
-- Fix: updated vision prompt to instruct Claude to shift past dates to next weekday occurrence
-- Fix: added post-extraction safety net in `handleCalendarExtraction` — if all events are in the past, auto-shifts forward by whole weeks to preserve weekday alignment
+- Fix: vision prompt instructs Claude to shift past dates forward; post-extraction safety net auto-shifts by whole weeks preserving weekday alignment
 
 #### New: Calendar text follow-up context
-- When user sends a text like "events were not created, create them" after a calendar image preview, the bot now recognizes it as a calendar follow-up and creates the pending events
-- Previously, such messages were routed to the secretary domain which had no context about the calendar image
+- Text messages like "create the events in outlook" after a calendar preview now trigger creation directly
 - 10-minute context window per user with regex-based intent detection (PT/EN)
 
-#### Infra: Google Calendar token refresh
-- Re-authenticated Google OAuth2 via OAuth Playground — Calendar, Gmail, and Drive all working on new refresh token
+#### Fix: EADDRINUSE on deploy
+- Graceful shutdown now `await`s `portalServer.close()` before `process.exit()` so port 8200 is released
+
+#### Infra
+- Google Calendar token re-authenticated via OAuth Playground
+- `HEALTH_TOKEN` configured for `/health/detailed` endpoint
 
 ---
 
