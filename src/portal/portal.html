@@ -1276,6 +1276,13 @@
       <thead><tr><th>Channel</th><th>Status</th><th>Videos</th><th>Last Analyzed</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+
+    <!-- Extracted Knowledge -->
+    <h3 style="font-size:14px;margin:16px 0 8px;color:var(--text2)">🧠 Extracted Voice DNA</h3>
+    <p style="font-size:11px;color:var(--text2);margin-bottom:8px">
+      Synthesized patterns from your reference channels — these shape your AI's writing voice.
+    </p>
+    <div id="ref-knowledge-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px"></div>
   </div>
 
   <!-- ── Video Transcripts ─────────────────── -->
@@ -2184,6 +2191,25 @@ document.addEventListener('DOMContentLoaded', () => {
         </tr>`;
       }).join('') || '<tr><td colspan="5" class="text-muted">No channels yet — add one above</td></tr>';
     }
+
+    // Load extracted knowledge
+    try {
+      const knowledgeRes = await apiFetch('/api/content-knowledge').then(r => r.json());
+      if (knowledgeRes.ok) {
+        const grid = document.getElementById('ref-knowledge-grid');
+        const catIcons = { hook_style: '🎣', brand_voice: '🗣️', visual_style: '🎨', editing_style: '✂️', content_structure: '📐', title_pattern: '📝', audience_engagement: '💬', cta_pattern: '📢', storytelling: '📖' };
+        grid.innerHTML = knowledgeRes.knowledge.map(k => {
+          const icon = catIcons[k.category] || '🧩';
+          const preview = k.text.length > 150 ? k.text.slice(0, 150) + '...' : k.text;
+          const sources = (k.sources || []).slice(0, 3).join(', ');
+          return `<div style="background:var(--surface2);border-radius:8px;padding:10px;border-left:3px solid var(--accent)">
+            <div style="font-weight:600;font-size:13px;margin-bottom:4px">${icon} ${esc(k.category.replace(/_/g, ' '))}</div>
+            <div style="font-size:11px;color:var(--text2);line-height:1.4;margin-bottom:6px">${esc(preview)}</div>
+            <div style="font-size:10px;color:var(--text2);opacity:0.7">From: ${esc(sources)}</div>
+          </div>`;
+        }).join('') || '<span class="text-muted">No knowledge extracted yet — add channels and run /relearn</span>';
+      }
+    } catch { /* non-critical */ }
 
     // Transcript stats
     if (snap.transcriptStats) {

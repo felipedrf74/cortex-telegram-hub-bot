@@ -1429,6 +1429,28 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/content-knowledge — extracted voice DNA from reference channels
+  app.get('/api/content-knowledge', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const knowledge = db.prepare(`
+        SELECT category, synthesized_text, source_channels, updated_at
+        FROM content_knowledge ORDER BY updated_at DESC
+      `).all() as any[];
+      res.json({
+        ok: true,
+        knowledge: knowledge.map(k => ({
+          category: k.category,
+          text: k.synthesized_text,
+          sources: JSON.parse(k.source_channels || '[]'),
+          updatedAt: k.updated_at,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/books — book library
   app.get('/api/books', (_req: Request, res: Response) => {
     try {

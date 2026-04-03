@@ -100,7 +100,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('pipeline_agent',   'Pipeline Tracker',       '0 20 * * *',      'content');
   registerJob('performance_agent','Performance Intel',        '0 6 * * 0',       'content');
   registerJob('voice_evolution', 'Voice Evolution',          '0 4 1 * *',       'content');
-  registerJob('reaction_radar',   'Reaction Radar',          '0 6,10,14,18,22 * * *', 'content');
+  registerJob('reaction_radar',   'Reaction Radar',          '0 8,14,20 * * *', 'content');
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
   registerJob('training_plan_adjust', 'Training Plan Auto-Adjust', '0 19 * * 0', 'triathlon');
@@ -576,7 +576,7 @@ export function startScheduler(bot: Bot): void {
   }), { timezone: tz });
 
   // ── Reaction Radar Agent (every 4 hours) ─────────────────────────
-  cron.schedule('0 6,10,14,18,22 * * *', wrapJob('reaction_radar', async () => {
+  cron.schedule('0 8,14,20 * * *', wrapJob('reaction_radar', async () => {
     await runReactionRadar();
   }), { timezone: tz });
 
