@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import type {
   MessageAdapter,
   SendTextOptions,
@@ -196,7 +197,7 @@ export class WhatsAppAdapter implements MessageAdapter {
     let mediaId: string;
 
     if (Buffer.isBuffer(photo)) {
-      const tmpPath = path.join('/tmp', `nexus-wa-photo-${Date.now()}.jpg`);
+      const tmpPath = path.join('/tmp', `nexus-wa-photo-${Date.now()}-${randomBytes(8).toString('hex')}.jpg`);
       fs.writeFileSync(tmpPath, photo);
       try {
         mediaId = await this.uploadMedia(tmpPath);
@@ -236,7 +237,7 @@ export class WhatsAppAdapter implements MessageAdapter {
     let mediaId: string;
 
     if (Buffer.isBuffer(audio)) {
-      const tmpPath = path.join('/tmp', `nexus-wa-voice-${Date.now()}.ogg`);
+      const tmpPath = path.join('/tmp', `nexus-wa-voice-${Date.now()}-${randomBytes(8).toString('hex')}.ogg`);
       fs.writeFileSync(tmpPath, audio);
       try {
         mediaId = await this.uploadMedia(tmpPath);

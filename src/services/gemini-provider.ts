@@ -91,10 +91,6 @@ function logGeminiUsage(
   }
 }
 
-// ─── Deterministic tool call ID counter ─────────────────────────────
-
-let _toolCallCounter = 0;
-
 // ─── Tool format conversion ─────────────────────────────────────────
 
 function toSchemaType(type: string): SchemaType {
@@ -148,17 +144,20 @@ function extractText(result: GenerateContentResult): string {
   }
 }
 
-function extractFunctionCalls(result: GenerateContentResult): AIToolCall[] {
+function extractFunctionCalls(result: GenerateContentResult, nextId: () => string): AIToolCall[] {
   const calls = result.response.functionCalls();
   if (!calls || calls.length === 0) return [];
 
   return calls.map((fc) => ({
     type: 'tool_use' as const,
-    id: `gemini_tc_${++_toolCallCounter}`,
+    id: nextId(),
     name: fc.name,
     input: (fc.args || {}) as Record<string, unknown>,
   }));
 }
+
+/** Injectable sleep — override `.fn` in tests to avoid real setTimeout waits. */
+export const _sleep = { fn: (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms)) };
 
 function safeParse(json: string): Record<string, unknown> {
   try {
@@ -172,6 +171,10 @@ function safeParse(json: string): Record<string, unknown> {
 
 export class GeminiProvider implements AIProvider {
   readonly name = 'gemini';
+  private _toolCallCounter = 0;
+
+  /** Generate a deterministic, sequential tool call ID. */
+  private nextToolCallId = (): string => `gemini_tc_${++this._toolCallCounter}`;
 
   // ─── Retry with exponential backoff ───────────────────────────────
 
@@ -201,7 +204,7 @@ export class GeminiProvider implements AIProvider {
 
         const backoffMs = 1000 * Math.pow(2, attempt);
         logger.warn({ attempt, status, backoffMs, message: message.slice(0, 100) }, 'Gemini retrying after error');
-        await new Promise(r => setTimeout(r, backoffMs));
+        await _sleep.fn(backoffMs);
       }
     }
     throw new Error('withRetry: unreachable');
@@ -312,7 +315,7 @@ ${message}`;
 
     return {
       text: extractText(result),
-      toolCalls: extractFunctionCalls(result),
+      toolCalls: extractFunctionCalls(result, this.nextToolCallId),
       stopReason: result.response.candidates?.[0]?.finishReason || 'STOP',
     };
   }
@@ -422,7 +425,7 @@ ${message}`;
 
     return {
       text: extractText(result),
-      toolCalls: extractFunctionCalls(result),
+      toolCalls: extractFunctionCalls(result, this.nextToolCallId),
       stopReason: result.response.candidates?.[0]?.finishReason || 'STOP',
     };
   }

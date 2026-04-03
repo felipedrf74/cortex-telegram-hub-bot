@@ -73,10 +73,15 @@ vi.mock('../../src/portal/telemetry', () => ({
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { GeminiProvider } from '../../src/services/gemini-provider';
+import { GeminiProvider, _sleep } from '../../src/services/gemini-provider';
 import { pushEvent } from '../../src/portal/telemetry';
 
 const mockPushEvent = vi.mocked(pushEvent);
+
+// Override sleep to avoid real setTimeout in retry tests
+const _origSleep = _sleep.fn;
+beforeEach(() => { _sleep.fn = () => Promise.resolve(); });
+afterEach(() => { _sleep.fn = _origSleep; });
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 

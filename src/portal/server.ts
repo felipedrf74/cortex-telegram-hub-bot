@@ -15,6 +15,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -1531,27 +1532,68 @@ export function createPortalServer(bot: Bot): http.Server {
 
   // GET /api/webhooks/whatsapp — Meta webhook verification
   app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
+    const verifyToken = config.whatsapp?.verifyToken;
+
+    // Reject if WhatsApp is not configured or verify token is not set
+    if (!config.whatsapp?.enabled || !verifyToken) {
+      res.status(403).send('Forbidden');
+      return;
+    }
+
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    const verifyToken = config.whatsapp?.verifyToken || process.env.WHATSAPP_VERIFY_TOKEN;
-
-    if (mode === 'subscribe' && token === verifyToken) {
-      logger.info('WhatsApp webhook verified');
-      res.status(200).send(challenge);
-    } else {
-      logger.warn({ mode, tokenMatch: token === verifyToken }, 'WhatsApp webhook verification failed');
-      res.status(403).send('Forbidden');
+    if (mode === 'subscribe' && typeof token === 'string') {
+      // Timing-safe comparison to prevent token oracle attacks
+      const tokenBuf = Buffer.from(token);
+      const expectedBuf = Buffer.from(verifyToken);
+      if (tokenBuf.length === expectedBuf.length &&
+          crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+        logger.info('WhatsApp webhook verified');
+        res.status(200).send(challenge);
+        return;
+      }
     }
+
+    logger.warn({ mode }, 'WhatsApp webhook verification failed');
+    res.status(403).send('Forbidden');
   });
 
   // POST /api/webhooks/whatsapp — Incoming WhatsApp messages
-  app.post('/api/webhooks/whatsapp', express.json(), (req: Request, res: Response) => {
-    // Always respond 200 immediately (WhatsApp retries on non-200)
+  app.post('/api/webhooks/whatsapp',
+    express.raw({ type: 'application/json', limit: '1mb' }),
+    (req: Request, res: Response) => {
+    // HMAC signature verification (when WHATSAPP_APP_SECRET is configured)
+    const appSecret = config.whatsapp?.appSecret;
+    if (appSecret) {
+      const sig = req.headers['x-hub-signature-256'] as string | undefined;
+      if (!sig) {
+        res.status(403).send('Forbidden');
+        return;
+      }
+      const expected = 'sha256=' + crypto
+        .createHmac('sha256', appSecret)
+        .update(req.body as Buffer)
+        .digest('hex');
+      const sigBuf = Buffer.from(sig);
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        logger.warn('WhatsApp webhook HMAC verification failed');
+        res.status(403).send('Forbidden');
+        return;
+      }
+    }
+
+    // Respond 200 immediately after verification (WhatsApp retries on non-200)
     res.status(200).send('OK');
 
-    const body = req.body;
+    let body: any;
+    try {
+      body = typeof req.body === 'string' ? JSON.parse(req.body)
+        : Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString('utf-8'))
+        : req.body;
+    } catch { return; }
     if (body?.object !== 'whatsapp_business_account') return;
 
     const entries = body.entry ?? [];
@@ -1792,6 +1834,9 @@ export function createPortalServer(bot: Bot): http.Server {
     logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
     if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {
       logger.warn('Portal is listening on a non-loopback address without PORTAL_TOKEN — API is unauthenticated!');
+    }
+    if (!config.health.token && bind !== '127.0.0.1' && bind !== 'localhost') {
+      logger.warn('HEALTH_TOKEN is not set — /health/detailed is publicly accessible!');
     }
   });
 

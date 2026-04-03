@@ -66,7 +66,9 @@ async function trackedCompletion(
   const usage = response.usage;
   if (usage) {
     const model = response.model || params.model;
-    const rates = OPENAI_COST_PER_MTK[model] ?? OPENAI_COST_PER_MTK['gpt-4o'];
+    // Prefix match (longest key first): OpenAI returns versioned models (e.g. 'gpt-4o-2024-08-06')
+    const rateKey = Object.keys(OPENAI_COST_PER_MTK).sort((a, b) => b.length - a.length).find(k => model.startsWith(k));
+    const rates = rateKey ? OPENAI_COST_PER_MTK[rateKey] : OPENAI_COST_PER_MTK['gpt-4o'];
     const costUsd =
       (usage.prompt_tokens / 1_000_000) * rates.in +
       (usage.completion_tokens / 1_000_000) * rates.out;
@@ -94,6 +96,9 @@ async function trackedCompletion(
 
 // ─── Retry on 429 / 5xx ─────────────────────────────────────────────
 
+/** Injectable sleep — override `.fn` in tests to avoid real setTimeout waits. */
+export const _sleep = { fn: (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms)) };
+
 /**
  * Retry on OpenAI rate limit (429) and transient server errors (500, 502, 503).
  * Uses exponential backoff with jitter. Max 3 retries.
@@ -115,7 +120,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
         : (2 ** attempt) * 1000 + Math.random() * 500;
 
       logger.warn({ status, attempt, waitMs }, 'OpenAI retryable error, backing off');
-      await new Promise(r => setTimeout(r, waitMs));
+      await _sleep.fn(waitMs);
     }
   }
   throw new Error('withRetry: unreachable');
@@ -340,13 +345,15 @@ ${message}`;
     ];
 
     const start = Date.now();
-    const stream = await getClient().chat.completions.create({
-      model: routing.model,
-      max_tokens: routing.maxTokens,
-      messages,
-      stream: true,
-      stream_options: { include_usage: true },
-    });
+    const stream = await withRetry(() =>
+      getClient().chat.completions.create({
+        model: routing.model,
+        max_tokens: routing.maxTokens,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+      })
+    );
 
     let fullText = '';
     let finishReason = 'stop';
@@ -373,7 +380,9 @@ ${message}`;
 
     if (usage) {
       const model = routing.model;
-      const rates = OPENAI_COST_PER_MTK[model] ?? OPENAI_COST_PER_MTK['gpt-4o'];
+      // Prefix match (longest key first): OpenAI returns versioned models (e.g. 'gpt-4o-2024-08-06')
+    const rateKey = Object.keys(OPENAI_COST_PER_MTK).sort((a, b) => b.length - a.length).find(k => model.startsWith(k));
+    const rates = rateKey ? OPENAI_COST_PER_MTK[rateKey] : OPENAI_COST_PER_MTK['gpt-4o'];
       const costUsd =
         (usage.prompt_tokens / 1_000_000) * rates.in +
         (usage.completion_tokens / 1_000_000) * rates.out;

@@ -157,6 +157,7 @@ export const config = {
     phoneNumberId: process.env.WHATSAPP_PHONE_ID || '',
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || '',
+    appSecret: process.env.WHATSAPP_APP_SECRET || '',
     apiVersion: process.env.WHATSAPP_API_VERSION || 'v21.0',
     enabled: !!process.env.WHATSAPP_PHONE_ID && !!process.env.WHATSAPP_ACCESS_TOKEN,
   },
