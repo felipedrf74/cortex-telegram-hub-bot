@@ -34,6 +34,14 @@ export function initDatabase(): Database.Database {
     loadModelOverrides();
   } catch { /* model-config not yet available — non-critical */ }
 
+  // Load persisted settings overrides from kv_store
+  try {
+    const { DatabaseConfigProvider, setConfigProvider } = require('./config-provider');
+    const dbConfig = new DatabaseConfigProvider();
+    dbConfig.loadPersistedSettings();
+    setConfigProvider(dbConfig);
+  } catch { /* config-provider not yet available — non-critical */ }
+
   logger.info({ path: config.app.databasePath }, 'Database initialized');
   return db;
 }

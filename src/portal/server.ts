@@ -1481,6 +1481,63 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/settings — current settings for portal display
+  app.get('/api/settings', (_req: Request, res: Response) => {
+    try {
+      const { getConfigProvider, DatabaseConfigProvider } = require('../services/config-provider');
+      const provider = getConfigProvider();
+      if (provider instanceof DatabaseConfigProvider) {
+        res.json({ settings: provider.getAllSettings() });
+      } else {
+        res.json({ settings: [], message: 'DatabaseConfigProvider not active' });
+      }
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // PUT /api/settings — update a setting
+  app.put('/api/settings', express.json(), (req: Request, res: Response) => {
+    try {
+      const { id, value } = req.body;
+      if (!id || value === undefined) {
+        res.status(400).json({ error: 'id and value required' });
+        return;
+      }
+      const { getConfigProvider, DatabaseConfigProvider } = require('../services/config-provider');
+      const provider = getConfigProvider();
+      if (!(provider instanceof DatabaseConfigProvider)) {
+        res.status(503).json({ error: 'DatabaseConfigProvider not active' });
+        return;
+      }
+      provider.setSetting(id, value);
+      res.json({ ok: true, id, value, message: 'Setting updated. Active immediately.' });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/settings — reset a setting to default
+  app.delete('/api/settings', express.json(), (req: Request, res: Response) => {
+    try {
+      const { id } = req.body;
+      if (!id) {
+        res.status(400).json({ error: 'id required' });
+        return;
+      }
+      const { getConfigProvider, DatabaseConfigProvider } = require('../services/config-provider');
+      const provider = getConfigProvider();
+      if (!(provider instanceof DatabaseConfigProvider)) {
+        res.status(503).json({ error: 'DatabaseConfigProvider not active' });
+        return;
+      }
+      provider.clearSetting(id);
+      res.json({ ok: true, settings: provider.getAllSettings() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/quality-scores — agent quality scoring data
   app.get('/api/quality-scores', (_req: Request, res: Response) => {
     try {

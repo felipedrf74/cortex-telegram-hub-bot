@@ -178,9 +178,9 @@ describe('ConfigProvider', () => {
   // ── Singleton management ────────────────────────────────────────
 
   describe('singleton', () => {
-    it('getConfigProvider() returns an EnvConfigProvider by default', () => {
+    it('getConfigProvider() returns a DatabaseConfigProvider by default', () => {
       const p = getConfigProvider();
-      expect(p.name).toBe('env');
+      expect(p.name).toBe('database');
     });
 
     it('getConfigProvider() returns the same instance on repeated calls', () => {
@@ -211,3 +211,5 @@ describe('ConfigProvider', () => {
     });
   });
 });
+
+// DatabaseConfigProvider tests are in config-provider-db.test.ts (needs separate vi.mock scope)
