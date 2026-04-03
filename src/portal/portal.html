@@ -1965,7 +1965,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Render snapshot ────────────────────────
-  function render(snap) {
+  async function render(snap) {
     // Header
     document.getElementById('uptime').textContent = `Up ${snap.uptime.human}`;
     const pollEl = document.getElementById('poll-status');
