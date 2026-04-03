@@ -3126,6 +3126,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Init ───────────────────────────────────
+  // Expose functions to global scope for onclick handlers in HTML
+  window.createInviteCode = createInviteCode;
+  window.deleteInviteCode = deleteInviteCode;
+  window.openSkillGrid = openSkillGrid;
+  window.toggleSkill = toggleSkill;
+  window.resetUserSkills = resetUserSkills;
+  window.closeSkillGrid = closeSkillGrid;
+  window.suspendUser = suspendUser;
+  window.activateUser = activateUser;
+  window.updateModel = updateModel;
+  window.resetModel = resetModel;
+  window.updateSetting = updateSetting;
+  window.resetSetting = resetSetting;
+
   ensureToken();
   poll();
   pollTimer = setInterval(poll, POLL_MS);
