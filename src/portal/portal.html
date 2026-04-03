@@ -1511,7 +1511,7 @@
 
   async function fetchSkillPackages() {
     try {
-      const res = await fetch('/api/skills', { headers: authHeaders() });
+      const res = await apiFetch('/api/skills');
       if (!res.ok) return;
       const skills = await res.json();
       renderSkillPackages(skills);
@@ -1555,9 +1555,9 @@
     checkbox.checked = newState;
     card.className = newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled';
     try {
-      await fetch('/api/skills/toggle', {
+      await apiFetch('/api/skills/toggle', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain, subSkill, enabled: newState }),
       });
     } catch { checkbox.checked = !newState; card.className = !newState ? 'sub-skill-card enabled' : 'sub-skill-card disabled'; }
@@ -2693,7 +2693,7 @@
   // Users
   async function loadUsers() {
     try {
-      const r = await fetch('/api/users', { headers: authHeaders() });
+      const r = await apiFetch('/api/users');
       if (!r.ok) return;
       const d = await r.json();
       const el = document.getElementById('users-content');
@@ -2717,11 +2717,11 @@
     } catch (err) { console.warn('Users poll failed:', err); }
   }
   async function suspendUser(id) {
-    await fetch('/api/users/' + id + '/suspend', { method: 'POST', headers: authHeaders() });
+    await apiFetch('/api/users/' + id + '/suspend', { method: 'POST' });
     showToast('User suspended', true); loadUsers();
   }
   async function activateUser(id) {
-    await fetch('/api/users/' + id + '/activate', { method: 'POST', headers: authHeaders() });
+    await apiFetch('/api/users/' + id + '/activate', { method: 'POST' });
     showToast('User activated', true); loadUsers();
   }
   loadUsers();
@@ -2734,7 +2734,7 @@
     document.getElementById('skill-user-name').textContent = name;
     document.getElementById('skill-management-card').style.display = '';
     try {
-      const r = await fetch('/api/users/' + telegramId + '/skills', { headers: authHeaders() });
+      const r = await apiFetch('/api/users/' + telegramId + '/skills');
       if (!r.ok) return;
       const d = await r.json();
       const el = document.getElementById('skill-grid-content');
@@ -2760,8 +2760,8 @@
     } catch (err) { console.warn('Skill grid failed:', err); }
   }
   async function toggleSkill(telegramId, skill, subSkill, enabled) {
-    await fetch('/api/users/' + telegramId + '/skills', {
-      method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    await apiFetch('/api/users/' + telegramId + '/skills', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ skill, subSkill, enabled }),
     });
     showToast(skill + (subSkill ? ':' + subSkill : '') + (enabled ? ' enabled' : ' disabled'), true);
@@ -2769,7 +2769,7 @@
   }
   async function resetUserSkills() {
     if (!_skillUserId) return;
-    await fetch('/api/users/' + _skillUserId + '/skills/reset', { method: 'POST', headers: authHeaders() });
+    await apiFetch('/api/users/' + _skillUserId + '/skills/reset', { method: 'POST' });
     showToast('Skills reset to defaults', true);
     openSkillGrid(_skillUserId, document.getElementById('skill-user-name').textContent);
   }
@@ -2778,7 +2778,7 @@
   // Invite codes
   async function loadInviteCodes() {
     try {
-      const r = await fetch('/api/invite-codes', { headers: authHeaders() });
+      const r = await apiFetch('/api/invite-codes');
       if (!r.ok) return;
       const d = await r.json();
       const el = document.getElementById('invite-codes-content');
@@ -2798,13 +2798,13 @@
     } catch (err) { console.warn('Invite codes poll failed:', err); }
   }
   async function createInviteCode() {
-    const r = await fetch('/api/invite-codes', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ maxUses: 1 }) });
+    const r = await apiFetch('/api/invite-codes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxUses: 1 }) });
     const d = await r.json();
     if (d.ok) showToast('Code: ' + d.code, true);
     loadInviteCodes();
   }
   async function deleteInviteCode(code) {
-    await fetch('/api/invite-codes/' + code, { method: 'DELETE', headers: authHeaders() });
+    await apiFetch('/api/invite-codes/' + code, { method: 'DELETE' });
     showToast('Code deleted', true); loadInviteCodes();
   }
   loadInviteCodes();
@@ -2813,7 +2813,7 @@
   // Settings
   async function loadSettings() {
     try {
-      const r = await fetch('/api/settings', { headers: authHeaders() });
+      const r = await apiFetch('/api/settings');
       if (!r.ok) return;
       const d = await r.json();
       const el = document.getElementById('settings-content');
@@ -2853,7 +2853,7 @@
   }
   async function updateSetting(id, value) {
     try {
-      const r = await fetch('/api/settings', { method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ id, value }) });
+      const r = await apiFetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, value }) });
       const d = await r.json();
       if (d.ok) showToast(id + ' updated', true); else showToast('Failed: ' + (d.error || 'unknown'), false);
       loadSettings();
@@ -2861,7 +2861,7 @@
   }
   async function resetSetting(id) {
     try {
-      const r = await fetch('/api/settings', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      const r = await apiFetch('/api/settings', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       const d = await r.json();
       if (d.ok) showToast(id + ' reset to default', true);
       loadSettings();
@@ -2877,7 +2877,7 @@
   // Model configuration
   async function loadModelConfig() {
     try {
-      const r = await fetch('/api/model-config', { headers: authHeaders() });
+      const r = await apiFetch('/api/model-config');
       if (!r.ok) return;
       const d = await r.json();
       const el = document.getElementById('model-config-content');
@@ -2919,7 +2919,7 @@
   }
   async function updateModel(provider, role, model) {
     try {
-      const r = await fetch('/api/model-config', { method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role, model }) });
+      const r = await apiFetch('/api/model-config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role, model }) });
       const d = await r.json();
       if (d.ok) showToast(provider + ' ' + role + ' → ' + model, true);
       else showToast('Failed: ' + (d.error || 'unknown'), false);
@@ -2928,7 +2928,7 @@
   }
   async function resetModel(provider, role) {
     try {
-      const r = await fetch('/api/model-config', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role }) });
+      const r = await apiFetch('/api/model-config', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role }) });
       const d = await r.json();
       if (d.ok) showToast(provider + ' ' + role + ' reset to default', true);
       loadModelConfig();
@@ -2940,7 +2940,7 @@
   // Provider health
   async function loadProviderHealth() {
     try {
-      const r = await fetch('/api/provider-health', { headers: authHeaders() });
+      const r = await apiFetch('/api/provider-health');
       if (!r.ok) return;
       const d = await r.json();
       const el = document.getElementById('provider-health-content');
@@ -2980,7 +2980,7 @@
   // Quality scores by agent
   async function loadQualityScores() {
     try {
-      const r = await fetch('/api/quality-scores', { headers: authHeaders() });
+      const r = await apiFetch('/api/quality-scores');
       if (!r.ok) return;
       const d = await r.json();
       if (!d.ok) return;
@@ -3006,7 +3006,7 @@
   // Error distribution
   async function loadErrorDist() {
     try {
-      const r = await fetch('/api/error-distribution', { headers: authHeaders() });
+      const r = await apiFetch('/api/error-distribution');
       if (!r.ok) return;
       const d = await r.json();
       if (!d.ok) return;
@@ -3040,7 +3040,7 @@
   // Task execution metrics
   async function loadTaskMetrics() {
     try {
-      const r = await fetch('/api/task-metrics', { headers: authHeaders() });
+      const r = await apiFetch('/api/task-metrics');
       if (!r.ok) return;
       const d = await r.json();
       if (!d.ok) return;
