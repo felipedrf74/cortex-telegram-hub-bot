@@ -9,6 +9,7 @@
  */
 
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
+import type { DomainModelRole } from './model-config';
 
 // ─── Core Types ─────────────────────────────────────────────────────
 
@@ -75,7 +76,24 @@ export interface ProviderModelConfig {
 export function getModelRouting(
   cfg: ProviderModelConfig,
   domain: DomainName,
+  providerName?: string,
 ): ModelRouting {
+  // Check for a domain-specific model override first
+  if (providerName) {
+    try {
+      const { getDomainModelOverride } = require('./model-config');
+      const domainOverride = getDomainModelOverride(providerName, domain as DomainModelRole);
+      if (domainOverride) {
+        // Use the overridden model with the domain's standard token limit
+        const maxTokens = domain === 'secretary' ? cfg.secretaryMaxTokens
+          : domain === 'triathlon' ? 2048
+          : cfg.maxTokens;
+        return { model: domainOverride, maxTokens };
+      }
+    } catch { /* model-config not loaded yet — use tier defaults */ }
+  }
+
+  // Fall through to existing tier-based routing
   switch (domain) {
     case 'secretary':
       return { model: cfg.model, maxTokens: cfg.secretaryMaxTokens };

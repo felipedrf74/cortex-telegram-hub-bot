@@ -493,9 +493,15 @@ let _cachedToolsArray: Anthropic.Tool[] | null = null;
 // ─── Model selection helpers ─────────────────────────────────────────
 
 function getModelForDomain(domain: DomainName): string {
-  // Sonnet for secretary (multi-step tool-use) — Haiku for triathlon/content (tool-use + conversational)
+  // Check for domain-specific override first
+  try {
+    const { getDomainModelOverride } = require('./model-config');
+    const override = getDomainModelOverride('anthropic', domain);
+    if (override) return override;
+  } catch { /* model-config not loaded yet */ }
+
+  // Tier-based routing: Sonnet for secretary, Haiku for everything else
   if (domain === 'secretary') return config.anthropic.model;
-  if (domain === 'triathlon') return config.anthropic.classifierModel; // Haiku — good enough for tool calls
   return config.anthropic.classifierModel;
 }
 

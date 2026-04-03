@@ -273,7 +273,7 @@ ${message}`;
     stateContext: string,
     maxTokensOverride?: number,
   ): Promise<AICallResult> {
-    const routing = getModelRouting(config.gemini, domain);
+    const routing = getModelRouting(config.gemini, domain, 'gemini');
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
@@ -329,7 +329,7 @@ ${message}`;
     stateContext: string,
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult> {
-    const routing = getModelRouting(config.gemini, domain);
+    const routing = getModelRouting(config.gemini, domain, 'gemini');
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';

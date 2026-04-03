@@ -2675,32 +2675,33 @@
       const states = d.states || [];
       const options = d.options || {};
       const providerIcons = { anthropic: '🟣', openai: '🟢', gemini: '🔵' };
+      const domainIcons = { secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳' };
+      const allModels = p => [...new Set([...(options[p]?.chat||[]), ...(options[p]?.classifier||[])])];
       el.innerHTML = states.map(s => {
         const icon = providerIcons[s.provider] || '⚪';
-        const chatOpts = (options[s.provider]?.chat || []).map(m =>
-          `<option value="${esc(m)}"${m === s.chat.model ? ' selected' : ''}>${esc(m)}</option>`
-        ).join('');
-        const clsOpts = (options[s.provider]?.classifier || []).map(m =>
-          `<option value="${esc(m)}"${m === s.classifier.model ? ' selected' : ''}>${esc(m)}</option>`
-        ).join('');
-        const chatBadge = s.chat.source === 'override' ? '<span class="badge badge-sent" style="margin-left:4px">override</span>' : '';
-        const clsBadge = s.classifier.source === 'override' ? '<span class="badge badge-sent" style="margin-left:4px">override</span>' : '';
+        const mkSelect = (role, current, opts) => {
+          const optHtml = opts.map(m => `<option value="${esc(m)}"${m === current ? ' selected' : ''}>${esc(m)}</option>`).join('');
+          return `<select style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px" onchange="updateModel('${s.provider}','${role}',this.value)">${optHtml}</select>`;
+        };
+        const mkBadge = (src) => src === 'override' ? '<span class="badge badge-sent" style="margin-left:4px">override</span>' : '';
+        const mkReset = (role, src) => src === 'override' ? `<button class="btn" style="font-size:10px;padding:2px 6px" onclick="resetModel('${s.provider}','${role}')">Reset</button>` : '';
+        const mkRow = (label, role, model, src, opts) => `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <span style="min-width:80px;color:var(--t2);font-size:12px">${label}</span>
+          ${mkSelect(role, model, opts)} ${mkBadge(src)} ${mkReset(role, src)}
+        </div>`;
+        // Domain-specific rows
+        const domainRows = s.domains ? Object.entries(s.domains).map(([dom, d]) => {
+          const di = domainIcons[dom] || '⚙️';
+          const badge = d.source === 'override' ? 'override' : '';
+          return mkRow(di + ' ' + dom, dom, d.model, d.source, allModels(s.provider));
+        }).join('') : '';
         return `<div style="margin-bottom:12px;padding:8px;border-radius:6px;background:var(--bg2);border:1px solid var(--bdr)">
           <div style="font-weight:600;margin-bottom:6px">${icon} ${esc(s.provider)}</div>
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-            <span style="min-width:70px;color:var(--t2)">Chat:</span>
-            <select style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px"
-              onchange="updateModel('${s.provider}','chat',this.value)">${chatOpts}</select>
-            ${chatBadge}
-            ${s.chat.source === 'override' ? `<button class="btn" style="font-size:10px;padding:2px 6px" onclick="resetModel('${s.provider}','chat')">Reset</button>` : ''}
-          </div>
-          <div style="display:flex;align-items:center;gap:6px">
-            <span style="min-width:70px;color:var(--t2)">Classifier:</span>
-            <select style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px"
-              onchange="updateModel('${s.provider}','classifier',this.value)">${clsOpts}</select>
-            ${clsBadge}
-            ${s.classifier.source === 'override' ? `<button class="btn" style="font-size:10px;padding:2px 6px" onclick="resetModel('${s.provider}','classifier')">Reset</button>` : ''}
-          </div>
+          <div style="font-size:11px;color:var(--t2);margin-bottom:4px">Provider tiers</div>
+          ${mkRow('Chat', 'chat', s.chat.model, s.chat.source, options[s.provider]?.chat||[])}
+          ${mkRow('Classifier', 'classifier', s.classifier.model, s.classifier.source, options[s.provider]?.classifier||[])}
+          <div style="font-size:11px;color:var(--t2);margin:6px 0 4px;border-top:1px solid var(--bdr);padding-top:6px">Per-domain overrides <span style="opacity:.5">(optional — overrides tier above)</span></div>
+          ${domainRows}
         </div>`;
       }).join('');
     } catch (err) {

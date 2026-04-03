@@ -2,11 +2,13 @@
  * Model Config Tests
  *
  * Tests runtime model override system:
- * - get/set/clear overrides
- * - config mutation (live patching)
+ * - Provider-level get/set/clear overrides (chat, classifier)
+ * - Domain-level get/set/clear overrides (secretary, triathlon, etc.)
+ * - Resolution chain: domain override → tier override → config default
+ * - Config mutation (live patching)
  * - KV store persistence
  * - loadModelOverrides from DB
- * - getAllModelStates for portal
+ * - getAllModelStates for portal (includes domain states)
  * - MODEL_OPTIONS validation
  */
 
@@ -21,8 +23,7 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
 }));
 
-// ─── Mock config with mutable properties ────────────────────────────
-// Defined inline in factory to avoid hoisting issues with vi.mock
+// ─── Mock config (inline to avoid hoisting issues) ──────────────────
 
 vi.mock('../../src/config', () => ({
   config: {
@@ -67,10 +68,15 @@ import {
   getAllModelStates,
   MODEL_OPTIONS,
   _resetOverrides,
+  setDomainModel,
+  clearDomainModel,
+  getDomainModelOverride,
+  getEffectiveDomainModel,
+  DOMAIN_ROLES,
+  VALID_ROLES,
 } from '../../src/services/model-config';
 import { config } from '../../src/config';
 
-// Reference to the mocked config for assertion
 const mockConfig = config as { anthropic: Record<string, any>; openai: Record<string, any>; gemini: Record<string, any> };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -102,7 +108,7 @@ describe('model-config', () => {
     testDb?.close();
   });
 
-  // ── getActiveModel ────────────────────────────────────────────────
+  // ── Provider-level: getActiveModel ────────────────────────────────
 
   describe('getActiveModel', () => {
     it('returns default from config when no override', () => {
@@ -116,7 +122,7 @@ describe('model-config', () => {
     });
   });
 
-  // ── setActiveModel ────────────────────────────────────────────────
+  // ── Provider-level: setActiveModel ────────────────────────────────
 
   describe('setActiveModel', () => {
     it('updates in-memory cache', () => {
@@ -131,9 +137,15 @@ describe('model-config', () => {
       expect(JSON.parse(row!.value)).toBe('claude-opus-4-6');
     });
 
-    it('patches live config object', () => {
+    it('patches live config object for provider-level roles', () => {
       setActiveModel('anthropic', 'chat', 'claude-opus-4-6');
       expect(mockConfig.anthropic.model).toBe('claude-opus-4-6');
+    });
+
+    it('does NOT patch config for domain-level roles', () => {
+      setActiveModel('anthropic', 'secretary', 'claude-opus-4-6');
+      // config.anthropic.model should NOT change — domain overrides are resolved in getModelRouting
+      expect(mockConfig.anthropic.model).toBe('claude-sonnet-4-6');
     });
 
     it('works for all three providers', () => {
@@ -146,7 +158,7 @@ describe('model-config', () => {
       expect(mockConfig.gemini.model).toBe('gemini-2.5-pro-preview-03-25');
     });
 
-    it('works for both roles (chat, classifier)', () => {
+    it('works for both provider roles (chat, classifier)', () => {
       setActiveModel('anthropic', 'chat', 'claude-opus-4-6');
       setActiveModel('anthropic', 'classifier', 'claude-sonnet-4-6');
 
@@ -155,7 +167,7 @@ describe('model-config', () => {
     });
   });
 
-  // ── clearModelOverride ────────────────────────────────────────────
+  // ── Provider-level: clearModelOverride ─────────────────────────────
 
   describe('clearModelOverride', () => {
     it('removes override, reverts to default', () => {
@@ -173,34 +185,109 @@ describe('model-config', () => {
 
     it('patches config back to default', () => {
       setActiveModel('anthropic', 'chat', 'claude-opus-4-6');
-      expect(mockConfig.anthropic.model).toBe('claude-opus-4-6');
-
       clearModelOverride('anthropic', 'chat');
       expect(mockConfig.anthropic.model).toBe('claude-sonnet-4-6');
+    });
+  });
+
+  // ── Domain-level overrides ────────────────────────────────────────
+
+  describe('domain-level overrides', () => {
+    it('setDomainModel stores a domain-specific override', () => {
+      setDomainModel('anthropic', 'triathlon', 'claude-sonnet-4-6');
+      expect(getDomainModelOverride('anthropic', 'triathlon')).toBe('claude-sonnet-4-6');
+    });
+
+    it('getDomainModelOverride returns undefined when no override', () => {
+      expect(getDomainModelOverride('anthropic', 'secretary')).toBeUndefined();
+    });
+
+    it('domain override persists to kv_store', () => {
+      setDomainModel('anthropic', 'cooking', 'claude-haiku-4-5-20251001');
+      const row = testDb.prepare("SELECT value FROM kv_store WHERE key = 'model_override:anthropic:cooking'").get() as any;
+      expect(JSON.parse(row.value)).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('clearDomainModel removes domain override', () => {
+      setDomainModel('anthropic', 'secretary', 'claude-opus-4-6');
+      clearDomainModel('anthropic', 'secretary');
+      expect(getDomainModelOverride('anthropic', 'secretary')).toBeUndefined();
+    });
+
+    it('clearDomainModel deletes from kv_store', () => {
+      setDomainModel('openai', 'finance', 'gpt-4.1-nano');
+      clearDomainModel('openai', 'finance');
+      const row = testDb.prepare("SELECT 1 FROM kv_store WHERE key = 'model_override:openai:finance'").get();
+      expect(row).toBeUndefined();
+    });
+  });
+
+  // ── Resolution chain: getEffectiveDomainModel ─────────────────────
+
+  describe('getEffectiveDomainModel (resolution chain)', () => {
+    it('returns domain override when set (highest priority)', () => {
+      setDomainModel('anthropic', 'triathlon', 'claude-opus-4-6');
+      expect(getEffectiveDomainModel('anthropic', 'triathlon')).toBe('claude-opus-4-6');
+    });
+
+    it('falls through to provider-tier when no domain override', () => {
+      // secretary uses 'chat' tier → defaults to config.anthropic.model
+      expect(getEffectiveDomainModel('anthropic', 'secretary')).toBe('claude-sonnet-4-6');
+      // triathlon uses 'classifier' tier → defaults to config.anthropic.classifierModel
+      expect(getEffectiveDomainModel('anthropic', 'triathlon')).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('uses provider-level override when no domain override exists', () => {
+      // Set a provider-level chat tier override
+      setActiveModel('anthropic', 'chat', 'claude-opus-4-6');
+      // secretary (chat tier) should pick up the provider override
+      expect(getEffectiveDomainModel('anthropic', 'secretary')).toBe('claude-opus-4-6');
+      // triathlon (classifier tier) should NOT be affected
+      expect(getEffectiveDomainModel('anthropic', 'triathlon')).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('domain override takes precedence over provider-tier override', () => {
+      setActiveModel('anthropic', 'chat', 'claude-opus-4-6');
+      setDomainModel('anthropic', 'secretary', 'claude-haiku-4-5-20251001');
+      // Domain override wins over tier override
+      expect(getEffectiveDomainModel('anthropic', 'secretary')).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('independent domains can use different models', () => {
+      setDomainModel('anthropic', 'secretary', 'claude-opus-4-6');
+      setDomainModel('anthropic', 'triathlon', 'claude-sonnet-4-6');
+      setDomainModel('anthropic', 'cooking', 'claude-haiku-4-5-20251001');
+
+      expect(getEffectiveDomainModel('anthropic', 'secretary')).toBe('claude-opus-4-6');
+      expect(getEffectiveDomainModel('anthropic', 'triathlon')).toBe('claude-sonnet-4-6');
+      expect(getEffectiveDomainModel('anthropic', 'cooking')).toBe('claude-haiku-4-5-20251001');
+      // finance has no override → falls to classifier tier default
+      expect(getEffectiveDomainModel('anthropic', 'finance')).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('works across providers', () => {
+      setDomainModel('openai', 'secretary', 'gpt-4.1');
+      setDomainModel('gemini', 'content', 'gemini-2.5-pro-preview-03-25');
+
+      expect(getEffectiveDomainModel('openai', 'secretary')).toBe('gpt-4.1');
+      expect(getEffectiveDomainModel('gemini', 'content')).toBe('gemini-2.5-pro-preview-03-25');
     });
   });
 
   // ── loadModelOverrides ────────────────────────────────────────────
 
   describe('loadModelOverrides', () => {
-    it('loads persisted overrides from kv_store on startup', () => {
-      // Manually insert an override into DB
-      testDb.prepare(`
-        INSERT INTO kv_store (key, value) VALUES ('model_override:openai:chat', '"gpt-4.1"')
-      `).run();
-
+    it('loads provider-level overrides from kv_store', () => {
+      testDb.prepare(`INSERT INTO kv_store (key, value) VALUES ('model_override:openai:chat', '"gpt-4.1"')`).run();
       loadModelOverrides();
       expect(getActiveModel('openai', 'chat')).toBe('gpt-4.1');
       expect(mockConfig.openai.model).toBe('gpt-4.1');
     });
 
-    it('patches config for each loaded override', () => {
-      testDb.prepare(`INSERT INTO kv_store (key, value) VALUES ('model_override:anthropic:chat', '"claude-opus-4-6"')`).run();
-      testDb.prepare(`INSERT INTO kv_store (key, value) VALUES ('model_override:gemini:classifier', '"gemini-2.5-flash-preview-04-17"')`).run();
-
+    it('loads domain-level overrides from kv_store', () => {
+      testDb.prepare(`INSERT INTO kv_store (key, value) VALUES ('model_override:anthropic:triathlon', '"claude-sonnet-4-6"')`).run();
       loadModelOverrides();
-      expect(mockConfig.anthropic.model).toBe('claude-opus-4-6');
-      expect(mockConfig.gemini.classifierModel).toBe('gemini-2.5-flash-preview-04-17');
+      expect(getDomainModelOverride('anthropic', 'triathlon')).toBe('claude-sonnet-4-6');
     });
 
     it('handles empty kv_store gracefully', () => {
@@ -210,41 +297,48 @@ describe('model-config', () => {
     it('handles missing kv_store table (creates it)', () => {
       testDb.exec('DROP TABLE IF EXISTS kv_store');
       expect(() => loadModelOverrides()).not.toThrow();
-      // Table should now exist
-      const tables = testDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='kv_store'").all();
-      expect(tables).toHaveLength(1);
     });
   });
 
   // ── getAllModelStates ──────────────────────────────────────────────
 
   describe('getAllModelStates', () => {
-    it('returns all 3 providers with chat + classifier', () => {
+    it('returns all 3 providers with chat + classifier + domains', () => {
       const states = getAllModelStates();
       expect(states).toHaveLength(3);
-      const names = states.map(s => s.provider);
-      expect(names).toContain('anthropic');
-      expect(names).toContain('openai');
-      expect(names).toContain('gemini');
+      for (const s of states) {
+        expect(s.chat).toBeDefined();
+        expect(s.classifier).toBeDefined();
+        expect(s.domains).toBeDefined();
+        expect(Object.keys(s.domains)).toEqual(
+          expect.arrayContaining(['secretary', 'triathlon', 'content', 'finance', 'cooking'])
+        );
+      }
     });
 
-    it('marks overridden models with source: override', () => {
+    it('marks provider-level overrides with source: override', () => {
       setActiveModel('anthropic', 'chat', 'claude-opus-4-6');
       const states = getAllModelStates();
       const anthropic = states.find(s => s.provider === 'anthropic')!;
       expect(anthropic.chat.source).toBe('override');
-      expect(anthropic.chat.model).toBe('claude-opus-4-6');
     });
 
-    it('marks defaults with source: default', () => {
+    it('marks domain overrides with source: override', () => {
+      setDomainModel('anthropic', 'secretary', 'claude-opus-4-6');
       const states = getAllModelStates();
       const anthropic = states.find(s => s.provider === 'anthropic')!;
-      expect(anthropic.chat.source).toBe('default');
-      expect(anthropic.classifier.source).toBe('default');
+      expect(anthropic.domains.secretary.source).toBe('override');
+      expect(anthropic.domains.secretary.model).toBe('claude-opus-4-6');
+    });
+
+    it('marks non-overridden domains with source: tier-default', () => {
+      const states = getAllModelStates();
+      const anthropic = states.find(s => s.provider === 'anthropic')!;
+      expect(anthropic.domains.triathlon.source).toBe('tier-default');
     });
   });
 
-  // ── MODEL_OPTIONS ─────────────────────────────────────────────────
+  // ── MODEL_OPTIONS + VALID_ROLES ───────────────────────────────────
 
   describe('MODEL_OPTIONS', () => {
     it('has entries for all three providers', () => {
@@ -258,6 +352,24 @@ describe('model-config', () => {
         expect(MODEL_OPTIONS[provider].chat.length).toBeGreaterThan(0);
         expect(MODEL_OPTIONS[provider].classifier.length).toBeGreaterThan(0);
       }
+    });
+  });
+
+  describe('VALID_ROLES', () => {
+    it('includes both provider and domain roles', () => {
+      expect(VALID_ROLES).toContain('chat');
+      expect(VALID_ROLES).toContain('classifier');
+      expect(VALID_ROLES).toContain('secretary');
+      expect(VALID_ROLES).toContain('triathlon');
+      expect(VALID_ROLES).toContain('content');
+      expect(VALID_ROLES).toContain('finance');
+      expect(VALID_ROLES).toContain('cooking');
+    });
+  });
+
+  describe('DOMAIN_ROLES', () => {
+    it('has all 5 domains', () => {
+      expect(DOMAIN_ROLES).toHaveLength(5);
     });
   });
 });

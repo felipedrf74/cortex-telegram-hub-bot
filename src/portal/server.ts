@@ -1452,7 +1452,7 @@ export function createPortalServer(bot: Bot): http.Server {
     try {
       const { provider, role, model } = req.body;
       const validProviders = ['anthropic', 'openai', 'gemini'];
-      const validRoles = ['chat', 'classifier'];
+      const validRoles = ['chat', 'classifier', 'secretary', 'triathlon', 'content', 'finance', 'cooking'];
       if (!validProviders.includes(provider) || !validRoles.includes(role) || !model) {
         res.status(400).json({ error: 'Invalid provider, role, or model' });
         return;

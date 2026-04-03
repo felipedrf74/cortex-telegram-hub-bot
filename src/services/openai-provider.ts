@@ -220,7 +220,7 @@ ${message}`;
     stateContext: string,
     maxTokensOverride?: number,
   ): Promise<AICallResult> {
-    const routing = getModelRouting(config.openai, domain);
+    const routing = getModelRouting(config.openai, domain, 'openai');
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
@@ -258,7 +258,7 @@ ${message}`;
     stateContext: string,
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult> {
-    const routing = getModelRouting(config.openai, domain);
+    const routing = getModelRouting(config.openai, domain, 'openai');
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
@@ -331,7 +331,7 @@ ${message}`;
     currentMessage: string,
     stateContext: string,
   ): AsyncGenerator<string, AICallResult, undefined> {
-    const routing = getModelRouting(config.openai, domain);
+    const routing = getModelRouting(config.openai, domain, 'openai');
     const systemPrompt = getDomainSystemPrompt(domain);
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
