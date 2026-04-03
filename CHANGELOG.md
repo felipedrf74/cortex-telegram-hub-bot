@@ -7,7 +7,18 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 
 ### Bug Fixes
 
+- **portal**: Expose button handlers to global scope — fixes invite codes, skill grid, model config ([`42df9a0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/42df9a03d27a5b6c02d458a0cada9c930e02599a))
+
+## [4.7.3] — 2026-04-03
+
+### Bug Fixes
+
 - **timeout**: Auto-scale AI timeout to 90s for streaming/Sonnet calls ([`ceda18a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/ceda18a48a417e93e0a6609af8f47d1c7d47c324))
+
+## [4.7.2] — 2026-04-03
+
+### Bug Fixes
+
 - **portal**: Tabbed layout, skill defaults, invite codes, sub-skill errors ([`9e2aeb0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9e2aeb0b89973ea2c263e33ed2d7af805381d395))
 
 ## [4.7.1] — 2026-04-03
