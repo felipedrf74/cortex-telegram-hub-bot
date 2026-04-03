@@ -53,7 +53,7 @@ export async function trackedCreate(
   client: Anthropic,
   params: Anthropic.MessageCreateParamsNonStreaming,
   category: string,
-  options?: { userId?: number; isUserMessage?: boolean },
+  options?: { userId?: number; isUserMessage?: boolean; timeoutMs?: number },
 ): Promise<Anthropic.Message> {
   const start = Date.now();
 
@@ -63,7 +63,9 @@ export async function trackedCreate(
   const isLargeRequest = params.max_tokens >= 4096;
   const useStreaming = isSonnet || isLargeRequest;
 
-  const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+  // Timeout: use caller override, or auto-scale for streaming/large requests (90s), default 30s
+  const defaultTimeout = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+  const AI_CALL_TIMEOUT_MS = options?.timeoutMs ?? (useStreaming ? Math.max(defaultTimeout, 90_000) : defaultTimeout);
 
   let response: Anthropic.Message;
   if (useStreaming) {
