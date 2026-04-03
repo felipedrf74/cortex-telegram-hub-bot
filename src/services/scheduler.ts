@@ -35,7 +35,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
-import { runDatabaseBackup } from './backup';
+import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -106,6 +106,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('training_plan_adjust', 'Training Plan Auto-Adjust', '0 19 * * 0', 'triathlon');
   registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
   registerJob('db_backup',        'Database Backup',        backupCron,        'system');
+  registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -623,6 +624,23 @@ export function startScheduler(bot: Bot): void {
         } catch {
           // swallow — notification is best-effort
         }
+      }
+    }), { timezone: tz });
+
+    // ── Weekly Restore Test (Sunday 04:00) ─────────────────────────
+    cron.schedule('0 4 * * 0', wrapJob('db_restore_test', async () => {
+      const result = await weeklyRestoreTest();
+      if (!result.success) {
+        logger.error({ details: result.details }, 'Weekly restore test FAILED');
+        for (const userId of config.telegram.allowedUserIds) {
+          try {
+            await bot.api.sendMessage(userId,
+              `🚨 <b>Weekly Restore Test FAILED</b>\n\n<code>${escapeHtml(result.details.slice(0, 200))}</code>`,
+              { parse_mode: 'HTML' });
+          } catch {}
+        }
+      } else {
+        logger.info({ details: result.details }, 'Weekly restore test passed');
       }
     }), { timezone: tz });
   }

@@ -144,6 +144,8 @@ export const config = {
     dir: process.env.BACKUP_DIR || './data/backups',
     retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10),
     time: process.env.BACKUP_TIME || '03:00',
+    encrypt: (process.env.BACKUP_ENCRYPT || 'false') === 'true',
+    encryptionKey: process.env.BACKUP_KEY || '',
   },
   // ── Status Portal ──────────────────────────────────────────────────
   portal: {
