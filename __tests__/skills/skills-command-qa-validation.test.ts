@@ -272,11 +272,12 @@ describe('QA: /skills and /skill listed in help', () => {
   });
 
   it('help text includes /skills and /skill', () => {
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+    // HELP_TEXT was extracted to src/handlers/help-text.ts
+    const helpSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/handlers/help-text.ts'), 'utf-8',
     );
-    expect(botSource).toContain('/skills');
-    expect(botSource).toContain('/skill [name]');
+    expect(helpSource).toContain('/skills');
+    expect(helpSource).toContain('/skill [name]');
   });
 });
 

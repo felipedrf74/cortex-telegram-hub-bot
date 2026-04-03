@@ -235,27 +235,23 @@ async function handleDiscoverCommand(ctx: Context, mode: 'full' | 'news' | 'plat
   }
 }
 
-// ─── Rate Limiter ────────────────────────────────────────────────────
+// ─── Shared State (extracted to handlers/shared-state.ts) ────────────
+import {
+  isRateLimited, pendingEdits as _pendingEdits, pendingOnboarding as _pendingOnboarding,
+  lastActiveDomain as _lastActiveDomain, pendingCalendarRef as _pendingCalendarRef,
+  CONTINUITY_WINDOW_MS as _CONTINUITY_WINDOW_MS, enqueue as _enqueue,
+  isHtmlParseError as _isHtmlParseError,
+  setLastActiveDomain as _setLastActiveDomainFn,
+  type PendingEdit, type PendingOnboarding,
+} from './handlers/shared-state';
+import { HELP_TEXT as _HELP_TEXT } from './handlers/help-text';
 
-const rateLimitMap = new Map<number, number[]>();
-
-function isRateLimited(userId: number): boolean {
-  const ts = Date.now();
-  const window = 60_000; // 1 minute
-  const max = config.rateLimit.maxMessagesPerMinute;
-
-  let timestamps = rateLimitMap.get(userId) || [];
-  timestamps = timestamps.filter((t) => ts - t < window);
-
-  if (timestamps.length >= max) {
-    rateLimitMap.set(userId, timestamps); // update pruned list, but don't record blocked msg
-    return true;
-  }
-
-  timestamps.push(ts);
-  rateLimitMap.set(userId, timestamps);
-  return false;
-}
+// Re-alias for backward compatibility within this file
+const pendingEdits = _pendingEdits;
+const pendingOnboarding = _pendingOnboarding;
+const lastActiveDomain = _lastActiveDomain;
+const pendingCalendarRef = _pendingCalendarRef;
+const CONTINUITY_WINDOW_MS = _CONTINUITY_WINDOW_MS;
 
 // ─── Domain Handler Map ──────────────────────────────────────────────
 
@@ -267,21 +263,8 @@ const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Prom
   cooking: handleCooking,
 };
 
-// ─── Processing Queue (sequential per user) ─────────────────────────
-
-const processingQueue = new Map<number, Promise<void>>();
-
-function enqueue(userId: number, fn: () => Promise<void>): void {
-  const prev = processingQueue.get(userId) || Promise.resolve();
-  const next = prev
-    .then(fn)
-    .catch((err) => { logger.error({ err, userId }, 'Queued handler failed'); })
-    .finally(() => {
-      // Clean up Map entry when the chain settles (only if still the latest)
-      if (processingQueue.get(userId) === next) processingQueue.delete(userId);
-    });
-  processingQueue.set(userId, next);
-}
+// Processing queue imported from shared-state
+const enqueue = _enqueue;
 
 // ─── Inline Keyboard Callback Store (shared from utils/callback-store.ts) ───
 
@@ -305,13 +288,7 @@ async function downloadTelegramFile(bot: Bot, fileId: string): Promise<{ base64:
  * grammY wraps these as GrammyError with description "Bad Request: can't parse entities…"
  * Only these should trigger a plaintext fallback; other errors (network, rate-limit) must propagate.
  */
-function isHtmlParseError(err: unknown): boolean {
-  if (err && typeof err === 'object') {
-    const msg = ((err as any).message || (err as any).description || '').toLowerCase();
-    return msg.includes("can't parse entities") || msg.includes('parse entities');
-  }
-  return false;
-}
+// isHtmlParseError imported from shared-state
 
 // ─── Coach Recommendation → Calendar Update ────────────────────────
 
@@ -378,71 +355,14 @@ async function parseCaptionInfo(caption: string): Promise<CalendarCaptionInfo> {
   return { categories: [cat], prefix: '', label: 'Pessoal' };
 }
 
-// ─── Pending Edit State (per user) ──────────────────────────────────
+// Types and state imported from shared-state.ts above
+// PendingEdit, PendingOnboarding, LastDomainState, pendingEdits, pendingOnboarding,
+// lastActiveDomain, pendingCalendarRef, CONTINUITY_WINDOW_MS are all imported
 
-interface PendingEdit {
-  listId: string;
-  taskId: string;
-  title: string;
-  listName: string;
-  field: string;
-  expires: number;
-}
-
-const pendingEdits = new Map<number, PendingEdit>();
-
-// ─── Pending Onboarding Text Input (per user) ──────────────────────
-
-interface PendingOnboarding {
-  questionnaire: string;
-  step: onboarding.QuestionStep;
-  expires: number;
-}
-
-const pendingOnboarding = new Map<number, PendingOnboarding>();
-
-// ─── Last Active Domain (per user) ──────────────────────────────────
-
-interface LastDomainState {
-  domain: DomainName;
-  timestamp: number;
-}
-
-const lastActiveDomain = new Map<number, LastDomainState>();
-
-/** Tracks the last pending calendar callback ref per user, so text follow-ups can reference it */
-const pendingCalendarRef = new Map<number, { ref: string; timestamp: number }>();
-
-/** Conversation continuity window — if user replies within this time, prefer sticking with the same domain */
-const CONTINUITY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-
-// ─── Periodic Memory Cleanup ─────────────────────────────────────────
-// Prevent unbounded growth of per-user Maps over long-running sessions.
-setInterval(() => {
-  const now = Date.now();
-
-  // Clean up stale rate-limit entries (no timestamps within the last minute)
-  for (const [userId, timestamps] of rateLimitMap) {
-    const fresh = timestamps.filter((t) => now - t < 60_000);
-    if (fresh.length === 0) rateLimitMap.delete(userId);
-    else rateLimitMap.set(userId, fresh);
-  }
-
-  // Clean up expired lastActiveDomain entries (older than continuity window)
-  for (const [userId, state] of lastActiveDomain) {
-    if (now - state.timestamp > CONTINUITY_WINDOW_MS) lastActiveDomain.delete(userId);
-  }
-
-  // Clean up expired pending edits (2-min TTL)
-  for (const [userId, edit] of pendingEdits) {
-    if (now > edit.expires) pendingEdits.delete(userId);
-  }
-}, 10 * 60 * 1000); // every 10 minutes
-
-/** Set last active domain for a user (used by scheduler for cron-triggered messages) */
-export function setLastActiveDomain(userId: number, domain: DomainName): void {
-  lastActiveDomain.set(userId, { domain, timestamp: Date.now() });
-}
+/** Re-export setLastActiveDomain for scheduler.ts */
+export { setLastActiveDomain } from './handlers/shared-state';
+const isHtmlParseError = _isHtmlParseError;
+const HELP_TEXT = _HELP_TEXT;
 
 // ─── Bot Setup ───────────────────────────────────────────────────────
 
@@ -4477,121 +4397,3 @@ async function handleWeekOverview(ctx: Context): Promise<void> {
 }
 
 // ─── Help Text ───────────────────────────────────────────────────────
-
-const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
-
-<b>📋 MICROSOFT TO DO</b>
-/lists — Show all task lists
-/tasks [list] — Tasks in a list
-/alltasks — All tasks across all lists
-/newtask [task] — Create task
-/newtask [list] | [task] — Create in specific list
-/done [task] — Complete a task
-/undone [task] — Reopen a task
-/edittask [task] | [new title] — Rename a task
-/notetask [task] | [note] — Add description
-/movetask [task] | [list] — Move to another list
-/addstep [task] | [step] — Add checklist step
-/steps [task] — Show checklist steps
-/newlist [name] — Create a list
-/deletelist [name] — Delete a list
-/deletetask [task] — Delete a task
-/due [task] | [date] — Set due date
-/remind [task] | [time] — Set reminder
-/priority [task] | [level] — Set importance
-/search [query] — Search tasks
-/todosummary — Task summary
-/overdue — All overdue tasks
-/duetoday — Tasks due today
-/dueweek — Tasks due this week
-/completed [list] — Recently completed tasks
-
-<b>📅 SCHEDULE &amp; SECRETARY</b>
-/day — Today's schedule
-/week — Week overview
-/plan — Tomorrow's plan
-/review — Weekly review
-
-<b>🏋️ TRIATHLON &amp; COACH</b>
-/coach — Daily training analysis (Garmin data + calendar)
-/checkin — How I feel today
-/gym — Gym program
-/run — Running plan
-/bike — Cycling plan
-/meal — Carnivore meal plan
-/macros — Macros tracking
-/deload — Deload recommendations
-/pain — Pain/injury report
-
-<b>📹 CONTENT — Quick Guide</b>
-• Want ideas? → Wait for Tue/Thu/Fri auto-delivery or /contenttopic
-• Research trends? → /discover (--news or --platform)
-• Reaction angles? → /reaction [topic]
-• Ready to write? → /script [topic]
-• Have a script? → /repurpose to multiply
-• Published? → /published [URL] to close pipeline
-• Track performance? → /feedback [URL]
-
-<b>🔍 DISCOVER &amp; RESEARCH</b>
-/discover — Full content discovery (trending + ideas)
-/discover --news — Hot news scan
-/discover --platform — Cross-platform trends
-/deepsearch [topic] — Deep research pipeline
-/sources [topic] — Curated source list
-/reaction [topic] — Find reaction-worthy content
-
-<b>✍️ CREATE</b>
-/script [topic] — Full video script (research + AI intelligence)
-/hooks [topic] — Generate scroll-stopping hooks
-/titles [topic] — A/B title variants
-/genthumbnail [title] — Thumbnail concepts
-/gencaption [topic] — Instagram caption + hashtags
-/repurpose [topic] — 1 video → Reels + Stories + Tweets
-
-<b>📊 ANALYZE</b>
-/competitor [channel] — Reverse-engineer a channel
-/gaps [niche] — Find content gaps
-/seo [topic] — Keyword analysis
-/feedback [url] [views] [ret%] — Log performance
-/report [week|month] — Content performance report
-
-<b>📚 KNOWLEDGE</b>
-/learnfrom [url] — Learn from a YouTube channel
-/references — List reference channels
-/relearn — Re-analyze all channels
-/addbook Title | Author — Add book to library
-/books — View book library
-/bookidea [topic] — Search books for ideas
-
-<b>📝 VIDEO TOOLS</b>
-/transcribe [url] — Extract YouTube transcript
-/studyvideo [url] — Deep study: hooks, structure, reel cuts
-/ideas [date] — View ideas by date
-/ideas saved — View saved ideas
-
-<b>📄 FATURAS</b>
-/amazon [YYYY-MM] [--force] — Recolher faturas Amazon
-/uber [YYYY-MM] [--force] — Recolher faturas Uber
-📸 Send photo of invoice → Auto-files
-
-<b>🔬 AUTORESEARCH</b>
-/autoresearch [target] [rounds] [--dry] — Run prompt optimization
-/evalscore [target] — Score current prompt without mutation
-
-<b>🧩 SKILLS</b>
-/skills — List installed skills with status
-/skill [name] — Detail view of a skill
-/skill [name] enable|disable — Toggle a skill on/off
-/skill [name] modules — List sub-modules
-/skill [name] module [sub] enable|disable — Toggle a sub-module
-
-<b>🔧 SYSTEM</b>
-/help — This menu
-/status — Current state overview
-/skills — List installed skills
-/skill [name] — Skill detail view
-/clear [domain] — Clear conversation history
-/garminmfa [code] — Submit Garmin MFA code
-
-💡 Just type naturally — I'll route to the right domain.
-🌐 Portal: http://your-server:8200`;
