@@ -31,6 +31,7 @@ import { logger } from '../utils/logger';
 import { getDomainSystemPrompt, getClassifierSystemPrompt, TOOLS } from './anthropic';
 import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
+import { withTimeout } from '../utils/timeout';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -179,9 +180,11 @@ export class GeminiProvider implements AIProvider {
   // ─── Retry with exponential backoff ───────────────────────────────
 
   private async withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+    const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        return await fn();
+        return await withTimeout(fn(), AI_CALL_TIMEOUT_MS);
       } catch (err: unknown) {
         const e = err as { status?: number; response?: { status?: number }; message?: string };
         const status = e?.status ?? e?.response?.status;

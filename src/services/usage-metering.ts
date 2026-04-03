@@ -206,31 +206,56 @@ export function setQuota(
   );
 }
 
-/** Check whether a user is within their daily quota. */
+/**
+ * Check whether a user is within their daily quota.
+ * Reads limits from the users table (TASK-02) or falls back to usage_quotas.
+ * Returns { allowed: true } or { allowed: false, exceeded: [...] }.
+ */
 export function checkQuota(userId: number): QuotaStatus {
   const usage = getDailyUsage(userId);
-  const quota = getQuota(userId);
 
-  if (!quota) {
-    return { allowed: true, usage, quota: null, exceeded: [] };
+  // Try to get limits from users table first (TASK-02)
+  let limits: { messages: number; tokens: number; cost: number } | null = null;
+  try {
+    const { getUserByTelegramId } = require('./user-service');
+    const user = getUserByTelegramId(userId);
+    if (user) {
+      limits = {
+        messages: user.daily_message_limit,
+        tokens: user.daily_token_limit,
+        cost: user.daily_cost_limit_usd,
+      };
+    }
+  } catch { /* user-service not available — fall through */ }
+
+  // Fall back to legacy usage_quotas table
+  if (!limits) {
+    const quota = getQuota(userId);
+    if (!quota) return { allowed: true, usage, quota: null, exceeded: [] };
+    limits = {
+      messages: quota.dailyMessageLimit ?? 0,
+      tokens: quota.dailyTokenLimit ?? 0,
+      cost: quota.dailyCostLimitUsd ?? 0,
+    };
   }
 
   const exceeded: ('messages' | 'tokens' | 'cost')[] = [];
 
-  if (quota.dailyMessageLimit !== null && usage.messageCount >= quota.dailyMessageLimit) {
+  // 0 = unlimited (owner tier and unset limits)
+  if (limits.messages > 0 && usage.messageCount >= limits.messages) {
     exceeded.push('messages');
   }
-  if (quota.dailyTokenLimit !== null && usage.totalTokens >= quota.dailyTokenLimit) {
+  if (limits.tokens > 0 && usage.totalTokens >= limits.tokens) {
     exceeded.push('tokens');
   }
-  if (quota.dailyCostLimitUsd !== null && usage.costUsd >= quota.dailyCostLimitUsd) {
+  if (limits.cost > 0 && usage.costUsd >= limits.cost) {
     exceeded.push('cost');
   }
 
   return {
     allowed: exceeded.length === 0,
     usage,
-    quota,
+    quota: { userId, dailyMessageLimit: limits.messages, dailyTokenLimit: limits.tokens, dailyCostLimitUsd: limits.cost },
     exceeded,
   };
 }

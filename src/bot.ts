@@ -3737,6 +3737,30 @@ async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
       }
     }
 
+    // Pre-flight quota check — block before making any AI call
+    if (userId) {
+      try {
+        const { isOwner } = require('./services/user-service');
+        if (!isOwner(userId)) {
+          const { checkQuota } = require('./services/usage-metering');
+          const quotaCheck = checkQuota(userId);
+          if (!quotaCheck.allowed) {
+            const reasons = quotaCheck.exceeded.map((r: string) => {
+              if (r === 'messages') return `📨 Message limit: ${quotaCheck.quota?.dailyMessageLimit}/day`;
+              if (r === 'tokens') return '🔤 Token limit reached';
+              if (r === 'cost') return '💰 Cost limit reached';
+              return r;
+            }).join('\n');
+            await ctx.reply(
+              `⚠️ You've reached your daily limit:\n\n${reasons}\n\n` +
+              `Your limits reset at midnight (${config.app.timezone}).`
+            );
+            return;
+          }
+        }
+      } catch { /* quota check not available — allow */ }
+    }
+
     const route = await routeMessage(text, activeContext);
     logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
 

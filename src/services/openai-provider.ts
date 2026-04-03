@@ -21,6 +21,7 @@ import { logger } from '../utils/logger';
 import { getDomainSystemPrompt, getClassifierSystemPrompt, TOOLS } from './anthropic';
 import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
+import { withTimeout } from '../utils/timeout';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -59,8 +60,10 @@ async function trackedCompletion(
   params: OpenAI.ChatCompletionCreateParamsNonStreaming,
   category: string,
 ): Promise<OpenAI.ChatCompletion> {
+  const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+
   const start = Date.now();
-  const response = await client.chat.completions.create(params);
+  const response = await withTimeout(client.chat.completions.create(params), AI_CALL_TIMEOUT_MS);
   const durationMs = Date.now() - start;
 
   const usage = response.usage;

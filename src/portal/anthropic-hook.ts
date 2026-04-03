@@ -11,6 +11,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../services/database';
 import { pushEvent } from './telemetry';
 import { logger } from '../utils/logger';
+import { withTimeout } from '../utils/timeout';
 
 // ─── Per-million-token pricing (update when Anthropic changes rates) ─
 
@@ -62,15 +63,17 @@ export async function trackedCreate(
   const isLargeRequest = params.max_tokens >= 4096;
   const useStreaming = isSonnet || isLargeRequest;
 
+  const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+
   let response: Anthropic.Message;
   if (useStreaming) {
-    const stream = await client.messages.stream({
-      ...params,
-      stream: true,
-    });
-    response = await stream.finalMessage();
+    const streamPromise = (async () => {
+      const stream = await client.messages.stream({ ...params, stream: true });
+      return stream.finalMessage();
+    })();
+    response = await withTimeout(streamPromise, AI_CALL_TIMEOUT_MS);
   } else {
-    response = await client.messages.create(params);
+    response = await withTimeout(client.messages.create(params), AI_CALL_TIMEOUT_MS);
   }
 
   const durationMs = Date.now() - start;

@@ -182,6 +182,12 @@ export const config = {
   rateLimit: {
     maxMessagesPerMinute: 30,
   },
+  // ── AI Safety ─────────────────────────────────────────────────────
+  aiSafety: {
+    callTimeoutMs: parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10),
+    globalDailyLimitUsd: parseFloat(process.env.GLOBAL_DAILY_COST_LIMIT || '10.00'),
+    alertThresholdPercent: parseFloat(process.env.COST_ALERT_THRESHOLD || '0.80'),
+  },
 } as const;
 
 // Fail-fast: empty allowedUserIds would silently reject all messages

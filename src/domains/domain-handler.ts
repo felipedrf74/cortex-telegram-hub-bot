@@ -118,40 +118,49 @@ export async function handleSimpleDomain(
   const history = getConversationHistory(userId ?? 0, domain);
   const stateContext = await buildSimpleStateContext(domain, userId);
 
-  let result = await callDomain(domain, history, message, stateContext, maxTokensOverride, userId);
-  let finalText = result.text;
+  try {
+    let result = await callDomain(domain, history, message, stateContext, maxTokensOverride, userId);
+    let finalText = result.text;
 
-  const toolConversation: Anthropic.MessageParam[] = [];
-  const toolsUsed: string[] = [];
-  let iterations = 0;
-  while (result.toolCalls.length > 0 && iterations < maxIterations) {
-    iterations++;
-    const assistantContent: Anthropic.ContentBlock[] = [];
-    if (result.text) assistantContent.push({ type: 'text', text: result.text } as Anthropic.ContentBlock);
-    for (const tc of result.toolCalls) {
-      assistantContent.push(tc);
-      toolsUsed.push(tc.name);
+    const toolConversation: Anthropic.MessageParam[] = [];
+    const toolsUsed: string[] = [];
+    let iterations = 0;
+    while (result.toolCalls.length > 0 && iterations < maxIterations) {
+      iterations++;
+      const assistantContent: Anthropic.ContentBlock[] = [];
+      if (result.text) assistantContent.push({ type: 'text', text: result.text } as Anthropic.ContentBlock);
+      for (const tc of result.toolCalls) {
+        assistantContent.push(tc);
+        toolsUsed.push(tc.name);
+      }
+      const toolResults = await Promise.all(
+        result.toolCalls.map(async (tc) => ({
+          type: 'tool_result' as const,
+          tool_use_id: tc.id,
+          content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
+        }))
+      );
+      toolConversation.push(
+        { role: 'assistant' as const, content: assistantContent },
+        { role: 'user' as const, content: toolResults },
+      );
+      result = await continueWithToolResults(domain, history, message, stateContext, toolConversation, userId);
+      finalText = result.text;
     }
-    const toolResults = await Promise.all(
-      result.toolCalls.map(async (tc) => ({
-        type: 'tool_result' as const,
-        tool_use_id: tc.id,
-        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
-      }))
-    );
-    toolConversation.push(
-      { role: 'assistant' as const, content: assistantContent },
-      { role: 'user' as const, content: toolResults },
-    );
-    result = await continueWithToolResults(domain, history, message, stateContext, toolConversation, userId);
-    finalText = result.text;
+
+    addToConversation(userId ?? 0, domain, 'user', message);
+    const storedText = toolsUsed.length > 0
+      ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+      : finalText;
+    addToConversation(userId ?? 0, domain, 'assistant', storedText);
+
+    return { text: finalText, domain };
+  } catch (err: unknown) {
+    // Handle AI timeout gracefully
+    const { AITimeoutError } = require('../utils/timeout');
+    if (err instanceof AITimeoutError) {
+      return { text: '⏱ Sorry, I took too long to respond. Please try again with a simpler question.', domain };
+    }
+    throw err;
   }
-
-  addToConversation(userId ?? 0, domain, 'user', message);
-  const storedText = toolsUsed.length > 0
-    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
-    : finalText;
-  addToConversation(userId ?? 0, domain, 'assistant', storedText);
-
-  return { text: finalText, domain };
 }
