@@ -110,9 +110,6 @@ export function startScheduler(bot: Bot): void {
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
 
-  // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
-  seedJobLastRunFromHistory();
-
   // ── Reminder checker (every minute) ────────────────────────────────
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
     const dueReminders = getDueReminders();

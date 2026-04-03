@@ -1830,6 +1830,15 @@ export function createPortalServer(bot: Bot): http.Server {
   // Expire stale webhook subscriptions on server start
   try { expireSubscriptions(); } catch { /* non-critical */ }
 
+  // Handle listen errors gracefully — EADDRINUSE should NOT crash the bot
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error({ port, bind }, `Portal port ${port} already in use — portal disabled but bot continues`);
+    } else {
+      logger.error({ err, port, bind }, 'Portal server error');
+    }
+  });
+
   server.listen(port, bind, () => {
     logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
     if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {
