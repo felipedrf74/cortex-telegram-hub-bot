@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import crypto from 'crypto';
 import { storeCallback, getCallback } from './utils/callback-store';
 import { Bot, Context, GrammyError, HttpError, InlineKeyboard, InputFile } from 'grammy';
@@ -9,6 +11,9 @@ import { DomainName } from './domains/types';
 import { handleSecretary } from './domains/secretary';
 import { handleTriathlon } from './domains/triathlon';
 import { handleContent } from './domains/content-creator';
+import { handleFinance } from './domains/finance';
+import { handleCooking } from './domains/cooking';
+import * as onboarding from './services/onboarding';
 import { getActiveReminders } from './state/reminders';
 import { clearConversation, clearAllConversations, addToConversation, getLastAssistantMessage } from './state/conversation';
 import {
@@ -25,6 +30,7 @@ import { classifyAndExtractImage, ImageInvoiceResult, ImageCalendarResult, Image
 import { runContentDiscovery } from './services/content-discovery';
 import { saveIdea, getSavedIdeas, markIdeaUsed, deleteIdea } from './state/saved-ideas';
 import { InvoiceAnalysis, fileInvoice, isInvoiceFilingConfigured, testSshConnection, PT_MONTHS } from './services/invoice-filer';
+import { addTransaction, parseReceiptAmount } from './services/finance-tracker';
 import { enqueueInvoice, getPendingCount } from './services/invoice-queue';
 import { collectMonthlyInvoices, formatCollectionNotification, getBuiltinVendors, getAllVendors } from './services/invoice-collector';
 import {
@@ -71,6 +77,8 @@ import { handlePipelineStatus, handleFilmedStage, handleEditingStage, handlePubl
 import { handleAddBook, handleBookNote, handleListBooks, handleBookIdea } from './commands/books';
 import { handleAddSEOKeyword, handleSEORank } from './agents/seo-agent';
 import { handleAutoresearch, handleEvalScore } from './commands/autoresearch';
+import { getAllSkillStatuses, getSkillStatus, type SkillStatus } from './skills/skill-manager';
+import { handleSkillsList, handleSkillCommand } from './commands/skills';
 import fs from 'fs';
 import path from 'path';
 
@@ -251,10 +259,12 @@ function isRateLimited(userId: number): boolean {
 
 // ─── Domain Handler Map ──────────────────────────────────────────────
 
-const DOMAIN_HANDLERS: Record<DomainName, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> = {
+const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> = {
   secretary: handleSecretary,
   triathlon: handleTriathlon,
   content: handleContent,
+  finance: handleFinance,
+  cooking: handleCooking,
 };
 
 // ─── Processing Queue (sequential per user) ─────────────────────────
@@ -381,6 +391,16 @@ interface PendingEdit {
 
 const pendingEdits = new Map<number, PendingEdit>();
 
+// ─── Pending Onboarding Text Input (per user) ──────────────────────
+
+interface PendingOnboarding {
+  questionnaire: string;
+  step: onboarding.QuestionStep;
+  expires: number;
+}
+
+const pendingOnboarding = new Map<number, PendingOnboarding>();
+
 // ─── Last Active Domain (per user) ──────────────────────────────────
 
 interface LastDomainState {
@@ -474,8 +494,31 @@ export function createBot(): Bot {
     );
   });
 
+  bot.command('version', async (ctx) => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+    const commitHash = process.env.GIT_COMMIT || 'dev';
+    const nodeVersion = process.version;
+    const uptime = process.uptime();
+    const uptimeStr = `${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`;
+    await ctx.reply(
+      `<b>Nexus Hub</b> v${pkg.version}\n` +
+      `Commit: <code>${commitHash}</code>\n` +
+      `Node: ${nodeVersion}\n` +
+      `Uptime: ${uptimeStr}`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
   bot.command('help', async (ctx) => {
     await ctx.reply(HELP_TEXT, { parse_mode: 'HTML' });
+  });
+
+  bot.command('skills', async (ctx) => {
+    await handleSkillsList(ctx);
+  });
+
+  bot.command('skill', async (ctx) => {
+    await handleSkillCommand(ctx);
   });
 
   bot.command('status', async (ctx) => {
@@ -2590,7 +2633,128 @@ export function createBot(): Bot {
     });
   });
 
+  // ── Onboarding Command ──
+  bot.command('onboard', async (ctx) => {
+    const args = (ctx.message?.text || '').replace(/^\/onboard\s*/i, '').trim();
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const available = onboarding.getAvailableQuestionnaires();
+
+    if (!args) {
+      // Show available questionnaires
+      const keyboard = new InlineKeyboard();
+      for (const qId of available) {
+        const def = onboarding.getQuestionnaire(qId)!;
+        const ref = storeCallback({ action: 'start', questionnaire: qId }, 300_000);
+        keyboard.text(`${def.title}`, `ob:start:${ref}`).row();
+      }
+      await ctx.reply(
+        '📋 <b>Onboarding Questionnaires</b>\n\nChoose a profile to set up:',
+        { parse_mode: 'HTML', reply_markup: keyboard },
+      );
+      return;
+    }
+
+    // Start a specific questionnaire
+    const qId = args.toLowerCase();
+    if (!available.includes(qId)) {
+      await ctx.reply(`Unknown questionnaire: ${escapeHtml(qId)}. Available: ${available.join(', ')}`);
+      return;
+    }
+
+    const session = onboarding.startOrResume(userId, qId);
+    const def = onboarding.getQuestionnaire(qId)!;
+    const step = def.steps[session.current_step];
+    if (!step) return;
+
+    await sendOnboardingStep(ctx, qId, step, session.current_step, def.steps.length);
+  });
+
+  bot.command('profile', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    const profiles = onboarding.getAllProfiles(userId);
+    if (profiles.length === 0) {
+      await ctx.reply('No profiles set up yet. Use /onboard to get started.');
+      return;
+    }
+
+    const lines = profiles.map(p => {
+      const data = p.data;
+      const entries = Object.entries(data).map(([k, v]) => `  <code>${k}</code>: ${escapeHtml(String(v))}`);
+      return `<b>${escapeHtml(p.profile_type)}</b>\n${entries.join('\n')}`;
+    });
+    await ctx.reply(`📋 <b>Your Profiles</b>\n\n${lines.join('\n\n')}`, { parse_mode: 'HTML' });
+  });
+
   // ── Inline Keyboard Callback Handlers ──
+
+  // Onboarding questionnaire callbacks
+  bot.callbackQuery(/^ob:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1];
+    const ref = parts[2];
+    const userId = ctx.from?.id;
+    if (!userId) return;
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    const cbData = getCallback(ref);
+    if (!cbData) {
+      await ctx.editMessageText('⚠️ This action has expired. Use /onboard to start again.');
+      return;
+    }
+
+    switch (action) {
+      case 'start': {
+        const qId = cbData.questionnaire;
+        const session = onboarding.startOrResume(userId, qId);
+        const def = onboarding.getQuestionnaire(qId)!;
+        const step = def.steps[session.current_step];
+        if (!step) return;
+
+        await ctx.editMessageText(
+          `${def.title}\n\n${def.description}\n\nLet's begin! (${def.steps.length} questions)`,
+          { parse_mode: 'HTML' },
+        );
+        await sendOnboardingStep(ctx, qId, step, session.current_step, def.steps.length);
+        break;
+      }
+      case 'answer': {
+        const { questionnaire: qId, answer } = cbData;
+        try {
+          const result = onboarding.answerStep(userId, qId, answer);
+          if (!result.nextStep) {
+            // Questionnaire complete
+            const profile = onboarding.getProfile(userId, qId);
+            const entries = profile ? Object.entries(profile.data).map(([k, v]) =>
+              `  <code>${k}</code>: ${escapeHtml(String(v))}`
+            ).join('\n') : '';
+            await ctx.editMessageText(
+              `✅ <b>Profile Complete!</b>\n\n${entries}\n\nYour ${qId} profile is saved. The AI will use this for personalized responses.`,
+              { parse_mode: 'HTML' },
+            );
+          } else {
+            await ctx.editMessageText(`✅ Got it!`);
+            await sendOnboardingStep(ctx, qId, result.nextStep, result.session.current_step, onboarding.getQuestionnaire(qId)!.steps.length);
+          }
+        } catch (err: any) {
+          await ctx.editMessageText(`⚠️ ${escapeHtml(err.message)}`);
+        }
+        break;
+      }
+      case 'cancel': {
+        const qId = cbData.questionnaire;
+        onboarding.abandonSession(userId, qId);
+        await ctx.editMessageText('❌ Onboarding cancelled. Use /onboard to start again.');
+        break;
+      }
+    }
+  });
+
   bot.callbackQuery(/^td:/, async (ctx) => {
     const data = ctx.callbackQuery.data;
     const parts = data.split(':');
@@ -2854,6 +3018,12 @@ export function createBot(): Bot {
         await ctx.editMessageText('⚠️ Ação expirada. Envie a foto novamente.');
         return;
       }
+      // Delete auto-logged finance transaction if one was created
+      if (cbData.txId && ctx.from?.id) {
+        const { deleteTransaction } = await import('./services/finance-tracker');
+        deleteTransaction(ctx.from.id, cbData.txId);
+        logger.info({ txId: cbData.txId }, 'Undid auto-logged finance transaction (not an invoice)');
+      }
       await ctx.editMessageText('🔄 Reprocessando como tarefa...');
       // Re-download image from Telegram (stored fileId instead of base64 to save memory)
       const { base64: reBase64, mediaType: reMT } = await downloadTelegramFile(bot, cbData.fileId);
@@ -3113,6 +3283,89 @@ export function createBot(): Bot {
     await ctx.reply('😄 Stickers are fun, but I can only process text and photos!');
   });
 
+  // ── Skill Management Commands ──
+
+  bot.command('skills', async (ctx) => {
+    const skills = getAllSkillStatuses();
+    if (skills.length === 0) {
+      await ctx.reply(
+        '<b>🔧 Skills</b>\n\n' +
+        'No skills installed yet.\n\n' +
+        'Skills are domain modules that give me capabilities like task management, ' +
+        'calendar access, email, and more. They are installed automatically when the bot starts.\n\n' +
+        'Try restarting the bot or check the <b>Status Portal</b> at port 8200.',
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const SKILL_ICONS: Record<string, string> = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+    const lines: string[] = ['<b>🔧 Installed Skills</b>', ''];
+
+    for (const skill of skills) {
+      const icon = SKILL_ICONS[skill.name] || '📦';
+      const status = skill.enabled ? '✅ Enabled' : '❌ Disabled';
+      const activeSubs = skill.subSkills.filter(s => s.enabled).length;
+      const totalSubs = skill.subSkills.length;
+      const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
+      const activeTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
+
+      lines.push(`${icon} <b>${escapeHtml(skill.name)}</b> — ${status}`);
+      lines.push(`   ${escapeHtml(skill.description)}`);
+      lines.push(`   Sub-modules: ${activeSubs}/${totalSubs} active · Tools: ${activeTools}/${totalTools}`);
+      lines.push('');
+    }
+
+    lines.push('Use /skill &lt;name&gt; for detail view.');
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  });
+
+  bot.command('skill', async (ctx) => {
+    const name = ctx.match?.trim().toLowerCase();
+    if (!name) {
+      await ctx.reply('Usage: /skill &lt;name&gt;\nExample: /skill secretary', { parse_mode: 'HTML' });
+      return;
+    }
+
+    const allStatuses = getAllSkillStatuses();
+    const skill = allStatuses.find(s => s.name === name);
+    if (!skill) {
+      const available = allStatuses.map(s => s.name).join(', ');
+      await ctx.reply(
+        `Unknown skill "<b>${escapeHtml(name)}</b>".\n\nAvailable skills: ${available}`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const SKILL_ICONS: Record<string, string> = { secretary: '📋', triathlon: '🏊', content: '🎬' };
+    const icon = SKILL_ICONS[skill.name] || '📦';
+    const status = skill.enabled ? '✅ Enabled' : '❌ Disabled';
+
+    const lines: string[] = [
+      `${icon} <b>${escapeHtml(skill.name)}</b> — ${status}`,
+      escapeHtml(skill.description),
+      '',
+      '<b>Sub-modules:</b>',
+    ];
+
+    for (const sub of skill.subSkills) {
+      const subStatus = sub.enabled ? '🟢' : '🔴';
+      lines.push(`  ${subStatus} <b>${escapeHtml(sub.name)}</b> — ${escapeHtml(sub.description)} (${sub.toolCount} tools)`);
+    }
+
+    const activeSubs = skill.subSkills.filter(s => s.enabled).length;
+    const totalTools = skill.subSkills.reduce((sum, s) => sum + s.toolCount, 0);
+    const activeTools = skill.subSkills.filter(s => s.enabled).reduce((sum, s) => sum + s.toolCount, 0);
+
+    lines.push('');
+    lines.push(`<b>Summary:</b> ${activeSubs}/${skill.subSkills.length} sub-modules active, ${activeTools}/${totalTools} tools available`);
+    lines.push('');
+    lines.push('Toggle sub-modules from the <b>Status Portal</b> at port 8200.');
+
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  });
+
   // ── Catch-all: Route to domain ──
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
@@ -3133,6 +3386,37 @@ export function createBot(): Bot {
       return;
     }
     pendingEdits.delete(userId); // clean up expired
+
+    // Check for pending onboarding text input
+    const pendingOb = pendingOnboarding.get(userId);
+    if (pendingOb && Date.now() < pendingOb.expires) {
+      pendingOnboarding.delete(userId);
+      enqueue(userId, async () => {
+        try {
+          const result = onboarding.answerStep(userId, pendingOb.questionnaire, text);
+          if (!result.nextStep) {
+            const profile = onboarding.getProfile(userId, pendingOb.questionnaire);
+            const entries = profile ? Object.entries(profile.data).map(([k, v]) =>
+              `  <code>${k}</code>: ${escapeHtml(String(v))}`
+            ).join('\n') : '';
+            await ctx.reply(
+              `✅ <b>Profile Complete!</b>\n\n${entries}\n\nYour ${pendingOb.questionnaire} profile is saved.`,
+              { parse_mode: 'HTML' },
+            );
+          } else {
+            await ctx.reply('✅ Got it!');
+            const def = onboarding.getQuestionnaire(pendingOb.questionnaire)!;
+            await sendOnboardingStep(ctx, pendingOb.questionnaire, result.nextStep, result.session.current_step, def.steps.length);
+          }
+        } catch (err: any) {
+          await ctx.reply(`⚠️ ${escapeHtml(err.message)}. Please try again.`);
+          // Re-set pending so user can retry
+          pendingOnboarding.set(userId, pendingOb);
+        }
+      });
+      return;
+    }
+    pendingOnboarding.delete(userId);
 
     enqueue(userId, async () => {
       await handleDomainMessage(ctx, text);
@@ -3182,6 +3466,52 @@ function buildTaskListKeyboard(tasks: msTodo.TodoTask[], listId: string): Inline
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────
+
+async function sendOnboardingStep(
+  ctx: Context,
+  questionnaireId: string,
+  step: onboarding.QuestionStep,
+  stepIdx: number,
+  totalSteps: number,
+): Promise<void> {
+  const progress = `(${stepIdx + 1}/${totalSteps})`;
+  const prompt = `${progress} ${step.prompt}`;
+
+  if (step.type === 'choice' && step.options) {
+    const keyboard = new InlineKeyboard();
+    for (const option of step.options) {
+      const ref = storeCallback({ questionnaire: questionnaireId, answer: option }, 300_000);
+      keyboard.text(option, `ob:answer:${ref}`).row();
+    }
+    const cancelRef = storeCallback({ questionnaire: questionnaireId }, 300_000);
+    keyboard.text('❌ Cancel', `ob:cancel:${cancelRef}`);
+    await ctx.reply(prompt, { reply_markup: keyboard });
+  } else if (step.type === 'multi_choice' && step.options) {
+    // For multi_choice, present as individual buttons; user selects each
+    const keyboard = new InlineKeyboard();
+    for (const option of step.options) {
+      const ref = storeCallback({ questionnaire: questionnaireId, answer: option }, 300_000);
+      keyboard.text(option, `ob:answer:${ref}`).row();
+    }
+    const cancelRef = storeCallback({ questionnaire: questionnaireId }, 300_000);
+    keyboard.text('❌ Cancel', `ob:cancel:${cancelRef}`);
+    await ctx.reply(`${prompt}\n<i>(select one — you can update this later)</i>`, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+  } else {
+    // Text or number input — set up pending onboarding input
+    const userId = ctx.from?.id;
+    if (userId) {
+      pendingOnboarding.set(userId, {
+        questionnaire: questionnaireId,
+        step,
+        expires: Date.now() + 300_000,
+      });
+    }
+    await ctx.reply(`${prompt}\n<i>(type your answer)</i>`, { parse_mode: 'HTML' });
+  }
+}
 
 async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
   const systemCmd = isSystemCommand(text);
@@ -3406,6 +3736,22 @@ async function handleInvoiceFiling(
       status: 'filed',
     });
 
+    // ── Auto-log receipt as finance expense transaction ──
+    const userId = ctx.from?.id;
+    const parsedAmount = parseReceiptAmount(analysis.totalAmount);
+    let txId: number | null = null;
+
+    if (userId && parsedAmount) {
+      const txDate = analysis.documentDate || new Date().toISOString().split('T')[0];
+      const tx = addTransaction(userId, txDate, 'expense', parsedAmount, {
+        subcategory: 'receipt',
+        description: analysis.vendor ? `Receipt: ${analysis.vendor}` : 'Receipt from photo',
+        receiptRef: filingResult.filename || undefined,
+      });
+      txId = tx.id;
+      logger.info({ userId, amount: parsedAmount, vendor: analysis.vendor }, 'Receipt auto-logged as finance transaction');
+    }
+
     let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
     if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
     if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
@@ -3419,8 +3765,12 @@ async function handleInvoiceFiling(
       msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
     }
 
+    if (txId && parsedAmount) {
+      msg += `\n\n💳 <b>Despesa registrada:</b> R$ ${parsedAmount.toFixed(2)}`;
+    }
+
     // Store fileId instead of base64 to reduce memory (~500KB-2MB per entry)
-    const ref = storeCallback({ fileId, caption });
+    const ref = storeCallback({ fileId, caption, txId });
     const keyboard = new InlineKeyboard()
       .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
 
@@ -4042,9 +4392,18 @@ const HELP_TEXT = `<b>🤖 Felipe's Command Hub</b>
 /autoresearch [target] [rounds] [--dry] — Run prompt optimization
 /evalscore [target] — Score current prompt without mutation
 
+<b>🧩 SKILLS</b>
+/skills — List installed skills with status
+/skill [name] — Detail view of a skill
+/skill [name] enable|disable — Toggle a skill on/off
+/skill [name] modules — List sub-modules
+/skill [name] module [sub] enable|disable — Toggle a sub-module
+
 <b>🔧 SYSTEM</b>
 /help — This menu
 /status — Current state overview
+/skills — List installed skills
+/skill [name] — Skill detail view
 /clear [domain] — Clear conversation history
 /garminmfa [code] — Submit Garmin MFA code
 

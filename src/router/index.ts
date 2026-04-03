@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DomainName } from '../domains/types';
 import { patternMatch, keywordMatch, classifyWithClaude, ConversationContext } from './classifier';
 import { logger } from '../utils/logger';
@@ -18,6 +20,8 @@ const SYSTEM_COMMANDS = [
   '/competitor', '/gaps', '/seo', '/repurpose', '/feedback', '/report',
   '/learnfrom', '/references', '/relearn', '/studyvideo', '/transcribe', '/script', '/repurpose',
   '/contenttopic', '/contentretro',
+  '/onboard', '/profile',
+  '/skills', '/skill',
 ];
 
 export function isSystemCommand(message: string): string | null {

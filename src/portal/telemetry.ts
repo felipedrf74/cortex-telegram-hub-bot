@@ -1,5 +1,7 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
- * In-process telemetry singleton for the Cortex Status Portal.
+ * In-process telemetry singleton for the Nexus Hub Status Portal.
  *
  * Owns:
  *  - Activity event ring buffer (200 entries, in-memory)
@@ -81,6 +83,21 @@ export function registerJob(name: string, label: string, cronExpression: string,
 // ─── Failure Notification Callback ────────────────────────────────────
 
 type FailureNotifier = (jobLabel: string, errorMessage: string) => Promise<void>;
+// ─── Sub-skill gating callback ──────────────────────────────────────
+// Injected by scheduler.ts after skill-manager is initialized.
+// Returns false if the cron job's owning sub-skill is disabled.
+let _jobEnabledChecker: ((jobName: string) => boolean) | null = null;
+
+export function setJobEnabledChecker(checker: (jobName: string) => boolean): void {
+  _jobEnabledChecker = checker;
+}
+
+/** Check if a cron job is enabled (sub-skill not disabled). */
+export function isJobEnabled(jobName: string): boolean {
+  if (!_jobEnabledChecker) return true; // no checker registered → all jobs run
+  return _jobEnabledChecker(jobName);
+}
+
 let _failureNotifier: FailureNotifier | null = null;
 
 /** Register a callback to send Telegram alerts when jobs fail. */
@@ -95,6 +112,12 @@ export function setJobFailureNotifier(fn: FailureNotifier): void {
  */
 export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<void> {
   const wrapped = async () => {
+    // Skip if the owning sub-skill is disabled
+    if (!isJobEnabled(name)) {
+      logger.debug({ job: name }, 'Cron job skipped — sub-skill disabled');
+      return;
+    }
+
     const status = jobMap.get(name);
     if (!status) return fn(); // unregistered — run without tracking
 

@@ -49,11 +49,11 @@ const TASKS = [
 
   // Phase 0 — Month 2
   { title: "Trademark search for 'Nexus Hub'", desc: "Engage attorney, EUIPO + INPI (Brazil). Budget €1,200–€2,000.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🔴 Critical", tags: ["legal", "brand"], month: "Month 2" },
-  { title: "Register domain (nexushub.ai)", desc: "Check availability, acquire best domain option.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟠 High", tags: ["brand"], month: "Month 2" },
+  { title: "Register domain (nexushub.me)", desc: "Domain nexushub.me purchased. Configure DNS, SSL, point to landing page.", status: "Done", phase: "Phase 0 — Foundation", priority: "🟠 High", tags: ["brand"], month: "Month 2" },
   { title: "Reserve social handles", desc: "@nexushub on Instagram, X, YouTube, TikTok.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟡 Medium", tags: ["brand"], month: "Month 2" },
   { title: "Design minimal logo", desc: "Hub/nexus concept. Clean, monochrome, tech-forward.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟡 Medium", tags: ["brand", "design"], month: "Month 2" },
   { title: "Per-tenant config system", desc: "ConfigProvider abstraction (even if single-tenant initially).", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟡 Medium", tags: ["arch", "code"], month: "Month 2" },
-  { title: "Landing page (PT-BR)", desc: "nexushub.ai hero, features, pricing, CTA. Portuguese.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟠 High", tags: ["design", "marketing"], month: "Month 2" },
+  { title: "Landing page (PT-BR)", desc: "nexushub.me hero, features, pricing, CTA. Portuguese.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟠 High", tags: ["design", "marketing"], month: "Month 2" },
   { title: "Terms of Service (PT law)", desc: "SaaS ToS compliant with Portuguese law.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🔴 Critical", tags: ["legal"], month: "Month 2" },
   { title: "Privacy Policy (GDPR)", desc: "Data processing, retention, user rights, GDPR compliance.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🔴 Critical", tags: ["legal"], month: "Month 2" },
   { title: "Usage metering system", desc: "Track AI messages per tenant per day.", status: "Backlog", phase: "Phase 0 — Foundation", priority: "🟡 Medium", tags: ["code"], month: "Month 2" },

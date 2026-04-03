@@ -12,7 +12,7 @@ Felipe only sees a clean summary on Telegram. The creative detail lives in the f
 
 ## Project Context
 
-Cortex is a Telegram bot (`telegram-hub-bot/`). Key architecture:
+Nexus Hub is a Telegram bot (`telegram-hub-bot/`). Key architecture:
 - `src/services/anthropic.ts` — Anthropic SDK client, `DOMAIN_SYSTEM_PROMPTS`, `callDomain()`, model constants
 - `src/domains/content-creator.ts` — content domain handler with `handleContent()`, uses `callDomain('content', ...)`
 - `src/services/scheduler.ts` — node-cron jobs, sends Telegram messages via `bot.api.sendMessage()`

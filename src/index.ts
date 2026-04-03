@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { config } from './config';
 import { logger } from './utils/logger';
 import { initDatabase, closeDatabase, getDb } from './services/database';
@@ -6,6 +8,12 @@ import { startScheduler } from './services/scheduler';
 import { setBotRef, setBotPollingActive, setDbProvider } from './portal/telemetry';
 import { setDbProvider as setBusDbProvider } from './services/intelligence-bus';
 import { createPortalServer } from './portal/server';
+import {
+  setDbProvider as setErrorDbProvider,
+  setAlertCallback,
+  installProcessHandlers,
+} from './services/error-monitor';
+import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
 
 const MAX_RETRIES = 5;
@@ -20,12 +28,25 @@ async function main(): Promise<void> {
   // Wire up DB providers for telemetry and intelligence bus
   setDbProvider(() => getDb());
   setBusDbProvider(() => getDb() as any);
+  setErrorDbProvider(() => getDb());
+
+  // Install process-level error handlers (unhandledRejection, uncaughtException)
+  installProcessHandlers();
 
   // Create bot
   const bot = createBot();
 
   // Store bot reference for portal restart action
   setBotRef(bot);
+
+  // Wire Telegram alerting for critical errors
+  setAlertCallback(async (message: string) => {
+    for (const userId of config.telegram.allowedUserIds) {
+      try {
+        await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
+      } catch { /* swallow — don't cascade alert failures */ }
+    }
+  });
 
   // Start scheduler (reminders, daily briefing, weekly review)
   startScheduler(bot);

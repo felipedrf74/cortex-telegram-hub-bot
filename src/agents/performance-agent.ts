@@ -1,11 +1,13 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Performance Intelligence Agent — analyzes Felipe's YouTube channel
  * performance to identify what works and feed back into content creation.
  *
  * Schedule: Weekly, Sunday 06:00 (after channel relearn at 03:00)
  *
- * Consumes: channel_dna, book_knowledge
- * Produces: hook_effectiveness, pillar_performance, retention_pattern, book_reference_effective
+ * Consumes: channel_dna, book_knowledge, voice_pattern (cross-agent), keyword_opportunity (cross-agent)
+ * Produces: hook_effectiveness, pillar_performance, retention_pattern, book_reference_effective, content_formula
  *
  * NOTE: Currently uses YouTube Data API v3 (public stats only).
  * YouTube Analytics API (retention curves, traffic sources) requires separate OAuth setup.
@@ -13,6 +15,7 @@
  */
 
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { buildAgentContext, writeContentFormula, formatContextForPrompt } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -225,6 +228,10 @@ export async function runPerformanceAgent(): Promise<void> {
     const bookSignals = readSignals('performance-agent', ['book_knowledge'], 20);
     signalsConsumed += dnaSignals.length + bookSignals.length;
 
+    // Cross-agent learning: consume peer signals (voice patterns, keywords)
+    const peerContext = buildAgentContext('performance-agent');
+    signalsConsumed += peerContext.signalsConsumed;
+
     // Analysis 1: Pillar Performance
     const pillarRankings = analyzePillarPerformance(videos);
     if (pillarRankings.length > 0) {
@@ -289,6 +296,24 @@ export async function runPerformanceAgent(): Promise<void> {
         },
       });
       signalsProduced++;
+    }
+
+    // Analysis 3b: Detect content formulas from top performers
+    if (top3.length >= 2 && pillarRankings.length > 0) {
+      const topPillar = pillarRankings[0];
+      if (topPillar && topPillar.avg_views > 0) {
+        const topPillarVideos = top3.filter(v => v.pillar === topPillar.pillar);
+        if (topPillarVideos.length >= 2) {
+          writeContentFormula(
+            'performance-agent',
+            `${topPillar.pillar} content with high engagement pattern`,
+            topPillar.pillar,
+            Math.min(0.9, topPillarVideos.length / 3),
+            `${topPillarVideos.length} of top 3 videos are ${topPillar.pillar}`,
+          );
+          signalsProduced++;
+        }
+      }
     }
 
     // Analysis 4: Posting day effectiveness

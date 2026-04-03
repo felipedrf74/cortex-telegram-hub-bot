@@ -1,3 +1,6 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+import path from 'path';
 import cron from 'node-cron';
 import { Bot } from 'grammy';
 import { config } from '../config';
@@ -15,7 +18,8 @@ import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } f
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
-import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
+import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
+import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
@@ -31,6 +35,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
+import { runDatabaseBackup } from './backup';
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -41,6 +46,9 @@ const todayNotifications: string[] = [];
 export function getTodayNotifications(): string[] { return todayNotifications; }
 
 export function startScheduler(bot: Bot): void {
+  // Register sub-skill gating so disabled sub-skills skip their cron jobs
+  setJobEnabledChecker(isCronJobEnabled);
+
   // Register failure notifier so wrapJob sends Telegram alerts on job failures
   setJobFailureNotifier(async (jobLabel, errorMessage) => {
     const short = errorMessage.slice(0, 120);
@@ -63,6 +71,10 @@ export function startScheduler(bot: Bot): void {
   const coachCron = (() => {
     const [h, m] = config.garmin.coachTime.split(':').map(Number);
     return `${m ?? 0} ${h ?? 21} * * *`;
+  })();
+  const backupCron = (() => {
+    const [h, m] = config.backup.time.split(':').map(Number);
+    return `${m ?? 0} ${h ?? 3} * * *`;
   })();
 
   // ── Register all jobs for portal tracking ──────────────────────────
@@ -91,7 +103,12 @@ export function startScheduler(bot: Bot): void {
   registerJob('reaction_radar',   'Reaction Radar',          '0 6,10,14,18,22 * * *', 'content');
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
+  registerJob('training_plan_adjust', 'Training Plan Auto-Adjust', '0 19 * * 0', 'triathlon');
   registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
+  registerJob('db_backup',        'Database Backup',        backupCron,        'system');
+
+  // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
+  seedJobLastRunFromHistory();
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -428,6 +445,48 @@ export function startScheduler(bot: Bot): void {
     }), { timezone: tz });
   }
 
+  // ── Training Plan weekly auto-adjust (Sunday 19:00) ─────────────────
+  cron.schedule('0 19 * * 0', wrapJob('training_plan_adjust', async () => {
+    const { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } = require('./training-plans');
+
+    for (const userId of config.telegram.allowedUserIds) {
+      const plan = getActivePlan(userId);
+      if (!plan) continue;
+
+      const currentWeek = getCurrentWeek(plan.id);
+      if (!currentWeek) continue;
+
+      const stats = getWeeklyAdherence(plan.id, currentWeek.id);
+      if (stats.completedSessions === 0 && stats.skippedSessions === 0) continue; // no data yet
+
+      const recommendation = computeAdjustmentRecommendation(stats);
+
+      // Find next week and apply adjustment if needed
+      const allWeeks = getWeeksForPlan(plan.id);
+      const nextWeek = allWeeks.find((w: any) => w.week_number === currentWeek.week_number + 1);
+
+      if (nextWeek && recommendation.adjustIntensity !== 100) {
+        updateWeekAdjustment(nextWeek.id, recommendation.adjustIntensity, recommendation.reason);
+
+        const emoji = recommendation.adjustIntensity < 100 ? '📉' : '📈';
+        let msg = `${emoji} <b>Training Plan Auto-Adjust</b>\n\n`;
+        msg += `<b>${plan.name}</b> — Week ${currentWeek.week_number} review:\n`;
+        msg += `• Adherence: ${stats.adherenceRate}%  (${stats.completedSessions}/${stats.totalSessions})\n`;
+        if (stats.avgRpe != null) msg += `• Avg RPE: ${stats.avgRpe}\n`;
+        if (stats.avgSoreness != null) msg += `• Avg Soreness: ${stats.avgSoreness}/10\n`;
+        if (stats.avgEnergy != null) msg += `• Avg Energy: ${stats.avgEnergy}/10\n`;
+        msg += `\n<b>Week ${currentWeek.week_number + 1} adjusted:</b> ${recommendation.adjustIntensity}% intensity\n`;
+        msg += `<i>Reason: ${recommendation.reason}</i>`;
+
+        try {
+          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send training adjustment notification');
+        }
+      }
+    }
+  }), { timezone: tz });
+
   // ── Invoice queue flush (every 15 min) ──────────────────────────────
   cron.schedule('*/15 * * * *', wrapJob('invoice_queue', async () => {
     const pending = getPendingCount();
@@ -554,6 +613,23 @@ export function startScheduler(bot: Bot): void {
     }
   }), { timezone: tz });
 
+  // ── Database Backup (daily, configurable — default 03:00) ─────────
+  if (config.backup.enabled) {
+    cron.schedule(backupCron, wrapJob('db_backup', async () => {
+      const backupPath = await runDatabaseBackup();
+      const short = path.basename(backupPath);
+      for (const userId of config.telegram.allowedUserIds) {
+        try {
+          await bot.api.sendMessage(userId,
+            `💾 <b>Database Backup</b>\n\nBackup complete: <code>${escapeHtml(short)}</code>`,
+            { parse_mode: 'HTML' });
+        } catch {
+          // swallow — notification is best-effort
+        }
+      }
+    }), { timezone: tz });
+  }
+
   // ── Signal Expiry Cleanup (hourly) ────────────────────────────────
   cron.schedule('0 * * * *', wrapJob('expire_signals', async () => {
     const expired = expireStaleSignals();
@@ -624,7 +700,7 @@ export function startScheduler(bot: Bot): void {
   });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

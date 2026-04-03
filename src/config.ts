@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
@@ -27,6 +29,41 @@ export const config = {
     classifierModel: 'claude-haiku-4-5-20251001' as const,
     maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
     secretaryMaxTokens: 2048,   // needs headroom for parallel tool calls
+  },
+  // ── Alternative AI Providers (optional fallbacks) ──────────────────
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY || '',
+    model: process.env.OPENAI_MODEL || 'gpt-4o',
+    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4o-mini',
+    maxTokens: 1024,            // content domain — conversational
+    secretaryMaxTokens: 2048,   // secretary — parallel tool calls need headroom
+  },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || '',
+    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.0-flash',
+    maxTokens: 1024,
+    secretaryMaxTokens: 2048,
+  },
+  // ── Provider Fallback Routing ─────────────────────────────────────
+  // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'
+  providerRouting: {
+    classify: {
+      primary: process.env.AI_CLASSIFY_PRIMARY || 'anthropic',
+      fallback: process.env.AI_CLASSIFY_FALLBACK || 'openai',
+    },
+    chat: {
+      primary: process.env.AI_CHAT_PRIMARY || 'anthropic',
+      fallback: process.env.AI_CHAT_FALLBACK || 'openai',
+    },
+    toolUse: {
+      primary: process.env.AI_TOOL_USE_PRIMARY || 'anthropic',
+      fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
+    },
+    circuitBreaker: {
+      failureThreshold: parseInt(process.env.AI_CB_FAILURE_THRESHOLD || '3', 10),
+      cooldownMs: parseInt(process.env.AI_CB_COOLDOWN_MS || '60000', 10),
+    },
   },
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
@@ -101,12 +138,44 @@ export const config = {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
     port: parseInt(process.env.CONTENT_ENGINE_PORT || '8100', 10),
   },
+  // ── Database Backup ─────────────────────────────────────────────────
+  backup: {
+    enabled: (process.env.BACKUP_ENABLED || 'true') === 'true',
+    dir: process.env.BACKUP_DIR || './data/backups',
+    retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10),
+    time: process.env.BACKUP_TIME || '03:00',
+  },
   // ── Status Portal ──────────────────────────────────────────────────
   portal: {
     enabled: (process.env.PORTAL_ENABLED || 'true') === 'true',
     port: parseInt(process.env.PORTAL_PORT || '8200', 10),
     bind: process.env.PORTAL_BIND || '0.0.0.0',
     token: process.env.PORTAL_TOKEN || '',
+  },
+  // ── WhatsApp Cloud API (optional) ──────────────────────────────────
+  whatsapp: {
+    phoneNumberId: process.env.WHATSAPP_PHONE_ID || '',
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || '',
+    appSecret: process.env.WHATSAPP_APP_SECRET || '',
+    apiVersion: process.env.WHATSAPP_API_VERSION || 'v21.0',
+    enabled: !!process.env.WHATSAPP_PHONE_ID && !!process.env.WHATSAPP_ACCESS_TOKEN,
+  },
+  // ── Webhook Infrastructure ─────────────────────────────────────────
+  webhooks: {
+    enabled: (process.env.WEBHOOKS_ENABLED || 'true') === 'true',
+    secret: process.env.WEBHOOK_SECRET || '',
+    maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10),
+    eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
+  },
+  // ── Health Check ──────────────────────────────────────────────────
+  health: {
+    token: process.env.HEALTH_TOKEN || '',
+  },
+  // ── Finance Data Encryption ─────────────────────────────────────
+  financeEncryption: {
+    enabled: (process.env.FINANCE_ENCRYPTION_ENABLED || 'true') === 'true',
+    masterKey: process.env.FINANCE_ENCRYPTION_KEY || '',
   },
   rateLimit: {
     maxMessagesPerMinute: 30,

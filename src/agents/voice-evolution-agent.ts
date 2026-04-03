@@ -1,15 +1,18 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Voice Evolution Agent — compares AI-generated scripts against
  * actual published video transcripts to learn Felipe's true voice.
  *
  * Schedule: Monthly, 1st of month at 04:00
  *
- * Consumes: channel_dna
+ * Consumes: channel_dna, pillar_performance (cross-agent), retention_pattern (cross-agent)
  * Produces: voice_pattern, voice_phrase_trend
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { writeSignal, readSignals, logAgentRun } from '../services/intelligence-bus';
+import { buildAgentContext } from '../services/cross-agent-learning';
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -122,7 +125,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
 
     // Collect published video transcripts
     const transcripts = db.prepare(`
-      SELECT title, transcript FROM video_transcripts
+      SELECT title, full_text FROM video_transcripts
       WHERE created_at > ?
       ORDER BY created_at DESC
       LIMIT 10
@@ -131,6 +134,10 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     // Consume channel DNA for reference
     const dnaSignals = readSignals('voice-evolution', ['channel_dna'], 20);
     signalsConsumed += dnaSignals.length;
+
+    // Cross-agent learning: consume performance data to focus on high-performing content
+    const peerContext = buildAgentContext('voice-evolution');
+    signalsConsumed += peerContext.signalsConsumed;
 
     // If we have neither scripts nor transcripts, graceful skip
     if (scripts.length === 0 && transcripts.length === 0) {
@@ -146,7 +153,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       : 'No generated scripts available for this period.';
 
     const transcriptsBlock = transcripts.length > 0
-      ? transcripts.map((t: any) => `=== ${t.title} ===\n${(t.transcript || '').slice(0, 2000)}`).join('\n\n')
+      ? transcripts.map((t: any) => `=== ${t.title} ===\n${(t.full_text || '').slice(0, 2000)}`).join('\n\n')
       : 'No published transcripts available for this period. Analyze scripts against the creator profile instead.';
 
     const prompt = ANALYSIS_PROMPT

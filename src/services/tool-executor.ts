@@ -1,14 +1,20 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { saveNote, searchNotes } from '../state/notes';
 import { setReminder } from '../state/reminders';
 import { setSharedMemory, removeSharedMemory } from '../state/shared-memory';
 import * as unifiedCal from './unified-calendar';
 import * as outlookMail from './outlook-mail';
 import * as msTodo from './microsoft-todo';
+import * as trainingPlans from './training-plans';
+import * as financeTracker from './finance-tracker';
+import * as cookingChef from './cooking-chef';
 import { logger } from '../utils/logger';
 
 export async function executeToolCall(
   toolName: string,
-  input: Record<string, any>
+  input: Record<string, any>,
+  userId?: number,
 ): Promise<any> {
   logger.info({ tool: toolName, input }, 'Executing tool call');
 
@@ -263,6 +269,203 @@ export async function executeToolCall(
       case 'shared_memory_remove': {
         const removed = removeSharedMemory(input.key);
         return { success: removed, key: input.key };
+      }
+
+      // ── Training Plan tools ──
+      case 'create_training_plan': {
+        const plan = trainingPlans.createPlan({
+          user_id: input.user_id || 0,
+          name: input.name,
+          sport: input.sport,
+          goal: input.goal,
+          duration_weeks: input.duration_weeks,
+          periodization: input.periodization,
+          start_date: input.start_date,
+          end_date: input.end_date,
+          preferences_json: input.preferences_json,
+        });
+        return { success: true, plan_id: plan.id, name: plan.name, status: plan.status };
+      }
+
+      case 'add_training_week': {
+        const week = trainingPlans.createWeek({
+          plan_id: input.plan_id,
+          week_number: input.week_number,
+          focus: input.focus,
+          intensity_pct: input.intensity_pct,
+          volume_sessions: input.volume_sessions,
+          notes: input.notes,
+        });
+        return { success: true, week_id: week.id, week_number: week.week_number };
+      }
+
+      case 'add_training_session': {
+        const session = trainingPlans.createSession({
+          week_id: input.week_id,
+          plan_id: input.plan_id,
+          day_of_week: input.day_of_week,
+          session_type: input.session_type,
+          title: input.title,
+          description: input.description,
+          exercises_json: input.exercises_json,
+          duration_minutes: input.duration_minutes,
+          intensity_text: input.intensity_text,
+        });
+        return { success: true, session_id: session.id, title: session.title, day: session.day_of_week };
+      }
+
+      case 'get_training_plan': {
+        const plan = input.plan_id
+          ? trainingPlans.getPlanById(input.plan_id)
+          : trainingPlans.getActivePlan(input.user_id || 0);
+        if (!plan) return { error: 'No training plan found' };
+
+        const currentWeek = trainingPlans.getCurrentWeek(plan.id);
+        const weeks = trainingPlans.getWeeksForPlan(plan.id);
+        const sessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
+        const adherence = currentWeek ? trainingPlans.getWeeklyAdherence(plan.id, currentWeek.id) : null;
+
+        return {
+          plan: { id: plan.id, name: plan.name, sport: plan.sport, goal: plan.goal, status: plan.status, start_date: plan.start_date, end_date: plan.end_date, duration_weeks: plan.duration_weeks, periodization: plan.periodization },
+          total_weeks: weeks.length,
+          current_week: currentWeek ? { id: currentWeek.id, number: currentWeek.week_number, focus: currentWeek.focus, intensity_pct: currentWeek.intensity_pct, auto_adjusted: !!currentWeek.auto_adjusted, adjustment_reason: currentWeek.adjustment_reason } : null,
+          sessions: sessions.map(s => ({ id: s.id, day: s.day_of_week, type: s.session_type, title: s.title, status: s.status, intensity: s.intensity_text, duration_min: s.duration_minutes, has_calendar: !!s.calendar_event_id })),
+          adherence,
+        };
+      }
+
+      case 'log_training_completion': {
+        const session = trainingPlans.getSessionById(input.session_id);
+        if (!session) return { error: `Session ${input.session_id} not found` };
+
+        const completion = trainingPlans.logCompletion({
+          session_id: input.session_id,
+          plan_id: session.plan_id,
+          rpe_overall: input.rpe_overall,
+          duration_minutes: input.duration_minutes,
+          energy_level: input.energy_level,
+          soreness_level: input.soreness_level,
+          actual_exercises_json: input.actual_exercises_json,
+          notes: input.notes,
+        });
+        return { success: true, completion_id: completion.id, session_title: session.title };
+      }
+
+      case 'update_training_session': {
+        const updated = trainingPlans.updateSession(input.session_id, {
+          title: input.title,
+          exercises_json: input.exercises_json,
+          duration_minutes: input.duration_minutes,
+          intensity_text: input.intensity_text,
+          description: input.description,
+          status: input.status,
+        });
+        return { success: updated, session_id: input.session_id };
+      }
+
+      case 'link_session_calendar': {
+        const linked = trainingPlans.linkSessionToCalendar(
+          input.session_id, input.calendar_event_id, input.calendar_source,
+        );
+        return { success: linked, session_id: input.session_id };
+      }
+
+      // ── Finance tools ──
+      case 'finance_add_transaction': {
+        const uid = userId ?? 0;
+        const tx = financeTracker.addTransaction(uid, input.date, input.category, input.amount, {
+          subcategory: input.subcategory, description: input.description,
+        });
+        return { success: true, id: tx.id, date: tx.date, category: tx.category, amount: tx.amount };
+      }
+      case 'finance_get_transactions': {
+        const uid = userId ?? 0;
+        return financeTracker.getTransactions(uid, {
+          startDate: input.start_date, endDate: input.end_date,
+          category: input.category, limit: input.limit,
+        });
+      }
+      case 'finance_delete_transaction': {
+        const uid = userId ?? 0;
+        const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
+        return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
+      }
+      case 'finance_monthly_summary': {
+        const uid = userId ?? 0;
+        return financeTracker.getMonthlySummary(uid, input.month);
+      }
+      case 'finance_calculate_tax': {
+        const uid = userId ?? 0;
+        const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
+        const breakdown = financeTracker.calculateMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
+        return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
+      }
+      case 'finance_get_tax_events': {
+        const uid = userId ?? 0;
+        return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit });
+      }
+      case 'finance_mark_tax_paid': {
+        const uid = userId ?? 0;
+        const marked = financeTracker.markTaxPaid(uid, input.month);
+        return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
+      }
+      case 'finance_annual_summary': {
+        const uid = userId ?? 0;
+        const summary = financeTracker.getAnnualTaxSummary(uid, input.year);
+        return {
+          year: summary.year,
+          totalGrossIncome: summary.totalGrossIncome,
+          totalDeductions: summary.totalDeductions,
+          totalInssDue: summary.totalInssDue,
+          totalTaxDue: summary.totalTaxDue,
+          totalPaid: summary.totalPaid,
+          totalPending: summary.totalPending,
+          effectiveAnnualRate: summary.effectiveAnnualRate,
+          monthsPaid: summary.monthsPaid,
+          monthsPending: summary.monthsPending,
+        };
+      }
+
+      // ── Cooking tools ──
+      case 'cooking_add_recipe': {
+        const uid = userId ?? 0;
+        const recipe = cookingChef.addRecipe(uid, input.title, input.ingredients, {
+          instructions: input.instructions, prepTime: input.prep_time_min,
+          cookTime: input.cook_time_min, servings: input.servings, tags: input.tags,
+        });
+        return { success: true, id: recipe.id, title: recipe.title };
+      }
+      case 'cooking_get_recipes': {
+        const uid = userId ?? 0;
+        return cookingChef.getRecipes(uid, { tags: input.tags, search: input.search, limit: input.limit });
+      }
+      case 'cooking_delete_recipe': {
+        const uid = userId ?? 0;
+        return cookingChef.deleteRecipe(uid, input.recipe_id) ? { success: true } : { error: 'Recipe not found' };
+      }
+      case 'cooking_set_meal': {
+        const uid = userId ?? 0;
+        const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
+          recipeId: input.recipe_id, notes: input.notes,
+        });
+        return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
+      }
+      case 'cooking_get_meal_plan': {
+        const uid = userId ?? 0;
+        return cookingChef.getMealPlan(uid, input.start_date, input.end_date);
+      }
+      case 'cooking_delete_meal': {
+        const uid = userId ?? 0;
+        return cookingChef.deleteMealPlan(uid, input.date, input.meal_type) ? { success: true } : { error: 'Meal not found' };
+      }
+      case 'cooking_generate_shopping_list': {
+        const uid = userId ?? 0;
+        return cookingChef.generateShoppingList(uid, input.week_start);
+      }
+      case 'cooking_get_shopping_list': {
+        const uid = userId ?? 0;
+        const list = cookingChef.getShoppingList(uid, input.week_start);
+        return list || { items: [], status: 'not_found' };
       }
 
       default:

@@ -1,0 +1,13 @@
+{
+  "id": "335ad49d-23e7-8152-b4c8-e71d1f5e6974",
+  "title": "FEAT: Content Agent Mesh v2 — cross-agent learning + shared memory",
+  "description": "Upgrade the Intelligence Bus so content agents truly communicate and learn from each other. Performance data feeds Research, Research feeds Script Generator, Voice Evolution feeds style into all agents. See page content.",
+  "priority": "🟠 High",
+  "phase": "Phase 1 — Private Beta",
+  "tags": [
+    "arch",
+    "code"
+  ],
+  "originAgent": "backend",
+  "queuedAt": "2026-04-01T19:22:36.686Z"
+}

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DomainName, DomainResponse } from './types';
 import { callDomain, continueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
@@ -5,6 +7,7 @@ import { listTodos } from '../state/todos';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
+import { getActivePlanSummary } from '../services/training-plans';
 import Anthropic from '@anthropic-ai/sdk';
 import type { CoachRecommendation } from '../services/garmin-coach';
 
@@ -84,6 +87,16 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
     }
   }
 
+  // Active training plan context for triathlon domain
+  if (domain === 'triathlon' && userId) {
+    try {
+      const planSummary = getActivePlanSummary(userId);
+      if (planSummary) parts.push(`\n${planSummary}`);
+    } catch {
+      // Training plan tables may not exist yet — skip silently
+    }
+  }
+
   // Cross-domain shared context
   const sharedCtx = getSharedMemorySummary();
   if (sharedCtx) parts.push(sharedCtx);
@@ -105,7 +118,7 @@ export async function handleSimpleDomain(
   const history = getConversationHistory(domain);
   const stateContext = await buildSimpleStateContext(domain, userId);
 
-  let result = await callDomain(domain, history, message, stateContext, maxTokensOverride);
+  let result = await callDomain(domain, history, message, stateContext, maxTokensOverride, userId);
   let finalText = result.text;
 
   const toolConversation: Anthropic.MessageParam[] = [];
@@ -123,14 +136,14 @@ export async function handleSimpleDomain(
       result.toolCalls.map(async (tc) => ({
         type: 'tool_result' as const,
         tool_use_id: tc.id,
-        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>)),
+        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
       }))
     );
     toolConversation.push(
       { role: 'assistant' as const, content: assistantContent },
       { role: 'user' as const, content: toolResults },
     );
-    result = await continueWithToolResults(domain, history, message, stateContext, toolConversation);
+    result = await continueWithToolResults(domain, history, message, stateContext, toolConversation, userId);
     finalText = result.text;
   }
 

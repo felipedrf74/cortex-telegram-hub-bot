@@ -1,23 +1,71 @@
 # CLAUDE.md — Nexus Hub Development Instructions
 
-## ⚡ FIRST: Check for Assigned Task
+> **Also read:** CODEBASE.md (architecture map) + your AGENT-{ROLE}.md (role-specific rules)
 
-**Before doing anything else**, check if you have a task assigned:
+## ⚡ AUTONOMOUS AGENT MODE
 
+You are part of a self-orchestrating dev team. You work independently and chain to the next step when done.
+
+### Step 1: Check for task
 ```bash
 cat .agent-prompt.md 2>/dev/null
 ```
+If it exists, read it and execute the task. If not, wait for instructions.
 
-If `.agent-prompt.md` exists, **read it and execute the task described**. It contains:
-- What to build/fix/test
-- Step-by-step instructions specific to your agent role
-- The Notion task ID for tracking
+### Step 2: Execute the task
+- Read CLAUDE.md and the task prompt
+- Implement/test/fix as described
+- Run `npx vitest run` and `npx tsc --noEmit` before committing
+- Commit and push to your branch
 
-If no task file exists, wait for instructions from Felipe.
+### Step 3: Auto-chain when done
+Detect which worktree you're in and run the completion script:
+```bash
+AGENT_DIR=$(basename "$(pwd)")
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --summary "brief description of what you did"
+```
+This automatically:
+- Updates the Notion card
+- Triggers QA validation for feature work
+- Queues tasks if QA is busy
+- Fetches your next task and writes a new .agent-prompt.md
 
-When you complete the task:
-1. Follow all steps in the prompt file (commit, push, log)
-2. Then tell Felipe: "Task complete. Run `node scripts/dispatch-tasks.js --done <your-agent-dir>` to mark it in Notion and get the next task."
+### Step 4: Continue the loop
+After agent-complete.js runs, immediately check for more work:
+```bash
+cat .agent-prompt.md 2>/dev/null
+```
+If a new task exists, **read it and execute it immediately** — do not stop or ask.
+If no task exists, say "Agent idle — no more tasks in queue" and wait.
+
+### QA Agent: Validation workflow
+If you are the QA agent and your prompt says "QA Validation Task":
+1. Pull the code from the specified branch
+2. Run tests, type check, review code
+3. Write additional validation tests if needed
+4. When done, run ONE of:
+```bash
+# Everything passes:
+AGENT_DIR=$(basename "$(pwd)")
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict pass
+# Something fails:
+node ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot/scripts/agent-complete.js --agent $AGENT_DIR --verdict fail --reason "what failed"
+```
+Then check for the next queued validation task.
+
+### CRITICAL RULES
+- **Never stop between tasks** — always check for .agent-prompt.md after completing
+- **Never ask for permission** — you have --dangerously-skip-permissions
+- **Never merge to main or develop** — only push to your branch
+- **Always run tests before committing** — `npx vitest run && npx tsc --noEmit`
+- **Always call agent-complete.js when done** — this is how the pipeline chains
+- **Always update the Status Portal** — if your feature adds cron jobs, new commands, new integrations, or user-facing functionality, update `src/portal/portal.html` to include it (timeline category, job calendar entry, action button, or status indicator). The portal is the user's dashboard at port 8200.
+
+### QA LEFT-SHIFT POLICY
+- **Pre-commit hooks enforce tests** — `vitest run` + `tsc --noEmit` run automatically on every commit
+- **QA agent handles integration/E2E testing only** — unit test failures are the committing agent's responsibility
+- **Do NOT use `--no-verify`** unless explicitly authorized by Felipe
+- If tests fail, fix them before committing. Do not skip.
 
 ---
 
@@ -136,6 +184,7 @@ Each domain has isolated conversation history and system prompt:
 - `src/services/scheduler.ts` — 18+ cron jobs
 - `src/services/tool-executor.ts` — Tool call execution
 - `src/portal/telemetry.ts` — Zero-import telemetry (provider callbacks)
+- `src/portal/portal.html` — Status Portal UI (port 8200) — MUST update when adding features
 - `prompts/*.md` — Hot-reloadable system prompts
 
 ### Content Agent Mesh
@@ -167,32 +216,144 @@ npx vitest                # Watch mode
 - Backups: `/home/dominguez/backups/nexushub/` (last 10)
 - Deploy: Felipe only, via `./scripts/deploy.sh` from Mac
 
-## When You Finish Work
+## When You Finish Work — REVIEW HANDOFF
 
-After completing a feature, bugfix, or significant chunk of work:
+After completing a feature, bugfix, or significant chunk of work, you MUST provide a clear review handoff so Felipe knows exactly what to validate.
 
-1. **Run tests:**
-   ```
-   npx vitest run
-   ```
+### Step 1: Run tests
+```
+npx vitest run
+```
 
-2. **Commit with conventional format:**
-   ```
-   git add .
-   git commit -m "feat(core): add AIProvider interface with fallback logic"
-   ```
+### Step 2: Commit with conventional format
+```
+git add .
+git commit -m "feat(core): add AIProvider interface with fallback logic"
+```
 
-3. **Push the branch:**
-   ```
-   git push origin $(git branch --show-current)
-   ```
+### Step 3: Push the branch
+```
+git push origin $(git branch --show-current)
+```
 
-4. **Log completion:**
-   ```
-   echo "$(date '+%Y-%m-%d %H:%M') DONE: $(git branch --show-current) — Description" >> ~/Desktop/nexushub-agent-log.md
-   ```
+### Step 4: Log completion
+```
+echo "$(date '+%Y-%m-%d %H:%M') DONE: $(git branch --show-current) — Description" >> ~/Desktop/nexushub-agent-log.md
+```
 
-5. **Do NOT merge to develop or main** — Felipe reviews and merges.
+### Step 5: Write acceptance criteria (REQUIRED)
+
+**Before telling Felipe you're done**, provide a clear summary with this exact format:
+
+```
+## Review Summary
+
+### What was done
+- Brief list of what was implemented/fixed
+
+### Files changed
+- List of key files added or modified (not every file — just the important ones)
+
+### Acceptance criteria
+- [ ] Criterion 1 — specific, testable condition
+- [ ] Criterion 2 — specific, testable condition
+- [ ] Criterion 3 — etc.
+
+### Validation steps
+1. Step-by-step commands Felipe can run to verify the work
+2. Expected output for each step
+3. Edge cases to test manually if applicable
+
+### Tests added
+- List of new test files or test cases added
+- Total test count after your changes
+
+### Breaking changes
+- None / List any breaking changes
+
+### Dependencies added
+- None / List any new npm packages
+```
+
+**Example for a feature agent:**
+```
+## Review Summary
+
+### What was done
+- Implemented AIProvider interface with classify(), chat(), and fallback support
+- Created AnthropicProvider wrapping existing Claude API calls
+- Created OpenAIProvider for GPT-4o support
+- Added FallbackProvider that auto-switches on failure
+
+### Files changed
+- src/services/ai-provider.ts (new — interface + base class)
+- src/services/providers/anthropic.ts (new)
+- src/services/providers/openai.ts (new)
+- src/services/providers/fallback.ts (new)
+
+### Acceptance criteria
+- [ ] `npx vitest run` passes (all 395+ tests green)
+- [ ] `npx tsc --noEmit` passes (no type errors)
+- [ ] AIProvider interface exports classify() and chat() methods
+- [ ] AnthropicProvider implements the interface using existing Anthropic SDK
+- [ ] OpenAIProvider implements the interface (mock-tested, no real API calls)
+- [ ] FallbackProvider cascades through providers on failure
+- [ ] No changes to existing domain handler behavior
+
+### Validation steps
+1. Run `npx vitest run` — expect all tests pass
+2. Run `npx tsc --noEmit` — expect no errors
+3. Check `git diff main --stat` — see only new files in src/services/providers/
+4. Review `src/services/ai-provider.ts` — interface should have classify(), chat()
+5. Review `__tests__/services/ai-provider.test.ts` — tests cover fallback cascade
+
+### Tests added
+- __tests__/services/ai-provider.test.ts (45 new tests)
+- Total: 395 → 440 tests
+
+### Breaking changes
+- None — existing Anthropic calls still work, AIProvider is additive
+
+### Dependencies added
+- None (OpenAI SDK not added yet — provider is interface-only)
+```
+
+**Example for a bug agent:**
+```
+## Review Summary
+
+### What was done
+- Fixed null return when keyword matcher receives empty message
+- Fixed regex boundary issue with "3x12 curls" format
+
+### Files changed
+- src/router/classifier.ts (2 lines changed)
+- __tests__/router/classifier.test.ts (8 new test cases)
+
+### Acceptance criteria
+- [ ] `keywordMatch("")` returns null (not throws)
+- [ ] `keywordMatch("3x12 curls")` returns "triathlon"
+- [ ] All existing 212 classifier tests still pass
+- [ ] No type errors
+
+### Validation steps
+1. Run `npx vitest run __tests__/router/classifier.test.ts` — all pass
+2. Run `npx vitest run` — full suite passes
+3. Check `git diff` — only classifier.ts and its test file changed
+
+### Tests added
+- 8 new edge case tests in classifier.test.ts
+- Total: 395 → 403 tests
+
+### Breaking changes
+- None
+
+### Dependencies added
+- None
+```
+
+### Step 6: Do NOT merge
+Felipe reviews and merges. Never merge to develop or main.
 
 ## Rules
 
@@ -201,6 +362,7 @@ After completing a feature, bugfix, or significant chunk of work:
 - Never attempt SSH connections to the server or run deploy commands
 - Never modify `cd-production.yml` to add automatic triggers
 - Always run tests before committing
+- Always provide acceptance criteria when finishing work (see Step 5 above)
 - Keep prompts/*.md files — they are hot-reloadable and tracked in git
 - Use `os.homedir()` for paths — never hardcode `/home/dominguez` or `/Users/felipedominguez`
 - Max 20 conversation messages per domain (auto-pruned by SQLite trigger)

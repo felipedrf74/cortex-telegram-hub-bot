@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import fs from 'fs';
 import os from 'os';
 import path from 'path';

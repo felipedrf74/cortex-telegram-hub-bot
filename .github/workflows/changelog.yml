@@ -1,0 +1,60 @@
+name: 📝 Update Changelog
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'CHANGELOG.md'
+
+jobs:
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Generate Changelog
+        run: git-cliff --output CHANGELOG.md
+
+      - name: Check for changes
+        id: check
+        run: |
+          if git diff --quiet CHANGELOG.md 2>/dev/null; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create PR with changelog update
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          BRANCH="chore/changelog-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog [skip ci]"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "docs: update CHANGELOG.md" \
+            --body "Auto-generated changelog update via git-cliff." \
+            --base main \
+            --head "$BRANCH" \
+            --label "documentation"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
  * Garmin Daily Coach — collects Garmin data, analyzes with Claude using
  * the Triatlon coaching persona, and formats a Telegram briefing message.
@@ -43,7 +45,7 @@ DATA INTERPRETATION:
 
 OUTPUT FORMAT (follow exactly):
 
-🏋️ <b>CORTEX — DAILY COACH BRIEFING</b>
+🏋️ <b>NEXUS HUB — DAILY COACH BRIEFING</b>
 📅 {date} — 21:00
 
 ━━━ <b>TODAY'S SNAPSHOT</b> ━━━

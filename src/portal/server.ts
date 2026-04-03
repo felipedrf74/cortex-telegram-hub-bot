@@ -1,5 +1,7 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 /**
- * Cortex Status Portal — Express server.
+ * Nexus Hub Status Portal — Express server.
  *
  * Runs inside the same Node.js process as the Grammy bot.
  * Provides:
@@ -13,6 +15,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -33,6 +36,12 @@ import { clearAllConversations } from '../state/conversation';
 import { isGarminConfigured, keepAlive as garminKeepAlive } from '../services/garmin';
 import { isMicrosoftConfigured } from '../services/microsoft-auth';
 import { isInvoiceFilingConfigured } from '../services/invoice-filer';
+import { isGoogleCalendarConfigured } from '../services/google-calendar';
+import { isGmailConfigured } from '../services/google-gmail';
+import { isGoogleDriveEnabled } from '../services/google-drive';
+import { isOutlookCalendarConfigured } from '../services/outlook-calendar';
+import { isOutlookMailConfigured } from '../services/outlook-mail';
+import { isOutlookTodoConfigured } from '../services/microsoft-todo';
 import { getPendingCount as getInvoiceQueuePending } from '../services/invoice-queue';
 import { sendDailyBriefing } from '../services/scheduler';
 import { generateCoachBriefing } from '../services/garmin-coach';
@@ -54,6 +63,18 @@ import { runPerformanceAgent } from '../agents/performance-agent';
 import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { CronExpressionParser } from 'cron-parser';
+import {
+  getAllSkillStatuses, enableSkill, disableSkill,
+  enableSubSkill, disableSubSkill,
+} from '../skills/skill-manager';
+import type { DomainName } from '../domains/types';
+import { getErrorTrends } from '../services/error-monitor';
+import {
+  verifySignature, receiveWebhookEvent, getSubscriptions, registerSubscription,
+  removeSubscription, getWebhookStats, getRecentEvents as getRecentWebhookEvents,
+  replayEvent, expireSubscriptions,
+  type WebhookProvider,
+} from '../services/webhook-registry';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -70,6 +91,9 @@ interface SnapshotResponse {
     configured: boolean;
     status?: string;
     lastCheck?: string;
+    group?: string;
+    tokenHealth?: 'valid' | 'expired' | 'warning' | 'not_configured';
+    lastApiCall?: string | null;
   }[];
   jobs: ReturnType<typeof getJobStatuses>;
   jobHistory: Record<string, { result: string; ts: string }[]>;
@@ -115,6 +139,37 @@ interface SnapshotResponse {
     knowledgeCategories: number;
   };
   transcriptStats: { transcripts: number; studies: number };
+  trainingPlans: {
+    activePlans: number;
+    totalCompletedSessions: number;
+    currentWeekAdherence: number;
+    currentPlanName: string | null;
+  } | null;
+  domainStatus: {
+    domain: string;
+    label: string;
+    active: boolean;
+    messagesToday: number;
+    totalMessages: number;
+    lastMessageAt: string | null;
+    details: Record<string, string | number | boolean>;
+  }[];
+  skillStatus: {
+    name: string;
+    description: string;
+    enabled: boolean;
+    subSkills: {
+      name: string;
+      description: string;
+      enabled: boolean;
+      toolCount: number;
+    }[];
+  }[];
+  usageMetering: {
+    today: { messageCount: number; totalTokens: number; apiCalls: number; costUsd: number };
+    byUser: { userId: number; messageCount: number; totalTokens: number; apiCalls: number; costUsd: number }[];
+  };
+  adapters?: { name: string; status: string; lastMessage?: string; lastMessageAt?: string | null; configured: boolean }[];
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -216,6 +271,14 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
     jobHistoryRecent: db.prepare(`
       SELECT job_name, result, ts
       FROM job_history ORDER BY ts DESC LIMIT 200`),
+    lastSuccessForJob: db.prepare(`
+      SELECT ts FROM job_history
+      WHERE job_name = ? AND result = 'success'
+      ORDER BY ts DESC LIMIT 1`),
+    lastFailureForJob: db.prepare(`
+      SELECT ts FROM job_history
+      WHERE job_name = ? AND result = 'failed'
+      ORDER BY ts DESC LIMIT 1`),
     jobHistory7d: db.prepare(`
       SELECT job_name, result, ts, duration_ms
       FROM job_history WHERE ts >= date('now', '-7 days')
@@ -224,6 +287,14 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
       SELECT job_name, result, ts, duration_ms
       FROM job_history WHERE ts >= date('now', '-45 days')
       ORDER BY ts ASC`),
+    domainMessagesToday: db.prepare(`
+      SELECT domain, COUNT(*) as count
+      FROM conversations WHERE created_at >= date('now')
+      GROUP BY domain`),
+    domainMessagesTotal: db.prepare(`
+      SELECT domain, COUNT(*) as count, MAX(created_at) as last_at
+      FROM conversations
+      GROUP BY domain`),
   };
   return _stmts;
 }
@@ -235,34 +306,141 @@ function buildSnapshot(): SnapshotResponse {
   const garminStatus = getGarminRefreshStatus();
 
   // ── Integration status list ────────────────────────────────────
-  const integrations = [
+  // Helper: get last successful API call time for a job name (proxy for integration health)
+  function lastJobSuccess(jobName: string): string | null {
+    try {
+      const row = getStmts().lastSuccessForJob.get(jobName) as { ts: string } | undefined;
+      return row?.ts ?? null;
+    } catch { return null; }
+  }
+  function lastJobFailure(jobName: string): string | null {
+    try {
+      const row = getStmts().lastFailureForJob.get(jobName) as { ts: string } | undefined;
+      return row?.ts ?? null;
+    } catch { return null; }
+  }
+
+  // Determine token health based on configured + recent job success/failure
+  function inferTokenHealth(
+    configured: boolean,
+    lastSuccess: string | null,
+    lastFailure: string | null,
+  ): 'valid' | 'expired' | 'warning' | 'not_configured' {
+    if (!configured) return 'not_configured';
+    if (!lastSuccess && !lastFailure) return 'valid'; // configured but never ran — assume valid
+    const successTs = lastSuccess ? new Date(lastSuccess).getTime() : 0;
+    const failureTs = lastFailure ? new Date(lastFailure).getTime() : 0;
+    if (failureTs > successTs) {
+      // More recent failure than success → likely expired
+      const hoursSinceFailure = (Date.now() - failureTs) / 3_600_000;
+      return hoursSinceFailure < 24 ? 'expired' : 'warning';
+    }
+    // Last run was successful — check staleness
+    const hoursSinceSuccess = (Date.now() - successTs) / 3_600_000;
+    if (hoursSinceSuccess > 48) return 'warning';
+    return 'valid';
+  }
+
+  // Google integrations
+  const googleCalConfigured = isGoogleCalendarConfigured();
+  const gmailConfigured = isGmailConfigured();
+  const gdriveConfigured = isGoogleDriveEnabled();
+  const googleLastSuccess = lastJobSuccess('daily_briefing'); // briefing uses Google Calendar
+  const googleLastFailure = lastJobFailure('daily_briefing');
+
+  // Microsoft integrations
+  const msConfigured = isMicrosoftConfigured();
+  const outlookCalConfigured = isOutlookCalendarConfigured();
+  const outlookMailConfigured = isOutlookMailConfigured();
+  const outlookTodoConfigured = isOutlookTodoConfigured();
+  const msLastSuccess = lastJobSuccess('conflict_detection'); // uses Outlook Calendar
+  const msLastFailure = lastJobFailure('conflict_detection');
+
+  // Garmin
+  const garminConfigured = isGarminConfigured();
+  const garminLastSuccess = lastJobSuccess('garmin_keepalive');
+  const garminLastFailure = lastJobFailure('garmin_keepalive');
+
+  const integrations: SnapshotResponse['integrations'] = [
     {
       name: 'Telegram Bot',
+      group: 'system',
       configured: true,
       status: isBotPollingActive() ? 'polling' : isRestarting() ? 'restarting' : 'stopped',
+      tokenHealth: 'valid',
     },
     {
-      name: 'Microsoft Graph',
-      configured: isMicrosoftConfigured(),
-      status: isMicrosoftConfigured() ? 'configured' : 'not configured',
+      name: 'Google Calendar',
+      group: 'google',
+      configured: googleCalConfigured,
+      status: googleCalConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(googleCalConfigured, googleLastSuccess, googleLastFailure),
+      lastApiCall: googleLastSuccess,
+    },
+    {
+      name: 'Google Drive',
+      group: 'google',
+      configured: gdriveConfigured,
+      status: gdriveConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(gdriveConfigured, googleLastSuccess, googleLastFailure),
+      lastApiCall: googleLastSuccess,
+    },
+    {
+      name: 'Gmail',
+      group: 'google',
+      configured: gmailConfigured,
+      status: gmailConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(gmailConfigured, googleLastSuccess, googleLastFailure),
+      lastApiCall: googleLastSuccess,
+    },
+    {
+      name: 'Outlook Calendar',
+      group: 'microsoft',
+      configured: outlookCalConfigured,
+      status: outlookCalConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(outlookCalConfigured, msLastSuccess, msLastFailure),
+      lastApiCall: msLastSuccess,
+    },
+    {
+      name: 'Outlook Mail',
+      group: 'microsoft',
+      configured: outlookMailConfigured,
+      status: outlookMailConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(outlookMailConfigured, msLastSuccess, msLastFailure),
+      lastApiCall: msLastSuccess,
+    },
+    {
+      name: 'Microsoft To Do',
+      group: 'microsoft',
+      configured: outlookTodoConfigured,
+      status: outlookTodoConfigured ? 'configured' : 'not configured',
+      tokenHealth: inferTokenHealth(outlookTodoConfigured, msLastSuccess, msLastFailure),
+      lastApiCall: msLastSuccess,
     },
     {
       name: 'Garmin Connect',
-      configured: isGarminConfigured(),
+      group: 'garmin',
+      configured: garminConfigured,
       status: garminStatus.at
         ? `last refresh: ${garminStatus.ok ? '✓' : '✗'} at ${garminStatus.at}`
-        : isGarminConfigured() ? 'awaiting first refresh' : 'not configured',
+        : garminConfigured ? 'awaiting first refresh' : 'not configured',
       lastCheck: garminStatus.at ?? undefined,
+      tokenHealth: inferTokenHealth(garminConfigured, garminLastSuccess, garminLastFailure),
+      lastApiCall: garminLastSuccess,
     },
     {
       name: 'Invoice Filing (SSH)',
+      group: 'system',
       configured: isInvoiceFilingConfigured(),
       status: isInvoiceFilingConfigured() ? 'configured' : 'not configured',
+      tokenHealth: isInvoiceFilingConfigured() ? 'valid' : 'not_configured',
     },
     {
       name: 'Anthropic API',
+      group: 'system',
       configured: true,
       status: 'active',
+      tokenHealth: 'valid',
     },
   ];
 
@@ -478,6 +656,129 @@ function buildSnapshot(): SnapshotResponse {
     } catch { return { transcripts: 0, studies: 0 }; }
   })();
 
+  // ── Domain handler status ───────────────────────────────────────
+  let domainStatus: SnapshotResponse['domainStatus'] = [];
+  try {
+    const stmts = getStmts();
+    const todayRows = stmts.domainMessagesToday.all() as { domain: string; count: number }[];
+    const totalRows = stmts.domainMessagesTotal.all() as { domain: string; count: number; last_at: string | null }[];
+
+    const todayMap: Record<string, number> = {};
+    for (const r of todayRows) todayMap[r.domain] = r.count;
+
+    const totalMap: Record<string, { count: number; lastAt: string | null }> = {};
+    for (const r of totalRows) totalMap[r.domain] = { count: r.count, lastAt: r.last_at };
+
+    // Active agent count from intelligence bus
+    let activeAgentCount = 0;
+    let totalSignals = 0;
+    try {
+      const agentStats = getAgentStats();
+      activeAgentCount = agentStats.filter((a: any) => a.last_status === 'success').length;
+      totalSignals = getActiveSignalCount();
+    } catch { /* ignore — table may not exist */ }
+
+    const garminConnected = isGarminConfigured();
+    const graphConfigured = isMicrosoftConfigured();
+
+    domainStatus = [
+      {
+        domain: 'secretary',
+        label: 'Secretary',
+        active: true,
+        messagesToday: todayMap['secretary'] || 0,
+        totalMessages: totalMap['secretary']?.count || 0,
+        lastMessageAt: totalMap['secretary']?.lastAt || null,
+        details: {
+          graphConnected: graphConfigured,
+          garminConnected,
+        },
+      },
+      {
+        domain: 'triathlon',
+        label: 'Triathlon',
+        active: true,
+        messagesToday: todayMap['triathlon'] || 0,
+        totalMessages: totalMap['triathlon']?.count || 0,
+        lastMessageAt: totalMap['triathlon']?.lastAt || null,
+        details: {
+          garminConnected,
+        },
+      },
+      {
+        domain: 'content',
+        label: 'Content Creator',
+        active: true,
+        messagesToday: todayMap['content'] || 0,
+        totalMessages: totalMap['content']?.count || 0,
+        lastMessageAt: totalMap['content']?.lastAt || null,
+        details: {
+          activeAgents: activeAgentCount,
+          activeSignals: totalSignals,
+        },
+      },
+      {
+        domain: 'finance',
+        label: 'Finance Tracker',
+        active: true,
+        messagesToday: todayMap['finance'] || 0,
+        totalMessages: totalMap['finance']?.count || 0,
+        lastMessageAt: totalMap['finance']?.lastAt || null,
+        details: {},
+      },
+      {
+        domain: 'cooking',
+        label: 'Cooking Chef',
+        active: true,
+        messagesToday: todayMap['cooking'] || 0,
+        totalMessages: totalMap['cooking']?.count || 0,
+        lastMessageAt: totalMap['cooking']?.lastAt || null,
+        details: {},
+      },
+    ];
+  } catch (err) {
+    logger.warn({ err }, 'Portal: failed to query domain status');
+  }
+
+  // ── Training plan stats ──────────────────────────────────────────
+  let trainingPlans: { activePlans: number; totalCompletedSessions: number; currentWeekAdherence: number; currentPlanName: string | null } | null = null;
+  try {
+    const { getPlanStats } = require('../services/training-plans');
+    const userId = config.telegram.allowedUserIds[0];
+    if (userId) {
+      trainingPlans = getPlanStats(userId);
+    }
+  } catch { /* table may not exist yet */ }
+
+  // ── Usage metering stats ──────────────────────────────────────────
+  let usageMetering: SnapshotResponse['usageMetering'] = {
+    today: { messageCount: 0, totalTokens: 0, apiCalls: 0, costUsd: 0 },
+    byUser: [],
+  };
+  try {
+    const { getGlobalDailyUsage, getDailyUsage } = require('../services/usage-metering');
+    const global = getGlobalDailyUsage();
+    usageMetering.today = {
+      messageCount: global.messageCount,
+      totalTokens: global.totalTokens,
+      apiCalls: global.apiCalls,
+      costUsd: global.costUsd,
+    };
+    // Per-user breakdown for allowed users
+    for (const uid of config.telegram.allowedUserIds) {
+      const u = getDailyUsage(uid);
+      if (u.apiCalls > 0) {
+        usageMetering.byUser.push({
+          userId: uid,
+          messageCount: u.messageCount,
+          totalTokens: u.totalTokens,
+          apiCalls: u.apiCalls,
+          costUsd: u.costUsd,
+        });
+      }
+    }
+  } catch { /* table may not exist yet */ }
+
   return {
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
@@ -498,7 +799,42 @@ function buildSnapshot(): SnapshotResponse {
     calendarData: { days: calendarDays, jobs: calendarJobs },
     contentReferences,
     transcriptStats,
+    domainStatus,
+    skillStatus: getAllSkillStatuses(),
+    trainingPlans,
+    usageMetering,
   };
+}
+
+function buildAdapterStatus(): SnapshotResponse['adapters'] {
+  const polling = isBotPollingActive();
+  const lastMsg = getLastMessageAt();
+
+  // Determine Telegram status based on polling and recency of last message
+  let telegramStatus: 'connected' | 'idle' | 'error' = 'error';
+  if (polling) {
+    if (lastMsg) {
+      const ageMs = Date.now() - new Date(lastMsg).getTime();
+      telegramStatus = ageMs < 3_600_000 ? 'connected' : 'idle';
+    } else {
+      telegramStatus = 'idle'; // polling but no messages yet
+    }
+  }
+
+  return [
+    {
+      name: 'Telegram',
+      status: telegramStatus,
+      configured: true,
+      lastMessageAt: lastMsg,
+    },
+    {
+      name: 'WhatsApp',
+      status: 'planned',
+      configured: false,
+      lastMessageAt: null,
+    },
+  ];
 }
 
 // ─── Quick Actions ──────────────────────────────────────────────────
@@ -687,6 +1023,132 @@ export function createPortalServer(bot: Bot): http.Server {
   const app = express();
   app.use(express.json());
 
+  // ── Health check endpoint (no auth — for uptime monitors) ──────
+  app.get('/health', (_req: Request, res: Response) => {
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+    let dbOk = false;
+    try {
+      const d = getDb();
+      const row = d.prepare('SELECT 1 as ok').get() as any;
+      dbOk = row?.ok === 1;
+    } catch { /* db not ready */ }
+
+    const mem = process.memoryUsage();
+    const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
+
+    res.status(status === 'healthy' ? 200 : 503).json({
+      status,
+      uptime: uptimeSec,
+      uptimeHuman: humanUptime(uptimeSec),
+      bot: {
+        polling: isBotPollingActive(),
+        restarting: isRestarting(),
+        lastMessageAt: getLastMessageAt(),
+      },
+      database: dbOk ? 'connected' : 'disconnected',
+      memory: {
+        rss: Math.round(mem.rss / 1024 / 1024),
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        external: Math.round(mem.external / 1024 / 1024),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // ── Detailed health check (auth-protected via ?token=HEALTH_TOKEN) ──
+  app.get('/health/detailed', (req: Request, res: Response) => {
+    const healthToken = config.health.token;
+    if (healthToken && req.query.token !== healthToken) {
+      res.status(401).json({ error: 'Unauthorized — provide ?token=HEALTH_TOKEN' });
+      return;
+    }
+
+    const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
+
+    // Database check
+    let dbOk = false;
+    try {
+      const d = getDb();
+      const row = d.prepare('SELECT 1 as ok').get() as any;
+      dbOk = row?.ok === 1;
+    } catch { /* db not ready */ }
+
+    // Memory
+    const mem = process.memoryUsage();
+
+    // Cron job statuses
+    const jobs = getJobStatuses().map(j => ({
+      name: j.name,
+      label: j.label,
+      cronExpression: j.cronExpression,
+      domain: j.domain,
+      lastRunAt: j.lastRunAt,
+      lastResult: j.lastResult,
+      lastDurationMs: j.lastDurationMs,
+      lastError: j.lastError,
+    }));
+
+    // Error count from recent events (in-memory ring buffer)
+    const recentEvents = getRecentEvents();
+    const errorCount = recentEvents.filter(e => e.type === 'error').length;
+    const errorsLast1h = recentEvents.filter(e => {
+      if (e.type !== 'error') return false;
+      const ageMs = Date.now() - new Date(e.ts).getTime();
+      return ageMs < 3_600_000;
+    }).length;
+
+    // Integration health (lightweight version of buildSnapshot integrations)
+    let integrationHealth: { name: string; status: string; configured: boolean; tokenHealth: string }[] = [];
+    try {
+      const snap = buildSnapshot();
+      integrationHealth = snap.integrations.map(i => ({
+        name: i.name,
+        status: i.status ?? 'unknown',
+        configured: i.configured,
+        tokenHealth: i.tokenHealth ?? 'unknown',
+      }));
+    } catch { /* snapshot build may fail during startup */ }
+
+    // Provider circuit breaker + metrics
+    let providerHealth: Record<string, unknown> = {};
+    try {
+      const { getActiveProvider } = require('../services/provider-registry');
+      const activeProvider = getActiveProvider();
+      if (activeProvider) {
+        providerHealth = activeProvider.getProviderHealth();
+      }
+    } catch { /* provider not initialized yet */ }
+
+    const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
+
+    res.status(status === 'healthy' ? 200 : 503).json({
+      status,
+      uptime: uptimeSec,
+      uptimeHuman: humanUptime(uptimeSec),
+      bot: {
+        polling: isBotPollingActive(),
+        restarting: isRestarting(),
+        lastMessageAt: getLastMessageAt(),
+      },
+      database: dbOk ? 'connected' : 'disconnected',
+      memory: {
+        rss: Math.round(mem.rss / 1024 / 1024),
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        external: Math.round(mem.external / 1024 / 1024),
+      },
+      crons: jobs,
+      integrations: integrationHealth,
+      providers: providerHealth,
+      errors: {
+        total: errorCount,
+        lastHour: errorsLast1h,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // ── Auth middleware for /api/* ──────────────────────────────────
   const portalToken = config.portal.token;
 
@@ -727,6 +1189,36 @@ export function createPortalServer(bot: Bot): http.Server {
     } catch (err) {
       logger.error({ err }, 'Portal: snapshot failed');
       res.status(500).json({ error: 'Failed to build snapshot' });
+    }
+  });
+
+  // ── GET /api/skills — all skill statuses with sub-skill toggles ──
+  app.get('/api/skills', (_req: Request, res: Response) => {
+    try {
+      res.json(getAllSkillStatuses());
+    } catch (err) {
+      logger.error({ err }, 'Portal: skills status failed');
+      res.status(500).json({ error: 'Failed to get skill statuses' });
+    }
+  });
+
+  // ── POST /api/skills/toggle — toggle a sub-skill on/off ──────
+  app.post('/api/skills/toggle', (req: Request, res: Response) => {
+    const { domain, subSkill, enabled } = req.body;
+    if (!domain || !subSkill || typeof enabled !== 'boolean') {
+      res.status(400).json({ ok: false, message: 'Required: domain, subSkill, enabled (boolean)' });
+      return;
+    }
+    try {
+      const result = enabled
+        ? enableSubSkill(domain as DomainName, subSkill)
+        : disableSubSkill(domain as DomainName, subSkill);
+      // Invalidate snapshot cache so next fetch reflects the toggle
+      cachedSnapshot = null;
+      res.json({ ok: result, domain, subSkill, enabled });
+    } catch (err) {
+      logger.error({ err }, 'Portal: skill toggle failed');
+      res.status(500).json({ ok: false, message: 'Toggle failed' });
     }
   });
 
@@ -911,17 +1403,505 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── Error Monitoring API ──────────────────────────────────────────
+
+  // GET /api/errors — error trends and recent errors
+  app.get('/api/errors', (_req: Request, res: Response) => {
+    try {
+      const trends = getErrorTrends();
+      res.json({ ok: true, ...trends });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/error-distribution — categorized agent error breakdown
+  app.get('/api/error-distribution', (_req: Request, res: Response) => {
+    try {
+      const { getErrorDistribution } = require('../services/error-categorizer');
+      const distribution = getErrorDistribution(7);
+      res.json({ ok: true, distribution });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/quality-scores — agent quality scoring data
+  app.get('/api/quality-scores', (_req: Request, res: Response) => {
+    try {
+      const { getQualityByAgent } = require('../services/quality-scorer');
+      const byAgent = getQualityByAgent(30);
+      res.json({ ok: true, byAgent });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/task-metrics — task execution cost and duration data
+  app.get('/api/task-metrics', (_req: Request, res: Response) => {
+    try {
+      const { getTaskExecutionSummary, getRecentExecutions } = require('../services/task-metrics');
+      const summary = getTaskExecutionSummary(7);
+      const recent = getRecentExecutions(20);
+      res.json({ ok: true, summary, recent });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── Skill Management API ─────────────────────────────────────────
+
+  // GET /api/skills — list all skills with sub-skill status
+  app.get('/api/skills', (_req: Request, res: Response) => {
+    try {
+      const skills = getAllSkillStatuses();
+      res.json({ ok: true, skills });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/enable — enable an entire skill
+  app.post('/api/skills/:name/enable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const result = enableSkill(name);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Skill "${name}" not found` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Skill "${name}" enabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/disable — disable an entire skill
+  app.post('/api/skills/:name/disable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const result = disableSkill(name);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Skill "${name}" not found` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Skill "${name}" disabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/subskills/:sub/enable — enable a sub-skill
+  app.post('/api/skills/:name/subskills/:sub/enable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const sub = String(req.params.sub);
+      const result = enableSubSkill(name, sub);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Sub-skill "${sub}" not found in "${name}"` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Sub-skill "${sub}" enabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/skills/:name/subskills/:sub/disable — disable a sub-skill
+  app.post('/api/skills/:name/subskills/:sub/disable', (req: Request, res: Response) => {
+    try {
+      const name = req.params.name as DomainName;
+      const sub = String(req.params.sub);
+      const result = disableSubSkill(name, sub);
+      if (!result) {
+        res.status(404).json({ ok: false, message: `Sub-skill "${sub}" not found in "${name}"` });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: `Sub-skill "${sub}" disabled` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── WhatsApp Webhook Routes ───────────────────────────────────────
+  // These MUST come before the universal /api/webhooks/:provider route
+
+  // GET /api/webhooks/whatsapp — Meta webhook verification
+  app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
+    const verifyToken = config.whatsapp?.verifyToken;
+
+    // Reject if WhatsApp is not configured or verify token is not set
+    if (!config.whatsapp?.enabled || !verifyToken) {
+      res.status(403).send('Forbidden');
+      return;
+    }
+
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && typeof token === 'string') {
+      // Timing-safe comparison to prevent token oracle attacks
+      const tokenBuf = Buffer.from(token);
+      const expectedBuf = Buffer.from(verifyToken);
+      if (tokenBuf.length === expectedBuf.length &&
+          crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+        logger.info('WhatsApp webhook verified');
+        res.status(200).send(challenge);
+        return;
+      }
+    }
+
+    logger.warn({ mode }, 'WhatsApp webhook verification failed');
+    res.status(403).send('Forbidden');
+  });
+
+  // POST /api/webhooks/whatsapp — Incoming WhatsApp messages
+  app.post('/api/webhooks/whatsapp',
+    express.raw({ type: 'application/json', limit: '1mb' }),
+    (req: Request, res: Response) => {
+    // HMAC signature verification (when WHATSAPP_APP_SECRET is configured)
+    const appSecret = config.whatsapp?.appSecret;
+    if (appSecret) {
+      const sig = req.headers['x-hub-signature-256'] as string | undefined;
+      if (!sig) {
+        res.status(403).send('Forbidden');
+        return;
+      }
+      const expected = 'sha256=' + crypto
+        .createHmac('sha256', appSecret)
+        .update(req.body as Buffer)
+        .digest('hex');
+      const sigBuf = Buffer.from(sig);
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        logger.warn('WhatsApp webhook HMAC verification failed');
+        res.status(403).send('Forbidden');
+        return;
+      }
+    }
+
+    // Respond 200 immediately after verification (WhatsApp retries on non-200)
+    res.status(200).send('OK');
+
+    let body: any;
+    try {
+      body = typeof req.body === 'string' ? JSON.parse(req.body)
+        : Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString('utf-8'))
+        : req.body;
+    } catch { return; }
+    if (body?.object !== 'whatsapp_business_account') return;
+
+    const entries = body.entry ?? [];
+    for (const entry of entries) {
+      const changes = entry.changes ?? [];
+      for (const change of changes) {
+        if (change.field !== 'messages') continue;
+
+        const value = change.value;
+        const messages = value?.messages ?? [];
+        const contacts = value?.contacts ?? [];
+
+        for (const msg of messages) {
+          const senderPhone = msg.from;
+          const senderName = contacts.find((c: { wa_id: string; profile?: { name?: string } }) =>
+            c.wa_id === senderPhone)?.profile?.name ?? 'Unknown';
+
+          pushEvent({
+            ts: new Date().toISOString(),
+            type: 'message',
+            summary: `WhatsApp from ${senderName}: ${(msg.text?.body ?? msg.type).slice(0, 60)}`,
+            detail: JSON.stringify(msg),
+            domain: 'whatsapp',
+          });
+
+          logger.info({
+            from: senderPhone,
+            name: senderName,
+            type: msg.type,
+            msgId: msg.id,
+          }, 'WhatsApp incoming message');
+
+          // TODO: Route incoming WhatsApp messages to bot domains
+        }
+
+        // Handle status updates (sent, delivered, read)
+        const statuses = value?.statuses ?? [];
+        for (const status of statuses) {
+          logger.debug({
+            msgId: status.id,
+            status: status.status,
+            recipientId: status.recipient_id,
+          }, 'WhatsApp message status update');
+        }
+      }
+    }
+  });
+
+  // ── Webhook Infrastructure API ──────────────────────────────────────
+
+  // POST /api/webhooks/:provider — universal webhook receiver
+  // Uses raw body parsing for HMAC signature verification
+  app.post('/api/webhooks/:provider',
+    express.raw({ type: '*/*', limit: config.webhooks.maxPayloadBytes }),
+    async (req: Request, res: Response) => {
+      const provider = req.params.provider as WebhookProvider;
+
+      // Google webhook verification challenge (sync validation)
+      if (req.headers['x-goog-resource-state'] === 'sync') {
+        res.status(200).send('OK');
+        return;
+      }
+
+      // Microsoft Graph validation token (subscription verification)
+      const validationToken = req.query.validationToken;
+      if (validationToken && typeof validationToken === 'string') {
+        res.type('text/plain').status(200).send(validationToken);
+        return;
+      }
+
+      // Find matching subscription
+      const subs = getSubscriptions({ provider, status: 'active' });
+      const sub = subs.length > 0 ? subs[0] : null;
+
+      // Verify signature if subscription has a secret
+      if (sub?.secret) {
+        const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body));
+        const valid = verifySignature(
+          provider,
+          rawBody,
+          req.headers as Record<string, string | string[] | undefined>,
+          sub.secret,
+        );
+        if (!valid) {
+          logger.warn({ provider }, 'Webhook signature verification failed');
+          res.status(401).json({ ok: false, message: 'Invalid signature' });
+          return;
+        }
+      }
+
+      try {
+        // Parse payload
+        let payload: Record<string, unknown>;
+        if (Buffer.isBuffer(req.body)) {
+          try {
+            payload = JSON.parse(req.body.toString('utf-8'));
+          } catch {
+            payload = { raw: req.body.toString('utf-8') };
+          }
+        } else if (typeof req.body === 'object') {
+          payload = req.body as Record<string, unknown>;
+        } else {
+          payload = { raw: String(req.body) };
+        }
+
+        // Extract event type from provider-specific headers/payload
+        const eventType = extractEventType(provider, req.headers, payload);
+
+        // Extract idempotency key from provider-specific fields
+        const idempotencyKey = extractIdempotencyKey(provider, req.headers, payload);
+
+        const eventId = await receiveWebhookEvent({
+          provider,
+          event_type: eventType,
+          payload,
+          headers: flattenHeaders(req.headers),
+          idempotency_key: idempotencyKey,
+          subscription_id: sub?.id,
+        });
+
+        res.status(200).json({ ok: true, eventId });
+      } catch (err) {
+        logger.error({ err, provider }, 'Webhook processing failed');
+        res.status(500).json({ ok: false, message: 'Processing failed' });
+      }
+    });
+
+  // GET /api/webhooks/stats — webhook infrastructure health
+  app.get('/api/webhooks/stats', (_req: Request, res: Response) => {
+    try {
+      const stats = getWebhookStats();
+      res.json({ ok: true, ...stats });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/webhooks/subscriptions — list all subscriptions
+  app.get('/api/webhooks/subscriptions', (req: Request, res: Response) => {
+    try {
+      const provider = req.query.provider as WebhookProvider | undefined;
+      const subs = getSubscriptions(provider ? { provider } : undefined);
+      res.json({ ok: true, subscriptions: subs });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/webhooks/subscriptions — register a new subscription
+  app.post('/api/webhooks/subscriptions', (req: Request, res: Response) => {
+    const { provider, event_types, secret, external_id, metadata, expires_at } = req.body || {};
+    if (!provider) {
+      res.status(400).json({ ok: false, message: 'provider is required' });
+      return;
+    }
+    try {
+      const id = registerSubscription({
+        provider,
+        event_types,
+        endpoint_path: `/api/webhooks/${provider}`,
+        secret: secret || config.webhooks.secret || undefined,
+        external_id,
+        metadata,
+        expires_at,
+      });
+      if (id < 0) {
+        res.status(500).json({ ok: false, message: 'Failed to register subscription' });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, id, endpoint: `/api/webhooks/${provider}` });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // DELETE /api/webhooks/subscriptions/:id — remove a subscription
+  app.delete('/api/webhooks/subscriptions/:id', (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) {
+      res.status(400).json({ ok: false, message: 'Invalid subscription ID' });
+      return;
+    }
+    try {
+      const removed = removeSubscription(id);
+      if (!removed) {
+        res.status(404).json({ ok: false, message: 'Subscription not found' });
+        return;
+      }
+      cachedSnapshot = null;
+      res.json({ ok: true, message: 'Subscription removed' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/webhooks/events — recent webhook events
+  app.get('/api/webhooks/events', (req: Request, res: Response) => {
+    try {
+      const provider = req.query.provider as string | undefined;
+      const status = req.query.status as string | undefined;
+      const limit = parseInt(String(req.query.limit || '50'), 10);
+      const events = getRecentWebhookEvents({
+        provider: provider || undefined,
+        status: status as any || undefined,
+        limit: Math.min(limit, 200),
+      });
+      res.json({ ok: true, events });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // POST /api/webhooks/events/:id/replay — replay a failed event
+  app.post('/api/webhooks/events/:id/replay', async (req: Request, res: Response) => {
+    const id = parseInt(String(req.params.id), 10);
+    if (isNaN(id)) {
+      res.status(400).json({ ok: false, message: 'Invalid event ID' });
+      return;
+    }
+    try {
+      const success = await replayEvent(id);
+      res.json({ ok: success, message: success ? 'Event replayed successfully' : 'Replay failed' });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Start HTTP server ──────────────────────────────────────────
   const server = http.createServer(app);
   const bind = config.portal.bind;
   const port = config.portal.port;
 
+  // Expire stale webhook subscriptions on server start
+  try { expireSubscriptions(); } catch { /* non-critical */ }
+
   server.listen(port, bind, () => {
-    logger.info({ port, bind }, `Cortex Status Portal running at http://${bind}:${port}`);
+    logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
     if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {
       logger.warn('Portal is listening on a non-loopback address without PORTAL_TOKEN — API is unauthenticated!');
+    }
+    if (!config.health.token && bind !== '127.0.0.1' && bind !== 'localhost') {
+      logger.warn('HEALTH_TOKEN is not set — /health/detailed is publicly accessible!');
     }
   });
 
   return server;
+}
+
+// ─── Webhook Helpers ───────────────────────────────────────────────
+
+/** Extract event type from provider-specific headers/payload. */
+function extractEventType(
+  provider: string,
+  headers: Record<string, string | string[] | undefined>,
+  payload: Record<string, unknown>,
+): string {
+  switch (provider) {
+    case 'google_calendar':
+    case 'google_gmail':
+      return (headers['x-goog-resource-state'] as string) || 'update';
+    case 'outlook_calendar':
+    case 'outlook_mail':
+    case 'outlook_todo':
+      return (payload.changeType as string) || 'updated';
+    case 'garmin':
+      return (payload.activityType as string) || 'activity';
+    case 'strava':
+      return (payload.aspect_type as string) || (payload.object_type as string) || 'activity';
+    case 'github': {
+      const ghEvent = headers['x-github-event'];
+      return (typeof ghEvent === 'string' ? ghEvent : 'push');
+    }
+    default:
+      return (payload.event_type as string) || (payload.type as string) || 'unknown';
+  }
+}
+
+/** Extract idempotency key from provider-specific fields. */
+function extractIdempotencyKey(
+  provider: string,
+  headers: Record<string, string | string[] | undefined>,
+  payload: Record<string, unknown>,
+): string | undefined {
+  switch (provider) {
+    case 'google_calendar':
+    case 'google_gmail':
+      return headers['x-goog-message-number'] as string | undefined;
+    case 'outlook_calendar':
+    case 'outlook_mail':
+    case 'outlook_todo':
+      return payload.subscriptionId as string | undefined;
+    case 'github':
+      return headers['x-github-delivery'] as string | undefined;
+    case 'strava':
+      return payload.event_time ? String(payload.event_time) : undefined;
+    default:
+      return payload.id ? String(payload.id) : undefined;
+  }
+}
+
+/** Flatten Express headers into a simple string record (for storage). */
+function flattenHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value !== undefined) {
+      result[key] = Array.isArray(value) ? value.join(', ') : value;
+    }
+  }
+  return result;
 }

@@ -1,13 +1,17 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { getDb } from '../services/database';
 import { DomainMessage, DomainName } from '../domains/types';
 
 // Per-domain limits: secretary needs deep history for multi-step tasks,
 // triathlon/content produce verbose responses (training plans, scripts)
 // so fewer messages avoids bloating the context window.
-const HISTORY_LIMITS: Record<DomainName, number> = {
+const HISTORY_LIMITS: Record<string, number> = {
   secretary: 10,
   triathlon: 6,
   content: 6,
+  finance: 8,
+  cooking: 8,
 };
 
 export function getConversationHistory(domain: DomainName): DomainMessage[] {

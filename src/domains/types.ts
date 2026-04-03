@@ -1,4 +1,14 @@
-export type DomainName = 'secretary' | 'triathlon' | 'content';
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+/** The built-in domains. Kept as a narrow type for domain handlers. */
+export type DefaultDomainName = 'secretary' | 'triathlon' | 'content' | 'finance' | 'cooking';
+
+/**
+ * Any domain/skill name — includes the three defaults plus any dynamically
+ * registered skill.  The `(string & {})` arm keeps autocomplete for known
+ * values while accepting arbitrary strings at compile time.
+ */
+export type DomainName = DefaultDomainName | (string & {});
 
 export interface DomainContext {
   domain: DomainName;
@@ -80,5 +90,29 @@ export interface InvoiceVendor {
   sender_pattern: string;
   subject_patterns: string | null;
   enabled: number;       // SQLite boolean: 1 = active, 0 = disabled
+  created_at: string;
+}
+
+// ── Skill Registry ─────────────────────────────────────────────────
+
+export interface InstalledSkill {
+  id: number;
+  name: string;
+  description: string | null;
+  version: string;
+  domain: string | null;
+  enabled: number;       // SQLite boolean: 1 = enabled, 0 = disabled
+  config_json: string | null;
+  installed_at: string;
+  updated_at: string;
+}
+
+export interface SkillSubmodule {
+  id: number;
+  skill_id: number;
+  module_name: string;
+  version: string;
+  enabled: number;       // SQLite boolean: 1 = enabled, 0 = disabled
+  config_json: string | null;
   created_at: string;
 }

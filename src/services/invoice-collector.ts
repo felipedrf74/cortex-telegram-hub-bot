@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
 import { DateTime } from 'luxon';
 import { config } from '../config';
 import { logger } from '../utils/logger';
