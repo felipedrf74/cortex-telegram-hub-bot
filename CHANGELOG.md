@@ -3,6 +3,12 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [Unreleased]
+
+### Bug Fixes
+
+- **portal**: Tabbed layout, skill defaults, invite codes, sub-skill errors ([`9e2aeb0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9e2aeb0b89973ea2c263e33ed2d7af805381d395))
+
 ## [4.7.1] — 2026-04-03
 
 ### Bug Fixes
