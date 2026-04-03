@@ -1453,6 +1453,23 @@
 <div id="toast" class="toast" style="display:none"></div>
 
 <script>
+// ── Global helper functions (called from onclick in HTML) ──
+
+function toggleDNA(fullId, previewId, btnId) {
+  const full = document.getElementById(fullId);
+  const preview = document.getElementById(previewId);
+  const btn = document.getElementById(btnId);
+  if (full.style.display === 'none') {
+    full.style.display = '';
+    preview.style.display = 'none';
+    btn.textContent = '▲ Collapse';
+  } else {
+    full.style.display = 'none';
+    preview.style.display = '';
+    btn.textContent = '▼ Read more';
+  }
+}
+
 // ── Tab switching (global, called from onclick) ──
 function switchTab(tabName) {
   // Hide all cards that don't match the selected tab
@@ -2198,14 +2215,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (knowledgeRes.ok) {
         const grid = document.getElementById('ref-knowledge-grid');
         const catIcons = { hook_style: '🎣', brand_voice: '🗣️', visual_style: '🎨', editing_style: '✂️', content_structure: '📐', title_pattern: '📝', audience_engagement: '💬', cta_pattern: '📢', storytelling: '📖' };
-        grid.innerHTML = knowledgeRes.knowledge.map(k => {
+        grid.innerHTML = knowledgeRes.knowledge.map((k, i) => {
           const icon = catIcons[k.category] || '🧩';
-          const preview = k.text.length > 150 ? k.text.slice(0, 150) + '...' : k.text;
-          const sources = (k.sources || []).slice(0, 3).join(', ');
-          return `<div style="background:var(--surface2);border-radius:8px;padding:10px;border-left:3px solid var(--accent)">
-            <div style="font-weight:600;font-size:13px;margin-bottom:4px">${icon} ${esc(k.category.replace(/_/g, ' '))}</div>
-            <div style="font-size:11px;color:var(--text2);line-height:1.4;margin-bottom:6px">${esc(preview)}</div>
-            <div style="font-size:10px;color:var(--text2);opacity:0.7">From: ${esc(sources)}</div>
+          const isLong = k.text.length > 150;
+          const preview = isLong ? k.text.slice(0, 150) + '...' : k.text;
+          const sources = (k.sources || []).join(', ');
+          const fullId = 'dna-full-' + i;
+          const previewId = 'dna-preview-' + i;
+          const btnId = 'dna-btn-' + i;
+          return `<div style="background:var(--surface2);border-radius:8px;padding:12px;border-left:3px solid var(--accent)">
+            <div style="font-weight:600;font-size:13px;margin-bottom:6px;text-transform:capitalize">${icon} ${esc(k.category.replace(/_/g, ' '))}</div>
+            <div id="${previewId}" style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:6px">${esc(preview)}</div>
+            <div id="${fullId}" style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:6px;display:none;white-space:pre-wrap">${esc(k.text)}</div>
+            ${isLong ? `<button id="${btnId}" onclick="toggleDNA('${fullId}','${previewId}','${btnId}')" style="background:none;border:1px solid var(--border);border-radius:4px;padding:2px 8px;color:var(--accent);cursor:pointer;font-size:11px">▼ Read more</button>` : ''}
+            <div style="font-size:10px;color:var(--text2);opacity:0.7;margin-top:6px">Sources: ${esc(sources)}</div>
           </div>`;
         }).join('') || '<span class="text-muted">No knowledge extracted yet — add channels and run /relearn</span>';
       }
@@ -2360,6 +2383,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ['channel-learner',  'content-workflow',  'channel_dna'],
     ['book-extractor',   'script-writer',    'book_knowledge'],
     ['book-extractor',   'content-workflow',  'book_knowledge'],
+    ['book-extractor',   'voice-evolution',   'book_knowledge'],
     ['seo-agent',        'script-writer',    'keyword_rank_change'],
     ['seo-agent',        'content-workflow',  'keyword_rank_change'],
     ['reaction-radar',   'content-workflow',  'reaction_opportunity'],

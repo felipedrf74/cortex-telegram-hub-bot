@@ -6,7 +6,7 @@
  *
  * Schedule: Monthly, 1st of month at 04:00
  *
- * Consumes: channel_dna, pillar_performance (cross-agent), retention_pattern (cross-agent)
+ * Consumes: channel_dna, book_knowledge, pillar_performance (cross-agent), retention_pattern (cross-agent)
  * Produces: voice_pattern, voice_phrase_trend
  */
 
@@ -34,6 +34,9 @@ AI-GENERATED SCRIPTS:
 
 PUBLISHED VIDEO TRANSCRIPTS:
 {transcripts}
+
+BOOK KNOWLEDGE (extracted from books Felipe reads — frameworks, vocabulary, and techniques):
+{book_knowledge}
 
 Analyze and return a JSON object with:
 {{
@@ -66,10 +69,18 @@ Analyze and return a JSON object with:
       "count": 3
     }}
   ],
-  "voice_summary": "2-3 sentences describing Felipe's actual voice vs the AI-generated voice"
+  "book_influences": [
+    {{
+      "book_or_concept": "Name of book or concept from book knowledge",
+      "how_it_appears": "How this concept shows up in Felipe's scripts or transcripts",
+      "adoption_level": "integrated|emerging|absent"
+    }}
+  ],
+  "voice_summary": "2-3 sentences describing Felipe's actual voice vs the AI-generated voice, including any book influences detected"
 }}
 
 If transcripts are limited, analyze the scripts against the creator profile instead and note what's missing.
+If book knowledge is available, identify which concepts Felipe has integrated into his natural voice vs. which remain absent.
 Return ONLY valid JSON, no markdown.`;
 
 // ── Main Agent Runner ────────────────────────────────────────────────
@@ -135,6 +146,10 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     const dnaSignals = readSignals('voice-evolution', ['channel_dna'], 20);
     signalsConsumed += dnaSignals.length;
 
+    // Consume book knowledge — frameworks, vocabulary, techniques from books Felipe reads
+    const bookSignals = readSignals('voice-evolution', ['book_knowledge'], 10);
+    signalsConsumed += bookSignals.length;
+
     // Cross-agent learning: consume performance data to focus on high-performing content
     const peerContext = buildAgentContext('voice-evolution');
     signalsConsumed += peerContext.signalsConsumed;
@@ -156,9 +171,21 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       ? transcripts.map((t: any) => `=== ${t.title} ===\n${(t.full_text || '').slice(0, 2000)}`).join('\n\n')
       : 'No published transcripts available for this period. Analyze scripts against the creator profile instead.';
 
+    // Build book knowledge context
+    const bookKnowledgeBlock = bookSignals.length > 0
+      ? bookSignals.map(s => {
+          const p = s.payload as any;
+          const title = p.book_title || p.title || 'Unknown';
+          const concepts = p.key_concepts || p.frameworks || p.techniques || [];
+          const summary = p.summary || p.description || '';
+          return `=== ${title} ===\n${summary}\nKey concepts: ${Array.isArray(concepts) ? concepts.join(', ') : concepts}`;
+        }).join('\n\n')
+      : 'No book knowledge available. Skip the book_influences section.';
+
     const prompt = ANALYSIS_PROMPT
       .replace('{scripts}', scriptsBlock)
-      .replace('{transcripts}', transcriptsBlock);
+      .replace('{transcripts}', transcriptsBlock)
+      .replace('{book_knowledge}', bookKnowledgeBlock);
 
     // Call Claude Sonnet for deep analysis
     const response = await trackedCreate(client, {
@@ -249,6 +276,23 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       }
     }
 
+    // Write book influence signals (tracks how book concepts enter Felipe's voice)
+    if (analysis.book_influences?.length > 0) {
+      writeSignal({
+        source_agent: 'voice-evolution',
+        signal_type: 'voice_pattern',
+        payload: {
+          observation: 'book_voice_influence',
+          description: `${analysis.book_influences.filter((b: any) => b.adoption_level === 'integrated').length} book concepts integrated into voice`,
+          influences: analysis.book_influences,
+          strength: analysis.book_influences.filter((b: any) => b.adoption_level === 'integrated').length / Math.max(1, analysis.book_influences.length),
+          first_detected: new Date().toISOString().slice(0, 10),
+          category: 'book_influence',
+        },
+      });
+      signalsProduced++;
+    }
+
     // Voice summary signal
     if (analysis.voice_summary) {
       writeSignal({
@@ -265,7 +309,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       signalsProduced++;
     }
 
-    const summary = `Voice Evolution: analyzed ${scripts.length} scripts + ${transcripts.length} transcripts. ${signalsProduced} voice patterns detected.`;
+    const summary = `Voice Evolution: analyzed ${scripts.length} scripts + ${transcripts.length} transcripts + ${bookSignals.length} book insights. ${signalsProduced} voice patterns detected.`;
     logAgentRun('voice-evolution', 'success', signalsProduced, signalsConsumed, Date.now() - start);
     logger.info(summary);
   } catch (err: any) {
