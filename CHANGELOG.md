@@ -11,6 +11,7 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 
 ### Chores
 
+- Bump version to 4.7.0 + update changelog ([`9a69249`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9a692490e5b18813b6bdc6bce90c949000be9262))
 - Bump version to 4.6.1 [deploy] ([`9d8c186`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9d8c1862b0e4423add2b84307fef29c1a26f067b))
 - **brand**: Complete cortex-telegram-hub-bot → nexus-hub rename across all files ([`29f996a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/29f996afa2224e1e3ab69f87c1c0afcd300d0856))
 - Bump version to 4.6.0 ([`063c8fb`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/063c8fb749392a847e226c38af3c0a8d671c528e))
