@@ -54,6 +54,12 @@ export function initDatabase(): Database.Database {
     migrateOwnerTokens();
   } catch { /* oauth-store not yet available — non-critical */ }
 
+  // Seed default skills into installed_skills table (idempotent)
+  try {
+    const { seedDefaultSkills } = require('../skills/skill-manager');
+    seedDefaultSkills();
+  } catch { /* skill-manager not yet available — non-critical */ }
+
   logger.info({ path: config.app.databasePath }, 'Database initialized');
   return db;
 }
