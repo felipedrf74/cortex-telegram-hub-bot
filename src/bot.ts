@@ -245,6 +245,15 @@ import {
   type PendingEdit, type PendingOnboarding,
 } from './handlers/shared-state';
 import { HELP_TEXT as _HELP_TEXT } from './handlers/help-text';
+import {
+  buildTaskListKeyboard, handleUndone, handleDeleteTask, handlePendingEdit,
+  handleTodoSummary, handleStatus, handleDayOverview, handleWeekOverview,
+} from './handlers/commands/secretary-helpers';
+import { sendOnboardingStep } from './handlers/onboarding';
+import {
+  handlePhotoMessage, handleInvoiceFiling, handleCalendarExtraction, handleTaskExtraction,
+} from './handlers/photo';
+import { handleDomainMessage } from './handlers/message';
 
 // Re-alias for backward compatibility within this file
 const pendingEdits = _pendingEdits;
@@ -328,32 +337,7 @@ async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void>
 
 // ─── Caption → Outlook Calendar Category ────────────────────────────
 
-interface CalendarCaptionInfo {
-  categories: string[];
-  prefix: string;     // "SMS - ", "EC - ", or ""
-  label: string;      // "SMS", "EC", or "Pessoal"
-}
-
-/**
- * Resolves caption keywords to Outlook category names by querying
- * the user's master categories (cached after first fetch).
- * SMS → blue preset, EC → green preset, default → red preset.
- */
-async function parseCaptionInfo(caption: string): Promise<CalendarCaptionInfo> {
-  if (caption) {
-    const upper = caption.toUpperCase().trim();
-    if (upper.includes('SMS')) {
-      const cat = await getCategoryNameForColor('blue');
-      return { categories: [cat], prefix: 'SMS - ', label: 'SMS' };
-    }
-    if (upper.includes('EC')) {
-      const cat = await getCategoryNameForColor('green');
-      return { categories: [cat], prefix: 'EC - ', label: 'EC' };
-    }
-  }
-  const cat = await getCategoryNameForColor('red');
-  return { categories: [cat], prefix: '', label: 'Pessoal' };
-}
+// CalendarCaptionInfo + parseCaptionInfo → moved to handlers/photo.ts
 
 // Types and state imported from shared-state.ts above
 // PendingEdit, PendingOnboarding, LastDomainState, pendingEdits, pendingOnboarding,
@@ -855,7 +839,7 @@ export function createBot(): Bot {
         return;
       }
       // Route to secretary domain for intelligent handling
-      await handleDomainMessage(ctx, `/due ${text}`);
+      await handleDomainMessage(ctx, `/due ${text}`, DOMAIN_HANDLERS);
     });
   });
 
@@ -866,7 +850,7 @@ export function createBot(): Bot {
         await ctx.reply('Usage: /remind Meeting prep | today 2pm');
         return;
       }
-      await handleDomainMessage(ctx, `/remind ${text}`);
+      await handleDomainMessage(ctx, `/remind ${text}`, DOMAIN_HANDLERS);
     });
   });
 
@@ -877,7 +861,7 @@ export function createBot(): Bot {
         await ctx.reply('Usage: /priority Review PR | high');
         return;
       }
-      await handleDomainMessage(ctx, `/priority ${text}`);
+      await handleDomainMessage(ctx, `/priority ${text}`, DOMAIN_HANDLERS);
     });
   });
 
@@ -1253,7 +1237,7 @@ export function createBot(): Bot {
       return;
     }
     enqueue(ctx.from!.id, async () => {
-      await handleDomainMessage(ctx, `/todo ${text}`);
+      await handleDomainMessage(ctx, `/todo ${text}`, DOMAIN_HANDLERS);
     });
   });
 
@@ -3273,7 +3257,7 @@ export function createBot(): Bot {
   // ── Photo handler: Vision → Unified classification (invoice / calendar / task) ──
   bot.on('message:photo', async (ctx) => {
     enqueue(ctx.from.id, async () => {
-      await handlePhotoMessage(ctx);
+      await handlePhotoMessage(ctx, DOMAIN_HANDLERS);
     });
   });
 
@@ -3490,7 +3474,7 @@ export function createBot(): Bot {
     pendingOnboarding.delete(userId);
 
     enqueue(userId, async () => {
-      await handleDomainMessage(ctx, text);
+      await handleDomainMessage(ctx, text, DOMAIN_HANDLERS);
     });
   });
 
@@ -3518,882 +3502,34 @@ export function createBot(): Bot {
 
 // ─── Task List Keyboard Builder ──────────────────────────────────────
 
-function buildTaskListKeyboard(tasks: msTodo.TodoTask[], listId: string): InlineKeyboard {
-  const keyboard = new InlineKeyboard();
-
-  for (const task of tasks.slice(0, 5)) {
-    const completeRef = storeCallback({ listId, taskId: task.id, title: task.title, listName: task.listName });
-    const editRef = storeCallback({ listId, taskId: task.id, title: task.title, listName: task.listName });
-    const deleteRef = storeCallback({ listId, taskId: task.id, title: task.title, listName: task.listName });
-
-    keyboard
-      .text(`✅ ${task.title.slice(0, 20)}`, `td:tc:${completeRef}`)
-      .text('📝', `td:te:${editRef}`)
-      .text('🗑', `td:tx:${deleteRef}`)
-      .row();
-  }
-
-  return keyboard;
-}
+// buildTaskListKeyboard → moved to handlers/commands/secretary-helpers.ts
 
 // ─── Handlers ────────────────────────────────────────────────────────
 
-async function sendOnboardingStep(
-  ctx: Context,
-  questionnaireId: string,
-  step: onboarding.QuestionStep,
-  stepIdx: number,
-  totalSteps: number,
-): Promise<void> {
-  const progress = `(${stepIdx + 1}/${totalSteps})`;
-  const prompt = `${progress} ${step.prompt}`;
+// sendOnboardingStep → moved to handlers/onboarding.ts
 
-  if (step.type === 'choice' && step.options) {
-    const keyboard = new InlineKeyboard();
-    for (const option of step.options) {
-      const ref = storeCallback({ questionnaire: questionnaireId, answer: option }, 300_000);
-      keyboard.text(option, `ob:answer:${ref}`).row();
-    }
-    const cancelRef = storeCallback({ questionnaire: questionnaireId }, 300_000);
-    keyboard.text('❌ Cancel', `ob:cancel:${cancelRef}`);
-    await ctx.reply(prompt, { reply_markup: keyboard });
-  } else if (step.type === 'multi_choice' && step.options) {
-    // For multi_choice, present as individual buttons; user selects each
-    const keyboard = new InlineKeyboard();
-    for (const option of step.options) {
-      const ref = storeCallback({ questionnaire: questionnaireId, answer: option }, 300_000);
-      keyboard.text(option, `ob:answer:${ref}`).row();
-    }
-    const cancelRef = storeCallback({ questionnaire: questionnaireId }, 300_000);
-    keyboard.text('❌ Cancel', `ob:cancel:${cancelRef}`);
-    await ctx.reply(`${prompt}\n<i>(select one — you can update this later)</i>`, {
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    });
-  } else {
-    // Text or number input — set up pending onboarding input
-    const userId = ctx.from?.id;
-    if (userId) {
-      pendingOnboarding.set(userId, {
-        questionnaire: questionnaireId,
-        step,
-        expires: Date.now() + 300_000,
-      });
-    }
-    await ctx.reply(`${prompt}\n<i>(type your answer)</i>`, { parse_mode: 'HTML' });
-  }
-}
+// handleDomainMessage → moved to handlers/message.ts
 
-async function handleDomainMessage(ctx: Context, text: string): Promise<void> {
-  const systemCmd = isSystemCommand(text);
-  if (systemCmd) return; // Already handled by command handlers
+// handlePhotoMessage → moved to handlers/photo.ts
 
-  try {
-    await ctx.replyWithChatAction('typing');
+// handleInvoiceFiling → moved to handlers/photo.ts
 
-    const userId = ctx.from?.id;
+// handleCalendarExtraction → moved to handlers/photo.ts
 
-    // ── Calendar follow-up detection ──
-    // If user recently received a calendar preview and sends a text about creating/adjusting events,
-    // auto-trigger the calendar creation instead of routing to a domain that lacks context.
-    if (userId) {
-      const pending = pendingCalendarRef.get(userId);
-      if (pending && Date.now() - pending.timestamp < 10 * 60 * 1000) {
-        const lower = text.toLowerCase();
-        const isCalendarFollowUp = /\b(cri[ae]|create|adjust|add|confirm|yes|sim|manda|vai|go ahead)\b/.test(lower)
-          && /\b(event|evento|calendar|calend[aá]rio|outlook|agenda)\b/.test(lower);
-        if (isCalendarFollowUp) {
-          const cbData = getCallback(pending.ref);
-          if (cbData) {
-            pendingCalendarRef.delete(userId);
-            await ctx.reply('⏳ Criando eventos no calendário...');
-            const events = cbData.events as { title: string; start: string; end: string; description?: string }[];
-            const categories = cbData.categories as string[];
-            let successCount = 0;
-            const createdTitles: string[] = [];
-            for (const event of events) {
-              try {
-                const created = await createCalendarEvent({
-                  title: event.title, start: event.start, end: event.end,
-                  description: event.description, categories,
-                });
-                successCount++;
-                createdTitles.push(created.summary);
-              } catch (err) {
-                logger.error({ err, eventTitle: event.title }, 'Failed to create calendar event from text follow-up');
-              }
-            }
-            if (successCount === 0) {
-              await ctx.reply('⚠️ Falha ao criar os eventos. Tente novamente.');
-              return;
-            }
-            let msg = `📅✅ <b>${successCount} evento${successCount > 1 ? 's' : ''} criado${successCount > 1 ? 's' : ''}:</b>\n`;
-            for (const title of createdTitles) msg += `\n  📌 ${escapeHtml(title)}`;
-            msg += `\n\n🏷️ ${escapeHtml(categories[0])}`;
-            try {
-              await ctx.reply(msg, { parse_mode: 'HTML' });
-            } catch (err) {
-              if (isHtmlParseError(err)) await ctx.reply(msg.replace(/<[^>]*>/g, ''));
-              else throw err;
-            }
-            return;
-          }
-        }
-      }
-    }
+// handleTaskExtraction → moved to handlers/photo.ts
 
-    // ── Build active conversation context for the classifier ──
-    // If the user recently interacted with a domain and the bot's last message
-    // is still unanswered, pass that context to the classifier so it can
-    // intelligently decide: is this a follow-up or a new topic?
-    let activeContext: { domain: DomainName; lastAssistantMessage: string } | null = null;
-    if (userId && !text.startsWith('/')) {
-      const lastState = lastActiveDomain.get(userId);
-      if (lastState && Date.now() - lastState.timestamp < CONTINUITY_WINDOW_MS) {
-        const lastMsg = getLastAssistantMessage(userId, lastState.domain);
-        if (lastMsg) {
-          activeContext = { domain: lastState.domain, lastAssistantMessage: lastMsg };
-        }
-      }
-    }
+// handleUndone → moved to handlers/commands/secretary-helpers.ts
 
-    // Pre-flight quota check — block before making any AI call
-    if (userId) {
-      try {
-        const { isOwner } = require('./services/user-service');
-        if (!isOwner(userId)) {
-          const { checkQuota } = require('./services/usage-metering');
-          const quotaCheck = checkQuota(userId);
-          if (!quotaCheck.allowed) {
-            const reasons = quotaCheck.exceeded.map((r: string) => {
-              if (r === 'messages') return `📨 Message limit: ${quotaCheck.quota?.dailyMessageLimit}/day`;
-              if (r === 'tokens') return '🔤 Token limit reached';
-              if (r === 'cost') return '💰 Cost limit reached';
-              return r;
-            }).join('\n');
-            await ctx.reply(
-              `⚠️ You've reached your daily limit:\n\n${reasons}\n\n` +
-              `Your limits reset at midnight (${config.app.timezone}).`
-            );
-            return;
-          }
-        }
-      } catch { /* quota check not available — allow */ }
-    }
+// handleDeleteTask → moved to handlers/commands/secretary-helpers.ts
 
-    const route = await routeMessage(text, activeContext);
-    logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
+// handlePendingEdit → moved to handlers/commands/secretary-helpers.ts
 
-    // Track last active domain for photo routing and conversation continuity
-    if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
+// handleTodoSummary → moved to handlers/commands/secretary-helpers.ts
 
-    // Check if the user has access to this skill
-    try {
-      const { isSkillEnabled } = require('./services/user-skill-access');
-      if (userId && !isSkillEnabled(userId, route.domain)) {
-        const { getUserLanguage } = require('./services/user-service');
-        const { t } = require('./utils/i18n');
-        await ctx.reply(t('skill_disabled', getUserLanguage(userId)), { parse_mode: 'HTML' });
-        return;
-      }
-    } catch { /* skill access not loaded — allow */ }
+// handleStatus → moved to handlers/commands/secretary-helpers.ts
 
-    const handler = DOMAIN_HANDLERS[route.domain];
-    const response = await handler(route.strippedMessage, ctx.from?.id);
+// handleDayOverview → moved to handlers/commands/secretary-helpers.ts
 
-    const parts = splitMessage(response.text);
-    for (const part of parts) {
-      try {
-        await ctx.reply(part, { parse_mode: 'HTML' });
-      } catch (err) {
-        if (isHtmlParseError(err)) await ctx.reply(part.replace(/<[^>]*>/g, ''));
-        else throw err;
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, 'Failed to handle domain message');
-    await ctx.reply('⚠️ Something went wrong processing your message. Please try again.');
-  }
-}
-
-async function handlePhotoMessage(ctx: Context): Promise<void> {
-  try {
-    await ctx.replyWithChatAction('typing');
-    const photos = ctx.message?.photo;
-    if (!photos || photos.length === 0) return;
-
-    const caption = ctx.message?.caption || '';
-    const userId = ctx.from?.id;
-
-    // ── Branch 1: Caption explicitly targets a non-secretary domain ──
-    // Only route to non-secretary if the caption has a clear keyword match.
-    // Never fall back to lastActiveDomain for photos — they are self-contained
-    // (invoices, screenshots, etc.) and should be classified on their own merit.
-    if (caption) {
-      const domainFromCaption = keywordMatch(caption) as DomainName | null;
-
-      if (domainFromCaption && domainFromCaption !== 'secretary') {
-        const handler = DOMAIN_HANDLERS[domainFromCaption];
-        const photoContext = `[Photo attached] ${caption}`;
-        const response = await handler(photoContext, userId);
-        if (userId) lastActiveDomain.set(userId, { domain: domainFromCaption, timestamp: Date.now() });
-        const parts = splitMessage(response.text);
-        for (const part of parts) {
-          try {
-            await ctx.reply(part, { parse_mode: 'HTML' });
-          } catch (err) {
-            if (isHtmlParseError(err)) await ctx.reply(part.replace(/<[^>]*>/g, ''));
-            else throw err;
-          }
-        }
-        return;
-      }
-    }
-
-    // ── Download image (needed for both invoice filing and task extraction) ──
-    const photo = photos[photos.length - 1];
-    const file = await ctx.api.getFile(photo.file_id);
-    // SECURITY: fileUrl contains bot token — never log this variable
-    const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
-    logger.debug({ filePath: file.file_path }, 'Downloading Telegram file');
-
-    const response = await fetch(fileUrl);
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const base64 = buffer.toString('base64');
-    const ext = file.file_path?.split('.').pop()?.toLowerCase() || 'jpg';
-    const mediaType = (
-      ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-    ) as 'image/jpeg' | 'image/png' | 'image/webp';
-
-    // ── Branch 2: Unified image classification (invoice / calendar / task) ──
-    const classification = await classifyAndExtractImage(base64, mediaType as any, caption || undefined);
-
-    switch (classification.type) {
-      case 'invoice':
-        await handleInvoiceFiling(ctx, buffer, mediaType, classification, photo.file_id, caption);
-        break;
-
-      case 'calendar':
-        await handleCalendarExtraction(ctx, classification, caption, photo.file_id, mediaType);
-        break;
-
-      case 'task':
-        await handleTaskExtraction(ctx, classification, caption);
-        break;
-
-      default:
-        await ctx.reply('📷 Não foi possível classificar esta imagem. Tente adicionar uma legenda.');
-    }
-  } catch (err) {
-    logger.error({ err }, 'Failed to process photo message');
-    await ctx.reply('⚠️ Falha ao processar a imagem. Tente novamente.');
-  }
-}
-
-/**
- * Handle invoice filing when unified classifier detects an invoice.
- */
-async function handleInvoiceFiling(
-  ctx: Context,
-  buffer: Buffer,
-  mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
-  analysis: ImageInvoiceResult,
-  fileId: string,
-  caption: string
-): Promise<void> {
-  if (!isInvoiceFilingConfigured() || analysis.confidence < config.invoices.minConfidence) {
-    logger.info({ confidence: analysis.confidence }, 'Invoice detected but low confidence or filing not configured');
-    // Fall through to task extraction as fallback
-    await handleTaskExtraction(ctx, { type: 'task', title: analysis.vendor || 'Document', subtasks: [] }, caption);
-    return;
-  }
-
-  logger.info(
-    { vendor: analysis.vendor, date: analysis.documentDate, confidence: analysis.confidence },
-    'Invoice detected — filing via SCP'
-  );
-
-  // Map unified result to InvoiceAnalysis format expected by fileInvoice
-  const invoiceAnalysis: InvoiceAnalysis = {
-    isInvoice: true,
-    confidence: analysis.confidence,
-    documentDate: analysis.documentDate,
-    documentDateRaw: analysis.documentDateRaw,
-    vendor: analysis.vendor,
-    totalAmount: analysis.totalAmount,
-    invoiceNumber: analysis.invoiceNumber,
-  };
-
-  const filingResult = await fileInvoice(buffer, mediaType, invoiceAnalysis);
-
-  if (filingResult.success) {
-    recordFiling({
-      vendor: analysis.vendor || 'Unknown',
-      amount: analysis.totalAmount,
-      document_date: analysis.documentDate,
-      invoice_number: analysis.invoiceNumber,
-      source: 'photo',
-      source_ref: 'telegram_photo',
-      remote_path: filingResult.filePath,
-      folder_path: filingResult.folderPath,
-      filename: filingResult.filename,
-      file_size_bytes: filingResult.originalSizeKB ? filingResult.originalSizeKB * 1024 : null,
-      compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
-      status: 'filed',
-    });
-
-    // ── Auto-log receipt as finance expense transaction ──
-    const userId = ctx.from?.id;
-    const parsedAmount = parseReceiptAmount(analysis.totalAmount);
-    let txId: number | null = null;
-
-    if (userId && parsedAmount) {
-      const txDate = analysis.documentDate || new Date().toISOString().split('T')[0];
-      const tx = addTransaction(userId, txDate, 'expense', parsedAmount, {
-        subcategory: 'receipt',
-        description: analysis.vendor ? `Receipt: ${analysis.vendor}` : 'Receipt from photo',
-        receiptRef: filingResult.filename || undefined,
-      });
-      txId = tx.id;
-      logger.info({ userId, amount: parsedAmount, vendor: analysis.vendor }, 'Receipt auto-logged as finance transaction');
-    }
-
-    let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
-    if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
-    if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
-    if (analysis.totalAmount) msg += `💰 ${escapeHtml(analysis.totalAmount)}\n`;
-    if (analysis.invoiceNumber) msg += `🔢 ${escapeHtml(analysis.invoiceNumber)}\n`;
-    msg += `\n📁 <code>${escapeHtml(filingResult.folderPath!)}</code>`;
-    msg += `\n📄 <code>${escapeHtml(filingResult.filename!)}</code>`;
-
-    if (filingResult.originalSizeKB && filingResult.compressedSizeKB && filingResult.originalSizeKB !== filingResult.compressedSizeKB) {
-      const savings = Math.round((1 - filingResult.compressedSizeKB / filingResult.originalSizeKB) * 100);
-      msg += `\n📦 ${filingResult.originalSizeKB}KB → ${filingResult.compressedSizeKB}KB (-${savings}%)`;
-    }
-
-    if (txId && parsedAmount) {
-      msg += `\n\n💳 <b>Despesa registrada:</b> R$ ${parsedAmount.toFixed(2)}`;
-    }
-
-    // Store fileId instead of base64 to reduce memory (~500KB-2MB per entry)
-    const ref = storeCallback({ fileId, caption, txId });
-    const keyboard = new InlineKeyboard()
-      .text('❌ Não é nota fiscal', `nf:undo:${ref}`);
-
-    await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
-    return;
-  }
-
-  // Filing failed — check if it's an SSH/connectivity issue and queue for retry
-  const isSshError = filingResult.error && (
-    filingResult.error.includes('Connection') ||
-    filingResult.error.includes('timed out') ||
-    filingResult.error.includes('No route') ||
-    filingResult.error.includes('Connection refused') ||
-    filingResult.error.includes('Host is down') ||
-    filingResult.error.includes('Permission denied') ||
-    filingResult.error.includes('ssh') ||
-    filingResult.error.includes('scp')
-  );
-
-  if (isSshError) {
-    logger.warn({ error: filingResult.error }, 'Invoice filing failed (SSH) — queuing for retry');
-    const queueId = enqueueInvoice(
-      buffer,
-      'image',
-      mediaType,
-      JSON.stringify(invoiceAnalysis),
-      'photo',
-    );
-    const pendingCount = getPendingCount();
-
-    let msg = `📥 <b>Nota fiscal na fila de envio</b>\n\n`;
-    msg += `O Mac parece estar indisponível (a dormir ou sem túnel SSH).\n`;
-    msg += `A fatura foi guardada localmente e será enviada automaticamente quando a ligação voltar.\n\n`;
-    if (analysis.vendor) msg += `🏢 ${escapeHtml(analysis.vendor)}\n`;
-    if (analysis.totalAmount) msg += `💰 ${escapeHtml(analysis.totalAmount)}\n`;
-    if (analysis.documentDateRaw) msg += `📅 ${escapeHtml(analysis.documentDateRaw)}\n`;
-    msg += `\n🔄 Fila: ${pendingCount} fatura${pendingCount > 1 ? 's' : ''} pendente${pendingCount > 1 ? 's' : ''}`;
-    msg += `\n⏱️ Tentativa automática a cada 15 minutos`;
-
-    await ctx.reply(msg, { parse_mode: 'HTML' });
-    return;
-  }
-
-  logger.error({ error: filingResult.error }, 'Invoice filing failed');
-  await ctx.reply(
-    `⚠️ Nota fiscal detectada mas falhou ao arquivar: ${escapeHtml(filingResult.error || 'Erro desconhecido')}`,
-    { parse_mode: 'HTML' }
-  );
-}
-
-/**
- * Handle calendar event creation when unified classifier detects a schedule/timetable.
- */
-async function handleCalendarExtraction(
-  ctx: Context,
-  result: ImageCalendarResult,
-  caption: string,
-  fileId: string,
-  mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
-): Promise<void> {
-  if (!isAnyCalendarConfigured()) {
-    await ctx.reply('📅 Conteúdo de calendário detectado, mas nenhum calendário está configurado.');
-    return;
-  }
-
-  if (!result.events || result.events.length === 0) {
-    await ctx.reply('📅 Parece ser um calendário, mas não foi possível extrair eventos. Tente com uma imagem mais clara.');
-    return;
-  }
-
-  const info = await parseCaptionInfo(caption);
-
-  // ── Shift past events forward to next occurrence of same weekday ──
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const allInPast = result.events.every((e) => new Date(e.start) < todayStart);
-  if (allInPast && result.events.length > 0) {
-    const earliest = new Date(Math.min(...result.events.map((e) => new Date(e.start).getTime())));
-    const daysDiff = Math.ceil((todayStart.getTime() - earliest.getTime()) / (24 * 60 * 60 * 1000));
-    const weeksToShift = Math.ceil(daysDiff / 7);
-    const msShift = weeksToShift * 7 * 24 * 60 * 60 * 1000;
-    logger.info({ weeksShifted: weeksToShift, originalStart: earliest.toISOString() },
-      'Calendar events are in the past — shifting forward to preserve weekdays');
-    for (const e of result.events) {
-      e.start = new Date(new Date(e.start).getTime() + msShift).toISOString().replace('Z', '').split('.')[0];
-      e.end = new Date(new Date(e.end).getTime() + msShift).toISOString().replace('Z', '').split('.')[0];
-    }
-  }
-
-  // ── Apply prefix to event titles (SMS - / EC - ) ──
-  const prefixedEvents = result.events.map((e) => ({
-    ...e,
-    title: info.prefix ? `${info.prefix}${e.title}` : e.title,
-  }));
-
-  // ── Fetch existing calendar events to detect conflicts ──
-  const starts = prefixedEvents.map((e) => new Date(e.start).getTime());
-  const ends = prefixedEvents.map((e) => new Date(e.end).getTime());
-  const rangeStart = new Date(Math.min(...starts));
-  const rangeEnd = new Date(Math.max(...ends));
-  // Add 1 day buffer at end
-  rangeEnd.setDate(rangeEnd.getDate() + 1);
-
-  let existingEvents: { summary: string; start: string; end: string }[] = [];
-  try {
-    existingEvents = await getEvents(rangeStart.toISOString(), rangeEnd.toISOString());
-  } catch (err) {
-    logger.warn({ err }, 'Failed to fetch existing calendar events for conflict check');
-  }
-
-  // ── Detect conflicts (overlapping time slots) ──
-  interface Conflict {
-    newEvent: string;
-    newTime: string;
-    existingEvent: string;
-    existingTime: string;
-  }
-  const conflicts: Conflict[] = [];
-
-  for (const newEvt of prefixedEvents) {
-    const nStart = new Date(newEvt.start).getTime();
-    const nEnd = new Date(newEvt.end).getTime();
-
-    for (const existing of existingEvents) {
-      const eStart = new Date(existing.start).getTime();
-      const eEnd = new Date(existing.end).getTime();
-
-      // Two events overlap if one starts before the other ends
-      if (nStart < eEnd && nEnd > eStart) {
-        conflicts.push({
-          newEvent: newEvt.title,
-          newTime: `${formatTime(newEvt.start)}-${formatTime(newEvt.end)}`,
-          existingEvent: existing.summary,
-          existingTime: `${formatTime(existing.start)}-${formatTime(existing.end)}`,
-        });
-      }
-    }
-  }
-
-  // ── Build preview message ──
-  let msg = `📅 <b>${prefixedEvents.length} evento${prefixedEvents.length > 1 ? 's' : ''} detectado${prefixedEvents.length > 1 ? 's' : ''} (${escapeHtml(info.label)}):</b>\n`;
-  for (const evt of prefixedEvents) {
-    const day = new Date(evt.start).toLocaleDateString('pt-PT', { weekday: 'short', day: 'numeric' });
-    msg += `\n  📌 ${escapeHtml(evt.title)} — ${day} ${formatTime(evt.start)}-${formatTime(evt.end)}`;
-  }
-
-  msg += `\n\n🏷️ Categoria: <b>${escapeHtml(info.categories[0])}</b>`;
-
-  if (conflicts.length > 0) {
-    msg += `\n\n⚠️ <b>${conflicts.length} conflito${conflicts.length > 1 ? 's' : ''} com eventos existentes:</b>`;
-    // Deduplicate and limit display
-    const shown = new Set<string>();
-    for (const c of conflicts) {
-      const key = `${c.newEvent}|${c.existingEvent}`;
-      if (shown.has(key)) continue;
-      shown.add(key);
-      msg += `\n  🔴 <b>${escapeHtml(c.newEvent)}</b> (${c.newTime}) ↔ <b>${escapeHtml(c.existingEvent)}</b> (${c.existingTime})`;
-      if (shown.size >= 15) { msg += '\n  ...'; break; }
-    }
-  } else {
-    msg += '\n\n✅ Sem conflitos com eventos existentes.';
-  }
-
-  // ── Store pending events and show confirmation buttons ──
-  // Store fileId instead of base64 to reduce memory (~500KB-2MB per entry)
-  const ref = storeCallback({
-    events: prefixedEvents,
-    categories: info.categories,
-    fileId,
-    caption,
-  }, 10 * 60 * 1000); // 10 min TTL for calendar follow-ups
-
-  // Track pending calendar ref so text follow-ups can trigger creation
-  const calUserId = ctx.from?.id;
-  if (calUserId) pendingCalendarRef.set(calUserId, { ref, timestamp: Date.now() });
-
-  const keyboard = new InlineKeyboard()
-    .text(`✅ Criar ${prefixedEvents.length} evento${prefixedEvents.length > 1 ? 's' : ''}`, `cal:create:${ref}`)
-    .text('❌ Cancelar', `cal:cancel:${ref}`)
-    .row()
-    .text('🔄 Não é calendário', `cal:undo:${ref}`);
-
-  await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
-}
-
-/**
- * Handle task creation when unified classifier detects a task/checklist.
- * Preserved from the original handlePhotoTaskExtraction logic.
- */
-async function handleTaskExtraction(
-  ctx: Context,
-  extracted: ImageTaskResult,
-  caption: string,
-): Promise<void> {
-  if (!msTodo.isOutlookTodoConfigured()) {
-    await ctx.reply('📷 Foto recebida, mas o Microsoft To Do não está configurado.');
-    return;
-  }
-
-  if (!extracted.title) {
-    await ctx.reply('📷 Não foi possível extrair tarefas desta imagem. Tente adicionar uma legenda.');
-    return;
-  }
-
-  let targetList: msTodo.TodoList | null = null;
-  if (extracted.listHint) targetList = await msTodo.findListByName(extracted.listHint);
-  if (!targetList) targetList = await msTodo.getDefaultList();
-  if (!targetList) {
-    const lists = await msTodo.getLists();
-    if (lists.success && lists.data.length > 0) targetList = lists.data[0];
-  }
-  if (!targetList) {
-    await ctx.reply('⚠️ Nenhuma lista de tarefas encontrada.');
-    return;
-  }
-
-  const taskResult = await msTodo.createTask(targetList.id, targetList.displayName, {
-    title: extracted.title,
-  });
-  if (!taskResult.success) {
-    await ctx.reply(`⚠️ Falha ao criar tarefa: ${taskResult.error}`);
-    return;
-  }
-
-  let addedSubtasks = 0;
-  if (extracted.subtasks.length > 0) {
-    const subResults = await Promise.all(
-      extracted.subtasks.map((sub) => msTodo.addChecklistItem(targetList!.id, taskResult.data.id, sub))
-    );
-    addedSubtasks = subResults.filter((r) => r.success).length;
-  }
-
-  let msg = `📷✅ Tarefa criada da imagem:\n\n<b>${escapeHtml(extracted.title)}</b>\n📋 ${escapeHtml(targetList.displayName)}`;
-  if (addedSubtasks > 0) {
-    msg += `\n\n📝 ${addedSubtasks} subtarefa${addedSubtasks > 1 ? 's' : ''}:`;
-    for (const sub of extracted.subtasks.slice(0, addedSubtasks)) {
-      msg += `\n  ⬜ ${escapeHtml(sub)}`;
-    }
-  }
-  await ctx.reply(msg, { parse_mode: 'HTML' });
-}
-
-async function handleUndone(ctx: Context, query: string): Promise<void> {
-  const searchResult = await msTodo.searchTasks(query);
-  if (!searchResult.success || searchResult.data.length === 0) {
-    await ctx.reply(`❌ No task matching "${escapeHtml(query)}" found.`, { parse_mode: 'HTML' });
-    return;
-  }
-
-  const completed = searchResult.data.filter((t) => t.status === 'completed');
-  if (completed.length === 0) {
-    await ctx.reply(`⬜ "${escapeHtml(query)}" is not completed — nothing to reopen.`, { parse_mode: 'HTML' });
-    return;
-  }
-
-  const task = completed[0];
-  const result = await msTodo.uncompleteTask(task.listId, task.id);
-  if (result.success) {
-    await ctx.reply(`⬜ Reopened: "<b>${escapeHtml(task.title)}</b>" [${escapeHtml(task.listName)}]`, { parse_mode: 'HTML' });
-  } else {
-    await ctx.reply(`⚠️ Failed to reopen task: ${result.error}`);
-  }
-}
-
-async function handleDeleteTask(ctx: Context, query: string): Promise<void> {
-  const searchResult = await msTodo.searchTasks(query);
-  if (!searchResult.success || searchResult.data.length === 0) {
-    await ctx.reply(`❌ No task matching "${escapeHtml(query)}" found.`, { parse_mode: 'HTML' });
-    return;
-  }
-
-  const task = searchResult.data[0];
-  const ref = storeCallback({ listId: task.listId, taskId: task.id, title: task.title, listName: task.listName, type: 'task' });
-  const keyboard = new InlineKeyboard()
-    .text('Yes, delete', `td:dy:${ref}`)
-    .text('Cancel', `td:dn:${ref}`);
-
-  await ctx.reply(`🗑 Delete "<b>${escapeHtml(task.title)}</b>" from ${escapeHtml(task.listName)}?`, {
-    parse_mode: 'HTML',
-    reply_markup: keyboard,
-  });
-}
-
-async function handlePendingEdit(ctx: Context, pending: PendingEdit, value: string): Promise<void> {
-  try {
-    await ctx.replyWithChatAction('typing');
-    const { listId, taskId, title, listName, field } = pending;
-
-    switch (field) {
-      case 'title': {
-        const result = await msTodo.updateTask(listId, taskId, { title: value });
-        if (result.success) {
-          await ctx.reply(`📝 Renamed: "${escapeHtml(title)}" → "<b>${escapeHtml(value)}</b>" [${escapeHtml(listName)}]`, { parse_mode: 'HTML' });
-        } else {
-          await ctx.reply(`⚠️ Failed to rename: ${result.error}`);
-        }
-        break;
-      }
-      case 'due': {
-        const parsed = parseNaturalDate(value);
-        if (!parsed) {
-          await ctx.reply(`⚠️ Couldn't parse date: "${escapeHtml(value)}". Try "tomorrow 5pm" or "2026-03-15".`);
-          return;
-        }
-        const result = await msTodo.updateTask(listId, taskId, { dueDateTime: parsed });
-        if (result.success) {
-          await ctx.reply(`📅 Due date set for "<b>${escapeHtml(title)}</b>": ${formatDateTime(parsed)}`, { parse_mode: 'HTML' });
-        } else {
-          await ctx.reply(`⚠️ Failed to set due date: ${result.error}`);
-        }
-        break;
-      }
-      case 'reminder': {
-        const parsed = parseNaturalDate(value);
-        if (!parsed) {
-          await ctx.reply(`⚠️ Couldn't parse time: "${escapeHtml(value)}". Try "today 2pm" or "2026-03-15T14:00".`);
-          return;
-        }
-        const result = await msTodo.updateTask(listId, taskId, { reminderDateTime: parsed });
-        if (result.success) {
-          await ctx.reply(`⏰ Reminder set for "<b>${escapeHtml(title)}</b>": ${formatDateTime(parsed)}`, { parse_mode: 'HTML' });
-        } else {
-          await ctx.reply(`⚠️ Failed to set reminder: ${result.error}`);
-        }
-        break;
-      }
-      case 'priority': {
-        const level = value.toLowerCase().trim();
-        if (!['low', 'normal', 'high'].includes(level)) {
-          await ctx.reply('⚠️ Priority must be: low, normal, or high');
-          return;
-        }
-        const result = await msTodo.updateTask(listId, taskId, { importance: level as 'low' | 'normal' | 'high' });
-        if (result.success) {
-          await ctx.reply(`⚡ Priority set to <b>${level}</b> for "${escapeHtml(title)}"`, { parse_mode: 'HTML' });
-        } else {
-          await ctx.reply(`⚠️ Failed to update priority: ${result.error}`);
-        }
-        break;
-      }
-      default:
-        await ctx.reply('⚠️ Unknown edit field.');
-    }
-  } catch (err) {
-    logger.error({ err }, 'Failed to handle pending edit');
-    await ctx.reply('⚠️ Failed to apply the edit. Please try again.');
-  }
-}
-
-async function handleTodoSummary(ctx: Context): Promise<void> {
-  const pendingResult = await msTodo.getAllPendingTasks();
-  if (!pendingResult.success) {
-    await ctx.reply(`⚠️ Failed to fetch tasks: ${pendingResult.error}`);
-    return;
-  }
-
-  const pending = pendingResult.data;
-  const nowDate = new Date();
-  const todayStart = new Date(startOfDay()).getTime();
-  const todayEnd = new Date(endOfDay()).getTime();
-
-  const overdue = pending.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
-  const highPriority = pending.filter((t) => t.importance === 'high');
-  // Derive due-today from pending data — no second API call needed
-  const dueToday = pending.filter((t) => {
-    if (!t.dueDateTime) return false;
-    const due = new Date(t.dueDateTime).getTime();
-    return due >= todayStart && due <= todayEnd;
-  });
-
-  const msg = formatMsTodoSummary({
-    pendingCount: pending.length,
-    overdueCount: overdue.length,
-    dueTodayCount: dueToday.length,
-    highPriorityCount: highPriority.length,
-    overdueTasks: overdue,
-    dueTodayTasks: dueToday,
-  });
-
-  await ctx.reply(msg, { parse_mode: 'HTML' });
-}
-
-async function handleStatus(ctx: Context): Promise<void> {
-  let msg = '<b>📊 Status Overview</b>\n\n';
-
-  // Microsoft To Do
-  if (msTodo.isOutlookTodoConfigured()) {
-    try {
-      const pendingResult = await msTodo.getAllPendingTasks();
-      if (pendingResult.success) {
-        const highPriority = pendingResult.data.filter((t) => t.importance === 'high');
-        msg += `📋 Microsoft To Do: ${pendingResult.data.length} pending tasks\n`;
-        if (highPriority.length > 0) {
-          msg += `🔴 High priority: ${highPriority.length}\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Status: failed to fetch MS Todo tasks');
-      msg += '📋 Microsoft To Do: unavailable\n';
-    }
-  } else {
-    msg += '📋 Microsoft To Do: not configured\n';
-  }
-
-  const reminders = getActiveReminders(ctx.from?.id ?? 0);
-  msg += `⏰ Active reminders: ${reminders.length}\n`;
-
-  if (isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfDay(), endOfDay());
-      msg += `📅 Events today: ${events.length}\n`;
-    } catch (err) {
-      logger.warn({ err }, 'Status: failed to fetch calendar events');
-      msg += '📅 Calendar: unavailable\n';
-    }
-  } else {
-    msg += '📅 Calendar: not configured\n';
-  }
-
-  if (isOutlookMailConfigured()) {
-    try {
-      const unread = await getOutlookUnread();
-      msg += `📧 Outlook unread: ${unread}\n`;
-    } catch (err) {
-      logger.warn({ err }, 'Status: failed to fetch Outlook unread');
-      msg += '📧 Outlook: unavailable\n';
-    }
-  }
-
-  await ctx.reply(msg, { parse_mode: 'HTML' });
-}
-
-async function handleDayOverview(ctx: Context): Promise<void> {
-  let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
-
-  if (isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfDay(), endOfDay());
-      if (events.length === 0) {
-        msg += 'No events scheduled today.\n';
-      } else {
-        for (const e of events) {
-          const src = (e as any).source === 'outlook' ? ' 📧' : '';
-          msg += `${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Day overview: failed to fetch calendar events');
-      msg += 'Calendar unavailable.\n';
-    }
-  } else {
-    msg += 'Calendar not configured.\n';
-  }
-
-  // Microsoft To Do — due today
-  if (msTodo.isOutlookTodoConfigured()) {
-    try {
-      const dueTodayResult = await msTodo.getTasksDueInRange(startOfDay(), endOfDay());
-      if (dueTodayResult.success && dueTodayResult.data.length > 0) {
-        msg += `\n📋 Due today (${dueTodayResult.data.length}):\n`;
-        for (const t of dueTodayResult.data) {
-          msg += `- ${escapeHtml(t.title)} [${escapeHtml(t.listName)}]\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Day overview: failed to fetch due tasks');
-    }
-  }
-
-  await ctx.reply(msg, { parse_mode: 'HTML' });
-}
-
-async function handleWeekOverview(ctx: Context): Promise<void> {
-  let msg = `<b>📅 Week Overview</b>\n`;
-  msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
-
-  if (isAnyCalendarConfigured()) {
-    try {
-      const events = await getEvents(startOfWeek(), endOfWeek());
-      if (events.length === 0) {
-        msg += 'No events this week.\n';
-      } else {
-        let currentDay = '';
-        for (const e of events) {
-          const day = formatDateTime(e.start).split(',')[0];
-          if (day !== currentDay) {
-            currentDay = day;
-            msg += `\n<b>${day}</b>\n`;
-          }
-          const src = (e as any).source === 'outlook' ? ' 📧' : '';
-          msg += `  ${formatTime(e.start)} - ${formatTime(e.end)}  ${escapeHtml(e.summary)}${src}\n`;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Week overview: failed to fetch calendar events');
-      msg += 'Calendar unavailable.\n';
-    }
-  } else {
-    msg += 'Calendar not configured.\n';
-  }
-
-  // Microsoft To Do — pending tasks count
-  if (msTodo.isOutlookTodoConfigured()) {
-    try {
-      const pendingResult = await msTodo.getAllPendingTasks();
-      if (pendingResult.success && pendingResult.data.length > 0) {
-        msg += `\n📋 Pending tasks: ${pendingResult.data.length}\n`;
-      }
-    } catch (err) {
-      logger.warn({ err }, 'Week overview: failed to fetch pending tasks');
-    }
-  }
-
-  const parts = splitMessage(msg);
-  for (const part of parts) {
-    await ctx.reply(part, { parse_mode: 'HTML' });
-  }
-}
+// handleWeekOverview → moved to handlers/commands/secretary-helpers.ts
 
 // ─── Help Text ───────────────────────────────────────────────────────
