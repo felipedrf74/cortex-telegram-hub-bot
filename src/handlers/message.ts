@@ -122,6 +122,20 @@ export async function handleDomainMessage(
       } catch { /* quota check not available — allow */ }
     }
 
+    // Global cost guardrail — block ALL users (including owner) when daily spend exceeded
+    try {
+      const { checkGlobalCostGuardrail } = require('../services/cost-guardrail');
+      const costCheck = checkGlobalCostGuardrail();
+      if (costCheck.exceeded) {
+        const { getUserLanguage } = require('../services/user-service');
+        const { t } = require('../utils/i18n');
+        const lang = userId ? getUserLanguage(userId) : 'en-US';
+        await ctx.reply(t('cost_limit_reached', lang));
+        logger.error({ total: costCheck.totalUsd, limit: costCheck.limitUsd }, 'Global cost limit exceeded — AI call blocked');
+        return;
+      }
+    } catch { /* cost guardrail not available — allow */ }
+
     const route = await routeMessage(text, activeContext);
     logger.info({ domain: route.domain, method: route.method, confidence: route.confidence }, 'Message routed');
 

@@ -36,6 +36,38 @@ import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
+import { getDb } from './database';
+
+/**
+ * Get all active user Telegram IDs from the database.
+ * Falls back to config.telegram.allowedUserIds if users table doesn't exist yet.
+ */
+function getActiveUserIds(): number[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT telegram_id FROM users WHERE status = 'active'"
+    ).all() as { telegram_id: number }[];
+    if (rows.length > 0) return rows.map(r => r.telegram_id);
+  } catch { /* users table might not exist yet */ }
+  return config.telegram.allowedUserIds;
+}
+
+/**
+ * Get only owner-tier user IDs (for admin-only notifications).
+ */
+function getOwnerUserIds(): number[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT telegram_id FROM users WHERE tier = 'owner' AND status = 'active'"
+    ).all() as { telegram_id: number }[];
+    if (rows.length > 0) return rows.map(r => r.telegram_id);
+  } catch { /* users table might not exist yet */ }
+  return config.telegram.allowedUserIds;
+}
+
+export { getActiveUserIds, getOwnerUserIds };
 
 // Track known shared list task IDs — seeded on first run, new IDs trigger notifications
 const knownSharedTaskIds = new Set<string>();
@@ -52,7 +84,7 @@ export function startScheduler(bot: Bot): void {
   // Register failure notifier so wrapJob sends Telegram alerts on job failures
   setJobFailureNotifier(async (jobLabel, errorMessage) => {
     const short = errorMessage.slice(0, 120);
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId,
           `⚠️ <b>${escapeHtml(jobLabel)} failed</b>\n\n<code>${escapeHtml(short)}</code>\n\n<i>Check logs for details.</i>`,
@@ -115,14 +147,13 @@ export function startScheduler(bot: Bot): void {
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
     const dueReminders = getDueReminders();
     for (const reminder of dueReminders) {
-      for (const userId of config.telegram.allowedUserIds) {
-        try {
-          let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
-          if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send reminder');
-        }
+      const targetUserId = (reminder as any).user_id as number;
+      try {
+        let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
+        if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
+        await bot.api.sendMessage(targetUserId, msg, { parse_mode: 'HTML' });
+      } catch (err) {
+        logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
       }
       markReminderFired(reminder.id);
     }
@@ -167,7 +198,7 @@ export function startScheduler(bot: Bot): void {
       }
     }
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getActiveUserIds()) {
       try {
         await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
       } catch (err) {
@@ -243,7 +274,7 @@ export function startScheduler(bot: Bot): void {
       if (otherNew.length > 8) msg += `  ... +${otherNew.length - 8} more\n`;
     }
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getActiveUserIds()) {
       try {
         await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
       } catch (err) {
@@ -269,7 +300,7 @@ export function startScheduler(bot: Bot): void {
     const result = await collectMonthlyInvoices(prev.year, prev.month);
     const notification = formatCollectionNotification(result);
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
       } catch (err) {
@@ -286,7 +317,7 @@ export function startScheduler(bot: Bot): void {
     const result = await collectAmazonInvoices(prev.year, prev.month);
     const notification = formatAmazonNotification(result);
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
       } catch (err) {
@@ -303,7 +334,7 @@ export function startScheduler(bot: Bot): void {
     const result = await collectUberInvoices(prev.year, prev.month);
     const notification = formatUberNotification(result);
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
       } catch (err) {
@@ -335,7 +366,7 @@ export function startScheduler(bot: Bot): void {
       todayNotifications.push(`📧 Email automático "Limpeza Fossa Séptica" enviado para ${fossaTo}`);
       logger.info({ to: fossaTo }, 'Fossa email sent successfully');
 
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try {
           await bot.api.sendMessage(userId,
             `📧 <b>Email automático enviado</b>\n\n<b>Para:</b> ${fossaTo}\n<b>Assunto:</b> Limpeza Fossa Septica\n\n<i>Próximo envio em 2 semanas.</i>`,
@@ -381,7 +412,7 @@ export function startScheduler(bot: Bot): void {
     }
     msg += 'Consider rescheduling one of these events.';
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getActiveUserIds()) {
       try {
         await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
       } catch (err) {
@@ -414,7 +445,7 @@ export function startScheduler(bot: Bot): void {
 
       // Store recommendations so triathlon domain can reference them in follow-up chat
       if (result.recommendations.length > 0) {
-        for (const userId of config.telegram.allowedUserIds) {
+        for (const userId of getOwnerUserIds()) {
           setLastCoachState(userId, result.recommendations, result.message.substring(0, 500));
         }
       }
@@ -425,7 +456,7 @@ export function startScheduler(bot: Bot): void {
       // Uses userId 0 (default/owner) — scheduler doesn't have per-user context yet
       addToConversation(0, 'triathlon', 'assistant', result.message);
 
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         // Set conversation continuity to triathlon so follow-up replies stay in context
         setLastActiveDomain(userId, 'triathlon');
         try {
@@ -449,7 +480,7 @@ export function startScheduler(bot: Bot): void {
     const { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } = require('./training-plans');
     const { calculateReadiness, persistReadinessScore } = require('./readiness-scorer');
 
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getActiveUserIds()) {
       const plan = getActivePlan(userId);
       if (!plan) continue;
 
@@ -522,7 +553,7 @@ export function startScheduler(bot: Bot): void {
       if (result.remaining > 0) msg += `\n🔄 ${result.remaining} ainda na fila`;
       msg += `\n\n<i>O Mac voltou a estar disponível.</i>`;
 
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try {
           await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
@@ -538,7 +569,7 @@ export function startScheduler(bot: Bot): void {
     if (result.analyzed > 0 || result.failed > 0) {
       const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
         `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try {
           await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
@@ -550,7 +581,7 @@ export function startScheduler(bot: Bot): void {
 
   // ── Content Workflow: Tuesday Reel Topics (09:00) ──────────────────
   cron.schedule('0 9 * * 2', wrapJob('tuesday_reels', async () => {
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await sendTopicCandidates(bot, userId, 'reel', 'tuesday_reels');
       } catch (err) {
@@ -561,7 +592,7 @@ export function startScheduler(bot: Bot): void {
 
   // ── Content Workflow: Thursday YT Topic (09:00) ───────────────────
   cron.schedule('0 9 * * 4', wrapJob('thursday_youtube', async () => {
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await sendTopicCandidates(bot, userId, 'youtube', 'thursday_youtube');
       } catch (err) {
@@ -572,7 +603,7 @@ export function startScheduler(bot: Bot): void {
 
   // ── Content Workflow: Friday Weekly Package (18:30) ────────────────
   cron.schedule('30 18 * * 5', wrapJob('friday_weekly', async () => {
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await sendWeeklyPackage(bot, userId);
       } catch (err) {
@@ -605,7 +636,7 @@ export function startScheduler(bot: Bot): void {
   cron.schedule('0 6 * * 1', wrapJob('seo_agent', async () => {
     await runSEOAgent();
     const msg = '🔍 <b>SEO Agent</b> — weekly keyword rank check complete. Use <code>/seorank</code> to see results.';
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
     }
   }), { timezone: tz });
@@ -614,7 +645,7 @@ export function startScheduler(bot: Bot): void {
   cron.schedule('0 1 * * 0', wrapJob('autoresearch', async () => {
     const targetId = getScheduledTarget();
     const onProgress = async (msg: string) => {
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
       }
     };
@@ -625,7 +656,7 @@ export function startScheduler(bot: Bot): void {
         `Score: <b>${(result.finalScore * 100).toFixed(1)}%</b>\n` +
         `Kept ${kept}/${result.rounds.length} mutations\n` +
         `Duration: ${(result.totalDurationMs / 1000).toFixed(0)}s`;
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try { await bot.api.sendMessage(userId, summary, { parse_mode: 'HTML' }); } catch {}
       }
     } catch (err) {
@@ -638,7 +669,7 @@ export function startScheduler(bot: Bot): void {
     cron.schedule(backupCron, wrapJob('db_backup', async () => {
       const backupPath = await runDatabaseBackup();
       const short = path.basename(backupPath);
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try {
           await bot.api.sendMessage(userId,
             `💾 <b>Database Backup</b>\n\nBackup complete: <code>${escapeHtml(short)}</code>`,
@@ -654,7 +685,7 @@ export function startScheduler(bot: Bot): void {
       const result = await weeklyRestoreTest();
       if (!result.success) {
         logger.error({ details: result.details }, 'Weekly restore test FAILED');
-        for (const userId of config.telegram.allowedUserIds) {
+        for (const userId of getOwnerUserIds()) {
           try {
             await bot.api.sendMessage(userId,
               `🚨 <b>Weekly Restore Test FAILED</b>\n\n<code>${escapeHtml(result.details.slice(0, 200))}</code>`,
@@ -693,7 +724,7 @@ export function startScheduler(bot: Bot): void {
   // Seed book library (only if table is empty)
   try {
     seedBooksIfEmpty(async (msg) => {
-      for (const userId of config.telegram.allowedUserIds) {
+      for (const userId of getOwnerUserIds()) {
         try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
       }
     });
@@ -848,7 +879,7 @@ export async function sendDailyBriefing(bot: Bot): Promise<void> {
   const msg = formatDailyBriefing(data);
   const chunks = splitMessage(msg);
 
-  for (const userId of config.telegram.allowedUserIds) {
+  for (const userId of getActiveUserIds()) {
     try {
       for (const chunk of chunks) {
         await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
@@ -903,7 +934,7 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
     msg += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
   }
 
-  for (const userId of config.telegram.allowedUserIds) {
+  for (const userId of getActiveUserIds()) {
     try {
       await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
     } catch (err) {

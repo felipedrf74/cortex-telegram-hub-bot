@@ -25,7 +25,7 @@ export function setSharedMemory(
   db.prepare(`
     INSERT INTO shared_memory (user_id, key, value, source_domain, expires_at)
     VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET
+    ON CONFLICT(user_id, key) DO UPDATE SET
       value = excluded.value,
       source_domain = excluded.source_domain,
       expires_at = excluded.expires_at,

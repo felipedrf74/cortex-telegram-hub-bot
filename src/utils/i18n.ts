@@ -204,6 +204,11 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'later': { 'pt-BR': 'Depois', 'en-US': 'Later' },
   'continue': { 'pt-BR': 'Continuar', 'en-US': 'Continue' },
+  // ── Cost Guardrail ──
+  'cost_limit_reached': {
+    'pt-BR': '⚠️ O sistema atingiu o limite diário de custos. Tente novamente amanhã ou contate o administrador.',
+    'en-US': '⚠️ The system has reached its daily cost limit. Try again tomorrow or contact the administrator.',
+  },
 };
 
 /**

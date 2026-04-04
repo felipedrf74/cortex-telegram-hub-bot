@@ -123,9 +123,10 @@ export function createBot(): Bot {
     await next();
   });
 
-  // ── Garmin MFA notifier (sends Telegram message when MFA needed) ──
+  // ── Garmin MFA notifier (owner-only — Garmin credentials are admin-level) ──
   setMfaNotifier(async (message: string) => {
-    for (const userId of config.telegram.allowedUserIds) {
+    const { getOwnerUserIds } = require('./services/scheduler');
+    for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
       } catch (err) {

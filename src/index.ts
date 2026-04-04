@@ -39,9 +39,10 @@ async function main(): Promise<void> {
   // Store bot reference for portal restart action
   setBotRef(bot);
 
-  // Wire Telegram alerting for critical errors
+  // Wire Telegram alerting for critical errors (owner-only — never send internals to regular users)
+  const { getOwnerUserIds } = require('./services/scheduler');
   setAlertCallback(async (message: string) => {
-    for (const userId of config.telegram.allowedUserIds) {
+    for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
       } catch { /* swallow — don't cascade alert failures */ }
