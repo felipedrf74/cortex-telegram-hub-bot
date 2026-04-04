@@ -447,6 +447,7 @@ export function startScheduler(bot: Bot): void {
   // ── Training Plan weekly auto-adjust (Sunday 19:00) ─────────────────
   cron.schedule('0 19 * * 0', wrapJob('training_plan_adjust', async () => {
     const { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } = require('./training-plans');
+    const { calculateReadiness, persistReadinessScore } = require('./readiness-scorer');
 
     for (const userId of config.telegram.allowedUserIds) {
       const plan = getActivePlan(userId);
@@ -458,7 +459,26 @@ export function startScheduler(bot: Bot): void {
       const stats = getWeeklyAdherence(plan.id, currentWeek.id);
       if (stats.completedSessions === 0 && stats.skippedSessions === 0) continue; // no data yet
 
+      // Calculate and persist readiness score
+      let readinessScore: number | null = null;
+      let readinessRec = '';
+      try {
+        const readiness = await calculateReadiness(userId);
+        persistReadinessScore(userId, readiness);
+        readinessScore = readiness.score;
+        readinessRec = readiness.recommendation;
+      } catch (err) {
+        logger.warn({ err, userId }, 'Readiness calculation failed — using adherence only');
+      }
+
       const recommendation = computeAdjustmentRecommendation(stats);
+
+      // Factor readiness into adjustment:
+      // Low readiness + good adherence = fatigue, not laziness → force deload
+      if (readinessScore != null && readinessScore < 50 && stats.adherenceRate > 70) {
+        recommendation.adjustIntensity = Math.min(recommendation.adjustIntensity, 70);
+        recommendation.reason += ` + Low readiness (${readinessScore}/100): ${readinessRec}`;
+      }
 
       // Find next week and apply adjustment if needed
       const allWeeks = getWeeksForPlan(plan.id);
@@ -474,6 +494,7 @@ export function startScheduler(bot: Bot): void {
         if (stats.avgRpe != null) msg += `• Avg RPE: ${stats.avgRpe}\n`;
         if (stats.avgSoreness != null) msg += `• Avg Soreness: ${stats.avgSoreness}/10\n`;
         if (stats.avgEnergy != null) msg += `• Avg Energy: ${stats.avgEnergy}/10\n`;
+        if (readinessScore != null) msg += `• Readiness: ${readinessScore}/100 (${readinessRec})\n`;
         msg += `\n<b>Week ${currentWeek.week_number + 1} adjusted:</b> ${recommendation.adjustIntensity}% intensity\n`;
         msg += `<i>Reason: ${recommendation.reason}</i>`;
 

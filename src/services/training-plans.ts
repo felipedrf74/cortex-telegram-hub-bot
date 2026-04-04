@@ -9,6 +9,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from './unified-calendar';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -511,4 +512,78 @@ export function getPlanStats(userId: number): {
     currentWeekAdherence: adherence,
     currentPlanName: activePlan?.name ?? null,
   };
+}
+
+// ── Calendar Blocker Creation ───────────────────────────────────────
+
+function addDays(isoDate: string, days: number): string {
+  const d = new Date(isoDate);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function addMinutesToISO(isoDateTime: string, minutes: number): string {
+  const d = new Date(isoDateTime);
+  d.setMinutes(d.getMinutes() + minutes);
+  return d.toISOString().replace('Z', '').split('.')[0];
+}
+
+/**
+ * Create calendar events for all sessions in a training week.
+ * Uses the owner's calendar (Outlook or Google). Skips gracefully if no calendar is connected.
+ *
+ * @param weekOf - ISO Monday date, e.g., '2026-04-06'
+ * @param sessions - Training sessions for the week
+ * @param preferredTime - User's preferred start time, e.g., '06:00'
+ */
+export async function createCalendarBlockers(
+  userId: number,
+  weekOf: string,
+  sessions: TrainingSession[],
+  preferredTime: string,
+): Promise<{ created: number; failed: number }> {
+  if (!isAnyCalendarConfigured()) {
+    logger.info({ userId }, 'No calendar connected — skipping blocker creation');
+    return { created: 0, failed: 0 };
+  }
+
+  // Determine which calendar to use — try per-user OAuth, fall back to owner's
+  let calendarSource: 'outlook' | 'google' | undefined;
+  try {
+    const { isConnected } = require('./oauth-store');
+    if (isConnected(userId, 'outlook')) calendarSource = 'outlook';
+    else if (isConnected(userId, 'google')) calendarSource = 'google';
+  } catch { /* oauth-store not available */ }
+
+  let created = 0;
+  let failed = 0;
+
+  for (const session of sessions) {
+    const dayOfWeek = typeof session.day_of_week === 'string'
+      ? parseInt(session.day_of_week, 10)
+      : (session.day_of_week as unknown as number) ?? 0;
+
+    const dayDate = addDays(weekOf, dayOfWeek);
+    const duration = session.duration_minutes || 60;
+    const startISO = `${dayDate}T${preferredTime}:00`;
+    const endISO = addMinutesToISO(startISO, duration);
+
+    try {
+      const event = await createCalendarEvent({
+        title: `🏋️ ${session.title} (${duration}min)`,
+        start: startISO,
+        end: endISO,
+        description: session.description || undefined,
+        categories: ['Green category'],
+      }, calendarSource);
+
+      linkSessionToCalendar(session.id, event.id || event.summary, calendarSource || 'outlook');
+      created++;
+    } catch (err) {
+      logger.warn({ err, session: session.title, userId }, 'Failed to create calendar blocker');
+      failed++;
+    }
+  }
+
+  return { created, failed };
 }
