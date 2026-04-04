@@ -79,6 +79,7 @@ import {
 // ─── Types ──────────────────────────────────────────────────────────
 
 interface SnapshotResponse {
+  version: string;
   generatedAt: string;
   uptime: { seconds: number; human: string };
   bot: {
@@ -779,7 +780,15 @@ function buildSnapshot(): SnapshotResponse {
     }
   } catch { /* table may not exist yet */ }
 
+  // Read version from package.json
+  let pkgVersion = 'unknown';
+  try {
+    const pkg = require('../../package.json');
+    pkgVersion = pkg.version;
+  } catch { /* fallback */ }
+
   return {
+    version: pkgVersion,
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
     bot: {

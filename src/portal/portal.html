@@ -868,7 +868,7 @@
 <body>
 
 <div class="header">
-  <h1>🧠 Nexus Hub Status Portal</h1>
+  <h1>🧠 Nexus Hub <span id="app-version" style="font-size:0.5em;opacity:0.6;font-weight:normal"></span></h1>
   <div class="header-right">
     <span id="uptime"></span>
     <span id="poll-status"><span class="status-dot dot-yellow"></span> connecting…</span>
@@ -1983,7 +1983,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Render snapshot ────────────────────────
   async function render(snap) {
-    // Header
+    // Header + version
+    if (snap.version) {
+      document.getElementById('app-version').textContent = `v${snap.version}`;
+    }
     document.getElementById('uptime').textContent = `Up ${snap.uptime.human}`;
     const pollEl = document.getElementById('poll-status');
     if (snap.bot.polling) {
