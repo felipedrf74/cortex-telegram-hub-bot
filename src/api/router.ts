@@ -18,6 +18,25 @@ import { settingsRoutes } from './routes/settings';
 export function createApiRouter(): Router {
   const router = Router();
 
+  // Public: API info / health check (no auth)
+  router.get('/', (_req, res) => {
+    res.json({
+      name: 'Nexus Hub iOS API',
+      version: 'v1',
+      status: 'online',
+      endpoints: {
+        auth: 'POST /api/v1/auth/register, POST /api/v1/auth/refresh',
+        chat: 'POST /api/v1/chat, GET /api/v1/chat/history',
+        dashboard: 'GET /api/v1/dashboard',
+        tasks: 'GET/POST/PATCH/DELETE /api/v1/tasks',
+        training: 'GET /api/v1/training/*',
+        onboarding: 'GET/POST /api/v1/onboarding',
+        settings: 'GET/PATCH /api/v1/settings',
+      },
+      auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
+    });
+  });
+
   // Public routes (no JWT required)
   router.use('/auth', authRoutes());
 
