@@ -1686,6 +1686,53 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/audit-trail — recent audit events (admin only)
+  app.get('/api/audit-trail', (_req: Request, res: Response) => {
+    try {
+      const userId = _req.query.userId ? parseInt(_req.query.userId as string, 10) : undefined;
+      const limit = Math.min(parseInt(_req.query.limit as string || '50', 10), 500);
+      const { getAuditTrail } = require('../services/audit-trail');
+      const db = getDb();
+
+      const rows = userId
+        ? db.prepare('SELECT * FROM audit_trail WHERE user_id = ? ORDER BY ts DESC LIMIT ?').all(userId, limit)
+        : db.prepare('SELECT * FROM audit_trail ORDER BY ts DESC LIMIT ?').all(limit);
+
+      res.json({ entries: rows });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/users/:telegramId/data-summary — record counts per table (admin view)
+  app.get('/api/users/:telegramId/data-summary', (req: Request, res: Response) => {
+    try {
+      const telegramId = parseInt(String(req.params.telegramId), 10);
+      const { countUserFinanceData } = require('../services/user-data-export');
+      const financeCounts = countUserFinanceData(telegramId);
+      const db = getDb();
+
+      const count = (table: string) => {
+        try {
+          return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE user_id = ?`).get(telegramId) as any)?.c ?? 0;
+        } catch { return 0; }
+      };
+
+      res.json({
+        conversations: count('conversations'),
+        todos: count('todos'),
+        reminders: count('reminders'),
+        notes: count('notes'),
+        sharedMemory: count('shared_memory'),
+        savedIdeas: count('saved_ideas'),
+        financeTransactions: financeCounts.transactions,
+        financeTaxEvents: financeCounts.taxEvents,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/settings — current settings for portal display
   app.get('/api/settings', (_req: Request, res: Response) => {
     try {

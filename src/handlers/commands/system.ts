@@ -7,7 +7,7 @@
  * /version, /help, /clear, /onboard, ob: callback, /profile
  */
 
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
 import { config } from '../../config';
 import { storeCallback, getCallback } from '../../utils/callback-store';
 import { DomainName } from '../../domains/types';
@@ -17,6 +17,9 @@ import { escapeHtml } from '../../utils/telegram-formatter';
 import { enqueue, pendingOnboarding } from '../shared-state';
 import { HELP_TEXT } from '../help-text';
 import { sendOnboardingStep } from '../onboarding';
+import { exportAllUserData, deleteAllUserData } from '../../services/user-data-export';
+import { logAudit } from '../../services/audit-trail';
+import { logger } from '../../utils/logger';
 import fs from 'fs';
 import path from 'path';
 
@@ -294,5 +297,125 @@ export function registerSystemCommands(bot: Bot): void {
         break;
       }
     }
+  });
+
+  // ── GDPR: /export — data portability (Article 20) ──
+  bot.command('export', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const { getUserLanguage } = require('../../services/user-service');
+    const { t } = require('../../utils/i18n');
+    const lang = getUserLanguage(userId);
+
+    await ctx.reply(t('export_starting', lang));
+
+    try {
+      const data = exportAllUserData(userId);
+      const json = JSON.stringify(data, null, 2);
+      const buffer = Buffer.from(json, 'utf-8');
+
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'export',
+        resource: 'all',
+        details: {
+          conversations: data.conversations.length,
+          todos: data.todos.length,
+          reminders: data.reminders.length,
+          financeTransactions: data.finance.transactions.length,
+        },
+      });
+
+      await ctx.replyWithDocument(
+        new InputFile(buffer, `nexushub-export-${userId}-${new Date().toISOString().slice(0, 10)}.json`),
+        { caption: t('export_complete', lang) },
+      );
+    } catch (err: any) {
+      logger.error({ err, userId }, 'User data export failed');
+      await ctx.reply(t('export_failed', lang));
+    }
+  });
+
+  // ── GDPR: /delete — right to erasure (Article 17) ──
+  bot.command('delete', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const { getUserLanguage } = require('../../services/user-service');
+    const { t } = require('../../utils/i18n');
+    const lang = getUserLanguage(userId);
+
+    const args = ctx.message?.text?.split(' ').slice(1).join(' ');
+    if (args !== 'my-data' && args !== 'meus-dados') {
+      await ctx.reply(t('delete_usage', lang), { parse_mode: 'HTML' });
+      return;
+    }
+
+    await ctx.reply(t('delete_confirm', lang), {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '⚠️ ' + t('delete_yes', lang), callback_data: `gdpr_delete:${userId}` },
+          { text: '❌ ' + t('delete_cancel', lang), callback_data: 'gdpr_cancel' },
+        ]],
+      },
+    });
+  });
+
+  bot.callbackQuery(/^gdpr_delete:/, async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const { getUserLanguage } = require('../../services/user-service');
+    const { t } = require('../../utils/i18n');
+    const lang = getUserLanguage(userId);
+
+    // Verify the delete is for the same user who requested it
+    const targetId = parseInt(ctx.callbackQuery.data.replace('gdpr_delete:', ''), 10);
+    if (targetId !== userId) {
+      await ctx.answerCallbackQuery('Unauthorized');
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(t('delete_processing', lang));
+
+    try {
+      // Export first so user has a copy
+      const exportData = exportAllUserData(userId);
+      const json = JSON.stringify(exportData, null, 2);
+      await ctx.api.sendDocument(
+        userId,
+        new InputFile(Buffer.from(json, 'utf-8'), `nexushub-final-export-${userId}.json`),
+        { caption: t('delete_export_before', lang) },
+      );
+
+      // Delete all data
+      const counts = deleteAllUserData(userId);
+
+      // Log audit (this entry survives deletion — Article 17(3)(e))
+      logAudit({
+        userId,
+        actorId: userId,
+        action: 'delete',
+        resource: 'all',
+        details: counts,
+      });
+
+      const totalRecords = Object.values(counts).reduce((a, b) => a + b, 0);
+      await ctx.api.sendMessage(userId, t('delete_complete', lang, {
+        records: String(totalRecords),
+      }));
+    } catch (err: any) {
+      logger.error({ err, userId }, 'User data deletion failed');
+      await ctx.api.sendMessage(userId, t('delete_failed', lang));
+    }
+  });
+
+  bot.callbackQuery('gdpr_cancel', async (ctx) => {
+    const userId = ctx.from?.id;
+    const { getUserLanguage } = require('../../services/user-service');
+    const { t } = require('../../utils/i18n');
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(t('delete_cancelled', userId ? getUserLanguage(userId) : 'en-US'));
   });
 }

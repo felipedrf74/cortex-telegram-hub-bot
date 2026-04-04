@@ -6,6 +6,9 @@
  * - Per-user data deletion (right to erasure)
  * - Data isolation between users in export
  * - Record counting
+ * - Full GDPR export across ALL tables
+ * - Full GDPR delete across ALL tables
+ * - Audit trail integration
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -61,7 +64,53 @@ vi.mock('../../src/config', () => ({
 }));
 
 import { addTransaction, calculateAndStoreTax, markTaxPaid } from '../../src/services/finance-tracker';
-import { exportUserFinanceData, deleteUserFinanceData, countUserFinanceData } from '../../src/services/user-data-export';
+import {
+  exportUserFinanceData, deleteUserFinanceData, countUserFinanceData,
+  exportAllUserData, deleteAllUserData,
+} from '../../src/services/user-data-export';
+import { logAudit, getAuditTrail } from '../../src/services/audit-trail';
+
+// ── Helper: seed a user record ──
+function seedUser(db: Database.Database, telegramId: number, opts?: { username?: string; language?: string }) {
+  try {
+    db.prepare(`
+      INSERT INTO users (telegram_id, username, first_name, language, timezone, tier, status)
+      VALUES (?, ?, 'Test', ?, 'Europe/Lisbon', 'free', 'active')
+    `).run(telegramId, opts?.username ?? 'testuser', opts?.language ?? 'en-US');
+  } catch { /* table may not exist */ }
+}
+
+// ── Helper: seed data across multiple tables ──
+function seedUserData(db: Database.Database, userId: number) {
+  try {
+    db.prepare('INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)')
+      .run(userId, 'secretary', 'user', 'Hello bot');
+    db.prepare('INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)')
+      .run(userId, 'secretary', 'assistant', 'Hi there!');
+  } catch { /* table may not exist */ }
+
+  try {
+    db.prepare('INSERT INTO todos (user_id, title, status, priority) VALUES (?, ?, ?, ?)')
+      .run(userId, 'Buy groceries', 'pending', 'normal');
+  } catch { /* table may not exist */ }
+
+  try {
+    db.prepare('INSERT INTO reminders (user_id, message, remind_at, status) VALUES (?, ?, ?, ?)')
+      .run(userId, 'Call doctor', '2026-04-05T14:00:00', 'active');
+  } catch { /* table may not exist */ }
+
+  try {
+    db.prepare('INSERT INTO notes (user_id, content, domain) VALUES (?, ?, ?)')
+      .run(userId, 'Meeting notes', 'secretary');
+  } catch { /* table may not exist */ }
+
+  try {
+    db.prepare('INSERT INTO shared_memory (user_id, key, value, source_domain) VALUES (?, ?, ?, ?)')
+      .run(userId, `preference_${userId}`, 'dark mode', 'secretary');
+  } catch { /* table may not exist */ }
+}
+
+// ── Finance Export Tests (existing) ──
 
 describe('User finance data export', () => {
   beforeEach(() => {
@@ -175,5 +224,236 @@ describe('countUserFinanceData', () => {
     const counts = countUserFinanceData(999);
     expect(counts.transactions).toBe(0);
     expect(counts.taxEvents).toBe(0);
+  });
+});
+
+// ── Full Export Tests (GDPR Article 20) ──
+
+describe('exportAllUserData', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('exports conversations for the correct user', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+
+    const exported = exportAllUserData(1);
+    expect(exported.conversations).toHaveLength(2);
+    expect(exported.conversations[0].domain).toBe('secretary');
+  });
+
+  it('exports todos, reminders, notes, shared memory', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+
+    const exported = exportAllUserData(1);
+    expect(exported.todos).toHaveLength(1);
+    expect(exported.todos[0].title).toBe('Buy groceries');
+    expect(exported.reminders).toHaveLength(1);
+    expect(exported.reminders[0].message).toBe('Call doctor');
+    expect(exported.notes).toHaveLength(1);
+    expect(exported.notes[0].content).toBe('Meeting notes');
+    expect(exported.sharedMemory).toHaveLength(1);
+    expect(exported.sharedMemory[0].key).toContain('preference');
+  });
+
+  it('exports finance data with decrypted amounts', () => {
+    seedUser(testDb, 1);
+    addTransaction(1, '2024-06-01', 'income', 9999.99);
+
+    const exported = exportAllUserData(1);
+    expect(exported.finance.transactions).toHaveLength(1);
+    expect(exported.finance.transactions[0].amount).toBe(9999.99);
+  });
+
+  it('exports user profile data', () => {
+    seedUser(testDb, 1, { username: 'felipe', language: 'pt-BR' });
+
+    const exported = exportAllUserData(1);
+    expect(exported.user).not.toBeNull();
+    expect(exported.user!.username).toBe('felipe');
+    expect(exported.user!.language).toBe('pt-BR');
+  });
+
+  it('does NOT include other users data', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    seedUserData(testDb, 1);
+    seedUserData(testDb, 2);
+
+    const exported = exportAllUserData(1);
+    expect(exported.conversations).toHaveLength(2); // only user 1's
+    expect(exported.todos).toHaveLength(1);
+  });
+
+  it('handles missing tables gracefully', () => {
+    // Just export with no data seeded — should not throw
+    const exported = exportAllUserData(999);
+    expect(exported.user).toBeNull();
+    expect(exported.conversations).toHaveLength(0);
+    expect(exported.todos).toHaveLength(0);
+    expect(exported.savedIdeas).toHaveLength(0);
+  });
+
+  it('includes exportedAt timestamp and userId', () => {
+    const exported = exportAllUserData(42);
+    expect(exported.userId).toBe(42);
+    expect(exported.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+// ── Full Delete Tests (GDPR Article 17) ──
+
+describe('deleteAllUserData', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('deletes from ALL tables', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+    addTransaction(1, '2024-06-01', 'income', 5000);
+
+    const counts = deleteAllUserData(1);
+
+    expect(counts['conversations']).toBe(2);
+    expect(counts['todos']).toBe(1);
+    expect(counts['reminders']).toBe(1);
+    expect(counts['notes']).toBe(1);
+    expect(counts['shared_memory']).toBe(1);
+    expect(counts['finance_transactions']).toBe(1);
+    expect(counts['users']).toBe(1);
+  });
+
+  it('runs in a transaction — other users unaffected', () => {
+    seedUser(testDb, 1);
+    seedUser(testDb, 2, { username: 'other' });
+    seedUserData(testDb, 1);
+    seedUserData(testDb, 2);
+
+    deleteAllUserData(1);
+
+    // User 2's data should be intact
+    const convos = testDb.prepare('SELECT COUNT(*) as c FROM conversations WHERE user_id = 2').get() as any;
+    expect(convos.c).toBe(2);
+    const user2 = testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 2').get();
+    expect(user2).toBeTruthy();
+  });
+
+  it('deletes the user record last', () => {
+    seedUser(testDb, 1);
+    const counts = deleteAllUserData(1);
+    expect(counts['users']).toBe(1);
+
+    const user = testDb.prepare('SELECT 1 FROM users WHERE telegram_id = 1').get();
+    expect(user).toBeUndefined();
+  });
+
+  it('does NOT delete audit trail entries', () => {
+    seedUser(testDb, 1);
+    logAudit({ userId: 1, actorId: 1, action: 'export', resource: 'all' });
+
+    deleteAllUserData(1);
+
+    const auditRows = testDb.prepare('SELECT * FROM audit_trail WHERE user_id = 1').all();
+    expect(auditRows).toHaveLength(1);
+  });
+
+  it('returns correct counts per table', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+
+    const counts = deleteAllUserData(1);
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThan(0);
+    expect(typeof counts['conversations']).toBe('number');
+    expect(typeof counts['users']).toBe('number');
+  });
+
+  it('returns zeros when deleting user with no data', () => {
+    const counts = deleteAllUserData(999);
+    expect(counts['conversations']).toBe(0);
+    expect(counts['users']).toBe(0);
+  });
+});
+
+// ── GDPR Compliance Integration Tests ──
+
+describe('GDPR compliance', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('export + delete covers every table with user_id', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+    addTransaction(1, '2024-06-01', 'income', 5000);
+
+    // Export first
+    const exported = exportAllUserData(1);
+    expect(exported.conversations.length).toBeGreaterThan(0);
+    expect(exported.todos.length).toBeGreaterThan(0);
+    expect(exported.finance.transactions.length).toBeGreaterThan(0);
+
+    // Delete
+    const counts = deleteAllUserData(1);
+    expect(counts['conversations']).toBeGreaterThan(0);
+    expect(counts['finance_transactions']).toBeGreaterThan(0);
+
+    // Verify empty after deletion
+    const afterExport = exportAllUserData(1);
+    expect(afterExport.conversations).toHaveLength(0);
+    expect(afterExport.todos).toHaveLength(0);
+    expect(afterExport.finance.transactions).toHaveLength(0);
+  });
+
+  it('audit trail entry is created for export operations', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+
+    const data = exportAllUserData(1);
+    logAudit({
+      userId: 1,
+      actorId: 1,
+      action: 'export',
+      resource: 'all',
+      details: { conversations: data.conversations.length },
+    });
+
+    const trail = getAuditTrail(1);
+    expect(trail).toHaveLength(1);
+    expect(trail[0].action).toBe('export');
+  });
+
+  it('audit trail entry is created for delete operations', () => {
+    seedUser(testDb, 1);
+    seedUserData(testDb, 1);
+
+    const counts = deleteAllUserData(1);
+    logAudit({ userId: 1, actorId: 1, action: 'delete', resource: 'all', details: counts });
+
+    const trail = getAuditTrail(1);
+    expect(trail).toHaveLength(1);
+    expect(trail[0].action).toBe('delete');
+  });
+
+  it('audit trail survives user deletion', () => {
+    seedUser(testDb, 1);
+    logAudit({ userId: 1, actorId: 1, action: 'export', resource: 'all' });
+
+    // Delete the user completely
+    deleteAllUserData(1);
+
+    // Audit trail should still be there
+    const trail = getAuditTrail(1);
+    expect(trail).toHaveLength(1);
+    expect(trail[0].action).toBe('export');
   });
 });

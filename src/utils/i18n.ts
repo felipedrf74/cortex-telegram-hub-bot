@@ -86,6 +86,45 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'pt-BR': '🔒 A funcionalidade <b>{skill}</b> não está habilitada para sua conta.',
     'en-US': '🔒 The <b>{skill}</b> feature is not enabled for your account.',
   },
+  'export_starting': {
+    'pt-BR': '📦 Preparando seu export de dados...',
+    'en-US': '📦 Preparing your data export...',
+  },
+  'export_complete': {
+    'pt-BR': '✅ Aqui estão todos os seus dados do Nexus Hub em formato JSON.',
+    'en-US': '✅ Here\'s all your Nexus Hub data in JSON format.',
+  },
+  'export_failed': {
+    'pt-BR': '❌ Falha ao exportar dados. Tente novamente mais tarde.',
+    'en-US': '❌ Failed to export data. Please try again later.',
+  },
+  'delete_usage': {
+    'pt-BR': '⚠️ Para deletar todos os seus dados, envie:\n<code>/delete meus-dados</code>\n\nIsso é irreversível.',
+    'en-US': '⚠️ To delete all your data, send:\n<code>/delete my-data</code>\n\nThis is irreversible.',
+  },
+  'delete_confirm': {
+    'pt-BR': '🚨 <b>ATENÇÃO:</b> Isso vai deletar permanentemente TODOS os seus dados:\n\n• Conversas\n• Tarefas\n• Lembretes\n• Notas\n• Dados financeiros\n• Configurações\n• Conexões OAuth\n\nUm export final será enviado antes da exclusão.\n\nTem certeza?',
+    'en-US': '🚨 <b>WARNING:</b> This will permanently delete ALL your data:\n\n• Conversations\n• Tasks\n• Reminders\n• Notes\n• Financial data\n• Settings\n• OAuth connections\n\nA final export will be sent before deletion.\n\nAre you sure?',
+  },
+  'delete_yes': { 'pt-BR': 'Sim, deletar tudo', 'en-US': 'Yes, delete everything' },
+  'delete_cancel': { 'pt-BR': 'Cancelar', 'en-US': 'Cancel' },
+  'delete_processing': { 'pt-BR': '🗑️ Deletando seus dados...', 'en-US': '🗑️ Deleting your data...' },
+  'delete_export_before': {
+    'pt-BR': '📦 Aqui está uma cópia dos seus dados antes da exclusão.',
+    'en-US': '📦 Here\'s a copy of your data before deletion.',
+  },
+  'delete_complete': {
+    'pt-BR': '✅ Dados deletados. {records} registros removidos. Sua conta foi encerrada.\n\nVocê pode criar uma nova conta a qualquer momento com /start.',
+    'en-US': '✅ Data deleted. {records} records removed. Your account has been closed.\n\nYou can create a new account anytime with /start.',
+  },
+  'delete_cancelled': {
+    'pt-BR': '✅ Exclusão cancelada. Seus dados estão seguros.',
+    'en-US': '✅ Deletion cancelled. Your data is safe.',
+  },
+  'delete_failed': {
+    'pt-BR': '❌ Falha ao deletar dados. Contate o administrador.',
+    'en-US': '❌ Failed to delete data. Contact the administrator.',
+  },
 };
 
 /**
