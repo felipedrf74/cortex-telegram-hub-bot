@@ -14,7 +14,7 @@ import { encryptValue, decryptValue } from '../utils/encryption';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-export type OAuthProvider = 'google' | 'outlook';
+export type OAuthProvider = 'google' | 'outlook' | 'strava' | 'whoop' | 'fitbit';
 
 export interface OAuthTokens {
   accessToken: string;

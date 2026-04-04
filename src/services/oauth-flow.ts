@@ -37,6 +37,24 @@ const OUTLOOK_SCOPES = [
   'offline_access',
 ];
 
+// ─── Strava OAuth ───────────────────────────────────────────────────
+
+const STRAVA_AUTH_URL = 'https://www.strava.com/oauth/authorize';
+const STRAVA_TOKEN_URL = 'https://www.strava.com/oauth/token';
+const STRAVA_SCOPES = 'read,activity:read_all';
+
+// ─── Whoop OAuth ────────────────────────────────────────────────────
+
+const WHOOP_AUTH_URL = 'https://api.prod.whoop.com/oauth/oauth2/auth';
+const WHOOP_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token';
+const WHOOP_SCOPES = 'read:recovery read:sleep read:workout read:cycles read:profile offline';
+
+// ─── Fitbit OAuth ───────────────────────────────────────────────────
+
+const FITBIT_AUTH_URL = 'https://www.fitbit.com/oauth2/authorize';
+const FITBIT_TOKEN_URL = 'https://api.fitbit.com/oauth2/token';
+const FITBIT_SCOPES = 'activity heartrate sleep profile';
+
 // ─── Public API ─────────────────────────────────────────────────────
 
 /**
@@ -70,6 +88,43 @@ export function getOAuthUrl(provider: OAuthProvider, userId: number): string {
     return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params.toString()}`;
   }
 
+  if (provider === 'strava') {
+    const redirectUri = `${REDIRECT_BASE}/oauth/strava/callback`;
+    const params = new URLSearchParams({
+      client_id: process.env.STRAVA_CLIENT_ID || '',
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: STRAVA_SCOPES,
+      approval_prompt: 'force',
+      state: String(userId),
+    });
+    return `${STRAVA_AUTH_URL}?${params.toString()}`;
+  }
+
+  if (provider === 'whoop') {
+    const redirectUri = `${REDIRECT_BASE}/oauth/whoop/callback`;
+    const params = new URLSearchParams({
+      client_id: process.env.WHOOP_CLIENT_ID || '',
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: WHOOP_SCOPES,
+      state: String(userId),
+    });
+    return `${WHOOP_AUTH_URL}?${params.toString()}`;
+  }
+
+  if (provider === 'fitbit') {
+    const redirectUri = `${REDIRECT_BASE}/oauth/fitbit/callback`;
+    const params = new URLSearchParams({
+      client_id: process.env.FITBIT_CLIENT_ID || '',
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: FITBIT_SCOPES,
+      state: String(userId),
+    });
+    return `${FITBIT_AUTH_URL}?${params.toString()}`;
+  }
+
   throw new Error(`Unknown OAuth provider: ${provider}`);
 }
 
@@ -82,6 +137,15 @@ export async function exchangeCode(provider: OAuthProvider, code: string, userId
   }
   if (provider === 'outlook') {
     return exchangeOutlookCode(code);
+  }
+  if (provider === 'strava') {
+    return exchangeStravaCode(code);
+  }
+  if (provider === 'whoop') {
+    return exchangeWhoopCode(code);
+  }
+  if (provider === 'fitbit') {
+    return exchangeFitbitCode(code);
   }
   throw new Error(`Unknown OAuth provider: ${provider}`);
 }
@@ -142,6 +206,107 @@ async function exchangeOutlookCode(code: string): Promise<OAuthTokens> {
     const err = await response.text();
     logger.error({ status: response.status, err }, 'Outlook token exchange failed');
     throw new Error(`Outlook token exchange failed: ${response.status}`);
+  }
+
+  const data = await response.json() as any;
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    tokenType: data.token_type || 'Bearer',
+    expiresAt: data.expires_in
+      ? new Date(Date.now() + data.expires_in * 1000).toISOString()
+      : null,
+    scopes: (data.scope || '').split(' ').filter(Boolean),
+  };
+}
+
+// ─── Strava ─────────────────────────────────────────────────────────
+
+async function exchangeStravaCode(code: string): Promise<OAuthTokens> {
+  const response = await fetch(STRAVA_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: process.env.STRAVA_CLIENT_ID || '',
+      client_secret: process.env.STRAVA_CLIENT_SECRET || '',
+      grant_type: 'authorization_code',
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    logger.error({ status: response.status, err }, 'Strava token exchange failed');
+    throw new Error(`Strava token exchange failed: ${response.status}`);
+  }
+
+  const data = await response.json() as any;
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    tokenType: data.token_type || 'Bearer',
+    expiresAt: data.expires_at
+      ? new Date(data.expires_at * 1000).toISOString()
+      : null,
+    scopes: (data.scope || STRAVA_SCOPES).split(',').filter(Boolean),
+  };
+}
+
+// ─── Whoop ──────────────────────────────────────────────────────────
+
+async function exchangeWhoopCode(code: string): Promise<OAuthTokens> {
+  const redirectUri = `${REDIRECT_BASE}/oauth/whoop/callback`;
+  const response = await fetch(WHOOP_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: process.env.WHOOP_CLIENT_ID || '',
+      client_secret: process.env.WHOOP_CLIENT_SECRET || '',
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    logger.error({ status: response.status, err }, 'Whoop token exchange failed');
+    throw new Error(`Whoop token exchange failed: ${response.status}`);
+  }
+
+  const data = await response.json() as any;
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    tokenType: data.token_type || 'Bearer',
+    expiresAt: data.expires_in
+      ? new Date(Date.now() + data.expires_in * 1000).toISOString()
+      : null,
+    scopes: (data.scope || '').split(' ').filter(Boolean),
+  };
+}
+
+// ─── Fitbit ─────────────────────────────────────────────────────────
+
+async function exchangeFitbitCode(code: string): Promise<OAuthTokens> {
+  const redirectUri = `${REDIRECT_BASE}/oauth/fitbit/callback`;
+  const response = await fetch(FITBIT_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${Buffer.from(`${process.env.FITBIT_CLIENT_ID || ''}:${process.env.FITBIT_CLIENT_SECRET || ''}`).toString('base64')}`,
+    },
+    body: new URLSearchParams({
+      code,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    logger.error({ status: response.status, err }, 'Fitbit token exchange failed');
+    throw new Error(`Fitbit token exchange failed: ${response.status}`);
   }
 
   const data = await response.json() as any;

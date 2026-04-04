@@ -1089,6 +1089,105 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── Strava OAuth Callback ──────────────────────────────────────────
+
+  app.get('/oauth/strava/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('strava', code, userId);
+      storeTokens(userId, 'strava', tokens);
+
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Strava' }));
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Strava account linked. You can close this window and return to Telegram.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Strava OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect strava in Telegram.</p></body></html>');
+    }
+  });
+
+  // ── Whoop OAuth Callback ───────────────────────────────────────────
+
+  app.get('/oauth/whoop/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('whoop', code, userId);
+      storeTokens(userId, 'whoop', tokens);
+
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Whoop' }));
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Whoop account linked. You can close this window and return to Telegram.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Whoop OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect whoop in Telegram.</p></body></html>');
+    }
+  });
+
+  // ── Fitbit OAuth Callback ──────────────────────────────────────────
+
+  app.get('/oauth/fitbit/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('fitbit', code, userId);
+      storeTokens(userId, 'fitbit', tokens);
+
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Fitbit' }));
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Fitbit account linked. You can close this window and return to Telegram.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Fitbit OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect fitbit in Telegram.</p></body></html>');
+    }
+  });
+
   // ── Health Check ──────────────────────────────────────────────────
 
   app.get('/health', (_req: Request, res: Response) => {
