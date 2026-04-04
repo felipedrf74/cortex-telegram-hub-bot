@@ -125,6 +125,60 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'pt-BR': '❌ Falha ao deletar dados. Contate o administrador.',
     'en-US': '❌ Failed to delete data. Contact the administrator.',
   },
+  // ── Training Commands ──
+  'training_help': {
+    'pt-BR': '🏋️ <b>Comandos de treino:</b>\n\n/training plan — Plano da semana\n/training today — Treino de hoje\n/training done — Marcar como feito\n/training readiness — Score de prontidão\n/training compare — Planejado vs Realizado\n/training history — Últimas 4 semanas\n/training feedback easy|perfect|hard — Avaliar treino',
+    'en-US': '🏋️ <b>Training commands:</b>\n\n/training plan — This week\'s plan\n/training today — Today\'s workout\n/training done — Mark as complete\n/training readiness — Readiness score\n/training compare — Planned vs Actual\n/training history — Last 4 weeks\n/training feedback easy|perfect|hard — Rate session',
+  },
+  'training_no_plan': {
+    'pt-BR': '❌ Nenhum plano ativo. Peça para eu criar um com linguagem natural.',
+    'en-US': '❌ No active plan. Ask me to create one in natural language.',
+  },
+  'training_no_week': {
+    'pt-BR': '❌ Nenhuma semana ativa no plano atual.',
+    'en-US': '❌ No active week in current plan.',
+  },
+  'training_rest_day': {
+    'pt-BR': 'Hoje é dia de descanso. Aproveite a recuperação!',
+    'en-US': 'Today is a rest day. Enjoy the recovery!',
+  },
+  'training_already_done': {
+    'pt-BR': 'Treino de hoje já feito',
+    'en-US': 'Today\'s session already done',
+  },
+  'training_done_hint': {
+    'pt-BR': 'Quando terminar, marque',
+    'en-US': 'When done, mark with',
+  },
+  'training_low_readiness': {
+    'pt-BR': 'Readiness baixo ({score}/100): considere {rec}',
+    'en-US': 'Low readiness ({score}/100): consider {rec}',
+  },
+  'training_marked_done': {
+    'pt-BR': '✅ Treino marcado como feito: <b>{title}</b>\nComo foi?',
+    'en-US': '✅ Session marked complete: <b>{title}</b>\nHow was it?',
+  },
+  'training_no_session_today': {
+    'pt-BR': '❌ Nenhuma sessão pendente hoje.',
+    'en-US': '❌ No pending session for today.',
+  },
+  'training_feedback_saved': {
+    'pt-BR': '💪 Feedback salvo: {rating}. Isso ajusta o próximo treino.',
+    'en-US': '💪 Feedback saved: {rating}. This helps adjust your next session.',
+  },
+  'too_easy': { 'pt-BR': 'Fácil', 'en-US': 'Too easy' },
+  'perfect': { 'pt-BR': 'Perfeito', 'en-US': 'Perfect' },
+  'too_hard': { 'pt-BR': 'Difícil', 'en-US': 'Too hard' },
+  'week': { 'pt-BR': 'Semana', 'en-US': 'Week' },
+  'completed': { 'pt-BR': 'concluídos', 'en-US': 'completed' },
+  'readiness_score': { 'pt-BR': 'Score de Prontidão', 'en-US': 'Readiness Score' },
+  'sleep': { 'pt-BR': 'Sono', 'en-US': 'Sleep' },
+  'recommendation': { 'pt-BR': 'Recomendação', 'en-US': 'Recommendation' },
+  'readiness_full_intensity': { 'pt-BR': 'Pode ir com tudo!', 'en-US': 'Go full intensity!' },
+  'readiness_reduce_10pct': { 'pt-BR': 'Reduza 10% — dia ok', 'en-US': 'Reduce 10% — decent day' },
+  'readiness_reduce_25pct': { 'pt-BR': 'Reduza 25% — corpo cansado', 'en-US': 'Reduce 25% — body is tired' },
+  'readiness_active_recovery': { 'pt-BR': 'Só recuperação ativa', 'en-US': 'Active recovery only' },
+  'readiness_rest_day': { 'pt-BR': 'Dia de descanso total', 'en-US': 'Full rest day' },
 };
 
 /**
