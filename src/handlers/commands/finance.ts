@@ -28,17 +28,7 @@ import {
 } from '../../services/uber-collector';
 import { handleTaskExtraction } from '../photo';
 import { enqueue, isHtmlParseError } from '../shared-state';
-
-/** Re-download a photo from Telegram by file_id. Returns { base64, mediaType }. */
-async function downloadTelegramFile(bot: Bot, fileId: string): Promise<{ base64: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }> {
-  const file = await bot.api.getFile(fileId);
-  const fileUrl = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
-  const response = await fetch(fileUrl);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const ext = file.file_path?.split('.').pop()?.toLowerCase() || 'jpg';
-  const mediaType = (ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp';
-  return { base64: buffer.toString('base64'), mediaType };
-}
+import { downloadTelegramFile } from '../telegram-file';
 
 export function registerFinanceCommands(bot: Bot): void {
   // /invoices [YYYY-MM] — Manual trigger for monthly invoice collection
