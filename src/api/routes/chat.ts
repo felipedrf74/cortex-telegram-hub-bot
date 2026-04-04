@@ -84,7 +84,13 @@ export function chatRoutes(): Router {
         return;
       }
 
-      const result = await handler(route.strippedMessage, userId);
+      // Execute with a 25-second timeout to prevent infinite hangs
+      // (iOS client times out at 30s, so we respond before that)
+      const handlerPromise = handler(route.strippedMessage, userId);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Response timeout — AI is taking too long')), 25000),
+      );
+      const result = await Promise.race([handlerPromise, timeoutPromise]);
 
       // Extract buttons from the response text if present.
       // The handler returns HTML text which may contain callback references.

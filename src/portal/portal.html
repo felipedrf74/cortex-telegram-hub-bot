@@ -1547,8 +1547,17 @@ document.addEventListener('DOMContentLoaded', () => {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   }
 
-  function ensureToken() {
-    if (TOKEN) return true;
+  async function ensureToken() {
+    if (TOKEN) {
+      // Validate the stored token is still valid
+      try {
+        const res = await fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + TOKEN } });
+        if (res.ok) return true;
+      } catch {}
+      // Token is invalid — clear and show login
+      localStorage.removeItem('portal_token');
+      TOKEN = '';
+    }
     showLoginForm();
     return false;
   }
@@ -3263,10 +3272,10 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTaskMetrics();    setInterval(loadTaskMetrics, 30_000);
   }
 
-  if (ensureToken()) {
-    startAllPolling();
-  }
-  // If no token, showLoginForm() was called — startAllPolling runs after successful login
+  ensureToken().then(valid => {
+    if (valid) startAllPolling();
+  });
+  // If no token or invalid token, showLoginForm() was called — startAllPolling runs after successful login
 })();
 </script>
 </body>

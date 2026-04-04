@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 
-// Lazy-load MS Todo service to avoid startup dependency issues
+// Lazy-load MS Todo service
 function getTodo() {
   return require('../../services/microsoft-todo');
 }
@@ -20,12 +20,13 @@ export function taskRoutes(): Router {
       const listsArray = result?.data || result || [];
       const lists = Array.isArray(listsArray) ? listsArray : [];
 
-      // Fetch pending task count per list (MS Graph doesn't include counts)
+      // Fetch pending count per list using the correct function signature:
+      // getTasks(listId, listName, { status?: string, top?: number })
       const formatted = await Promise.all(lists.map(async (l: any) => {
         let taskCount = 0;
         try {
-          const tasksResult = await todo.getTasksFromList(l.id, 'notStarted');
-          const tasks = tasksResult?.data || tasksResult || [];
+          const tasksResult = await todo.getTasks(l.id, l.displayName || l.name || '', { status: 'notStarted' });
+          const tasks = tasksResult?.data || [];
           taskCount = Array.isArray(tasks) ? tasks.length : 0;
         } catch { /* count stays 0 */ }
         return {
@@ -49,10 +50,15 @@ export function taskRoutes(): Router {
       const { listId } = req.params;
       const status = req.query.status as string | undefined;
 
-      const tasksResult = await todo.getTasksFromList(listId, status);
-      const tasks = tasksResult?.data || tasksResult || [];
-      const listResult = await todo.getList(listId).catch(() => null);
-      const list = listResult?.data || listResult;
+      // getTasks(listId, listName, filter)
+      // We don't know the listName here, so pass empty — it's used for display only
+      const listsResult = await todo.getLists();
+      const lists = listsResult?.data || [];
+      const list = Array.isArray(lists) ? lists.find((l: any) => l.id === listId) : null;
+      const listName = list?.displayName || list?.name || 'Tasks';
+
+      const tasksResult = await todo.getTasks(listId, listName, status ? { status } : undefined);
+      const tasks = tasksResult?.data || [];
 
       const formatted = (Array.isArray(tasks) ? tasks : []).map((t: any) => ({
         id: t.id, title: t.title,
@@ -60,14 +66,14 @@ export function taskRoutes(): Router {
         importance: t.importance || 'normal',
         status: t.status || 'notStarted',
         dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
-        listId, listName: list?.displayName || list?.name || null,
+        listId, listName,
         checklistItems: t.checklistItems?.map((ci: any) => ({
           id: ci.id, displayName: ci.displayName, isChecked: ci.isChecked ?? false,
         })) || null,
         createdDateTime: t.createdDateTime || null,
       }));
 
-      res.json({ listName: list?.displayName || list?.name || 'Tasks', tasks: formatted });
+      res.json({ listName, tasks: formatted });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
