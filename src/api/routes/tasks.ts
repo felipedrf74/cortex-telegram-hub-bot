@@ -17,13 +17,24 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo();
       const result = await todo.getLists();
-      // getLists() returns ServiceResult<TodoList[]> = { success, data }
       const listsArray = result?.data || result || [];
-      const formatted = (Array.isArray(listsArray) ? listsArray : []).map((l: any) => ({
-        id: l.id,
-        name: l.displayName || l.name,
-        taskCount: l.taskCount ?? 0,
+      const lists = Array.isArray(listsArray) ? listsArray : [];
+
+      // Fetch pending task count per list (MS Graph doesn't include counts)
+      const formatted = await Promise.all(lists.map(async (l: any) => {
+        let taskCount = 0;
+        try {
+          const tasksResult = await todo.getTasksFromList(l.id, 'notStarted');
+          const tasks = tasksResult?.data || tasksResult || [];
+          taskCount = Array.isArray(tasks) ? tasks.length : 0;
+        } catch { /* count stays 0 */ }
+        return {
+          id: l.id,
+          name: l.displayName || l.name,
+          taskCount,
+        };
       }));
+
       res.json({ lists: formatted });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');

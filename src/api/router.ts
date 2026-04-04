@@ -51,9 +51,9 @@ export function createApiRouter(): Router {
   router.use('/content', contentRoutes());
   router.use('/onboarding', onboardingRoutes());
 
-  // Settings routes include /status, /connections, /language, /push-token
-  // Mount at root of protected routes so /api/v1/status, /api/v1/connections work
-  router.use('/', settingsRoutes());
+  // Settings: /api/v1/settings/language, /api/v1/settings/push-token
+  // Status & connections also live under /settings/ per spec 02-API-SPECIFICATION
+  router.use('/settings', settingsRoutes());
 
   // Profile route is part of onboarding module
   // GET /api/v1/profile is handled by onboarding routes

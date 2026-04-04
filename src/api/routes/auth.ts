@@ -123,11 +123,12 @@ export function authRoutes(): Router {
         { expiresIn: '7d' as any },
       );
 
-      // Update last active
-      db.prepare('UPDATE ios_devices SET last_active_at = datetime(\'now\') WHERE device_id = ?')
-        .run(device.device_id);
+      // Rotate refresh token — invalidate old one, issue new one
+      const newRefreshToken = crypto.randomBytes(64).toString('hex');
+      db.prepare('UPDATE ios_devices SET refresh_token = ?, last_active_at = datetime(\'now\') WHERE device_id = ?')
+        .run(newRefreshToken, device.device_id);
 
-      res.json({ accessToken, expiresIn: 604800 });
+      res.json({ accessToken, refreshToken: newRefreshToken, expiresIn: 604800 });
     } catch (err: any) {
       logger.error({ err }, 'iOS refresh failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });

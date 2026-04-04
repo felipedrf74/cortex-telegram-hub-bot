@@ -3,8 +3,11 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { routeMessage, isSystemCommand } from '../../router';
-import { IOSAdapter } from '../../adapters/ios-adapter';
 import { logger } from '../../utils/logger';
+// NOTE: IOSAdapter exists but domain handlers currently don't accept an adapter parameter.
+// Messages are processed via handler(message, userId) which returns { text, domain }.
+// Buttons sent via Grammy InlineKeyboard are Telegram-specific and not captured here.
+// Future: refactor domain handlers to accept MessageAdapter for platform-agnostic responses.
 import type { DomainName } from '../../domains/types';
 
 // Domain handlers — same functions used by bot.ts
