@@ -1535,8 +1535,7 @@ document.addEventListener('DOMContentLoaded', () => {
           localStorage.setItem('portal_token', t);
           TOKEN = t;
           overlay.remove();
-          poll();
-          pollTimer = setInterval(poll, POLL_MS);
+          startAllPolling();
         } else {
           errEl.style.display = 'block';
           btn.disabled = false;
@@ -3029,12 +3028,8 @@ document.addEventListener('DOMContentLoaded', () => {
       loadSettings();
     } catch (err) { showToast('Error resetting setting', false); }
   }
-  loadSettings();
-  setInterval(loadSettings, 30_000);
-
-  // Poll mission control alongside main poll
-  pollMissionControl();
-  setInterval(pollMissionControl, 30_000);
+  // NOTE: loadSettings, pollMissionControl, loadModelConfig, etc. are started
+  // inside startAllPolling() AFTER auth succeeds — not here.
 
   // Model configuration
   async function loadModelConfig() {
@@ -3111,9 +3106,6 @@ document.addEventListener('DOMContentLoaded', () => {
       loadModelConfig();
     } catch (err) { showToast('Error resetting model', false); }
   }
-  loadModelConfig();
-  setInterval(loadModelConfig, 30_000);
-
   // Provider health
   async function loadProviderHealth() {
     try {
@@ -3151,9 +3143,6 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Provider health poll failed:', err);
     }
   }
-  loadProviderHealth();
-  setInterval(loadProviderHealth, 30_000);
-
   // Quality scores by agent
   async function loadQualityScores() {
     try {
@@ -3177,9 +3166,6 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Quality scores poll failed:', err);
     }
   }
-  loadQualityScores();
-  setInterval(loadQualityScores, 30_000);
-
   // Error distribution
   async function loadErrorDist() {
     try {
@@ -3211,9 +3197,6 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Error dist poll failed:', err);
     }
   }
-  loadErrorDist();
-  setInterval(loadErrorDist, 30_000);
-
   // Task execution metrics
   async function loadTaskMetrics() {
     try {
@@ -3243,9 +3226,6 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Task metrics poll failed:', err);
     }
   }
-  loadTaskMetrics();
-  setInterval(loadTaskMetrics, 30_000);
-
   function showToast(msg, ok) {
     const el = document.getElementById('toast');
     el.textContent = msg;
@@ -3270,11 +3250,23 @@ document.addEventListener('DOMContentLoaded', () => {
   window.updateSetting = updateSetting;
   window.resetSetting = resetSetting;
 
-  if (ensureToken()) {
+  // ── Start all polling AFTER auth succeeds ──
+  function startAllPolling() {
     poll();
     pollTimer = setInterval(poll, POLL_MS);
+    loadSettings();       setInterval(loadSettings, 30_000);
+    pollMissionControl(); setInterval(pollMissionControl, 30_000);
+    loadModelConfig();    setInterval(loadModelConfig, 30_000);
+    loadProviderHealth(); setInterval(loadProviderHealth, 30_000);
+    loadQualityScores();  setInterval(loadQualityScores, 30_000);
+    loadErrorDist();      setInterval(loadErrorDist, 30_000);
+    loadTaskMetrics();    setInterval(loadTaskMetrics, 30_000);
   }
-  // If no token, showLoginForm() was called — poll starts after successful login
+
+  if (ensureToken()) {
+    startAllPolling();
+  }
+  // If no token, showLoginForm() was called — startAllPolling runs after successful login
 })();
 </script>
 </body>
