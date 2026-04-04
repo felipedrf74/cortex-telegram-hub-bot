@@ -1380,7 +1380,15 @@ export function createPortalServer(bot: Bot): http.Server {
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
-    res.sendFile(htmlPath);
+    // Inject the portal token into the HTML so the browser doesn't need localStorage/prompt
+    let html = fs.readFileSync(htmlPath, 'utf-8');
+    if (portalToken) {
+      html = html.replace(
+        "localStorage.getItem('portal_token') || new URLSearchParams(location.search).get('token') || ''",
+        `localStorage.getItem('portal_token') || new URLSearchParams(location.search).get('token') || '${portalToken}'`,
+      );
+    }
+    res.type('html').send(html);
   });
 
   // ── GET /api/snapshot — full dashboard payload ─────────────────
