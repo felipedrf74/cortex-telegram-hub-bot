@@ -182,6 +182,14 @@ export const config = {
   rateLimit: {
     maxMessagesPerMinute: 30,
   },
+  // ── iOS API ─────────────────────────────────────────────────────────
+  ios: {
+    enabled: (process.env.IOS_API_ENABLED || 'false') === 'true',
+    jwtSecret: process.env.IOS_API_JWT_SECRET || 'nexus-ios-dev-secret-change-me',
+    jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
+    rateLimit: parseInt(process.env.IOS_API_RATE_LIMIT || '60', 10),
+    inviteCode: process.env.IOS_INVITE_CODE || 'NEXUS-ADMIN',
+  },
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
     callTimeoutMs: parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10),

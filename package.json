@@ -44,6 +44,7 @@
     "garmin-connect": "^1.6.2",
     "googleapis": "^171.4.0",
     "grammy": "^1.41.1",
+    "jsonwebtoken": "^9.0.3",
     "luxon": "^3.7.2",
     "mammoth": "^1.12.0",
     "node-cron": "^4.2.1",
@@ -55,6 +56,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/luxon": "^3.7.1",
     "@types/node": "^25.3.3",
     "@types/sharp": "^0.31.1",

@@ -1032,6 +1032,32 @@ export function createPortalServer(bot: Bot): http.Server {
   const app = express();
   app.use(express.json());
 
+  // ── iOS API (mounted first — separate JWT auth, not portal token) ────
+  if (config.ios?.enabled) {
+    const { createApiRouter } = require('../api/router');
+    app.use('/api/v1', createApiRouter());
+    logger.info('iOS API enabled on /api/v1');
+
+    // Ensure ios_devices table exists
+    try {
+      const db = getDb();
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ios_devices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          device_id TEXT NOT NULL UNIQUE,
+          device_name TEXT,
+          push_token TEXT,
+          refresh_token TEXT NOT NULL,
+          last_active_at TEXT DEFAULT (datetime('now')),
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+      `);
+    } catch (err) {
+      logger.error({ err }, 'Failed to create ios_devices table');
+    }
+  }
+
   // ── Health check endpoint (no auth — for uptime monitors) ──────
   // ── OAuth Callback Routes (no auth — public redirect targets) ──────
 
@@ -1328,6 +1354,10 @@ export function createPortalServer(bot: Bot): http.Server {
   const portalToken = config.portal.token;
 
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    // Skip portal auth for iOS API routes — they use their own JWT middleware
+    if (req.path.startsWith('/v1/') || req.path.startsWith('/v1')) {
+      return next();
+    }
     if (!portalToken) {
       // No token configured — allow (dev mode)
       return next();
