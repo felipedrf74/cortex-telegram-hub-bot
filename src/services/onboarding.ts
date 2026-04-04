@@ -10,6 +10,8 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { isOwner } from './user-service';
+import { isSkillEnabled } from './user-skill-access';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -359,4 +361,50 @@ function parseSession(row: any): OnboardingSession {
     created_at: row.created_at,
     completed_at: row.completed_at,
   };
+}
+
+// ── Skill → Questionnaire Mapping ───────────────────────────────────
+
+/** Maps skills to their onboarding questionnaire IDs */
+export const SKILL_ONBOARDING_MAP: Record<string, string | null> = {
+  secretary: null,
+  triathlon: 'fitness',
+  content: null,
+  cooking: 'diet',
+  finance: null,
+};
+
+/** Reverse: which skill does this questionnaire serve? */
+export const QUESTIONNAIRE_SKILL_MAP: Record<string, string> = {
+  fitness: 'triathlon',
+  diet: 'cooking',
+};
+
+/**
+ * Get questionnaire IDs enabled for a user based on their skill access.
+ * Owner sees all questionnaires.
+ */
+export function getEnabledQuestionnaires(userId: number): string[] {
+  try {
+    if (isOwner(userId)) {
+      return getAvailableQuestionnaires();
+    }
+
+    return Object.entries(SKILL_ONBOARDING_MAP)
+      .filter(([skill, qId]) => qId !== null && isSkillEnabled(userId, skill))
+      .map(([, qId]) => qId!)
+      .filter(qId => !!getQuestionnaire(qId));
+  } catch {
+    return getAvailableQuestionnaires(); // fallback to all if skill system not loaded
+  }
+}
+
+/**
+ * Get questionnaire IDs that are enabled but not yet completed.
+ */
+export function getPendingOnboardings(userId: number): string[] {
+  return getEnabledQuestionnaires(userId).filter(qId => {
+    const profile = getProfile(userId, qId);
+    return !profile;
+  });
 }

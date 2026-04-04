@@ -1735,6 +1735,16 @@ export function createPortalServer(bot: Bot): http.Server {
     try {
       const { createInviteCode } = require('../services/user-service');
       const code = createInviteCode(0, req.body.maxUses ?? 1, req.body.expiresInDays);
+
+      // Store skill preset if provided
+      if (req.body.skillPreset) {
+        try {
+          const { getDb } = require('../services/database');
+          const db = getDb();
+          db.prepare('UPDATE invite_codes SET skill_preset = ? WHERE code = ?')
+            .run(JSON.stringify(req.body.skillPreset), code);
+        } catch { /* skill_preset column may not exist yet */ }
+      }
       res.json({ ok: true, code });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });

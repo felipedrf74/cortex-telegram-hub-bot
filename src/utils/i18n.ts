@@ -179,6 +179,31 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   'readiness_reduce_25pct': { 'pt-BR': 'Reduza 25% — corpo cansado', 'en-US': 'Reduce 25% — body is tired' },
   'readiness_active_recovery': { 'pt-BR': 'Só recuperação ativa', 'en-US': 'Active recovery only' },
   'readiness_rest_day': { 'pt-BR': 'Dia de descanso total', 'en-US': 'Full rest day' },
+  // ── Skill-Gated Onboarding ──
+  'onboard_prompt': {
+    'pt-BR': '🎯 Para personalizar sua experiência, preciso fazer algumas perguntas sobre: <b>{skills}</b>\n\nVamos começar?',
+    'en-US': '🎯 To personalize your experience, I need to ask a few questions about: <b>{skills}</b>\n\nShall we begin?',
+  },
+  'start_onboarding': { 'pt-BR': 'Vamos lá!', 'en-US': 'Let\'s go!' },
+  'skip_onboarding': { 'pt-BR': 'Depois', 'en-US': 'Later' },
+  'onboard_next': {
+    'pt-BR': '✅ Perfil salvo!\n\nPróximo: <b>{name}</b>. Continuar?',
+    'en-US': '✅ Profile saved!\n\nNext: <b>{name}</b>. Continue?',
+  },
+  'onboard_complete': {
+    'pt-BR': '🎉 Tudo pronto! Seus perfis estão configurados.\n\nDigite /help para ver todos os comandos disponíveis.',
+    'en-US': '🎉 All set! Your profiles are configured.\n\nType /help to see all available commands.',
+  },
+  'onboard_no_skills': {
+    'pt-BR': '❌ Nenhum questionário disponível para suas habilidades ativas.',
+    'en-US': '❌ No questionnaires available for your enabled skills.',
+  },
+  'onboard_skipped': {
+    'pt-BR': '⏭️ Sem problema! Use /onboard a qualquer momento para configurar seus perfis.',
+    'en-US': '⏭️ No problem! Use /onboard anytime to set up your profiles.',
+  },
+  'later': { 'pt-BR': 'Depois', 'en-US': 'Later' },
+  'continue': { 'pt-BR': 'Continuar', 'en-US': 'Continue' },
 };
 
 /**

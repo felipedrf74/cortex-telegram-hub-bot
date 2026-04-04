@@ -160,16 +160,22 @@ export function createInviteCode(createdBy: number, maxUses = 1, expiresInDays?:
   return code;
 }
 
-export function validateAndConsumeInviteCode(code: string): boolean {
+export function validateAndConsumeInviteCode(code: string): { valid: boolean; skillPreset?: Record<string, boolean> } {
   const db = getDb();
-  const invite = db.prepare('SELECT * FROM invite_codes WHERE code = ?').get(code) as InviteCode | undefined;
+  const invite = db.prepare('SELECT * FROM invite_codes WHERE code = ?').get(code) as any;
 
-  if (!invite) return false;
-  if (invite.used_count >= invite.max_uses) return false;
-  if (invite.expires_at && new Date(invite.expires_at) < new Date()) return false;
+  if (!invite) return { valid: false };
+  if (invite.used_count >= invite.max_uses) return { valid: false };
+  if (invite.expires_at && new Date(invite.expires_at) < new Date()) return { valid: false };
 
   db.prepare('UPDATE invite_codes SET used_count = used_count + 1 WHERE code = ?').run(code);
-  return true;
+
+  let skillPreset: Record<string, boolean> | undefined;
+  if (invite.skill_preset) {
+    try { skillPreset = JSON.parse(invite.skill_preset); } catch { /* ignore */ }
+  }
+
+  return { valid: true, skillPreset };
 }
 
 export function listInviteCodes(): InviteCode[] {

@@ -54,7 +54,8 @@ export function registerSystemCommands(bot: Bot): void {
     }
 
     // Validate invite code if provided
-    if (inviteCode && !validateAndConsumeInviteCode(inviteCode)) {
+    const inviteResult = inviteCode ? validateAndConsumeInviteCode(inviteCode) : null;
+    if (inviteCode && !inviteResult?.valid) {
       const lang = detectLanguageFromTelegram(ctx.from?.language_code);
       await ctx.reply(t('invalid_invite', lang));
       return;
@@ -67,6 +68,14 @@ export function registerSystemCommands(bot: Bot): void {
       lastName: ctx.from?.last_name,
       inviteCode,
     });
+
+    // Apply skill preset from invite code if present
+    if (inviteResult?.skillPreset) {
+      try {
+        const { applySkillPreset } = require('../../services/user-skill-access');
+        applySkillPreset(userId, inviteResult.skillPreset);
+      } catch { /* skill access not loaded */ }
+    }
 
     // Language selection
     await ctx.reply(t('choose_language', 'en-US'), {
@@ -89,6 +98,30 @@ export function registerSystemCommands(bot: Bot): void {
     setUserLanguage(ctx.from.id, lang);
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(t('language_set', lang), { parse_mode: 'HTML' });
+
+    // Auto-prompt onboarding for enabled skill questionnaires
+    try {
+      const pending = onboarding.getPendingOnboardings(ctx.from.id);
+      if (pending.length > 0) {
+        const qNames = pending.map(q => {
+          const def = onboarding.getQuestionnaire(q);
+          return def ? def.title : q;
+        }).join(', ');
+
+        const ref = storeCallback({ pendingIds: pending }, 600_000);
+        await ctx.api.sendMessage(ctx.from.id, t('onboard_prompt', lang, { skills: qNames }), {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '\u2705 ' + t('start_onboarding', lang), callback_data: `ob:auto_start:${ref}` },
+              { text: '\u23ED\uFE0F ' + t('skip_onboarding', lang), callback_data: 'ob:skip_all' },
+            ]],
+          },
+        });
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Auto-onboarding prompt failed');
+    }
   });
 
   // ── /connect — OAuth account linking ──
@@ -185,7 +218,14 @@ export function registerSystemCommands(bot: Bot): void {
     const userId = ctx.from?.id;
     if (!userId) return;
 
-    const available = onboarding.getAvailableQuestionnaires();
+    const available = onboarding.getEnabledQuestionnaires(userId);
+
+    if (available.length === 0) {
+      const { getUserLanguage } = require('../../services/user-service');
+      const { t } = require('../../utils/i18n');
+      await ctx.reply(t('onboard_no_skills', getUserLanguage(userId)));
+      return;
+    }
 
     if (!args) {
       // Show available questionnaires
@@ -246,6 +286,12 @@ export function registerSystemCommands(bot: Bot): void {
 
     try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
 
+    // skip_all has no ref — handle before getCallback
+    if (action === 'skip_all') {
+      await ctx.editMessageText('\u23ED\uFE0F Skipped. Use /onboard anytime to set up your profiles.');
+      return;
+    }
+
     const cbData = getCallback(ref);
     if (!cbData) {
       await ctx.editMessageText('\u26A0\uFE0F This action has expired. Use /onboard to start again.');
@@ -259,6 +305,25 @@ export function registerSystemCommands(bot: Bot): void {
         const def = onboarding.getQuestionnaire(qId)!;
         const step = def.steps[session.current_step];
         if (!step) return;
+
+        await ctx.editMessageText(
+          `${def.title}\n\n${def.description}\n\nLet's begin! (${def.steps.length} questions)`,
+          { parse_mode: 'HTML' },
+        );
+        await sendOnboardingStep(ctx, qId, step, session.current_step, def.steps.length);
+        break;
+      }
+      case 'auto_start': {
+        const pendingIds = cbData?.pendingIds as string[] || [];
+        if (pendingIds.length === 0) {
+          await ctx.editMessageText('No pending onboarding.');
+          break;
+        }
+        const qId = pendingIds[0];
+        const session = onboarding.startOrResume(userId, qId);
+        const def = onboarding.getQuestionnaire(qId)!;
+        const step = def.steps[session.current_step];
+        if (!step) break;
 
         await ctx.editMessageText(
           `${def.title}\n\n${def.description}\n\nLet's begin! (${def.steps.length} questions)`,
@@ -281,6 +346,27 @@ export function registerSystemCommands(bot: Bot): void {
               `\u2705 <b>Profile Complete!</b>\n\n${entries}\n\nYour ${qId} profile is saved. The AI will use this for personalized responses.`,
               { parse_mode: 'HTML' },
             );
+
+            // Check for next pending onboarding
+            try {
+              const remaining = onboarding.getPendingOnboardings(userId);
+              if (remaining.length > 0) {
+                const nextDef = onboarding.getQuestionnaire(remaining[0])!;
+                const { getUserLanguage } = require('../../services/user-service');
+                const { t } = require('../../utils/i18n');
+                const userLang = getUserLanguage(userId);
+                const nextRef = storeCallback({ action: 'start', questionnaire: remaining[0] }, 300_000);
+                await ctx.api.sendMessage(userId, t('onboard_next', userLang, { name: nextDef.title }), {
+                  parse_mode: 'HTML',
+                  reply_markup: {
+                    inline_keyboard: [[
+                      { text: '\u25B6\uFE0F ' + t('continue', userLang), callback_data: `ob:start:${nextRef}` },
+                      { text: '\u23ED\uFE0F ' + t('later', userLang), callback_data: 'ob:skip_all' },
+                    ]],
+                  },
+                });
+              }
+            } catch { /* auto-chain failed — not critical */ }
           } else {
             await ctx.editMessageText(`\u2705 Got it!`);
             await sendOnboardingStep(ctx, qId, result.nextStep, result.session.current_step, onboarding.getQuestionnaire(qId)!.steps.length);

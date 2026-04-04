@@ -184,30 +184,47 @@ describe('user-service', () => {
     it('creates and validates a code', () => {
       const code = createInviteCode(111111);
       expect(code).toHaveLength(8);
-      expect(validateAndConsumeInviteCode(code)).toBe(true);
+      expect(validateAndConsumeInviteCode(code)).toEqual({ valid: true });
     });
 
     it('code exhausted after max uses', () => {
       const code = createInviteCode(111111, 1);
-      expect(validateAndConsumeInviteCode(code)).toBe(true);
-      expect(validateAndConsumeInviteCode(code)).toBe(false); // Exhausted
+      expect(validateAndConsumeInviteCode(code).valid).toBe(true);
+      expect(validateAndConsumeInviteCode(code).valid).toBe(false); // Exhausted
     });
 
     it('multi-use code works up to max', () => {
       const code = createInviteCode(111111, 3);
-      expect(validateAndConsumeInviteCode(code)).toBe(true);
-      expect(validateAndConsumeInviteCode(code)).toBe(true);
-      expect(validateAndConsumeInviteCode(code)).toBe(true);
-      expect(validateAndConsumeInviteCode(code)).toBe(false);
+      expect(validateAndConsumeInviteCode(code).valid).toBe(true);
+      expect(validateAndConsumeInviteCode(code).valid).toBe(true);
+      expect(validateAndConsumeInviteCode(code).valid).toBe(true);
+      expect(validateAndConsumeInviteCode(code).valid).toBe(false);
     });
 
-    it('expired code returns false', () => {
+    it('expired code returns invalid', () => {
       const code = createInviteCode(111111, 1, -1); // Expired 1 day ago
-      expect(validateAndConsumeInviteCode(code)).toBe(false);
+      expect(validateAndConsumeInviteCode(code).valid).toBe(false);
     });
 
-    it('invalid code returns false', () => {
-      expect(validateAndConsumeInviteCode('NOTACODE')).toBe(false);
+    it('invalid code returns invalid', () => {
+      expect(validateAndConsumeInviteCode('NOTACODE').valid).toBe(false);
+    });
+
+    it('returns skill preset when present', () => {
+      const code = createInviteCode(111111);
+      // Manually set skill_preset
+      testDb.prepare('UPDATE invite_codes SET skill_preset = ? WHERE code = ?')
+        .run(JSON.stringify({ triathlon: true, cooking: false }), code);
+      const result = validateAndConsumeInviteCode(code);
+      expect(result.valid).toBe(true);
+      expect(result.skillPreset).toEqual({ triathlon: true, cooking: false });
+    });
+
+    it('returns no skill preset when column is null', () => {
+      const code = createInviteCode(111111);
+      const result = validateAndConsumeInviteCode(code);
+      expect(result.valid).toBe(true);
+      expect(result.skillPreset).toBeUndefined();
     });
 
     it('listInviteCodes returns all codes', () => {

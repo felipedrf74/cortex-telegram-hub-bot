@@ -249,3 +249,16 @@ export function resetUserSkillOverrides(userId: number): void {
   db.prepare('DELETE FROM user_skill_overrides WHERE user_id = ?').run(userId);
   logger.info({ userId }, 'All skill overrides reset to default');
 }
+
+/**
+ * Apply a skill preset from an invite code.
+ * The preset is a JSON object mapping skill names to boolean (enabled/disabled).
+ * Only creates override entries for DISABLED skills (default is enabled).
+ */
+export function applySkillPreset(userId: number, preset: Record<string, boolean>): void {
+  for (const [skill, enabled] of Object.entries(preset)) {
+    if (!enabled) {
+      setSkillAccess(userId, skill, false);
+    }
+  }
+}
