@@ -3006,15 +3006,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const allModels = p => [...new Set([...(options[p]?.chat||[]), ...(options[p]?.classifier||[])])];
       el.innerHTML = states.map(s => {
         const icon = providerIcons[s.provider] || '⚪';
+        const selId = (role) => `model-sel-${s.provider}-${role}`;
         const mkSelect = (role, current, opts) => {
           const optHtml = opts.map(m => `<option value="${esc(m)}"${m === current ? ' selected' : ''}>${esc(m)}</option>`).join('');
-          return `<select style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px" onchange="updateModel('${s.provider}','${role}',this.value)">${optHtml}</select>`;
+          return `<select id="${selId(role)}" data-original="${esc(current)}" style="flex:1;background:var(--bg);border:1px solid var(--bdr);border-radius:4px;padding:3px 6px;color:var(--t1);font:inherit;font-size:12px" onchange="showApplyBtn('${s.provider}','${role}')">${optHtml}</select>`;
         };
         const mkBadge = (src) => src === 'override' ? '<span class="badge badge-sent" style="margin-left:4px">override</span>' : '';
         const mkReset = (role, src) => src === 'override' ? `<button class="btn" style="font-size:10px;padding:2px 6px" onclick="resetModel('${s.provider}','${role}')">Reset</button>` : '';
+        const mkApplyBtn = (role) => `<span id="apply-${s.provider}-${role}" style="display:none"><button class="btn" style="font-size:10px;padding:2px 8px;background:var(--green);color:#000;font-weight:600" onclick="applyModelChange('${s.provider}','${role}')">Apply</button></span>`;
         const mkRow = (label, role, model, src, opts) => `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
           <span style="min-width:80px;color:var(--t2);font-size:12px">${label}</span>
-          ${mkSelect(role, model, opts)} ${mkBadge(src)} ${mkReset(role, src)}
+          ${mkSelect(role, model, opts)} ${mkApplyBtn(role)} ${mkBadge(src)} ${mkReset(role, src)}
         </div>`;
         // Domain-specific rows
         const domainRows = s.domains ? Object.entries(s.domains).map(([dom, d]) => {
@@ -3035,15 +3037,28 @@ document.addEventListener('DOMContentLoaded', () => {
       console.warn('Model config poll failed:', err);
     }
   }
-  async function updateModel(provider, role, model) {
+  function showApplyBtn(provider, role) {
+    const sel = document.getElementById(`model-sel-${provider}-${role}`);
+    const btn = document.getElementById(`apply-${provider}-${role}`);
+    if (!sel || !btn) return;
+    // Show Apply button only if value differs from current
+    btn.style.display = sel.value !== sel.dataset.original ? '' : 'none';
+  }
+  window.showApplyBtn = showApplyBtn;
+
+  async function applyModelChange(provider, role) {
+    const sel = document.getElementById(`model-sel-${provider}-${role}`);
+    if (!sel) return;
+    const model = sel.value;
     try {
       const r = await apiFetch('/api/model-config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role, model }) });
       const d = await r.json();
-      if (d.ok) showToast(provider + ' ' + role + ' → ' + model, true);
+      if (d.ok) showToast(`✅ ${provider} ${role} → ${model}`, true);
       else showToast('Failed: ' + (d.error || 'unknown'), false);
       loadModelConfig();
     } catch (err) { showToast('Error updating model', false); }
   }
+  window.applyModelChange = applyModelChange;
   async function resetModel(provider, role) {
     try {
       const r = await apiFetch('/api/model-config', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role }) });
