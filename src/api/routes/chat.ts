@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { routeMessage, isSystemCommand } from '../../router';
+import { IOSAdapter } from '../../adapters/ios-adapter';
 import { logger } from '../../utils/logger';
 import type { DomainName } from '../../domains/types';
 
@@ -33,6 +34,10 @@ export function chatRoutes(): Router {
    * POST /api/v1/chat/message
    * Send a message — equivalent to typing in Telegram.
    * Routes through Router → Domain Handler → returns AI response.
+   *
+   * For system commands (/day, /tasks, etc.), we route them through the
+   * domain handler as natural language since the handler functions
+   * accept the raw message text including the / prefix.
    */
   router.post('/message', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
@@ -46,29 +51,10 @@ export function chatRoutes(): Router {
     }
 
     try {
-      // Check if it's a system command
-      const systemCmd = isSystemCommand(text);
-      if (systemCmd) {
-        // Handle system commands directly
-        // /help, /status, /clear etc. — return informational response
-        res.json({
-          id: `msg-${Date.now()}`,
-          text: `System command "${systemCmd}" processed.`,
-          domain: 'system',
-          routeMethod: 'pattern',
-          confidence: 1.0,
-          buttons: null,
-          metadata: null,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
       // Build active conversation context
       let activeContext = null;
       const lastState = lastActiveDomain.get(userId);
       if (lastState && Date.now() - lastState.timestamp < 5 * 60 * 1000) {
-        // Within 5-minute continuity window
         try {
           const { getLastAssistantMessage } = require('../../state/conversation');
           const lastMsg = getLastAssistantMessage(userId, lastState.domain);
@@ -78,7 +64,7 @@ export function chatRoutes(): Router {
         } catch { /* conversation state not available */ }
       }
 
-      // Route the message
+      // Route the message (handles both commands and natural language)
       const route = await routeMessage(text, activeContext);
       logger.info({ domain: route.domain, method: route.method, confidence: route.confidence, platform: 'ios' }, 'iOS message routed');
 
@@ -97,13 +83,34 @@ export function chatRoutes(): Router {
 
       const result = await handler(route.strippedMessage, userId);
 
+      // Extract buttons from the response text if present.
+      // The handler returns HTML text which may contain callback references.
+      // Parse common button patterns from callback store.
+      let buttons: { text: string; callbackData: string }[][] | null = null;
+      try {
+        const { getRecentCallbacks } = require('../../utils/callback-store');
+        const recentCallbacks = getRecentCallbacks?.();
+        if (recentCallbacks && recentCallbacks.length > 0) {
+          // Convert to button rows (each callback becomes a button)
+          const row = recentCallbacks.slice(0, 6).map((cb: { label: string; ref: string }) => ({
+            text: cb.label || 'Action',
+            callbackData: cb.ref,
+          }));
+          if (row.length > 0) {
+            buttons = [row];
+          }
+        }
+      } catch {
+        // callback-store may not export getRecentCallbacks — buttons stay null
+      }
+
       res.json({
         id: `msg-${Date.now()}`,
         text: result.text,
         domain: result.domain || route.domain,
         routeMethod: route.method,
         confidence: route.confidence,
-        buttons: null, // TODO: extract from IOSAdapter when integrated
+        buttons,
         metadata: null,
         timestamp: new Date().toISOString(),
       });
@@ -117,9 +124,10 @@ export function chatRoutes(): Router {
 
   /**
    * POST /api/v1/chat/callback
-   * Handle inline button presses.
+   * Handle inline button presses (equivalent to Telegram callback queries).
    */
   router.post('/callback', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
     const { callbackData, messageId } = req.body;
 
     if (!callbackData) {
@@ -130,14 +138,67 @@ export function chatRoutes(): Router {
     }
 
     try {
-      // Import the callback handler from the existing system
-      const { handleCallbackAction } = require('../../handlers/callback-query');
-      const result = await handleCallbackAction(callbackData, (req as AuthenticatedRequest).userId);
+      // Resolve the callback data from the store
+      const { getCallback } = require('../../utils/callback-store');
+      const cbData = getCallback(callbackData);
+
+      // The callback-query handler in the existing system processes these
+      // For iOS, we need to handle the most common callback patterns:
+      // td:tc:ref — todo complete
+      // td:ls:ref — list select
+      // td:dy:ref / td:dn:ref — delete yes/no
+      const prefix = callbackData.split(':').slice(0, 2).join(':');
+      let responseText = 'Action processed';
+      let editOriginal = false;
+
+      switch (prefix) {
+        case 'td:tc': {
+          // Complete a task
+          if (cbData?.listId && cbData?.taskId) {
+            const todo = require('../../services/microsoft-todo');
+            await todo.completeTask(cbData.listId, cbData.taskId);
+            responseText = `✅ Completed: ${cbData.title || 'task'}`;
+            editOriginal = true;
+          }
+          break;
+        }
+        case 'td:dy': {
+          // Delete confirmed
+          if (cbData?.listId && cbData?.taskId) {
+            const todo = require('../../services/microsoft-todo');
+            await todo.deleteTask(cbData.listId, cbData.taskId);
+            responseText = `🗑️ Deleted: ${cbData.title || 'task'}`;
+            editOriginal = true;
+          } else if (cbData?.listId && cbData?.type === 'list') {
+            const todo = require('../../services/microsoft-todo');
+            await todo.deleteList(cbData.listId);
+            responseText = `🗑️ Deleted list: ${cbData.listName || 'list'}`;
+            editOriginal = true;
+          }
+          break;
+        }
+        case 'td:dn': {
+          responseText = 'Cancelled.';
+          editOriginal = true;
+          break;
+        }
+        default: {
+          // Try generic callback handler
+          try {
+            const { handleCallbackAction } = require('../../handlers/callback-query');
+            const result = await handleCallbackAction(callbackData, userId);
+            if (result?.text) responseText = result.text;
+            if (result?.editOriginal !== undefined) editOriginal = result.editOriginal;
+          } catch {
+            responseText = `Action "${prefix}" processed.`;
+          }
+        }
+      }
 
       res.json({
-        text: result?.text || 'Action processed',
-        editOriginal: result?.editOriginal ?? false,
-        newButtons: result?.newButtons || null,
+        text: responseText,
+        editOriginal,
+        newButtons: null,
       });
     } catch (err: any) {
       logger.error({ err, callbackData, platform: 'ios' }, 'iOS callback failed');
@@ -168,7 +229,7 @@ export function chatRoutes(): Router {
       }
 
       query += ' ORDER BY created_at DESC LIMIT ?';
-      params.push(limit + 1); // +1 to check hasMore
+      params.push(limit + 1);
 
       const rows = db.prepare(query).all(...params) as any[];
       const hasMore = rows.length > limit;
@@ -188,7 +249,6 @@ export function chatRoutes(): Router {
         hasMore,
       });
     } catch (err: any) {
-      // If messages table doesn't exist yet, return empty
       logger.debug({ err }, 'iOS chat history query failed (table may not exist)');
       res.json({ messages: [], cursor: null, hasMore: false });
     }

@@ -72,15 +72,39 @@ async function fetchCalendar() {
 
     const events: any[] = [];
 
+    // Helper: extract a clean HH:MM time from various date formats
+    function extractTime(dateInput: any): string {
+      if (!dateInput) return '';
+      const raw = typeof dateInput === 'string' ? dateInput : dateInput.dateTime || dateInput.date || String(dateInput);
+      try {
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/Lisbon' });
+        }
+      } catch {}
+      // Fallback: try to extract time from ISO string
+      const match = raw.match(/T(\d{2}:\d{2})/);
+      return match ? match[1] : '';
+    }
+
+    // Helper: extract title from various calendar event shapes
+    function extractTitle(e: any): string {
+      return e.subject || e.summary || e.title || e.displayName || e.name || '(No title)';
+    }
+
     // Outlook Calendar
     try {
       const { getEvents } = require('../../services/outlook-calendar');
       const outlookEvents = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
       if (Array.isArray(outlookEvents)) {
         events.push(...outlookEvents.map((e: any) => ({
-          id: e.id, title: e.subject || e.title || 'Untitled',
-          start: e.start?.dateTime || e.start, end: e.end?.dateTime || e.end,
-          source: 'outlook', category: e.categories?.[0] || null, color: null,
+          id: e.id,
+          title: extractTitle(e),
+          start: extractTime(e.start),
+          end: extractTime(e.end),
+          source: 'outlook',
+          category: e.categories?.[0] || null,
+          color: null,
         })));
       }
     } catch { /* Outlook not configured */ }
@@ -91,12 +115,19 @@ async function fetchCalendar() {
       const googleEvents = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
       if (Array.isArray(googleEvents)) {
         events.push(...googleEvents.map((e: any) => ({
-          id: e.id, title: e.summary || e.title || 'Untitled',
-          start: e.start?.dateTime || e.start, end: e.end?.dateTime || e.end,
-          source: 'google', category: null, color: null,
+          id: e.id,
+          title: extractTitle(e),
+          start: extractTime(e.start),
+          end: extractTime(e.end),
+          source: 'google',
+          category: null,
+          color: null,
         })));
       }
     } catch { /* Google not configured */ }
+
+    // Sort by start time
+    events.sort((a, b) => a.start.localeCompare(b.start));
 
     return { today: events, upcoming: [] };
   } catch {

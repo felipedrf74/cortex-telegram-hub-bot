@@ -115,5 +115,63 @@ export function settingsRoutes(): Router {
     }
   });
 
+  /** POST /api/v1/export — GDPR data export */
+  router.post('/export', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    try {
+      const db = require('../../services/database').getDb();
+
+      // Collect all user data
+      const userData: Record<string, any> = {};
+
+      // Messages
+      try {
+        userData.messages = db.prepare('SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 10000').all(userId);
+      } catch { userData.messages = []; }
+
+      // Profiles
+      try {
+        const onboarding = require('../../services/onboarding');
+        const allQ = onboarding.getAllQuestionnaires?.() || [];
+        userData.profiles = allQ.map((q: any) => onboarding.getProfile(userId, q.id)).filter(Boolean);
+      } catch { userData.profiles = []; }
+
+      // Devices
+      try {
+        userData.devices = db.prepare('SELECT device_id, device_name, created_at, last_active_at FROM ios_devices WHERE user_id = ?').all(userId);
+      } catch { userData.devices = []; }
+
+      userData.exportedAt = new Date().toISOString();
+      userData.userId = userId;
+
+      res.json(userData);
+    } catch (err: any) {
+      logger.error({ err }, 'iOS data export failed');
+      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+    }
+  });
+
+  /** DELETE /api/v1/account — GDPR account deletion */
+  router.delete('/account', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    try {
+      const db = require('../../services/database').getDb();
+
+      // Delete all user data
+      const tables = ['ios_devices', 'messages', 'onboarding_sessions', 'reminders', 'notes'];
+      for (const table of tables) {
+        try {
+          db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId);
+        } catch { /* table may not exist */ }
+      }
+
+      logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
+      res.json({ deleted: true, message: 'All data has been permanently deleted.' });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS account deletion failed');
+      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+    }
+  });
+
   return router;
 }

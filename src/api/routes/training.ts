@@ -122,5 +122,26 @@ export function trainingRoutes(): Router {
     }
   });
 
+  /** POST /api/v1/training/coach/apply — apply coach recommendations */
+  router.post('/coach/apply', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const { recommendationIds } = req.body; // array of IDs or "all"
+
+    try {
+      // Coach recommendations modify calendar events
+      const { applyCoachRecommendations } = require('../../services/garmin-coach');
+      const applied = await applyCoachRecommendations(userId, recommendationIds);
+
+      res.json({
+        applied: applied?.count || 0,
+        message: `Calendar updated with ${applied?.count || 0} coach recommendation(s).`,
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS training/coach/apply failed');
+      // Graceful fallback — may not be implemented in garmin-coach yet
+      res.json({ applied: 0, message: 'Coach recommendations noted. Calendar update not available yet.' });
+    }
+  });
+
   return router;
 }

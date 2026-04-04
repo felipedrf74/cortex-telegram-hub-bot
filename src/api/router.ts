@@ -2,6 +2,7 @@
 
 import { Router } from 'express';
 import { authMiddleware } from './auth-middleware';
+import { rateLimitMiddleware } from './rate-limiter';
 import { authRoutes } from './routes/auth';
 import { chatRoutes } from './routes/chat';
 import { dashboardRoutes } from './routes/dashboard';
@@ -40,8 +41,9 @@ export function createApiRouter(): Router {
   // Public routes (no JWT required)
   router.use('/auth', authRoutes());
 
-  // Protected routes (require JWT)
+  // Protected routes (require JWT + rate limiting)
   router.use(authMiddleware);
+  router.use(rateLimitMiddleware);
   router.use('/chat', chatRoutes());
   router.use('/dashboard', dashboardRoutes());
   router.use('/tasks', taskRoutes());

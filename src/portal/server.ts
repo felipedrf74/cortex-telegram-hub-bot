@@ -2351,6 +2351,16 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // Attach WebSocket server for iOS streaming
+  if (config.ios?.enabled) {
+    try {
+      const { attachWebSocket } = require('../api/websocket');
+      attachWebSocket(server);
+    } catch (err) {
+      logger.error({ err }, 'Failed to attach WebSocket server');
+    }
+  }
+
   server.listen(port, bind, () => {
     logger.info({ port, bind }, `Nexus Hub Status Portal running at http://${bind}:${port}`);
     if (!portalToken && bind !== '127.0.0.1' && bind !== 'localhost') {

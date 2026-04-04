@@ -66,14 +66,23 @@ export function authRoutes(): Router {
 
       logger.info({ userId, deviceId, deviceName }, 'iOS device registered');
 
+      // Pull user info from user-service
+      let firstName = 'User';
+      let language = 'pt-BR';
+      try {
+        const { getUserLanguage, getUserDisplayName } = require('../../services/user-service');
+        firstName = getUserDisplayName?.(userId) || 'User';
+        language = getUserLanguage?.(userId) || 'pt-BR';
+      } catch { /* user-service may not have these exports */ }
+
       res.status(201).json({
         accessToken,
         refreshToken,
-        expiresIn: 604800, // 7 days
+        expiresIn: 604800,
         user: {
           id: userId,
-          firstName: 'Felipe', // TODO: pull from user-service
-          language: 'pt-BR',
+          firstName,
+          language,
         },
       });
     } catch (err: any) {

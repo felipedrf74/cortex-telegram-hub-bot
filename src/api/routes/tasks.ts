@@ -16,8 +16,10 @@ export function taskRoutes(): Router {
   router.get('/lists', async (_req, res: Response) => {
     try {
       const todo = getTodo();
-      const lists = await todo.getLists();
-      const formatted = (lists || []).map((l: any) => ({
+      const result = await todo.getLists();
+      // getLists() returns ServiceResult<TodoList[]> = { success, data }
+      const listsArray = result?.data || result || [];
+      const formatted = (Array.isArray(listsArray) ? listsArray : []).map((l: any) => ({
         id: l.id,
         name: l.displayName || l.name,
         taskCount: l.taskCount ?? 0,
@@ -36,10 +38,12 @@ export function taskRoutes(): Router {
       const { listId } = req.params;
       const status = req.query.status as string | undefined;
 
-      const tasks = await todo.getTasksFromList(listId, status);
-      const list = await todo.getList(listId).catch(() => null);
+      const tasksResult = await todo.getTasksFromList(listId, status);
+      const tasks = tasksResult?.data || tasksResult || [];
+      const listResult = await todo.getList(listId).catch(() => null);
+      const list = listResult?.data || listResult;
 
-      const formatted = (tasks || []).map((t: any) => ({
+      const formatted = (Array.isArray(tasks) ? tasks : []).map((t: any) => ({
         id: t.id, title: t.title,
         body: t.body?.content || t.body || null,
         importance: t.importance || 'normal',
@@ -70,13 +74,14 @@ export function taskRoutes(): Router {
         return;
       }
 
-      const task = await todo.createTask({
+      const result = await todo.createTask({
         title,
         listName: listName || 'Tasks',
         dueDateTime: dueDateTime || undefined,
         importance: importance || 'normal',
         body: body || undefined,
       });
+      const task = result?.data || result;
 
       res.status(201).json({ task });
     } catch (err: any) {
@@ -92,7 +97,8 @@ export function taskRoutes(): Router {
       const { listId, taskId } = req.params;
       const updates = req.body;
 
-      const task = await todo.updateTask(listId, taskId, updates);
+      const result = await todo.updateTask(listId, taskId, updates);
+      const task = result?.data || result;
       res.json({ task });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
@@ -106,7 +112,8 @@ export function taskRoutes(): Router {
       const todo = getTodo();
       const { listId, taskId } = req.params;
 
-      const task = await todo.completeTask(listId, taskId);
+      const result = await todo.completeTask(listId, taskId);
+      const task = result?.data || result;
       res.json({
         task,
         message: `✅ Completed: ${task?.title || 'task'}`,
