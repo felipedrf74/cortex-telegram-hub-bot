@@ -84,7 +84,9 @@ export function registerTriathlonCommands(bot: Bot): void {
   bot.command('coach', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!isGarminConfigured()) {
-        await ctx.reply('\u26A0\uFE0F Garmin not configured. Set GARMIN_EMAIL and GARMIN_PASSWORD.');
+        const { getUserLanguage } = require('../../services/user-service');
+        const { t } = require('../../utils/i18n');
+        await ctx.reply(t('garmin_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -138,12 +140,15 @@ export function registerTriathlonCommands(bot: Bot): void {
             keyboard.text(label, `coach:apply:${ref}`).row();
           }
           // Add "Apply all" if more than one
+          const { getUserLanguage: getCoachLang } = require('../../services/user-service');
+          const { t: tCoach } = require('../../utils/i18n');
+          const coachLang = getCoachLang(ctx.from!.id);
           if (actionableRecs.length > 1) {
             const allRef = storeCallback({ recommendations: actionableRecs });
-            keyboard.text('\u2705 Aplicar todas as altera\u00E7\u00F5es', `coach:all:${allRef}`).row();
+            keyboard.text(`\u2705 ${tCoach('apply_all', coachLang)}`, `coach:all:${allRef}`).row();
           }
           // Add dismiss button
-          keyboard.text('\u{1F44D} Manter tudo como est\u00E1', `coach:dismiss`);
+          keyboard.text(`\u{1F44D} ${tCoach('keep_all', coachLang)}`, `coach:dismiss`);
 
           await ctx.reply(
             '\u{1F3CB}\uFE0F <b>A\u00E7\u00F5es do Coach:</b>\n\nQueres aplicar alguma destas altera\u00E7\u00F5es ao calend\u00E1rio de amanh\u00E3?',
@@ -168,7 +173,10 @@ export function registerTriathlonCommands(bot: Bot): void {
     try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
 
     if (action === 'dismiss') {
-      await ctx.editMessageText('\u{1F44D} <b>Calend\u00E1rio mantido como est\u00E1.</b> Bom treino amanh\u00E3!', { parse_mode: 'HTML' });
+      const { getUserLanguage } = require('../../services/user-service');
+      const { t } = require('../../utils/i18n');
+      const dismissLang = getUserLanguage(ctx.from!.id);
+      await ctx.editMessageText(`${t('coach_dismissed', dismissLang)} ${t('coach_good_training', dismissLang)}`, { parse_mode: 'HTML' });
       return;
     }
 
@@ -339,7 +347,10 @@ async function handleTrainingPlan(ctx: Context, userId: number, lang: Lang): Pro
   const adherence = getWeeklyAdherence(plan.id, currentWeek.id);
   msg += `\n📊 ${adherence.completedSessions}/${adherence.totalSessions} ${t('completed', lang)}`;
 
-  await ctx.reply(msg, { parse_mode: 'HTML' });
+  const planParts = splitMessage(msg);
+  for (const part of planParts) {
+    await ctx.reply(part, { parse_mode: 'HTML' });
+  }
 }
 
 async function handleTrainingToday(ctx: Context, userId: number, lang: Lang): Promise<void> {
@@ -391,7 +402,10 @@ async function handleTrainingToday(ctx: Context, userId: number, lang: Lang): Pr
     }
   } catch { /* Garmin not configured */ }
 
-  await ctx.reply(msg, { parse_mode: 'HTML' });
+  const todayParts = splitMessage(msg);
+  for (const part of todayParts) {
+    await ctx.reply(part, { parse_mode: 'HTML' });
+  }
 }
 
 async function handleTrainingDone(ctx: Context, userId: number, lang: Lang): Promise<void> {
@@ -452,7 +466,10 @@ async function handleTrainingCompare(ctx: Context, userId: number, lang: Lang): 
   await ctx.replyWithChatAction('typing');
   const result = await comparePlannedVsActual(userId);
   const msg = formatComparison(result);
-  await ctx.reply(msg, { parse_mode: 'HTML' });
+  const compareParts = splitMessage(msg);
+  for (const part of compareParts) {
+    await ctx.reply(part, { parse_mode: 'HTML' });
+  }
 }
 
 async function handleTrainingHistory(ctx: Context, userId: number, lang: Lang): Promise<void> {
@@ -469,7 +486,10 @@ async function handleTrainingHistory(ctx: Context, userId: number, lang: Lang): 
   msg += `📈 Current week adherence: ${stats.currentWeekAdherence ?? 0}%\n`;
   msg += `📋 Active plans: ${stats.activePlans}\n`;
 
-  await ctx.reply(msg, { parse_mode: 'HTML' });
+  const histParts = splitMessage(msg);
+  for (const part of histParts) {
+    await ctx.reply(part, { parse_mode: 'HTML' });
+  }
 }
 
 async function handleTrainingFeedback(ctx: Context, userId: number, lang: Lang, rating: string): Promise<void> {

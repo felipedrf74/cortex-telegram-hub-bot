@@ -104,6 +104,18 @@ setInterval(() => {
   for (const [userId, edit] of pendingEdits) {
     if (now > edit.expires) pendingEdits.delete(userId);
   }
+
+  for (const [uid, state] of pendingOnboarding) {
+    if (now > state.expires) {
+      pendingOnboarding.delete(uid);
+    }
+  }
+
+  for (const [uid, ref] of pendingCalendarRef) {
+    if (now - ref.timestamp > 10 * 60 * 1000) {
+      pendingCalendarRef.delete(uid);
+    }
+  }
 }, 10 * 60 * 1000);
 
 // ─── Exported Utilities ─────────────────────────────────────────────

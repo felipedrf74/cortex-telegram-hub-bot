@@ -209,6 +209,41 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'pt-BR': '⚠️ O sistema atingiu o limite diário de custos. Tente novamente amanhã ou contate o administrador.',
     'en-US': '⚠️ The system has reached its daily cost limit. Try again tomorrow or contact the administrator.',
   },
+  'ms_todo_not_connected': {
+    'pt-BR': '⚠️ Microsoft To Do não está conectado.\n\nUse /connect outlook para vincular sua conta.',
+    'en-US': '⚠️ Microsoft To Do is not connected.\n\nUse /connect outlook to link your account.',
+  },
+  'generic_error': {
+    'pt-BR': '⚠️ Algo deu errado. Tente novamente em alguns instantes.',
+    'en-US': '⚠️ Something went wrong. Please try again in a moment.',
+  },
+  'garmin_not_connected': {
+    'pt-BR': '⚠️ Garmin não está conectado nesta instalação.\n\nFale com o administrador para configurar.',
+    'en-US': '⚠️ Garmin is not connected on this installation.\n\nContact the administrator to configure.',
+  },
+  'invalid_invite_with_help': {
+    'pt-BR': '❌ Código de convite inválido ou expirado.\n\nVerifique o código e tente novamente:\n/start SEU_CODIGO',
+    'en-US': '❌ Invalid or expired invite code.\n\nCheck the code and try again:\n/start YOUR_CODE',
+  },
+  'welcome_back_with_onboarding': {
+    'pt-BR': '👋 Olá de novo! Parece que você tem perfis para configurar.',
+    'en-US': '👋 Welcome back! Looks like you have profiles to set up.',
+  },
+  'setup_profile': {
+    'pt-BR': 'Configurar perfis',
+    'en-US': 'Set up profiles',
+  },
+  'registration_error': {
+    'pt-BR': '❌ Erro ao criar sua conta. Tente novamente em alguns instantes.',
+    'en-US': '❌ Error creating your account. Please try again in a moment.',
+  },
+  'apply': { 'pt-BR': 'Aplicar', 'en-US': 'Apply' },
+  'skip': { 'pt-BR': 'Pular', 'en-US': 'Skip' },
+  'apply_all': { 'pt-BR': 'Aplicar todas', 'en-US': 'Apply all' },
+  'keep_all': { 'pt-BR': 'Manter tudo', 'en-US': 'Keep all' },
+  'coach_applied': { 'pt-BR': '✅ Alteração aplicada!', 'en-US': '✅ Change applied!' },
+  'coach_dismissed': { 'pt-BR': '👍 Mantido como está.', 'en-US': '👍 Kept as is.' },
+  'coach_good_training': { 'pt-BR': '💪 Bom treino amanhã!', 'en-US': '💪 Good training tomorrow!' },
 };
 
 /**

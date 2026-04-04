@@ -13,8 +13,8 @@ import { storeCallback, getCallback } from '../../utils/callback-store';
 import { DomainName } from '../../domains/types';
 import * as onboarding from '../../services/onboarding';
 import { clearConversation, clearAllConversations } from '../../state/conversation';
-import { escapeHtml } from '../../utils/telegram-formatter';
-import { enqueue, pendingOnboarding } from '../shared-state';
+import { escapeHtml, splitMessage } from '../../utils/telegram-formatter';
+import { enqueue, pendingOnboarding, lastActiveDomain } from '../shared-state';
 import { HELP_TEXT } from '../help-text';
 import { sendOnboardingStep } from '../onboarding';
 import { exportAllUserData, deleteAllUserData } from '../../services/user-data-export';
@@ -34,6 +34,23 @@ export function registerSystemCommands(bot: Bot): void {
 
     const existing = getUserByTelegramId(userId);
     if (existing) {
+      // Check for pending onboardings to offer re-onboarding
+      try {
+        const pending = onboarding.getPendingOnboardings(userId);
+        if (pending.length > 0) {
+          const ref = storeCallback({ pendingIds: pending }, 600_000);
+          await ctx.reply(t('welcome_back_with_onboarding', existing.language), {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '\u2705 ' + t('setup_profile', existing.language), callback_data: `ob:auto_start:${ref}` },
+                { text: '\u23ED\uFE0F ' + t('skip', existing.language), callback_data: 'ob:skip_all' },
+              ]],
+            },
+          });
+          return;
+        }
+      } catch { /* non-critical */ }
       await ctx.reply(t('welcome_back', existing.language), { parse_mode: 'HTML' });
       return;
     }
@@ -57,17 +74,24 @@ export function registerSystemCommands(bot: Bot): void {
     const inviteResult = inviteCode ? validateAndConsumeInviteCode(inviteCode) : null;
     if (inviteCode && !inviteResult?.valid) {
       const lang = detectLanguageFromTelegram(ctx.from?.language_code);
-      await ctx.reply(t('invalid_invite', lang));
+      await ctx.reply(t('invalid_invite_with_help', lang));
       return;
     }
 
     // Create the user
-    getOrCreateUser(userId, {
-      username: ctx.from?.username,
-      firstName: ctx.from?.first_name,
-      lastName: ctx.from?.last_name,
-      inviteCode,
-    });
+    try {
+      getOrCreateUser(userId, {
+        username: ctx.from?.username,
+        firstName: ctx.from?.first_name,
+        lastName: ctx.from?.last_name,
+        inviteCode,
+      });
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to create user');
+      const errLang = detectLanguageFromTelegram(ctx.from?.language_code);
+      await ctx.reply(t('registration_error', errLang));
+      return;
+    }
 
     // Apply skill preset from invite code if present
     if (inviteResult?.skillPreset) {
@@ -177,7 +201,10 @@ export function registerSystemCommands(bot: Bot): void {
         msg += `\n   <i>${c.scopes.length} scopes</i>`;
       }
     }
-    await ctx.reply(msg, { parse_mode: 'HTML' });
+    const connParts = splitMessage(msg);
+    for (const part of connParts) {
+      await ctx.reply(part, { parse_mode: 'HTML' });
+    }
   });
 
   bot.command('version', async (ctx) => {
@@ -203,9 +230,11 @@ export function registerSystemCommands(bot: Bot): void {
     const domain = ctx.match?.trim();
     if (domain && ['secretary', 'triathlon', 'content'].includes(domain)) {
       clearConversation(ctx.from?.id ?? 0, domain as DomainName);
+      lastActiveDomain.delete(ctx.from?.id ?? 0);
       await ctx.reply(`\u{1F5D1} Cleared conversation history for <b>${domain}</b>.`, { parse_mode: 'HTML' });
     } else if (domain === 'all') {
       clearAllConversations(ctx.from?.id ?? 0);
+      lastActiveDomain.delete(ctx.from?.id ?? 0);
       await ctx.reply('\u{1F5D1} Cleared all conversation histories.', { parse_mode: 'HTML' });
     } else {
       await ctx.reply('Usage: /clear [secretary|triathlon|content|all]');

@@ -234,7 +234,10 @@ export async function handleStatus(ctx: Context): Promise<void> {
     }
   }
 
-  await ctx.reply(msg, { parse_mode: 'HTML' });
+  const statusParts = splitMessage(msg);
+  for (const part of statusParts) {
+    await ctx.reply(part, { parse_mode: 'HTML' });
+  }
 }
 
 export async function handleDayOverview(ctx: Context): Promise<void> {
@@ -274,7 +277,10 @@ export async function handleDayOverview(ctx: Context): Promise<void> {
     }
   }
 
-  await ctx.reply(msg, { parse_mode: 'HTML' });
+  const dayParts = splitMessage(msg);
+  for (const part of dayParts) {
+    await ctx.reply(part, { parse_mode: 'HTML' });
+  }
 }
 
 export async function handleWeekOverview(ctx: Context): Promise<void> {

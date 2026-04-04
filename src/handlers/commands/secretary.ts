@@ -26,6 +26,9 @@ import {
   splitMessage, escapeHtml, formatChecklistItems, formatAllTasks, formatCompletedTasks,
 } from '../../utils/telegram-formatter';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, formatDateTime } from '../../utils/date-parser';
+import { getUserLanguage } from '../../services/user-service';
+import { t } from '../../utils/i18n';
+import { logger } from '../../utils/logger';
 import type { DomainHandlerFn } from '../photo';
 
 /**
@@ -44,13 +47,14 @@ export function registerSecretaryCommands(
   bot.command('lists', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured. Set Outlook credentials first.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
       const result = await msTodo.getLists();
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch lists: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch lists');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -71,7 +75,7 @@ export function registerSecretaryCommands(
   bot.command('tasks', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
@@ -85,7 +89,8 @@ export function registerSecretaryCommands(
 
       const result = await msTodo.getTasks(list.id, list.displayName, { status: 'notStarted' });
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -102,7 +107,7 @@ export function registerSecretaryCommands(
   bot.command('newtask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const text = ctx.match?.trim();
@@ -130,7 +135,8 @@ export function registerSecretaryCommands(
 
       const result = await msTodo.createTask(list.id, list.displayName, { title });
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to create task: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to create task');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -141,7 +147,7 @@ export function registerSecretaryCommands(
   bot.command('done', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const query = ctx.match?.trim();
@@ -170,7 +176,8 @@ export function registerSecretaryCommands(
         if (result.success) {
           await ctx.reply(`✅ Completed: "<b>${escapeHtml(task.title)}</b>" [${escapeHtml(task.listName)}]`, { parse_mode: 'HTML' });
         } else {
-          await ctx.reply(`⚠️ Failed to complete task: ${result.error}`);
+          logger.warn({ err: result.error }, 'Failed to complete task');
+          await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         }
         return;
       }
@@ -193,7 +200,7 @@ export function registerSecretaryCommands(
   bot.command('undone', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const query = ctx.match?.trim();
@@ -209,7 +216,7 @@ export function registerSecretaryCommands(
   bot.command('newlist', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const name = ctx.match?.trim();
@@ -222,7 +229,8 @@ export function registerSecretaryCommands(
       if (result.success) {
         await ctx.reply(`📋 List created: "<b>${escapeHtml(result.data.displayName)}</b>"`, { parse_mode: 'HTML' });
       } else {
-        await ctx.reply(`⚠️ Failed to create list: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to create list');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
       }
     });
   });
@@ -230,7 +238,7 @@ export function registerSecretaryCommands(
   bot.command('deletelist', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const name = ctx.match?.trim();
@@ -261,7 +269,7 @@ export function registerSecretaryCommands(
   bot.command('deletetask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const query = ctx.match?.trim();
@@ -311,7 +319,7 @@ export function registerSecretaryCommands(
   bot.command('search', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const query = ctx.match?.trim();
@@ -323,7 +331,8 @@ export function registerSecretaryCommands(
 
       const result = await msTodo.searchTasks(query);
       if (!result.success) {
-        await ctx.reply(`⚠️ Search failed: ${result.error}`);
+        logger.warn({ err: result.error }, 'Search failed');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -339,14 +348,17 @@ export function registerSecretaryCommands(
       }
       if (result.data.length > 15) msg += `\n... and ${result.data.length - 15} more`;
 
-      await ctx.reply(msg, { parse_mode: 'HTML' });
+      const parts = splitMessage(msg);
+      for (const part of parts) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
     });
   });
 
   bot.command('todosummary', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
@@ -359,14 +371,15 @@ export function registerSecretaryCommands(
   bot.command('overdue', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
 
       const pendingResult = await msTodo.getAllPendingTasks();
       if (!pendingResult.success) {
-        await ctx.reply(`⚠️ Failed to fetch tasks: ${pendingResult.error}`);
+        logger.warn({ err: pendingResult.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -383,21 +396,25 @@ export function registerSecretaryCommands(
         msg += `⚠️ ${escapeHtml(t.title)} — was due ${formatDateTime(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
       }
 
-      await ctx.reply(msg.trim(), { parse_mode: 'HTML' });
+      const parts = splitMessage(msg.trim());
+      for (const part of parts) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
     });
   });
 
   bot.command('duetoday', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
 
       const result = await msTodo.getTasksDueInRange(startOfDay(), endOfDay());
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -412,21 +429,25 @@ export function registerSecretaryCommands(
         msg += `⬜${imp} ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
       }
 
-      await ctx.reply(msg.trim(), { parse_mode: 'HTML' });
+      const parts = splitMessage(msg.trim());
+      for (const part of parts) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
     });
   });
 
   bot.command('dueweek', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
 
       const result = await msTodo.getTasksDueInRange(startOfWeek(), endOfWeek());
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -451,14 +472,15 @@ export function registerSecretaryCommands(
   bot.command('alltasks', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
 
       const result = await msTodo.getAllPendingTasks();
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -473,7 +495,7 @@ export function registerSecretaryCommands(
   bot.command('completed', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
@@ -489,19 +511,29 @@ export function registerSecretaryCommands(
         }
         const result = await msTodo.getTasks(list.id, list.displayName, { status: 'completed' });
         if (!result.success) {
-          await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+          logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
           return;
         }
-        await ctx.reply(formatCompletedTasks(result.data, list.displayName), { parse_mode: 'HTML' });
+        const msgSpecific = formatCompletedTasks(result.data, list.displayName);
+        const partsSpecific = splitMessage(msgSpecific);
+        for (const part of partsSpecific) {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        }
       } else {
         // Completed tasks across all lists (last 7 days)
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
         const result = await msTodo.getCompletedTasksInRange(sevenDaysAgo, new Date().toISOString());
         if (!result.success) {
-          await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+          logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
           return;
         }
-        await ctx.reply(formatCompletedTasks(result.data), { parse_mode: 'HTML' });
+        const msgAll = formatCompletedTasks(result.data);
+        const partsAll = splitMessage(msgAll);
+        for (const part of partsAll) {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        }
       }
     });
   });
@@ -509,7 +541,7 @@ export function registerSecretaryCommands(
   bot.command('movetask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const text = ctx.match?.trim();
@@ -544,7 +576,8 @@ export function registerSecretaryCommands(
       if (result.success) {
         await ctx.reply(`📦 Moved "<b>${escapeHtml(task.title)}</b>" from ${escapeHtml(task.listName)} → <b>${escapeHtml(targetList.displayName)}</b>`, { parse_mode: 'HTML' });
       } else {
-        await ctx.reply(`⚠️ Failed to move task: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to move task');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
       }
     });
   });
@@ -552,7 +585,7 @@ export function registerSecretaryCommands(
   bot.command('edittask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const text = ctx.match?.trim();
@@ -575,7 +608,8 @@ export function registerSecretaryCommands(
       if (result.success) {
         await ctx.reply(`📝 Renamed: "${escapeHtml(task.title)}" → "<b>${escapeHtml(newTitle)}</b>" [${escapeHtml(task.listName)}]`, { parse_mode: 'HTML' });
       } else {
-        await ctx.reply(`⚠️ Failed to rename task: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to rename task');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
       }
     });
   });
@@ -583,7 +617,7 @@ export function registerSecretaryCommands(
   bot.command('notetask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const text = ctx.match?.trim();
@@ -606,7 +640,8 @@ export function registerSecretaryCommands(
       if (result.success) {
         await ctx.reply(`📝 Note added to "<b>${escapeHtml(task.title)}</b>": ${escapeHtml(note)}`, { parse_mode: 'HTML' });
       } else {
-        await ctx.reply(`⚠️ Failed to add note: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to add note');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
       }
     });
   });
@@ -614,7 +649,7 @@ export function registerSecretaryCommands(
   bot.command('addstep', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const text = ctx.match?.trim();
@@ -637,7 +672,8 @@ export function registerSecretaryCommands(
       if (result.success) {
         await ctx.reply(`☑️ Step added to "<b>${escapeHtml(task.title)}</b>": ${escapeHtml(stepTitle)}`, { parse_mode: 'HTML' });
       } else {
-        await ctx.reply(`⚠️ Failed to add step: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to add step');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
       }
     });
   });
@@ -645,7 +681,7 @@ export function registerSecretaryCommands(
   bot.command('steps', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       const query = ctx.match?.trim();
@@ -664,7 +700,8 @@ export function registerSecretaryCommands(
       const task = searchResult.data[0];
       const result = await msTodo.getChecklistItems(task.listId, task.id);
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch steps: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch steps');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 
@@ -687,7 +724,7 @@ export function registerSecretaryCommands(
   bot.command('todos', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
       if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply('⚠️ Microsoft To Do is not configured.');
+        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
         return;
       }
       await ctx.replyWithChatAction('typing');
@@ -700,7 +737,8 @@ export function registerSecretaryCommands(
 
       const result = await msTodo.getTasks(defaultList.id, defaultList.displayName, { status: 'notStarted' });
       if (!result.success) {
-        await ctx.reply(`⚠️ Failed to fetch tasks: ${result.error}`);
+        logger.warn({ err: result.error }, 'Failed to fetch tasks');
+        await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
         return;
       }
 

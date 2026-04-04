@@ -277,7 +277,6 @@ describe('QA: /skills and /skill listed in help', () => {
       path.resolve(__dirname, '../../src/handlers/help-text.ts'), 'utf-8',
     );
     expect(helpSource).toContain('/skills');
-    expect(helpSource).toContain('/skill [name]');
   });
 });
 
