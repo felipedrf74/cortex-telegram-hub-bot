@@ -1547,17 +1547,8 @@ document.addEventListener('DOMContentLoaded', () => {
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   }
 
-  async function ensureToken() {
-    if (TOKEN) {
-      // Validate the stored token is still valid
-      try {
-        const res = await fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + TOKEN } });
-        if (res.ok) return true;
-      } catch {}
-      // Token is invalid — clear and show login
-      localStorage.removeItem('portal_token');
-      TOKEN = '';
-    }
+  function ensureToken() {
+    if (TOKEN) return true;
     showLoginForm();
     return false;
   }
@@ -2336,12 +2327,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Polling ────────────────────────────────
   async function poll() {
     try {
+      console.log('[Portal] poll() starting...');
       const res = await apiFetch('/api/snapshot');
+      console.log('[Portal] poll() got response:', res.status);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const snap = await res.json();
+      console.log('[Portal] poll() rendering snapshot, version:', snap.version);
       render(snap);
+      console.log('[Portal] poll() render complete');
     } catch (err) {
-      console.error('Poll failed:', err);
+      console.error('[Portal] Poll failed:', err);
       const pollEl = document.getElementById('poll-status');
       pollEl.innerHTML = '<span class="status-dot dot-red"></span> disconnected';
     }
@@ -3272,10 +3267,15 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTaskMetrics();    setInterval(loadTaskMetrics, 30_000);
   }
 
-  ensureToken().then(valid => {
-    if (valid) startAllPolling();
-  });
-  // If no token or invalid token, showLoginForm() was called — startAllPolling runs after successful login
+  // Debug: mark that JS reached this point
+  console.log('[Portal] TOKEN=' + (TOKEN ? 'set (' + TOKEN.length + ' chars)' : 'EMPTY'));
+  if (ensureToken()) {
+    console.log('[Portal] Auth OK — starting polls');
+    startAllPolling();
+  } else {
+    console.log('[Portal] No token — showing login form');
+  }
+  // If no token, showLoginForm() — startAllPolling runs after successful login
 })();
 </script>
 </body>
