@@ -1497,18 +1497,61 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 (function() {
-  const TOKEN = localStorage.getItem('portal_token') || '';
+  let TOKEN = localStorage.getItem('portal_token') || new URLSearchParams(location.search).get('token') || '';
+  // If token came from URL param, store it and clean the URL
+  if (!localStorage.getItem('portal_token') && TOKEN) {
+    localStorage.setItem('portal_token', TOKEN);
+    history.replaceState(null, '', location.pathname);
+  }
   const POLL_MS = 10_000;
   let pollTimer = null;
 
-  // ── Auth prompt ────────────────────────────
+  // ── Auth: inline login form ────────────────
+  function showLoginForm() {
+    const existing = document.getElementById('login-overlay');
+    if (existing) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'login-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999';
+    overlay.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:32px;max-width:360px;width:90%;text-align:center">
+      <h2 style="margin:0 0 8px;font-size:20px">🧠 Nexus Hub</h2>
+      <p style="color:var(--text2);margin:0 0 20px;font-size:13px">Enter your portal access token</p>
+      <input id="login-token" type="password" placeholder="Portal token" style="width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font:inherit;font-size:14px;box-sizing:border-box;margin-bottom:12px" autofocus>
+      <button id="login-btn" style="width:100%;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:6px;font:inherit;font-size:14px;cursor:pointer;font-weight:600">Sign In</button>
+      <p id="login-error" style="color:var(--red);font-size:12px;margin:8px 0 0;display:none">Invalid token</p>
+    </div>`;
+    document.body.appendChild(overlay);
+    const input = document.getElementById('login-token');
+    const btn = document.getElementById('login-btn');
+    const errEl = document.getElementById('login-error');
+    const doLogin = async () => {
+      const t = input.value.trim();
+      if (!t) return;
+      btn.disabled = true;
+      btn.textContent = 'Checking...';
+      try {
+        const res = await fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + t } });
+        if (res.ok) {
+          localStorage.setItem('portal_token', t);
+          TOKEN = t;
+          overlay.remove();
+          poll();
+          pollTimer = setInterval(poll, POLL_MS);
+        } else {
+          errEl.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Sign In';
+        }
+      } catch { errEl.style.display = 'block'; btn.disabled = false; btn.textContent = 'Sign In'; }
+    };
+    btn.onclick = doLogin;
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  }
+
   function ensureToken() {
-    if (TOKEN) return;
-    const t = prompt('Enter portal token:');
-    if (t) {
-      localStorage.setItem('portal_token', t);
-      location.reload();
-    }
+    if (TOKEN) return true;
+    showLoginForm();
+    return false;
   }
 
   // ── Fetch with auth ────────────────────────
@@ -1518,7 +1561,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await fetch(url, { ...opts, headers });
     if (res.status === 401) {
       localStorage.removeItem('portal_token');
-      ensureToken();
+      TOKEN = '';
+      showLoginForm();
       throw new Error('Unauthorized');
     }
     return res;
@@ -3226,9 +3270,11 @@ document.addEventListener('DOMContentLoaded', () => {
   window.updateSetting = updateSetting;
   window.resetSetting = resetSetting;
 
-  ensureToken();
-  poll();
-  pollTimer = setInterval(poll, POLL_MS);
+  if (ensureToken()) {
+    poll();
+    pollTimer = setInterval(poll, POLL_MS);
+  }
+  // If no token, showLoginForm() was called — poll starts after successful login
 })();
 </script>
 </body>
