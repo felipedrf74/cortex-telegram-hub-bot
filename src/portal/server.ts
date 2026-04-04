@@ -1377,6 +1377,9 @@ export function createPortalServer(bot: Bot): http.Server {
       res.status(503).send('Dashboard not found — portal.html is missing');
       return;
     }
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
     res.sendFile(htmlPath);
   });
 
