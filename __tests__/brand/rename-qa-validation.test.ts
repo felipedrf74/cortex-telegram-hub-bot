@@ -50,9 +50,10 @@ describe('QA: Cortex → Nexus Hub rename — source files', () => {
     expect(content).toContain('Nexus Hub');
   });
 
-  it('bot.ts references "Nexus Hub"', () => {
-    if (fileExists('src/bot.ts')) {
-      const content = readFile('src/bot.ts');
+  it('system commands reference "Nexus Hub"', () => {
+    // /version command moved from bot.ts to handlers/commands/system.ts
+    if (fileExists('src/handlers/commands/system.ts')) {
+      const content = readFile('src/handlers/commands/system.ts');
       expect(content).toContain('Nexus Hub');
     }
   });

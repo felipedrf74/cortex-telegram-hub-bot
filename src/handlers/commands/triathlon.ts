@@ -1,0 +1,229 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+/**
+ * Triathlon command handlers — extracted from bot.ts.
+ *
+ * Registers: /garminmfa, /coach
+ * Callback: coach: (apply / all / dismiss)
+ */
+
+import { Bot, InlineKeyboard } from 'grammy';
+import { logger } from '../../utils/logger';
+import { storeCallback, getCallback } from '../../utils/callback-store';
+import { splitMessage, escapeHtml } from '../../utils/telegram-formatter';
+import { addToConversation } from '../../state/conversation';
+import { isGarminConfigured, isMfaPending, submitMfaCode } from '../../services/garmin';
+import { generateCoachBriefing, CoachRecommendation } from '../../services/garmin-coach';
+import { updateEvent as updateCalendarEvent } from '../../services/unified-calendar';
+import { setLastCoachState } from '../../domains/domain-handler';
+import { enqueue, lastActiveDomain, isHtmlParseError } from '../shared-state';
+
+/**
+ * Apply a single coach recommendation to the calendar.
+ * - MODIFY / SWAP -> updateEvent with new title/times
+ * - REST -> updateEvent with cancelled title (keeps the slot visible but marked)
+ * - KEEP -> no-op (shouldn't be called for KEEP)
+ */
+async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void> {
+  if (rec.action === 'KEEP') return; // No change needed
+
+  if (rec.action === 'REST') {
+    // Mark the event as cancelled (don't delete — athlete sees it on calendar)
+    await updateCalendarEvent(
+      {
+        event_id: rec.eventId,
+        new_title: rec.newTitle || `\u274C CANCELLED \u2014 ${rec.originalTitle}`,
+      },
+      rec.source,
+    );
+    return;
+  }
+
+  // MODIFY or SWAP — update title and optionally times
+  const updateData: { event_id: string; new_title?: string; new_start?: string; new_end?: string } = {
+    event_id: rec.eventId,
+  };
+  if (rec.newTitle && rec.newTitle !== rec.originalTitle) {
+    updateData.new_title = rec.newTitle;
+  }
+  if (rec.newStart) updateData.new_start = rec.newStart;
+  if (rec.newEnd) updateData.new_end = rec.newEnd;
+
+  await updateCalendarEvent(updateData, rec.source);
+}
+
+export function registerTriathlonCommands(bot: Bot): void {
+  // ── Garmin MFA Code Submission ──
+  bot.command('garminmfa', async (ctx) => {
+    const code = ctx.message?.text?.replace(/^\/garminmfa\s*/, '').trim();
+    if (!code || !/^\d{4,8}$/.test(code)) {
+      await ctx.reply('\u26A0\uFE0F Usage: <code>/garminmfa 123456</code>\n\nProvide the numeric code from your email.', { parse_mode: 'HTML' });
+      return;
+    }
+    if (!isMfaPending()) {
+      await ctx.reply('\u2139\uFE0F No MFA challenge pending. Garmin may not need a code right now.');
+      return;
+    }
+    const accepted = submitMfaCode(code);
+    if (accepted) {
+      await ctx.reply('\u2705 MFA code submitted \u2014 Garmin login completing\u2026');
+    } else {
+      await ctx.reply('\u26A0\uFE0F MFA code was not accepted \u2014 the challenge may have expired.');
+    }
+  });
+
+  // ── Garmin Daily Coach ──
+  bot.command('coach', async (ctx) => {
+    enqueue(ctx.from!.id, async () => {
+      if (!isGarminConfigured()) {
+        await ctx.reply('\u26A0\uFE0F Garmin not configured. Set GARMIN_EMAIL and GARMIN_PASSWORD.');
+        return;
+      }
+
+      await ctx.replyWithChatAction('typing');
+      await ctx.reply('\u{1F3CB}\uFE0F Running coach analysis\u2026 collecting Garmin data + Claude analysis (~30s).', { parse_mode: 'HTML' });
+
+      // Keep typing indicator alive during the long-running analysis
+      const typingInterval = setInterval(() => {
+        ctx.replyWithChatAction('typing').catch(() => {});
+      }, 4000);
+
+      try {
+        const result = await generateCoachBriefing();
+        clearInterval(typingInterval);
+
+        // Store recommendations so triathlon domain can reference them in follow-up chat
+        if (result.recommendations.length > 0) {
+          setLastCoachState(ctx.from!.id, result.recommendations, result.message.substring(0, 500));
+        }
+
+        // Set conversation continuity to triathlon so follow-up replies stay in context
+        if (ctx.from?.id) {
+          lastActiveDomain.set(ctx.from.id, { domain: 'triathlon', timestamp: Date.now() });
+        }
+
+        // Save to triathlon conversation history so follow-ups have context
+        addToConversation(ctx.from?.id ?? 0, 'triathlon', 'assistant', result.message);
+
+        // Send the human-readable briefing
+        const chunks = splitMessage(result.message);
+        for (const chunk of chunks) {
+          try {
+            await ctx.reply(chunk, { parse_mode: 'HTML' });
+          } catch (err) {
+            // If HTML parsing fails, send without formatting
+            if (isHtmlParseError(err)) await ctx.reply(chunk.replace(/<[^>]*>/g, ''));
+            else throw err;
+          }
+        }
+
+        // Send interactive recommendation buttons (if any non-KEEP recommendations exist)
+        const actionableRecs = result.recommendations.filter((r) => r.action !== 'KEEP');
+        if (actionableRecs.length > 0) {
+          const keyboard = new InlineKeyboard();
+          const recRefs: string[] = [];
+          for (const rec of actionableRecs) {
+            const ref = storeCallback({ recommendation: rec });
+            recRefs.push(ref);
+            const emoji = rec.action === 'MODIFY' ? '\u26A0\uFE0F' : rec.action === 'SWAP' ? '\u{1F504}' : '\u274C';
+            const label = `${emoji} ${rec.summary}`.substring(0, 60);
+            keyboard.text(label, `coach:apply:${ref}`).row();
+          }
+          // Add "Apply all" if more than one
+          if (actionableRecs.length > 1) {
+            const allRef = storeCallback({ recommendations: actionableRecs });
+            keyboard.text('\u2705 Aplicar todas as altera\u00E7\u00F5es', `coach:all:${allRef}`).row();
+          }
+          // Add dismiss button
+          keyboard.text('\u{1F44D} Manter tudo como est\u00E1', `coach:dismiss`);
+
+          await ctx.reply(
+            '\u{1F3CB}\uFE0F <b>A\u00E7\u00F5es do Coach:</b>\n\nQueres aplicar alguma destas altera\u00E7\u00F5es ao calend\u00E1rio de amanh\u00E3?',
+            { parse_mode: 'HTML', reply_markup: keyboard },
+          );
+        }
+      } catch (err: any) {
+        clearInterval(typingInterval);
+        logger.error({ err }, 'Coach briefing failed (manual)');
+        await ctx.reply(`\u26A0\uFE0F Coach briefing failed: ${escapeHtml(err.message || 'Unknown error')}`, { parse_mode: 'HTML' });
+      }
+    });
+  });
+
+  // ── Coach Recommendation Callback Handler (apply / all / dismiss) ──
+  bot.callbackQuery(/^coach:/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parts = data.split(':');
+    const action = parts[1]; // 'apply' | 'all' | 'dismiss'
+    const ref = parts[2];
+
+    try { await ctx.answerCallbackQuery(); } catch { /* expired */ }
+
+    if (action === 'dismiss') {
+      await ctx.editMessageText('\u{1F44D} <b>Calend\u00E1rio mantido como est\u00E1.</b> Bom treino amanh\u00E3!', { parse_mode: 'HTML' });
+      return;
+    }
+
+    if (action === 'apply') {
+      // Apply a single recommendation
+      const cbData = getCallback(ref);
+      if (!cbData?.recommendation) {
+        await ctx.editMessageText('\u26A0\uFE0F A\u00E7\u00E3o expirada. Usa /coach novamente.');
+        return;
+      }
+      const rec = cbData.recommendation as CoachRecommendation;
+      await ctx.editMessageText(`\u23F3 Aplicando: ${escapeHtml(rec.summary)}...`, { parse_mode: 'HTML' });
+      try {
+        await applyCoachRecommendation(rec);
+        await ctx.editMessageText(
+          `\u2705 <b>Altera\u00E7\u00E3o aplicada:</b>\n${escapeHtml(rec.summary)}\n\n\u{1F4C5} O evento <b>${escapeHtml(rec.originalTitle)}</b> foi atualizado no calend\u00E1rio.`,
+          { parse_mode: 'HTML' },
+        );
+      } catch (err) {
+        logger.error({ err, rec }, 'Coach: failed to apply recommendation');
+        await ctx.editMessageText(`\u26A0\uFE0F Falha ao aplicar: ${escapeHtml((err as Error).message)}`, { parse_mode: 'HTML' });
+      }
+      return;
+    }
+
+    if (action === 'all') {
+      // Apply all actionable recommendations
+      const cbData = getCallback(ref);
+      if (!cbData?.recommendations) {
+        await ctx.editMessageText('\u26A0\uFE0F A\u00E7\u00E3o expirada. Usa /coach novamente.');
+        return;
+      }
+      const recs = cbData.recommendations as CoachRecommendation[];
+      await ctx.editMessageText(`\u23F3 Aplicando ${recs.length} altera\u00E7\u00F5es ao calend\u00E1rio...`, { parse_mode: 'HTML' });
+
+      let successCount = 0;
+      const appliedSummaries: string[] = [];
+      for (const rec of recs) {
+        try {
+          await applyCoachRecommendation(rec);
+          successCount++;
+          appliedSummaries.push(rec.summary);
+        } catch (err) {
+          logger.error({ err, rec }, 'Coach: failed to apply recommendation (batch)');
+        }
+      }
+
+      if (successCount === 0) {
+        await ctx.editMessageText('\u26A0\uFE0F Nenhuma altera\u00E7\u00E3o aplicada. Verifica o calend\u00E1rio.', { parse_mode: 'HTML' });
+      } else {
+        let msg = `\u2705 <b>${successCount}/${recs.length} altera\u00E7\u00F5es aplicadas:</b>\n`;
+        for (const s of appliedSummaries) {
+          msg += `\n  \u2022 ${escapeHtml(s)}`;
+        }
+        msg += '\n\n\u{1F4C5} Calend\u00E1rio de amanh\u00E3 atualizado.';
+        try {
+          await ctx.editMessageText(msg, { parse_mode: 'HTML' });
+        } catch (err) {
+          if (isHtmlParseError(err)) await ctx.editMessageText(msg.replace(/<[^>]*>/g, ''));
+          else throw err;
+        }
+      }
+      return;
+    }
+  });
+}

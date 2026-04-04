@@ -191,12 +191,12 @@ describe('QA: /skills output formatting', () => {
     expect(skillsSource).toContain("parse_mode: 'HTML'");
   });
 
-  it('bot.ts delegates /skills to handleSkillsList', () => {
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+  it('skills-commands.ts delegates /skills to handleSkillsList', () => {
+    const skillsCmdSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/handlers/commands/skills-commands.ts'), 'utf-8',
     );
-    expect(botSource).toContain('handleSkillsList(ctx)');
-    expect(botSource).toContain('handleSkillCommand');
+    expect(skillsCmdSource).toContain('handleSkillsList(ctx)');
+    expect(skillsCmdSource).toContain('handleSkillCommand');
   });
 
   it('/skill detail view shows sub-module enabled/disabled indicator', () => {
@@ -263,12 +263,12 @@ describe('QA: Skill routing configuration', () => {
 // ── Help text ─────────────────────────────────────────────────────
 
 describe('QA: /skills and /skill listed in help', () => {
-  it('bot.ts registers both /skills and /skill commands', () => {
-    const botSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
+  it('skills-commands.ts registers both /skills and /skill commands', () => {
+    const skillsCmdSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/handlers/commands/skills-commands.ts'), 'utf-8',
     );
-    expect(botSource).toContain("bot.command('skills'");
-    expect(botSource).toContain("bot.command('skill'");
+    expect(skillsCmdSource).toContain("bot.command('skills'");
+    expect(skillsCmdSource).toContain("bot.command('skill'");
   });
 
   it('help text includes /skills and /skill', () => {
@@ -283,25 +283,29 @@ describe('QA: /skills and /skill listed in help', () => {
 
 // ── Dead code detection ─────────────────────────────────────────
 
-describe('QA: Duplicate handler cleanup needed', () => {
-  it('CLEANUP: bot.ts has duplicate /skills handlers — old inline version should be removed', () => {
+describe('QA: Duplicate handler cleanup completed', () => {
+  it('skills-commands.ts has exactly 1 /skills and 1 /skill handler (duplicates removed)', () => {
+    const skillsCmdSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/handlers/commands/skills-commands.ts'), 'utf-8',
+    );
+    // After extraction, exactly 1 handler for each in the dedicated module
+    const skillsMatches = skillsCmdSource.match(/bot\.command\('skills'/g);
+    expect(
+      skillsMatches?.length,
+      'skills-commands.ts should have exactly 1 /skills handler',
+    ).toBe(1);
+
+    const skillMatches = skillsCmdSource.match(/bot\.command\('skill'[^s]/g);
+    expect(
+      skillMatches?.length,
+      'skills-commands.ts should have exactly 1 /skill handler',
+    ).toBe(1);
+
+    // bot.ts should no longer contain any direct /skills or /skill registrations
     const botSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/bot.ts'), 'utf-8',
     );
-    // Count how many times bot.command('skills' appears
-    const skillsMatches = botSource.match(/bot\.command\('skills'/g);
-    // After refactoring, there should be exactly 1 handler (the delegating one).
-    // Currently there are 2 (refactored + old inline). Flag as cleanup needed.
-    expect(
-      skillsMatches?.length,
-      'bot.ts should have exactly 1 /skills handler — old inline handler at ~line 3288 is dead code',
-    ).toBe(2); // Known issue: 2 handlers exist; flip to 1 after cleanup
-
-    const skillMatches = botSource.match(/bot\.command\('skill'[^s]/g);
-    // Similarly, /skill has 2 handlers (using negative lookahead to exclude 'skills')
-    expect(
-      skillMatches?.length,
-      'bot.ts should have exactly 1 /skill handler — old inline handler at ~line 3323 is dead code',
-    ).toBe(2); // Known issue: 2 handlers exist; flip to 1 after cleanup
+    const botSkillsMatches = botSource.match(/bot\.command\('skills'/g);
+    expect(botSkillsMatches).toBeNull();
   });
 });
