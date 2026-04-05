@@ -362,7 +362,9 @@ async function buildWeekFromCalendar(): Promise<any[]> {
         const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
         dayMap.set(dayIdx, {
           day: dayNames[dayIdx], type: e.subject || e.summary || e.title || 'Workout',
-          time: timeMatch ? timeMatch[1] : null, status: d < today ? 'completed' : 'planned',
+          // Mark as 'completed' only if the event's DATE is in the past (not time-of-day)
+          // This avoids false-positives like a 6am event showing "completed" at 6:01am
+          time: timeMatch ? timeMatch[1] : null, status: d.toDateString() < today.toDateString() ? 'completed' : 'planned',
         });
       }
     }

@@ -42,12 +42,17 @@ export function taskRoutes(): Router {
       const { listId } = req.params;
       const status = req.query.status as string | undefined;
 
-      // getTasks(listId, listName, filter)
-      // We don't know the listName here, so pass empty — it's used for display only
-      const listsResult = await todo.getLists();
-      const lists = listsResult?.data || [];
-      const list = Array.isArray(lists) ? lists.find((l: any) => l.id === listId) : null;
-      const listName = list?.displayName || list?.name || 'Tasks';
+      // Accept listName as query param from iOS (avoids extra getLists() MS Graph call)
+      // Fallback: fetch lists only if listName wasn't provided
+      let listName = req.query.listName as string | undefined;
+      if (!listName) {
+        try {
+          const listsResult = await todo.getLists();
+          const lists = listsResult?.data || [];
+          const list = Array.isArray(lists) ? lists.find((l: any) => l.id === listId) : null;
+          listName = list?.displayName || list?.name || 'Tasks';
+        } catch { listName = 'Tasks'; }
+      }
 
       const tasksResult = await todo.getTasks(listId, listName, status ? { status } : undefined);
       const tasks = tasksResult?.data || [];
@@ -104,7 +109,13 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo();
       const { listId, taskId } = req.params;
-      const updates = req.body;
+
+      // Sanitize: only allow known fields to prevent arbitrary field injection
+      const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
+      const updates: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(req.body)) {
+        if (ALLOWED_FIELDS.has(key)) updates[key] = value;
+      }
 
       const result = await todo.updateTask(listId, taskId, updates);
       const task = result?.data || result;

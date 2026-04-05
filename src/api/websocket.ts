@@ -49,43 +49,48 @@ export function attachWebSocket(server: http.Server): void {
       return;
     }
 
-    // Authenticate via query param token
-    const token = url.searchParams.get('token');
-    if (!token) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    try {
-      const payload = jwt.verify(token, config.ios.jwtSecret) as {
-        userId: number;
-        deviceId: string;
-      };
-
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        (ws as any).userId = payload.userId;
-        (ws as any).deviceId = payload.deviceId;
-        wss.emit('connection', ws, request);
-      });
-    } catch {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-    }
+    // Accept connection without auth — auth happens via first message payload
+    // (JWT in URL query params appears in server access logs, which is a security risk)
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      (ws as any).authenticated = false;
+      wss.emit('connection', ws, request);
+    });
   });
 
   wss.on('connection', (ws: WebSocket) => {
-    const userId = (ws as any).userId as number;
-    logger.info({ userId, platform: 'ios' }, 'WebSocket connected');
+    logger.info({ platform: 'ios' }, 'WebSocket connected (pending auth)');
 
     ws.on('message', async (data) => {
       try {
         const msg = JSON.parse(data.toString());
+
+        // First message must be auth: { type: "auth", token: "jwt" }
+        if (!(ws as any).authenticated) {
+          if (msg.type !== 'auth' || !msg.token) {
+            ws.send(JSON.stringify({ type: 'error', message: 'First message must be { type: "auth", token: "jwt" }' }));
+            ws.close(4001, 'Auth required');
+            return;
+          }
+          try {
+            const payload = jwt.verify(msg.token, config.ios.jwtSecret) as { userId: number; deviceId: string };
+            (ws as any).userId = payload.userId;
+            (ws as any).deviceId = payload.deviceId;
+            (ws as any).authenticated = true;
+            ws.send(JSON.stringify({ type: 'auth_ok' }));
+            logger.info({ userId: payload.userId, platform: 'ios' }, 'WebSocket authenticated');
+            return;
+          } catch {
+            ws.send(JSON.stringify({ type: 'error', message: 'Invalid token' }));
+            ws.close(4001, 'Invalid token');
+            return;
+          }
+        }
+
+        const userId = (ws as any).userId as number;
         if (msg.type !== 'message' || !msg.text) return;
 
         const messageId = `msg-${Date.now()}`;
 
-        // Route the message
         const route = await routeMessage(msg.text);
         const handlers = getDomainHandlers();
         const handler = handlers[route.domain];
@@ -133,7 +138,7 @@ export function attachWebSocket(server: http.Server): void {
     });
 
     ws.on('close', () => {
-      logger.debug({ userId, platform: 'ios' }, 'WebSocket disconnected');
+      logger.debug({ userId: (ws as any).userId, platform: 'ios' }, 'WebSocket disconnected');
     });
 
     // Ping/pong for keepalive

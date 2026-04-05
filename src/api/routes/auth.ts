@@ -25,9 +25,8 @@ export function authRoutes(): Router {
         return;
       }
 
-      // Validate invite code (simple check — owner's allowed user IDs)
-      // In production, this would check a separate invite codes table
-      if (inviteCode !== config.ios.inviteCode && inviteCode !== 'NEXUS-ADMIN') {
+      // Validate invite code against configured env var only (no hardcoded fallbacks)
+      if (inviteCode !== config.ios.inviteCode) {
         res.status(403).json({
           error: { code: 'INVALID_INVITE', message: 'Invalid invite code' },
         });

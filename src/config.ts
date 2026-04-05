@@ -185,10 +185,10 @@ export const config = {
   // ── iOS API ─────────────────────────────────────────────────────────
   ios: {
     enabled: (process.env.IOS_API_ENABLED || 'false') === 'true',
-    jwtSecret: process.env.IOS_API_JWT_SECRET || 'nexus-ios-dev-secret-change-me',
+    jwtSecret: process.env.IOS_API_JWT_SECRET || '',
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
     rateLimit: parseInt(process.env.IOS_API_RATE_LIMIT || '60', 10),
-    inviteCode: process.env.IOS_INVITE_CODE || 'NEXUS-ADMIN',
+    inviteCode: process.env.IOS_INVITE_CODE || '',
   },
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
@@ -201,4 +201,12 @@ export const config = {
 // Fail-fast: empty allowedUserIds would silently reject all messages
 if (config.telegram.allowedUserIds.length === 0) {
   throw new Error('TELEGRAM_ALLOWED_USER_IDS parsed to empty list — check env var format (comma-separated numeric IDs)');
+}
+
+// Fail-fast: iOS API enabled without a proper JWT secret is a security risk
+if (config.ios.enabled && !config.ios.jwtSecret) {
+  throw new Error('IOS_API_ENABLED=true but IOS_API_JWT_SECRET is not set. Set a 256-bit secret.');
+}
+if (config.ios.enabled && !config.ios.inviteCode) {
+  throw new Error('IOS_API_ENABLED=true but IOS_INVITE_CODE is not set.');
 }
