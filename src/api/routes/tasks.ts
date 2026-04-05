@@ -20,20 +20,12 @@ export function taskRoutes(): Router {
       const listsArray = result?.data || result || [];
       const lists = Array.isArray(listsArray) ? listsArray : [];
 
-      // Fetch pending count per list using the correct function signature:
-      // getTasks(listId, listName, { status?: string, top?: number })
-      const formatted = await Promise.all(lists.map(async (l: any) => {
-        let taskCount = 0;
-        try {
-          const tasksResult = await todo.getTasks(l.id, l.displayName || l.name || '', { status: 'notStarted' });
-          const tasks = tasksResult?.data || [];
-          taskCount = Array.isArray(tasks) ? tasks.length : 0;
-        } catch { /* count stays 0 */ }
-        return {
-          id: l.id,
-          name: l.displayName || l.name,
-          taskCount,
-        };
+      // Return lists without counts (fetching counts per list = N+1 = 12s for 10 lists)
+      // Counts are fetched lazily when the user opens a specific list
+      const formatted = lists.map((l: any) => ({
+        id: l.id,
+        name: l.displayName || l.name,
+        taskCount: -1, // -1 = not yet loaded (iOS shows "..." instead of 0)
       }));
 
       res.json({ lists: formatted });
