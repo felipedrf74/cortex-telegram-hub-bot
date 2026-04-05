@@ -54,7 +54,7 @@ export function dashboardRoutes(): Router {
         training,
         content,
         system: {
-          version: process.env.npm_package_version || '4.8.25',
+          version: getAppVersion(),
           uptime: uptimeStr,
           botStatus: isBotPollingActive() ? 'online' : 'offline',
           lastMessageAt: getLastMessageAt(),
@@ -99,6 +99,16 @@ function extractTime(dateInput: any): string {
 
 function extractTitle(e: any): string {
   return e.subject || e.summary || e.title || e.displayName || e.name || '(No title)';
+}
+
+/** Read version from package.json (works with PM2, not just npm start) */
+function getAppVersion(): string {
+  try {
+    const pkg = require('../../../package.json');
+    return pkg.version || '0.0.0';
+  } catch {
+    return process.env.npm_package_version || '0.0.0';
+  }
 }
 
 function normalizeBodyBattery(bb: any): number | null {

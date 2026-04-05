@@ -19,7 +19,7 @@ export function settingsRoutes(): Router {
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
       res.json({
-        version: process.env.npm_package_version || '4.8.11',
+        version: (() => { try { return require('../../../package.json').version; } catch { return '0.0.0'; } })(),
         uptime: uptimeStr,
         botStatus: isBotPollingActive() ? 'online' : 'offline',
       });

@@ -3,8 +3,12 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { getCached, setCache, clearCache } from '../../services/cache-store';
 
-// Lazy-load MS Todo service
+// Cache TTLs
+const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
+const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
+
 function getTodo() {
   return require('../../services/microsoft-todo');
 }
@@ -12,38 +16,51 @@ function getTodo() {
 export function taskRoutes(): Router {
   const router = Router();
 
-  /** GET /api/v1/tasks/lists */
+  /** GET /api/v1/tasks/lists — cached in SQLite for 5 min */
   router.get('/lists', async (_req, res: Response) => {
     try {
+      // Check SQLite cache first (survives restarts, fast)
+      const cached = getCached<any>('task-lists');
+      if (cached) {
+        res.json(cached);
+        return;
+      }
+
       const todo = getTodo();
       const result = await todo.getLists();
       const listsArray = result?.data || result || [];
       const lists = Array.isArray(listsArray) ? listsArray : [];
 
-      // Return lists without counts (fetching counts per list = N+1 = 12s for 10 lists)
-      // Counts are fetched lazily when the user opens a specific list
       const formatted = lists.map((l: any) => ({
         id: l.id,
         name: l.displayName || l.name,
-        taskCount: -1, // -1 = not yet loaded (iOS shows "..." instead of 0)
+        taskCount: -1,
       }));
 
-      res.json({ lists: formatted });
+      const response = { lists: formatted };
+      setCache('task-lists', response, LISTS_CACHE_TTL);
+      res.json(response);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
     }
   });
 
-  /** GET /api/v1/tasks/list/:listId?status=notStarted */
+  /** GET /api/v1/tasks/list/:listId — cached per list for 2 min */
   router.get('/list/:listId', async (req, res: Response) => {
     try {
       const todo = getTodo();
       const { listId } = req.params;
       const status = req.query.status as string | undefined;
 
-      // Accept listName as query param from iOS (avoids extra getLists() MS Graph call)
-      // Fallback: fetch lists only if listName wasn't provided
+      // Check SQLite cache
+      const cacheKey = `tasks:${listId}:${status || 'all'}`;
+      const cached = getCached<any>(cacheKey);
+      if (cached) {
+        res.json(cached);
+        return;
+      }
+
       let listName = req.query.listName as string | undefined;
       if (!listName) {
         try {
@@ -70,7 +87,9 @@ export function taskRoutes(): Router {
         createdDateTime: t.createdDateTime || null,
       }));
 
-      res.json({ listName, tasks: formatted });
+      const response = { listName, tasks: formatted };
+      setCache(cacheKey, response, TASKS_CACHE_TTL);
+      res.json(response);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
@@ -89,13 +108,15 @@ export function taskRoutes(): Router {
       }
 
       const result = await todo.createTask({
-        title,
-        listName: listName || 'Tasks',
+        title, listName: listName || 'Tasks',
         dueDateTime: dueDateTime || undefined,
         importance: importance || 'normal',
         body: body || undefined,
       });
       const task = result?.data || result;
+
+      // Invalidate task caches (new task changes list contents)
+      invalidateTaskCaches();
 
       res.status(201).json({ task });
     } catch (err: any) {
@@ -110,7 +131,6 @@ export function taskRoutes(): Router {
       const todo = getTodo();
       const { listId, taskId } = req.params;
 
-      // Sanitize: only allow known fields to prevent arbitrary field injection
       const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
       const updates: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(req.body)) {
@@ -119,6 +139,8 @@ export function taskRoutes(): Router {
 
       const result = await todo.updateTask(listId, taskId, updates);
       const task = result?.data || result;
+
+      invalidateTaskCaches(listId);
       res.json({ task });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
@@ -134,10 +156,9 @@ export function taskRoutes(): Router {
 
       const result = await todo.completeTask(listId, taskId);
       const task = result?.data || result;
-      res.json({
-        task,
-        message: `✅ Completed: ${task?.title || 'task'}`,
-      });
+
+      invalidateTaskCaches(listId);
+      res.json({ task, message: `✅ Completed: ${task?.title || 'task'}` });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks complete failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
@@ -151,6 +172,7 @@ export function taskRoutes(): Router {
       const { listId, taskId } = req.params;
 
       await todo.deleteTask(listId, taskId);
+      invalidateTaskCaches(listId);
       res.json({ deleted: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks delete failed');
@@ -159,4 +181,14 @@ export function taskRoutes(): Router {
   });
 
   return router;
+}
+
+/** Invalidate task caches after mutations (create, update, complete, delete) */
+function invalidateTaskCaches(listId?: string): void {
+  clearCache('task-lists');
+  if (listId) {
+    clearCache(`tasks:${listId}:all`);
+    clearCache(`tasks:${listId}:notStarted`);
+    clearCache(`tasks:${listId}:completed`);
+  }
 }
