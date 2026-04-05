@@ -227,7 +227,7 @@ async function fetchTraining(userId: number) {
       } : null,
       weeklyAdherence: null, // Full adherence data is on /training/week endpoint
       readinessScore,
-      bodyBattery,
+      bodyBattery: normalizeBodyBattery(bodyBattery),
     };
   } catch {
     return { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null };
@@ -253,4 +253,12 @@ async function fetchContent() {
   } catch {
     return { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null };
   }
+}
+
+/** Ensures bodyBattery is always a plain number, never an object */
+function normalizeBodyBattery(bb: any): number | null {
+  if (bb === null || bb === undefined) return null;
+  if (typeof bb === 'number') return bb;
+  if (typeof bb === 'object') return bb.current ?? bb.charged ?? bb.score ?? null;
+  return null;
 }
