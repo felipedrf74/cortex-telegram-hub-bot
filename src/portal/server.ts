@@ -1038,10 +1038,13 @@ export function createPortalServer(bot: Bot): http.Server {
     try {
       const { initCacheStore, clearExpired } = require('../services/cache-store');
       initCacheStore();
-      // Clean expired entries every hour
       setInterval(clearExpired, 60 * 60 * 1000);
+
+      // Initialize domain→provider routing (loads feature flags from env + kv_store)
+      const { initDomainRouting } = require('../services/domain-provider-router');
+      initDomainRouting();
     } catch (err) {
-      logger.error({ err }, 'Failed to initialize cache store');
+      logger.error({ err }, 'Failed to initialize cache store or domain routing');
     }
 
     const { createApiRouter } = require('../api/router');
@@ -1706,9 +1709,25 @@ export function createPortalServer(bot: Bot): http.Server {
   app.post('/api/domain-routing/toggle', express.json(), (req: Request, res: Response) => {
     try {
       const { enabled, domains: geminiDomains } = req.body;
+      const VALID_DOMAINS = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
       const router = require('../services/domain-provider-router');
-      if (typeof enabled === 'boolean') router.setGeminiRoutingEnabled(enabled);
-      if (Array.isArray(geminiDomains)) router.setGeminiDomains(geminiDomains);
+
+      if (typeof enabled === 'boolean') {
+        router.setGeminiRoutingEnabled(enabled);
+      }
+      if (Array.isArray(geminiDomains)) {
+        // Validate: only accept known domain names
+        const validated = geminiDomains.filter((d: unknown) => typeof d === 'string' && VALID_DOMAINS.has(d));
+        router.setGeminiDomains(validated);
+        // Clear cached provider pairs so new routing takes effect immediately
+        try {
+          const { getActiveProvider } = require('../services/provider-registry');
+          const active = getActiveProvider();
+          if (active && typeof (active as any).clearDomainPairCache === 'function') {
+            (active as any).clearDomainPairCache();
+          }
+        } catch {}
+      }
       res.json({ ok: true, config: router.getDomainProviderConfig() });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });

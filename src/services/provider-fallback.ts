@@ -326,6 +326,10 @@ export class TaskRoutingProvider implements AIProvider {
     );
   }
 
+  // Cache domain-specific provider pairs to avoid re-construction on every call.
+  // Key: domain name, Value: resolved pair. Invalidated when routing config changes.
+  private domainPairCache = new Map<string, TaskProviderPair>();
+
   /**
    * Resolve provider pair for a domain. Checks domain-provider-router first
    * for domain-specific routing (e.g., secretary→Claude, cooking→Gemini),
@@ -333,7 +337,11 @@ export class TaskRoutingProvider implements AIProvider {
    */
   private resolveProviderPairForDomain(domain: DomainName): { taskType: TaskType; pair: TaskProviderPair } {
     const taskType = resolveTaskType(domain);
-    const pair = this.routing[taskType];
+    const defaultPair = this.routing[taskType];
+
+    // Check cache first
+    const cached = this.domainPairCache.get(domain);
+    if (cached) return { taskType, pair: cached };
 
     // Check domain-specific provider routing (e.g., cooking→Gemini)
     try {
@@ -342,21 +350,28 @@ export class TaskRoutingProvider implements AIProvider {
       const domainFallback = getFallbackForDomain(domain);
 
       // If the domain-specific provider differs from the task-type primary,
-      // construct a new pair with the domain-specific provider
-      if (domainProvider !== pair.primary.name) {
+      // build and cache a dedicated pair for this domain
+      if (domainProvider !== defaultPair.primary.name) {
         const { getProvider } = require('./provider-registry');
         const primary = getProvider(domainProvider);
         const fallback = getProvider(domainFallback);
         if (primary) {
-          logger.debug({ domain, provider: domainProvider, fallback: domainFallback }, 'Domain-specific provider selected');
-          return { taskType, pair: { primary, fallback: fallback || pair.fallback } };
+          const pair: TaskProviderPair = { primary, fallback: fallback || defaultPair.fallback };
+          this.domainPairCache.set(domain, pair);
+          logger.info({ domain, provider: domainProvider, fallback: domainFallback }, 'Domain-specific provider pair cached');
+          return { taskType, pair };
         }
       }
     } catch {
       // domain-provider-router not available — use task-type routing
     }
 
-    return { taskType, pair };
+    return { taskType, pair: defaultPair };
+  }
+
+  /** Clear cached domain pairs (call when routing config changes at runtime). */
+  clearDomainPairCache(): void {
+    this.domainPairCache.clear();
   }
 
   async callDomain(

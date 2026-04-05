@@ -28,7 +28,7 @@ type ProviderName = 'anthropic' | 'openai' | 'gemini';
 const providers = new Map<string, AIProvider>();
 
 /** Get or create a provider instance by name. Returns null if not configured. */
-function getProvider(name: string): AIProvider | null {
+export function getProvider(name: string): AIProvider | null {
   if (providers.has(name)) return providers.get(name)!;
 
   switch (name as ProviderName) {

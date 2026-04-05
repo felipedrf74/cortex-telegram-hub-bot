@@ -200,9 +200,8 @@ export async function handleSimpleDomain(
 async function handleWithDirectCalls(
   domain: DomainName, history: any[], message: string, stateContext: string,
   maxIterations: number, userId: number | undefined, maxTokensOverride: number | undefined,
-  callDomainFn: Function, continueWithToolResultsFn: Function,
+  callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
 ): Promise<DomainResponse> {
-  const Anthropic = require('@anthropic-ai/sdk');
   let result = await callDomainFn(domain, history, message, stateContext, maxTokensOverride, userId);
   let finalText = result.text;
 
@@ -219,11 +218,13 @@ async function handleWithDirectCalls(
       toolsUsed.push(tc.name);
     }
     const toolResults = await Promise.all(
-      result.toolCalls.map(async (tc: any) => ({
-        type: 'tool_result' as const,
-        tool_use_id: tc.id,
-        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
-      })),
+      result.toolCalls.map(async (tc: any) => {
+        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+        let content = JSON.stringify(toolResult);
+        // Truncate large results (consistent with primary path)
+        if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+        return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+      }),
     );
     toolConversation.push(
       { role: 'assistant' as const, content: assistantContent },

@@ -37,10 +37,10 @@ const rows = db.prepare(`
     SUM(output_tokens) as total_output,
     COUNT(*) as api_calls
   FROM api_usage
-  WHERE ts >= date('now', '-${baselineDays} days')
+  WHERE ts >= date('now', '-' || ? || ' days')
   GROUP BY provider, category
   ORDER BY total_cost DESC
-`).all() as any[];
+`).all(String(baselineDays)) as any[];
 
 // Current totals
 const currentTotal = rows.reduce((s: number, r: any) => s + r.total_cost, 0);

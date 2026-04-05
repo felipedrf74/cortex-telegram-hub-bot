@@ -72,13 +72,14 @@ export function getUserDailySpend(userId: number): { totalUsd: number; messageCo
 export function getSpendByProvider(date?: string): Record<string, number> {
   try {
     const db = getDb();
-    const dateFilter = date || "date('now')";
+    // Use parameterized query to prevent SQL injection
+    const filterDate = date || new Date().toISOString().slice(0, 10);
     const rows = db.prepare(`
       SELECT COALESCE(provider, 'anthropic') as provider, COALESCE(SUM(cost_usd), 0) as total
       FROM api_usage
-      WHERE ts >= ${dateFilter}
+      WHERE ts >= date(?)
       GROUP BY provider
-    `).all() as { provider: string; total: number }[];
+    `).all(filterDate) as { provider: string; total: number }[];
 
     const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0 };
     for (const row of rows) {
