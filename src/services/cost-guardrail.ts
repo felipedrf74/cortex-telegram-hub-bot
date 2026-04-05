@@ -64,3 +64,28 @@ export function getUserDailySpend(userId: number): { totalUsd: number; messageCo
     return { totalUsd: 0, messageCount: 0 };
   }
 }
+
+/**
+ * Get today's spend breakdown by provider.
+ * Returns: { anthropic: number, openai: number, gemini: number }
+ */
+export function getSpendByProvider(date?: string): Record<string, number> {
+  try {
+    const db = getDb();
+    const dateFilter = date || "date('now')";
+    const rows = db.prepare(`
+      SELECT COALESCE(provider, 'anthropic') as provider, COALESCE(SUM(cost_usd), 0) as total
+      FROM api_usage
+      WHERE ts >= ${dateFilter}
+      GROUP BY provider
+    `).all() as { provider: string; total: number }[];
+
+    const result: Record<string, number> = { anthropic: 0, openai: 0, gemini: 0 };
+    for (const row of rows) {
+      result[row.provider] = row.total;
+    }
+    return result;
+  } catch {
+    return { anthropic: 0, openai: 0, gemini: 0 };
+  }
+}

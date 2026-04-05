@@ -79,8 +79,8 @@ async function trackedCompletion(
     try {
       const db = getDb();
       db.prepare(`
-        INSERT INTO api_usage (category, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-        VALUES (?, ?, ?, ?, 0, 0, ?, ?)
+        INSERT INTO api_usage (category, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+        VALUES (?, ?, ?, ?, 0, 0, ?, ?, 'openai')
       `).run(category, model, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
     } catch (e) {
       logger.warn({ err: e }, 'Failed to log OpenAI usage to database');
@@ -393,8 +393,8 @@ ${message}`;
       try {
         const db = getDb();
         db.prepare(`
-          INSERT INTO api_usage (category, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-          VALUES (?, ?, ?, ?, 0, 0, ?, ?)
+          INSERT INTO api_usage (category, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+          VALUES (?, ?, ?, ?, 0, 0, ?, ?, 'openai')
         `).run(`openai_stream_${domain}`, model, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
       } catch (e) {
         logger.warn({ err: e }, 'Failed to log OpenAI streaming usage');

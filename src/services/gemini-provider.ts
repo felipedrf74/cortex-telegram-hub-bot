@@ -80,8 +80,8 @@ function logGeminiUsage(
     const cost = computeGeminiCost(model, usage);
     const db = getDb();
     db.prepare(`
-      INSERT INTO api_usage (category, model, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO api_usage (category, model, input_tokens, output_tokens, cost_usd, duration_ms, provider)
+      VALUES (?, ?, ?, ?, ?, ?, 'gemini')
     `).run(category, model, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
 
     pushEvent({

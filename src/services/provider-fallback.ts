@@ -326,6 +326,39 @@ export class TaskRoutingProvider implements AIProvider {
     );
   }
 
+  /**
+   * Resolve provider pair for a domain. Checks domain-provider-router first
+   * for domain-specific routing (e.g., secretary→Claude, cooking→Gemini),
+   * then falls back to task-type routing.
+   */
+  private resolveProviderPairForDomain(domain: DomainName): { taskType: TaskType; pair: TaskProviderPair } {
+    const taskType = resolveTaskType(domain);
+    const pair = this.routing[taskType];
+
+    // Check domain-specific provider routing (e.g., cooking→Gemini)
+    try {
+      const { getProviderForDomain, getFallbackForDomain } = require('./domain-provider-router');
+      const domainProvider = getProviderForDomain(domain);
+      const domainFallback = getFallbackForDomain(domain);
+
+      // If the domain-specific provider differs from the task-type primary,
+      // construct a new pair with the domain-specific provider
+      if (domainProvider !== pair.primary.name) {
+        const { getProvider } = require('./provider-registry');
+        const primary = getProvider(domainProvider);
+        const fallback = getProvider(domainFallback);
+        if (primary) {
+          logger.debug({ domain, provider: domainProvider, fallback: domainFallback }, 'Domain-specific provider selected');
+          return { taskType, pair: { primary, fallback: fallback || pair.fallback } };
+        }
+      }
+    } catch {
+      // domain-provider-router not available — use task-type routing
+    }
+
+    return { taskType, pair };
+  }
+
   async callDomain(
     domain: DomainName,
     history: DomainMessage[],
@@ -333,7 +366,7 @@ export class TaskRoutingProvider implements AIProvider {
     stateContext: string,
     maxTokensOverride?: number,
   ): Promise<AICallResult> {
-    const taskType = resolveTaskType(domain);
+    const { taskType } = this.resolveProviderPairForDomain(domain);
     return this.executeWithFallback(taskType, (p) =>
       p.callDomain(domain, history, currentMessage, stateContext, maxTokensOverride),
     );
@@ -346,7 +379,7 @@ export class TaskRoutingProvider implements AIProvider {
     stateContext: string,
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult> {
-    const taskType = resolveTaskType(domain);
+    const { taskType } = this.resolveProviderPairForDomain(domain);
     return this.executeWithFallback(taskType, (p) =>
       p.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation),
     );

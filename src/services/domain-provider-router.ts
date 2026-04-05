@@ -140,3 +140,43 @@ export function getDomainProviderConfig(): Array<{
 export function isGeminiRoutingEnabled(): boolean {
   return _geminiRoutingEnabled;
 }
+
+// ─── Secretary Haiku Sub-Routing (Phase 2 Optimization) ─────────────
+
+/**
+ * Simple secretary queries that can use Haiku ($1/$5) instead of Sonnet ($3/$15).
+ * These are lookups/commands that don't require complex reasoning.
+ */
+const SIMPLE_SECRETARY_PATTERNS = [
+  /^\/(agenda|schedule|day|week|tomorrow)$/i,
+  /^\/(done|undone|complete)\b/i,
+  /^\/(email|unread|inbox)\b/i,
+  /^\/(lists|tasks|todosummary)\b/i,
+  /^\/(overdue|duetoday|dueweek)\b/i,
+  /^\/(status|version)\b/i,
+];
+
+let _secretaryHaikuEnabled = process.env.SECRETARY_HAIKU_ROUTING_ENABLED === 'true';
+
+/**
+ * Check if a secretary message is a simple query that can use Haiku.
+ * Behind feature flag SECRETARY_HAIKU_ROUTING_ENABLED (default: false).
+ */
+export function isSimpleSecretaryQuery(message: string): boolean {
+  if (!_secretaryHaikuEnabled) return false;
+  return SIMPLE_SECRETARY_PATTERNS.some(p => p.test(message.trim()));
+}
+
+/**
+ * Get the secretary model tier for a message.
+ * Returns 'simple' for Haiku-eligible queries, 'complex' for Sonnet.
+ */
+export function getSecretaryTier(message: string): 'simple' | 'complex' {
+  return isSimpleSecretaryQuery(message) ? 'simple' : 'complex';
+}
+
+/** Toggle secretary Haiku routing */
+export function setSecretaryHaikuEnabled(enabled: boolean): void {
+  _secretaryHaikuEnabled = enabled;
+  logger.info({ enabled }, 'Secretary Haiku sub-routing toggled');
+}

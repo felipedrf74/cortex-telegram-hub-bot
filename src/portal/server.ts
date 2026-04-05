@@ -1685,6 +1685,46 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/domain-routing — domain→provider mapping for portal display
+  app.get('/api/domain-routing', (_req: Request, res: Response) => {
+    try {
+      const { getDomainProviderConfig, isGeminiRoutingEnabled } = require('../services/domain-provider-router');
+      const { getEffectiveDomainModel } = require('../services/model-config');
+      const domains = getDomainProviderConfig();
+      // Enrich with effective model per domain
+      const enriched = domains.map((d: any) => ({
+        ...d,
+        model: (() => { try { return getEffectiveDomainModel?.(d.provider, d.domain) || 'default'; } catch { return 'default'; } })(),
+      }));
+      res.json({ domains: enriched, geminiRoutingEnabled: isGeminiRoutingEnabled() });
+    } catch (err) {
+      res.json({ domains: [], geminiRoutingEnabled: false });
+    }
+  });
+
+  // POST /api/domain-routing/toggle — toggle Gemini routing at runtime
+  app.post('/api/domain-routing/toggle', express.json(), (req: Request, res: Response) => {
+    try {
+      const { enabled, domains: geminiDomains } = req.body;
+      const router = require('../services/domain-provider-router');
+      if (typeof enabled === 'boolean') router.setGeminiRoutingEnabled(enabled);
+      if (Array.isArray(geminiDomains)) router.setGeminiDomains(geminiDomains);
+      res.json({ ok: true, config: router.getDomainProviderConfig() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/spend-by-provider — per-provider daily cost breakdown
+  app.get('/api/spend-by-provider', (_req: Request, res: Response) => {
+    try {
+      const { getSpendByProvider } = require('../services/cost-guardrail');
+      res.json(getSpendByProvider());
+    } catch {
+      res.json({ anthropic: 0, openai: 0, gemini: 0 });
+    }
+  });
+
   // GET /api/model-config — current model state for all providers
   app.get('/api/model-config', (_req: Request, res: Response) => {
     try {
