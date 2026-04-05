@@ -172,7 +172,8 @@ async function fetchTraining(userId: number) {
       const { calculateReadiness } = require('../../services/readiness-scorer');
       const readiness = await calculateReadiness(userId);
       readinessScore = readiness?.score || null;
-      bodyBattery = readiness?.bodyBattery || readiness?.factors?.bodyBattery || null;
+      const rawBB = readiness?.bodyBattery || readiness?.factors?.bodyBattery || null;
+      bodyBattery = normalizeBodyBattery(rawBB);
     } catch {}
 
     // Get body battery from Garmin directly if readiness didn't provide it
@@ -258,7 +259,16 @@ async function fetchContent() {
 /** Ensures bodyBattery is always a plain number, never an object */
 function normalizeBodyBattery(bb: any): number | null {
   if (bb === null || bb === undefined) return null;
-  if (typeof bb === 'number') return bb;
-  if (typeof bb === 'object') return bb.current ?? bb.charged ?? bb.score ?? null;
-  return null;
+  if (typeof bb === 'number') return Math.round(bb);
+  if (typeof bb === 'object') {
+    // Handle Garmin SDK objects, plain objects, and class instances
+    const val = bb.current !== undefined ? bb.current
+      : bb.charged !== undefined ? bb.charged
+      : bb.score !== undefined ? bb.score
+      : bb.value !== undefined ? bb.value
+      : null;
+    return val !== null && val !== undefined ? Math.round(Number(val)) : null;
+  }
+  const num = Number(bb);
+  return isNaN(num) ? null : Math.round(num);
 }
