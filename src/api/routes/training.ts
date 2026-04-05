@@ -216,11 +216,11 @@ export function trainingRoutes(): Router {
           const garmin = require('../../services/garmin');
           const today = new Date().toISOString().slice(0, 10);
           const bb = await garmin.getBodyBattery?.(today);
-          if (bb?.charged !== undefined) {
-            factors.bodyBattery = bb.charged;
-          } else if (typeof bb === 'number') {
-            factors.bodyBattery = bb;
-          }
+          // Normalize: Garmin may return {current, morningPeak, score} or a number
+          if (typeof bb === 'number') factors.bodyBattery = bb;
+          else if (bb?.current !== undefined) factors.bodyBattery = bb.current;
+          else if (bb?.charged !== undefined) factors.bodyBattery = bb.charged;
+          else if (bb?.score !== undefined) factors.bodyBattery = bb.score;
         } catch {}
       }
 

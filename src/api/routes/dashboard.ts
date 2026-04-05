@@ -181,8 +181,11 @@ async function fetchTraining(userId: number) {
         const garmin = require('../../services/garmin');
         const today = new Date().toISOString().slice(0, 10);
         const bb = await garmin.getBodyBattery?.(today);
-        if (bb?.charged !== undefined) bodyBattery = bb.charged;
-        else if (typeof bb === 'number') bodyBattery = bb;
+        // Normalize: Garmin may return {current, morningPeak, score} or a number
+        if (typeof bb === 'number') bodyBattery = bb;
+        else if (bb?.current !== undefined) bodyBattery = bb.current;
+        else if (bb?.charged !== undefined) bodyBattery = bb.charged;
+        else if (bb?.score !== undefined) bodyBattery = bb.score;
       } catch {}
     }
 
