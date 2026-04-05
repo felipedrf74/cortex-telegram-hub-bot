@@ -164,26 +164,65 @@ async function fetchTasks(userId: number) {
 
 async function fetchTraining(userId: number) {
   try {
-    const { getActivePlan, getSessionsForWeek } = require('../../services/training-plans');
-    const plan = getActivePlan(userId);
-    const sessions = plan ? getSessionsForWeek(userId) : null;
-    const todaySession = sessions?.find((s: any) => s.isToday) || null;
+    let readinessScore: number | null = null;
+    let bodyBattery: number | null = null;
 
-    let readinessScore = null;
-    let bodyBattery = null;
+    // Get readiness
     try {
       const { calculateReadiness } = require('../../services/readiness-scorer');
       const readiness = await calculateReadiness(userId);
       readinessScore = readiness?.score || null;
-      bodyBattery = readiness?.bodyBattery || null;
-    } catch { /* Garmin not available */ }
+      bodyBattery = readiness?.bodyBattery || readiness?.factors?.bodyBattery || null;
+    } catch {}
+
+    // Get body battery from Garmin directly if readiness didn't provide it
+    if (bodyBattery === null) {
+      try {
+        const garmin = require('../../services/garmin');
+        const today = new Date().toISOString().slice(0, 10);
+        const bb = await garmin.getBodyBattery?.(today);
+        if (bb?.charged !== undefined) bodyBattery = bb.charged;
+        else if (typeof bb === 'number') bodyBattery = bb;
+      } catch {}
+    }
+
+    // Get today's training — first try training plans, then calendar fallback
+    let todaySession: any = null;
+    try {
+      const { getActivePlan, getSessionsForWeek } = require('../../services/training-plans');
+      const plan = getActivePlan(userId);
+      const sessions = plan ? getSessionsForWeek(userId) : null;
+      todaySession = sessions?.find((s: any) => s.isToday) || null;
+    } catch {}
+
+    // Calendar fallback for today's training
+    if (!todaySession) {
+      try {
+        const today = new Date();
+        const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
+        const { getEvents } = require('../../services/outlook-calendar');
+        const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
+        const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
+        const trainingEvent = (events || []).find((e: any) => {
+          const title = (e.subject || e.summary || e.title || '').toLowerCase();
+          return keywords.some(kw => title.includes(kw));
+        });
+        if (trainingEvent) {
+          const title = trainingEvent.subject || trainingEvent.summary || trainingEvent.title;
+          const startRaw = trainingEvent.start?.dateTime || trainingEvent.start;
+          const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
+          todaySession = { type: title, time: timeMatch ? timeMatch[1] : null, duration: null, status: 'planned' };
+        }
+      } catch {}
+    }
 
     return {
       todaySession: todaySession ? {
         type: todaySession.type || todaySession.name,
         time: todaySession.time, duration: todaySession.duration, status: todaySession.status || 'planned',
       } : null,
-      weeklyAdherence: sessions ? sessions.filter((s: any) => s.status === 'completed').length / sessions.length : null,
+      weeklyAdherence: null, // Full adherence data is on /training/week endpoint
       readinessScore,
       bodyBattery,
     };
