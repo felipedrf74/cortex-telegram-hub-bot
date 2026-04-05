@@ -472,27 +472,27 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
     });
   });
 
-  describe('Active context skips keyword matching, goes to classifier', () => {
-    it('with active context, ambiguous message goes to classifier', async () => {
+  describe('Active context: keyword matching runs first (token-zero optimization)', () => {
+    it('with active context, truly ambiguous message goes to classifier', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.88 });
       const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Your 5K time was great!' };
 
+      // "move it to wednesday" has no strong keyword match → goes to classifier
       const result = await routeMessage('move it to wednesday', context);
       expect(result.domain).toBe('triathlon');
       expect(result.method).toBe('classifier');
       expect(result.confidence).toBe(0.88);
     });
 
-    it('keyword-heavy message still goes to classifier when context is active', async () => {
-      // "schedule a meeting" would match secretary via keywords, but with active
-      // triathlon context, the classifier should decide (maybe user is scheduling a training)
+    it('keyword-heavy message matches keyword FIRST even with active context (token-zero)', async () => {
+      // Token-zero: "schedule a meeting" keyword-matches to secretary.
+      // With the new routing, keywords always run before classifier to save tokens.
       mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.75 });
       const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Rest day today.' };
 
       const result = await routeMessage('schedule a meeting', context);
-      expect(result.method).toBe('classifier');
-      // The classifier decided it's triathlon, not secretary
-      expect(result.domain).toBe('triathlon');
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
     });
   });
 

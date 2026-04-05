@@ -1,29 +1,38 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { isBotPollingActive, getLastMessageAt } from '../../portal/telemetry';
+import { getCached, setCache } from '../../services/cache-store';
 
 export function dashboardRoutes(): Router {
   const router = Router();
 
   /**
    * GET /api/v1/dashboard
-   * Aggregated dashboard data — single call for the home screen.
+   * Aggregated dashboard — single call for the home screen.
+   * Supports ETag/If-None-Match for polling efficiency.
+   * All external calls are parallel via Promise.allSettled (never sequential).
    */
-  router.get('/', async (req, res: Response) => {
+  router.get('/', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
 
     try {
-      // Parallel fetch — each wrapped in try/catch for partial failure resilience
-      const [calendar, tasks, training, content] = await Promise.all([
-        fetchCalendar().catch(() => null),
-        fetchTasks(userId).catch(() => null),
-        fetchTraining(userId).catch(() => null),
-        fetchContent().catch(() => null),
+      // ALL external fetches run in parallel — never sequential
+      const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
+        fetchCalendar(),
+        fetchTasks(),
+        fetchTraining(userId),
+        fetchContent(),
       ]);
+
+      const calendar = calendarResult.status === 'fulfilled' ? calendarResult.value : { today: [], upcoming: [] };
+      const tasks = tasksResult.status === 'fulfilled' ? tasksResult.value : { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] };
+      const training = trainingResult.status === 'fulfilled' ? trainingResult.value : { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null };
+      const content = contentResult.status === 'fulfilled' ? contentResult.value : { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null };
 
       // Time-aware greeting
       const now = new Date();
@@ -36,7 +45,7 @@ export function dashboardRoutes(): Router {
         ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
-      res.json({
+      const response = {
         greeting: `${greeting}, Felipe`,
         date: now.toISOString().slice(0, 10),
         dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
@@ -45,12 +54,25 @@ export function dashboardRoutes(): Router {
         training,
         content,
         system: {
-          version: process.env.npm_package_version || '4.8.11',
+          version: process.env.npm_package_version || '4.8.25',
           uptime: uptimeStr,
           botStatus: isBotPollingActive() ? 'online' : 'offline',
           lastMessageAt: getLastMessageAt(),
         },
-      });
+      };
+
+      // ETag support — skip full response if nothing changed
+      const responseJson = JSON.stringify(response);
+      const etag = `"${crypto.createHash('md5').update(responseJson).digest('hex')}"`;
+
+      if (req.headers['if-none-match'] === etag) {
+        res.status(304).end();
+        return;
+      }
+
+      res.setHeader('ETag', etag);
+      res.setHeader('Cache-Control', 'private, max-age=30');
+      res.json(response);
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
@@ -60,179 +82,179 @@ export function dashboardRoutes(): Router {
   return router;
 }
 
-// ── Data fetchers (each is independently failable) ──
+// ── Helpers ──────────────────────────────────────────────────────────
 
-async function fetchCalendar() {
+function extractTime(dateInput: any): string {
+  if (!dateInput) return '';
+  const raw = typeof dateInput === 'string' ? dateInput : dateInput.dateTime || dateInput.date || String(dateInput);
   try {
-    const today = new Date();
-    const startOfDay = new Date(today);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(today);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const events: any[] = [];
-
-    // Helper: extract a clean HH:MM time from various date formats
-    function extractTime(dateInput: any): string {
-      if (!dateInput) return '';
-      const raw = typeof dateInput === 'string' ? dateInput : dateInput.dateTime || dateInput.date || String(dateInput);
-      try {
-        const d = new Date(raw);
-        if (!isNaN(d.getTime())) {
-          return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/Lisbon' });
-        }
-      } catch {}
-      // Fallback: try to extract time from ISO string
-      const match = raw.match(/T(\d{2}:\d{2})/);
-      return match ? match[1] : '';
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/Lisbon' });
     }
-
-    // Helper: extract title from various calendar event shapes
-    function extractTitle(e: any): string {
-      return e.subject || e.summary || e.title || e.displayName || e.name || '(No title)';
-    }
-
-    // Outlook Calendar
-    try {
-      const { getEvents } = require('../../services/outlook-calendar');
-      const outlookEvents = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
-      if (Array.isArray(outlookEvents)) {
-        events.push(...outlookEvents.map((e: any) => ({
-          id: e.id,
-          title: extractTitle(e),
-          start: extractTime(e.start),
-          end: extractTime(e.end),
-          source: 'outlook',
-          category: e.categories?.[0] || null,
-          color: null,
-        })));
-      }
-    } catch { /* Outlook not configured */ }
-
-    // Google Calendar
-    try {
-      const { getEvents } = require('../../services/google-calendar');
-      const googleEvents = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
-      if (Array.isArray(googleEvents)) {
-        events.push(...googleEvents.map((e: any) => ({
-          id: e.id,
-          title: extractTitle(e),
-          start: extractTime(e.start),
-          end: extractTime(e.end),
-          source: 'google',
-          category: null,
-          color: null,
-        })));
-      }
-    } catch { /* Google not configured */ }
-
-    // Sort by start time
-    events.sort((a, b) => a.start.localeCompare(b.start));
-
-    return { today: events, upcoming: [] };
-  } catch {
-    return { today: [], upcoming: [] };
-  }
+  } catch {}
+  const match = raw.match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : '';
 }
 
-async function fetchTasks(userId: number) {
-  try {
-    const todo = require('../../services/microsoft-todo');
-    const allTasks = await todo.getAllPendingTasks();
-    const tasks = allTasks?.data || allTasks || [];
-    const now = new Date();
+function extractTitle(e: any): string {
+  return e.subject || e.summary || e.title || e.displayName || e.name || '(No title)';
+}
 
-    const overdue = tasks.filter((t: any) => t.dueDateTime && new Date(t.dueDateTime.dateTime || t.dueDateTime) < now).length;
-    const dueToday = tasks.filter((t: any) => {
-      if (!t.dueDateTime) return false;
-      const due = new Date(t.dueDateTime.dateTime || t.dueDateTime);
-      return due.toDateString() === now.toDateString();
-    }).length;
-
-    const topTasks = tasks.slice(0, 5).map((t: any) => ({
-      id: t.id, title: t.title, body: t.body?.content || null,
-      importance: t.importance || 'normal', status: t.status || 'notStarted',
-      dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
-      listId: null, listName: null, checklistItems: null, createdDateTime: t.createdDateTime || null,
-    }));
-
-    return { overdue, dueToday, totalPending: tasks.length, topTasks };
-  } catch {
-    return { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] };
+function normalizeBodyBattery(bb: any): number | null {
+  if (bb === null || bb === undefined) return null;
+  if (typeof bb === 'number') return Math.round(bb);
+  if (typeof bb === 'object') {
+    const val = bb.current !== undefined ? bb.current
+      : bb.charged !== undefined ? bb.charged
+      : bb.score !== undefined ? bb.score
+      : null;
+    return val !== null && val !== undefined ? Math.round(Number(val)) : null;
   }
+  return null;
+}
+
+function mapCalendarEvent(e: any, source: string) {
+  return {
+    id: e.id,
+    title: extractTitle(e),
+    start: extractTime(e.start),
+    end: extractTime(e.end),
+    source,
+    category: e.categories?.[0] || null,
+    color: null,
+  };
+}
+
+// ── Data Fetchers (all independently failable) ──────────────────────
+
+async function fetchCalendar() {
+  const today = new Date();
+  const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
+  const start = startOfDay.toISOString();
+  const end = endOfDay.toISOString();
+
+  // PARALLEL fetch of Outlook + Google Calendar (never sequential)
+  const [outlookResult, googleResult] = await Promise.allSettled([
+    (async () => {
+      const { getEvents } = require('../../services/outlook-calendar');
+      const events = await getEvents(start, end);
+      return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'outlook')) : [];
+    })(),
+    (async () => {
+      const { getEvents } = require('../../services/google-calendar');
+      const events = await getEvents(start, end);
+      return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'google')) : [];
+    })(),
+  ]);
+
+  const outlookEvents = outlookResult.status === 'fulfilled' ? outlookResult.value : [];
+  const googleEvents = googleResult.status === 'fulfilled' ? googleResult.value : [];
+
+  const allEvents = [...outlookEvents, ...googleEvents].sort((a, b) => a.start.localeCompare(b.start));
+  return { today: allEvents, upcoming: [] };
+}
+
+async function fetchTasks() {
+  const todo = require('../../services/microsoft-todo');
+  const allTasksResult = await todo.getAllPendingTasks();
+  const tasks = allTasksResult?.data || allTasksResult || [];
+  if (!Array.isArray(tasks)) return { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] };
+
+  const now = new Date();
+  const overdue = tasks.filter((t: any) => {
+    const due = t.dueDateTime?.dateTime || t.dueDateTime;
+    return due && new Date(due) < now && new Date(due).toDateString() !== now.toDateString();
+  }).length;
+
+  const dueToday = tasks.filter((t: any) => {
+    const due = t.dueDateTime?.dateTime || t.dueDateTime;
+    return due && new Date(due).toDateString() === now.toDateString();
+  }).length;
+
+  const topTasks = tasks.slice(0, 5).map((t: any) => ({
+    id: t.id, title: t.title, body: t.body?.content || null,
+    importance: t.importance || 'normal', status: t.status || 'notStarted',
+    dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
+    listId: t.listId || null, listName: t.listName || null,
+    checklistItems: null, createdDateTime: t.createdDateTime || null,
+  }));
+
+  return { overdue, dueToday, totalPending: tasks.length, topTasks };
 }
 
 async function fetchTraining(userId: number) {
-  try {
-    let readinessScore: number | null = null;
-    let bodyBattery: number | null = null;
+  let readinessScore: number | null = null;
+  let bodyBattery: number | null = null;
 
-    // Get readiness
+  // Get readiness (algorithmic — NO AI call, cached 30min in SQLite)
+  const cachedReadiness = getCached<{ score: number; bodyBattery: number | null }>(`readiness:${userId}`);
+  if (cachedReadiness) {
+    readinessScore = cachedReadiness.score;
+    bodyBattery = cachedReadiness.bodyBattery;
+  } else {
     try {
       const { calculateReadiness } = require('../../services/readiness-scorer');
       const readiness = await calculateReadiness(userId);
       readinessScore = readiness?.score || null;
-      const rawBB = readiness?.bodyBattery || readiness?.factors?.bodyBattery || null;
-      bodyBattery = normalizeBodyBattery(rawBB);
+      bodyBattery = normalizeBodyBattery(readiness?.bodyBattery || readiness?.factors?.bodyBattery);
+
+      // Try Garmin direct for body battery if readiness didn't provide it
+      if (bodyBattery === null) {
+        try {
+          const garmin = require('../../services/garmin');
+          const todayStr = new Date().toISOString().slice(0, 10);
+          const bb = await garmin.getBodyBattery?.(todayStr);
+          bodyBattery = normalizeBodyBattery(bb);
+        } catch {}
+      }
+
+      // Cache readiness for 30 minutes
+      setCache(`readiness:${userId}`, { score: readinessScore, bodyBattery }, 1800);
     } catch {}
-
-    // Get body battery from Garmin directly if readiness didn't provide it
-    if (bodyBattery === null) {
-      try {
-        const garmin = require('../../services/garmin');
-        const today = new Date().toISOString().slice(0, 10);
-        const bb = await garmin.getBodyBattery?.(today);
-        // Normalize: Garmin may return {current, morningPeak, score} or a number
-        if (typeof bb === 'number') bodyBattery = bb;
-        else if (bb?.current !== undefined) bodyBattery = bb.current;
-        else if (bb?.charged !== undefined) bodyBattery = bb.charged;
-        else if (bb?.score !== undefined) bodyBattery = bb.score;
-      } catch {}
-    }
-
-    // Get today's training — first try training plans, then calendar fallback
-    let todaySession: any = null;
-    try {
-      const { getActivePlan, getSessionsForWeek } = require('../../services/training-plans');
-      const plan = getActivePlan(userId);
-      const sessions = plan ? getSessionsForWeek(userId) : null;
-      todaySession = sessions?.find((s: any) => s.isToday) || null;
-    } catch {}
-
-    // Calendar fallback for today's training
-    if (!todaySession) {
-      try {
-        const today = new Date();
-        const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
-        const { getEvents } = require('../../services/outlook-calendar');
-        const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
-        const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
-        const trainingEvent = (events || []).find((e: any) => {
-          const title = (e.subject || e.summary || e.title || '').toLowerCase();
-          return keywords.some(kw => title.includes(kw));
-        });
-        if (trainingEvent) {
-          const title = trainingEvent.subject || trainingEvent.summary || trainingEvent.title;
-          const startRaw = trainingEvent.start?.dateTime || trainingEvent.start;
-          const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
-          todaySession = { type: title, time: timeMatch ? timeMatch[1] : null, duration: null, status: 'planned' };
-        }
-      } catch {}
-    }
-
-    return {
-      todaySession: todaySession ? {
-        type: todaySession.type || todaySession.name,
-        time: todaySession.time, duration: todaySession.duration, status: todaySession.status || 'planned',
-      } : null,
-      weeklyAdherence: null, // Full adherence data is on /training/week endpoint
-      readinessScore,
-      bodyBattery: normalizeBodyBattery(bodyBattery),
-    };
-  } catch {
-    return { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null };
   }
+
+  // Get today's training — first try training plans, then calendar fallback
+  let todaySession: any = null;
+  try {
+    const { getActivePlan, getSessionsForWeek } = require('../../services/training-plans');
+    const plan = getActivePlan(userId);
+    const sessions = plan ? getSessionsForWeek(userId) : null;
+    todaySession = sessions?.find((s: any) => s.isToday) || null;
+  } catch {}
+
+  // Calendar fallback
+  if (!todaySession) {
+    try {
+      const today = new Date();
+      const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
+      const { getEvents } = require('../../services/outlook-calendar');
+      const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
+      const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
+      const trainingEvent = (events || []).find((e: any) => {
+        const title = (e.subject || e.summary || e.title || '').toLowerCase();
+        return keywords.some(kw => title.includes(kw));
+      });
+      if (trainingEvent) {
+        const title = trainingEvent.subject || trainingEvent.summary || trainingEvent.title;
+        const startRaw = trainingEvent.start?.dateTime || trainingEvent.start;
+        const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
+        todaySession = { type: title, time: timeMatch ? timeMatch[1] : null, duration: null, status: 'planned' };
+      }
+    } catch {}
+  }
+
+  return {
+    todaySession: todaySession ? {
+      type: todaySession.type || todaySession.name,
+      time: todaySession.time, duration: todaySession.duration, status: todaySession.status || 'planned',
+    } : null,
+    weeklyAdherence: null,
+    readinessScore,
+    bodyBattery,
+  };
 }
 
 async function fetchContent() {
@@ -240,8 +262,7 @@ async function fetchContent() {
     const db = require('../../services/database').getDb();
     const counts = db.prepare(`
       SELECT stage, COUNT(*) as count FROM content_ideas
-      WHERE status != 'archived'
-      GROUP BY stage
+      WHERE status != 'archived' GROUP BY stage
     `).all() as { stage: string; count: number }[];
 
     const pipelineCount = { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 };
@@ -249,26 +270,8 @@ async function fetchContent() {
       const key = row.stage as keyof typeof pipelineCount;
       if (key in pipelineCount) pipelineCount[key] = row.count;
     }
-
     return { pipelineCount, nextDeadline: null };
   } catch {
     return { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null };
   }
-}
-
-/** Ensures bodyBattery is always a plain number, never an object */
-function normalizeBodyBattery(bb: any): number | null {
-  if (bb === null || bb === undefined) return null;
-  if (typeof bb === 'number') return Math.round(bb);
-  if (typeof bb === 'object') {
-    // Handle Garmin SDK objects, plain objects, and class instances
-    const val = bb.current !== undefined ? bb.current
-      : bb.charged !== undefined ? bb.charged
-      : bb.score !== undefined ? bb.score
-      : bb.value !== undefined ? bb.value
-      : null;
-    return val !== null && val !== undefined ? Math.round(Number(val)) : null;
-  }
-  const num = Number(bb);
-  return isNaN(num) ? null : Math.round(num);
 }

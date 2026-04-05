@@ -1034,6 +1034,16 @@ export function createPortalServer(bot: Bot): http.Server {
 
   // ── iOS API (mounted first — separate JWT auth, not portal token) ────
   if (config.ios?.enabled) {
+    // Initialize SQLite-backed cache store (survives restarts)
+    try {
+      const { initCacheStore, clearExpired } = require('../services/cache-store');
+      initCacheStore();
+      // Clean expired entries every hour
+      setInterval(clearExpired, 60 * 60 * 1000);
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize cache store');
+    }
+
     const { createApiRouter } = require('../api/router');
     app.use('/api/v1', createApiRouter());
     logger.info('iOS API enabled on /api/v1');

@@ -4,6 +4,11 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { routeMessage, isSystemCommand } from '../../router';
 import { logger } from '../../utils/logger';
+import { getCached, setCache } from '../../services/cache-store';
+
+// Commands whose responses can be cached (deterministic for a few minutes)
+const CACHEABLE_COMMANDS = new Set(['/day', '/status', '/week', '/todosummary', '/training today', '/training plan']);
+const CHAT_CMD_TTL = 180; // 3 minutes
 // NOTE: IOSAdapter exists but domain handlers currently don't accept an adapter parameter.
 // Messages are processed via handler(message, userId) which returns { text, domain }.
 // Buttons sent via Grammy InlineKeyboard are Telegram-specific and not captured here.
@@ -54,6 +59,18 @@ export function chatRoutes(): Router {
     }
 
     try {
+      // Check cache for known deterministic commands (saves $0.02-0.05 per hit)
+      const normalizedText = text.trim().toLowerCase();
+      if (CACHEABLE_COMMANDS.has(normalizedText)) {
+        const cacheKey = `chat-cmd:${userId}:${normalizedText}`;
+        const cached = getCached(cacheKey);
+        if (cached) {
+          logger.debug({ cmd: normalizedText, platform: 'ios' }, 'Returning cached chat command');
+          res.json(cached);
+          return;
+        }
+      }
+
       // Build active conversation context
       let activeContext = null;
       const lastState = lastActiveDomain.get(userId);
@@ -113,7 +130,7 @@ export function chatRoutes(): Router {
         // callback-store may not export getRecentCallbacks — buttons stay null
       }
 
-      res.json({
+      const response = {
         id: `msg-${Date.now()}`,
         text: result.text,
         domain: result.domain || route.domain,
@@ -122,7 +139,14 @@ export function chatRoutes(): Router {
         buttons,
         metadata: null,
         timestamp: new Date().toISOString(),
-      });
+      };
+
+      // Cache the response if it was a deterministic command
+      if (CACHEABLE_COMMANDS.has(normalizedText)) {
+        setCache(`chat-cmd:${userId}:${normalizedText}`, response, CHAT_CMD_TTL);
+      }
+
+      res.json(response);
     } catch (err: any) {
       logger.error({ err, text, platform: 'ios' }, 'iOS chat/message failed');
       res.status(500).json({

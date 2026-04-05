@@ -375,34 +375,36 @@ describe('REGRESSION: Three-tier cascade functions correctly', () => {
     });
   });
 
-  describe('Active context bypasses keyword matching', () => {
-    it('with active triathlon context, "schedule a meeting" goes to classifier not secretary keyword', async () => {
+  describe('Active context: keywords always run first (token-zero optimization)', () => {
+    it('with active triathlon context, "schedule a meeting" keyword-matches to secretary (saves classifier call)', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.75 });
       const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Rest day today.' };
 
       const result = await routeMessage('schedule a meeting', context);
-      // Without context, "schedule a meeting" would match secretary via keyword.
-      // With context, it goes to classifier, which decides triathlon.
-      expect(result.method).toBe('classifier');
-      expect(result.domain).toBe('triathlon');
+      // Token-zero: keyword matching runs BEFORE classifier even with active context.
+      // "schedule" + "meeting" match secretary keywords. This saves a Claude call.
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
     });
 
-    it('with active secretary context, "training plan" goes to classifier not triathlon keyword', async () => {
+    it('with active secretary context, "training plan" keyword-matches to triathlon', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.8 });
       const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here are your tasks.' };
 
       const result = await routeMessage('add training plan to my tasks', context);
-      expect(result.method).toBe('classifier');
-      expect(result.domain).toBe('secretary');
+      // "training" matches triathlon keyword — classifier NOT called
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('triathlon');
     });
 
-    it('with active content context, "deadline" goes to classifier not secretary keyword', async () => {
+    it('with active content context, "deadline" keyword-matches to secretary', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.9 });
       const context = { domain: 'content' as const, lastAssistantMessage: 'Video script draft ready.' };
 
       const result = await routeMessage('when is the deadline for this?', context);
-      expect(result.method).toBe('classifier');
-      expect(result.domain).toBe('content');
+      // "deadline" matches secretary keyword — classifier NOT called
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
     });
 
     it('explicit command still wins even with active context', async () => {

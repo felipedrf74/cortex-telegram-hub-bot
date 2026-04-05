@@ -3,63 +3,54 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { getCached, setCache, clearCache } from '../../services/cache-store';
 
-// ── Coach briefing cache (avoid calling Claude on every tab open) ────
-// TTL: 6 hours — Garmin data only changes meaningfully once per day
-const COACH_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-let coachCache: { data: any; timestamp: number } | null = null;
-
-function getCachedCoachBriefing(): any | null {
-  if (coachCache && Date.now() - coachCache.timestamp < COACH_CACHE_TTL_MS) {
-    return coachCache.data;
-  }
-  return null;
-}
-
-function setCachedCoachBriefing(data: any): void {
-  coachCache = { data, timestamp: Date.now() };
-}
-
-// ── Readiness cache (avoid hitting Garmin API on every request) ──────
-const READINESS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
-let readinessCache: { data: any; timestamp: number } | null = null;
+// Cache TTLs (seconds)
+const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
+const READINESS_TTL = 30 * 60; // 30 minutes
+const SUMMARY_TTL = 5 * 60;    // 5 minutes
 
 export function trainingRoutes(): Router {
   const router = Router();
+
+  /**
+   * GET /api/v1/training/summary
+   * Consolidated endpoint: today + week + readiness in ONE call.
+   * Cached for 5 minutes in SQLite. Eliminates 3 separate API calls from iOS.
+   */
+  router.get('/summary', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const cacheKey = `training-summary:${userId}`;
+
+    const cached = getCached(cacheKey);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
+
+    // Parallel fetch — NEVER sequential
+    const [todayResult, weekResult, readinessResult] = await Promise.allSettled([
+      getTodaySession(userId),
+      getWeekPlan(userId),
+      getReadiness(userId),
+    ]);
+
+    const response = {
+      today: todayResult.status === 'fulfilled' ? todayResult.value : null,
+      week: weekResult.status === 'fulfilled' ? weekResult.value : { sessions: [], adherence: 0, weekNumber: 0 },
+      readiness: readinessResult.status === 'fulfilled' ? readinessResult.value : { score: 0, factors: {}, recommendation: null },
+    };
+
+    setCache(cacheKey, response, SUMMARY_TTL);
+    res.json(response);
+  });
 
   /** GET /api/v1/training/today */
   router.get('/today', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
-      let session: any = null;
-      let plan: any = null;
-
-      // Try training plans service first
-      try {
-        const tp = require('../../services/training-plans');
-        const activePlan = tp.getActivePlan(userId);
-        if (activePlan) {
-          plan = { name: activePlan.name, weekNumber: activePlan.currentWeek || 1, phase: activePlan.phase || null };
-          const sessions = tp.getSessionsForWeek(userId);
-          session = sessions?.find((s: any) => s.isToday) || null;
-        }
-      } catch {}
-
-      // Fallback: look for training events in today's calendar
-      if (!session) {
-        session = await findTodayTrainingFromCalendar();
-      }
-
-      if (session) {
-        session = {
-          id: session.id || null, type: session.type || session.name || 'Workout',
-          time: session.time || null, duration: session.duration || null,
-          status: session.status || 'planned', notes: session.notes || null,
-          exercises: session.exercises || null,
-        };
-      }
-
-      res.json({ session, plan });
+      const session = await getTodaySession(userId);
+      res.json(session);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/today failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
@@ -70,44 +61,8 @@ export function trainingRoutes(): Router {
   router.get('/week', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
-      let weekNumber = 0;
-      let sessions: any[] = [];
-      let adherence = 0;
-
-      try {
-        const tp = require('../../services/training-plans');
-        const plan = tp.getActivePlan(userId);
-        if (plan) {
-          weekNumber = plan.currentWeek || 1;
-          const weekSessions = tp.getSessionsForWeek(userId);
-          if (Array.isArray(weekSessions) && weekSessions.length > 0) {
-            sessions = weekSessions.map((s: any) => ({
-              day: s.day || s.dayOfWeek, type: s.type || s.name,
-              time: s.time || null, status: s.status || 'planned',
-            }));
-          }
-          const adh = tp.getWeeklyAdherence?.(userId);
-          adherence = typeof adh === 'number' ? adh : adh?.adherenceRate || 0;
-        }
-      } catch {}
-
-      // Fallback: build week from calendar if no training plan
-      if (sessions.length === 0) {
-        sessions = await buildWeekFromCalendar();
-        const completed = sessions.filter(s => s.status === 'completed').length;
-        const total = sessions.filter(s => s.status !== 'rest').length;
-        adherence = total > 0 ? completed / total : 0;
-      }
-
-      const completedCount = sessions.filter((s: any) => s.status === 'completed').length;
-
-      res.json({
-        weekNumber,
-        sessions,
-        adherence: typeof adherence === 'number' ? adherence : 0,
-        completedCount,
-        totalCount: sessions.filter((s: any) => s.status !== 'rest').length,
-      });
+      const week = await getWeekPlan(userId);
+      res.json(week);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/week failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
@@ -118,45 +73,8 @@ export function trainingRoutes(): Router {
   router.get('/readiness', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
-      // Use cached readiness if fresh
-      if (readinessCache && Date.now() - readinessCache.timestamp < READINESS_CACHE_TTL_MS) {
-        res.json(readinessCache.data);
-        return;
-      }
-
-      let score = 0;
-      let factors: any = {};
-      let recommendation: string | null = null;
-
-      try {
-        const { calculateReadiness } = require('../../services/readiness-scorer');
-        const readiness = await calculateReadiness(userId);
-        score = readiness?.score || 0;
-        factors = {
-          sleepScore: readiness?.sleepScore || readiness?.factors?.sleepScore || null,
-          hrvStatus: readiness?.hrvStatus || readiness?.factors?.hrvStatus || null,
-          bodyBattery: normalizeBodyBattery(readiness?.bodyBattery || readiness?.factors?.bodyBattery),
-          trainingLoad: readiness?.trainingLoad || readiness?.factors?.trainingLoad || null,
-          restingHeartRate: readiness?.restingHeartRate || readiness?.factors?.restingHeartRate || null,
-          stressLevel: readiness?.stressLevel || readiness?.factors?.stressLevel || null,
-        };
-        const rawRec = readiness?.recommendation || readiness?.action || '';
-        recommendation = humanizeRecommendation(rawRec, score);
-      } catch {}
-
-      // Try Garmin direct for body battery
-      if (!factors.bodyBattery) {
-        try {
-          const garmin = require('../../services/garmin');
-          const today = new Date().toISOString().slice(0, 10);
-          const bb = await garmin.getBodyBattery?.(today);
-          factors.bodyBattery = normalizeBodyBattery(bb);
-        } catch {}
-      }
-
-      const result = { score, factors, recommendation };
-      readinessCache = { data: result, timestamp: Date.now() };
-      res.json(result);
+      const readiness = await getReadiness(userId);
+      res.json(readiness);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/readiness failed');
       res.json({ score: 0, factors: {}, recommendation: null });
@@ -165,18 +83,19 @@ export function trainingRoutes(): Router {
 
   /**
    * GET /api/v1/training/coach
-   *
-   * CACHED: Returns cached briefing if <6 hours old.
+   * Coach briefing — cached in SQLite for 6 hours (survives restarts).
    * Use ?refresh=true to force a new AI analysis (costs ~$0.05).
    */
   router.get('/coach', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
     const forceRefresh = req.query.refresh === 'true';
+    const cacheKey = `coach-briefing:${userId}`;
 
-    // Return cached briefing (no AI call, no token cost)
+    // Return SQLite-cached briefing (survives restarts, no AI call)
     if (!forceRefresh) {
-      const cached = getCachedCoachBriefing();
+      const cached = getCached(cacheKey);
       if (cached) {
-        logger.debug('Returning cached coach briefing (no AI call)');
+        logger.debug('Returning SQLite-cached coach briefing (no AI call)');
         res.json(cached);
         return;
       }
@@ -193,7 +112,7 @@ export function trainingRoutes(): Router {
         cachedAt: new Date().toISOString(),
       };
 
-      setCachedCoachBriefing(result);
+      setCache(cacheKey, result, COACH_TTL);
       res.json(result);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
@@ -212,8 +131,9 @@ export function trainingRoutes(): Router {
       const adh = getWeeklyAdherence ? getWeeklyAdherence(userId) : null;
       const adherenceRate = typeof adh === 'number' ? adh : adh?.adherenceRate || null;
 
-      // Invalidate coach cache since training status changed
-      coachCache = null;
+      // Invalidate caches since training status changed
+      clearCache(`coach-briefing:${userId}`);
+      clearCache(`training-summary:${userId}`);
 
       res.json({ completed: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {
@@ -226,7 +146,6 @@ export function trainingRoutes(): Router {
   router.post('/coach/apply', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     const { recommendationIds } = req.body;
-
     try {
       const { applyCoachRecommendations } = require('../../services/garmin-coach');
       const applied = await applyCoachRecommendations(userId, recommendationIds);
@@ -237,6 +156,114 @@ export function trainingRoutes(): Router {
   });
 
   return router;
+}
+
+// ── Shared Logic (used by individual routes AND /summary) ───────────
+
+async function getTodaySession(userId: number) {
+  let session: any = null;
+  let plan: any = null;
+
+  try {
+    const tp = require('../../services/training-plans');
+    const activePlan = tp.getActivePlan(userId);
+    if (activePlan) {
+      plan = { name: activePlan.name, weekNumber: activePlan.currentWeek || 1, phase: activePlan.phase || null };
+      const sessions = tp.getSessionsForWeek(userId);
+      session = sessions?.find((s: any) => s.isToday) || null;
+    }
+  } catch {}
+
+  if (!session) session = await findTodayTrainingFromCalendar();
+
+  return {
+    session: session ? {
+      id: session.id || null, type: session.type || session.name || 'Workout',
+      time: session.time || null, duration: session.duration || null,
+      status: session.status || 'planned', notes: session.notes || null,
+      exercises: session.exercises || null,
+    } : null,
+    plan,
+  };
+}
+
+async function getWeekPlan(userId: number) {
+  let weekNumber = 0;
+  let sessions: any[] = [];
+  let adherence = 0;
+
+  try {
+    const tp = require('../../services/training-plans');
+    const plan = tp.getActivePlan(userId);
+    if (plan) {
+      weekNumber = plan.currentWeek || 1;
+      const weekSessions = tp.getSessionsForWeek(userId);
+      if (Array.isArray(weekSessions) && weekSessions.length > 0) {
+        sessions = weekSessions.map((s: any) => ({
+          day: s.day || s.dayOfWeek, type: s.type || s.name,
+          time: s.time || null, status: s.status || 'planned',
+        }));
+      }
+      const adh = tp.getWeeklyAdherence?.(userId);
+      adherence = typeof adh === 'number' ? adh : adh?.adherenceRate || 0;
+    }
+  } catch {}
+
+  if (sessions.length === 0) {
+    sessions = await buildWeekFromCalendar();
+    const completed = sessions.filter(s => s.status === 'completed').length;
+    const total = sessions.filter(s => s.status !== 'rest').length;
+    adherence = total > 0 ? completed / total : 0;
+  }
+
+  return {
+    weekNumber,
+    sessions,
+    adherence: typeof adherence === 'number' ? adherence : 0,
+    completedCount: sessions.filter((s: any) => s.status === 'completed').length,
+    totalCount: sessions.filter((s: any) => s.status !== 'rest').length,
+  };
+}
+
+async function getReadiness(userId: number) {
+  const cacheKey = `readiness:${userId}`;
+
+  // Check SQLite cache first (survives restarts)
+  const cached = getCached<any>(cacheKey);
+  if (cached) return cached;
+
+  let score = 0;
+  let factors: any = {};
+  let recommendation: string | null = null;
+
+  try {
+    const { calculateReadiness } = require('../../services/readiness-scorer');
+    const readiness = await calculateReadiness(userId);
+    score = readiness?.score || 0;
+    factors = {
+      sleepScore: readiness?.sleepScore || readiness?.factors?.sleepScore || null,
+      hrvStatus: readiness?.hrvStatus || readiness?.factors?.hrvStatus || null,
+      bodyBattery: normalizeBodyBattery(readiness?.bodyBattery || readiness?.factors?.bodyBattery),
+      trainingLoad: readiness?.trainingLoad || readiness?.factors?.trainingLoad || null,
+      restingHeartRate: readiness?.restingHeartRate || readiness?.factors?.restingHeartRate || null,
+      stressLevel: readiness?.stressLevel || readiness?.factors?.stressLevel || null,
+    };
+    const rawRec = readiness?.recommendation || readiness?.action || '';
+    recommendation = humanizeRecommendation(rawRec, score);
+  } catch {}
+
+  if (!factors.bodyBattery) {
+    try {
+      const garmin = require('../../services/garmin');
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const bb = await garmin.getBodyBattery?.(todayStr);
+      factors.bodyBattery = normalizeBodyBattery(bb);
+    } catch {}
+  }
+
+  const result = { score, factors, recommendation };
+  setCache(cacheKey, result, READINESS_TTL);
+  return result;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -261,7 +288,7 @@ function humanizeRecommendation(code: string, score: number): string {
     if (score >= 40) return 'Recovery is below optimal. Consider a lighter session.';
     return 'Poor recovery. Rest or very light activity recommended.';
   }
-  const codeMap: Record<string, string> = {
+  const map: Record<string, string> = {
     'full_send': 'Excellent recovery — go all out today!',
     'normal': 'Good to train at normal intensity.',
     'reduce_10pct': 'Slightly fatigued — reduce intensity by ~10%.',
@@ -270,7 +297,7 @@ function humanizeRecommendation(code: string, score: number): string {
     'rest': 'Your body needs rest today. Skip the workout.',
     'deload': 'Consider a deload — light movement only.',
   };
-  return codeMap[code] || code.replace(/_/g, ' ');
+  return map[code] || code.replace(/_/g, ' ');
 }
 
 async function findTodayTrainingFromCalendar(): Promise<any | null> {
@@ -279,17 +306,15 @@ async function findTodayTrainingFromCalendar(): Promise<any | null> {
     const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
 
-    let calEvents: any[] = [];
-    try {
-      const { getEvents } = require('../../services/outlook-calendar');
-      const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
-      if (Array.isArray(events)) calEvents.push(...events);
-    } catch {}
-    try {
-      const { getEvents } = require('../../services/google-calendar');
-      const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
-      if (Array.isArray(events)) calEvents.push(...events);
-    } catch {}
+    const [outlookResult, googleResult] = await Promise.allSettled([
+      (async () => { const { getEvents } = require('../../services/outlook-calendar'); return await getEvents(startOfDay.toISOString(), endOfDay.toISOString()); })(),
+      (async () => { const { getEvents } = require('../../services/google-calendar'); return await getEvents(startOfDay.toISOString(), endOfDay.toISOString()); })(),
+    ]);
+
+    const calEvents = [
+      ...(outlookResult.status === 'fulfilled' && Array.isArray(outlookResult.value) ? outlookResult.value : []),
+      ...(googleResult.status === 'fulfilled' && Array.isArray(googleResult.value) ? googleResult.value : []),
+    ];
 
     const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga'];
     const trainingEvent = calEvents.find((e: any) => {
@@ -304,11 +329,7 @@ async function findTodayTrainingFromCalendar(): Promise<any | null> {
       let duration: number | null = null;
       try { const s = new Date(startRaw); const e = new Date(endRaw); duration = Math.round((e.getTime() - s.getTime()) / 60000); } catch {}
       const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
-      return {
-        id: trainingEvent.id, type: title,
-        time: timeMatch ? timeMatch[1] : null, duration, status: 'planned',
-        notes: null, exercises: null,
-      };
+      return { id: trainingEvent.id, type: title, time: timeMatch ? timeMatch[1] : null, duration, status: 'planned', notes: null, exercises: null };
     }
   } catch {}
   return null;
@@ -322,13 +343,11 @@ async function buildWeekFromCalendar(): Promise<any[]> {
     const monday = new Date(today); monday.setDate(today.getDate() + mondayOffset); monday.setHours(0, 0, 0, 0);
     const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999);
 
-    let calEvents: any[] = [];
-    try {
-      const { getEvents } = require('../../services/outlook-calendar');
-      const events = await getEvents(monday.toISOString(), sunday.toISOString());
-      if (Array.isArray(events)) calEvents.push(...events);
-    } catch {}
+    const [outlookResult] = await Promise.allSettled([
+      (async () => { const { getEvents } = require('../../services/outlook-calendar'); return await getEvents(monday.toISOString(), sunday.toISOString()); })(),
+    ]);
 
+    const calEvents = outlookResult.status === 'fulfilled' && Array.isArray(outlookResult.value) ? outlookResult.value : [];
     const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga'];
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -341,10 +360,9 @@ async function buildWeekFromCalendar(): Promise<any[]> {
       const dayIdx = d.getDay();
       if (!dayMap.has(dayIdx)) {
         const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
-        const isPast = d < today;
         dayMap.set(dayIdx, {
           day: dayNames[dayIdx], type: e.subject || e.summary || e.title || 'Workout',
-          time: timeMatch ? timeMatch[1] : null, status: isPast ? 'completed' : 'planned',
+          time: timeMatch ? timeMatch[1] : null, status: d < today ? 'completed' : 'planned',
         });
       }
     }

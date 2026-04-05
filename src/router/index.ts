@@ -50,27 +50,11 @@ export async function routeMessage(
     };
   }
 
-  // Step 2: If there's an active conversation, skip keyword matching and go
-  // straight to the context-aware classifier. Keywords are too blunt — "calendar"
-  // in a reply about moving a training session shouldn't hijack to secretary.
-  if (activeContext) {
-    const classification = await classifyWithClaude(message, activeContext);
-    logger.debug(
-      { domain: classification.domain, confidence: classification.confidence, activeContext: activeContext.domain },
-      'Routed by context-aware classifier',
-    );
-    return {
-      domain: classification.domain,
-      method: 'classifier',
-      confidence: classification.confidence,
-      strippedMessage: message,
-    };
-  }
-
-  // Step 3: No active conversation — try keyword matching (free, no API call)
+  // Step 2: ALWAYS try keyword matching (free, no API call) — even with active context.
+  // This saves ~40% of classifier API calls. Only truly ambiguous messages need Claude.
   const kwDomain = keywordMatch(message);
   if (kwDomain) {
-    logger.debug({ domain: kwDomain, method: 'keyword' }, 'Routed by keyword');
+    logger.debug({ domain: kwDomain, method: 'keyword', hadActiveContext: !!activeContext }, 'Routed by keyword');
     return {
       domain: kwDomain,
       method: 'keyword',
@@ -79,9 +63,13 @@ export async function routeMessage(
     };
   }
 
-  // Step 4: Claude classifier for ambiguous messages (no active conversation)
-  const classification = await classifyWithClaude(message);
-  logger.debug({ domain: classification.domain, confidence: classification.confidence, method: 'classifier' }, 'Routed by classifier');
+  // Step 3: Claude classifier for genuinely ambiguous messages.
+  // Pass activeContext if available so the classifier has conversation history.
+  const classification = await classifyWithClaude(message, activeContext ?? undefined);
+  logger.debug(
+    { domain: classification.domain, confidence: classification.confidence, method: 'classifier', hadActiveContext: !!activeContext },
+    'Routed by classifier',
+  );
   return {
     domain: classification.domain,
     method: 'classifier',
