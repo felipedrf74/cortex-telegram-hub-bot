@@ -55,13 +55,16 @@ export function isGeminiProviderConfigured(): boolean {
 // ─── Cost per million tokens ────────────────────────────────────────
 
 const GEMINI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
-  'gemini-2.0-flash':  { in: 0.10, out: 0.40 },
-  'gemini-1.5-pro':    { in: 1.25, out: 5.00 },
-  'gemini-2.0-pro':    { in: 1.25, out: 5.00 },
+  'gemini-3.1-pro':         { in: 2.00, out: 12.00 },
+  'gemini-3-flash':         { in: 0.50, out: 3.00 },
+  'gemini-2.5-flash':       { in: 0.30, out: 2.50 },
+  'gemini-2.5-flash-lite':  { in: 0.10, out: 0.40 },
+  'gemini-2.0-flash':       { in: 0.10, out: 0.40 },  // legacy, deprecated June 2026
+  'gemini-1.5-pro':         { in: 1.25, out: 5.00 },  // legacy
 };
 
 function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number }): number {
-  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-2.0-flash';
+  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-3-flash';
   const rates = GEMINI_COST_PER_MTK[key];
   return (usage.promptTokenCount / 1_000_000) * rates.in +
          (usage.candidatesTokenCount / 1_000_000) * rates.out;

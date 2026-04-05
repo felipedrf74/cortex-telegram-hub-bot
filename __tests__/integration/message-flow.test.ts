@@ -18,13 +18,26 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─── Mock external services at the boundary ────────────────────────
 
-// Mock Anthropic SDK — the only real external dependency
+// Mock Anthropic SDK — used as fallback and by direct tests
+const mockCallDomain = vi.fn();
+const mockContinueWithToolResults = vi.fn();
+
 vi.mock('../../src/services/anthropic', () => ({
-  callDomain: vi.fn(),
-  continueWithToolResults: vi.fn(),
+  callDomain: (...args: any[]) => mockCallDomain(...args),
+  continueWithToolResults: (...args: any[]) => mockContinueWithToolResults(...args),
   classifyMessage: vi.fn(),
   getDomainSystemPrompt: vi.fn().mockReturnValue('You are a test assistant.'),
   getClassifierSystemPrompt: vi.fn().mockReturnValue('Classify messages.'),
+}));
+
+// Mock provider-registry — domain-handler now routes through this
+vi.mock('../../src/services/provider-registry', () => ({
+  getActiveProvider: vi.fn().mockReturnValue({
+    name: 'mock-provider',
+    callDomain: (...args: any[]) => mockCallDomain(...args),
+    continueWithToolResults: (...args: any[]) => mockContinueWithToolResults(...args),
+    classify: vi.fn(),
+  }),
 }));
 
 vi.mock('../../src/state/conversation', () => ({
@@ -78,8 +91,8 @@ import { splitMessage } from '../../src/utils/telegram-formatter';
 
 // ─── Typed mock references ─────────────────────────────────────────
 
-const mockCallDomain = vi.mocked(callDomain);
-const mockContinueWithToolResults = vi.mocked(continueWithToolResults);
+// mockCallDomain and mockContinueWithToolResults are defined at the top of the file
+// (shared between the anthropic mock and provider-registry mock)
 const mockClassifyMessage = vi.mocked(classifyMessage);
 const mockExecuteToolCall = vi.mocked(executeToolCall);
 const mockAddToConversation = vi.mocked(addToConversation);
@@ -684,13 +697,14 @@ describe('Integration: State context is passed to domain calls', () => {
 
     await handleTriathlon('test', 123456789);
 
+    // Provider interface: callDomain(domain, history, message, stateContext, maxTokensOverride)
+    // userId is handled by domain-handler, not passed to the provider
     expect(mockCallDomain).toHaveBeenCalledWith(
       'triathlon',
       expect.any(Array),    // history
       'test',               // message
       expect.stringContaining('Wednesday, April 01 2026'), // stateContext
       undefined,            // maxTokensOverride
-      123456789,            // userId
     );
   });
 });

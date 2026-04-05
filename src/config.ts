@@ -33,15 +33,15 @@ export const config = {
   // ── Alternative AI Providers (optional fallbacks) ──────────────────
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
-    model: process.env.OPENAI_MODEL || 'gpt-4o',
-    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4o-mini',
+    model: process.env.OPENAI_MODEL || 'gpt-5-mini',
+    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-5-nano',
     maxTokens: 1024,            // content domain — conversational
     secretaryMaxTokens: 2048,   // secretary — parallel tool calls need headroom
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
-    model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
-    classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.0-flash',
+    model: process.env.GEMINI_MODEL || 'gemini-3-flash',
+    classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.5-flash-lite',
     maxTokens: 1024,
     secretaryMaxTokens: 2048,
   },
@@ -49,16 +49,16 @@ export const config = {
   // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'
   providerRouting: {
     classify: {
-      primary: process.env.AI_CLASSIFY_PRIMARY || 'anthropic',
-      fallback: process.env.AI_CLASSIFY_FALLBACK || 'openai',
+      primary: process.env.AI_CLASSIFY_PRIMARY || 'gemini',
+      fallback: process.env.AI_CLASSIFY_FALLBACK || 'anthropic',
     },
     chat: {
       primary: process.env.AI_CHAT_PRIMARY || 'anthropic',
-      fallback: process.env.AI_CHAT_FALLBACK || 'openai',
+      fallback: process.env.AI_CHAT_FALLBACK || 'gemini',
     },
     toolUse: {
       primary: process.env.AI_TOOL_USE_PRIMARY || 'anthropic',
-      fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
+      fallback: process.env.AI_TOOL_USE_FALLBACK || 'gemini',
     },
     circuitBreaker: {
       failureThreshold: parseInt(process.env.AI_CB_FAILURE_THRESHOLD || '3', 10),

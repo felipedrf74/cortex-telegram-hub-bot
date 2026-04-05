@@ -11,6 +11,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─── Mock all dependencies ──────────────────────────────────────────
 
+// Mock provider-registry: the routing provider that domain-handler now uses
+const mockCallDomainFn = vi.fn();
+const mockContinueFn = vi.fn();
+
+vi.mock('../../src/services/provider-registry', () => ({
+  getActiveProvider: vi.fn().mockReturnValue({
+    name: 'mock-provider',
+    callDomain: (...args: any[]) => mockCallDomainFn(...args),
+    continueWithToolResults: (...args: any[]) => mockContinueFn(...args),
+    classify: vi.fn(),
+  }),
+}));
+
+// Keep backward-compat mock for the fallback path
 vi.mock('../../src/services/anthropic', () => ({
   callDomain: vi.fn(),
   continueWithToolResults: vi.fn(),
@@ -56,15 +70,15 @@ import {
   handleSimpleDomain,
 } from '../../src/domains/domain-handler';
 
-import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
 import { getConversationHistory, addToConversation } from '../../src/state/conversation';
 import { listTodos } from '../../src/state/todos';
 import { getSharedMemorySummary } from '../../src/state/shared-memory';
 import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
 
-const mockCallDomain = vi.mocked(callDomain);
-const mockContinue = vi.mocked(continueWithToolResults);
+// Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
+const mockCallDomain = mockCallDomainFn;
+const mockContinue = mockContinueFn;
 const mockExecuteTool = vi.mocked(executeToolCall);
 
 // ─── Shared setup: reset now() mock for every test ──────────────────
@@ -313,13 +327,14 @@ describe('handleSimpleDomain', () => {
 
     await handleSimpleDomain('content', 'Write a full script', 5, undefined, 4096);
 
+    // Provider interface: callDomain(domain, history, message, stateContext, maxTokensOverride)
+    // No userId param — userId is handled by the domain handler, not the provider
     expect(mockCallDomain).toHaveBeenCalledWith(
       'content',
       expect.any(Array),
       'Write a full script',
       expect.any(String),
       4096,
-      undefined,
     );
   });
 });

@@ -1,14 +1,15 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DomainName, DomainResponse } from './types';
-import { callDomain, continueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
 import { listTodos } from '../state/todos';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getActivePlanSummary } from '../services/training-plans';
-import Anthropic from '@anthropic-ai/sdk';
+import { getActiveProvider } from '../services/provider-registry';
+import type { AIToolResultMessage } from '../services/ai-provider';
+import { logger } from '../utils/logger';
 import type { CoachRecommendation } from '../services/garmin-coach';
 
 // ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
@@ -106,7 +107,12 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
 
 /**
  * Shared tool-use loop for non-secretary domains.
- * Runs up to `maxIterations` rounds of tool calls, collecting results.
+ * Routes through the active AI provider (Anthropic, Gemini, or OpenAI)
+ * via the TaskRoutingProvider, which handles fallback and circuit breaker.
+ *
+ * IMPORTANT: This function is PROVIDER-AGNOSTIC. It uses the AIProvider
+ * interface, not Anthropic-specific types. The provider routing layer
+ * decides which AI backend handles each domain.
  */
 export async function handleSimpleDomain(
   domain: DomainName,
@@ -119,35 +125,58 @@ export async function handleSimpleDomain(
   const stateContext = await buildSimpleStateContext(domain, userId);
 
   try {
-    let result = await callDomain(domain, history, message, stateContext, maxTokensOverride, userId);
+    // Get the active routing provider (handles fallback + circuit breaker)
+    const provider = getActiveProvider();
+    if (!provider) {
+      // Fallback to direct Anthropic if routing provider not initialized
+      const { callDomain, continueWithToolResults } = require('../services/anthropic');
+      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, userId, maxTokensOverride, callDomain, continueWithToolResults);
+    }
+
+    // Route through the provider-agnostic interface
+    let result = await provider.callDomain(domain, history, message, stateContext, maxTokensOverride);
     let finalText = result.text;
 
-    const toolConversation: Anthropic.MessageParam[] = [];
+    logger.debug({ domain, provider: provider.name, hasTools: result.toolCalls.length > 0 }, 'Domain call completed via routing provider');
+
+    // Provider-agnostic tool conversation (no Anthropic-specific types)
+    const toolConversation: AIToolResultMessage[] = [];
     const toolsUsed: string[] = [];
     let iterations = 0;
+
     while (result.toolCalls.length > 0 && iterations < maxIterations) {
       iterations++;
-      const assistantContent: Anthropic.ContentBlock[] = [];
-      if (result.text) assistantContent.push({ type: 'text', text: result.text } as Anthropic.ContentBlock);
+
+      // Build assistant content (provider-agnostic format)
+      const assistantContent: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> = [];
+      if (result.text) assistantContent.push({ type: 'text', text: result.text });
       for (const tc of result.toolCalls) {
-        assistantContent.push(tc);
+        assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
         toolsUsed.push(tc.name);
       }
+
+      // Execute tool calls in parallel
       const toolResults = await Promise.all(
-        result.toolCalls.map(async (tc) => ({
-          type: 'tool_result' as const,
-          tool_use_id: tc.id,
-          content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
-        }))
+        result.toolCalls.map(async (tc) => {
+          const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+          let content = JSON.stringify(toolResult);
+          if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+          return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+        }),
       );
+
+      // Build tool conversation in provider-agnostic format
       toolConversation.push(
-        { role: 'assistant' as const, content: assistantContent },
+        { role: 'assistant' as const, content: assistantContent as any },
         { role: 'user' as const, content: toolResults },
       );
-      result = await continueWithToolResults(domain, history, message, stateContext, toolConversation, userId);
+
+      // Continue with tool results via the routing provider
+      result = await provider.continueWithToolResults(domain, history, message, stateContext, toolConversation);
       finalText = result.text;
     }
 
+    // Store conversation
     addToConversation(userId ?? 0, domain, 'user', message);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
@@ -156,11 +185,59 @@ export async function handleSimpleDomain(
 
     return { text: finalText, domain };
   } catch (err: unknown) {
-    // Handle AI timeout gracefully
     const { AITimeoutError } = require('../utils/timeout');
     if (err instanceof AITimeoutError) {
       return { text: '⏱ Sorry, I took too long to respond. Please try again with a simpler question.', domain };
     }
     throw err;
   }
+}
+
+/**
+ * Fallback: direct Anthropic calls when routing provider isn't initialized.
+ * This preserves backward compatibility during startup or if routing fails to init.
+ */
+async function handleWithDirectCalls(
+  domain: DomainName, history: any[], message: string, stateContext: string,
+  maxIterations: number, userId: number | undefined, maxTokensOverride: number | undefined,
+  callDomainFn: Function, continueWithToolResultsFn: Function,
+): Promise<DomainResponse> {
+  const Anthropic = require('@anthropic-ai/sdk');
+  let result = await callDomainFn(domain, history, message, stateContext, maxTokensOverride, userId);
+  let finalText = result.text;
+
+  const toolConversation: any[] = [];
+  const toolsUsed: string[] = [];
+  let iterations = 0;
+
+  while (result.toolCalls.length > 0 && iterations < maxIterations) {
+    iterations++;
+    const assistantContent: any[] = [];
+    if (result.text) assistantContent.push({ type: 'text', text: result.text });
+    for (const tc of result.toolCalls) {
+      assistantContent.push(tc);
+      toolsUsed.push(tc.name);
+    }
+    const toolResults = await Promise.all(
+      result.toolCalls.map(async (tc: any) => ({
+        type: 'tool_result' as const,
+        tool_use_id: tc.id,
+        content: JSON.stringify(await executeToolCall(tc.name, tc.input as Record<string, any>, userId)),
+      })),
+    );
+    toolConversation.push(
+      { role: 'assistant' as const, content: assistantContent },
+      { role: 'user' as const, content: toolResults },
+    );
+    result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId);
+    finalText = result.text;
+  }
+
+  addToConversation(userId ?? 0, domain, 'user', message);
+  const storedText = toolsUsed.length > 0
+    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+    : finalText;
+  addToConversation(userId ?? 0, domain, 'assistant', storedText);
+
+  return { text: finalText, domain };
 }
