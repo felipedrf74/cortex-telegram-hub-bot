@@ -3087,8 +3087,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Show Apply button only if value differs from current
     btn.style.display = sel.value !== sel.dataset.original ? '' : 'none';
   }
-  window.showApplyBtn = showApplyBtn;
-
   async function applyModelChange(provider, role) {
     const sel = document.getElementById(`model-sel-${provider}-${role}`);
     if (!sel) return;
@@ -3101,7 +3099,6 @@ document.addEventListener('DOMContentLoaded', () => {
       loadModelConfig();
     } catch (err) { showToast('Error updating model', false); }
   }
-  window.applyModelChange = applyModelChange;
   async function resetModel(provider, role) {
     try {
       const r = await apiFetch('/api/model-config', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, role }) });
@@ -3249,7 +3246,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.closeSkillGrid = closeSkillGrid;
   window.suspendUser = suspendUser;
   window.activateUser = activateUser;
-  window.updateModel = updateModel;
+  window.applyModelChange = applyModelChange;
+  window.showApplyBtn = showApplyBtn;
   window.resetModel = resetModel;
   window.updateSetting = updateSetting;
   window.resetSetting = resetSetting;
