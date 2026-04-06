@@ -21,7 +21,24 @@ export function dashboardRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
 
     try {
-      // ALL external fetches run in parallel — never sequential
+      // Check SQLite cache first (survives restarts, instant response)
+      const dashboardCacheKey = `dashboard:${userId}`;
+      const cachedDashboard = getCached<any>(dashboardCacheKey);
+      if (cachedDashboard) {
+        // ETag check on cached data
+        const cachedJson = JSON.stringify(cachedDashboard);
+        const etag = `"${crypto.createHash('md5').update(cachedJson).digest('hex')}"`;
+        if (req.headers['if-none-match'] === etag) {
+          res.status(304).end();
+          return;
+        }
+        res.setHeader('ETag', etag);
+        res.setHeader('Cache-Control', 'private, max-age=30');
+        res.json(cachedDashboard);
+        return;
+      }
+
+      // Cache miss — fetch all data in parallel
       const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
         fetchCalendar(),
         fetchTasks(),
@@ -72,6 +89,10 @@ export function dashboardRoutes(): Router {
 
       res.setHeader('ETag', etag);
       res.setHeader('Cache-Control', 'private, max-age=30');
+
+      // Cache the full dashboard response for 3 minutes
+      setCache(dashboardCacheKey, response, 180);
+
       res.json(response);
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
@@ -99,6 +120,41 @@ function extractTime(dateInput: any): string {
 
 function extractTitle(e: any): string {
   return e.subject || e.summary || e.title || e.displayName || e.name || '(No title)';
+}
+
+/**
+ * Pre-warm dashboard cache in background so first load is instant.
+ * Called on startup and periodically.
+ */
+export async function warmDashboardCache(userId: number): Promise<void> {
+  const cacheKey = `dashboard:${userId}`;
+  if (getCached(cacheKey)) return; // Already cached
+
+  try {
+    const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
+      fetchCalendar(), fetchTasks(), fetchTraining(userId), fetchContent(),
+    ]);
+
+    const now = new Date();
+    const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
+    const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+
+    const response = {
+      greeting: `${greeting}, Felipe`,
+      date: now.toISOString().slice(0, 10),
+      dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
+      calendar: calendarResult.status === 'fulfilled' ? calendarResult.value : { today: [], upcoming: [] },
+      tasks: tasksResult.status === 'fulfilled' ? tasksResult.value : { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
+      training: trainingResult.status === 'fulfilled' ? trainingResult.value : { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null },
+      content: contentResult.status === 'fulfilled' ? contentResult.value : { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+      system: { version: getAppVersion(), uptime: '0h 0m', botStatus: 'online', lastMessageAt: null },
+    };
+
+    setCache(cacheKey, response, 180);
+    logger.debug('Dashboard cache warmed');
+  } catch (err) {
+    logger.debug({ err }, 'Dashboard cache warming failed (non-critical)');
+  }
 }
 
 /** Read version from package.json (works with PM2, not just npm start) */
@@ -173,14 +229,27 @@ async function fetchTasks() {
   if (!Array.isArray(tasks)) return { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] };
 
   const now = new Date();
+  // MS Graph stores due dates as T23:00:00 UTC for the "previous" day in European TZ.
+  // Example: "due April 7" = "2026-04-06T23:00:00" in UTC = April 7 in Lisbon.
+  // To compare correctly, use the DATE PORTION ONLY (first 10 chars of ISO string).
+  const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' }); // "2026-04-06"
+
+  function getDueDateStr(t: any): string | null {
+    const raw = t.dueDateTime?.dateTime || t.dueDateTime;
+    if (!raw) return null;
+    // MS Graph: "2026-04-06T23:00:00.0000000" → add 1 hour to get Lisbon date
+    const d = new Date(raw);
+    return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' }); // "2026-04-07"
+  }
+
   const overdue = tasks.filter((t: any) => {
-    const due = t.dueDateTime?.dateTime || t.dueDateTime;
-    return due && new Date(due) < now && new Date(due).toDateString() !== now.toDateString();
+    const dueStr = getDueDateStr(t);
+    return dueStr && dueStr < todayStr;
   }).length;
 
   const dueToday = tasks.filter((t: any) => {
-    const due = t.dueDateTime?.dateTime || t.dueDateTime;
-    return due && new Date(due).toDateString() === now.toDateString();
+    const dueStr = getDueDateStr(t);
+    return dueStr === todayStr;
   }).length;
 
   const topTasks = tasks.slice(0, 5).map((t: any) => ({
