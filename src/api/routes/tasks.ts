@@ -4,12 +4,30 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { getCached, setCache, clearCache, getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { sendSuccess, sendError } from '../response-helpers';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
 const TASKS_CACHE_TTL = 120;  // 2 min for task items (change more often)
+
+// SWR pattern: serve cached responses up to `staleSec` past the fresh boundary,
+// while triggering an async refresh in the background. The user always sees
+// instant responses; the next request gets the refreshed data.
+const LISTS_SWR_STALE = 1800;  // 30 min stale grace for lists
+const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
+
+// In-flight refresh tracker — prevents 50 concurrent SWR requests from
+// triggering 50 background refreshes for the same key. Each key can have
+// at most one in-flight background fetch at a time.
+const swrInFlight = new Set<string>();
+function swrRefresh(key: string, fn: () => Promise<void>): void {
+  if (swrInFlight.has(key)) return;
+  swrInFlight.add(key);
+  // Detached so the response goes out immediately.
+  fn().catch((err) => logger.debug({ err, key }, 'SWR background refresh failed'))
+    .finally(() => swrInFlight.delete(key));
+}
 
 function getTodo() {
   return require('../../services/microsoft-todo');
@@ -18,16 +36,40 @@ function getTodo() {
 export function taskRoutes(): Router {
   const router = Router();
 
-  /** GET /api/v1/tasks/lists — cached in SQLite for 5 min */
+  /**
+   * GET /api/v1/tasks/lists — cached in SQLite with SWR semantics.
+   *
+   * - Within 5 min of fetch: served instantly as fresh.
+   * - 5 min – 35 min: served instantly as stale, background refresh triggered.
+   * - >35 min: synchronous fetch (cold path, very rare given 2-min cache warmer).
+   */
   router.get('/lists', async (_req, res: Response) => {
     try {
-      // Check SQLite cache first (survives restarts, fast)
-      const cached = getCached<any>('task-lists');
-      if (cached) {
-        sendSuccess(res, cached, { cached: true });
+      const cacheKey = 'task-lists';
+      const swr = getCachedSWR<any>(cacheKey);
+
+      if (swr) {
+        // Serve cached value immediately. If it's stale, trigger an async
+        // refresh so the NEXT request gets fresh data.
+        sendSuccess(res, swr.value, { cached: true });
+        if (!swr.fresh) {
+          swrRefresh(cacheKey, async () => {
+            const todo = getTodo();
+            const result = await todo.getLists();
+            const listsArray = result?.data || result || [];
+            const lists = Array.isArray(listsArray) ? listsArray : [];
+            const formatted = lists.map((l: any) => ({
+              id: l.id,
+              name: l.displayName || l.name,
+              taskCount: -1,
+            }));
+            setCacheSWR(cacheKey, { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
+          });
+        }
         return;
       }
 
+      // Cold path: nothing in cache at all — synchronous fetch.
       const todo = getTodo();
       const result = await todo.getLists();
       const listsArray = result?.data || result || [];
@@ -40,7 +82,7 @@ export function taskRoutes(): Router {
       }));
 
       const payload = { lists: formatted };
-      setCache('task-lists', payload, LISTS_CACHE_TTL);
+      setCacheSWR(cacheKey, payload, LISTS_CACHE_TTL, LISTS_SWR_STALE);
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
@@ -51,25 +93,21 @@ export function taskRoutes(): Router {
   /**
    * GET /api/v1/tasks/filtered?filter=overdue|dueToday|all
    * Returns tasks across ALL lists in a single call (no N+1).
-   * Cached in SQLite for 2 minutes.
+   * SWR-cached: 2 min fresh, 10 min stale grace.
    */
   router.get('/filtered', async (req, res: Response) => {
     const filter = (req.query.filter as string) || 'all';
     const cacheKey = `tasks-filtered:${filter}`;
 
-    const cached = getCached<any>(cacheKey);
-    if (cached) {
-      sendSuccess(res, cached, { cached: true });
-      return;
-    }
-
-    try {
+    // Helper for the actual fetch+filter+cache write.
+    const fetchAndCache = async (): Promise<{ tasks: any[]; count: number }> => {
       const todo = getTodo();
       const result = await todo.getAllPendingTasks();
       const allTasks = result?.data || result || [];
       if (!Array.isArray(allTasks)) {
-        sendSuccess(res, { tasks: [], count: 0 });
-        return;
+        const empty = { tasks: [], count: 0 };
+        setCacheSWR(cacheKey, empty, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+        return empty;
       }
 
       // Lisbon timezone for date comparison
@@ -108,7 +146,18 @@ export function taskRoutes(): Router {
       }));
 
       const payload = { tasks, count: tasks.length };
-      setCache(cacheKey, payload, TASKS_CACHE_TTL);
+      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+      return payload;
+    };
+
+    try {
+      const swr = getCachedSWR<any>(cacheKey);
+      if (swr) {
+        sendSuccess(res, swr.value, { cached: true });
+        if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
+        return;
+      }
+      const payload = await fetchAndCache();
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');
@@ -116,21 +165,21 @@ export function taskRoutes(): Router {
     }
   });
 
-  /** GET /api/v1/tasks/list/:listId — cached per list for 2 min */
+  /**
+   * GET /api/v1/tasks/list/:listId — SWR-cached per list.
+   *
+   * - 2 min fresh window
+   * - 10 min stale grace (background refresh on stale hits)
+   */
   router.get('/list/:listId', async (req, res: Response) => {
-    try {
+    const { listId } = req.params;
+    const status = req.query.status as string | undefined;
+    const cacheKey = `tasks:${listId}:${status || 'all'}`;
+
+    // Helper that does the actual MS Graph fetch + cache write.
+    // Reused for both the cold-path response AND background refresh.
+    const fetchAndCache = async (): Promise<any> => {
       const todo = getTodo();
-      const { listId } = req.params;
-      const status = req.query.status as string | undefined;
-
-      // Check SQLite cache
-      const cacheKey = `tasks:${listId}:${status || 'all'}`;
-      const cached = getCached<any>(cacheKey);
-      if (cached) {
-        sendSuccess(res, cached, { cached: true });
-        return;
-      }
-
       let listName = req.query.listName as string | undefined;
       if (!listName) {
         try {
@@ -158,7 +207,18 @@ export function taskRoutes(): Router {
       }));
 
       const payload = { listName, tasks: formatted };
-      setCache(cacheKey, payload, TASKS_CACHE_TTL);
+      setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
+      return payload;
+    };
+
+    try {
+      const swr = getCachedSWR<any>(cacheKey);
+      if (swr) {
+        sendSuccess(res, swr.value, { cached: true });
+        if (!swr.fresh) swrRefresh(cacheKey, async () => { await fetchAndCache(); });
+        return;
+      }
+      const payload = await fetchAndCache();
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
@@ -307,7 +367,9 @@ export async function warmTaskCache(): Promise<void> {
       name: l.displayName || l.name,
       taskCount: -1,
     }));
-    setCache('task-lists', { lists: formatted }, LISTS_CACHE_TTL);
+    // SWR write — fresh window matches old TTL, stale grace gives the next
+    // 30 min of "instant" responses even if the warmer hits a transient error.
+    setCacheSWR('task-lists', { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
 
     // Cache the cross-list "all pending tasks" snapshot used by both
     // /api/v1/tasks/filtered AND the chat fast-path (/overdue, /duetoday, etc.)
@@ -347,7 +409,7 @@ export async function warmTaskCache(): Promise<void> {
             })) || null,
             createdDateTime: t.createdDateTime || null,
           }));
-          setCache(cacheKey, { listName, tasks: taskFormatted }, TASKS_CACHE_TTL);
+          setCacheSWR(cacheKey, { listName, tasks: taskFormatted }, TASKS_CACHE_TTL, TASKS_SWR_STALE);
         } catch {
           // Individual list failure is non-critical
         }

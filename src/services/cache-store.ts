@@ -43,7 +43,13 @@ export function getCached<T = unknown>(key: string): T | null {
     ).get(key, now) as { value_json: string } | undefined;
 
     if (!row) return null;
-    return JSON.parse(row.value_json) as T;
+    const parsed = JSON.parse(row.value_json);
+    // SWR-wrapped values are envelopes — unwrap and ignore freshness for
+    // legacy callers (they get whatever's currently stored).
+    if (parsed && typeof parsed === 'object' && '__swr' in parsed) {
+      return parsed.value as T;
+    }
+    return parsed as T;
   } catch (err) {
     logger.debug({ err, key }, 'Cache read failed');
     return null;
@@ -62,6 +68,92 @@ export function setCache(key: string, value: unknown, ttlSeconds: number): void 
     ).run(key, JSON.stringify(value), expiresAt);
   } catch (err) {
     logger.debug({ err, key }, 'Cache write failed');
+  }
+}
+
+// ─── Stale-While-Revalidate ─────────────────────────────────────────
+//
+// SWR wraps the value in an envelope `{ __swr: 1, value, freshUntil }` and
+// uses a longer hard expiry. Reads return `{ value, fresh }` so the caller
+// can decide whether to serve immediately and refresh in the background.
+//
+// Legacy `getCached` automatically unwraps the envelope, so old call sites
+// keep working without modification.
+//
+// Why a JSON envelope instead of a new SQL column? Avoids schema migration
+// — the existing api_cache table just stores JSON, and we can ship the
+// feature without a deploy-time DB change.
+
+interface SWREnvelope<T> {
+  __swr: 1;
+  value: T;
+  freshUntil: number; // epoch ms
+}
+
+/**
+ * Read a cache entry with stale-while-revalidate semantics.
+ *
+ * Returns `null` if the entry doesn't exist OR has hard-expired.
+ * Otherwise returns `{ value, fresh }` where `fresh: false` means the entry
+ * is past its freshness boundary but still within the hard expiry — the
+ * caller should serve it AND trigger a background refresh.
+ */
+export function getCachedSWR<T = unknown>(key: string): { value: T; fresh: boolean } | null {
+  try {
+    const db = getDb();
+    const now = new Date().toISOString();
+    const row = db.prepare(
+      'SELECT value_json FROM api_cache WHERE cache_key = ? AND expires_at > ?',
+    ).get(key, now) as { value_json: string } | undefined;
+
+    if (!row) return null;
+    const parsed = JSON.parse(row.value_json);
+
+    // Legacy non-envelope row — treat as always fresh
+    if (!parsed || typeof parsed !== 'object' || !('__swr' in parsed)) {
+      return { value: parsed as T, fresh: true };
+    }
+
+    const env = parsed as SWREnvelope<T>;
+    return { value: env.value, fresh: Date.now() < env.freshUntil };
+  } catch (err) {
+    logger.debug({ err, key }, 'SWR cache read failed');
+    return null;
+  }
+}
+
+/**
+ * Write a cache entry with separate freshness and hard-expiry windows.
+ *
+ * @param key Cache key
+ * @param value The value to cache
+ * @param freshSeconds How long the entry counts as "fresh" — within this
+ *                     window callers serve immediately with no refresh
+ * @param staleSeconds How long the entry can be served as "stale" past the
+ *                     fresh boundary. After this, the row is hard-expired
+ *                     and `getCachedSWR` returns null. Defaults to 5x freshSec.
+ */
+export function setCacheSWR(
+  key: string,
+  value: unknown,
+  freshSeconds: number,
+  staleSeconds?: number,
+): void {
+  try {
+    const db = getDb();
+    const stale = staleSeconds ?? freshSeconds * 5;
+    const freshUntil = Date.now() + freshSeconds * 1000;
+    const expiresAt = new Date(Date.now() + stale * 1000).toISOString();
+    const envelope: SWREnvelope<unknown> = {
+      __swr: 1,
+      value,
+      freshUntil,
+    };
+    db.prepare(
+      'INSERT OR REPLACE INTO api_cache (cache_key, value_json, expires_at) VALUES (?, ?, ?)',
+    ).run(key, JSON.stringify(envelope), expiresAt);
+  } catch (err) {
+    logger.debug({ err, key }, 'SWR cache write failed');
   }
 }
 

@@ -3,6 +3,17 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [4.9.14] — 2026-04-06
+
+### Bug Fixes
+
+- **microsoft-todo**: `getDefaultList()` now uses a 4-tier fallback chain — configured name → MS Graph `wellknownListName === 'defaultList'` (locale-independent) → 16 localized names (Tarefas, Tâches, Aufgaben, タスク, ...) → first owned list. Fixes "Default list not found" for the chat `/todo` command on non-English Outlook accounts.
+- **api/tasks**: Read endpoints (`/lists`, `/list/:listId`, `/filtered`) now use stale-while-revalidate caching. Cached responses are served instantly within a 30-min (lists) / 10-min (tasks) stale grace window, with background refresh triggered automatically. Eliminates the "cold cache wait" the user was hitting on the iOS Tarefas tab.
+
+### Features
+
+- **cache-store**: New `getCachedSWR<T>()` and `setCacheSWR()` primitives implementing stale-while-revalidate semantics. Stores `{ value, freshUntil }` envelopes inside the existing `api_cache` row — zero schema migration. Legacy `getCached()` automatically unwraps the envelope so old call sites keep working.
+
 ## [4.9.13] — 2026-04-06
 
 ### Features

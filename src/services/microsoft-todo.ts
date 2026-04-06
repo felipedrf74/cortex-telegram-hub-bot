@@ -11,6 +11,15 @@ export interface TodoList {
   displayName: string;
   isOwner: boolean;
   isShared: boolean;
+  /**
+   * Microsoft Graph returns this field on system-managed lists. The user's
+   * primary tasks list (the one MS To Do auto-creates) has the value
+   * `'defaultList'` regardless of locale — so a German user's "Aufgaben",
+   * a Portuguese user's "Tarefas", and an English user's "Tasks" all share
+   * the same `wellknownListName: 'defaultList'`. Use this for locale-safe
+   * default-list discovery before falling back to displayName matching.
+   */
+  wellknownListName?: string;
 }
 
 export interface TodoTask {
@@ -161,6 +170,9 @@ export async function getLists(): Promise<ServiceResult<TodoList[]>> {
       displayName: list.displayName || '(Unnamed)',
       isOwner: list.isOwner ?? true,
       isShared: list.isShared ?? false,
+      // wellknownListName is only present on system-managed lists; the
+      // primary tasks folder reports `'defaultList'` here regardless of locale.
+      wellknownListName: list.wellknownListName || undefined,
     }));
 
     cachedLists = lists;
@@ -247,10 +259,83 @@ export async function findListByName(name: string): Promise<TodoList | null> {
 }
 
 /**
- * Get the default list (matching config.todo.defaultList name).
+ * Locale-aware names for the user's default tasks list. Microsoft To Do
+ * auto-creates this list on first use and localizes the name to the user's
+ * Outlook display language. We try these in order when the configured name
+ * doesn't match and the wellknownListName lookup also fails.
+ *
+ * Add more entries here as users in new locales report mismatches.
+ */
+const LOCALIZED_DEFAULT_NAMES = [
+  'Tasks',           // English
+  'Tarefas',         // Portuguese (PT/BR)
+  'Tareas',          // Spanish
+  'Tâches',          // French
+  'Aufgaben',        // German
+  'Attività',        // Italian
+  'Taken',           // Dutch
+  'Uppgifter',       // Swedish
+  'Opgaver',         // Danish/Norwegian
+  'Tehtävät',        // Finnish
+  'Zadania',         // Polish
+  'Задачи',          // Russian
+  '任务',            // Chinese (Simplified)
+  '工作',            // Chinese (Traditional, sometimes)
+  'タスク',          // Japanese
+  '작업',            // Korean
+];
+
+/**
+ * Get the user's default tasks list using a 4-tier fallback chain:
+ *
+ *   1. Configured name from `config.todo.defaultList` (env-overridable, fastest path)
+ *   2. Microsoft Graph's `wellknownListName === 'defaultList'` (locale-independent,
+ *      this is the canonical answer for any user who hasn't deleted/renamed their
+ *      auto-created primary list)
+ *   3. Common localized names ('Tarefas', 'Tâches', 'Aufgaben', ...) — handles
+ *      users who renamed the primary list to match their UI language
+ *   4. The first owned list returned by Graph — final safety net so the chat
+ *      `/todo` command never errors with "Default list not found" as long as
+ *      the user has at least one list
+ *
+ * Returns null only if the user literally has zero To Do lists.
  */
 export async function getDefaultList(): Promise<TodoList | null> {
-  return findListByName(config.todo.defaultList);
+  // Tier 1: configured name (existing behavior)
+  const configured = await findListByName(config.todo.defaultList);
+  if (configured) return configured;
+
+  // Tier 2: locale-independent wellknownListName flag from Graph
+  const result = await getLists();
+  if (!result.success || result.data.length === 0) return null;
+
+  const wellKnown = result.data.find((l) => l.wellknownListName === 'defaultList');
+  if (wellKnown) {
+    logger.debug({ list: wellKnown.displayName }, 'Default list resolved via wellknownListName');
+    return wellKnown;
+  }
+
+  // Tier 3: walk the localized name list
+  for (const candidate of LOCALIZED_DEFAULT_NAMES) {
+    const lower = candidate.toLowerCase();
+    const match = result.data.find((l) => l.displayName.toLowerCase() === lower);
+    if (match) {
+      logger.debug({ list: match.displayName, candidate }, 'Default list resolved via localized name');
+      return match;
+    }
+  }
+
+  // Tier 4: first owned list (most users have at least one)
+  const firstOwned = result.data.find((l) => l.isOwner) || result.data[0];
+  if (firstOwned) {
+    logger.warn(
+      { list: firstOwned.displayName, total: result.data.length },
+      'Default list resolved by first-list fallback — consider setting TODO_DEFAULT_LIST',
+    );
+    return firstOwned;
+  }
+
+  return null;
 }
 
 // ─── Tasks ──────────────────────────────────────────────────────────
