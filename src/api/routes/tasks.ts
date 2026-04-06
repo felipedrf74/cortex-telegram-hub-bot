@@ -191,4 +191,63 @@ function invalidateTaskCaches(listId?: string): void {
     clearCache(`tasks:${listId}:notStarted`);
     clearCache(`tasks:${listId}:completed`);
   }
+  // Re-warm cache in background after mutation
+  setTimeout(() => warmTaskCache().catch(() => {}), 1000);
+}
+
+/**
+ * Pre-populate task cache in background so users never wait for MS Graph.
+ * Called on startup and every 2 minutes via setInterval.
+ */
+export async function warmTaskCache(): Promise<void> {
+  try {
+    const todo = getTodo();
+
+    // Cache list names (fast, single MS Graph call)
+    const result = await todo.getLists();
+    const listsArray = result?.data || result || [];
+    const lists = Array.isArray(listsArray) ? listsArray : [];
+    const formatted = lists.map((l: any) => ({
+      id: l.id,
+      name: l.displayName || l.name,
+      taskCount: -1,
+    }));
+    setCache('task-lists', { lists: formatted }, LISTS_CACHE_TTL);
+
+    // Cache pending tasks for each list (parallel — all at once)
+    await Promise.allSettled(
+      lists.map(async (l: any) => {
+        const listId = l.id;
+        const listName = l.displayName || l.name || 'Tasks';
+        const cacheKey = `tasks:${listId}:notStarted`;
+
+        // Skip if cache is still fresh
+        if (getCached(cacheKey)) return;
+
+        try {
+          const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+          const tasks = tasksResult?.data || [];
+          const taskFormatted = (Array.isArray(tasks) ? tasks : []).map((t: any) => ({
+            id: t.id, title: t.title,
+            body: t.body?.content || t.body || null,
+            importance: t.importance || 'normal',
+            status: t.status || 'notStarted',
+            dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
+            listId, listName,
+            checklistItems: t.checklistItems?.map((ci: any) => ({
+              id: ci.id, displayName: ci.displayName, isChecked: ci.isChecked ?? false,
+            })) || null,
+            createdDateTime: t.createdDateTime || null,
+          }));
+          setCache(cacheKey, { listName, tasks: taskFormatted }, TASKS_CACHE_TTL);
+        } catch {
+          // Individual list failure is non-critical
+        }
+      }),
+    );
+
+    logger.debug({ listCount: lists.length }, 'Task cache warmed');
+  } catch (err) {
+    logger.debug({ err }, 'Task cache warming failed (non-critical)');
+  }
 }

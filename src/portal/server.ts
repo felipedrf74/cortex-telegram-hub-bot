@@ -1051,6 +1051,15 @@ export function createPortalServer(bot: Bot): http.Server {
     app.use('/api/v1', createApiRouter());
     logger.info('iOS API enabled on /api/v1');
 
+    // Warm task cache on startup + every 2 minutes (users never wait for MS Graph)
+    try {
+      const { warmTaskCache } = require('../api/routes/tasks');
+      setTimeout(() => warmTaskCache().catch(() => {}), 5000); // 5s after startup
+      setInterval(() => warmTaskCache().catch(() => {}), 2 * 60 * 1000); // every 2 min
+    } catch (err) {
+      logger.debug({ err }, 'Task cache warming setup failed (non-critical)');
+    }
+
     // Ensure ios_devices table exists
     try {
       const db = getDb();
