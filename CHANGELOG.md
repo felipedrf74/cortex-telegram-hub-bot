@@ -3,6 +3,17 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [4.9.13] — 2026-04-06
+
+### Features
+
+- **routing**: Gemini routing ENABLED by default — secretary stays on Claude (tool-use quality), triathlon/content/finance/cooking move to Gemini (6x cheaper). Gracefully degrades to Claude if `GEMINI_API_KEY` is not set. Opt out with `GEMINI_ROUTING_ENABLED=false`.
+- **portal/ai**: New "Cost by Skill (7d)" card on AI & Providers page, aggregated from `api_usage` GROUP BY category. Shows per-skill spend, calls, tokens, and provider split with an inline relative-cost bar. Replaces the old "Task Execution Costs" card which only tracked Notion agent dispatches.
+- **portal/api**: New `GET /api/cost-by-domain?days=N` endpoint returning per-skill spend aggregated across providers.
+- **portal/api**: New `GET /api/provider-stats` endpoint backed by `api_usage` — always populated, merges with in-memory circuit breaker state.
+- **portal/dashboard**: Provider Status card now merges in-memory metrics with SQLite-backed totals, so it always shows data (was stuck on "No provider data yet" because direct `anthropic-hook` calls bypass the TaskRoutingProvider metrics map).
+- **portal/audit**: User filter is now a dropdown populated from `/api/users`, sorted by most recently active. Replaces the raw user-ID text input.
+
 ## [4.9.11] — 2026-04-06
 
 ### Bug Fixes

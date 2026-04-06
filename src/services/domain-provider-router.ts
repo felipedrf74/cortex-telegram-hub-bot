@@ -43,17 +43,38 @@ const DOMAIN_FALLBACK_MAP: Record<string, ProviderName> = {
 
 // ─── Feature Flag ───────────────────────────────────────────────────
 
-let _geminiRoutingEnabled = false;
-let _geminiDomains = new Set<string>();
+// Gemini routing is ENABLED by default — this matches the project's intended
+// cost model: secretary stays on Claude (tool-use quality), everything else
+// moves to Gemini (6x cheaper). Opt out by setting GEMINI_ROUTING_ENABLED=false
+// in the environment, or toggle via the portal UI (persists to kv_store).
+//
+// Safe default: if GEMINI_API_KEY is not set, provider-registry returns null
+// and resolveProviderPairForDomain falls back to anthropic automatically, so
+// enabling this flag on a Gemini-less install is a no-op rather than a crash.
+let _geminiRoutingEnabled = true;
+
+// Default per-domain mapping — everything except secretary routes through Gemini.
+// This matches DOMAIN_PROVIDER_MAP above and is the intended production config.
+const DEFAULT_GEMINI_DOMAINS = ['triathlon', 'content', 'finance', 'cooking'];
+let _geminiDomains = new Set<string>(DEFAULT_GEMINI_DOMAINS);
 
 /** Initialize from environment or kv_store */
 export function initDomainRouting(): void {
-  _geminiRoutingEnabled = process.env.GEMINI_ROUTING_ENABLED === 'true';
+  // Env override — only disables if explicitly set to 'false'. Any other value
+  // (including unset) keeps the enabled-by-default behavior.
+  if (process.env.GEMINI_ROUTING_ENABLED === 'false') {
+    _geminiRoutingEnabled = false;
+  } else if (process.env.GEMINI_ROUTING_ENABLED === 'true') {
+    _geminiRoutingEnabled = true;
+  }
 
+  // Env can also narrow the domain set
   const domainsStr = process.env.GEMINI_DOMAINS || '';
-  _geminiDomains = new Set(domainsStr.split(',').map(d => d.trim()).filter(Boolean));
+  if (domainsStr.trim()) {
+    _geminiDomains = new Set(domainsStr.split(',').map(d => d.trim()).filter(Boolean));
+  }
 
-  // Try loading from kv_store (persists across restarts)
+  // kv_store overrides env (persistent user preferences win)
   try {
     const { getDb } = require('./database');
     const db = getDb();
@@ -64,7 +85,7 @@ export function initDomainRouting(): void {
     if (domainsRow && domainsRow.value) {
       _geminiDomains = new Set(domainsRow.value.split(',').map(d => d.trim()).filter(Boolean));
     }
-  } catch { /* kv_store not available — use env defaults */ }
+  } catch { /* kv_store not available — use env/code defaults */ }
 
   logger.info({
     geminiRoutingEnabled: _geminiRoutingEnabled,

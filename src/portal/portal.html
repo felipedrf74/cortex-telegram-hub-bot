@@ -1550,10 +1550,11 @@ table.legacy th {
       <div class="grid grid-cols-2 mt-4">
         <div class="card">
           <div class="card-header">
-            <div class="card-title">🏭 Task Execution Costs (7d)</div>
+            <div class="card-title">💸 Cost by Skill (7d)</div>
+            <span class="card-subtitle" id="cost-by-domain-total">—</span>
           </div>
-          <table class="legacy" id="task-metrics-table">
-            <thead><tr><th>Task</th><th>Agent</th><th>Status</th><th class="text-right">Cost</th><th class="text-right">Dur</th></tr></thead>
+          <table class="legacy" id="cost-by-domain-table">
+            <thead><tr><th>Skill</th><th>Provider</th><th class="text-right">Calls</th><th class="text-right">Tokens</th><th class="text-right">Cost</th></tr></thead>
             <tbody><tr><td colspan="5"><div class="empty">Loading…</div></td></tr></tbody>
           </table>
         </div>
@@ -1683,7 +1684,9 @@ table.legacy th {
 
       <div class="card">
         <div class="table-toolbar">
-          <input class="input" type="search" placeholder="Filter by user ID…" id="audit-filter">
+          <select class="input" id="audit-filter" style="max-width:280px">
+            <option value="">All users</option>
+          </select>
           <span class="text-muted mono" style="margin-left:auto;font-size:11px" id="audit-count-label"></span>
         </div>
         <div style="overflow-x:auto">
@@ -2420,39 +2423,95 @@ table.legacy th {
 
   // ════════════════════════════════════════════════════════════
   // Provider Health
+  //
+  // Pulls from TWO sources and merges:
+  //   1. /api/provider-health  → in-memory circuit breaker + fallback metrics
+  //                               (only populated for routing-provider calls)
+  //   2. /api/provider-stats   → api_usage-backed totals (ALWAYS populated)
+  //
+  // The dashboard's "No provider data yet" issue was that (1) is empty for
+  // direct anthropic-hook calls. (2) guarantees we have something to show.
   // ════════════════════════════════════════════════════════════
   async function loadProviderHealth() {
     try {
-      const r = await apiFetch('/api/provider-health');
-      if (!r.ok) return;
-      const d = await r.json();
+      const [healthRes, statsRes] = await Promise.all([
+        apiFetch('/api/provider-health').catch(() => null),
+        apiFetch('/api/provider-stats').catch(() => null),
+      ]);
+
+      const health = healthRes && healthRes.ok ? await healthRes.json() : { providers: {} };
+      const stats = statsRes && statsRes.ok ? await statsRes.json() : { providers: [] };
+
       const el = document.getElementById('provider-health-content');
       const dashEl = document.getElementById('dash-providers');
-      const providers = d.providers || {};
-      const entries = Object.entries(providers);
-      if (entries.length === 0) {
+
+      // Merge: iterate the broader set (stats has all known providers + any
+      // with SQLite rows), then overlay circuit/fallback metrics from health.
+      const statProviders = Array.isArray(stats.providers) ? stats.providers : [];
+      const healthMap = health.providers || {};
+
+      if (statProviders.length === 0 && Object.keys(healthMap).length === 0) {
         el.innerHTML = '<div class="empty">No provider data yet</div>';
         dashEl.innerHTML = '<div class="empty">No provider data yet</div>';
         return;
       }
-      const html = entries.map(([name, p]) => {
-        const m = p.metrics || {};
-        const lastOk = m.lastSuccessAt ? shortDateTime(m.lastSuccessAt) : '—';
-        const lastFail = m.lastFailureAt ? shortDateTime(m.lastFailureAt) : '—';
+
+      // Build the unified row list. Any provider that has either SQLite stats
+      // OR in-memory metrics shows up.
+      const providerNames = new Set();
+      statProviders.forEach(p => providerNames.add(p.name));
+      Object.keys(healthMap).forEach(n => providerNames.add(n));
+
+      const rows = Array.from(providerNames).map(name => {
+        const s = statProviders.find(p => p.name === name) || {
+          name, today: { calls: 0, cost: 0, tokens: 0, lastCallAt: null },
+          week: { calls: 0, cost: 0 }, circuit: { state: 'CLOSED', failures: 0 },
+        };
+        const h = healthMap[name] || {};
+        const metrics = h.metrics || {};
+        return {
+          name,
+          circuit: s.circuit || h.circuit || { state: 'CLOSED', failures: 0 },
+          todayCalls: s.today.calls,
+          todayCost: s.today.cost,
+          todayTokens: s.today.tokens,
+          weekCalls: s.week.calls,
+          weekCost: s.week.cost,
+          failures: metrics.failureCount || 0,
+          fallbacks: metrics.fallbackTriggerCount || 0,
+          cbOpens: metrics.circuitOpenCount || 0,
+          lastOk: metrics.lastSuccessAt || s.today.lastCallAt,
+          lastFail: metrics.lastFailureAt,
+        };
+      }).sort((a, b) => (b.todayCost + b.weekCost) - (a.todayCost + a.weekCost));
+
+      const providerIcons = { anthropic: '🟣', openai: '🟢', gemini: '🔵' };
+
+      const html = rows.map(p => {
+        const icon = providerIcons[p.name] || '⚪';
+        const lastOk = p.lastOk ? shortDateTime(p.lastOk) : '—';
+        const lastFail = p.lastFail ? shortDateTime(p.lastFail) : '—';
+        const circuitClass = p.circuit.state || 'CLOSED';
         return '<div class="provider-card">' +
           '<div class="provider-card-header">' +
-            '<div class="provider-name">' + esc(name) + '</div>' +
-            '<span class="provider-circuit ' + (p.circuit?.state || 'CLOSED') + '">● ' + (p.circuit?.state || 'CLOSED') + '</span>' +
+            '<div class="provider-name">' + icon + ' ' + esc(p.name) + '</div>' +
+            '<span class="provider-circuit ' + circuitClass + '">● ' + circuitClass + '</span>' +
           '</div>' +
           '<div class="provider-stats">' +
-            '<div>Calls<br><b>' + (m.usageCount || 0) + '</b></div>' +
-            '<div>Errors<br><b style="color:' + (m.failureCount > 0 ? 'var(--error)' : 'inherit') + '">' + (m.failureCount || 0) + '</b></div>' +
-            '<div>Fallbacks<br><b>' + (m.fallbackTriggerCount || 0) + '</b></div>' +
-            '<div>CB Opens<br><b>' + (m.circuitOpenCount || 0) + '</b></div>' +
+            '<div>Calls today<br><b>' + p.todayCalls + '</b></div>' +
+            '<div>Cost today<br><b>$' + (p.todayCost).toFixed(3) + '</b></div>' +
+            '<div>7d calls<br><b>' + p.weekCalls + '</b></div>' +
+            '<div>7d cost<br><b>$' + (p.weekCost).toFixed(3) + '</b></div>' +
           '</div>' +
-          '<div class="text-tertiary mono" style="font-size:10px;margin-top:8px">OK: ' + lastOk + ' · Fail: ' + lastFail + '</div>' +
+          (p.failures + p.fallbacks + p.cbOpens > 0
+            ? '<div class="text-tertiary mono" style="font-size:10px;margin-top:6px">' +
+                'Errors: ' + p.failures + ' · Fallbacks: ' + p.fallbacks + ' · CB opens: ' + p.cbOpens +
+              '</div>'
+            : '') +
+          '<div class="text-tertiary mono" style="font-size:10px;margin-top:4px">OK: ' + lastOk + ' · Fail: ' + lastFail + '</div>' +
         '</div>';
       }).join('');
+
       el.innerHTML = html;
       dashEl.innerHTML = html;
     } catch { /* silent */ }
@@ -2593,25 +2652,59 @@ table.legacy th {
     } catch { /* silent */ }
   }
 
-  async function loadTaskMetrics() {
+  // Loads per-skill cost aggregated from api_usage. This replaced the old
+  // loadTaskMetrics which read from task_execution_metrics (only populated by
+  // the Notion agent dispatcher, so it was always empty for real users).
+  async function loadCostByDomain() {
     try {
-      const r = await apiFetch('/api/task-metrics');
+      const r = await apiFetch('/api/cost-by-domain?days=7');
       if (!r.ok) return;
       const d = await r.json();
       if (!d.ok) return;
-      const tbody = document.querySelector('#task-metrics-table tbody');
-      const tasks = d.recentTasks || [];
-      tbody.innerHTML = tasks.map(t => {
-        const cls = t.status === 'success' ? 'success' : t.status === 'failed' ? 'error' : 'info';
-        const dur = t.durationMs ? Math.round(t.durationMs / 1000) + 's' : '—';
+
+      const tbody = document.querySelector('#cost-by-domain-table tbody');
+      const totalEl = document.getElementById('cost-by-domain-total');
+      const rows = d.detailed || [];
+
+      if (totalEl) {
+        totalEl.textContent = '$' + (d.totalCost || 0).toFixed(3) + ' · ' + (d.totalCalls || 0) + ' calls';
+      }
+
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5"><div class="empty">No AI usage in the last 7 days</div></td></tr>';
+        return;
+      }
+
+      // Icons + colors per known skill name so the table has texture
+      const skillIcons = {
+        secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳',
+        classify: '🧭', chat: '💬', unknown: '❔',
+      };
+      const providerColors = {
+        anthropic: '#D97757', openai: '#10A37F', gemini: '#4285F4', unknown: '#888',
+      };
+
+      // Find max cost for the inline bar
+      const maxCost = Math.max(...rows.map(r => r.cost || 0), 0.0001);
+
+      tbody.innerHTML = rows.map(r => {
+        const icon = skillIcons[r.domain] || '⚙️';
+        const pColor = providerColors[r.provider] || '#888';
+        const barPct = ((r.cost || 0) / maxCost * 100).toFixed(0);
+        const costFmt = '$' + (r.cost || 0).toFixed(r.cost >= 0.01 ? 3 : 4);
         return '<tr>' +
-          '<td class="mono" style="font-size:10px">' + esc(t.taskId || t.id || '?') + '</td>' +
-          '<td class="mono">' + esc(t.agent) + '</td>' +
-          '<td><span class="badge badge-' + cls + '">' + esc(t.status) + '</span></td>' +
-          '<td class="text-right mono">$' + (t.costUsd || 0).toFixed(3) + '</td>' +
-          '<td class="text-right">' + dur + '</td>' +
+          '<td><span style="margin-right:6px">' + icon + '</span>' +
+            '<span class="mono" style="font-size:12px">' + esc(r.domain) + '</span>' +
+          '</td>' +
+          '<td><span class="mono" style="font-size:11px;color:' + pColor + '">● ' + esc(r.provider) + '</span></td>' +
+          '<td class="text-right mono" style="font-size:11px">' + (r.calls || 0).toLocaleString() + '</td>' +
+          '<td class="text-right mono" style="font-size:11px">' + Math.round(r.tokens || 0).toLocaleString() + '</td>' +
+          '<td class="text-right mono" style="position:relative">' +
+            '<div style="position:absolute;left:0;top:50%;transform:translateY(-50%);width:' + barPct + '%;height:70%;background:var(--accent-bg,rgba(255,107,53,0.12));border-radius:3px;z-index:0"></div>' +
+            '<span style="position:relative;z-index:1;font-weight:600">' + costFmt + '</span>' +
+          '</td>' +
         '</tr>';
-      }).join('') || '<tr><td colspan="5"><div class="empty">No task executions yet</div></td></tr>';
+      }).join('');
     } catch { /* silent */ }
   }
 
@@ -2772,10 +2865,47 @@ table.legacy th {
   // Audit Trail
   // ════════════════════════════════════════════════════════════
   let allAuditEntries = [];
+  let auditUsersPopulated = false;
+
+  // Populate the audit user dropdown from the shared /api/users endpoint.
+  // Runs once per session; subsequent entries to the Audit tab reuse the
+  // cached list (the main Users tab refresh will re-populate if stale).
+  async function populateAuditUserDropdown(force) {
+    if (auditUsersPopulated && !force) return;
+    try {
+      // Reuse allUsers if the Users tab has already loaded them
+      if (!allUsers || allUsers.length === 0) {
+        const r = await apiFetch('/api/users');
+        if (!r.ok) return;
+        const d = await r.json();
+        allUsers = d.users || [];
+      }
+      const sel = document.getElementById('audit-filter');
+      const currentValue = sel.value;
+      // Sort: most recently active first
+      const sorted = [...allUsers].sort((a, b) => {
+        const at = a.last_active_at ? new Date(a.last_active_at).getTime() : 0;
+        const bt = b.last_active_at ? new Date(b.last_active_at).getTime() : 0;
+        return bt - at;
+      });
+      const options = ['<option value="">All users</option>'].concat(
+        sorted.map(u => {
+          const name = u.first_name || u.username || ('User ' + u.telegram_id);
+          const handle = u.username ? ' @' + u.username : '';
+          const label = esc(name + handle) + ' · ' + u.telegram_id;
+          return '<option value="' + u.telegram_id + '">' + label + '</option>';
+        })
+      );
+      sel.innerHTML = options.join('');
+      if (currentValue) sel.value = currentValue;
+      auditUsersPopulated = true;
+    } catch { /* silent */ }
+  }
 
   async function loadAuditTrail() {
     try {
-      const filter = document.getElementById('audit-filter').value.trim();
+      await populateAuditUserDropdown(false);
+      const filter = (document.getElementById('audit-filter').value || '').trim();
       const url = filter ? '/api/audit-trail?userId=' + encodeURIComponent(filter) + '&limit=200' : '/api/audit-trail?limit=200';
       const r = await apiFetch(url);
       if (!r.ok) return;
@@ -2799,11 +2929,12 @@ table.legacy th {
       '<td class="text-muted" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(e.details || '—') + '</td>' +
     '</tr>').join('');
   }
-  document.getElementById('audit-refresh-btn').addEventListener('click', loadAuditTrail);
-  document.getElementById('audit-filter').addEventListener('input', () => {
-    clearTimeout(window._auditTimer);
-    window._auditTimer = setTimeout(loadAuditTrail, 300);
+  document.getElementById('audit-refresh-btn').addEventListener('click', () => {
+    // Force-refresh the user dropdown too on manual refresh
+    populateAuditUserDropdown(true).then(loadAuditTrail);
   });
+  // Dropdown: immediate reload on change (no debounce needed)
+  document.getElementById('audit-filter').addEventListener('change', loadAuditTrail);
   document.getElementById('audit-export-btn').addEventListener('click', () => {
     if (allAuditEntries.length === 0) { showToast('No data to export', false); return; }
     const headers = ['timestamp', 'user_id', 'action', 'resource', 'details'];
@@ -2877,7 +3008,7 @@ table.legacy th {
     loadModelConfig();
     loadQualityScores();
     loadErrorDist();
-    loadTaskMetrics();
+    loadCostByDomain();
     loadSettings();
 
     // Polling intervals
@@ -2889,7 +3020,7 @@ table.legacy th {
       loadProviderHealth();
       loadQualityScores();
       loadErrorDist();
-      loadTaskMetrics();
+      loadCostByDomain();
       loadSettings();
       // Refresh users in background if user is on the Users tab
       if (currentSection === 'users') loadUsers();

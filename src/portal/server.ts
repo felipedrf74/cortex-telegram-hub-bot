@@ -2143,6 +2143,144 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  /**
+   * GET /api/cost-by-domain
+   *
+   * Aggregates api_usage by the `category` column (which is the domain/skill
+   * name set by each provider's logging path: 'secretary', 'triathlon', 'content',
+   * 'finance', 'cooking', 'classify', etc). Returns per-domain spend for the
+   * last 7 days so the portal can show which skill is costing the most.
+   *
+   * This is what the "Task Execution Costs" panel actually wanted — the old
+   * source (task_execution_metrics) only logs Notion agent dispatches, which
+   * an end user never triggers.
+   */
+  app.get('/api/cost-by-domain', (req: Request, res: Response) => {
+    try {
+      const days = Math.min(Math.max(parseInt(req.query.days as string || '7', 10), 1), 90);
+      const db = getDb();
+      const rows = db.prepare(`
+        SELECT
+          COALESCE(category, 'unknown') AS domain,
+          COALESCE(provider, 'anthropic') AS provider,
+          COUNT(*) AS calls,
+          COALESCE(SUM(cost_usd), 0) AS cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+          COALESCE(AVG(duration_ms), 0) AS avgDurationMs
+        FROM api_usage
+        WHERE ts >= date('now', '-' || ? || ' days')
+        GROUP BY category, provider
+        ORDER BY cost DESC
+      `).all(days) as Array<{
+        domain: string;
+        provider: string;
+        calls: number;
+        cost: number;
+        tokens: number;
+        avgDurationMs: number;
+      }>;
+
+      const totalCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
+      const totalCalls = rows.reduce((s, r) => s + (r.calls || 0), 0);
+
+      // Also aggregate at the domain level (summed across providers) for the
+      // simpler "cost by skill" view.
+      const byDomain = new Map<string, { calls: number; cost: number; tokens: number; providers: string[] }>();
+      for (const r of rows) {
+        const existing = byDomain.get(r.domain) || { calls: 0, cost: 0, tokens: 0, providers: [] };
+        existing.calls += r.calls;
+        existing.cost += r.cost;
+        existing.tokens += r.tokens;
+        if (!existing.providers.includes(r.provider)) existing.providers.push(r.provider);
+        byDomain.set(r.domain, existing);
+      }
+      const domains = Array.from(byDomain.entries())
+        .map(([domain, stats]) => ({ domain, ...stats }))
+        .sort((a, b) => b.cost - a.cost);
+
+      res.json({ ok: true, days, totalCost, totalCalls, domains, detailed: rows });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  /**
+   * GET /api/provider-stats
+   *
+   * Fallback source for the dashboard "Provider Status" card. Reads directly
+   * from api_usage (which is always populated) and merges in circuit-breaker
+   * state from the in-memory TaskRoutingProvider when available.
+   *
+   * The older /api/provider-health endpoint only returns data for providers
+   * that have been called through TaskRoutingProvider's executeWithFallback
+   * wrapper — which means non-routing callers (direct anthropic-hook calls)
+   * don't show up there. This endpoint always has data as long as anything
+   * has been logged to api_usage.
+   */
+  app.get('/api/provider-stats', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const todayRows = db.prepare(`
+        SELECT COALESCE(provider, 'anthropic') AS provider,
+               COUNT(*) AS calls,
+               COALESCE(SUM(cost_usd), 0) AS cost,
+               COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+               MAX(ts) AS lastCallAt
+        FROM api_usage
+        WHERE ts >= date('now')
+        GROUP BY provider
+      `).all() as Array<{ provider: string; calls: number; cost: number; tokens: number; lastCallAt: string }>;
+
+      const weekRows = db.prepare(`
+        SELECT COALESCE(provider, 'anthropic') AS provider,
+               COUNT(*) AS calls,
+               COALESCE(SUM(cost_usd), 0) AS cost
+        FROM api_usage
+        WHERE ts >= date('now', '-7 days')
+        GROUP BY provider
+      `).all() as Array<{ provider: string; calls: number; cost: number }>;
+
+      // Merge with in-memory circuit-breaker state (if available)
+      let circuits: Record<string, { state: string; failures: number }> = {};
+      try {
+        const { getActiveProvider } = require('../services/provider-registry');
+        const active = getActiveProvider();
+        if (active && typeof active.getAllCircuitStates === 'function') {
+          circuits = active.getAllCircuitStates();
+        }
+      } catch { /* no active routing provider — use defaults */ }
+
+      const knownProviders = new Set<string>(['anthropic', 'openai', 'gemini']);
+      for (const r of todayRows) knownProviders.add(r.provider);
+      for (const r of weekRows) knownProviders.add(r.provider);
+      for (const p of Object.keys(circuits)) knownProviders.add(p);
+
+      const providers = Array.from(knownProviders).map(name => {
+        const today = todayRows.find(r => r.provider === name);
+        const week = weekRows.find(r => r.provider === name);
+        const circuit = circuits[name] || { state: 'CLOSED', failures: 0 };
+        return {
+          name,
+          today: {
+            calls: today?.calls || 0,
+            cost: today?.cost || 0,
+            tokens: today?.tokens || 0,
+            lastCallAt: today?.lastCallAt || null,
+          },
+          week: {
+            calls: week?.calls || 0,
+            cost: week?.cost || 0,
+          },
+          circuit,
+        };
+      }).sort((a, b) => (b.today.cost + b.week.cost) - (a.today.cost + a.week.cost));
+
+      res.json({ ok: true, providers });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Skill Management API ─────────────────────────────────────────
 
   // GET /api/skills — list all skills with sub-skill status

@@ -13,12 +13,15 @@ describe('Domain Provider Router', () => {
       expect(getProviderForDomain('secretary')).toBe('anthropic');
     });
 
-    // Note: Other domains return 'anthropic' when GEMINI_ROUTING_ENABLED=false (default in tests)
-    it('non-secretary domains default to anthropic when Gemini disabled', () => {
-      expect(getProviderForDomain('triathlon')).toBe('anthropic');
-      expect(getProviderForDomain('content')).toBe('anthropic');
-      expect(getProviderForDomain('finance')).toBe('anthropic');
-      expect(getProviderForDomain('cooking')).toBe('anthropic');
+    // Gemini routing is ENABLED by default as of v4.9.13 — the cost-optimized
+    // path: secretary stays on Claude (tool-use quality), non-secretary domains
+    // move to Gemini (6x cheaper). The provider-fallback layer gracefully
+    // degrades to anthropic if GEMINI_API_KEY isn't set.
+    it('non-secretary domains default to gemini (enabled by default)', () => {
+      expect(getProviderForDomain('triathlon')).toBe('gemini');
+      expect(getProviderForDomain('content')).toBe('gemini');
+      expect(getProviderForDomain('finance')).toBe('gemini');
+      expect(getProviderForDomain('cooking')).toBe('gemini');
     });
   });
 
