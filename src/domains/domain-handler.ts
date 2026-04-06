@@ -8,6 +8,7 @@ import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getActivePlanSummary } from '../services/training-plans';
 import { getActiveProvider } from '../services/provider-registry';
+import { getDailyContext } from '../services/context-engine';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import type { CoachRecommendation } from '../services/garmin-coach';
@@ -101,6 +102,18 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
   // Cross-domain shared context
   const sharedCtx = getSharedMemorySummary(userId ?? 0);
   if (sharedCtx) parts.push(sharedCtx);
+
+  // Daily cross-domain context summary (TASK-16a).
+  // Pre-built at 5 AM and refreshed on every task write — replaces the
+  // 5+ speculative tool calls the AI used to make to gather "what's my
+  // day looking like?" before answering. Cost: ~500 tokens per message
+  // instead of ~1350. See src/services/context-engine.ts.
+  if (userId) {
+    const dailyContext = getDailyContext(userId);
+    if (dailyContext) {
+      parts.push('\n--- Daily Context ---\n' + dailyContext);
+    }
+  }
 
   return parts.join('\n');
 }

@@ -139,6 +139,8 @@ export function startScheduler(bot: Bot): void {
   registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
   registerJob('db_backup',        'Database Backup',        backupCron,        'system');
   registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
+  registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
+  registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -288,6 +290,51 @@ export function startScheduler(bot: Bot): void {
     msTodo.clearSelfCreatedTasks();
     todayNotifications.length = 0;
     logger.info('Cleared self-created task cache and daily notifications');
+  }), { timezone: tz });
+
+  // ── Unified task store: per-provider sync (every 15 min) ───────────
+  // Pulls from all registered TaskProviderAdapters for every active user.
+  // Webhook-enabled providers (Todoist) trigger immediate syncs on their
+  // own; this 15-min cron is the catchup safety net for missed webhooks
+  // and the sole sync mechanism for polling providers (Notion, MS To Do).
+  // The sync engine itself short-circuits disconnected adapters cheaply,
+  // so this is safe even when most users have zero providers connected.
+  cron.schedule('*/15 * * * *', wrapJob('task_sync', async () => {
+    try {
+      const { syncAllProviders } = require('./task-store/sync-engine');
+      for (const userId of getActiveUserIds()) {
+        try {
+          const results = await syncAllProviders(userId);
+          if (results.length > 0) {
+            const upserted = results.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0);
+            if (upserted > 0) {
+              logger.debug({ userId, upserted, providers: results.length }, 'Task sync completed');
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, userId }, 'Task sync failed for user');
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Task sync cron failed (sync engine may not be loaded yet)');
+    }
+  }), { timezone: tz });
+
+  // ── Daily cross-domain context builder (5 AM local) ────────────────
+  // Pre-builds the ~500-token cross-domain summary that gets injected into
+  // every AI call as system context. Running at 5 AM means the morning
+  // briefing (which fires at config.todo.digestTime, usually 6-7 AM) and
+  // every subsequent message that day reads from a freshly-built cache,
+  // saving ~1300 tokens of speculative tool calls per AI message.
+  cron.schedule('0 5 * * *', wrapJob('daily_context', async () => {
+    try {
+      const { buildContextForAllUsers } = require('./context-engine');
+      const userIds = getActiveUserIds();
+      const stats = await buildContextForAllUsers(userIds);
+      logger.info({ ...stats, total: userIds.length }, 'Daily context build complete');
+    } catch (err) {
+      logger.warn({ err }, 'Daily context cron failed');
+    }
   }), { timezone: tz });
 
   // Old content_discovery (16:43) removed — replaced by content-workflow (Tue/Thu/Fri)
