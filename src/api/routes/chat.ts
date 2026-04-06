@@ -101,11 +101,11 @@ export function chatRoutes(): Router {
         return;
       }
 
-      // Execute with a 25-second timeout to prevent infinite hangs
-      // (iOS client times out at 30s, so we respond before that)
+      // Execute with a 40-second timeout (iOS client times out at 45s)
+      // Secretary tool-use commands (/todo, /day) can take 15-30s with Claude Sonnet
       const handlerPromise = handler(route.strippedMessage, userId);
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Response timeout — AI is taking too long')), 25000),
+        setTimeout(() => reject(new Error('Response timeout — AI is taking too long')), 40000),
       );
       const result = await Promise.race([handlerPromise, timeoutPromise]);
 
