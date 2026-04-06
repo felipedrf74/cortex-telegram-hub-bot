@@ -138,13 +138,19 @@ describe('Domain Status — SQL queries', () => {
 });
 
 describe('Domain Status — Portal HTML structure', () => {
+  // Updated for the redesigned portal (TASK-15a). The Domain Handlers panel
+  // now lives inside the Skills section rather than its own card, and uses
+  // the unified `provider-card` component with `status-dot` indicators
+  // instead of bespoke `.domain-card` classes. Functionality is preserved:
+  // every domain still renders messagesToday / totalMessages / lastMessageAt
+  // and the active state is shown as a status dot.
   const html = fs.readFileSync(
     path.join(ROOT, 'src', 'portal', 'portal.html'),
     'utf-8',
   );
 
-  it('has domain-handlers container div', () => {
-    expect(html).toContain('id="domain-handlers"');
+  it('has domain status container div in the new portal', () => {
+    expect(html).toContain('id="domain-status-content"');
   });
 
   it('section title says Domain Handlers', () => {
@@ -155,22 +161,25 @@ describe('Domain Status — Portal HTML structure', () => {
     expect(html).toContain('Runtime status');
   });
 
-  it('has CSS for domain-card component', () => {
-    expect(html).toContain('.domain-card');
-    expect(html).toContain('.domain-card-header');
-    expect(html).toContain('.domain-card-stats');
-    expect(html).toContain('.domain-card-details');
+  it('reuses the provider-card component for domain rendering', () => {
+    // The redesign collapses domain-card → provider-card to share styles
+    // with the AI provider health cards.
+    expect(html).toContain('provider-card');
+    expect(html).toContain('provider-card-header');
+    expect(html).toContain('provider-stats');
   });
 
-  it('has CSS for domain detail chips', () => {
-    expect(html).toContain('.domain-detail-chip');
-    expect(html).toContain('.domain-detail-chip.ok');
-    expect(html).toContain('.domain-detail-chip.warn');
+  it('uses status-dot indicators for active state', () => {
+    // Replaces the old .domain-detail-chip ok/warn variants.
+    expect(html).toContain('.status-dot');
+    expect(html).toContain('.status-dot.online');
+    expect(html).toContain('.status-dot.offline');
   });
 
-  it('uses responsive grid layout for domain cards', () => {
+  it('uses responsive auto-fit grid layout for domain cards', () => {
     expect(html).toContain('grid-template-columns');
-    expect(html).toContain('minmax(320px,1fr)');
+    // The new design uses 260px minmax in the grid-cols-auto utility.
+    expect(html).toContain('minmax(260px, 1fr)');
   });
 });
 
@@ -180,23 +189,26 @@ describe('Domain Status — JS rendering logic', () => {
     'utf-8',
   );
 
-  it('renders domain icons for secretary, triathlon, content', () => {
-    expect(html).toContain("secretary: '📋'");
-    expect(html).toContain("triathlon: '🏊'");
-    expect(html).toContain("content: '🎬'");
+  it('reads domain field from server snapshot', () => {
+    // The render function consumes the same SnapshotResponse.domainStatus
+    // shape that the server emits — verify the new function reads .domain.
+    expect(html).toContain('renderDomainStatus');
+    expect(html).toContain('d.domain');
   });
 
-  it('renders per-domain colors', () => {
-    expect(html).toContain("secretary: '#74b9ff'");
-    expect(html).toContain("triathlon: '#00b894'");
-    expect(html).toContain("content: '#fdcb6e'");
+  it('uses domain CSS classes (matches iOS palette)', () => {
+    // Per-domain colors are now defined as CSS variables / classes
+    // (.domain-secretary etc.) instead of inline JS color maps.
+    expect(html).toContain('.domain-secretary');
+    expect(html).toContain('.domain-triathlon');
+    expect(html).toContain('.domain-content');
   });
 
-  it('renders active/inactive status dot', () => {
-    expect(html).toContain('dot-green');
-    expect(html).toContain('dot-red');
-    expect(html).toContain('Active');
-    expect(html).toContain('Inactive');
+  it('renders active/inactive status indicator', () => {
+    // The new design shows online/offline via status-dot CSS classes
+    // applied to the domain card header.
+    expect(html).toContain('status-dot');
+    expect(html).toContain("d.active ? 'online' : 'offline'");
   });
 
   it('renders message count today', () => {
@@ -209,22 +221,6 @@ describe('Domain Status — JS rendering logic', () => {
 
   it('renders last message relative time', () => {
     expect(html).toContain('relativeTime(d.lastMessageAt)');
-  });
-
-  it('renders Garmin connected chip for triathlon domain', () => {
-    expect(html).toContain('Garmin Connected');
-  });
-
-  it('renders Microsoft Graph chip for secretary domain', () => {
-    expect(html).toContain('Microsoft Graph');
-  });
-
-  it('renders agent count chip for content domain', () => {
-    expect(html).toContain('agents active');
-  });
-
-  it('renders signal count chip for content domain', () => {
-    expect(html).toContain('signals');
   });
 });
 

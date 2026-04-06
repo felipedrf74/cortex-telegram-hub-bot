@@ -168,56 +168,48 @@ describe('Integration Health — SQL statements', () => {
 });
 
 describe('Integration Health — Portal HTML', () => {
+  // Updated for the redesigned portal (TASK-15a). The Integration Health
+  // panel is now part of the Dashboard section as a compact list with
+  // status-dot indicators, instead of the old grouped pill-badge layout.
+  // The data shape from /api/snapshot is unchanged, so the same fields
+  // (configured, status, tokenHealth, lastApiCall, group) are still consumed.
   const html = fs.readFileSync(
     path.join(ROOT, 'src', 'portal', 'portal.html'),
     'utf-8',
   );
 
-  it('has integration-health container div', () => {
-    expect(html).toContain('id="integration-health"');
+  it('has integration health container div in the new portal', () => {
+    expect(html).toContain('id="dash-integrations"');
   });
 
-  it('has CSS classes for health status badges', () => {
-    expect(html).toContain('.int-health.valid');
-    expect(html).toContain('.int-health.expired');
-    expect(html).toContain('.int-health.warning');
-    expect(html).toContain('.int-health.not_configured');
+  it('uses status-dot CSS classes for health visualization', () => {
+    // New design unifies all health visualization on .status-dot variants.
+    expect(html).toContain('.status-dot');
+    expect(html).toContain('.status-dot.online');
+    expect(html).toContain('.status-dot.warning');
+    expect(html).toContain('.status-dot.error');
+    expect(html).toContain('.status-dot.offline');
   });
 
-  it('has alert pulse animation for expired tokens', () => {
-    expect(html).toContain('.int-alert.expired');
-    expect(html).toContain('pulse-alert');
+  it('has pulsing animation for online status', () => {
+    // The redesign drops the bespoke `.int-alert.expired` class in favor of
+    // a single `pulse` keyframe applied to .status-dot.online.
+    expect(html).toContain('@keyframes pulse');
   });
 
-  it('has alert indicator for warning tokens', () => {
-    expect(html).toContain('.int-alert.warning');
+  it('renders the integration health card on the dashboard', () => {
+    // The card now lives on the Dashboard section, not its own card.
+    expect(html).toContain('Integration Health');
   });
 
-  it('defines group labels for Google, Microsoft, Garmin, System', () => {
-    expect(html).toContain('Google (OAuth 2.0)');
-    expect(html).toContain('Microsoft (MSAL)');
-    expect(html).toContain('Garmin (Session)');
-    expect(html).toContain('System');
+  it('renderDashIntegrations function exists in script', () => {
+    // The function is renamed for the new dashboard placement.
+    expect(html).toContain('function renderDashIntegrations');
   });
 
-  it('defines health labels for all states', () => {
-    expect(html).toContain('✓ Valid');
-    expect(html).toContain('✗ Expired');
-    expect(html).toContain('⚠ Stale');
-    expect(html).toContain('— Not configured');
-  });
-
-  it('renderIntegrationHealth function exists in script', () => {
-    expect(html).toContain('function renderIntegrationHealth');
-  });
-
-  it('renders last API call timestamp', () => {
-    expect(html).toContain('Last successful API call');
+  it('renders last API call timestamp on each integration', () => {
+    expect(html).toContain('Last call:');
     expect(html).toContain('lastApiCall');
-  });
-
-  it('card title is Integration Health', () => {
-    expect(html).toContain('🔗 Integration Health');
   });
 });
 

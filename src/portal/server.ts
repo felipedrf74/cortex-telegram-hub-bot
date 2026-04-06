@@ -1438,6 +1438,91 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── GET /api/usage/summary — KPIs for the redesigned admin dashboard ──
+  // Aggregates "active users" and "cost / messages / tokens" for today, this
+  // week, and this month in a single query. Used by the Dashboard section's
+  // KPI strip — kept separate from /api/snapshot so it can be polled at a
+  // higher frequency without rebuilding the entire snapshot.
+  app.get('/api/usage/summary', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const safeGet = (sql: string): any => {
+        try { return db.prepare(sql).get(); }
+        catch { return null; }
+      };
+
+      // Active users / cost / messages / tokens — three windows.
+      const today = safeGet(`
+        SELECT
+          COUNT(DISTINCT user_id) as activeUsers,
+          COUNT(*) as messages,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+        FROM api_usage
+        WHERE ts >= date('now')
+      `) || { activeUsers: 0, messages: 0, cost: 0, tokens: 0 };
+
+      const week = safeGet(`
+        SELECT
+          COUNT(DISTINCT user_id) as activeUsers,
+          COUNT(*) as messages,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+        FROM api_usage
+        WHERE ts >= date('now', '-7 days')
+      `) || { activeUsers: 0, messages: 0, cost: 0, tokens: 0 };
+
+      const month = safeGet(`
+        SELECT
+          COUNT(DISTINCT user_id) as activeUsers,
+          COUNT(*) as messages,
+          COALESCE(SUM(cost_usd), 0) as cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+        FROM api_usage
+        WHERE ts >= date('now', '-30 days')
+      `) || { activeUsers: 0, messages: 0, cost: 0, tokens: 0 };
+
+      // 7-day cost sparkline (one number per day, oldest first).
+      const sparkline: number[] = [];
+      try {
+        const rows = db.prepare(`
+          SELECT date(ts) as day, COALESCE(SUM(cost_usd), 0) as cost
+          FROM api_usage
+          WHERE ts >= date('now', '-7 days')
+          GROUP BY day
+          ORDER BY day ASC
+        `).all() as Array<{ day: string; cost: number }>;
+        // Pad to 7 days even if some are missing.
+        const byDay = new Map(rows.map((r) => [r.day, r.cost]));
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date();
+          d.setDate(d.getDate() - i);
+          const key = d.toISOString().slice(0, 10);
+          sparkline.push(byDay.get(key) ?? 0);
+        }
+      } catch { /* api_usage may not have data yet */ }
+
+      // Total registered users (independent of usage window).
+      let totalUsers = 0;
+      try {
+        const row = db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number } | undefined;
+        totalUsers = row?.c ?? 0;
+      } catch { /* users table may not exist in dev */ }
+
+      res.json({
+        ok: true,
+        totalUsers,
+        today,
+        week,
+        month,
+        sparkline,
+      });
+    } catch (err) {
+      logger.error({ err }, 'Portal: usage/summary failed');
+      res.status(500).json({ ok: false, error: 'Failed to build usage summary' });
+    }
+  });
+
   // ── GET /api/skills — all skill statuses with sub-skill toggles ──
   app.get('/api/skills', (_req: Request, res: Response) => {
     try {
