@@ -30,6 +30,21 @@ async function main(): Promise<void> {
   setBusDbProvider(() => getDb() as any);
   setErrorDbProvider(() => getDb());
 
+  // Register task provider adapters (TASK-16b).
+  // Adapters self-register into the sync engine's in-memory registry; the
+  // 15-minute task_sync cron and the webhook router both look them up here.
+  // Wrapped in try/catch so a broken adapter never blocks app boot.
+  try {
+    const { registerAdapter } = require('./services/task-store/sync-engine');
+    const { TodoistAdapter } = require('./services/task-store/todoist-adapter');
+    const { NotionAdapter } = require('./services/task-store/notion-adapter');
+    registerAdapter(new TodoistAdapter());
+    registerAdapter(new NotionAdapter());
+    logger.info('Task provider adapters registered: todoist, notion');
+  } catch (err) {
+    logger.warn({ err }, 'Task provider adapter registration failed');
+  }
+
   // Install process-level error handlers (unhandledRejection, uncaughtException)
   installProcessHandlers();
 

@@ -113,6 +113,19 @@ export const config = {
     uberRidesEnabled: (process.env.UBER_RIDES_ENABLED || 'true') === 'true',
     uberEatsEnabled: (process.env.UBER_EATS_ENABLED || 'true') === 'true',
   },
+  // ── Todoist (TASK-16b — task provider with webhooks) ───────────────
+  todoist: {
+    clientId: process.env.TODOIST_CLIENT_ID || '',
+    clientSecret: process.env.TODOIST_CLIENT_SECRET || '',
+    // Webhook secret defaults to client_secret per Todoist's signature spec.
+    // Override only if you've rotated webhook keys independently.
+    webhookSecret: process.env.TODOIST_WEBHOOK_SECRET || process.env.TODOIST_CLIENT_SECRET || '',
+  },
+  // ── Notion (TASK-16b — task provider, polling-only) ────────────────
+  notion: {
+    clientId: process.env.NOTION_CLIENT_ID || '',
+    clientSecret: process.env.NOTION_CLIENT_SECRET || '',
+  },
   // ── Garmin Connect (Daily Coach) ────────────────────────────────────
   garmin: {
     email: process.env.GARMIN_EMAIL || '',

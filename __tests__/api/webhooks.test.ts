@@ -1,0 +1,222 @@
+/**
+ * Tests for src/api/routes/webhooks.ts
+ *
+ * Uses supertest against the webhook router (mounted standalone, no full
+ * portal server) to verify HMAC signature handling, replay protection, and
+ * the immediate-200-then-async-process contract.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import express from 'express';
+import crypto from 'crypto';
+import http from 'http';
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+// Mock the config so the webhook secret is deterministic
+vi.mock('../../src/config', () => ({
+  config: {
+    todoist: {
+      clientId: 'test_client',
+      clientSecret: 'test_secret',
+      webhookSecret: 'webhook_test_secret',
+    },
+  },
+}));
+
+// Mock the dependent services so the async processor doesn't crash
+vi.mock('../../src/services/database', () => ({ getDb: () => ({ prepare: () => ({ all: () => [] }) }) }));
+vi.mock('../../src/services/task-store/sync-engine', () => ({
+  syncProvider: vi.fn().mockResolvedValue({ tasksUpserted: 0, errors: [] }),
+}));
+vi.mock('../../src/services/task-store/todoist-adapter', () => ({
+  findNexusUserByTodoistId: vi.fn().mockReturnValue(123),
+  rememberTodoistUserMapping: vi.fn(),
+}));
+vi.mock('../../src/services/context-engine', () => ({
+  invalidateContextCache: vi.fn(),
+}));
+
+import {
+  createWebhookRouter,
+  verifyTodoistSignature,
+  _resetDeliveryCacheForTests,
+} from '../../src/api/routes/webhooks';
+
+const SECRET = 'webhook_test_secret';
+
+function buildSignature(rawBody: string): string {
+  return crypto.createHmac('sha256', SECRET).update(rawBody).digest('base64');
+}
+
+/** Spin up a minimal Express server with the webhook router and POST a request. */
+async function postWebhook(opts: {
+  body: any;
+  signature?: string;
+  deliveryId?: string;
+}): Promise<{ status: number; body: any }> {
+  const app = express();
+  app.use('/webhooks', createWebhookRouter());
+
+  const server = app.listen(0);
+  const address = server.address() as { port: number };
+  const port = address.port;
+
+  const rawBody = JSON.stringify(opts.body);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Content-Length': String(Buffer.byteLength(rawBody)),
+  };
+  if (opts.signature !== undefined) headers['X-Todoist-Hmac-SHA256'] = opts.signature;
+  if (opts.deliveryId !== undefined) headers['X-Todoist-Delivery-Id'] = opts.deliveryId;
+
+  const response = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/webhooks/todoist',
+        headers,
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode || 0, body: data ? JSON.parse(data) : null });
+          } catch {
+            resolve({ status: res.statusCode || 0, body: data });
+          }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(rawBody);
+    req.end();
+  });
+
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return response;
+}
+
+beforeEach(() => {
+  _resetDeliveryCacheForTests();
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+// ── verifyTodoistSignature ─────────────────────────────────────────
+
+describe('verifyTodoistSignature', () => {
+  it('accepts a correctly-signed body', () => {
+    const body = Buffer.from('{"test":"data"}');
+    const sig = crypto.createHmac('sha256', SECRET).update(body).digest('base64');
+    expect(verifyTodoistSignature(body, sig, SECRET)).toBe(true);
+  });
+
+  it('rejects an empty signature', () => {
+    expect(verifyTodoistSignature(Buffer.from('x'), '', SECRET)).toBe(false);
+  });
+
+  it('rejects a wrong signature', () => {
+    expect(verifyTodoistSignature(Buffer.from('x'), 'AAAAAAAAAAAAAAAAAAAAAAAA', SECRET)).toBe(false);
+  });
+
+  it('rejects an empty secret', () => {
+    expect(verifyTodoistSignature(Buffer.from('x'), 'whatever', '')).toBe(false);
+  });
+
+  it('uses constant-time comparison (no length leak)', () => {
+    const body = Buffer.from('{"a":1}');
+    const correct = crypto.createHmac('sha256', SECRET).update(body).digest('base64');
+    // Wrong but same length
+    const wrongSameLength = correct.split('').reverse().join('');
+    expect(verifyTodoistSignature(body, wrongSameLength, SECRET)).toBe(false);
+  });
+});
+
+// ── POST /webhooks/todoist ─────────────────────────────────────────
+
+describe('POST /webhooks/todoist', () => {
+  it('returns 200 for a valid signature', async () => {
+    const body = { event_name: 'item:added', user_id: 555, event_data: {} };
+    const sig = buildSignature(JSON.stringify(body));
+    const res = await postWebhook({ body, signature: sig, deliveryId: 'd1' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it('returns 401 for an invalid signature', async () => {
+    const body = { event_name: 'item:added', user_id: 555 };
+    const res = await postWebhook({
+      body,
+      signature: 'AAAAAAAAAAAAAAAAAAAAAAAA',
+      deliveryId: 'd2',
+    });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/invalid signature/);
+  });
+
+  it('returns 401 for a missing signature header', async () => {
+    const body = { event_name: 'item:added' };
+    const res = await postWebhook({ body, deliveryId: 'd3' });
+    expect(res.status).toBe(401);
+  });
+
+  it('dedups duplicate delivery IDs (returns 200 with dedup flag)', async () => {
+    const body = { event_name: 'item:added', user_id: 555 };
+    const sig = buildSignature(JSON.stringify(body));
+
+    const first = await postWebhook({ body, signature: sig, deliveryId: 'dup_test' });
+    expect(first.status).toBe(200);
+    expect(first.body.dedup).toBeUndefined();
+
+    const second = await postWebhook({ body, signature: sig, deliveryId: 'dup_test' });
+    expect(second.status).toBe(200);
+    expect(second.body.dedup).toBe(true);
+  });
+
+  it('returns 400 for malformed JSON (after passing HMAC)', async () => {
+    // Sign the literal "not json" string so HMAC passes; then the parser fails
+    const rawBody = 'not json';
+    const sig = crypto.createHmac('sha256', SECRET).update(Buffer.from(rawBody)).digest('base64');
+
+    const app = express();
+    app.use('/webhooks', createWebhookRouter());
+    const server = app.listen(0);
+    const port = (server.address() as any).port;
+
+    const res = await new Promise<{ status: number; body: any }>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1', port, method: 'POST', path: '/webhooks/todoist',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': String(Buffer.byteLength(rawBody)),
+            'X-Todoist-Hmac-SHA256': sig,
+            'X-Todoist-Delivery-Id': 'malformed_test',
+          },
+        },
+        (response) => {
+          let data = '';
+          response.on('data', (c) => (data += c));
+          response.on('end', () => {
+            try { resolve({ status: response.statusCode || 0, body: JSON.parse(data) }); }
+            catch { resolve({ status: response.statusCode || 0, body: data }); }
+          });
+        },
+      );
+      req.on('error', reject);
+      req.write(rawBody);
+      req.end();
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    expect(res.status).toBe(400);
+  });
+});

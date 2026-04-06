@@ -149,6 +149,14 @@ export function registerSystemCommands(bot: Bot): void {
   });
 
   // ── /connect — OAuth account linking ──
+  // Supported providers grow with each TASK. Group them by category in the
+  // help text so users see "calendar/email" vs "tasks" vs "wearables" instead
+  // of one giant blob.
+  const SUPPORTED_PROVIDERS = [
+    'google', 'outlook',                           // calendar + email
+    'todoist', 'notion',                           // tasks (TASK-16b)
+    'strava', 'whoop', 'fitbit',                   // wearables (TASK-09)
+  ];
   bot.command('connect', async (ctx) => {
     const userId = ctx.from?.id;
     if (!userId) return;
@@ -159,7 +167,7 @@ export function registerSystemCommands(bot: Bot): void {
     const provider = ctx.message?.text?.split(' ')[1]?.toLowerCase();
     const lang = getUserLanguage(userId);
 
-    if (!provider || !['google', 'outlook'].includes(provider)) {
+    if (!provider || !SUPPORTED_PROVIDERS.includes(provider)) {
       await ctx.reply(t('connect_help', lang), { parse_mode: 'HTML' });
       return;
     }
@@ -192,7 +200,15 @@ export function registerSystemCommands(bot: Bot): void {
       return;
     }
 
-    const providerIcons: Record<string, string> = { google: '\u{1F7E2}', outlook: '\u{1F535}' };
+    const providerIcons: Record<string, string> = {
+      google: '\u{1F7E2}',
+      outlook: '\u{1F535}',
+      todoist: '\u{2705}',  // ✅ Todoist
+      notion: '\u{1F4D3}',  // 📓 Notion
+      strava: '\u{1F3C3}',  // 🏃 Strava
+      whoop: '\u{1F4AA}',   // 💪 Whoop
+      fitbit: '\u{231A}',   // ⌚ Fitbit
+    };
     let msg = t('connections_header', lang);
     for (const c of connections) {
       const icon = providerIcons[c.provider] || '\u{1F4E1}';

@@ -1030,6 +1030,18 @@ async function handleAction(
 
 export function createPortalServer(bot: Bot): http.Server {
   const app = express();
+
+  // ── Webhook router (TASK-16b) ──────────────────────────────────────
+  // Mounted BEFORE express.json() because the Todoist webhook needs the
+  // raw bytes for HMAC verification. The router uses its own scoped
+  // express.raw() parser and JSON.parses the body manually after verifying.
+  try {
+    const { createWebhookRouter } = require('../api/routes/webhooks');
+    app.use('/webhooks', createWebhookRouter());
+  } catch (err) {
+    logger.warn({ err }, 'Webhook router failed to mount (non-fatal)');
+  }
+
   app.use(express.json());
 
   // ── iOS API (mounted first — separate JWT auth, not portal token) ────
@@ -1250,6 +1262,92 @@ export function createPortalServer(bot: Bot): http.Server {
     } catch (err) {
       logger.error({ err }, 'Fitbit OAuth callback failed');
       res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect fitbit in Telegram.</p></body></html>');
+    }
+  });
+
+  // ── Todoist OAuth Callback (TASK-16b) ──────────────────────────────
+
+  app.get('/oauth/todoist/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('todoist', code, userId);
+      storeTokens(userId, 'todoist', tokens);
+
+      // Trigger an immediate first sync so the user sees their tasks instantly,
+      // not after waiting up to 15 minutes for the cron tick. Detached so the
+      // OAuth callback HTML response goes out without waiting for the sync.
+      try {
+        const { syncProvider } = require('../services/task-store/sync-engine');
+        syncProvider(userId, 'todoist').catch((err: any) =>
+          logger.warn({ err, userId }, 'Initial Todoist sync failed (non-fatal)'),
+        );
+      } catch { /* sync engine optional */ }
+
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Todoist' }));
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Todoist account linked. Your first sync is starting now — return to Telegram.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Todoist OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect todoist in Telegram.</p></body></html>');
+    }
+  });
+
+  // ── Notion OAuth Callback (TASK-16b) ───────────────────────────────
+
+  app.get('/oauth/notion/callback', async (req: Request, res: Response) => {
+    const code = req.query.code as string;
+    const state = req.query.state as string;
+    if (!code || !state) {
+      res.status(400).send('Missing code or state parameter');
+      return;
+    }
+    try {
+      const { exchangeCode } = require('../services/oauth-flow');
+      const { storeTokens } = require('../services/oauth-store');
+      const { getUserLanguage } = require('../services/user-service');
+      const { t } = require('../utils/i18n');
+      const userId = parseInt(state, 10);
+      const tokens = await exchangeCode('notion', code, userId);
+      storeTokens(userId, 'notion', tokens);
+
+      // Notion needs a per-database mapping setup before sync works. We don't
+      // trigger a sync here — the user must run the database mapping flow
+      // first (see /connect command for the prompt). The bot's followup
+      // message tells them what to do next.
+      try {
+        const lang = getUserLanguage(userId);
+        const botRef = getBotRef();
+        if (botRef) {
+          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Notion' }));
+          await botRef.api.sendMessage(
+            userId,
+            '📋 <b>Next step:</b> Send me the URL of the Notion database you want to sync as your task list.\n\n' +
+            'Example: <code>https://notion.so/workspace/Tasks-abc123def456</code>',
+            { parse_mode: 'HTML' },
+          );
+        }
+      } catch { /* notification is best-effort */ }
+
+      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Notion account linked. Return to Telegram and send your database URL to finish setup.</p></body></html>');
+    } catch (err) {
+      logger.error({ err }, 'Notion OAuth callback failed');
+      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect notion in Telegram.</p></body></html>');
     }
   });
 

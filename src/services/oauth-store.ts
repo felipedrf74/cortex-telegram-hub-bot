@@ -14,7 +14,14 @@ import { encryptValue, decryptValue } from '../utils/encryption';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
-export type OAuthProvider = 'google' | 'outlook' | 'strava' | 'whoop' | 'fitbit';
+export type OAuthProvider =
+  | 'google'
+  | 'outlook'
+  | 'strava'
+  | 'whoop'
+  | 'fitbit'
+  | 'todoist'   // TASK-16b — task provider with webhooks + Sync API cursors
+  | 'notion';   // TASK-16b — task provider, polling-only, per-database mapping
 
 export interface OAuthTokens {
   accessToken: string;

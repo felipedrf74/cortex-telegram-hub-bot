@@ -55,8 +55,8 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'en-US': '🔐 Registration is currently closed. Ask an admin for an invite code.',
   },
   'connect_help': {
-    'pt-BR': '🔗 Para conectar suas contas:\n\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do',
-    'en-US': '🔗 To connect your accounts:\n\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do',
+    'pt-BR': '🔗 <b>Conectar suas contas:</b>\n\n<b>📅 Calendário e email</b>\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do\n\n<b>✅ Tarefas</b>\n/connect todoist — Todoist (sincronização em tempo real)\n/connect notion — Notion (banco de dados como lista de tarefas)\n\n<b>⌚ Wearables</b>\n/connect strava — Strava\n/connect whoop — Whoop\n/connect fitbit — Fitbit',
+    'en-US': '🔗 <b>Connect your accounts:</b>\n\n<b>📅 Calendar &amp; email</b>\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do\n\n<b>✅ Tasks</b>\n/connect todoist — Todoist (real-time webhook sync)\n/connect notion — Notion (database as task list)\n\n<b>⌚ Wearables</b>\n/connect strava — Strava\n/connect whoop — Whoop\n/connect fitbit — Fitbit',
   },
   'connect_prompt': {
     'pt-BR': '🔗 Clique no botão abaixo para autorizar o acesso ao {provider}:',
@@ -71,8 +71,8 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'en-US': '❌ Failed to connect {provider}. Try again with /connect {provider}.',
   },
   'connections_none': {
-    'pt-BR': '📡 Nenhuma conta conectada.\n\nUse /connect google ou /connect outlook para começar.',
-    'en-US': '📡 No accounts connected.\n\nUse /connect google or /connect outlook to get started.',
+    'pt-BR': '📡 Nenhuma conta conectada.\n\nUse /connect para ver as opções disponíveis.',
+    'en-US': '📡 No accounts connected.\n\nUse /connect to see available options.',
   },
   'connections_header': {
     'pt-BR': '📡 <b>Contas conectadas:</b>\n',
