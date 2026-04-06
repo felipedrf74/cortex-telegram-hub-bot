@@ -64,15 +64,21 @@ async function buildStateContext(): Promise<string> {
   if (todoResult) {
     if (todoResult.success && todoResult.data.length > 0) {
       const tasks = todoResult.data;
-      const nowDate = new Date();
-      const todayStart = new Date(startOfDay()).getTime();
-      const todayEnd = new Date(endOfDay()).getTime();
-      const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
-      const dueToday = tasks.filter((t) => {
-        if (!t.dueDateTime) return false;
-        const due = new Date(t.dueDateTime).getTime();
-        return due >= todayStart && due <= todayEnd;
+      // Date-only comparison in the configured timezone. A task "due April 6"
+      // should be treated as due TODAY at any moment on April 6, NOT marked
+      // overdue at 00:01 just because the timestamp is < now. This matches
+      // MS Todo's own UI behavior and avoids double-counting today's tasks
+      // as both "overdue" and "due today".
+      const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+      const dueDateStr = (t: typeof tasks[number]): string | null => {
+        if (!t.dueDateTime) return null;
+        return new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+      };
+      const overdue = tasks.filter((t) => {
+        const d = dueDateStr(t);
+        return d !== null && d < todayStr;
       });
+      const dueToday = tasks.filter((t) => dueDateStr(t) === todayStr);
 
       // Group by list with IDs (so model can skip ms_todo_get_lists)
       const byList = new Map<string, { id: string; count: number }>();

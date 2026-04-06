@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { isBotPollingActive, getLastMessageAt } from '../../portal/telemetry';
 import { getCached, setCache } from '../../services/cache-store';
+import { apiSuccess, sendError } from '../response-helpers';
 
 export function dashboardRoutes(): Router {
   const router = Router();
@@ -25,16 +26,18 @@ export function dashboardRoutes(): Router {
       const dashboardCacheKey = `dashboard:${userId}`;
       const cachedDashboard = getCached<any>(dashboardCacheKey);
       if (cachedDashboard) {
-        // ETag check on cached data
-        const cachedJson = JSON.stringify(cachedDashboard);
-        const etag = `"${crypto.createHash('md5').update(cachedJson).digest('hex')}"`;
+        // The ETag is computed over the wrapped envelope, so iOS clients
+        // get a stable hash that includes the timestamp/cached flags.
+        const envelope = apiSuccess(cachedDashboard, { cached: true });
+        const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined }); // hash is content-only
+        const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
         if (req.headers['if-none-match'] === etag) {
           res.status(304).end();
           return;
         }
         res.setHeader('ETag', etag);
         res.setHeader('Cache-Control', 'private, max-age=30');
-        res.json(cachedDashboard);
+        res.json(envelope);
         return;
       }
 
@@ -62,7 +65,7 @@ export function dashboardRoutes(): Router {
         ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
-      const response = {
+      const dashboard = {
         greeting: `${greeting}, Felipe`,
         date: now.toISOString().slice(0, 10),
         dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
@@ -78,9 +81,14 @@ export function dashboardRoutes(): Router {
         },
       };
 
+      // Cache the raw dashboard data (unwrapped) so warmDashboardCache and
+      // the cache hit path can both use it without double-wrapping.
+      setCache(dashboardCacheKey, dashboard, 180);
+
+      const envelope = apiSuccess(dashboard);
       // ETag support — skip full response if nothing changed
-      const responseJson = JSON.stringify(response);
-      const etag = `"${crypto.createHash('md5').update(responseJson).digest('hex')}"`;
+      const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined });
+      const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
 
       if (req.headers['if-none-match'] === etag) {
         res.status(304).end();
@@ -89,14 +97,10 @@ export function dashboardRoutes(): Router {
 
       res.setHeader('ETag', etag);
       res.setHeader('Cache-Control', 'private, max-age=30');
-
-      // Cache the full dashboard response for 3 minutes
-      setCache(dashboardCacheKey, response, 180);
-
-      res.json(response);
+      res.json(envelope);
     } catch (err: any) {
       logger.error({ err, platform: 'ios' }, 'Dashboard aggregation failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Dashboard aggregation failed', 500);
     }
   });
 

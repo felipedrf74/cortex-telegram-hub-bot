@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { sendSuccess, sendError } from '../response-helpers';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -23,7 +24,7 @@ export function taskRoutes(): Router {
       // Check SQLite cache first (survives restarts, fast)
       const cached = getCached<any>('task-lists');
       if (cached) {
-        res.json(cached);
+        sendSuccess(res, cached, { cached: true });
         return;
       }
 
@@ -38,12 +39,12 @@ export function taskRoutes(): Router {
         taskCount: -1,
       }));
 
-      const response = { lists: formatted };
-      setCache('task-lists', response, LISTS_CACHE_TTL);
-      res.json(response);
+      const payload = { lists: formatted };
+      setCache('task-lists', payload, LISTS_CACHE_TTL);
+      sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch lists', 500);
     }
   });
 
@@ -58,7 +59,7 @@ export function taskRoutes(): Router {
 
     const cached = getCached<any>(cacheKey);
     if (cached) {
-      res.json(cached);
+      sendSuccess(res, cached, { cached: true });
       return;
     }
 
@@ -67,7 +68,7 @@ export function taskRoutes(): Router {
       const result = await todo.getAllPendingTasks();
       const allTasks = result?.data || result || [];
       if (!Array.isArray(allTasks)) {
-        res.json({ tasks: [], count: 0 });
+        sendSuccess(res, { tasks: [], count: 0 });
         return;
       }
 
@@ -106,12 +107,12 @@ export function taskRoutes(): Router {
         createdDateTime: t.createdDateTime || null,
       }));
 
-      const response = { tasks, count: tasks.length };
-      setCache(cacheKey, response, TASKS_CACHE_TTL);
-      res.json(response);
+      const payload = { tasks, count: tasks.length };
+      setCache(cacheKey, payload, TASKS_CACHE_TTL);
+      sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch tasks', 500);
     }
   });
 
@@ -126,7 +127,7 @@ export function taskRoutes(): Router {
       const cacheKey = `tasks:${listId}:${status || 'all'}`;
       const cached = getCached<any>(cacheKey);
       if (cached) {
-        res.json(cached);
+        sendSuccess(res, cached, { cached: true });
         return;
       }
 
@@ -156,12 +157,12 @@ export function taskRoutes(): Router {
         createdDateTime: t.createdDateTime || null,
       }));
 
-      const response = { listName, tasks: formatted };
-      setCache(cacheKey, response, TASKS_CACHE_TTL);
-      res.json(response);
+      const payload = { listName, tasks: formatted };
+      setCache(cacheKey, payload, TASKS_CACHE_TTL);
+      sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch list tasks', 500);
     }
   });
 
@@ -172,7 +173,7 @@ export function taskRoutes(): Router {
       const { title, listName, dueDateTime, importance, body } = req.body;
 
       if (!title) {
-        res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'title is required' } });
+        sendError(res, 'BAD_REQUEST', 'title is required');
         return;
       }
 
@@ -187,10 +188,10 @@ export function taskRoutes(): Router {
       // Invalidate task caches (new task changes list contents)
       invalidateTaskCaches();
 
-      res.status(201).json({ task });
+      sendSuccess(res, { task }, { status: 201 });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks create failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to create task', 500);
     }
   });
 
@@ -210,10 +211,10 @@ export function taskRoutes(): Router {
       const task = result?.data || result;
 
       invalidateTaskCaches(listId);
-      res.json({ task });
+      sendSuccess(res, { task });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to update task', 500);
     }
   });
 
@@ -227,10 +228,10 @@ export function taskRoutes(): Router {
       const task = result?.data || result;
 
       invalidateTaskCaches(listId);
-      res.json({ task, message: `✅ Completed: ${task?.title || 'task'}` });
+      sendSuccess(res, { task, message: `✅ Completed: ${task?.title || 'task'}` });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks complete failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to complete task', 500);
     }
   });
 
@@ -242,10 +243,10 @@ export function taskRoutes(): Router {
 
       await todo.deleteTask(listId, taskId);
       invalidateTaskCaches(listId);
-      res.json({ deleted: true });
+      sendSuccess(res, { deleted: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks delete failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to delete task', 500);
     }
   });
 
@@ -255,6 +256,12 @@ export function taskRoutes(): Router {
 /** Invalidate task caches after mutations (create, update, complete, delete) */
 function invalidateTaskCaches(listId?: string): void {
   clearCache('task-lists');
+  // Cross-list pending cache shared with the chat fast-path interceptor.
+  clearCache('fastpath:pending-tasks');
+  // Filtered task views (used by /api/v1/tasks/filtered).
+  clearCache('tasks-filtered:all');
+  clearCache('tasks-filtered:overdue');
+  clearCache('tasks-filtered:dueToday');
   if (listId) {
     clearCache(`tasks:${listId}:all`);
     clearCache(`tasks:${listId}:notStarted`);
@@ -282,6 +289,19 @@ export async function warmTaskCache(): Promise<void> {
       taskCount: -1,
     }));
     setCache('task-lists', { lists: formatted }, LISTS_CACHE_TTL);
+
+    // Cache the cross-list "all pending tasks" snapshot used by both
+    // /api/v1/tasks/filtered AND the chat fast-path (/overdue, /duetoday, etc.)
+    // so the iOS chat command flow never has to wait for MS Graph.
+    try {
+      const pendingResult = await todo.getAllPendingTasks();
+      if (pendingResult?.success) {
+        // Raw TodoTask[] for the chat-fastpath module
+        setCache('fastpath:pending-tasks', pendingResult.data, TASKS_CACHE_TTL);
+      }
+    } catch {
+      // Non-critical — fast-path will fall back to a fresh fetch on miss
+    }
 
     // Cache pending tasks for each list (parallel — all at once)
     await Promise.allSettled(

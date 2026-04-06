@@ -5,11 +5,12 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { isBotPollingActive, getLastMessageAt } from '../../portal/telemetry';
+import { sendSuccess, sendError } from '../response-helpers';
 
 export function settingsRoutes(): Router {
   const router = Router();
 
-  /** GET /api/v1/status */
+  /** GET /api/v1/settings/status */
   router.get('/status', async (_req, res: Response) => {
     try {
       const startTime = (global as any).__startTime;
@@ -18,17 +19,22 @@ export function settingsRoutes(): Router {
         ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
-      res.json({
+      sendSuccess(res, {
         version: (() => { try { return require('../../../package.json').version; } catch { return '0.0.0'; } })(),
         uptime: uptimeStr,
         botStatus: isBotPollingActive() ? 'online' : 'offline',
+        lastMessageAt: getLastMessageAt(),
       });
     } catch (err: any) {
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Status fetch failed', 500);
     }
   });
 
-  /** GET /api/v1/connections */
+  /**
+   * GET /api/v1/settings/connections
+   * Legacy global integration check (which providers are configured at server level).
+   * The newer /api/v1/connections endpoint returns per-user OAuth connections.
+   */
   router.get('/connections', async (_req, res: Response) => {
     try {
       const connections: { name: string; status: string; lastSync: string | null }[] = [];
@@ -70,9 +76,9 @@ export function settingsRoutes(): Router {
         });
       } catch { connections.push({ name: 'Garmin Connect', status: 'unavailable', lastSync: null }); }
 
-      res.json({ connections });
+      sendSuccess(res, { connections });
     } catch (err: any) {
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Connections fetch failed', 500);
     }
   });
 
@@ -82,19 +88,17 @@ export function settingsRoutes(): Router {
     const { language } = req.body;
 
     if (!language || !['pt-BR', 'en-US'].includes(language)) {
-      res.status(400).json({
-        error: { code: 'BAD_REQUEST', message: 'language must be pt-BR or en-US' },
-      });
+      sendError(res, 'BAD_REQUEST', 'language must be pt-BR or en-US');
       return;
     }
 
     try {
       const { setUserLanguage } = require('../../services/user-service');
       setUserLanguage(userId, language);
-      res.json({ language });
+      sendSuccess(res, { language });
     } catch (err: any) {
       logger.error({ err }, 'iOS set language failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to set language', 500);
     }
   });
 
@@ -108,14 +112,14 @@ export function settingsRoutes(): Router {
       const db = require('../../services/database').getDb();
       db.prepare('UPDATE ios_devices SET push_token = ? WHERE user_id = ? AND device_id = ?')
         .run(token, userId, deviceId);
-      res.json({ updated: true });
+      sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS push-token update failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to update push token', 500);
     }
   });
 
-  /** POST /api/v1/export — GDPR data export */
+  /** POST /api/v1/settings/export — GDPR data export */
   router.post('/export', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
@@ -144,14 +148,14 @@ export function settingsRoutes(): Router {
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
 
-      res.json(userData);
+      sendSuccess(res, userData);
     } catch (err: any) {
       logger.error({ err }, 'iOS data export failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Data export failed', 500);
     }
   });
 
-  /** DELETE /api/v1/account — GDPR account deletion */
+  /** DELETE /api/v1/settings/account — GDPR account deletion */
   router.delete('/account', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
@@ -166,10 +170,10 @@ export function settingsRoutes(): Router {
       }
 
       logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
-      res.json({ deleted: true, message: 'All data has been permanently deleted.' });
+      sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });
     } catch (err: any) {
       logger.error({ err }, 'iOS account deletion failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Account deletion failed', 500);
     }
   });
 

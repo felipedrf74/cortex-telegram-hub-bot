@@ -68,6 +68,38 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 
 // ─── Helper: Parse Graph API task to our format ─────────────────────
 
+/**
+ * Normalize MS Graph dateTimeTimeZone objects to a clean ISO 8601 UTC string.
+ *
+ * MS Graph returns due/reminder dates as { dateTime, timeZone } where dateTime
+ * is missing the trailing "Z" and uses 7 fractional second digits, e.g.:
+ *   { dateTime: "2026-04-05T23:00:00.0000000", timeZone: "UTC" }
+ *
+ * Without normalization, JavaScript's `new Date()` interprets the bare string
+ * as **local time** — on a server in any timezone other than UTC, this is off
+ * by the local UTC offset (e.g. "2026-04-05T23:00:00" → April 5 23:00 LISBON
+ * instead of UTC), which causes today's tasks to be misclassified as overdue.
+ *
+ * Apple's ISO8601DateFormatter also rejects 7 fractional second digits.
+ *
+ * This helper:
+ *   1) Strips the (non-standard) fractional seconds entirely
+ *   2) Appends "Z" if the source timezone is UTC (the MS Graph default)
+ *   3) Falls back to the raw value for non-UTC timezones (rare)
+ */
+function normalizeMsGraphDateTime(dt?: { dateTime?: string; timeZone?: string }): string | undefined {
+  if (!dt?.dateTime) return undefined;
+  // Drop fractional seconds — they're non-standard width and never meaningful
+  // for due dates (which are date-only or hour-precision in practice).
+  let normalized = dt.dateTime.replace(/\.\d+/, '');
+  // If the source timezone is UTC (MS Graph default for /me/todo), mark it.
+  // For any other timezone, leave the string as-is and let consumers handle it.
+  if ((!dt.timeZone || dt.timeZone === 'UTC') && !/[Zz]$|[+-]\d{2}:?\d{2}$/.test(normalized)) {
+    normalized += 'Z';
+  }
+  return normalized;
+}
+
 function parseTask(task: any, listId: string, listName: string): TodoTask {
   return {
     id: task.id || '',
@@ -77,11 +109,11 @@ function parseTask(task: any, listId: string, listName: string): TodoTask {
     body: task.body?.content || undefined,
     importance: task.importance || 'normal',
     status: task.status || 'notStarted',
-    dueDateTime: task.dueDateTime?.dateTime || undefined,
-    reminderDateTime: task.reminderDateTime?.dateTime || undefined,
+    dueDateTime: normalizeMsGraphDateTime(task.dueDateTime),
+    reminderDateTime: normalizeMsGraphDateTime(task.reminderDateTime),
     isReminderOn: task.isReminderOn || false,
     createdDateTime: task.createdDateTime || '',
-    completedDateTime: task.completedDateTime?.dateTime || undefined,
+    completedDateTime: normalizeMsGraphDateTime(task.completedDateTime),
   };
 }
 

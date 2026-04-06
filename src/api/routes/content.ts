@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { sendSuccess, sendError } from '../response-helpers';
 
 export function contentRoutes(): Router {
   const router = Router();
@@ -38,7 +39,7 @@ export function contentRoutes(): Router {
         score: row.score || null, createdAt: row.created_at || null,
       });
 
-      res.json({
+      sendSuccess(res, {
         stages: {
           ideas: ideas.map(formatIdea),
           scripted: scripted.map(formatIdea),
@@ -56,9 +57,9 @@ export function contentRoutes(): Router {
         },
       });
     } catch (err: any) {
-      // Table may not exist
+      // Table may not exist — soft-fail with empty pipeline
       logger.debug({ err }, 'Content pipeline query failed (table may not exist)');
-      res.json({
+      sendSuccess(res, {
         stages: { ideas: [], scripted: [], filmed: [], editing: [], published: [] },
         stats: { totalIdeas: 0, publishedThisMonth: 0 },
       });
@@ -73,7 +74,7 @@ export function contentRoutes(): Router {
         'SELECT id, title, score, created_at, stage FROM content_ideas ORDER BY score DESC, created_at DESC',
       ).all() as any[];
 
-      res.json({
+      sendSuccess(res, {
         ideas: ideas.map((row: any) => ({
           id: row.id?.toString(), title: row.title,
           score: row.score || null, createdAt: row.created_at || null,
@@ -82,7 +83,7 @@ export function contentRoutes(): Router {
       });
     } catch (err: any) {
       logger.debug({ err }, 'Content ideas query failed');
-      res.json({ ideas: [] });
+      sendSuccess(res, { ideas: [] });
     }
   });
 
@@ -92,18 +93,24 @@ export function contentRoutes(): Router {
     try {
       const { runContentDiscovery } = require('../../services/content-discovery');
       const result = await runContentDiscovery(userId);
-      res.json({
+      sendSuccess(res, {
         discovered: result?.count || 0,
         ideas: result?.ideas || [],
         message: `Discovered ${result?.count || 0} new content ideas.`,
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/discover failed');
-      res.json({ discovered: 0, ideas: [], message: 'Content discovery not available.' });
+      sendSuccess(res, { discovered: 0, ideas: [], message: 'Content discovery not available.' });
     }
   });
 
-  /** POST /api/v1/content/script — generate a script for an idea */
+  /**
+   * POST /api/v1/content/script — generate a script for an idea
+   *
+   * NOTE: This is the only AI-using route in this file. Script generation is
+   * a CONTENT GENERATION operation, not a data lookup, so AI involvement is
+   * intentional and explicit. All other content endpoints are token-zero.
+   */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     const { ideaId, topic } = req.body;
@@ -115,10 +122,10 @@ export function contentRoutes(): Router {
         ? `/script ${ideaId}`
         : `/script ${topic || 'generate a script'}`;
       const result = await handleContent(prompt, userId);
-      res.json({ script: result.text, domain: result.domain });
+      sendSuccess(res, { script: result.text, domain: result.domain });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/script failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Script generation failed', 500);
     }
   });
 
@@ -132,23 +139,23 @@ export function contentRoutes(): Router {
 
       const idea = db.prepare('SELECT stage FROM content_ideas WHERE id = ?').get(id) as { stage: string } | undefined;
       if (!idea) {
-        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Idea not found' } });
+        sendError(res, 'NOT_FOUND', 'Idea not found', 404);
         return;
       }
 
       const currentIdx = stageOrder.indexOf(idea.stage);
       if (currentIdx === -1 || currentIdx >= stageOrder.length - 1) {
-        res.json({ advanced: false, message: 'Already at final stage.' });
+        sendSuccess(res, { advanced: false, message: 'Already at final stage.' });
         return;
       }
 
       const nextStage = stageOrder[currentIdx + 1];
       db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ?').run(nextStage, id);
 
-      res.json({ advanced: true, newStage: nextStage });
+      sendSuccess(res, { advanced: true, newStage: nextStage });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/advance failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to advance pipeline stage', 500);
     }
   });
 

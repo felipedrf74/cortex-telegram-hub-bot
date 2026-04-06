@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { sendSuccess, sendError } from '../response-helpers';
 
 export function onboardingRoutes(): Router {
   const router = Router();
@@ -14,7 +15,7 @@ export function onboardingRoutes(): Router {
       const onboarding = require('../../services/onboarding');
       const pending = onboarding.getPendingQuestionnaires(userId);
 
-      res.json({
+      sendSuccess(res, {
         questionnaires: (pending || []).map((q: any) => ({
           id: q.id, title: q.title, description: q.description || null,
           stepCount: q.steps?.length || 0, currentStep: q.currentStep || 0,
@@ -23,7 +24,7 @@ export function onboardingRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding/pending failed');
-      res.json({ questionnaires: [] });
+      sendSuccess(res, { questionnaires: [] });
     }
   });
 
@@ -38,11 +39,11 @@ export function onboardingRoutes(): Router {
       const session = onboarding.getSession(userId, questionnaireId);
 
       if (!questionnaire) {
-        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Questionnaire not found' } });
+        sendError(res, 'NOT_FOUND', 'Questionnaire not found', 404);
         return;
       }
 
-      res.json({
+      sendSuccess(res, {
         id: questionnaireId,
         title: questionnaire.title,
         steps: questionnaire.steps.map((s: any, i: number) => ({
@@ -53,7 +54,7 @@ export function onboardingRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding questionnaire fetch failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch questionnaire', 500);
     }
   });
 
@@ -64,9 +65,7 @@ export function onboardingRoutes(): Router {
     const { stepIndex, answer } = req.body;
 
     if (stepIndex === undefined || answer === undefined) {
-      res.status(400).json({
-        error: { code: 'BAD_REQUEST', message: 'stepIndex and answer are required' },
-      });
+      sendError(res, 'BAD_REQUEST', 'stepIndex and answer are required');
       return;
     }
 
@@ -77,7 +76,7 @@ export function onboardingRoutes(): Router {
       const questionnaire = onboarding.getQuestionnaire(questionnaireId);
       const totalSteps = questionnaire?.steps?.length || 1;
 
-      res.json({
+      sendSuccess(res, {
         nextStep: result.nextStep ? {
           index: result.nextStep.index ?? (stepIndex + 1),
           field: result.nextStep.field,
@@ -92,11 +91,11 @@ export function onboardingRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding answer failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to record answer', 500);
     }
   });
 
-  /** GET /api/v1/profile */
+  /** GET /api/v1/onboarding/profile */
   router.get('/profile', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     try {
@@ -113,10 +112,10 @@ export function onboardingRoutes(): Router {
         })
         .filter(Boolean);
 
-      res.json({ profiles });
+      sendSuccess(res, { profiles });
     } catch (err: any) {
       logger.error({ err }, 'iOS profile fetch failed');
-      res.json({ profiles: [] });
+      sendSuccess(res, { profiles: [] });
     }
   });
 

@@ -4,6 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { sendSuccess, sendError } from '../response-helpers';
 
 // Cache TTLs (seconds)
 const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
@@ -24,7 +25,7 @@ export function trainingRoutes(): Router {
 
     const cached = getCached(cacheKey);
     if (cached) {
-      res.json(cached);
+      sendSuccess(res, cached, { cached: true });
       return;
     }
 
@@ -35,14 +36,14 @@ export function trainingRoutes(): Router {
       getReadiness(userId),
     ]);
 
-    const response = {
+    const payload = {
       today: todayResult.status === 'fulfilled' ? todayResult.value : null,
       week: weekResult.status === 'fulfilled' ? weekResult.value : { sessions: [], adherence: 0, weekNumber: 0 },
       readiness: readinessResult.status === 'fulfilled' ? readinessResult.value : { score: 0, factors: {}, recommendation: null },
     };
 
-    setCache(cacheKey, response, SUMMARY_TTL);
-    res.json(response);
+    setCache(cacheKey, payload, SUMMARY_TTL);
+    sendSuccess(res, payload);
   });
 
   /** GET /api/v1/training/today */
@@ -50,10 +51,10 @@ export function trainingRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     try {
       const session = await getTodaySession(userId);
-      res.json(session);
+      sendSuccess(res, session);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/today failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch today session', 500);
     }
   });
 
@@ -62,10 +63,10 @@ export function trainingRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     try {
       const week = await getWeekPlan(userId);
-      res.json(week);
+      sendSuccess(res, week);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/week failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch week plan', 500);
     }
   });
 
@@ -74,10 +75,12 @@ export function trainingRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     try {
       const readiness = await getReadiness(userId);
-      res.json(readiness);
+      sendSuccess(res, readiness);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/readiness failed');
-      res.json({ score: 0, factors: {}, recommendation: null });
+      // Soft-fail with default — readiness is a "nice to have" indicator,
+      // so a missing wearable shouldn't block the screen from rendering.
+      sendSuccess(res, { score: 0, factors: {}, recommendation: null });
     }
   });
 
@@ -96,7 +99,7 @@ export function trainingRoutes(): Router {
       const cached = getCached(cacheKey);
       if (cached) {
         logger.debug('Returning SQLite-cached coach briefing (no AI call)');
-        res.json(cached);
+        sendSuccess(res, cached, { cached: true });
         return;
       }
     }
@@ -105,18 +108,19 @@ export function trainingRoutes(): Router {
       const { generateCoachBriefing } = require('../../services/garmin-coach');
       const briefing = await generateCoachBriefing();
 
-      const result = {
+      const payload = {
         briefing: briefing?.message || briefing?.text || briefing?.briefing || 'No coach briefing available.',
         recommendations: briefing?.recommendations || [],
         garminData: briefing?.garminData || null,
         cachedAt: new Date().toISOString(),
       };
 
-      setCache(cacheKey, result, COACH_TTL);
-      res.json(result);
+      setCache(cacheKey, payload, COACH_TTL);
+      sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
-      res.json({ briefing: 'Coach briefing unavailable.', recommendations: [], garminData: null });
+      // Soft-fail so the screen still renders even when Garmin is offline.
+      sendSuccess(res, { briefing: 'Coach briefing unavailable.', recommendations: [], garminData: null });
     }
   });
 
@@ -135,10 +139,10 @@ export function trainingRoutes(): Router {
       clearCache(`coach-briefing:${userId}`);
       clearCache(`training-summary:${userId}`);
 
-      res.json({ completed: true, weeklyAdherence: adherenceRate });
+      sendSuccess(res, { completed: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {
       logger.error({ err }, 'iOS training/complete failed');
-      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+      sendError(res, 'INTERNAL', err?.message || 'Failed to complete session', 500);
     }
   });
 
@@ -149,9 +153,9 @@ export function trainingRoutes(): Router {
     try {
       const { applyCoachRecommendations } = require('../../services/garmin-coach');
       const applied = await applyCoachRecommendations(userId, recommendationIds);
-      res.json({ applied: applied?.count || 0, message: `Calendar updated with ${applied?.count || 0} recommendation(s).` });
+      sendSuccess(res, { applied: applied?.count || 0, message: `Calendar updated with ${applied?.count || 0} recommendation(s).` });
     } catch {
-      res.json({ applied: 0, message: 'Coach recommendations noted.' });
+      sendSuccess(res, { applied: 0, message: 'Coach recommendations noted.' });
     }
   });
 

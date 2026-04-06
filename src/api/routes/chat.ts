@@ -5,10 +5,16 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { routeMessage, isSystemCommand } from '../../router';
 import { logger } from '../../utils/logger';
 import { getCached, setCache } from '../../services/cache-store';
+import { tryDeterministicChatCommand } from './chat-fastpath';
 
 // Commands whose responses can be cached (deterministic for a few minutes)
-const CACHEABLE_COMMANDS = new Set(['/day', '/status', '/week', '/todosummary', '/training today', '/training plan']);
-const CHAT_CMD_TTL = 180; // 3 minutes
+const CACHEABLE_COMMANDS = new Set([
+  '/day', '/today', '/status', '/week', '/todosummary', '/todo_summary',
+  '/todo', '/todos', '/tasks', '/lists',
+  '/duetoday', '/due_today', '/overdue', '/dueweek', '/due_week', '/alltasks', '/all_tasks',
+  '/training today', '/training plan',
+]);
+const CHAT_CMD_TTL = 60; // 1 minute — short enough to feel fresh, long enough to absorb retry storms
 // NOTE: IOSAdapter exists but domain handlers currently don't accept an adapter parameter.
 // Messages are processed via handler(message, userId) which returns { text, domain }.
 // Buttons sent via Grammy InlineKeyboard are Telegram-specific and not captured here.
@@ -69,6 +75,34 @@ export function chatRoutes(): Router {
           res.json(cached);
           return;
         }
+      }
+
+      // ── Token-zero fast-path ─────────────────────────────────────
+      // Slash commands like /todo, /day, /overdue are pure data lookups.
+      // Handle them directly without ever touching the AI pipeline.
+      // This is the difference between an instant ~200ms response and a
+      // 30-50 second Claude tool-use loop. See specs/08-TOKEN-ZERO-ARCHITECTURE.md.
+      const fastPath = await tryDeterministicChatCommand(text);
+      if (fastPath) {
+        const fastResponse = {
+          id: `msg-${Date.now()}`,
+          text: fastPath.text,
+          domain: fastPath.domain,
+          routeMethod: 'fast-path' as const,
+          confidence: 1.0,
+          buttons: null,
+          metadata: null,
+          timestamp: new Date().toISOString(),
+        };
+        // Track domain for conversation continuity even on fast-path.
+        lastActiveDomain.set(userId, { domain: fastPath.domain, timestamp: Date.now() });
+        // Cache deterministic responses for the next 60 seconds.
+        if (CACHEABLE_COMMANDS.has(normalizedText)) {
+          setCache(`chat-cmd:${userId}:${normalizedText}`, fastResponse, CHAT_CMD_TTL);
+        }
+        logger.info({ cmd: normalizedText, platform: 'ios', mode: 'fast-path' }, 'iOS chat fast-path hit');
+        res.json(fastResponse);
+        return;
       }
 
       // Build active conversation context

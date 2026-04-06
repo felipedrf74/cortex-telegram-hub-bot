@@ -11,6 +11,12 @@ import { trainingRoutes } from './routes/training';
 import { contentRoutes } from './routes/content';
 import { onboardingRoutes } from './routes/onboarding';
 import { settingsRoutes } from './routes/settings';
+import { calendarRoutes } from './routes/calendar';
+import { reminderRoutes } from './routes/reminders';
+import { notesRoutes } from './routes/notes';
+import { connectionRoutes } from './routes/connections';
+import { wearableRoutes } from './routes/wearable';
+import { usageRoutes } from './routes/usage';
 
 /**
  * Creates the iOS API router.
@@ -31,6 +37,12 @@ export function createApiRouter(): Router {
         dashboard: 'GET /api/v1/dashboard',
         tasks: 'GET/POST/PATCH/DELETE /api/v1/tasks',
         training: 'GET /api/v1/training/*',
+        calendar: 'GET /api/v1/calendar/events, GET /api/v1/calendar/today',
+        reminders: 'GET/POST/DELETE /api/v1/reminders',
+        notes: 'GET/POST /api/v1/notes',
+        connections: 'GET /api/v1/connections',
+        wearable: 'GET /api/v1/wearable/{summary|readiness|sleep|providers}',
+        usage: 'GET /api/v1/usage, GET /api/v1/usage/range, GET /api/v1/usage/today',
         onboarding: 'GET/POST /api/v1/onboarding',
         settings: 'GET/PATCH /api/v1/settings',
       },
@@ -41,14 +53,33 @@ export function createApiRouter(): Router {
   // Public routes (no JWT required)
   router.use('/auth', authRoutes());
 
-  // Protected routes (require JWT + rate limiting)
+  // Protected routes (require JWT + rate limiting).
+  // The middleware order matters: auth runs first to populate req.userId,
+  // then rate-limit checks the per-user quota, THEN the route handlers run.
   router.use(authMiddleware);
   router.use(rateLimitMiddleware);
+
+  // Chat is the ONLY route allowed to touch the AI pipeline.
   router.use('/chat', chatRoutes());
+
+  // Aggregated home screen
   router.use('/dashboard', dashboardRoutes());
+
+  // Token-zero data routes — direct service calls, no AI involvement.
   router.use('/tasks', taskRoutes());
   router.use('/training', trainingRoutes());
+  router.use('/calendar', calendarRoutes());
+  router.use('/reminders', reminderRoutes());
+  router.use('/notes', notesRoutes());
+  router.use('/connections', connectionRoutes());
+  router.use('/wearable', wearableRoutes());
+  router.use('/usage', usageRoutes());
+
+  // Content includes both data lookups (pipeline) and one AI generation
+  // endpoint (POST /script). Mounting under one router for cohesion.
   router.use('/content', contentRoutes());
+
+  // Onboarding (questionnaires + profile)
   router.use('/onboarding', onboardingRoutes());
 
   // Settings: /api/v1/settings/language, /api/v1/settings/push-token
