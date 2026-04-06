@@ -7,17 +7,154 @@ All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are document
 
 ### Bug Fixes
 
-- **portal**: Mesh signal visibility + layout + missing edges ([`755fa19`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/755fa19b3556e211eb6e8fbb680d995e214d2ca7))
-- **skills**: Seed installed_skills table on startup — fixes skill toggle errors ([`cc9173a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/cc9173ae7faf2606e5637e8357d8deb960827f95))
-- **portal**: Sub-skill toggle error + master skill toggle switch ([`6c6dc04`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/6c6dc043957e06c959fdd7a8540353f887e4ebe3))
-- **portal**: Improved agent mesh UI — curved connections, better contrast, brighter nodes ([`0bd2933`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/0bd2933ea4b8c48830c7cba62eda4835c33f0dde))
-- **portal**: Expose button handlers to global scope — fixes invite codes, skill grid, model config ([`42df9a0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/42df9a03d27a5b6c02d458a0cada9c930e02599a))
-- **timeout**: Auto-scale AI timeout to 90s for streaming/Sonnet calls ([`ceda18a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/ceda18a48a417e93e0a6609af8f47d1c7d47c324))
-- **portal**: Tabbed layout, skill defaults, invite codes, sub-skill errors ([`9e2aeb0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9e2aeb0b89973ea2c263e33ed2d7af805381d395))
+- Increase chat timeout 25s→40s, clear stale TZ caches (v4.9.5) ([`9bda8fb`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9bda8fb92e149fb9e3c89182f6ec9666ff8d5ef9))
+- Filtered task endpoint, dynamic timezone, overdue fix (v4.9.4) ([`b682fa5`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/b682fa502f4f9ea50d56cb9276ad9d19edc5d20b))
+- 7 code review findings — security, correctness, robustness ([`bc32ac7`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/bc32ac7ceb2e106fda995673e7d6c7134f4f3329))
+- **api**: Normalize bodyBattery at assignment, not just return ([`aae661e`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/aae661e1742175f3708f931a9d514412897f2c9c))
+- **api**: Normalize bodyBattery at response boundary — always return Int ([`3b6d752`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/3b6d752e2c27988233b94c3f9ce28f47807da588))
+- **api**: Normalize bodyBattery to Int — Garmin returns object not number ([`f27a33a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/f27a33a2182276939365062909feb6360b0cc01b))
+- **api**: Dashboard and training route improvements ([`9dd70e9`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9dd70e90ee768da44303acb2e1557811a9f1d216))
+- **portal**: Remove stale window.updateModel reference — was crashing entire IIFE ([`155eae0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/155eae02eee2ddb2b366f77516c9ca620764d377))
+- **portal**: Simplify auth to sync check + add debug logging to poll ([`f4a30c7`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/f4a30c723f7a88bb5c0d7f9cc521719dd0bc541d))
+- **portal**: Server-side token injection — portal works without localStorage auth ([`3c63d38`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/3c63d38f4fcbf9c19524175b9bc402f8e9a0d828))
+- Portal auth validation + correct getTasks signature + chat timeout + refresh token rotation ([`7be7d3b`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/7be7d3bc89c4774430abe35ce4f2b5f65319b0c9))
+- **api**: IOS API route improvements — auth, chat, tasks refinements ([`cd17adb`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/cd17adb1d9d1814a8794ddbf31292e9932272007))
+- **portal**: Gate ALL polling behind auth — fixes connecting... stuck state ([`74f4897`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/74f489760932ba51ba0b0084b9e267b443684a85))
+- **portal**: Add no-cache headers to portal HTML — prevents stale browser cache ([`07fdfb1`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/07fdfb11bbe731b8350a1c6fc552bc09b3b98806))
+- **portal**: Replace prompt() login with inline form + URL token support ([`52d6ad3`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/52d6ad3de6b8ba1107811eb72d7ae78247dc42ff))
+- **api**: Add public /api/v1/ info endpoint — no auth required ([`c5001a1`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/c5001a13f71d7fbff65efb05cb2f63c896f5a9da))
+
+### Chores
+
+- Bump version to 4.9.6 [deploy] ([`920692a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/920692a0515ab0f2cf022a9f8796f4eb564aca8f))
+- Bump version to 4.9.0 [deploy] ([`3293faf`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/3293faf0546a9311b3ba7e8d1e2e417de6ea14bf))
+- Bump version to 4.8.25 [deploy] ([`b0c476d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/b0c476d9df721683550c1e19a08ebf2c1cf57250))
+- Bump version to 4.8.24 [deploy] ([`2a0fa80`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/2a0fa8043df00ce37d4a3ebe67bb6141b13a4eaa))
+- Bump version to 4.8.23 [deploy] ([`a9d8a37`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a9d8a37bebed7395a65a2d241afe16ca676776d1))
+- Bump version to 4.8.22 [deploy] ([`059740d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/059740ddd006fc1c2fc2465d987dbad4c8a22de6))
+- Bump version to 4.8.21 [deploy] ([`e4944ce`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/e4944cea772f104f4e198544832a9bc34c5bbea8))
+- Bump version to 4.8.20 [deploy] ([`33f071e`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/33f071e951751acc1e1c7ae99c0505249de6ae8d))
+- Bump version to 4.8.19 [deploy] ([`299550b`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/299550b4f6218e2fcc0f5ec22077da8a1a997ceb))
+- Bump version to 4.8.18 [deploy] ([`c97bce8`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/c97bce827d491a02eee771fd44730ecea6f85338))
+- Bump version to 4.8.17 [deploy] ([`78d0991`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/78d0991c20f9676a09ecd3acb51a9d713d02dd9e))
+- Bump version to 4.8.16 [deploy] ([`e461f37`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/e461f3743daa1e8284f9267dcbe0da67e6361107))
+- Bump version to 4.8.15 [deploy] ([`2ab5d9d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/2ab5d9d29cfedfe0b910914ebf46df6dc398aef6))
+- Bump version to 4.8.14 [deploy] ([`a8adb16`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a8adb16d9b45e6e14940b1bf20564d75beb37bb0))
+- Bump version to 4.8.13 [deploy] ([`a822989`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a82298973f9886823745981055faa56ce86a6513))
+- Bump version to 4.8.12 [deploy] ([`54eed40`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/54eed40f981992683e847ffa91bfb74c37caa832))
+- Bump version to 4.8.11 [deploy] ([`be8f9d0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/be8f9d0b150b0e6f4c31541bfcbca635c249425f))
+- Bump version to 4.8.10 [deploy] ([`09d8b88`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/09d8b884b690cd6e0a617300f8195d7ad0886b23))
+- Bump version to 4.8.9 [deploy] ([`12367b3`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/12367b3c1a4d6f930ed4eb69faf658f7d134fde1))
+
+### Features
+
+- Complete multi-AI provider implementation (Phases 0-8) ([`a1c9213`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a1c9213163c2496ec2152554522a306e2ee51aba))
+- Multi-AI provider routing — Gemini for non-secretary domains ([`da14122`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/da14122afb0be49bbb41dd9502b11a65a3548bd4))
+- Token-zero architecture — SQLite cache, ETag, classifier fix, cmd cache ([`2eb3d19`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/2eb3d197859d1762eac5917f60f6ec623997431a))
+- **api**: IOS API improvements — rate limiter, expanded routes, dashboard enhancements ([`a60b644`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a60b644788a24bf812f2b680af49c39b6718d7e5))
+- Add iOS REST API layer (auth, chat, dashboard, tasks, training, onboarding, settings, content) ([`22fc325`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/22fc32591e99764238969be3070ef619ded028ba))
+- **portal**: Version display in header + confirm-before-apply model changes ([`b6ec846`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/b6ec8466ff7b20db6754eac0842506684671afc8))
+- **portal**: Show running version in header ([`4bbc1d4`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/4bbc1d4588839bc9ed26da26376bfb5ee58a40fe))
+
+### Performance
+
+- Dashboard cache, timezone fix, overdue tasks (v4.9.3) ([`18804dd`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/18804ddd95fb8aef45441634e474d03cfffbc142))
+- Background task cache warming + wire quick actions (v4.9.2) ([`8e9e0d6`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/8e9e0d609eb8d272d1c3e5a5ba61c3a52789b3a6))
+- SQLite task caching + fix version display (v4.9.1) ([`0245ec0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/0245ec07748068524aecdcc36006f2cc6321410f))
+- Cache coach briefing 6h + readiness 30min to avoid AI token waste ([`1d8666e`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/1d8666efd1d239246654b28c78813f435188970b))
+- Remove N+1 task count queries (12s → <1s for tasks/lists) ([`888f25d`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/888f25dd640ee97c802e52e1b21f6fcd697f4b1f))
+
+## [4.8.8] — 2026-04-04
+
+### Bug Fixes
+
+- **polish**: P1 first-week fixes — splitMessage, help text, i18n, error handling ([`0e45472`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/0e45472044531d7f9b02105f9e2faae8feec3cee))
+- **critical**: P0 alpha blockers — data isolation trigger, scheduler multi-user, cost guardrail enforcement ([`1c8f585`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/1c8f5853c133ca40c577ab23cc4609d91045a7f9))
+
+### Chores
+
+- Bump version to 4.8.1 [deploy] ([`09e9dd5`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/09e9dd5cdaec58b36cf612016c941911417710b8))
+
+### Features
+
+- **onboarding**: Skill-gated questionnaires + post-registration auto-onboarding ([`b3ba389`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/b3ba389fac992005cf34ba88c1b3c65bd1c64774))
+- **fitness**: Multi-wearable abstraction layer — Garmin + Strava + Whoop + Fitbit + Apple Health ([`d2a1543`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/d2a154350763a65d14f29421a8b170772bfee071))
+- **fitness**: /training commands + planned vs actual comparison from Garmin ([`a987a53`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/a987a533e187945b6463881376a1ee6d49eb9c0f))
+- **fitness**: Readiness scorer + AI plan generation + calendar blockers ([`9d2b4e9`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9d2b4e9e7f4e1bfdfb33badc057be78d68fb90f4))
+- **privacy**: Full GDPR export/delete — all user data, audit trail, /export + /delete commands ([`34fc56c`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/34fc56cde72a5c33f8710654b52eb2a6acbe0926))
+
+## [4.8.0] — 2026-04-04
+
+### Chores
+
+- Bump version to 4.7.12 [deploy] ([`9594508`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/95945087ae5d1ade2bc3e46b1fb242a11c71c808))
+
+### Refactor
+
+- **bot**: Phase 5 — extract callbacks + media, finalize composition root ([`01f53b3`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/01f53b395a6f3cbefbd32cfbc66794419066a639))
+- **bot**: Phase 4 — extract content + finance + triathlon + system + skills commands ([`14cba34`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/14cba341eac50bae9cda881bec3a7c794d103b0c))
+- **bot**: Phase 3 — extract secretary command handlers ([`e731b17`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/e731b17d60bfcc0ece973ae01ac901a7eb283984))
+- **bot**: Phase 2 — extract post-createBot helper functions ([`7fab4f5`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/7fab4f5abe9b739dcf122acfc2fdbfe29814c72f))
+
+## [4.7.11] — 2026-04-03
+
+### Features
+
+- **agents**: Wire Book Extractor → Voice Evolution + expandable Voice DNA cards ([`9aed5a2`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9aed5a24e38e35c90985ea2934732c81d2d4dffa))
+
+## [4.7.10] — 2026-04-03
+
+### Bug Fixes
+
+- **portal**: Async render function — fixes portal showing no data ([`33ea0cf`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/33ea0cfae92337129db01d377ec1fe7006224b7e))
+
+## [4.7.9] — 2026-04-03
 
 ### Features
 
 - **content**: Reduce Reaction Radar to 3x/day + show extracted voice DNA in portal ([`781ebf7`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/781ebf7fc66697fa89fc805f7879ea469f134448))
+
+## [4.7.8] — 2026-04-03
+
+### Bug Fixes
+
+- **portal**: Mesh signal visibility + layout + missing edges ([`755fa19`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/755fa19b3556e211eb6e8fbb680d995e214d2ca7))
+
+## [4.7.7] — 2026-04-03
+
+### Bug Fixes
+
+- **skills**: Seed installed_skills table on startup — fixes skill toggle errors ([`cc9173a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/cc9173ae7faf2606e5637e8357d8deb960827f95))
+
+## [4.7.6] — 2026-04-03
+
+### Bug Fixes
+
+- **portal**: Sub-skill toggle error + master skill toggle switch ([`6c6dc04`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/6c6dc043957e06c959fdd7a8540353f887e4ebe3))
+
+## [4.7.5] — 2026-04-03
+
+### Bug Fixes
+
+- **portal**: Improved agent mesh UI — curved connections, better contrast, brighter nodes ([`0bd2933`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/0bd2933ea4b8c48830c7cba62eda4835c33f0dde))
+
+## [4.7.4] — 2026-04-03
+
+### Bug Fixes
+
+- **portal**: Expose button handlers to global scope — fixes invite codes, skill grid, model config ([`42df9a0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/42df9a03d27a5b6c02d458a0cada9c930e02599a))
+
+## [4.7.3] — 2026-04-03
+
+### Bug Fixes
+
+- **timeout**: Auto-scale AI timeout to 90s for streaming/Sonnet calls ([`ceda18a`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/ceda18a48a417e93e0a6609af8f47d1c7d47c324))
+
+## [4.7.2] — 2026-04-03
+
+### Bug Fixes
+
+- **portal**: Tabbed layout, skill defaults, invite codes, sub-skill errors ([`9e2aeb0`](https://github.com/felipedrf74/cortex-telegram-hub-bot/commit/9e2aeb0b89973ea2c263e33ed2d7af805381d395))
 
 ## [4.7.1] — 2026-04-03
 
