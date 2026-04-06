@@ -111,7 +111,7 @@ function extractTime(dateInput: any): string {
   try {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
-      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/Lisbon' });
+      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.app.timezone });
     }
   } catch {}
   const match = raw.match(/T(\d{2}:\d{2})/);
@@ -232,14 +232,14 @@ async function fetchTasks() {
   // MS Graph stores due dates as T23:00:00 UTC for the "previous" day in European TZ.
   // Example: "due April 7" = "2026-04-06T23:00:00" in UTC = April 7 in Lisbon.
   // To compare correctly, use the DATE PORTION ONLY (first 10 chars of ISO string).
-  const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' }); // "2026-04-06"
+  const todayStr = now.toLocaleDateString('en-CA', { timeZone: config.app.timezone }); // "2026-04-06"
 
   function getDueDateStr(t: any): string | null {
     const raw = t.dueDateTime?.dateTime || t.dueDateTime;
     if (!raw) return null;
     // MS Graph: "2026-04-06T23:00:00.0000000" → add 1 hour to get Lisbon date
     const d = new Date(raw);
-    return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' }); // "2026-04-07"
+    return d.toLocaleDateString('en-CA', { timeZone: config.app.timezone }); // "2026-04-07"
   }
 
   const overdue = tasks.filter((t: any) => {

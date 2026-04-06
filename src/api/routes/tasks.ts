@@ -3,6 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { config } from '../../config';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
 
 // Cache TTLs
@@ -42,6 +43,74 @@ export function taskRoutes(): Router {
       res.json(response);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
+      res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
+    }
+  });
+
+  /**
+   * GET /api/v1/tasks/filtered?filter=overdue|dueToday|all
+   * Returns tasks across ALL lists in a single call (no N+1).
+   * Cached in SQLite for 2 minutes.
+   */
+  router.get('/filtered', async (req, res: Response) => {
+    const filter = (req.query.filter as string) || 'all';
+    const cacheKey = `tasks-filtered:${filter}`;
+
+    const cached = getCached<any>(cacheKey);
+    if (cached) {
+      res.json(cached);
+      return;
+    }
+
+    try {
+      const todo = getTodo();
+      const result = await todo.getAllPendingTasks();
+      const allTasks = result?.data || result || [];
+      if (!Array.isArray(allTasks)) {
+        res.json({ tasks: [], count: 0 });
+        return;
+      }
+
+      // Lisbon timezone for date comparison
+      const now = new Date();
+      const todayStr = now.toLocaleDateString('en-CA', { timeZone: config.app.timezone });
+
+      function getDueDateLisbon(t: any): string | null {
+        const raw = t.dueDateTime?.dateTime || t.dueDateTime;
+        if (!raw) return null;
+        return new Date(raw).toLocaleDateString('en-CA', { timeZone: config.app.timezone });
+      }
+
+      let filtered = allTasks;
+      if (filter === 'overdue') {
+        filtered = allTasks.filter((t: any) => {
+          const dueStr = getDueDateLisbon(t);
+          return dueStr && dueStr < todayStr;
+        });
+      } else if (filter === 'dueToday') {
+        filtered = allTasks.filter((t: any) => {
+          const dueStr = getDueDateLisbon(t);
+          return dueStr === todayStr;
+        });
+      }
+
+      const tasks = filtered.map((t: any) => ({
+        id: t.id, title: t.title,
+        body: t.body?.content || t.body || null,
+        importance: t.importance || 'normal',
+        status: t.status || 'notStarted',
+        dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
+        listId: t.listId || null,
+        listName: t.listName || null,
+        checklistItems: null,
+        createdDateTime: t.createdDateTime || null,
+      }));
+
+      const response = { tasks, count: tasks.length };
+      setCache(cacheKey, response, TASKS_CACHE_TTL);
+      res.json(response);
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/filtered failed');
       res.status(500).json({ error: { code: 'INTERNAL', message: err.message } });
     }
   });
