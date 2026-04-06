@@ -177,18 +177,37 @@ export function taskRoutes(): Router {
         return;
       }
 
-      const result = await todo.createTask({
-        title, listName: listName || 'Tasks',
+      // The MS Todo service's createTask expects (listId, listName, data) as
+      // separate args — NOT a single object. We must first resolve the list
+      // by name (defaulting to the user's default list when none is given).
+      const targetListName = (listName && String(listName).trim()) || 'Tasks';
+      let list = await todo.findListByName(targetListName);
+      if (!list) {
+        // Fall back to the configured default list (matches Telegram bot behavior).
+        list = await todo.getDefaultList();
+      }
+      if (!list) {
+        sendError(res, 'LIST_NOT_FOUND', `List "${targetListName}" not found`, 404);
+        return;
+      }
+
+      const result = await todo.createTask(list.id, list.displayName, {
+        title,
         dueDateTime: dueDateTime || undefined,
-        importance: importance || 'normal',
+        importance: (importance || 'normal') as 'low' | 'normal' | 'high',
         body: body || undefined,
       });
-      const task = result?.data || result;
+
+      if (!result?.success) {
+        logger.error({ err: result?.error, list: list.displayName }, 'iOS tasks create failed at MS Graph');
+        sendError(res, 'CREATE_FAILED', result?.error || 'Failed to create task in Microsoft To Do', 500);
+        return;
+      }
 
       // Invalidate task caches (new task changes list contents)
-      invalidateTaskCaches();
+      invalidateTaskCaches(list.id);
 
-      sendSuccess(res, { task }, { status: 201 });
+      sendSuccess(res, { task: result.data }, { status: 201 });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks create failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to create task', 500);

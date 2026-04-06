@@ -3,6 +3,14 @@
 All notable changes to Nexus Hub (formerly Cortex Telegram Hub Bot) are documented in this file.
 
 ---
+## [4.9.11] — 2026-04-06
+
+### Bug Fixes
+
+- **api/tasks**: Fix `POST /api/v1/tasks` crashing with "Cannot read properties of undefined". The route was calling `todo.createTask({})` with a single object, but the MS Graph Todo service expects `(listId, listName, data)` positional args. Now resolves the list via `findListByName`/`getDefaultList` before creating.
+- **api/training**: Fix `POST /api/v1/training/complete` silently failing — the handler was importing a non-existent `completeSession` export from `training-plans.ts` and calling `getWeeklyAdherence(userId)` with wrong arity. Rewrote to resolve session via active plan + current week, call `markSessionCompleted`, and compute adherence with the correct `(planId, weekId)` signature.
+- **api/training**: Fix `getTodaySession` helper calling `getSessionsForWeek(userId)` instead of `getSessionsForWeek(weekId)`. Session ids are now correctly stringified for iOS consumption.
+
 ## [Unreleased]
 
 ### Bug Fixes

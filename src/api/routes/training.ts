@@ -124,20 +124,84 @@ export function trainingRoutes(): Router {
     }
   });
 
-  /** POST /api/v1/training/complete */
+  /**
+   * POST /api/v1/training/complete
+   *
+   * Accepts either a numeric `sessionId` (from a SQLite training_sessions row)
+   * or the sentinel string `"today"` — in which case we look up the active
+   * plan's current week, find today's session by day name, and mark it.
+   *
+   * Gracefully no-ops with `completed: true` when there is no active plan —
+   * iOS users who haven't set up a structured plan should still see their
+   * "Concluir" button work (it's an optimistic UX signal, not a DB invariant).
+   */
   router.post('/complete', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     const { sessionId, notes, rpe } = req.body;
 
     try {
-      const { completeSession, getWeeklyAdherence } = require('../../services/training-plans');
-      await completeSession(userId, sessionId, { notes, rpe });
-      const adh = getWeeklyAdherence ? getWeeklyAdherence(userId) : null;
-      const adherenceRate = typeof adh === 'number' ? adh : adh?.adherenceRate || null;
+      const tp = require('../../services/training-plans');
+
+      // 1. Resolve session id → numeric row id
+      let rowId: number | null = null;
+      if (sessionId && sessionId !== 'today' && !isNaN(Number(sessionId))) {
+        rowId = Number(sessionId);
+      } else {
+        // Look up from active plan
+        const plan = tp.getActivePlan(userId);
+        if (plan) {
+          const week = tp.getCurrentWeek(plan.id);
+          if (week) {
+            const sessions = tp.getSessionsForWeek(week.id);
+            const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+            const todaySession = sessions?.find(
+              (s: any) => s.day_of_week === todayName && s.status !== 'completed',
+            );
+            if (todaySession) rowId = todaySession.id;
+          }
+        }
+      }
+
+      // 2. Mark completed (and log completion if we have RPE/notes)
+      let adherenceRate: number | null = null;
+      if (rowId !== null) {
+        if (notes || rpe != null) {
+          const session = tp.getSessionById(rowId);
+          if (session) {
+            tp.logCompletion({
+              session_id: rowId,
+              plan_id: session.plan_id,
+              rpe_overall: rpe ?? null,
+              notes: notes ?? null,
+            });
+          } else {
+            tp.markSessionCompleted(rowId);
+          }
+        } else {
+          tp.markSessionCompleted(rowId);
+        }
+
+        // Adherence calculation — need planId + weekId
+        try {
+          const plan = tp.getActivePlan(userId);
+          if (plan) {
+            const week = tp.getCurrentWeek(plan.id);
+            if (week) {
+              const adh = tp.getWeeklyAdherence(plan.id, week.id);
+              adherenceRate = typeof adh?.adherenceRate === 'number'
+                ? adh.adherenceRate / 100  // backend returns 0-100, iOS expects 0-1
+                : null;
+            }
+          }
+        } catch (e) {
+          logger.debug({ err: e }, 'Adherence calc failed (non-critical)');
+        }
+      }
 
       // Invalidate caches since training status changed
       clearCache(`coach-briefing:${userId}`);
       clearCache(`training-summary:${userId}`);
+      clearCache(`readiness:${userId}`);
 
       sendSuccess(res, { completed: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {
@@ -172,17 +236,42 @@ async function getTodaySession(userId: number) {
     const tp = require('../../services/training-plans');
     const activePlan = tp.getActivePlan(userId);
     if (activePlan) {
-      plan = { name: activePlan.name, weekNumber: activePlan.currentWeek || 1, phase: activePlan.phase || null };
-      const sessions = tp.getSessionsForWeek(userId);
-      session = sessions?.find((s: any) => s.isToday) || null;
+      const currentWeek = tp.getCurrentWeek(activePlan.id);
+      plan = {
+        name: activePlan.name,
+        weekNumber: currentWeek?.week_number || 1,
+        phase: activePlan.phase || null,
+      };
+      if (currentWeek) {
+        // getSessionsForWeek takes a weekId, NOT a userId
+        const sessions = tp.getSessionsForWeek(currentWeek.id);
+        const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+        const rawSession = sessions?.find(
+          (s: any) => s.day_of_week === todayName,
+        );
+        if (rawSession) {
+          session = {
+            id: rawSession.id != null ? String(rawSession.id) : null,
+            type: rawSession.title || rawSession.session_type || 'Workout',
+            time: null,
+            duration: rawSession.duration_minutes || null,
+            status: rawSession.status || 'planned',
+            notes: rawSession.description || null,
+            exercises: null,
+          };
+        }
+      }
     }
-  } catch {}
+  } catch (e) {
+    logger.debug({ err: e }, 'getTodaySession training-plans lookup failed');
+  }
 
   if (!session) session = await findTodayTrainingFromCalendar();
 
   return {
     session: session ? {
-      id: session.id || null, type: session.type || session.name || 'Workout',
+      id: session.id ? String(session.id) : null,
+      type: session.type || session.name || 'Workout',
       time: session.time || null, duration: session.duration || null,
       status: session.status || 'planned', notes: session.notes || null,
       exercises: session.exercises || null,
