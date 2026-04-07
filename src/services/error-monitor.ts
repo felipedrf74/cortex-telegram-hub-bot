@@ -177,6 +177,50 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
 
 let _handlersInstalled = false;
 
+// Graceful shutdown callback registered by main() after the bot/portal/db
+// have been wired up. boot.ts installs the process handlers BEFORE config
+// import — at that moment there's nothing graceful to do, so the handlers
+// fall back to a plain process.exit(1). Once main() registers the real
+// shutdown via setShutdownCallback(), runtime errors get the full graceful
+// path: bot.stop() → portalServer.close() → closeDatabase() → exit. This
+// is essential to avoid the EADDRINUSE deploy race (audit P0-4): without
+// portalServer.close(), the OS keeps port 8200 in TIME_WAIT for 60s after
+// the process dies, and the next PM2 restart can't bind cleanly.
+type ShutdownCallback = () => Promise<void>;
+let _shutdownFn: ShutdownCallback | null = null;
+let _shutdownInProgress = false;
+
+/** Register a graceful shutdown function. Called once from main(). */
+export function setShutdownCallback(fn: ShutdownCallback): void {
+  _shutdownFn = fn;
+}
+
+async function gracefulOrAbort(reason: string): Promise<never> {
+  if (_shutdownInProgress) {
+    // Re-entry: original shutdown is already running. Don't deadlock —
+    // exit hard. PM2 will restart us.
+    logger.fatal({ reason }, 'Re-entrant shutdown — forcing exit');
+    process.exit(1);
+  }
+  _shutdownInProgress = true;
+  if (_shutdownFn) {
+    try {
+      logger.fatal({ reason }, 'Initiating graceful shutdown from error handler');
+      // Bound the graceful path so a hung shutdown can't pin the process.
+      // PM2's kill_timeout is 10s; we leave a 2s safety margin.
+      await Promise.race([
+        _shutdownFn(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('Graceful shutdown timeout')), 8000),
+        ),
+      ]);
+    } catch (err) {
+      logger.fatal({ err }, 'Graceful shutdown failed — forcing exit');
+    }
+  }
+  process.exit(1);
+}
+
 /** Install global process error handlers. Call once during startup. */
 export function installProcessHandlers(): void {
   if (_handlersInstalled) return;
@@ -190,6 +234,10 @@ export function installProcessHandlers(): void {
       message: `Unhandled rejection: ${err.message}`,
       stack: err.stack,
     });
+    // Previously this handler ONLY logged, leaving the bot running in a
+    // corrupted state with no signal to PM2. We now treat unhandled
+    // rejections as fatal — let PM2 restart us cleanly. See audit P0-4.
+    void gracefulOrAbort('unhandledRejection');
   });
 
   process.on('uncaughtException', (err: Error) => {
@@ -199,9 +247,8 @@ export function installProcessHandlers(): void {
       message: `Uncaught exception: ${err.message}`,
       stack: err.stack,
     });
-    // For uncaught exceptions, log and exit after a brief delay to allow the alert to send
-    logger.fatal({ err }, 'Uncaught exception — exiting');
-    setTimeout(() => process.exit(1), 2000);
+    logger.fatal({ err }, 'Uncaught exception — initiating graceful shutdown');
+    void gracefulOrAbort('uncaughtException');
   });
 
   logger.info('Error monitor: process handlers installed');

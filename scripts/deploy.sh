@@ -68,6 +68,26 @@ echo "🛑 Stopping services on server..."
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 delete telegram-hub-bot 2>/dev/null || true"
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
 
+# ── 3b. Drain ports before restart (audit P0-4) ──────
+# pm2 stop returns when the process is gone, but the OS may keep port 8200
+# in TIME_WAIT for up to 60 seconds if the previous instance crashed
+# without calling portalServer.close() (e.g. uncaughtException). The next
+# pm2 start would then fail with EADDRINUSE — exactly what produced the
+# silent restart loop on April 3 that the audit caught. We poll for the
+# port to be released; if it isn't free after 30s, we warn and proceed
+# (PM2 will retry via exp_backoff_restart_delay).
+echo "   Waiting for port 8200 to release..."
+ssh "$SERVER" '
+  for i in $(seq 1 30); do
+    if ! ss -tln 2>/dev/null | grep -q ":8200 "; then
+      echo "   ✅ Port 8200 free (after ${i}s)"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "   ⚠️  Port 8200 still bound after 30s — proceeding anyway"
+'
+
 # ── 4. Sync files (excluding protected paths) ────────
 echo ""
 echo "📤 Syncing files to server..."

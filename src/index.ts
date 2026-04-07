@@ -16,6 +16,7 @@ import { createPortalServer } from './portal/server';
 import {
   setDbProvider as setErrorDbProvider,
   setAlertCallback,
+  setShutdownCallback,
 } from './services/error-monitor';
 import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
@@ -99,6 +100,12 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // Wire the same graceful shutdown into the error-monitor's process error
+  // handlers. Without this, an unhandledRejection or uncaughtException
+  // would skip portalServer.close() and leave port 8200 in TIME_WAIT,
+  // causing EADDRINUSE on the next deploy. See audit P0-4.
+  setShutdownCallback(() => shutdown('error-handler'));
 
   // Start bot with retry logic for 409 Conflict (multiple polling instances).
   // Uses exponential backoff: 45s → 90s → 180s to give Telegram time to release the lock.
