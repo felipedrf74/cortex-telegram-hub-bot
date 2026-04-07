@@ -1,0 +1,107 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+/**
+ * Google Auth Bridge — single source of truth for resolving the owner's
+ * Google OAuth refresh token across calendar, drive, and gmail services.
+ *
+ * Audit P1 follow-up to P0-7: the OAuth encryption work in P0-7 only
+ * encrypted rows in `user_oauth_tokens`, but the live google-* services
+ * were reading `config.google.refreshToken` directly from .env, bypassing
+ * the encrypted store entirely. This bridge fixes that asymmetry: the
+ * service-side helpers all go through `getOwnerGoogleRefreshToken()` which
+ * tries oauth-store first (encrypted, audited via getTokens) and falls
+ * back to the env var only if nothing's stored.
+ *
+ * Caller-facing API of google-calendar / google-drive / google-gmail does
+ * NOT change — they still expose `getEvents()` etc with no userId. The
+ * bridge resolves the owner identity internally from
+ * `config.telegram.allowedUserIds[0]` (same identity that
+ * `migrateOwnerTokens()` uses to populate the per-user store at boot).
+ *
+ * Cache invalidation: each google-* service caches its high-level client
+ * (calendar / drive / gmail). The OAuth callback handler in oauth-flow
+ * MUST call `resetGoogleClients()` after a successful `/connect google`
+ * so the next API call picks up the freshly-stored token instead of the
+ * stale one held by the singleton.
+ */
+
+import { google } from 'googleapis';
+import type { OAuth2Client } from 'google-auth-library';
+import { config } from '../config';
+import { logger } from '../utils/logger';
+
+// ─── Token resolution ───────────────────────────────────────────────
+
+/**
+ * Resolve the owner's Google refresh token. Tries oauth-store first
+ * (encrypted, audited via getTokens()), falls back to the legacy
+ * `config.google.refreshToken` env var.
+ *
+ * Returns null if neither source has a token.
+ */
+export function getOwnerGoogleRefreshToken(): string | null {
+  const ownerId = config.telegram.allowedUserIds[0];
+  if (ownerId) {
+    try {
+      // Lazy require to avoid a cycle (oauth-store → database → ...).
+      const { getTokens } = require('./oauth-store');
+      const tokens = getTokens(ownerId, 'google');
+      if (tokens?.refreshToken) {
+        return tokens.refreshToken;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'getOwnerGoogleRefreshToken: oauth-store read failed, falling back to env');
+    }
+  }
+  return config.google.refreshToken || null;
+}
+
+/**
+ * Build a fresh OAuth2 client with the current best refresh token.
+ * Throws if Google credentials are not configured.
+ *
+ * Callers should cache the resulting client at the service layer (each
+ * google-* service has its own cached high-level client).
+ */
+export function buildGoogleOAuth2Client(): OAuth2Client {
+  const refreshToken = getOwnerGoogleRefreshToken();
+  if (!config.google.clientId || !config.google.clientSecret || !refreshToken) {
+    throw new Error('Google credentials not configured');
+  }
+  const client = new google.auth.OAuth2(config.google.clientId, config.google.clientSecret);
+  client.setCredentials({ refresh_token: refreshToken });
+  return client;
+}
+
+/**
+ * Returns true if we have everything needed to make Google API calls.
+ * Used by `/connections` and the portal status check.
+ */
+export function isGoogleConfigured(): boolean {
+  return !!(config.google.clientId && config.google.clientSecret && getOwnerGoogleRefreshToken());
+}
+
+// ─── Cache invalidation hub ─────────────────────────────────────────
+
+/**
+ * Reset callbacks registered by each google-* service. Called by the
+ * OAuth callback handler in oauth-flow.ts after a successful re-auth so
+ * the next getCalendar/getDrive/getGmail call rebuilds with the fresh
+ * token instead of returning the stale singleton.
+ */
+const _resetCallbacks: Array<() => void> = [];
+
+export function registerGoogleClientReset(fn: () => void): void {
+  _resetCallbacks.push(fn);
+}
+
+export function resetGoogleClients(): void {
+  for (const fn of _resetCallbacks) {
+    try {
+      fn();
+    } catch (err) {
+      logger.warn({ err }, 'resetGoogleClients: callback failed');
+    }
+  }
+  logger.info({ count: _resetCallbacks.length }, 'Google client caches reset after re-auth');
+}

@@ -21,6 +21,7 @@ import fs from 'fs';
 import { google, drive_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { buildGoogleOAuth2Client, registerGoogleClientReset } from './google-auth';
 
 const ROOT_FOLDER_NAME = 'Nexus Hub IDEAS';
 const SUBFOLDERS = ['RESEARCH', 'IDEAS', 'SCRIPTS', 'VISUALS', 'REPORTS'] as const;
@@ -30,21 +31,21 @@ let driveClient: drive_v3.Drive | null = null;
 /** Cache: "parentId/name" → Google Drive folder ID */
 const folderIdCache = new Map<string, string>();
 
+// Reset the cached Drive client when /connect google writes a fresh token.
+// The folder ID cache is also dropped because folders are owned per-account
+// — switching tokens without invalidating would point at the wrong folders.
+registerGoogleClientReset(() => {
+  driveClient = null;
+  folderIdCache.clear();
+});
+
 // ── Auth ────────────────────────────────────────────────────────────
 
 function getDrive(): drive_v3.Drive {
   if (driveClient) return driveClient;
-
-  if (!config.google.clientId || !config.google.clientSecret || !config.google.refreshToken) {
-    throw new Error('Google Drive credentials not configured');
-  }
-
-  const oauth2Client = new google.auth.OAuth2(
-    config.google.clientId,
-    config.google.clientSecret,
-  );
-  oauth2Client.setCredentials({ refresh_token: config.google.refreshToken });
-
+  // Token resolution goes through oauth-store first (encrypted + audited),
+  // env-var fallback for backward compat. See google-auth.ts.
+  const oauth2Client = buildGoogleOAuth2Client();
   driveClient = google.drive({ version: 'v3', auth: oauth2Client });
   return driveClient;
 }

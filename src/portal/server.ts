@@ -1165,6 +1165,16 @@ export function createPortalServer(bot: Bot): http.Server {
       const tokens = await exchangeCode('google', code, userId);
       storeTokens(userId, 'google', tokens);
 
+      // Invalidate the cached Google clients (calendar/drive/gmail) so the
+      // very next API call rebuilds them with the freshly-stored refresh
+      // token instead of returning the stale singleton. Without this, the
+      // bot would keep using the old (broken) token until next restart.
+      // See google-auth.ts and audit P1 follow-up.
+      try {
+        const { resetGoogleClients } = require('../services/google-auth');
+        resetGoogleClients();
+      } catch { /* google-auth not available — non-critical */ }
+
       // Notify user via Telegram
       try {
         const lang = getUserLanguage(userId);
@@ -1196,6 +1206,13 @@ export function createPortalServer(bot: Bot): http.Server {
       const userId = parseInt(state, 10);
       const tokens = await exchangeCode('outlook', code, userId);
       storeTokens(userId, 'outlook', tokens);
+
+      // Invalidate the cached MSAL/Graph clients so the next API call uses
+      // the freshly-stored token. See microsoft-auth.ts and audit P1.
+      try {
+        const { resetMicrosoftClients } = require('../services/microsoft-auth');
+        resetMicrosoftClients();
+      } catch { /* microsoft-auth not available — non-critical */ }
 
       try {
         const lang = getUserLanguage(userId);

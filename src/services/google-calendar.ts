@@ -3,28 +3,32 @@
 import { google, calendar_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import {
+  buildGoogleOAuth2Client,
+  isGoogleConfigured,
+  registerGoogleClientReset,
+} from './google-auth';
 
 let calendarClient: calendar_v3.Calendar | null = null;
 
+// The Google client caches MUST be invalidated when /connect google writes
+// a fresh refresh token to oauth-store. The OAuth callback handler in
+// oauth-flow.ts calls resetGoogleClients() which fans out to every
+// registered reset hook (see google-auth.ts).
+registerGoogleClientReset(() => { calendarClient = null; });
+
 function getCalendar(): calendar_v3.Calendar {
   if (calendarClient) return calendarClient;
-
-  if (!config.google.clientId || !config.google.clientSecret || !config.google.refreshToken) {
-    throw new Error('Google Calendar credentials not configured');
-  }
-
-  const oauth2Client = new google.auth.OAuth2(
-    config.google.clientId,
-    config.google.clientSecret
-  );
-  oauth2Client.setCredentials({ refresh_token: config.google.refreshToken });
-
+  // Slow path: build a fresh client. The token resolution goes through
+  // oauth-store first (encrypted + audited via getTokens) and falls back
+  // to config.google.refreshToken for backward compat. See google-auth.ts.
+  const oauth2Client = buildGoogleOAuth2Client();
   calendarClient = google.calendar({ version: 'v3', auth: oauth2Client });
   return calendarClient;
 }
 
 export function isGoogleCalendarConfigured(): boolean {
-  return !!(config.google.clientId && config.google.clientSecret && config.google.refreshToken);
+  return isGoogleConfigured();
 }
 
 export interface CalendarEvent {

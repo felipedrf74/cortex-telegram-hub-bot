@@ -3,28 +3,28 @@
 import { google, gmail_v1 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import {
+  buildGoogleOAuth2Client,
+  isGoogleConfigured,
+  registerGoogleClientReset,
+} from './google-auth';
 
 let gmailClient: gmail_v1.Gmail | null = null;
 
+// Reset the cached Gmail client when /connect google writes a fresh token.
+registerGoogleClientReset(() => { gmailClient = null; });
+
 function getGmail(): gmail_v1.Gmail {
   if (gmailClient) return gmailClient;
-
-  if (!config.google.clientId || !config.google.clientSecret || !config.google.refreshToken) {
-    throw new Error('Gmail credentials not configured');
-  }
-
-  const oauth2Client = new google.auth.OAuth2(
-    config.google.clientId,
-    config.google.clientSecret
-  );
-  oauth2Client.setCredentials({ refresh_token: config.google.refreshToken });
-
+  // Token resolution goes through oauth-store first (encrypted + audited),
+  // env-var fallback for backward compat. See google-auth.ts.
+  const oauth2Client = buildGoogleOAuth2Client();
   gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
   return gmailClient;
 }
 
 export function isGmailConfigured(): boolean {
-  return !!(config.google.clientId && config.google.clientSecret && config.google.refreshToken);
+  return isGoogleConfigured();
 }
 
 export interface EmailMessage {

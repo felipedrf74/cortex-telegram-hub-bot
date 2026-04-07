@@ -10,10 +10,18 @@
  * invalidate each other's tokens.
  *
  * All needed Microsoft Graph scopes are requested in a single token call.
+ *
+ * Audit P1 follow-up to P0-7: previously read `config.outlook.refreshToken`
+ * directly from .env (plaintext, no audit). Now goes through oauth-store
+ * first (encrypted + audited via getTokens) with env-var fallback for
+ * backward compat. The graphClient singleton stays cached because token
+ * fetching happens per-call inside the authProvider — switching the token
+ * source is transparent to the cached client.
  */
 import { Client } from '@microsoft/microsoft-graph-client';
 import { PublicClientApplication } from '@azure/msal-node';
 import { config } from '../config';
+import { logger } from '../utils/logger';
 
 // ─── All Microsoft Graph scopes needed by the app ────────────────────
 const ALL_SCOPES = [
@@ -40,11 +48,35 @@ function getMsalClient(): PublicClientApplication {
   return msalClient;
 }
 
+/**
+ * Resolve the owner's Outlook refresh token. Tries oauth-store first
+ * (encrypted, audited), falls back to `config.outlook.refreshToken`.
+ */
+function getOwnerOutlookRefreshToken(): string | null {
+  const ownerId = config.telegram.allowedUserIds[0];
+  if (ownerId) {
+    try {
+      const { getTokens } = require('./oauth-store');
+      const tokens = getTokens(ownerId, 'outlook');
+      if (tokens?.refreshToken) {
+        return tokens.refreshToken;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'getOwnerOutlookRefreshToken: oauth-store read failed, falling back to env');
+    }
+  }
+  return config.outlook.refreshToken || null;
+}
+
 async function getAccessToken(): Promise<string> {
   const msal = getMsalClient();
+  const refreshToken = getOwnerOutlookRefreshToken();
+  if (!refreshToken) {
+    throw new Error('Outlook refresh token not configured (neither oauth-store nor .env has it)');
+  }
 
   const result = await msal.acquireTokenByRefreshToken({
-    refreshToken: config.outlook.refreshToken,
+    refreshToken,
     scopes: ALL_SCOPES,
   });
 
@@ -73,5 +105,18 @@ export function getGraphClient(): Client {
 }
 
 export function isMicrosoftConfigured(): boolean {
-  return !!(config.outlook.clientId && config.outlook.refreshToken);
+  return !!(config.outlook.clientId && getOwnerOutlookRefreshToken());
+}
+
+/**
+ * Reset the cached MSAL + Graph clients. Called by the OAuth callback
+ * handler in src/portal/server.ts after a successful /connect outlook so
+ * the next API call rebuilds with the freshly-stored token. Outlook tokens
+ * are fetched per-call so this is mostly defensive — but the underlying
+ * MSAL client may cache state internally too.
+ */
+export function resetMicrosoftClients(): void {
+  msalClient = null;
+  graphClient = null;
+  logger.info('Microsoft client caches reset after re-auth');
 }
