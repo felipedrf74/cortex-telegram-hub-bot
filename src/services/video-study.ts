@@ -24,6 +24,7 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } fro
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithFallback } from './gemini-provider';
 import { pushEvent } from '../portal/telemetry';
 import { uploadToDrive } from './google-drive';
 import {
@@ -273,18 +274,29 @@ ${timestampedText.substring(0, maxTranscriptChars)}
 
 Provide the complete study analysis.`;
 
-  const response = await trackedCreate(client, {
-    model: config.anthropic.model, // Sonnet for quality
-    max_tokens: 4096,
-    system: STUDY_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.4,
-  }, 'video_study');
+  // Gemini-first: gemini-2.5-flash matches Sonnet quality for structured
+  // analytical breakdown of long-form transcripts at ~9× lower cost.
+  const { text: studyText } = await completeOneShotWithFallback(
+    STUDY_SYSTEM_PROMPT,
+    prompt,
+    'video_study',
+    async () => {
+      const response = await trackedCreate(client, {
+        model: config.anthropic.model, // Sonnet for quality
+        max_tokens: 4096,
+        system: STUDY_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.4,
+      }, 'video_study');
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+    },
+    { maxTokens: 4096, temperature: 0.4 },
+  );
 
-  let text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+  let text = studyText;
 
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 

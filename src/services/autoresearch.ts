@@ -20,6 +20,7 @@ import { logger } from '../utils/logger';
 import { loadPrompt, writePrompt, getPromptPath } from '../utils/prompt-loader';
 import { getEvalTarget, getAllTargets, EvalTarget, EvalCriterion, TestInput } from './eval-criteria';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithFallback } from './gemini-provider';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -116,19 +117,29 @@ ${criteriaList}
 Return ONLY a JSON array of objects with "id" (criterion id) and "passed" (boolean). No other text.
 Example: [{"id":"tool_efficiency","passed":true},{"id":"template_format","passed":false}]`;
 
-  const response = await trackedCreate(client, {
-    model: scorerModel,
-    max_tokens: 512,
-    system: 'You are a strict eval scorer. Return only valid JSON. No markdown fences.',
-    messages: [
-      { role: 'user', content: `${scoringPrompt}\n\nASSISTANT OUTPUT TO EVALUATE:\n${output}` },
-    ],
-  }, 'autoresearch_score');
+  // Gemini-first scoring (small structured-JSON task — perfect for Flash)
+  const scorerSystem = 'You are a strict eval scorer. Return only valid JSON. No markdown fences.';
+  const scorerUser = `${scoringPrompt}\n\nASSISTANT OUTPUT TO EVALUATE:\n${output}`;
+  const { text: scoreText } = await completeOneShotWithFallback(
+    scorerSystem,
+    scorerUser,
+    'autoresearch_score',
+    async () => {
+      const response = await trackedCreate(client, {
+        model: scorerModel,
+        max_tokens: 512,
+        system: scorerSystem,
+        messages: [{ role: 'user', content: scorerUser }],
+      }, 'autoresearch_score');
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+    },
+    { maxTokens: 512 },
+  );
 
-  let text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+  let text = scoreText;
 
   // Strip markdown fences
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -243,17 +254,28 @@ Return a JSON object with:
 
 Return ONLY valid JSON. No markdown fences.`;
 
-  const response = await trackedCreate(client, {
-    model: 'claude-sonnet-4-6',
-    max_tokens: 4096,
-    system: 'You are a prompt optimization expert. Return only valid JSON with "description" and "mutated_prompt" fields.',
-    messages: [{ role: 'user', content: mutationPrompt }],
-  }, 'autoresearch_mutate');
+  // Gemini-first prompt mutation (analytical, structured output)
+  const mutateSystem = 'You are a prompt optimization expert. Return only valid JSON with "description" and "mutated_prompt" fields.';
+  const { text: mutateText } = await completeOneShotWithFallback(
+    mutateSystem,
+    mutationPrompt,
+    'autoresearch_mutate',
+    async () => {
+      const response = await trackedCreate(client, {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 4096,
+        system: mutateSystem,
+        messages: [{ role: 'user', content: mutationPrompt }],
+      }, 'autoresearch_mutate');
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+    },
+    { maxTokens: 4096 },
+  );
 
-  let text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+  let text = mutateText;
 
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 

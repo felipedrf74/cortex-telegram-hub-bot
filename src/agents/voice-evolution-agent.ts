@@ -17,6 +17,7 @@ import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithFallback } from '../services/gemini-provider';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -187,18 +188,29 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
       .replace('{transcripts}', transcriptsBlock)
       .replace('{book_knowledge}', bookKnowledgeBlock);
 
-    // Call Claude Sonnet for deep analysis
-    const response = await trackedCreate(client, {
-      model: config.anthropic.model,
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-    }, 'voice_evolution');
+    // Gemini-first deep analysis with Sonnet fallback. This is a low-frequency
+    // call (~weekly) but each invocation is large (~4K output tokens). Voice
+    // pattern extraction works well on gemini-2.5-flash for this prompt shape.
+    const { text: voiceText } = await completeOneShotWithFallback(
+      '',  // no system prompt — instructions are in the user prompt
+      prompt,
+      'voice_evolution',
+      async () => {
+        const response = await trackedCreate(client, {
+          model: config.anthropic.model,
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+        }, 'voice_evolution');
+        return response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map(b => b.text)
+          .join('');
+      },
+      { maxTokens: 4096, temperature: 0.3 },
+    );
 
-    let text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('');
+    let text = voiceText;
 
     text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 

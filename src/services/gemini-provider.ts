@@ -166,6 +166,47 @@ export async function completeOneShot(
   return extractText(result);
 }
 
+/**
+ * Convenience wrapper around `completeOneShot` that automatically falls back
+ * to a caller-supplied Anthropic path on Gemini failure (or when Gemini is
+ * not configured). Returns the result text plus which provider produced it.
+ *
+ * Designed to be the standard pattern for migrating existing `trackedCreate`
+ * call sites: instead of duplicating the try-catch-fallback boilerplate at
+ * every site, callers pass their original Anthropic call as a thunk and
+ * get a single-line migration.
+ *
+ * Example:
+ *   const { text } = await completeOneShotWithFallback(
+ *     systemPrompt,
+ *     userPrompt,
+ *     'knowledge_synthesis',
+ *     async () => {
+ *       const r = await trackedCreate(client, {...}, 'knowledge_synthesis');
+ *       return r.content.filter(b => b.type === 'text').map(b => b.text).join('');
+ *     },
+ *     { maxTokens: 2048, temperature: 0.3 },
+ *   );
+ */
+export async function completeOneShotWithFallback(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  anthropicFallback: () => Promise<string>,
+  options?: { model?: string; maxTokens?: number; temperature?: number },
+): Promise<{ text: string; provider: 'gemini' | 'anthropic' }> {
+  if (isGeminiProviderConfigured()) {
+    try {
+      const text = await completeOneShot(systemPrompt, userPrompt, category, options);
+      return { text, provider: 'gemini' };
+    } catch (err) {
+      logger.warn({ err, category }, 'Gemini one-shot failed, falling back to Anthropic');
+    }
+  }
+  const text = await anthropicFallback();
+  return { text, provider: 'anthropic' };
+}
+
 // ─── Tool format conversion ─────────────────────────────────────────
 
 function toSchemaType(type: string): SchemaType {

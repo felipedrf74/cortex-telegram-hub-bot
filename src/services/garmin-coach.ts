@@ -16,7 +16,7 @@ import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActi
 import { getEvents, isAnyCalendarConfigured, CalendarSource } from './unified-calendar';
 import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
-import { completeOneShot, isGeminiProviderConfigured } from './gemini-provider';
+import { completeOneShotWithFallback } from './gemini-provider';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -275,55 +275,38 @@ ${payloadStr}
 
     // Gemini-first routing for cost reduction. coach_analysis is the single
     // largest cost line in the system (~$1.62/wk on Sonnet 4.6 at 1 user).
-    // gemini-2.5-flash is ~8× cheaper for the same input/output volume and
+    // gemini-2.5-flash is ~9.5× cheaper for the same input/output volume and
     // matches Sonnet quality for analytical prompts of this shape.
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
-    let rawText = '';
-    let analysisProvider: 'gemini' | 'anthropic' = 'anthropic';
-    if (isGeminiProviderConfigured()) {
-      try {
-        rawText = await completeOneShot(systemPrompt, userPrompt, 'coach_analysis', {
-          maxTokens: 2500,
-        });
-        analysisProvider = 'gemini';
-      } catch (geminiErr) {
-        logger.warn(
-          { err: geminiErr },
-          'Gemini coach analysis failed, falling back to Anthropic Sonnet',
-        );
-      }
-    }
-
-    if (!rawText) {
-      // Fallback: original Anthropic Sonnet path
-      const response = await trackedCreate(client, {
-        model: config.anthropic.model,
-        max_tokens: 2500,
-        system: [
-          {
-            type: 'text',
-            text: getDomainSystemPrompt('triathlon'),
-            cache_control: { type: 'ephemeral' },
-          },
-          {
-            type: 'text',
-            text: COACH_ANALYSIS_PROMPT,
-          },
-        ],
-        messages: [
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-      }, 'coach_analysis');
-      rawText = response.content
-        .filter((c): c is Anthropic.TextBlock => c.type === 'text')
-        .map((c) => c.text)
-        .join('');
-      analysisProvider = 'anthropic';
-    }
+    const { text: rawText, provider: analysisProvider } = await completeOneShotWithFallback(
+      systemPrompt,
+      userPrompt,
+      'coach_analysis',
+      async () => {
+        const response = await trackedCreate(client, {
+          model: config.anthropic.model,
+          max_tokens: 2500,
+          system: [
+            {
+              type: 'text',
+              text: getDomainSystemPrompt('triathlon'),
+              cache_control: { type: 'ephemeral' },
+            },
+            {
+              type: 'text',
+              text: COACH_ANALYSIS_PROMPT,
+            },
+          ],
+          messages: [{ role: 'user', content: userPrompt }],
+        }, 'coach_analysis');
+        return response.content
+          .filter((c): c is Anthropic.TextBlock => c.type === 'text')
+          .map((c) => c.text)
+          .join('');
+      },
+      { maxTokens: 2500 },
+    );
 
     const analysisMs = Date.now() - analysisStart;
     logger.info(

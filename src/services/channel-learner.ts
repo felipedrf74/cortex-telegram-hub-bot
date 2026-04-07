@@ -17,6 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithFallback } from './gemini-provider';
 import { loadPrompt } from '../utils/prompt-loader';
 import { pushEvent } from '../portal/telemetry';
 import { deepAnalyzeTopVideos } from './video-study';
@@ -239,18 +240,29 @@ ${transcriptData}`;
 
 Extract content creation patterns across all 9 categories. Focus on what makes this creator successful — patterns that can be adapted (not copied) for a Portuguese-language fitness + commentary YouTube channel.`;
 
-  const response = await trackedCreate(client, {
-    model: config.anthropic.model, // Sonnet for quality analysis
-    max_tokens: 8192,
-    system: loadPrompt('channel-learner'),
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.3, // Lower temp for more consistent analysis
-  }, 'channel_analysis');
+  // Gemini-first: gemini-2.5-flash matches Sonnet for analytical pattern
+  // extraction at ~9× lower cost. Falls back to Anthropic on failure.
+  const { text: rawAnalysisText } = await completeOneShotWithFallback(
+    loadPrompt('channel-learner'),
+    prompt,
+    'channel_analysis',
+    async () => {
+      const response = await trackedCreate(client, {
+        model: config.anthropic.model, // Sonnet for quality analysis
+        max_tokens: 8192,
+        system: loadPrompt('channel-learner'),
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3, // Lower temp for more consistent analysis
+      }, 'channel_analysis');
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+    },
+    { maxTokens: 8192, temperature: 0.3 },
+  );
 
-  let text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+  let text = rawAnalysisText;
 
   // Extract JSON from potential markdown fences or surrounding text
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -341,23 +353,33 @@ async function synthesizeKnowledge(): Promise<void> {
       continue;
     }
 
-    // Multiple channels → ask Claude to synthesize
+    // Multiple channels → synthesize via Gemini (Anthropic Haiku fallback).
+    // knowledge_synthesis is the highest-frequency line in the audit
+    // (~18 calls/wk avg) so cumulative savings here are meaningful even
+    // though per-call cost is small.
     try {
-      const response = await trackedCreate(client, {
-        model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
-        max_tokens: 2048,
-        system: SYNTHESIS_SYSTEM_PROMPT,
-        messages: [{
-          role: 'user',
-          content: `Synthesize the "${category}" patterns from ${byChannel.size} creators:\n\n${context}`,
-        }],
-        temperature: 0.3,
-      }, 'knowledge_synthesis');
+      const userPrompt = `Synthesize the "${category}" patterns from ${byChannel.size} creators:\n\n${context}`;
+      const { text: synthText } = await completeOneShotWithFallback(
+        SYNTHESIS_SYSTEM_PROMPT,
+        userPrompt,
+        'knowledge_synthesis',
+        async () => {
+          const response = await trackedCreate(client, {
+            model: config.anthropic.classifierModel, // Haiku for synthesis (structured task)
+            max_tokens: 2048,
+            system: SYNTHESIS_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: userPrompt }],
+            temperature: 0.3,
+          }, 'knowledge_synthesis');
+          return response.content
+            .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+            .map((b) => b.text)
+            .join('');
+        },
+        { maxTokens: 2048, temperature: 0.3 },
+      );
 
-      let text = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
+      let text = synthText;
 
       // Extract JSON from potential markdown fences or surrounding text
       const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
