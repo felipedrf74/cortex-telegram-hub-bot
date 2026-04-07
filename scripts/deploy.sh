@@ -47,26 +47,46 @@ cd "$LOCAL_DIR"
 npx tsc --noEmit 2>/dev/null && echo "   ✅ Type check passed" || { echo "   ❌ Type errors — aborting"; exit 1; }
 npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
 
-# ── 2. Backup on server ─────────────────────────────
-echo ""
-echo "💾 Creating backup on server..."
-ssh "$SERVER" "
-  BACKUP_DIR='/home/dominguez/backups/nexushub'
-  TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
-  mkdir -p \"\$BACKUP_DIR\"
-  tar czf \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" \
-    -C '$REMOTE_DIR' \
-    dist/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js 2>/dev/null || true
-  ls -t \"\$BACKUP_DIR\"/*.tar.gz 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
-  echo '   ✅ Backup created'
-" || echo "   ⚠️  Backup skipped"
-
-# ── 3. Stop services on server ───────────────────────
+# ── 2. Stop services on server ───────────────────────
+# (Moved BEFORE backup so the SQLite WAL is checkpointed and bot.db is in
+# a consistent state when we copy it. Audit QW-10 found that the previous
+# backup ordering produced backups WITHOUT user data — see below.)
 echo ""
 echo "🛑 Stopping services on server..."
 # ── Handle PM2 process rename (one-time migration) ──
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 delete telegram-hub-bot 2>/dev/null || true"
 ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub 2>/dev/null; $PM2 stop content-engine 2>/dev/null; echo '   Stopped.'"
+
+# ── 2b. Backup on server (now includes data/bot.db) ───
+# Audit QW-10 finding: previous backups only contained code (dist/, prompts/,
+# migrations/, package.json, package-lock.json, ecosystem.config.js) — bot.db
+# was excluded entirely. There was no point-in-time data recovery at all.
+# This step now also includes the SQLite DB plus its WAL/SHM sidecars; the
+# sidecars are usually empty after a clean pm2 stop (graceful shutdown
+# closes the DB which checkpoints WAL into the main file), but we include
+# them defensively in case shutdown was abrupt.
+echo ""
+echo "💾 Creating backup on server (now WITH bot.db)..."
+ssh "$SERVER" "
+  BACKUP_DIR='/home/dominguez/backups/nexushub'
+  TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+  mkdir -p \"\$BACKUP_DIR\"
+  cd '$REMOTE_DIR'
+  # Build the include list dynamically: code paths + DB + sidecars (if present)
+  INCLUDES='dist/ prompts/ migrations/ package.json package-lock.json ecosystem.config.js data/bot.db'
+  [ -f data/bot.db-wal ] && INCLUDES=\"\$INCLUDES data/bot.db-wal\"
+  [ -f data/bot.db-shm ] && INCLUDES=\"\$INCLUDES data/bot.db-shm\"
+  [ -d data/garmin-tokens ] && INCLUDES=\"\$INCLUDES data/garmin-tokens/\"
+  tar czf \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" \$INCLUDES 2>/dev/null || {
+    echo '   ⚠️  Backup tar failed'; exit 1;
+  }
+  # Show resulting size + verify bot.db is actually in there
+  SIZE=\$(du -h \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" | cut -f1)
+  HAS_DB=\$(tar tzf \"\$BACKUP_DIR/v${VERSION}_\${TIMESTAMP}.tar.gz\" 2>/dev/null | grep -c 'bot.db\$' || echo 0)
+  echo \"   ✅ Backup created (\$SIZE, bot.db included: \$HAS_DB)\"
+  # Retention: keep 10 most recent
+  ls -t \"\$BACKUP_DIR\"/*.tar.gz 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
+" || echo "   ⚠️  Backup skipped"
 
 # ── 3b. Drain ports before restart (audit P0-4) ──────
 # pm2 stop returns when the process is gone, but the OS may keep port 8200
