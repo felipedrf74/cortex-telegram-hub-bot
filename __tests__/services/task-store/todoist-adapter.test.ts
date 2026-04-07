@@ -72,6 +72,8 @@ beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
   _resetTodoistUserCacheForTests();
+  // OAuth encryption is now mandatory at runtime (audit P0-7).
+  process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';
 });
 
 afterEach(() => {

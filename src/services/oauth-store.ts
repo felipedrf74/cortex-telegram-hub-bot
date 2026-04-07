@@ -39,30 +39,137 @@ export class ProviderNotConnectedError extends Error {
 }
 
 // ─── Encryption key ─────────────────────────────────────────────────
+//
+// OAuth refresh tokens are valuable credentials — they grant ongoing access
+// to a user's Google/Outlook/Notion/Todoist account without re-auth. They
+// MUST be encrypted at rest because the SQLite DB is included in the
+// weekly backup tarball, and the tarball is unencrypted on disk + may be
+// shipped off-site (S3, rsync). A leaked backup must not equal account
+// takeover for every connected user. See audit P0-7.
+//
+// Resolution order:
+//   1. OAUTH_ENCRYPTION_KEY (preferred — dedicated key for OAuth tokens)
+//   2. config.financeEncryption.masterKey (shared with finance encryption)
+//   3. FINANCE_ENCRYPTION_KEY (legacy fallback)
+//
+// At least one MUST be set or the process refuses to start (enforced in
+// `assertOAuthEncryptionConfigured()` called from boot). The empty-string
+// fallback that silently stored plaintext has been removed.
 
 function getEncryptionKey(): string {
-  const key = process.env.OAUTH_ENCRYPTION_KEY || config.financeEncryption?.masterKey || process.env.FINANCE_ENCRYPTION_KEY || '';
+  return process.env.OAUTH_ENCRYPTION_KEY
+    || config.financeEncryption?.masterKey
+    || process.env.FINANCE_ENCRYPTION_KEY
+    || '';
+}
+
+/**
+ * Boot-time assertion: refuse to start if no encryption key is configured.
+ * Called from src/services/database.ts during initDatabase().
+ */
+export function assertOAuthEncryptionConfigured(): void {
+  const key = getEncryptionKey();
   if (!key) {
-    logger.warn('No OAuth encryption key configured — tokens will be stored in plaintext');
+    throw new Error(
+      'OAUTH_ENCRYPTION_KEY is not configured. OAuth refresh tokens cannot ' +
+      'be stored safely without encryption. Set OAUTH_ENCRYPTION_KEY (or ' +
+      'FINANCE_ENCRYPTION_KEY) in .env to a high-entropy 32+ character ' +
+      'value. Generate one with: openssl rand -hex 32',
+    );
   }
-  return key;
 }
 
 function encrypt(value: string, userId: number): string {
   const key = getEncryptionKey();
-  if (!key) return value; // No encryption configured — store plaintext
+  if (!key) {
+    // Should never happen at runtime — assertOAuthEncryptionConfigured runs
+    // at boot. This is a defensive last-line check.
+    throw new Error('OAuth encryption key missing at write time');
+  }
   return encryptValue(value, key, userId);
 }
 
 function decrypt(value: string, userId: number): string {
   const key = getEncryptionKey();
-  if (!key) return value;
+  if (!key) {
+    throw new Error('OAuth encryption key missing at read time');
+  }
   try {
     return decryptValue(value, key, userId);
   } catch {
-    // May be plaintext from before encryption was configured
+    // Legacy plaintext from before encryption was enforced. We return as-is
+    // so existing rows still work, but the boot-time migration
+    // (`encryptPlaintextOAuthTokens`) should have already encrypted them.
     return value;
   }
+}
+
+/**
+ * Detect if a stored value looks like an encrypted blob from this module
+ * (hex string of length ≥ 56 chars = 28 bytes = IV + tag + at least 0
+ * bytes of ciphertext). Real Google/Outlook/Notion refresh tokens contain
+ * non-hex characters (`/`, `_`, `.`, `-`) so they fail this test cleanly.
+ */
+function looksEncrypted(value: string): boolean {
+  if (!value) return false;
+  if (value.length < 56) return false;
+  return /^[0-9a-f]+$/i.test(value);
+}
+
+/**
+ * One-time migration: encrypts any plaintext rows in user_oauth_tokens
+ * using the configured key. Idempotent — already-encrypted rows are left
+ * alone. Called from initDatabase() after migrations + key assertion.
+ *
+ * Returns counts so the caller can log meaningful telemetry.
+ */
+export function encryptPlaintextOAuthTokens(): {
+  scanned: number;
+  encryptedRows: number;
+  alreadyEncrypted: number;
+} {
+  const db = getDb();
+  const key = getEncryptionKey();
+  if (!key) {
+    // assertOAuthEncryptionConfigured should have caught this — defensive.
+    throw new Error('encryptPlaintextOAuthTokens called without an encryption key');
+  }
+
+  const rows = db
+    .prepare('SELECT id, user_id, access_token, refresh_token FROM user_oauth_tokens')
+    .all() as Array<{
+      id: number;
+      user_id: number;
+      access_token: string;
+      refresh_token: string;
+    }>;
+
+  let encryptedRows = 0;
+  let alreadyEncrypted = 0;
+
+  for (const row of rows) {
+    const accessNeedsEncryption = row.access_token !== '' && !looksEncrypted(row.access_token);
+    const refreshNeedsEncryption = row.refresh_token !== '' && !looksEncrypted(row.refresh_token);
+
+    if (!accessNeedsEncryption && !refreshNeedsEncryption) {
+      alreadyEncrypted++;
+      continue;
+    }
+
+    const newAccess = accessNeedsEncryption
+      ? encryptValue(row.access_token, key, row.user_id)
+      : row.access_token;
+    const newRefresh = refreshNeedsEncryption
+      ? encryptValue(row.refresh_token, key, row.user_id)
+      : row.refresh_token;
+
+    db.prepare(
+      'UPDATE user_oauth_tokens SET access_token = ?, refresh_token = ?, updated_at = datetime(\'now\') WHERE id = ?',
+    ).run(newAccess, newRefresh, row.id);
+    encryptedRows++;
+  }
+
+  return { scanned: rows.length, encryptedRows, alreadyEncrypted };
 }
 
 // ─── Token CRUD ─────────────────────────────────────────────────────

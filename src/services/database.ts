@@ -48,9 +48,28 @@ export function initDatabase(): Database.Database {
     seedOwnerUser();
   } catch { /* user-service not yet available — non-critical */ }
 
+  // OAuth encryption is mandatory: refuse to start without a key, then
+  // run a one-shot in-place migration that encrypts any legacy plaintext
+  // rows. See audit P0-7. assertOAuthEncryptionConfigured() throws if no
+  // key is set — that's intentional, the bot must not run without it.
+  const { assertOAuthEncryptionConfigured, encryptPlaintextOAuthTokens, migrateOwnerTokens } = require('./oauth-store');
+  assertOAuthEncryptionConfigured();
+  try {
+    const result = encryptPlaintextOAuthTokens();
+    if (result.encryptedRows > 0) {
+      logger.warn(
+        result,
+        `OAuth migration: encrypted ${result.encryptedRows} legacy plaintext rows in-place`,
+      );
+    } else {
+      logger.info(result, 'OAuth migration: all rows already encrypted');
+    }
+  } catch (err) {
+    logger.error({ err }, 'OAuth plaintext migration failed — investigate before next deploy');
+  }
+
   // Migrate owner's OAuth tokens from .env to per-user storage
   try {
-    const { migrateOwnerTokens } = require('./oauth-store');
     migrateOwnerTokens();
   } catch { /* oauth-store not yet available — non-critical */ }
 

@@ -48,6 +48,7 @@ function applyMigrations(db: Database.Database): void {
 import {
   storeTokens, getTokens, isConnected, disconnectProvider,
   getUserConnections, migrateOwnerTokens, ProviderNotConnectedError,
+  assertOAuthEncryptionConfigured, encryptPlaintextOAuthTokens,
 } from '../../src/services/oauth-store';
 
 describe('oauth-store', () => {
@@ -55,8 +56,10 @@ describe('oauth-store', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
-    // Clear env so encryption is disabled (plaintext mode for testing)
-    delete process.env.OAUTH_ENCRYPTION_KEY;
+    // OAuth encryption is now mandatory at runtime (audit P0-7) — set a
+    // deterministic test key so tests exercise the real encrypted path,
+    // not the legacy plaintext fallback that no longer exists.
+    process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';
     delete process.env.FINANCE_ENCRYPTION_KEY;
   });
 
@@ -225,6 +228,7 @@ describe('oauth-store', () => {
 
   describe('encryption', () => {
     it('encrypts tokens when OAUTH_ENCRYPTION_KEY is set', () => {
+      // Override the beforeEach test key with a different one for this test
       process.env.OAUTH_ENCRYPTION_KEY = 'test-master-key-for-oauth-encrypt';
       storeTokens(123, 'google', {
         accessToken: 'secret_access_token',
@@ -245,8 +249,67 @@ describe('oauth-store', () => {
       const tokens = getTokens(123, 'google');
       expect(tokens!.accessToken).toBe('secret_access_token');
       expect(tokens!.refreshToken).toBe('secret_refresh_token');
+    });
+  });
 
+  describe('assertOAuthEncryptionConfigured (P0-7)', () => {
+    it('throws when no encryption key is set', () => {
       delete process.env.OAUTH_ENCRYPTION_KEY;
+      delete process.env.FINANCE_ENCRYPTION_KEY;
+      expect(() => assertOAuthEncryptionConfigured()).toThrow(/OAUTH_ENCRYPTION_KEY/);
+    });
+
+    it('passes when OAUTH_ENCRYPTION_KEY is set', () => {
+      process.env.OAUTH_ENCRYPTION_KEY = 'some-key';
+      expect(() => assertOAuthEncryptionConfigured()).not.toThrow();
+    });
+
+    it('passes when only FINANCE_ENCRYPTION_KEY is set (legacy fallback)', () => {
+      delete process.env.OAUTH_ENCRYPTION_KEY;
+      process.env.FINANCE_ENCRYPTION_KEY = 'legacy-finance-key';
+      expect(() => assertOAuthEncryptionConfigured()).not.toThrow();
+    });
+  });
+
+  describe('encryptPlaintextOAuthTokens (P0-7 in-place migration)', () => {
+    it('encrypts plaintext rows in place', () => {
+      // Insert a plaintext row directly (simulating legacy data)
+      testDb.prepare(`
+        INSERT INTO user_oauth_tokens (user_id, provider, access_token, refresh_token, token_type, expires_at, scopes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(999, 'google', '', '1//04plaintext_refresh_token_with_slashes', 'Bearer', null, '[]');
+
+      const result = encryptPlaintextOAuthTokens();
+      expect(result.scanned).toBe(1);
+      expect(result.encryptedRows).toBe(1);
+      expect(result.alreadyEncrypted).toBe(0);
+
+      // Raw row should now be hex (encrypted)
+      const row = testDb.prepare(
+        'SELECT access_token, refresh_token FROM user_oauth_tokens WHERE user_id = 999'
+      ).get() as { access_token: string; refresh_token: string };
+      expect(row.refresh_token).not.toContain('//');
+      expect(row.refresh_token).toMatch(/^[0-9a-f]+$/i);
+      expect(row.refresh_token.length).toBeGreaterThanOrEqual(56);
+
+      // And reading via getTokens decrypts back to plaintext
+      const tokens = getTokens(999, 'google');
+      expect(tokens!.refreshToken).toBe('1//04plaintext_refresh_token_with_slashes');
+    });
+
+    it('is idempotent (already-encrypted rows are skipped)', () => {
+      // First insert + encrypt
+      storeTokens(888, 'google', {
+        accessToken: 'a', refreshToken: 'r', tokenType: 'Bearer', expiresAt: null, scopes: [],
+      });
+      const first = encryptPlaintextOAuthTokens();
+      expect(first.encryptedRows).toBe(0); // already encrypted via storeTokens
+      expect(first.alreadyEncrypted).toBe(1);
+
+      // Run again — still no work
+      const second = encryptPlaintextOAuthTokens();
+      expect(second.encryptedRows).toBe(0);
+      expect(second.alreadyEncrypted).toBe(1);
     });
   });
 });

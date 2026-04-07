@@ -105,6 +105,8 @@ function mockFetchResponse(body: any, status = 200): Response {
 beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
+  // OAuth encryption is now mandatory at runtime (audit P0-7).
+  process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';
 });
 
 afterEach(() => {
