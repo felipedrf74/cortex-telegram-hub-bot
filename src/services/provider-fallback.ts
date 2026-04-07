@@ -10,9 +10,12 @@
  * - Half-open recovery: after cooldown, probe the primary once to check recovery
  */
 
-import { AIProvider, AICallResult, AIToolResultMessage } from './ai-provider';
+import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
+import { planSecretaryOptimization, type SecretaryOptimization } from './secretary-tools';
+import { TOOLS } from './anthropic';
+import type Anthropic from '@anthropic-ai/sdk';
 
 // ─── Task Types ────────────────────────────────────────────────────
 
@@ -379,11 +382,28 @@ export class TaskRoutingProvider implements AIProvider {
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
-    maxTokensOverride?: number,
+    optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     const { taskType } = this.resolveProviderPairForDomain(domain);
+
+    // ── TASK-17 Layer 3+4+5: provider-agnostic optimization ──────
+    //
+    // Compute the optimization decision ONCE at dispatch time, then
+    // pass it to whichever concrete provider runs (Anthropic OR Gemini
+    // OR a future OpenAI provider). This is what makes the optimization
+    // work uniformly across providers — the decision is made before the
+    // provider is selected, not duplicated inside each provider.
+    //
+    // The caller may also have passed maxTokensOverride or its own
+    // CallDomainOptions; we merge those with the optimization result so
+    // explicit overrides win over the auto-computed values.
+    const callerOpts = typeof optionsOrMaxTokens === 'number'
+      ? { maxTokensOverride: optionsOrMaxTokens }
+      : (optionsOrMaxTokens || {});
+    const opts = this.buildOptimizedOptions(domain, history, currentMessage, callerOpts);
+
     return this.executeWithFallback(taskType, (p) =>
-      p.callDomain(domain, history, currentMessage, stateContext, maxTokensOverride),
+      p.callDomain(domain, opts.slicedHistory, currentMessage, stateContext, opts.callOptions),
     );
   }
 
@@ -393,11 +413,75 @@ export class TaskRoutingProvider implements AIProvider {
     currentMessage: string,
     stateContext: string,
     toolConversation: AIToolResultMessage[],
+    options?: CallDomainOptions,
   ): Promise<AICallResult> {
     const { taskType } = this.resolveProviderPairForDomain(domain);
+
+    // Same optimization logic as callDomain. Critical: must compute the
+    // SAME decision (same currentMessage → same tier/tools/history) so
+    // the tool loop sees a stable shape across iterations. Otherwise
+    // both Anthropic and Gemini will reject the second call because
+    // tool_use_id references a tool that's no longer in scope.
+    const callerOpts = options || {};
+    const opts = this.buildOptimizedOptions(domain, history, currentMessage, callerOpts);
+
     return this.executeWithFallback(taskType, (p) =>
-      p.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation),
+      p.continueWithToolResults(domain, opts.slicedHistory, currentMessage, stateContext, toolConversation, opts.callOptions),
     );
+  }
+
+  /**
+   * Build the per-call optimization options for a given message. Centralizes
+   * the call to planSecretaryOptimization() and the per-domain tool
+   * lookup so callDomain and continueWithToolResults stay DRY.
+   *
+   * Returns:
+   *   - slicedHistory: the (possibly trimmed) history to send
+   *   - callOptions: the CallDomainOptions to forward to the provider
+   */
+  private buildOptimizedOptions(
+    domain: DomainName,
+    history: DomainMessage[],
+    currentMessage: string,
+    callerOpts: CallDomainOptions,
+  ): { slicedHistory: DomainMessage[]; callOptions: CallDomainOptions } {
+    // Domain-filtered tool list (sub-skill aware) — same input both
+    // providers would have used. We narrow it further in planSecretaryOptimization.
+    let domainTools: Anthropic.Tool[];
+    try {
+      // Lazy require to avoid a circular import at module load time.
+      // anthropic.ts → secretary-tools.ts (Layer 3 helper) →
+      // secretary-tools.ts itself doesn't import anthropic, but anthropic
+      // imports secretary-tools, and provider-fallback.ts is also pulled
+      // in by tests that mock anthropic.ts — keeping this lazy avoids
+      // a fragile import order.
+      const { getToolsForDomainCached } = require('./anthropic');
+      domainTools = getToolsForDomainCached(domain) as Anthropic.Tool[];
+    } catch {
+      domainTools = TOOLS;
+    }
+
+    const optimization: SecretaryOptimization = planSecretaryOptimization(
+      domain,
+      currentMessage,
+      history,
+      domainTools,
+    );
+
+    // Caller-supplied options win over the auto-computed values.
+    // For example, if the caller passes filteredTools explicitly, that
+    // overrides the auto-filter — useful for testing and for special
+    // ops paths (like a "send all tools" debug flag).
+    const callOptions: CallDomainOptions = {
+      filteredTools: callerOpts.filteredTools ?? optimization.filteredTools,
+      modelTier: callerOpts.modelTier ?? optimization.modelTier,
+      maxTokensOverride: callerOpts.maxTokensOverride,
+    };
+
+    return {
+      slicedHistory: optimization.slicedHistory,
+      callOptions,
+    };
   }
 
   // ─── Monitoring / diagnostics ─────────────────────────────────────

@@ -153,8 +153,13 @@ describe('FallbackProvider — argument forwarding to fallback', () => {
       'secretary', history, 'Set reminder', 'state-ctx', toolConvo,
     );
 
+    // After TASK-17 Option B, the AIProvider.continueWithToolResults
+    // signature accepts an optional `options: CallDomainOptions` 6th
+    // arg. FallbackProvider forwards it through, so callers that don't
+    // pass options end up with `undefined` as the 6th positional arg.
+    // The test now asserts on all 6 args (the 6th being `undefined`).
     expect(fallback.continueWithToolResults).toHaveBeenCalledWith(
-      'secretary', history, 'Set reminder', 'state-ctx', toolConvo,
+      'secretary', history, 'Set reminder', 'state-ctx', toolConvo, undefined,
     );
   });
 });

@@ -107,6 +107,39 @@ export function getModelRouting(
 
 // ─── Provider Interface ─────────────────────────────────────────────
 
+/**
+ * Options bag for callDomain / continueWithToolResults.
+ *
+ * All fields are optional. When omitted, the provider falls back to its
+ * own defaults — same as before TASK-17 Layer 3+4+5 existed. This keeps
+ * the interface backwards-compatible: callers that don't know about the
+ * optimization knobs (legacy code, tests, ad-hoc tools) keep working.
+ *
+ * When the routing layer (TaskRoutingProvider) computes a
+ * SecretaryOptimization decision via `planSecretaryOptimization()`, it
+ * passes the result here so EVERY provider applies the same optimization
+ * regardless of which one ends up running. This is what makes Layers
+ * 3/4/5 provider-agnostic — the decision is made once at dispatch time,
+ * not duplicated inside each provider.
+ *
+ * Field semantics:
+ *   - filteredTools: Layer 3. The pre-narrowed tool subset for this
+ *     specific message. Providers that support tools should send only
+ *     these. Providers that don't use tools (or that get an empty
+ *     array) should call without tools.
+ *   - modelTier: Layer 4. Abstract tier the provider should use:
+ *     'heavy' = the full reasoning model (Sonnet/gemini-3-flash)
+ *     'light' = the cheap model (Haiku/gemini-2.5-flash-lite)
+ *     Providers map this to their own concrete model names.
+ *   - maxTokensOverride: explicit max-tokens cap (existing field —
+ *     promoted into the options bag for consistency).
+ */
+export interface CallDomainOptions {
+  filteredTools?: unknown[]; // Anthropic.Tool[] — kept generic to avoid SDK import in this file
+  modelTier?: 'heavy' | 'light';
+  maxTokensOverride?: number;
+}
+
 export interface AIProvider {
   /** Provider identifier (e.g., 'anthropic', 'openai') */
   readonly name: string;
@@ -123,18 +156,24 @@ export interface AIProvider {
   /**
    * Send a message to a domain handler and get a response.
    * May include tool calls that the caller must execute.
+   *
+   * The optional `options` bag carries the TASK-17 Layer 3/4/5
+   * optimization decisions (pre-filtered tools, model tier, max tokens).
+   * Providers that don't recognize the bag should ignore it and use
+   * their own defaults — backwards compatible.
    */
   callDomain(
     domain: DomainName,
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
-    maxTokensOverride?: number,
+    optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult>;
 
   /**
    * Continue a conversation after executing tool calls.
    * The toolConversation contains the assistant's tool_use + user's tool_result messages.
+   * Same options-bag semantics as callDomain.
    */
   continueWithToolResults(
     domain: DomainName,
@@ -142,7 +181,22 @@ export interface AIProvider {
     currentMessage: string,
     stateContext: string,
     toolConversation: AIToolResultMessage[],
+    options?: CallDomainOptions,
   ): Promise<AICallResult>;
+}
+
+/**
+ * Helper: normalize the legacy `maxTokensOverride: number` argument or
+ * the new `options: CallDomainOptions` argument into a uniform options
+ * shape. Lets each provider's callDomain accept either form without
+ * branching boilerplate at every call site.
+ */
+export function normalizeCallDomainOptions(
+  arg?: number | CallDomainOptions,
+): CallDomainOptions {
+  if (arg == null) return {};
+  if (typeof arg === 'number') return { maxTokensOverride: arg };
+  return arg;
 }
 
 // ─── Fallback Provider ──────────────────────────────────────────────
@@ -179,13 +233,13 @@ export class FallbackProvider implements AIProvider {
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
-    maxTokensOverride?: number,
+    optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     try {
-      return await this.primary.callDomain(domain, history, currentMessage, stateContext, maxTokensOverride);
+      return await this.primary.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     } catch (err) {
       this.onFallback?.(err as Error, 'callDomain');
-      return this.fallback.callDomain(domain, history, currentMessage, stateContext, maxTokensOverride);
+      return this.fallback.callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     }
   }
 
@@ -195,12 +249,13 @@ export class FallbackProvider implements AIProvider {
     currentMessage: string,
     stateContext: string,
     toolConversation: AIToolResultMessage[],
+    options?: CallDomainOptions,
   ): Promise<AICallResult> {
     try {
-      return await this.primary.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation);
+      return await this.primary.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options);
     } catch (err) {
       this.onFallback?.(err as Error, 'continueWithToolResults');
-      return this.fallback.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation);
+      return this.fallback.continueWithToolResults(domain, history, currentMessage, stateContext, toolConversation, options);
     }
   }
 }

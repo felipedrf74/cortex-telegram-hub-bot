@@ -11,11 +11,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ─── Mock Gemini SDK ────────────────────────────────────────────────
 
 const mockGenerateContent = vi.fn();
+// Spy on getGenerativeModel so tests can assert on the model name and
+// tool list passed in (Layer 4 + Layer 3 verification).
+const mockGetGenerativeModel = vi.fn();
 
 vi.mock('@google/generative-ai', () => {
   return {
     GoogleGenerativeAI: class {
-      getGenerativeModel() {
+      getGenerativeModel(...args: unknown[]) {
+        mockGetGenerativeModel(...args);
         return { generateContent: mockGenerateContent };
       }
     },
@@ -240,6 +244,101 @@ describe('GeminiProvider', () => {
       mockGeminiResponse('Great swim.');
       await provider.callDomain('triathlon', [], 'How was my swim?', '');
       expect(mockGenerateContent).toHaveBeenCalledOnce();
+    });
+
+    // ─── TASK-17 Option B: tier-aware model + filtered tools ──────
+    //
+    // Verifies that GeminiProvider honors the CallDomainOptions bag
+    // computed by TaskRoutingProvider's planSecretaryOptimization()
+    // helper. This is what makes Layers 3, 4, and 5 actually fire
+    // for Gemini in production (instead of running silently on the
+    // Anthropic-only fallback path).
+
+    describe('TASK-17: respects CallDomainOptions from routing layer', () => {
+      it('modelTier="light" → uses classifierModel (Haiku-equivalent)', async () => {
+        mockGeminiResponse('OK');
+        mockGetGenerativeModel.mockClear();
+
+        await provider.callDomain('secretary', [], 'show my tasks', '', {
+          modelTier: 'light',
+          filteredTools: [],
+        });
+
+        expect(mockGetGenerativeModel).toHaveBeenCalledTimes(1);
+        const args = mockGetGenerativeModel.mock.calls[0][0];
+        // Light tier maps to gemini.classifierModel from the mocked config
+        expect(args.model).toBe('gemini-2.0-flash');
+      });
+
+      it('modelTier="heavy" → uses gemini.model', async () => {
+        mockGeminiResponse('OK');
+        mockGetGenerativeModel.mockClear();
+
+        await provider.callDomain('secretary', [], 'plan my week', '', {
+          modelTier: 'heavy',
+          filteredTools: [],
+        });
+
+        expect(mockGetGenerativeModel).toHaveBeenCalledTimes(1);
+        const args = mockGetGenerativeModel.mock.calls[0][0];
+        expect(args.model).toBe('gemini-2.0-pro');
+      });
+
+      it('no modelTier → falls back to legacy per-domain default (gemini-2.0-pro for secretary)', async () => {
+        mockGeminiResponse('OK');
+        mockGetGenerativeModel.mockClear();
+
+        // No options passed at all — old call style
+        await provider.callDomain('secretary', [], 'do something', '');
+
+        const args = mockGetGenerativeModel.mock.calls[0][0];
+        // Legacy fallback uses getModelRouting() which returns the
+        // per-domain default — gemini.model for secretary
+        expect(args.model).toBe('gemini-2.0-pro');
+      });
+
+      it('filteredTools narrows the function declarations sent to Gemini', async () => {
+        mockGeminiResponse('OK');
+        mockGetGenerativeModel.mockClear();
+
+        const filteredTools = [
+          { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object', properties: {} } },
+        ];
+
+        await provider.callDomain('secretary', [], 'remind me at 3pm', '', {
+          modelTier: 'light',
+          filteredTools,
+        });
+
+        const args = mockGetGenerativeModel.mock.calls[0][0];
+        // The functionDeclarations should match the filtered set, not
+        // the full TOOLS array
+        const declarations = args.tools[0].functionDeclarations;
+        expect(declarations).toHaveLength(1);
+        expect(declarations[0].name).toBe('set_reminder');
+      });
+
+      it('continueWithToolResults: same tier + tools as the initial call', async () => {
+        mockGeminiResponse('Continued.');
+        mockGetGenerativeModel.mockClear();
+
+        const filteredTools = [
+          { name: 'set_reminder', description: 'Set a reminder', input_schema: { type: 'object', properties: {} } },
+        ];
+
+        await provider.continueWithToolResults(
+          'secretary',
+          [],
+          'remind me at 3pm',
+          '',
+          [],
+          { modelTier: 'light', filteredTools },
+        );
+
+        const args = mockGetGenerativeModel.mock.calls[0][0];
+        expect(args.model).toBe('gemini-2.0-flash');
+        expect(args.tools[0].functionDeclarations).toHaveLength(1);
+      });
     });
   });
 

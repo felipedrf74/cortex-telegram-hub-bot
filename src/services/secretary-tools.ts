@@ -24,7 +24,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
-import type { DomainName } from '../domains/types';
+import type { DomainName, DomainMessage } from '../domains/types';
 
 // ─── Tool Packs ─────────────────────────────────────────────────────
 //
@@ -230,19 +230,31 @@ export function getFilteredToolsForMessage(
   return allTools.filter((t) => allowed.has(t.name));
 }
 
-// ─── Layer 4: Adaptive Model Selection ──────────────────────────────
+// ─── Layer 4: Adaptive Model Tier Selection ─────────────────────────
 //
-// Secretary historically used Sonnet 4.6 for ALL queries because the
-// system prompt is full of "use tool X to do Y" reasoning that Haiku
-// occasionally botches. But "show my tasks" doesn't need tool-use
-// reasoning at all — Haiku formats lists just as well as Sonnet at 1/3
-// the cost. The trick is identifying which queries genuinely need
-// Sonnet's reasoning and routing only those to the expensive model.
+// Secretary queries fall into two buckets:
+//   - SIMPLE data reads ("show my tasks", "what's my day") that need
+//     basic list formatting and minimal reasoning
+//   - COMPLEX reasoning ("plan my week considering my training", "what
+//     should I prioritize") that need multi-step inference
 //
-// The classifier here is a list of complexity markers — if any of them
-// match, we keep the query on Sonnet. Otherwise it goes to Haiku.
-// Errs on the side of Sonnet (false positives = pay more, false
-// negatives = bad answer), so the patterns are intentionally generous.
+// This classifier returns an abstract tier — `'heavy'` or `'light'` —
+// rather than a concrete model name. Each provider then maps the tier
+// to its own model:
+//   - Anthropic: heavy → Sonnet 4.6, light → Haiku 4.5  (~3× cost diff)
+//   - Gemini:    heavy → gemini-3-flash, light → gemini-2.5-flash-lite  (~5× cost diff)
+//   - OpenAI:    heavy → gpt-5, light → gpt-5-mini  (when configured)
+//
+// Naming the function in provider-agnostic terms (`secretaryNeedsHeavyModel`
+// instead of `secretaryNeedsSonnet`) lets the same classifier feed both
+// the legacy Anthropic-only direct path AND the routing-provider Gemini
+// path without baking vendor assumptions into the function name.
+//
+// Errs on the side of `'heavy'` — false positives cost more money but
+// false negatives risk a bad answer that the user has to retry, which
+// burns more total tokens than just paying for the heavier model.
+
+export type ModelTier = 'heavy' | 'light';
 
 const COMPLEX_PATTERNS: RegExp[] = [
   // Planning verbs — "plan", "organize", "schedule out", "structure"
@@ -264,17 +276,96 @@ const COMPLEX_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Decide whether a secretary message needs Sonnet's deeper reasoning, or
- * whether Haiku is enough. Pure function — no AI calls.
+ * Decide whether a secretary message needs the heavier reasoning tier
+ * (Sonnet / gemini-3-flash) or whether the lighter model (Haiku /
+ * gemini-2.5-flash-lite) is enough.
  *
- * Heuristic: if ANY complexity marker matches, return true (use Sonnet).
- * Otherwise return false (use Haiku, save 2/3 the cost).
- *
- * Errs on the side of Sonnet — a false-positive costs ~$0.05 extra, a
- * false-negative might give a bad answer that the user has to retry.
+ * Pure function — no AI calls, no I/O. Safe to call on every message.
  */
-export function secretaryNeedsSonnet(message: string): boolean {
+export function secretaryNeedsHeavyModel(message: string): boolean {
   const trimmed = message.trim();
-  if (!trimmed) return true; // empty/unknown → safer to keep on Sonnet
+  if (!trimmed) return true; // empty/unknown → safer to use heavy tier
   return COMPLEX_PATTERNS.some((p) => p.test(trimmed));
+}
+
+/**
+ * @deprecated Use `secretaryNeedsHeavyModel` instead. Kept as a thin
+ * alias so any external code that imported the old name still works
+ * during the transition. New code should use the provider-agnostic name.
+ */
+export const secretaryNeedsSonnet = secretaryNeedsHeavyModel;
+
+// ─── planSecretaryOptimization: single source of truth for L3+L4+L5 ─
+//
+// Bundles the three message-level optimization decisions (filtered tool
+// list, model tier, sliced history) into one pure function. Both code
+// paths — the legacy direct anthropic.ts caller AND the routing-aware
+// TaskRoutingProvider — call this single helper, so the optimization
+// behavior is provider-agnostic by construction.
+//
+// Why one function instead of three exports? Two reasons:
+//   1. The decisions are correlated. Layer 5 (history reduction) only
+//      kicks in when Layer 4 picks the light tier — encoding that
+//      coupling in the function signature prevents callers from
+//      slicing history without also picking the light model (which
+//      would create a Frankenstein call: light history with the heavy
+//      model still being charged).
+//   2. Adding a 6th layer later means changing one call site, not
+//      hunting down every place that constructs optimized call args.
+//
+// Non-secretary domains return a no-op decision (full tools, heavy
+// tier, full history) so this function can be called unconditionally
+// from the routing layer without per-domain branching.
+
+export interface SecretaryOptimization {
+  /** Layer 3: pre-filtered tool array (subset of allTools). */
+  filteredTools: Anthropic.Tool[];
+  /** Layer 4: which model tier the provider should use. */
+  modelTier: ModelTier;
+  /** Layer 5: history truncated to the last N messages. */
+  slicedHistory: DomainMessage[];
+  /** Whether the optimization actually narrowed anything (for metrics). */
+  optimized: boolean;
+}
+
+/**
+ * Compute the optimization decision for a single secretary call.
+ * For non-secretary domains, returns a no-op decision so the routing
+ * layer can call this unconditionally without per-domain branching.
+ */
+export function planSecretaryOptimization(
+  domain: DomainName,
+  currentMessage: string,
+  history: DomainMessage[],
+  allTools: Anthropic.Tool[],
+): SecretaryOptimization {
+  // Non-secretary domains: pass through unchanged. Other domains have
+  // their own per-domain tool filtering at the skill manager layer and
+  // their own model selection logic; we don't second-guess them here.
+  if (domain !== 'secretary') {
+    return {
+      filteredTools: allTools,
+      modelTier: 'heavy',
+      slicedHistory: history,
+      optimized: false,
+    };
+  }
+
+  // Layer 3: filter tools by message intent (25 → 3-8 typical)
+  const filteredTools = getFilteredToolsForMessage(domain, currentMessage, allTools);
+
+  // Layer 4: pick the model tier based on complexity classifier
+  const modelTier: ModelTier = secretaryNeedsHeavyModel(currentMessage) ? 'heavy' : 'light';
+
+  // Layer 5: only trim history when we're using the light tier. The
+  // heavy tier keeps the full history because Sonnet/gemini-3-flash use
+  // it for reasoning continuity across multi-step plans.
+  const slicedHistory = modelTier === 'light' ? history.slice(-4) : history;
+
+  return {
+    filteredTools,
+    modelTier,
+    slicedHistory,
+    optimized: true,
+  };
 }

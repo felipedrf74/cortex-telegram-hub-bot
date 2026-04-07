@@ -21,8 +21,11 @@ import {
   getToolPacksForMessage,
   getFilteredToolsForMessage,
   secretaryNeedsSonnet,
+  secretaryNeedsHeavyModel,
+  planSecretaryOptimization,
   SECRETARY_TOOL_PACKS,
 } from '../../src/services/secretary-tools';
+import type { DomainMessage } from '../../src/domains/types';
 import type Anthropic from '@anthropic-ai/sdk';
 
 // Synthetic tool fixture — covers every name referenced by every pack so
@@ -274,6 +277,129 @@ describe('secretaryNeedsSonnet', () => {
   it('empty message → Sonnet (safe default)', () => {
     expect(secretaryNeedsSonnet('')).toBe(true);
     expect(secretaryNeedsSonnet('   ')).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// secretaryNeedsHeavyModel — provider-agnostic alias
+// ════════════════════════════════════════════════════════════════════
+//
+// After TASK-17 Option B, the canonical name is `secretaryNeedsHeavyModel`
+// because the tier decision is no longer Anthropic-specific. The legacy
+// name `secretaryNeedsSonnet` is kept as a deprecated alias for any
+// external code that imported it before the rename.
+
+describe('secretaryNeedsHeavyModel (canonical name)', () => {
+  it('returns the same result as the deprecated alias', () => {
+    const cases = [
+      'show my tasks',
+      'plan my week',
+      'what should I prioritize',
+      'add task: buy milk',
+      '',
+    ];
+    for (const msg of cases) {
+      expect(secretaryNeedsHeavyModel(msg)).toBe(secretaryNeedsSonnet(msg));
+    }
+  });
+
+  it('canonical name is identical function reference (not a copy)', () => {
+    // The deprecated alias should literally be `export const old = new`,
+    // not a separate function — that way bug fixes apply to both.
+    expect(secretaryNeedsSonnet).toBe(secretaryNeedsHeavyModel);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// planSecretaryOptimization — single source of truth for L3+L4+L5
+// ════════════════════════════════════════════════════════════════════
+
+describe('planSecretaryOptimization', () => {
+  const FAKE_TOOLS_FOR_PLAN = ALL_PACK_NAMES.map((name) => ({
+    name,
+    description: `fake ${name}`,
+    input_schema: { type: 'object' as const, properties: {} },
+  }));
+
+  const FAKE_HISTORY: DomainMessage[] = Array.from({ length: 12 }, (_, i) => ({
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: `message ${i}`,
+  }));
+
+  it('non-secretary domains: returns no-op decision (full tools, heavy, full history)', () => {
+    const result = planSecretaryOptimization('cooking', 'show my tasks', FAKE_HISTORY, FAKE_TOOLS_FOR_PLAN);
+    expect(result.optimized).toBe(false);
+    expect(result.filteredTools).toBe(FAKE_TOOLS_FOR_PLAN); // same reference
+    expect(result.modelTier).toBe('heavy');
+    expect(result.slicedHistory).toBe(FAKE_HISTORY); // same reference
+  });
+
+  it('secretary + simple query: filters tools, light tier, slices history to 4', () => {
+    const result = planSecretaryOptimization('secretary', 'show my tasks', FAKE_HISTORY, FAKE_TOOLS_FOR_PLAN);
+    expect(result.optimized).toBe(true);
+    expect(result.filteredTools.length).toBeLessThan(FAKE_TOOLS_FOR_PLAN.length);
+    expect(result.modelTier).toBe('light');
+    expect(result.slicedHistory.length).toBe(4);
+    // Last 4 messages from the original
+    expect(result.slicedHistory[0].content).toBe('message 8');
+    expect(result.slicedHistory[3].content).toBe('message 11');
+  });
+
+  it('secretary + complex query: filters tools, heavy tier, full history kept', () => {
+    const result = planSecretaryOptimization(
+      'secretary',
+      'plan my week considering my training and content schedule',
+      FAKE_HISTORY,
+      FAKE_TOOLS_FOR_PLAN,
+    );
+    expect(result.optimized).toBe(true);
+    expect(result.modelTier).toBe('heavy');
+    expect(result.slicedHistory).toBe(FAKE_HISTORY); // same reference, no slicing
+    expect(result.slicedHistory.length).toBe(12);
+  });
+
+  it('secretary + ambiguous query: light tier (length < 8 → ambiguous → not heavy keywords) → all tools fallback', () => {
+    const result = planSecretaryOptimization('secretary', 'ok', FAKE_HISTORY, FAKE_TOOLS_FOR_PLAN);
+    // Ambiguous queries fall back to all packs (Layer 3 safety net)
+    expect(result.filteredTools.length).toBe(FAKE_TOOLS_FOR_PLAN.length);
+    // "ok" doesn't match any complexity marker, so light tier
+    expect(result.modelTier).toBe('light');
+    // Light tier triggers history slicing
+    expect(result.slicedHistory.length).toBe(4);
+  });
+
+  it('history < 4 messages: slice is a no-op (.slice(-4) handles short arrays)', () => {
+    const shortHistory: DomainMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+    ];
+    const result = planSecretaryOptimization('secretary', 'show my tasks', shortHistory, FAKE_TOOLS_FOR_PLAN);
+    expect(result.modelTier).toBe('light');
+    expect(result.slicedHistory.length).toBe(2);
+    expect(result.slicedHistory).toEqual(shortHistory);
+  });
+
+  it('coupling invariant: light tier ALWAYS comes with sliced history (and vice versa)', () => {
+    // This is the critical contract: history slicing is gated on the
+    // model tier, never independent. Verify across many fixture inputs.
+    const inputs = [
+      'show my tasks',
+      'plan my week',
+      'list overdue items',
+      'what should I prioritize',
+      'add task: buy milk',
+      'considering my deadlines, what should I cancel',
+      'send email to John',
+      'analyze my workload',
+    ];
+    for (const msg of inputs) {
+      const r = planSecretaryOptimization('secretary', msg, FAKE_HISTORY, FAKE_TOOLS_FOR_PLAN);
+      if (r.modelTier === 'light') {
+        expect(r.slicedHistory.length).toBeLessThanOrEqual(4);
+      } else {
+        expect(r.slicedHistory).toBe(FAKE_HISTORY); // unchanged
+      }
+    }
   });
 });
 

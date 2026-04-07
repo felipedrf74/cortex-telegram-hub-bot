@@ -8,7 +8,13 @@
  * cost tracking) stays in anthropic.ts. The provider just bridges the interface.
  */
 
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage } from './ai-provider';
+import {
+  AIProvider,
+  AICallResult,
+  AIToolCall,
+  AIToolResultMessage,
+  CallDomainOptions,
+} from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import {
   classifyMessage,
@@ -52,9 +58,13 @@ export class AnthropicProvider implements AIProvider {
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
-    maxTokensOverride?: number,
+    optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
-    const result = await callDomain(domain, history, currentMessage, stateContext, maxTokensOverride);
+    // Forward the full options bag (or legacy maxTokensOverride number)
+    // through to anthropic.ts callDomain. anthropic.ts normalizes the
+    // shape internally, so we don't need to inspect it here. This wrapper
+    // stays a thin adapter — all optimization logic lives downstream.
+    const result = await callDomain(domain, history, currentMessage, stateContext, optionsOrMaxTokens);
     return toAICallResult(result);
   }
 
@@ -64,12 +74,15 @@ export class AnthropicProvider implements AIProvider {
     currentMessage: string,
     stateContext: string,
     toolConversation: AIToolResultMessage[],
+    options?: CallDomainOptions,
   ): Promise<AICallResult> {
     // Cast to Anthropic's MessageParam — the shapes are compatible since
     // AIToolResultMessage mirrors Anthropic's expected format
     const anthropicConvo = toolConversation as unknown as Anthropic.MessageParam[];
+    // Forward options as the 7th positional arg (continueWithToolResults
+    // has userId in slot 6 — keep that order so existing callers work).
     const result = await continueWithToolResults(
-      domain, history, currentMessage, stateContext, anthropicConvo,
+      domain, history, currentMessage, stateContext, anthropicConvo, undefined, options,
     );
     return toAICallResult(result);
   }

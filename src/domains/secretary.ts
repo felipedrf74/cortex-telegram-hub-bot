@@ -1,7 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DomainName, DomainResponse } from './types';
-import { callDomain, continueWithToolResults } from '../services/anthropic';
+import { getActiveProvider } from '../services/provider-registry';
+import { callDomain as directCallDomain, continueWithToolResults as directContinueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
 import { getActiveReminders, getRemindersForToday } from '../state/reminders';
 import { getEvents, isAnyCalendarConfigured } from '../services/unified-calendar';
@@ -15,7 +16,7 @@ import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import { tryFastpath } from '../services/secretary-fastpath';
 import { analyzeIntent } from '../services/secretary-tools';
-import Anthropic from '@anthropic-ai/sdk';
+import type { AIToolResultMessage } from '../services/ai-provider';
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -255,25 +256,61 @@ export async function handleSecretary(message: string, userId?: number): Promise
   // intent-typed queries; ambiguous queries fall back to fetching all).
   const stateContext = await buildStateContext(message);
 
-  let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
+  // ── Provider routing — TASK-17 Option B fix ────────────────────
+  //
+  // Previously this handler imported callDomain/continueWithToolResults
+  // directly from services/anthropic.ts, which BYPASSED the
+  // TaskRoutingProvider entirely — meaning the Gemini migration we
+  // shipped earlier never actually applied to secretary. Despite the
+  // routing config saying "secretary → gemini", every secretary call
+  // was still hitting Anthropic Sonnet because handleSecretary used
+  // a different code path than handleSimpleDomain.
+  //
+  // Fix: route through getActiveProvider() like handleSimpleDomain
+  // does, with the same fallback to direct Anthropic if the routing
+  // provider isn't initialized. Now secretary participates in:
+  //   - Gemini routing (config-driven, portal-toggleable)
+  //   - TASK-17 Layers 3/4/5 (computed by TaskRoutingProvider once
+  //     and passed to whichever provider runs)
+  //   - Circuit breaker fallback (if Gemini fails, falls back to
+  //     Anthropic Haiku — same fallback the chat domains get)
+  const provider = getActiveProvider();
+  if (!provider) {
+    // Fallback to direct Anthropic — same call signatures the legacy
+    // path used. The Anthropic SDK client is lazy-initialized inside
+    // anthropic.ts so this static import is cheap; the test suites
+    // can mock the imports normally without dynamic-require gotchas.
+    return await handleSecretaryWithDirectAnthropic(
+      uid, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId,
+    );
+  }
+
+  // Provider-agnostic tool loop — same shape as handleSimpleDomain
+  // but with secretary's iteration cap (4 instead of 5) and the
+  // empty-response fallback message that secretary specifically needs
+  // because its tool loop is more brittle than the chat domains.
+  let result = await provider.callDomain(DOMAIN, history, message, stateContext);
   let finalText = result.text;
 
-  // Accumulate full tool conversation chain across iterations
-  const toolConversation: Anthropic.MessageParam[] = [];
-  const toolsUsed: string[] = [];
+  logger.debug(
+    { provider: provider.name, hasTools: result.toolCalls.length > 0 },
+    'Secretary call dispatched via routing provider',
+  );
 
+  const toolConversation: AIToolResultMessage[] = [];
+  const toolsUsed: string[] = [];
   let iterations = 0;
+
   while (result.toolCalls.length > 0 && iterations < 4) {
     iterations++;
     logger.debug({ iteration: iterations, toolCount: result.toolCalls.length }, 'Tool loop iteration');
 
-    // Build assistant content blocks for this iteration
-    const assistantContent: Anthropic.ContentBlock[] = [];
-    if (result.text) {
-      assistantContent.push({ type: 'text', text: result.text } as Anthropic.ContentBlock);
-    }
+    // Build assistant content (provider-agnostic format — matches
+    // what handleSimpleDomain does for cooking/finance/etc.)
+    const assistantContent: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }> = [];
+    if (result.text) assistantContent.push({ type: 'text', text: result.text });
     for (const tc of result.toolCalls) {
-      assistantContent.push(tc);
+      assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
       toolsUsed.push(tc.name);
     }
 
@@ -282,25 +319,18 @@ export async function handleSecretary(message: string, userId?: number): Promise
       result.toolCalls.map(async (tc) => {
         const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
         let content = JSON.stringify(toolResult);
-        if (content.length > 2000) {
-          content = content.slice(0, 2000) + '...(truncated)';
-        }
-        return {
-          type: 'tool_result' as const,
-          tool_use_id: tc.id,
-          content,
-        };
+        if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+        return { type: 'tool_result' as const, tool_use_id: tc.id, content };
       })
     );
 
-    // Append this round to the full conversation chain
     toolConversation.push(
-      { role: 'assistant' as const, content: assistantContent },
+      { role: 'assistant' as const, content: assistantContent as any },
       { role: 'user' as const, content: toolResults },
     );
 
     logger.debug({ iteration: iterations, msgCount: toolConversation.length }, 'Calling continueWithToolResults');
-    result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, userId);
+    result = await provider.continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation);
     finalText = result.text;
     logger.debug({ iteration: iterations, hasText: !!finalText, toolCalls: result.toolCalls.length }, 'Continue result');
   }
@@ -311,6 +341,73 @@ export async function handleSecretary(message: string, userId?: number): Promise
   }
 
   // Store conversation — include tool summary so future turns have context
+  addToConversation(uid, DOMAIN, 'user', message);
+  const storedText = toolsUsed.length > 0
+    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+    : finalText;
+  addToConversation(uid, DOMAIN, 'assistant', storedText);
+
+  return { text: finalText, domain: DOMAIN };
+}
+
+/**
+ * Direct-Anthropic fallback for handleSecretary. Used only when the
+ * routing provider isn't initialized — preserves the original
+ * Anthropic-only flow as a safety net during startup or if routing
+ * fails to init. Uses Anthropic SDK types directly.
+ *
+ * In normal operation this never runs because portal/server.ts calls
+ * createRoutingProvider() at startup. It exists purely as a safety net
+ * so a misconfigured deploy can never leave secretary completely
+ * broken.
+ */
+async function handleSecretaryWithDirectAnthropic(
+  uid: number,
+  message: string,
+  history: ReturnType<typeof getConversationHistory>,
+  stateContext: string,
+  callDomain: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
+  continueWithToolResults: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
+  userId: number | undefined,
+): Promise<DomainResponse> {
+  let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
+  let finalText = result.text;
+
+  const toolConversation: any[] = [];
+  const toolsUsed: string[] = [];
+  let iterations = 0;
+
+  while (result.toolCalls.length > 0 && iterations < 4) {
+    iterations++;
+    const assistantContent: any[] = [];
+    if (result.text) assistantContent.push({ type: 'text', text: result.text });
+    for (const tc of result.toolCalls) {
+      assistantContent.push(tc);
+      toolsUsed.push(tc.name);
+    }
+
+    const toolResults = await Promise.all(
+      result.toolCalls.map(async (tc: any) => {
+        const toolResult = await executeToolCall(tc.name, tc.input as Record<string, any>, userId);
+        let content = JSON.stringify(toolResult);
+        if (content.length > 2000) content = content.slice(0, 2000) + '...(truncated)';
+        return { type: 'tool_result' as const, tool_use_id: tc.id, content };
+      })
+    );
+
+    toolConversation.push(
+      { role: 'assistant' as const, content: assistantContent },
+      { role: 'user' as const, content: toolResults },
+    );
+
+    result = await continueWithToolResults(DOMAIN, history, message, stateContext, toolConversation, userId);
+    finalText = result.text;
+  }
+
+  if (!finalText || !finalText.trim()) {
+    finalText = '⚠️ I processed your request but encountered some issues. Some actions may have completed partially. Please check your task list and try again if needed.';
+  }
+
   addToConversation(uid, DOMAIN, 'user', message);
   const storedText = toolsUsed.length > 0
     ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`

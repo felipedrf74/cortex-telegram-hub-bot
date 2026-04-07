@@ -465,7 +465,9 @@ function repairTruncatedCalendarJson(text: string): ImageCalendarResult | null {
 // ─── Dynamic Tool Filtering ─────────────────────────────────────────
 
 import { getToolsForDomain } from '../skills/skill-manager';
-import { getFilteredToolsForMessage, secretaryNeedsSonnet } from './secretary-tools';
+import { getFilteredToolsForMessage, secretaryNeedsHeavyModel } from './secretary-tools';
+import type { CallDomainOptions } from './ai-provider';
+import { normalizeCallDomainOptions } from './ai-provider';
 
 /** Service availability filter — removes tools for unconfigured services. */
 function serviceAvailabilityFilter(tool: Anthropic.Tool): boolean {
@@ -483,8 +485,17 @@ function serviceAvailabilityFilter(tool: Anthropic.Tool): boolean {
   return true;
 }
 
-/** Get per-domain filtered tools (sub-skill aware + service availability). */
-function getToolsForDomainCached(domain: DomainName): Anthropic.Tool[] {
+/**
+ * Get per-domain filtered tools (sub-skill aware + service availability).
+ *
+ * Exported so the TaskRoutingProvider can call this once at dispatch
+ * time and pass the per-domain-filtered tool array into
+ * planSecretaryOptimization() for further per-message narrowing
+ * (TASK-17 Layer 3). Both the legacy direct callDomain and the new
+ * routing path go through the same per-domain filter, so the resulting
+ * tool sets are identical.
+ */
+export function getToolsForDomainCached(domain: DomainName): Anthropic.Tool[] {
   return getToolsForDomain(domain, TOOLS, serviceAvailabilityFilter);
 }
 
@@ -506,25 +517,29 @@ let _cachedToolsArray: Anthropic.Tool[] | null = null;
 // ─── Model selection helpers ─────────────────────────────────────────
 
 /**
- * Layer 4: Adaptive model selection.
+ * Layer 4: Adaptive model selection — provider-aware version.
  *
- * Secretary historically pinned to Sonnet 4.6 ($3/$15 per MTK). Layer 4
- * inspects the message and routes simple data-read queries to Haiku 4.5
- * ($0.80/$4 per MTK — about 1/3 the cost) while complex reasoning stays
- * on Sonnet. The classifier (`secretaryNeedsSonnet`) lives in
- * secretary-tools.ts so Layer 2 + 3 + 4 share one source of truth for
- * the keyword logic.
+ * The model decision is now driven by an explicit `modelTier` arg
+ * ('heavy' | 'light') that's computed ONCE at the routing layer and
+ * passed through. When `modelTier` is omitted, falls back to inspecting
+ * the message text directly (legacy behavior, used by callers that
+ * still don't go through TaskRoutingProvider).
  *
- * The optional `message` argument exists so old call sites that don't
- * pass it (e.g. continuation calls inside a tool loop) keep behaving the
- * same — they fall through to Sonnet, which is also the safe default.
+ * Tier mapping for Anthropic:
+ *   - heavy → config.anthropic.model            (Sonnet 4.6)
+ *   - light → config.anthropic.classifierModel  (Haiku 4.5)
  *
  * Override precedence:
  *   1. Per-domain model override from kv_store (admin portal)
- *   2. Adaptive Haiku/Sonnet (this function, when message provided)
- *   3. Static tier default (Sonnet for secretary, Haiku for rest)
+ *   2. Explicit modelTier from CallDomainOptions
+ *   3. Adaptive classifier on the message text (legacy fallback)
+ *   4. Static tier default (Sonnet for secretary, Haiku for rest)
  */
-function getModelForDomain(domain: DomainName, message?: string): string {
+function getModelForDomain(
+  domain: DomainName,
+  message?: string,
+  modelTier?: 'heavy' | 'light',
+): string {
   // Check for domain-specific override first — operator can pin a specific
   // model from the portal regardless of message content
   try {
@@ -535,7 +550,11 @@ function getModelForDomain(domain: DomainName, message?: string): string {
 
   // Layer 4: adaptive routing for secretary
   if (domain === 'secretary') {
-    if (message && !secretaryNeedsSonnet(message)) {
+    // Explicit tier from options bag wins
+    if (modelTier === 'light') return config.anthropic.classifierModel;
+    if (modelTier === 'heavy') return config.anthropic.model;
+    // Legacy fallback: inspect the message directly
+    if (message && !secretaryNeedsHeavyModel(message)) {
       return config.anthropic.classifierModel; // Haiku — ~1/3 cost
     }
     return config.anthropic.model; // Sonnet — full reasoning
@@ -613,28 +632,39 @@ export async function callDomain(
   history: DomainMessage[],
   currentMessage: string,
   stateContext: string,
-  maxTokensOverride?: number,
+  optionsOrMaxTokens?: number | CallDomainOptions,
   userId?: number,
 ): Promise<CallDomainResult> {
+  // Normalize the legacy `maxTokensOverride: number` form into the new
+  // CallDomainOptions shape. This keeps every existing caller working
+  // unchanged while letting new callers (TaskRoutingProvider) pass the
+  // full options bag with pre-computed tools / tier / max-tokens.
+  const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
+
   let systemPrompt = getDomainSystemPrompt(domain);
   if (domain === 'content') {
     const knowledgeBlock = buildKnowledgePromptBlock();
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
-  // Layer 3: per-domain + per-message tool filtering. For secretary this
-  // narrows ~25 tools down to 3-8 by intent (saves ~3,000 input tokens).
-  // For other domains, getToolsForCall passes through unchanged.
-  const domainTools = getToolsForCall(domain, currentMessage);
+  // Layer 3: tool filtering. If the routing layer pre-computed the
+  // filtered tools, use them as-is — that's the canonical decision.
+  // If not (legacy direct callers, tests, ad-hoc tools), compute the
+  // filter here from the message text. Either way, the resulting tool
+  // list is the same.
+  const domainTools = (opts.filteredTools as Anthropic.Tool[] | undefined)
+    ?? getToolsForCall(domain, currentMessage);
   const useTools = domainTools.length > 0;
 
-  // Layer 5: history reduction for simple secretary queries.
-  // The full 10-message history (~2,000 tokens) is overkill for "show my
-  // tasks" — Haiku doesn't need that much context to answer. Simple
-  // queries get the last 2 turns (4 messages) instead of 10. Complex
-  // queries keep the full history because Sonnet uses it for reasoning
-  // continuity across multi-step plans.
+  // Layer 5: history reduction. Same precedence — if the routing layer
+  // computed the slice (via planSecretaryOptimization, where the slice
+  // is coupled to the model tier), trust it. Otherwise apply the legacy
+  // text-based check here so direct callers still get the optimization.
   let historyToSend = history;
-  if (domain === 'secretary' && !secretaryNeedsSonnet(currentMessage)) {
+  if (opts.modelTier == null) {
+    if (domain === 'secretary' && !secretaryNeedsHeavyModel(currentMessage)) {
+      historyToSend = history.slice(-4);
+    }
+  } else if (opts.modelTier === 'light' && domain === 'secretary') {
     historyToSend = history.slice(-4);
   }
 
@@ -653,8 +683,8 @@ export async function callDomain(
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
-      model: getModelForDomain(domain, currentMessage),
-      max_tokens: maxTokensOverride || getMaxTokensForDomain(domain),
+      model: getModelForDomain(domain, currentMessage, opts.modelTier),
+      max_tokens: opts.maxTokensOverride || getMaxTokensForDomain(domain),
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
@@ -685,7 +715,13 @@ export async function continueWithToolResults(
   stateContext: string,
   toolConversation: Anthropic.MessageParam[],
   userId?: number,
+  options?: CallDomainOptions,
 ): Promise<CallDomainResult> {
+  // Same options-bag normalization as callDomain. The continuation
+  // call MUST receive the same options as the initial call so the
+  // tool set + model tier + history shape stay stable across the loop.
+  const opts = normalizeCallDomainOptions(options);
+
   let systemPrompt = getDomainSystemPrompt(domain);
   if (domain === 'content') {
     const knowledgeBlock = buildKnowledgePromptBlock();
@@ -697,12 +733,15 @@ export async function continueWithToolResults(
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ];
 
-  // Layer 5: same history-reduction logic as the initial callDomain.
-  // Must use the SAME criteria so the tool loop sees a consistent
-  // history shape across iterations (otherwise the model could lose
-  // a tool_use block referenced by a tool_result).
+  // Layer 5: history reduction — same precedence as callDomain. The
+  // routing-provided tier wins; the legacy text classifier is the
+  // fallback for direct callers that don't pass options.
   let historyToSend = history;
-  if (domain === 'secretary' && !secretaryNeedsSonnet(currentMessage)) {
+  if (opts.modelTier == null) {
+    if (domain === 'secretary' && !secretaryNeedsHeavyModel(currentMessage)) {
+      historyToSend = history.slice(-4);
+    }
+  } else if (opts.modelTier === 'light' && domain === 'secretary') {
     historyToSend = history.slice(-4);
   }
 
@@ -716,13 +755,15 @@ export async function continueWithToolResults(
   // Layer 3: same per-message tool filtering as the initial callDomain.
   // Critical: must use the SAME currentMessage so the tool set is stable
   // across iterations of the tool loop — otherwise the AI could be told
-  // about a tool on call 1 and lose access to it on call 2.
-  const domainTools = getToolsForCall(domain, currentMessage);
+  // about a tool on call 1 and lose access to it on call 2. If the
+  // caller passed pre-filtered tools, use them; otherwise compute here.
+  const domainTools = (opts.filteredTools as Anthropic.Tool[] | undefined)
+    ?? getToolsForCall(domain, currentMessage);
   const useTools = domainTools.length > 0;
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
-      model: getModelForDomain(domain, currentMessage),
+      model: getModelForDomain(domain, currentMessage, opts.modelTier),
       max_tokens: getMaxTokensForDomain(domain),
       system,
       messages,

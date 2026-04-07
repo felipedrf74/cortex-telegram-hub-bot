@@ -24,7 +24,16 @@ import {
   SchemaType,
   type GenerateContentResult,
 } from '@google/generative-ai';
-import { AIProvider, AICallResult, AIToolCall, AIToolResultMessage, getModelRouting } from './ai-provider';
+import {
+  AIProvider,
+  AICallResult,
+  AIToolCall,
+  AIToolResultMessage,
+  CallDomainOptions,
+  getModelRouting,
+  normalizeCallDomainOptions,
+} from './ai-provider';
+import type Anthropic from '@anthropic-ai/sdk';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -123,8 +132,14 @@ function convertProperties(properties: Record<string, any>): Record<string, any>
   return result;
 }
 
-function toGeminiFunctionDeclarations(): FunctionDeclaration[] {
-  return TOOLS.map((t) => {
+/**
+ * Convert Anthropic-format tools to Gemini FunctionDeclarations.
+ * Accepts an explicit tool array so the caller can pass a pre-filtered
+ * subset (TASK-17 Layer 3) instead of always sending all 25+ tools.
+ * Defaults to the full TOOLS array for backwards compatibility.
+ */
+function toGeminiFunctionDeclarations(tools: Anthropic.Tool[] = TOOLS): FunctionDeclaration[] {
+  return tools.map((t) => {
     const schema = t.input_schema as any;
     return {
       name: t.name,
@@ -136,6 +151,40 @@ function toGeminiFunctionDeclarations(): FunctionDeclaration[] {
       },
     };
   });
+}
+
+/**
+ * Map an abstract model tier to a concrete Gemini model name.
+ * Mirrors anthropic.ts's getModelForDomain logic — but for Gemini's
+ * model names. The TaskRoutingProvider passes us a tier string; we
+ * resolve it to the actual SDK model identifier here.
+ *
+ * Tier mapping:
+ *   - heavy → config.gemini.model            (gemini-3-flash)
+ *   - light → config.gemini.classifierModel  (gemini-2.5-flash-lite)
+ *
+ * When tier is omitted, falls back to getModelRouting() which returns
+ * the per-domain default. This keeps backwards compatibility for any
+ * caller that hasn't been updated to pass options yet.
+ */
+function resolveGeminiModel(
+  domain: DomainName,
+  tier?: 'heavy' | 'light',
+): { model: string; maxTokens: number } {
+  if (tier === 'light') {
+    return {
+      model: config.gemini.classifierModel,
+      maxTokens: config.gemini.maxTokens,
+    };
+  }
+  if (tier === 'heavy') {
+    return {
+      model: config.gemini.model,
+      maxTokens: domain === 'secretary' ? config.gemini.secretaryMaxTokens : config.gemini.maxTokens,
+    };
+  }
+  // No tier specified — fall back to the legacy per-domain defaults
+  return getModelRouting(config.gemini, domain, 'gemini');
 }
 
 // ─── Response parsing helpers ───────────────────────────────────────
@@ -277,25 +326,40 @@ ${message}`;
     history: DomainMessage[],
     currentMessage: string,
     stateContext: string,
-    maxTokensOverride?: number,
+    optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
-    const routing = getModelRouting(config.gemini, domain, 'gemini');
+    // TASK-17 Layer 3+4+5: normalize the options bag, then apply each
+    // optimization. The decisions were made by TaskRoutingProvider via
+    // planSecretaryOptimization() so they're consistent with what the
+    // Anthropic provider would have done for the same message.
+    const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
+
+    // Layer 4: tier-aware model selection
+    const routing = resolveGeminiModel(domain, opts.modelTier);
+
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+
+    // Layer 3: use the pre-filtered tool list when provided, otherwise
+    // fall back to the full TOOLS array (legacy callers)
+    const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
 
     const model = getClient().getGenerativeModel({
       model: routing.model,
       systemInstruction: systemPrompt,
       generationConfig: {
-        maxOutputTokens: maxTokensOverride || routing.maxTokens,
+        maxOutputTokens: opts.maxTokensOverride || routing.maxTokens,
       },
-      ...(useTools ? {
-        tools: [{ functionDeclarations: toGeminiFunctionDeclarations() }],
+      ...(useTools && filteredTools.length > 0 ? {
+        tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
         toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
       } : {}),
     });
 
+    // Layer 5: history is sliced upstream by planSecretaryOptimization
+    // when modelTier === 'light'. We just consume whatever the caller
+    // passes — no double-slicing here.
     const contents: Content[] = [
       ...history.map((m) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
@@ -334,20 +398,31 @@ ${message}`;
     currentMessage: string,
     stateContext: string,
     toolConversation: AIToolResultMessage[],
+    options?: CallDomainOptions,
   ): Promise<AICallResult> {
-    const routing = getModelRouting(config.gemini, domain, 'gemini');
+    // CRITICAL: must apply the same options as the initial callDomain.
+    // The Gemini chat session keeps function declarations stable across
+    // turns, and Gemini will reject a tool_response that references a
+    // function it doesn't see in the current declarations. Using the
+    // same filtered tool list + same model tier across the whole loop
+    // is what makes multi-step tool conversations work.
+    const opts = normalizeCallDomainOptions(options);
+
+    const routing = resolveGeminiModel(domain, opts.modelTier);
     const systemPrompt = getDomainSystemPrompt(domain);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+
+    const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
 
     const model = getClient().getGenerativeModel({
       model: routing.model,
       systemInstruction: systemPrompt,
       generationConfig: {
-        maxOutputTokens: routing.maxTokens,
+        maxOutputTokens: opts.maxTokensOverride || routing.maxTokens,
       },
-      ...(useTools ? {
-        tools: [{ functionDeclarations: toGeminiFunctionDeclarations() }],
+      ...(useTools && filteredTools.length > 0 ? {
+        tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
         toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
       } : {}),
     });

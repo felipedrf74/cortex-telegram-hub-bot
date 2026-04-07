@@ -265,10 +265,121 @@ describe('TaskRoutingProvider', () => {
       );
     });
 
-    it('passes maxTokensOverride through', async () => {
+    it('passes maxTokensOverride through (now wrapped in CallDomainOptions)', async () => {
       anthropic.callDomain.mockResolvedValue(OK_RESULT);
       await provider.callDomain('secretary', [], 'msg', 'ctx', 4096);
-      expect(anthropic.callDomain).toHaveBeenCalledWith('secretary', [], 'msg', 'ctx', 4096);
+      // After TASK-17 Option B, TaskRoutingProvider computes the
+      // SecretaryOptimization decision (filteredTools, modelTier) and
+      // bundles the caller-supplied maxTokensOverride into the same
+      // CallDomainOptions bag. Caller-supplied values still win, so
+      // maxTokensOverride === 4096 is preserved verbatim — but it
+      // arrives at the provider inside an object, not as a bare number.
+      expect(anthropic.callDomain).toHaveBeenCalledWith(
+        'secretary',
+        [],
+        'msg',
+        'ctx',
+        expect.objectContaining({ maxTokensOverride: 4096 }),
+      );
+    });
+
+    // ─── TASK-17 Option B: provider-agnostic optimization wiring ───
+    //
+    // These tests prove the dispatch layer computes the optimization
+    // decision ONCE and forwards it to whichever provider runs. The
+    // assertions check the EXACT shape of the options bag passed to
+    // the provider, so any future regression in the wiring will fail
+    // here loudly with a useful diff.
+
+    describe('TASK-17 Option B: passes optimization through to provider', () => {
+      it('secretary + simple query → light tier + filtered tools + sliced history', async () => {
+        anthropic.callDomain.mockResolvedValue(OK_RESULT);
+        const fullHistory = Array.from({ length: 10 }, (_, i) => ({
+          role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: `m${i}`,
+        }));
+
+        await provider.callDomain('secretary', fullHistory, 'show my tasks', 'state-ctx');
+
+        const call = anthropic.callDomain.mock.calls[0];
+        // arg 1: history should be sliced to last 4 (Layer 5)
+        expect(call[1].length).toBe(4);
+        // arg 2: currentMessage unchanged
+        expect(call[2]).toBe('show my tasks');
+        // arg 4: options bag with light tier + filteredTools narrower than full
+        const opts = call[4];
+        expect(opts).toBeDefined();
+        expect(opts.modelTier).toBe('light');
+        expect(Array.isArray(opts.filteredTools)).toBe(true);
+        // Filtered tool list should be smaller than the full TOOLS array
+        // (we don't know the exact size since TOOLS is real, but it should
+        // be in the 5-10 range for "show my tasks" — a strict upper bound
+        // catches accidental no-op filtering)
+        expect(opts.filteredTools.length).toBeLessThan(15);
+        expect(opts.filteredTools.length).toBeGreaterThan(0);
+      });
+
+      it('secretary + complex query → heavy tier + full history kept', async () => {
+        anthropic.callDomain.mockResolvedValue(OK_RESULT);
+        const fullHistory = Array.from({ length: 10 }, (_, i) => ({
+          role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: `m${i}`,
+        }));
+
+        await provider.callDomain(
+          'secretary',
+          fullHistory,
+          'plan my week considering my training and content schedule',
+          'state-ctx',
+        );
+
+        const call = anthropic.callDomain.mock.calls[0];
+        // arg 1: full history kept (Layer 5 only triggers on light tier)
+        expect(call[1].length).toBe(10);
+        const opts = call[4];
+        expect(opts.modelTier).toBe('heavy');
+      });
+
+      it('non-secretary domain → no-op optimization (full tools, heavy, full history)', async () => {
+        // Triathlon is also a tool-use task type but optimization only
+        // applies to secretary. Other tool-use domains should pass through.
+        anthropic.callDomain.mockResolvedValue(OK_RESULT);
+        const fullHistory = Array.from({ length: 6 }, (_, i) => ({
+          role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: `m${i}`,
+        }));
+
+        await provider.callDomain('triathlon', fullHistory, 'plan my week', 'state-ctx');
+
+        const call = anthropic.callDomain.mock.calls[0];
+        // History should NOT be sliced for non-secretary domains
+        expect(call[1].length).toBe(6);
+        const opts = call[4];
+        // Optimization is a no-op: heavy tier, all tools
+        expect(opts.modelTier).toBe('heavy');
+      });
+
+      it('continueWithToolResults: same optimization applied for tool loop continuity', async () => {
+        // CRITICAL — the tool loop must see the same tool set on every
+        // iteration, otherwise the model will reference a tool that's
+        // no longer in scope and the API will reject the request.
+        anthropic.callDomain.mockResolvedValue(OK_RESULT);
+        anthropic.continueWithToolResults.mockResolvedValue(OK_RESULT);
+        const history = Array.from({ length: 10 }, (_, i) => ({
+          role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+          content: `m${i}`,
+        }));
+
+        await provider.callDomain('secretary', history, 'show my tasks', 'state-ctx');
+        await provider.continueWithToolResults('secretary', history, 'show my tasks', 'state-ctx', []);
+
+        const callArgs = anthropic.callDomain.mock.calls[0];
+        const continueArgs = anthropic.continueWithToolResults.mock.calls[0];
+        // Both calls must receive the same tier
+        expect(continueArgs[5]?.modelTier).toBe(callArgs[4]?.modelTier);
+        // Both calls must receive the same number of filtered tools
+        expect(continueArgs[5]?.filteredTools?.length).toBe(callArgs[4]?.filteredTools?.length);
+      });
     });
   });
 
