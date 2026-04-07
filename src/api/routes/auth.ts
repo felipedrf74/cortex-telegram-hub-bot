@@ -7,6 +7,7 @@ import { config } from '../../config';
 import { getDb } from '../../services/database';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { logAudit } from '../../services/audit-trail';
 
 export function authRoutes(): Router {
   const router = Router();
@@ -58,6 +59,18 @@ export function authRoutes(): Router {
     `).run(userId, deviceId, deviceName || null, pushToken || null, refreshToken);
 
     logger.info({ userId, deviceId, deviceName }, 'iOS device registered');
+
+    // Audit P0-10: device registration is a sensitive credential-issuance event.
+    // Logged so the user can later see "this device joined my account on date X
+    // from IP Y" via /api/v1/audit-trail/me.
+    logAudit({
+      userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.register',
+      details: { deviceId, deviceName: deviceName || null },
+      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+    });
 
     // Pull user info from user-service
     let firstName = 'User';
@@ -111,6 +124,18 @@ export function authRoutes(): Router {
     const newRefreshToken = crypto.randomBytes(64).toString('hex');
     db.prepare('UPDATE ios_devices SET refresh_token = ?, last_active_at = datetime(\'now\') WHERE device_id = ?')
       .run(newRefreshToken, device.device_id);
+
+    // Audit P0-10: refresh token rotation. Sensitive because it extends a
+    // session — if a leaked refresh token is used, the resulting refresh+
+    // rotation will show up here as a new audit row.
+    logAudit({
+      userId: device.user_id,
+      actorId: device.user_id,
+      action: 'access',
+      resource: 'auth.refresh',
+      details: { deviceId: device.device_id },
+      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+    });
 
     sendSuccess(res, { accessToken, refreshToken: newRefreshToken, expiresIn: 604800 });
   }));

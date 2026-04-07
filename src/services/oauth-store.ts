@@ -203,6 +203,13 @@ export function storeTokens(userId: number, provider: OAuthProvider, tokens: OAu
 
 /**
  * Retrieve decrypted tokens for a user+provider. Returns null if not connected.
+ *
+ * Audit P0-10: every token decryption is logged because OAuth refresh tokens
+ * grant ongoing access to a user's third-party account (Google/Outlook/...).
+ * Knowing exactly when each token was decrypted is the bare minimum forensic
+ * trail for "did anything weird access my Google data?". Logged at level
+ * 'decrypt' so it can be filtered out from user-facing audit views (which
+ * usually only show explicit user actions).
  */
 export function getTokens(userId: number, provider: OAuthProvider): OAuthTokens | null {
   const db = getDb();
@@ -211,6 +218,17 @@ export function getTokens(userId: number, provider: OAuthProvider): OAuthTokens 
   ).get(userId, provider) as any | undefined;
 
   if (!row) return null;
+
+  // Lazy require to avoid a cycle (audit-trail → database → oauth-store).
+  try {
+    const { logAudit } = require('./audit-trail');
+    logAudit({
+      userId,
+      actorId: userId,
+      action: 'decrypt',
+      resource: `oauth.${provider}`,
+    });
+  } catch { /* audit-trail not available — non-critical */ }
 
   return {
     accessToken: decrypt(row.access_token, userId),

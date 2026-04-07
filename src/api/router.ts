@@ -18,6 +18,7 @@ import { connectionRoutes } from './routes/connections';
 import { wearableRoutes } from './routes/wearable';
 import { usageRoutes } from './routes/usage';
 import { clientErrorsRoutes } from './routes/client-errors';
+import { auditTrailRoutes } from './routes/audit-trail';
 
 /**
  * Creates the iOS API router.
@@ -47,6 +48,7 @@ export function createApiRouter(): Router {
         onboarding: 'GET/POST /api/v1/onboarding',
         settings: 'GET/PATCH /api/v1/settings',
         clientErrors: 'POST /api/v1/client-errors',
+        auditTrail: 'GET /api/v1/audit-trail/me',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -81,6 +83,11 @@ export function createApiRouter(): Router {
   // iOS / web crash reports. JWT + rate-limit protected via the middleware
   // chain above. Reads are admin-only and exposed via the portal, not here.
   router.use('/client-errors', clientErrorsRoutes());
+
+  // GDPR self-service audit trail (audit P0-10): users can view their own
+  // audit history (Article 15). Read-only, scoped to the authenticated
+  // user's user_id — never returns rows for any other user.
+  router.use('/audit-trail', auditTrailRoutes());
 
   // Content includes both data lookups (pipeline) and one AI generation
   // endpoint (POST /script). Mounting under one router for cohesion.

@@ -1805,6 +1805,22 @@ export function createPortalServer(bot: Bot): http.Server {
       recordAction(name);
       // Invalidate snapshot cache so next poll reflects the change
       cachedSnapshot = null;
+
+      // Audit P0-10: every admin action is a privileged operation (refresh
+      // tokens, trigger jobs, mutate state). Logged with the owner user as
+      // both subject and actor since the portal token holder is the owner.
+      try {
+        const { logAudit } = require('../services/audit-trail');
+        const ownerId = config.telegram.allowedUserIds[0] ?? 0;
+        logAudit({
+          userId: ownerId,
+          actorId: ownerId,
+          action: 'access',
+          resource: `portal.action.${name}`,
+          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+        });
+      } catch { /* audit-trail not available — non-critical */ }
+
       res.json(result);
     } catch (err) {
       logger.error({ err, action: name }, 'Portal: action failed');
