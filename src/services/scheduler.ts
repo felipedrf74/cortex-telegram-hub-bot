@@ -135,6 +135,7 @@ export function startScheduler(bot: Bot): void {
   registerJob('reaction_radar',   'Reaction Radar',          '0 8,14,20 * * *', 'content');
   registerJob('seo_agent',        'SEO Tracking',           '0 6 * * 1',       'content');
   registerJob('expire_signals',   'Signal Cleanup',         '0 * * * *',       'content');
+  registerJob('integration_health', 'Integration Health Probes', '*/5 * * * *', 'system');
   registerJob('training_plan_adjust', 'Training Plan Auto-Adjust', '0 19 * * 0', 'triathlon');
   registerJob('autoresearch',     'Autoresearch',           '0 1 * * 0',       'system');
   registerJob('db_backup',        'Database Backup',        backupCron,        'system');
@@ -292,10 +293,40 @@ export function startScheduler(bot: Bot): void {
   }), { timezone: tz });
 
   // ── Midnight cleanup ───────────────────────────────────────────────
+  // Also runs the audit-recommended retention policies (Weeks 2-4):
+  //   - video_transcripts > 90 days  (was 57% of DB size; uncapped growth)
+  //   - job_history > 30 days        (35K+ rows at 1 user; ~5K/day)
+  //   - error_log > 60 days          (small but bounded for safety)
+  //   - client_errors > 90 days      (mirror of error_log retention)
+  // Each DELETE runs in its own try/catch so a failure on one table
+  // doesn't block the others. Row counts are logged for visibility.
   cron.schedule('0 0 * * *', wrapJob('midnight_cleanup', async () => {
     msTodo.clearSelfCreatedTasks();
     todayNotifications.length = 0;
     logger.info('Cleared self-created task cache and daily notifications');
+
+    const retentionTargets: Array<{ table: string; days: number; tsCol: string }> = [
+      { table: 'video_transcripts', days: 90, tsCol: 'created_at' },
+      { table: 'job_history',       days: 30, tsCol: 'ts' },
+      { table: 'error_log',         days: 60, tsCol: 'ts' },
+      { table: 'client_errors',     days: 90, tsCol: 'ts' },
+    ];
+    for (const { table, days, tsCol } of retentionTargets) {
+      try {
+        const { getDb } = require('./database');
+        const db = getDb();
+        const result = db
+          .prepare(`DELETE FROM ${table} WHERE ${tsCol} < datetime('now', '-${days} days')`)
+          .run();
+        if (result.changes > 0) {
+          logger.info({ table, days, deleted: result.changes }, 'Retention cleanup');
+        }
+      } catch (err) {
+        // Table may not exist yet (older deploys); also catches column-name
+        // typos so they show up in logs instead of silently dropping rows.
+        logger.warn({ err, table }, 'Retention cleanup failed for table');
+      }
+    }
   }), { timezone: tz });
 
   // ── Unified task store: per-provider sync (every 15 min) ───────────
@@ -759,6 +790,17 @@ export function startScheduler(bot: Bot): void {
 
   // Run signal expiry on startup
   expireStaleSignals();
+
+  // ── Integration Health Probes (every 5 min) ─────────────────────
+  // Audit Weeks 2-4. Synthetic checks against Garmin / Google / Outlook
+  // refresh tokens — proves the credentials are still valid before any
+  // user-facing flow needs them. Persisted to integration_health (60-day
+  // retention via midnight_cleanup). The portal can render a status grid
+  // from this table.
+  cron.schedule('*/5 * * * *', wrapJob('integration_health', async () => {
+    const { runHealthProbes } = require('./integration-health');
+    await runHealthProbes();
+  }));
 
   // Seed SEO keywords (only if table is empty)
   try {

@@ -1031,6 +1031,46 @@ async function handleAction(
 export function createPortalServer(bot: Bot): http.Server {
   const app = express();
 
+  // ── Request logging middleware (audit QW-15) ───────────────────────
+  // Structured pino log for every HTTP request with method, path, status,
+  // duration, and (when JWT-authenticated) userId. Mounted FIRST so it
+  // covers webhooks, waitlist, iOS API, and the admin portal alike.
+  //
+  // We hook res.on('finish') instead of wrapping res.end to keep the
+  // middleware non-invasive. The auth middleware (further down the chain)
+  // populates req.userId before res.send happens, so by the time finish
+  // fires we can read it from the modified request object.
+  //
+  // Why not pino-http? pino-http is a separate package and the project's
+  // CLAUDE.md says "no third-party HTTP libs". A 20-line bespoke middleware
+  // does the same job here.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const start = process.hrtime.bigint();
+    const path = req.path;
+    res.on('finish', () => {
+      const durationMs = Number((process.hrtime.bigint() - start) / 1_000_000n);
+      const userId = (req as any).userId as number | undefined;
+      const isHealthOrSnapshot = path === '/health' || path === '/api/snapshot';
+      // Skip noisy health-check polling at info level — log them at debug
+      // so they're visible if you crank up LOG_LEVEL but don't fill the
+      // normal log stream. The portal dashboard polls /api/snapshot every
+      // 5 seconds.
+      const logLevel = isHealthOrSnapshot ? 'debug' : 'info';
+      logger[logLevel](
+        {
+          method: req.method,
+          path,
+          status: res.statusCode,
+          durationMs,
+          userId,
+          ip: req.ip || req.socket?.remoteAddress,
+        },
+        'http',
+      );
+    });
+    next();
+  });
+
   // ── Webhook router (TASK-16b) ──────────────────────────────────────
   // Mounted BEFORE express.json() because the Todoist webhook needs the
   // raw bytes for HMAC verification. The router uses its own scoped

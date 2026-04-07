@@ -33,6 +33,10 @@ function applyMigrations(db: Database.Database): void {
       db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
     }
   }
+  // Migration 042 added FK on unified_*.user_id — pre-seed users so tests
+  // can insert with arbitrary user IDs without FK violations.
+  const seedUser = db.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
+  for (let i = 1; i <= 1000; i++) seedUser.run(i, i);
 }
 
 let testDb: Database.Database;

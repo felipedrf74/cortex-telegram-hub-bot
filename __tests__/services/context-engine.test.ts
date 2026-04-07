@@ -29,6 +29,12 @@ function applyMigrations(db: Database.Database): void {
       db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
     }
   }
+  // Migration 042 added FOREIGN KEY (user_id) REFERENCES users(id) on the
+  // unified_* tables. Tests insert with arbitrary user IDs (7, 11, 42, etc),
+  // so we pre-seed user rows here. AUTOINCREMENT means we explicitly assign
+  // both id and telegram_id (which is NOT NULL UNIQUE).
+  const seedUser = db.prepare('INSERT OR IGNORE INTO users (id, telegram_id) VALUES (?, ?)');
+  for (let i = 1; i <= 1000; i++) seedUser.run(i, i);
 }
 
 let testDb: Database.Database;
