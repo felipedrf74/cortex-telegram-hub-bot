@@ -104,6 +104,68 @@ function logGeminiUsage(
   }
 }
 
+// ─── One-shot completion (no tools, no domain) ──────────────────────
+
+/**
+ * Single-prompt chat completion via Gemini for non-domain calls like
+ * coach analysis, knowledge synthesis, voice evolution, content workflows.
+ * Bypasses the AIProvider interface because these calls don't fit the
+ * domain-handler shape (no conversation history, no tools, just one
+ * structured prompt → one structured response).
+ *
+ * Logs to api_usage with the supplied category for cost tracking.
+ * Returns plain text. Throws on Gemini errors so the caller can fall
+ * back to Anthropic if it wants to.
+ *
+ * Default model is `config.gemini.model` (gemini-3-flash). For high-stakes
+ * analytical calls (e.g. coach_analysis with ~12K input tokens), this is
+ * ~5.5× cheaper per call than Claude Sonnet 4.6 with comparable quality.
+ */
+export async function completeOneShot(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  options?: { model?: string; maxTokens?: number; temperature?: number },
+): Promise<string> {
+  if (!isGeminiProviderConfigured()) {
+    throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
+  }
+  const model = options?.model ?? config.gemini.model;
+  const maxTokens = options?.maxTokens ?? 2500;
+  const temperature = options?.temperature ?? 0.7;
+  const client = getClient();
+  const genModel = client.getGenerativeModel({
+    model,
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature,
+    },
+  });
+
+  const start = Date.now();
+  const result = await withTimeout(
+    genModel.generateContent([{ text: userPrompt }]),
+    config.aiSafety.callTimeoutMs,
+  );
+  const durationMs = Date.now() - start;
+
+  const usage = result.response.usageMetadata;
+  if (usage) {
+    logGeminiUsage(
+      model,
+      category,
+      {
+        promptTokenCount: usage.promptTokenCount ?? 0,
+        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+      },
+      durationMs,
+    );
+  }
+
+  return extractText(result);
+}
+
 // ─── Tool format conversion ─────────────────────────────────────────
 
 function toSchemaType(type: string): SchemaType {

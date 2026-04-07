@@ -16,6 +16,7 @@ import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActi
 import { getEvents, isAnyCalendarConfigured, CalendarSource } from './unified-calendar';
 import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShot, isGeminiProviderConfigured } from './gemini-provider';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -251,28 +252,12 @@ export async function generateCoachBriefing(): Promise<CoachBriefingResult> {
     tomorrowCalInPayload: dataPayload.tomorrowCalendar.length,
   }, 'Coach: payload stats');
 
-  // Phase 4: Claude analysis
+  // Phase 4: AI analysis (Gemini primary, Anthropic fallback)
   const analysisStart = Date.now();
   try {
     const today = now().toFormat('cccc, LLLL dd yyyy');
-    const response = await trackedCreate(client, {
-      model: config.anthropic.model,
-      max_tokens: 2500,
-      system: [
-        {
-          type: 'text',
-          text: getDomainSystemPrompt('triathlon'),
-          cache_control: { type: 'ephemeral' },
-        },
-        {
-          type: 'text',
-          text: COACH_ANALYSIS_PROMPT,
-        },
-      ],
-      messages: [
-        {
-          role: 'user',
-          content: `DAILY COACHING ANALYSIS — ${today}
+    const systemPrompt = `${getDomainSystemPrompt('triathlon')}\n\n${COACH_ANALYSIS_PROMPT}`;
+    const userPrompt = `DAILY COACHING ANALYSIS — ${today}
 
 ## RAW GARMIN DATA
 ${payloadStr}
@@ -286,22 +271,71 @@ ${payloadStr}
 6. Be direct, no fluff — talk to me like a coach who knows me
 7. Use HTML tags for Telegram formatting (<b>, <i>)
 8. Keep the human-readable briefing under 3800 characters
-9. At the END, include the structured COACH_RECS JSON block for calendar actions`,
-        },
-      ],
-    }, 'coach_analysis');
+9. At the END, include the structured COACH_RECS JSON block for calendar actions`;
+
+    // Gemini-first routing for cost reduction. coach_analysis is the single
+    // largest cost line in the system (~$1.62/wk on Sonnet 4.6 at 1 user).
+    // gemini-3-flash is ~5.5× cheaper for the same input/output volume and
+    // matches Sonnet quality for analytical prompts of this shape.
+    // Falls back to Anthropic if Gemini is not configured or fails. See
+    // audit P0-8.
+    let rawText = '';
+    let analysisProvider: 'gemini' | 'anthropic' = 'anthropic';
+    if (isGeminiProviderConfigured()) {
+      try {
+        rawText = await completeOneShot(systemPrompt, userPrompt, 'coach_analysis', {
+          maxTokens: 2500,
+        });
+        analysisProvider = 'gemini';
+      } catch (geminiErr) {
+        logger.warn(
+          { err: geminiErr },
+          'Gemini coach analysis failed, falling back to Anthropic Sonnet',
+        );
+      }
+    }
+
+    if (!rawText) {
+      // Fallback: original Anthropic Sonnet path
+      const response = await trackedCreate(client, {
+        model: config.anthropic.model,
+        max_tokens: 2500,
+        system: [
+          {
+            type: 'text',
+            text: getDomainSystemPrompt('triathlon'),
+            cache_control: { type: 'ephemeral' },
+          },
+          {
+            type: 'text',
+            text: COACH_ANALYSIS_PROMPT,
+          },
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: userPrompt,
+          },
+        ],
+      }, 'coach_analysis');
+      rawText = response.content
+        .filter((c): c is Anthropic.TextBlock => c.type === 'text')
+        .map((c) => c.text)
+        .join('');
+      analysisProvider = 'anthropic';
+    }
 
     const analysisMs = Date.now() - analysisStart;
-    const rawText = response.content
-      .filter((c): c is Anthropic.TextBlock => c.type === 'text')
-      .map((c) => c.text)
-      .join('');
+    logger.info(
+      { provider: analysisProvider, analysisMs },
+      `Coach analysis completed via ${analysisProvider}`,
+    );
 
     if (!rawText.trim()) {
       return {
         message: '⚠️ <b>Coach analysis returned empty.</b>\n\nTry /coach again.',
         recommendations: [],
-        errors: [...errors, 'Claude returned empty response'],
+        errors: [...errors, `${analysisProvider} returned empty response`],
         dataCollectionMs,
         analysisMs,
       };
@@ -326,7 +360,7 @@ ${payloadStr}
   } catch (err) {
     logger.error({ err }, 'Coach analysis failed');
     return {
-      message: '⚠️ <b>Coach analysis failed</b>\n\nClaude API error. Try /coach later.',
+      message: '⚠️ <b>Coach analysis failed</b>\n\nAI provider error. Try /coach later.',
       recommendations: [],
       errors: [...errors, (err as Error).message],
       dataCollectionMs,
