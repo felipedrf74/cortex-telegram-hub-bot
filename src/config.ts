@@ -40,7 +40,12 @@ export const config = {
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
-    model: process.env.GEMINI_MODEL || 'gemini-3-flash',
+    // gemini-2.5-flash is the current flagship Flash model on the Google
+    // Generative AI API ($0.30/M in, $2.50/M out). The previous default
+    // 'gemini-3-flash' was aspirational — that model name doesn't exist
+    // on the API and every heavy-tier Gemini call was silently 404'ing
+    // and falling back to Anthropic. See git blame for full investigation.
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.5-flash-lite',
     maxTokens: 1024,
     secretaryMaxTokens: 2048,

@@ -73,7 +73,7 @@ const GEMINI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
 };
 
 function computeGeminiCost(model: string, usage: { promptTokenCount: number; candidatesTokenCount: number }): number {
-  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-3-flash';
+  const key = Object.keys(GEMINI_COST_PER_MTK).find(k => model.startsWith(k)) ?? 'gemini-2.5-flash';
   const rates = GEMINI_COST_PER_MTK[key];
   return (usage.promptTokenCount / 1_000_000) * rates.in +
          (usage.candidatesTokenCount / 1_000_000) * rates.out;

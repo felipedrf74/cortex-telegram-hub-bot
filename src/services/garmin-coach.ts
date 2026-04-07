@@ -275,7 +275,7 @@ ${payloadStr}
 
     // Gemini-first routing for cost reduction. coach_analysis is the single
     // largest cost line in the system (~$1.62/wk on Sonnet 4.6 at 1 user).
-    // gemini-3-flash is ~5.5× cheaper for the same input/output volume and
+    // gemini-2.5-flash is ~8× cheaper for the same input/output volume and
     // matches Sonnet quality for analytical prompts of this shape.
     // Falls back to Anthropic if Gemini is not configured or fails. See
     // audit P0-8.
