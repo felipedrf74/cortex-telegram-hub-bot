@@ -1042,6 +1042,16 @@ export function createPortalServer(bot: Bot): http.Server {
     logger.warn({ err }, 'Webhook router failed to mount (non-fatal)');
   }
 
+  // ── Waitlist router (landing page public form) ─────────────────────
+  // Mounted at root /waitlist so it bypasses the portal token auth on /api.
+  // The router has its own scoped express.json() parser and rate limiter.
+  try {
+    const { createWaitlistRouter } = require('../api/routes/waitlist');
+    app.use('/waitlist', createWaitlistRouter());
+  } catch (err) {
+    logger.warn({ err }, 'Waitlist router failed to mount (non-fatal)');
+  }
+
   app.use(express.json());
 
   // ── iOS API (mounted first — separate JWT auth, not portal token) ────
@@ -1498,8 +1508,33 @@ export function createPortalServer(bot: Bot): http.Server {
     next();
   });
 
-  // ── GET / — serve dashboard HTML ───────────────────────────────
+  // ── GET / — serve the public landing page ────────────────────
+  //
+  // Previously this served the admin portal HTML. After the nexushub.me
+  // launch, the landing page (unauthenticated, public) owns the root URL
+  // and the admin portal moved to /admin. Both hostname and path split are
+  // intentional: nexushub.me/ (Cloudflare Pages) is marketing, and
+  // api.nexushub.me/admin (Cloudflare Tunnel → backend) is the ops view.
   app.get('/', (_req: Request, res: Response) => {
+    const landingPath = path.join(__dirname, 'landing.html');
+    if (fs.existsSync(landingPath)) {
+      // Landing page is public — safe to cache aggressively at the edge
+      res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
+      res.type('html').send(fs.readFileSync(landingPath, 'utf-8'));
+      return;
+    }
+    // Fallback if landing.html is missing (shouldn't happen in prod)
+    res.status(503).send('Landing page not found');
+  });
+
+  // ── GET /admin — serve the admin dashboard HTML ───────────────
+  //
+  // New canonical location for the ops dashboard. Unauthenticated requests
+  // still load the HTML (which is useless without the portal token), then
+  // the inline JS reads the token from localStorage / URL param / injected
+  // server string. All /api/* calls from the dashboard go through the
+  // portal-token middleware above.
+  const serveAdminDashboard = (_req: Request, res: Response): void => {
     const htmlPath = path.join(__dirname, 'portal.html');
     if (!fs.existsSync(htmlPath)) {
       res.status(503).send('Dashboard not found — portal.html is missing');
@@ -1517,7 +1552,10 @@ export function createPortalServer(bot: Bot): http.Server {
       );
     }
     res.type('html').send(html);
-  });
+  };
+  app.get('/admin', serveAdminDashboard);
+  // Backwards-compat alias so old bookmarks to /portal still work
+  app.get('/portal', serveAdminDashboard);
 
   // ── GET /api/snapshot — full dashboard payload ─────────────────
   app.get('/api/snapshot', (_req: Request, res: Response) => {
@@ -2074,6 +2112,157 @@ export function createPortalServer(bot: Bot): http.Server {
     try {
       const { deleteInviteCode } = require('../services/user-service');
       deleteInviteCode(req.params.code);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // ── Waitlist admin API (portal-token authed) ───────────────────────
+  //
+  // These are the ADMIN endpoints for the landing page waitlist. The PUBLIC
+  // endpoints (POST /waitlist and GET /waitlist/stats) live at the root in
+  // api/routes/waitlist.ts and bypass the portal token gate so the landing
+  // page form can call them without credentials. Admin endpoints are routed
+  // through /api/* which inherits the portal-token middleware.
+  //
+  // Admin flow:
+  //   1. GET  /api/waitlist           → list pending + approved signups
+  //   2. POST /api/waitlist/:id/approve → generate an invite code, link it
+  //                                        to the waitlist row, return the
+  //                                        code (admin emails it manually)
+  //   3. POST /api/waitlist/:id/reject  → mark as rejected (soft delete)
+  //   4. POST /api/waitlist/:id/invited → mark as "invite email sent"
+  //                                        (optional bookkeeping step)
+
+  app.get('/api/waitlist', (req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const status = typeof req.query.status === 'string' ? req.query.status : null;
+      const intent = typeof req.query.intent === 'string' ? req.query.intent : null;
+      const limit = Math.min(parseInt((req.query.limit as string) || '200', 10), 1000);
+
+      const where: string[] = [];
+      const args: unknown[] = [];
+      if (status) { where.push('status = ?'); args.push(status); }
+      if (intent) { where.push('intent = ?'); args.push(intent); }
+      const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+      const rows = db.prepare(
+        `SELECT id, email, intent, source, use_case, status, invite_code, founder_slot,
+                utm_source, utm_medium, utm_campaign, created_at, approved_at, notes
+         FROM waitlist ${whereSql} ORDER BY created_at DESC LIMIT ?`,
+      ).all(...args, limit) as any[];
+
+      // Also return the counter so the admin view can show "47/100 founders"
+      const { countFounderSlots } = require('../api/routes/waitlist');
+      const founderCount = countFounderSlots();
+
+      const totals = db.prepare(
+        `SELECT
+           SUM(CASE WHEN intent = 'founder' THEN 1 ELSE 0 END) AS founder_total,
+           SUM(CASE WHEN intent = 'general' THEN 1 ELSE 0 END) AS general_total,
+           SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_total,
+           SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_total,
+           SUM(CASE WHEN status = 'invited' THEN 1 ELSE 0 END) AS invited_total,
+           SUM(CASE WHEN status = 'signed_up' THEN 1 ELSE 0 END) AS signed_up_total
+         FROM waitlist`,
+      ).get() as any;
+
+      res.json({
+        ok: true,
+        entries: rows,
+        counters: {
+          founder: founderCount,
+          totals,
+        },
+      });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/waitlist failed');
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  /**
+   * Approve a waitlist entry and mint them an invite code.
+   *
+   * Generates a single-use invite code via the existing `user-service.createInviteCode`
+   * (reusing TASK-15a's invite infrastructure), links it to the waitlist row,
+   * and returns the code so the admin can paste it into a welcome email.
+   *
+   * Founder-intent entries get an invite code tagged with the `founder` skill
+   * preset so their account lands on the founder tier on first login.
+   */
+  app.post('/api/waitlist/:id/approve', express.json(), (req: Request, res: Response) => {
+    try {
+      const id = parseInt(String(req.params.id), 10);
+      const db = getDb();
+
+      const row = db.prepare('SELECT * FROM waitlist WHERE id = ?').get(id) as any;
+      if (!row) {
+        res.status(404).json({ ok: false, error: 'Waitlist entry not found' });
+        return;
+      }
+      if (row.status !== 'pending' && !req.body?.force) {
+        res.status(400).json({
+          ok: false,
+          error: `Already ${row.status}. Pass {"force": true} to re-approve.`,
+        });
+        return;
+      }
+
+      const { createInviteCode } = require('../services/user-service');
+      const expiresInDays = typeof req.body?.expiresInDays === 'number'
+        ? req.body.expiresInDays
+        : 30;
+      const code = createInviteCode(0, 1, expiresInDays);
+
+      // Tag founder-intent invites with a skill preset so downstream code can
+      // unlock founder-tier benefits on redeem. Non-fatal if the column is
+      // missing (old DB schemas).
+      if (row.intent === 'founder') {
+        try {
+          db.prepare('UPDATE invite_codes SET skill_preset = ? WHERE code = ?')
+            .run(JSON.stringify({ tier: 'founder', founderSlot: row.founder_slot }), code);
+        } catch { /* skill_preset column may not exist yet */ }
+      }
+
+      db.prepare(
+        `UPDATE waitlist SET
+           status = 'approved',
+           invite_code = ?,
+           approved_at = datetime('now')
+         WHERE id = ?`,
+      ).run(code, id);
+
+      res.json({ ok: true, code, email: row.email, intent: row.intent });
+    } catch (err) {
+      logger.error({ err }, 'POST /api/waitlist/:id/approve failed');
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  /** Mark a waitlist entry as rejected (soft delete — keeps the row for audit). */
+  app.post('/api/waitlist/:id/reject', express.json(), (req: Request, res: Response) => {
+    try {
+      const id = parseInt(String(req.params.id), 10);
+      const notes = typeof req.body?.notes === 'string' ? req.body.notes : null;
+      const db = getDb();
+      db.prepare(
+        "UPDATE waitlist SET status = 'rejected', notes = COALESCE(?, notes) WHERE id = ?",
+      ).run(notes, id);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  /** Mark a waitlist entry as "invite email sent" (bookkeeping). */
+  app.post('/api/waitlist/:id/invited', (req: Request, res: Response) => {
+    try {
+      const id = parseInt(String(req.params.id), 10);
+      const db = getDb();
+      db.prepare("UPDATE waitlist SET status = 'invited' WHERE id = ?").run(id);
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });

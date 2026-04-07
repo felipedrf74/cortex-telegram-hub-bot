@@ -1,0 +1,1511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0A0A0B">
+
+  <title>Nexus Hub — The AI that actually connects your life</title>
+  <meta name="description" content="One AI that reads your calendar, tasks, training, content pipeline, and wearable — then understands how they affect each other. Stop managing 12 apps. Built for creators, solopreneurs, and anyone with ADHD.">
+
+  <!-- Open Graph + Twitter cards -->
+  <meta property="og:title" content="Nexus Hub — The AI that actually connects your life">
+  <meta property="og:description" content="Your HRV is low. Your hard workout just moved to Thursday. Your deep-work block shifted to Tuesday morning. Nexus Hub is the first AI that crosses fitness, tasks, calendar, and content.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://nexushub.me">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <!-- Fonts: Inter for UI, JetBrains Mono for technical detail -->
+  <link rel="preconnect" href="https://rsms.me/">
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap">
+
+  <style>
+    /* ─── DESIGN TOKENS ─────────────────────────────────────── */
+    :root {
+      /* Brand */
+      --brand-500: #FF6B35;
+      --brand-400: #FF8559;
+      --brand-600: #E5551E;
+      --brand-300: #FFA07A;
+      --brand-alpha-12: rgba(255, 107, 53, 0.12);
+      --brand-alpha-20: rgba(255, 107, 53, 0.20);
+      --brand-alpha-40: rgba(255, 107, 53, 0.40);
+
+      /* Surface scale — warm-tinted dark neutrals */
+      --bg-canvas:   #0A0A0B;
+      --bg-elevated: #111113;
+      --bg-overlay:  #18181B;
+      --bg-sunken:   #050506;
+      --bg-hover:    rgba(255, 255, 255, 0.04);
+
+      /* Borders */
+      --border-subtle:  rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.09);
+      --border-strong:  rgba(255, 255, 255, 0.14);
+
+      /* Text */
+      --text-primary:   #EDEDEF;
+      --text-secondary: #A1A1A6;
+      --text-tertiary:  #6E6E76;
+      --text-disabled:  #48484F;
+
+      /* Status */
+      --status-success: #3FB950;
+      --status-warning: #D29922;
+      --status-danger:  #F85149;
+      --status-info:    #58A6FF;
+
+      /* Typography */
+      --font-sans: 'Inter', -apple-system, system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+      /* Spacing (4px base) */
+      --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+      --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+      --s-12: 48px; --s-16: 64px; --s-20: 80px; --s-24: 96px;
+
+      /* Radius */
+      --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px;
+      --r-full: 9999px;
+
+      /* Motion */
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --duration-fast: 120ms;
+      --duration-base: 180ms;
+      --duration-slow: 300ms;
+
+      /* Layout */
+      --content-width: 1120px;
+    }
+
+    /* ─── RESET + BASE ───────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.55;
+      color: var(--text-primary);
+      background: var(--bg-canvas);
+      -webkit-font-smoothing: antialiased;
+      font-feature-settings: 'cv11', 'ss01', 'cv02';
+      font-variant-numeric: tabular-nums;
+      overflow-x: hidden;
+    }
+    img, svg { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+    ::selection { background: var(--brand-alpha-40); color: var(--text-primary); }
+
+    /* ─── LAYOUT HELPERS ─────────────────────────────────────── */
+    .container {
+      width: 100%;
+      max-width: var(--content-width);
+      margin: 0 auto;
+      padding: 0 var(--s-6);
+    }
+    @media (min-width: 768px) {
+      .container { padding: 0 var(--s-8); }
+    }
+
+    /* ─── NAV ────────────────────────────────────────────────── */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(10, 10, 11, 0.72);
+      backdrop-filter: saturate(180%) blur(14px);
+      -webkit-backdrop-filter: saturate(180%) blur(14px);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .nav__inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: var(--s-2);
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+    .brand__mark {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--r-sm);
+      background: var(--brand-500);
+      color: var(--bg-canvas);
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+    .nav__links {
+      display: none;
+      gap: var(--s-6);
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    .nav__links a {
+      transition: color var(--duration-fast) var(--ease-out);
+    }
+    .nav__links a:hover { color: var(--text-primary); }
+    @media (min-width: 768px) {
+      .nav__links { display: flex; }
+    }
+    .nav__cta {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--s-2);
+      padding: 8px 14px;
+      background: var(--brand-500);
+      color: var(--bg-canvas);
+      border-radius: var(--r-sm);
+      font-weight: 600;
+      font-size: 13px;
+      transition: background var(--duration-fast) var(--ease-out),
+                  transform var(--duration-fast) var(--ease-out);
+    }
+    .nav__cta:hover { background: var(--brand-400); transform: translateY(-1px); }
+
+    /* ─── HERO ───────────────────────────────────────────────── */
+    .hero {
+      position: relative;
+      padding: var(--s-16) 0 var(--s-20);
+      overflow: hidden;
+    }
+    @media (min-width: 768px) {
+      .hero { padding: var(--s-20) 0 var(--s-24); }
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -40%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 140%;
+      height: 140%;
+      background: radial-gradient(ellipse at center top,
+        rgba(255, 107, 53, 0.12) 0%,
+        rgba(255, 107, 53, 0.04) 25%,
+        transparent 55%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .hero__inner {
+      position: relative;
+      z-index: 1;
+      max-width: 820px;
+      text-align: center;
+      margin: 0 auto;
+    }
+    .hero__eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--s-2);
+      padding: 6px 12px;
+      background: var(--brand-alpha-12);
+      border: 1px solid var(--brand-alpha-20);
+      border-radius: var(--r-full);
+      color: var(--brand-300);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      margin-bottom: var(--s-6);
+    }
+    .hero__eyebrow .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--brand-500);
+      box-shadow: 0 0 0 3px var(--brand-alpha-20);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 3px var(--brand-alpha-20); }
+      50%      { box-shadow: 0 0 0 6px rgba(255, 107, 53, 0); }
+    }
+    .hero__title {
+      font-size: clamp(36px, 6vw, 64px);
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      font-weight: 650;
+      margin-bottom: var(--s-6);
+    }
+    .hero__title .accent {
+      background: linear-gradient(135deg, var(--brand-500) 0%, var(--brand-300) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero__subtitle {
+      font-size: clamp(16px, 2vw, 19px);
+      line-height: 1.55;
+      color: var(--text-secondary);
+      max-width: 680px;
+      margin: 0 auto var(--s-10);
+    }
+    .hero__cta {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--s-3);
+    }
+
+    /* Form (hero + final CTA share styles) */
+    .form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-2);
+      width: 100%;
+      max-width: 460px;
+    }
+    @media (min-width: 560px) {
+      .form { flex-direction: row; }
+    }
+    .form__input {
+      flex: 1;
+      height: 48px;
+      padding: 0 var(--s-4);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-md);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 15px;
+      transition: border-color var(--duration-fast) var(--ease-out);
+    }
+    .form__input::placeholder { color: var(--text-tertiary); }
+    .form__input:focus {
+      outline: none;
+      border-color: var(--brand-500);
+      box-shadow: 0 0 0 3px var(--brand-alpha-20);
+    }
+    .form__button {
+      height: 48px;
+      padding: 0 var(--s-6);
+      background: var(--brand-500);
+      color: var(--bg-canvas);
+      border-radius: var(--r-md);
+      font-weight: 600;
+      font-size: 14px;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+      transition: all var(--duration-fast) var(--ease-out);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--s-2);
+    }
+    .form__button:hover:not(:disabled) {
+      background: var(--brand-400);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(255, 107, 53, 0.3);
+    }
+    .form__button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .form__message {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      min-height: 20px;
+    }
+    .form__message--success { color: var(--status-success); }
+    .form__message--error { color: var(--status-danger); }
+
+    .hero__counter {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--s-2);
+      font-size: 13px;
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+      letter-spacing: -0.01em;
+    }
+    .hero__counter strong { color: var(--brand-300); font-weight: 600; }
+
+    /* ─── SECTION HEADINGS ───────────────────────────────────── */
+    .section {
+      padding: var(--s-20) 0;
+      position: relative;
+    }
+    @media (min-width: 768px) {
+      .section { padding: var(--s-24) 0; }
+    }
+    .section--alt { background: var(--bg-elevated); }
+    .section__label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--brand-500);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: var(--s-3);
+      text-align: center;
+    }
+    .section__title {
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      font-weight: 650;
+      text-align: center;
+      margin-bottom: var(--s-4);
+      max-width: 720px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .section__subtitle {
+      font-size: clamp(15px, 1.6vw, 17px);
+      line-height: 1.55;
+      color: var(--text-secondary);
+      text-align: center;
+      max-width: 640px;
+      margin: 0 auto var(--s-12);
+    }
+
+    /* ─── PROBLEM SECTION (3 cards showing pain) ────────────── */
+    .problem-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--s-4);
+    }
+    @media (min-width: 768px) {
+      .problem-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .problem-card {
+      padding: var(--s-8);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-lg);
+      transition: border-color var(--duration-base) var(--ease-out),
+                  transform var(--duration-base) var(--ease-out);
+    }
+    .problem-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+    }
+    .problem-card__icon {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--r-md);
+      background: var(--brand-alpha-12);
+      display: grid;
+      place-items: center;
+      margin-bottom: var(--s-5);
+      font-size: 20px;
+    }
+    .problem-card__title {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: var(--s-2);
+    }
+    .problem-card__body {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+    }
+
+    /* ─── CROSS-DOMAIN INTELLIGENCE SHOWCASE ─────────────────── */
+    /* The flagship section — a real-looking terminal/chat block that shows
+       the actual context-engine.ts output format. This is the product. */
+    .showcase {
+      background: var(--bg-sunken);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      max-width: 780px;
+      margin: var(--s-12) auto 0;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5),
+                  0 0 0 1px var(--border-subtle);
+    }
+    .showcase__header {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      padding: var(--s-3) var(--s-5);
+      background: var(--bg-overlay);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .showcase__dots {
+      display: flex;
+      gap: 6px;
+    }
+    .showcase__dots span {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--text-tertiary);
+      opacity: 0.4;
+    }
+    .showcase__dots span:first-child { background: #FF5F56; opacity: 0.8; }
+    .showcase__dots span:nth-child(2) { background: #FFBD2E; opacity: 0.8; }
+    .showcase__dots span:nth-child(3) { background: #27C93F; opacity: 0.8; }
+    .showcase__title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-tertiary);
+      font-weight: 500;
+    }
+    .showcase__body {
+      padding: var(--s-6);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.7;
+      color: var(--text-primary);
+    }
+    .showcase__body .label { color: var(--brand-300); font-weight: 600; }
+    .showcase__body .dim { color: var(--text-tertiary); }
+    .showcase__body .value { color: var(--text-primary); }
+    .showcase__body .row { margin-bottom: var(--s-1); }
+    .showcase__footer {
+      padding: var(--s-4) var(--s-6);
+      border-top: 1px solid var(--border-subtle);
+      background: var(--bg-overlay);
+      font-size: 12px;
+      color: var(--text-tertiary);
+      text-align: center;
+    }
+    .showcase__footer strong { color: var(--brand-300); }
+
+    /* ─── HOW IT WORKS (3-step flow) ─────────────────────────── */
+    .steps {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--s-6);
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    @media (min-width: 768px) {
+      .steps { grid-template-columns: repeat(3, 1fr); gap: var(--s-4); }
+    }
+    .step {
+      position: relative;
+      padding: var(--s-8);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-lg);
+    }
+    .step__num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid var(--brand-alpha-20);
+      background: var(--brand-alpha-12);
+      color: var(--brand-300);
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: var(--s-5);
+    }
+    .step__title {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: var(--s-2);
+    }
+    .step__body {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+    }
+
+    /* ─── INTEGRATIONS ───────────────────────────────────────── */
+    .integrations-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--s-3);
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    @media (min-width: 560px) { .integrations-grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (min-width: 900px) { .integrations-grid { grid-template-columns: repeat(4, 1fr); } }
+
+    .integration {
+      display: flex;
+      align-items: center;
+      gap: var(--s-3);
+      padding: var(--s-4) var(--s-5);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-md);
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .integration:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+    .integration__icon {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--r-sm);
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .integration__name {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .integration__tag {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-tertiary);
+      margin-top: 2px;
+    }
+
+    /* ─── PRICING ────────────────────────────────────────────── */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--s-5);
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+    @media (min-width: 900px) {
+      .pricing-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .tier {
+      position: relative;
+      padding: var(--s-8);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-lg);
+      display: flex;
+      flex-direction: column;
+    }
+    .tier--featured {
+      border-color: var(--brand-500);
+      box-shadow: 0 0 0 1px var(--brand-500), 0 12px 48px rgba(255, 107, 53, 0.12);
+      transform: scale(1.015);
+    }
+    .tier__badge {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 12px;
+      background: var(--brand-500);
+      color: var(--bg-canvas);
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: var(--r-full);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .tier__name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--brand-300);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: var(--s-2);
+    }
+    .tier__tagline {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: var(--s-6);
+    }
+    .tier__price {
+      display: baseline;
+      margin-bottom: var(--s-2);
+    }
+    .tier__price-amount {
+      font-size: 44px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+    .tier__price-period {
+      font-size: 14px;
+      color: var(--text-tertiary);
+      margin-left: 4px;
+    }
+    .tier__price-alt {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      margin-bottom: var(--s-6);
+      font-family: var(--font-mono);
+    }
+    .tier__features {
+      list-style: none;
+      margin: 0 0 var(--s-8) 0;
+      padding: var(--s-5) 0 0 0;
+      border-top: 1px solid var(--border-subtle);
+      flex: 1;
+    }
+    .tier__features li {
+      display: flex;
+      align-items: start;
+      gap: var(--s-3);
+      padding: var(--s-2) 0;
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .tier__features li::before {
+      content: '';
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
+      border-radius: 50%;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23FF6B35' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6L9 17l-5-5'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 14px;
+    }
+    .tier__cta {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      border-radius: var(--r-md);
+      font-weight: 600;
+      font-size: 14px;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .tier__cta--primary {
+      background: var(--brand-500);
+      color: var(--bg-canvas);
+    }
+    .tier__cta--primary:hover {
+      background: var(--brand-400);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(255, 107, 53, 0.3);
+    }
+    .tier__cta--secondary {
+      background: var(--bg-overlay);
+      color: var(--text-primary);
+      border: 1px solid var(--border-default);
+    }
+    .tier__cta--secondary:hover {
+      border-color: var(--border-strong);
+    }
+
+    /* Founder deal highlight banner */
+    .founder-banner {
+      max-width: 820px;
+      margin: var(--s-12) auto 0;
+      padding: var(--s-8);
+      background: linear-gradient(135deg,
+        rgba(255, 107, 53, 0.10) 0%,
+        rgba(255, 107, 53, 0.04) 100%);
+      border: 1px solid var(--brand-alpha-20);
+      border-radius: var(--r-lg);
+      position: relative;
+      overflow: hidden;
+    }
+    .founder-banner::before {
+      content: '🏆';
+      position: absolute;
+      top: -20px;
+      right: -20px;
+      font-size: 160px;
+      opacity: 0.08;
+      transform: rotate(12deg);
+    }
+    .founder-banner__label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--brand-300);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: var(--s-2);
+      position: relative;
+    }
+    .founder-banner__title {
+      font-size: 24px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      margin-bottom: var(--s-3);
+      position: relative;
+    }
+    .founder-banner__title .strike {
+      text-decoration: line-through;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      margin-right: var(--s-2);
+    }
+    .founder-banner__text {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      margin-bottom: var(--s-5);
+      position: relative;
+      max-width: 580px;
+    }
+    .founder-banner__counter {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--brand-300);
+      position: relative;
+    }
+    .founder-banner__progress {
+      margin-top: var(--s-3);
+      height: 6px;
+      background: var(--bg-sunken);
+      border-radius: var(--r-full);
+      overflow: hidden;
+      position: relative;
+    }
+    .founder-banner__progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--brand-500), var(--brand-400));
+      border-radius: var(--r-full);
+      transition: width var(--duration-slow) var(--ease-out);
+      width: 0%;
+    }
+
+    /* ─── FAQ ────────────────────────────────────────────────── */
+    .faq {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .faq__item {
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-md);
+      margin-bottom: var(--s-3);
+      background: var(--bg-elevated);
+      overflow: hidden;
+      transition: border-color var(--duration-fast) var(--ease-out);
+    }
+    .faq__item:hover { border-color: var(--border-strong); }
+    .faq__item[open] { border-color: var(--brand-alpha-20); }
+    .faq__question {
+      padding: var(--s-5) var(--s-6);
+      font-size: 15px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--s-4);
+      list-style: none;
+    }
+    .faq__question::-webkit-details-marker { display: none; }
+    .faq__question::after {
+      content: '+';
+      color: var(--brand-500);
+      font-size: 20px;
+      font-weight: 400;
+      transition: transform var(--duration-fast) var(--ease-out);
+    }
+    .faq__item[open] .faq__question::after {
+      content: '−';
+    }
+    .faq__answer {
+      padding: 0 var(--s-6) var(--s-5);
+      font-size: 14px;
+      line-height: 1.65;
+      color: var(--text-secondary);
+    }
+    .faq__answer p + p { margin-top: var(--s-3); }
+    .faq__answer a { color: var(--brand-300); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+    /* ─── FINAL CTA ─────────────────────────────────────────── */
+    .final-cta {
+      text-align: center;
+      padding: var(--s-24) var(--s-6);
+      background: radial-gradient(ellipse at center,
+        rgba(255, 107, 53, 0.08) 0%,
+        transparent 60%);
+    }
+    .final-cta__title {
+      font-size: clamp(28px, 4vw, 40px);
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      font-weight: 650;
+      margin-bottom: var(--s-4);
+      max-width: 640px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .final-cta__subtitle {
+      font-size: 16px;
+      color: var(--text-secondary);
+      margin-bottom: var(--s-8);
+      max-width: 520px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .final-cta .form { margin: 0 auto; }
+
+    /* ─── FOOTER ────────────────────────────────────────────── */
+    .footer {
+      padding: var(--s-12) 0 var(--s-10);
+      border-top: 1px solid var(--border-subtle);
+      color: var(--text-tertiary);
+      font-size: 13px;
+    }
+    .footer__inner {
+      display: flex;
+      flex-direction: column;
+      gap: var(--s-5);
+      align-items: center;
+      text-align: center;
+    }
+    @media (min-width: 768px) {
+      .footer__inner {
+        flex-direction: row;
+        justify-content: space-between;
+        text-align: left;
+      }
+    }
+    .footer__brand {
+      display: flex;
+      align-items: center;
+      gap: var(--s-2);
+      color: var(--text-secondary);
+    }
+    .footer__links {
+      display: flex;
+      gap: var(--s-5);
+      font-size: 12px;
+    }
+    .footer__links a { transition: color var(--duration-fast) var(--ease-out); }
+    .footer__links a:hover { color: var(--text-primary); }
+
+    /* ─── UTILITIES ─────────────────────────────────────────── */
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0);
+      white-space: nowrap; border: 0;
+    }
+
+    /* Scroll-triggered fade-in for sections (progressive enhancement) */
+    @media (prefers-reduced-motion: no-preference) {
+      .reveal {
+        opacity: 0;
+        transform: translateY(16px);
+        transition: opacity 600ms var(--ease-out), transform 600ms var(--ease-out);
+      }
+      .reveal--visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════════ NAV ═══════════════════ -->
+  <nav class="nav">
+    <div class="container nav__inner">
+      <a href="#" class="brand" aria-label="Nexus Hub home">
+        <span class="brand__mark">N</span>
+        <span>Nexus Hub</span>
+      </a>
+      <div class="nav__links">
+        <a href="#how">How it works</a>
+        <a href="#integrations">Integrations</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+      </div>
+      <a href="#waitlist" class="nav__cta">Reserve your slot →</a>
+    </div>
+  </nav>
+
+  <!-- ═══════════════════ HERO ═══════════════════ -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero__inner">
+        <div class="hero__eyebrow">
+          <span class="dot"></span>
+          <span>Pre-alpha · Founder pricing open</span>
+        </div>
+
+        <h1 class="hero__title">
+          One AI that actually <span class="accent">connects your life.</span>
+        </h1>
+
+        <p class="hero__subtitle">
+          Your calendar, tasks, training, content pipeline, and wearable —
+          all talking to each other. Built for creators, solopreneurs, and
+          anyone who's tired of juggling 12 productivity apps that don't know
+          the others exist.
+        </p>
+
+        <form class="form" id="hero-form" data-source="hero">
+          <input
+            type="email"
+            class="form__input"
+            placeholder="you@example.com"
+            name="email"
+            required
+            autocomplete="email"
+            aria-label="Email address">
+          <button type="submit" class="form__button">
+            Reserve founder slot →
+          </button>
+        </form>
+
+        <div class="form__message" id="hero-form-message" aria-live="polite"></div>
+
+        <div class="hero__counter" id="hero-counter">
+          <strong id="founder-filled">—</strong> of <strong>100</strong> founder slots reserved
+          <span class="dim">· $79/yr lifetime lock-in</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ PROBLEM ═══════════════════ -->
+  <section class="section section--alt">
+    <div class="container">
+      <div class="section__label">The problem</div>
+      <h2 class="section__title">You're running your life across 12 apps that don't talk.</h2>
+      <p class="section__subtitle">
+        Your calendar doesn't know you slept 5 hours last night. Your task manager
+        doesn't know you're filming on Thursday. Your training app doesn't know
+        you have a deadline. The mental load of keeping them in sync is the work.
+      </p>
+
+      <div class="problem-grid">
+        <div class="problem-card">
+          <div class="problem-card__icon">🧠</div>
+          <h3 class="problem-card__title">ADHD tax</h3>
+          <p class="problem-card__body">
+            Every switch between apps resets your working memory. By the time
+            you've opened Notion, Todoist, Google Calendar, Apple Health, and
+            your content spreadsheet, you've forgotten what you came in for.
+          </p>
+        </div>
+
+        <div class="problem-card">
+          <div class="problem-card__icon">⚡</div>
+          <h3 class="problem-card__title">Solopreneur scatter</h3>
+          <p class="problem-card__body">
+            You're a founder, a marketer, an athlete, a creator, and an operator.
+            Each role has its own tools. None of them know about the others.
+            The "integration" is you, retyping everything at 11pm.
+          </p>
+        </div>
+
+        <div class="problem-card">
+          <div class="problem-card__icon">🎬</div>
+          <h3 class="problem-card__title">Creator overwhelm</h3>
+          <p class="problem-card__body">
+            Ideas in one app, scripts in another, filming schedule on a third,
+            fitness routine on a fourth. You miss publish dates because your
+            body was tired and no tool saw it coming.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ CROSS-DOMAIN SHOWCASE ═══════════════════ -->
+  <section class="section" id="how">
+    <div class="container">
+      <div class="section__label">The difference</div>
+      <h2 class="section__title">
+        This is what your AI actually sees every morning.
+      </h2>
+      <p class="section__subtitle">
+        Not marketing copy. This is the real context block Nexus Hub builds
+        every day at 5am and injects into every AI conversation — so it always
+        knows what's going on across your entire life before you even ask.
+      </p>
+
+      <div class="showcase">
+        <div class="showcase__header">
+          <div class="showcase__dots">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="showcase__title">daily-context.txt · auto-built 5:00 AM</div>
+        </div>
+        <div class="showcase__body">
+          <div class="row">
+            <span class="label">TASKS:</span>
+            <span class="value">3 overdue</span>
+            <span class="dim">(edit podcast, review PR, tax filing),</span>
+            <span class="value">5 due this week</span>, <span class="value">12 pending</span>
+          </div>
+          <div class="row">
+            <span class="label">CALENDAR:</span>
+            <span class="value">4 events today</span>
+            <span class="dim">(standup 9am, dev 11am, gym 6am, film 3pm)</span>
+          </div>
+          <div class="row">
+            <span class="label">TRAINING:</span>
+            <span class="value">Upper Body</span>
+            <span class="dim">today, readiness</span>
+            <span class="value">72/100</span>
+            <span class="dim">(yellow), adherence</span>
+            <span class="value">80%</span>
+          </div>
+          <div class="row">
+            <span class="label">CONTENT:</span>
+            <span class="value">3 ideas</span>
+            <span class="dim">in pipeline, "carnivore 30 days" due Thursday</span>
+          </div>
+          <div class="row">
+            <span class="label">WEARABLE:</span>
+            <span class="dim">Sleep</span>
+            <span class="value">7.2h</span><span class="dim">, HRV</span>
+            <span class="value">45ms</span>
+            <span class="dim">(below avg), BB</span>
+            <span class="value">65</span>
+          </div>
+        </div>
+        <div class="showcase__footer">
+          Every AI response starts from here. That's how it catches conflicts you
+          don't even see — <strong>"your HRV is low, move the hard workout to Thursday
+          and shift deep-work to Tuesday morning."</strong>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ HOW IT WORKS ═══════════════════ -->
+  <section class="section section--alt">
+    <div class="container">
+      <div class="section__label">How it works</div>
+      <h2 class="section__title">Three layers. Zero lock-in.</h2>
+      <p class="section__subtitle">
+        You keep using the apps you love. Nexus Hub reads from all of them,
+        reasons across them, and writes back to whichever one you pick as your
+        default. Nothing gets trapped.
+      </p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step__num">01</div>
+          <h3 class="step__title">Connect everything you already use</h3>
+          <p class="step__body">
+            Todoist, Microsoft To Do, Notion, Google Calendar, Outlook, Garmin,
+            Strava, Whoop, Apple Health. One OAuth click each. Your data stays
+            in your existing apps — we just aggregate.
+          </p>
+        </div>
+
+        <div class="step">
+          <div class="step__num">02</div>
+          <h3 class="step__title">The AI reads it all, constantly</h3>
+          <p class="step__body">
+            Every 15 minutes we pull incremental changes from each provider
+            and normalize them into one store. A daily context summary is
+            pre-built so every AI conversation starts with the full picture —
+            at a fixed token cost.
+          </p>
+        </div>
+
+        <div class="step">
+          <div class="step__num">03</div>
+          <h3 class="step__title">Ask anything in plain English</h3>
+          <p class="step__body">
+            "Plan my week." "What should I skip if HRV stays low?" "Move my
+            workout and find a recording slot." The AI writes changes back
+            to your default provider. No new tool to learn.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ INTEGRATIONS ═══════════════════ -->
+  <section class="section" id="integrations">
+    <div class="container">
+      <div class="section__label">Connects to</div>
+      <h2 class="section__title">Works with your existing stack.</h2>
+      <p class="section__subtitle">
+        Nexus Hub is the layer above — it doesn't replace your favorite apps,
+        it makes them finally work together. More integrations in beta.
+      </p>
+
+      <div class="integrations-grid">
+        <div class="integration"><div class="integration__icon">✅</div><div><div class="integration__name">Todoist</div><div class="integration__tag">webhook · live sync</div></div></div>
+        <div class="integration"><div class="integration__icon">📓</div><div><div class="integration__name">Notion</div><div class="integration__tag">database mapping</div></div></div>
+        <div class="integration"><div class="integration__icon">📋</div><div><div class="integration__name">Microsoft To Do</div><div class="integration__tag">Graph API</div></div></div>
+        <div class="integration"><div class="integration__icon">📅</div><div><div class="integration__name">Google Calendar</div><div class="integration__tag">read · write</div></div></div>
+        <div class="integration"><div class="integration__icon">📧</div><div><div class="integration__name">Outlook + Gmail</div><div class="integration__tag">mail triage</div></div></div>
+        <div class="integration"><div class="integration__icon">⌚</div><div><div class="integration__name">Garmin Connect</div><div class="integration__tag">HRV · sleep · load</div></div></div>
+        <div class="integration"><div class="integration__icon">🏃</div><div><div class="integration__name">Strava</div><div class="integration__tag">activities</div></div></div>
+        <div class="integration"><div class="integration__icon">💪</div><div><div class="integration__name">Whoop</div><div class="integration__tag">recovery</div></div></div>
+        <div class="integration"><div class="integration__icon">🍎</div><div><div class="integration__name">Apple Health</div><div class="integration__tag">iOS bridge</div></div></div>
+        <div class="integration"><div class="integration__icon">💰</div><div><div class="integration__name">Finance tracker</div><div class="integration__tag">invoices · tax</div></div></div>
+        <div class="integration"><div class="integration__icon">🎬</div><div><div class="integration__name">Content pipeline</div><div class="integration__tag">YouTube · IG</div></div></div>
+        <div class="integration"><div class="integration__icon">💬</div><div><div class="integration__name">Telegram bot</div><div class="integration__tag">chat interface</div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ PRICING ═══════════════════ -->
+  <section class="section section--alt" id="pricing">
+    <div class="container">
+      <div class="section__label">Pricing</div>
+      <h2 class="section__title">Priced for people who actually use it.</h2>
+      <p class="section__subtitle">
+        Founder slots include lifetime price lock. After the first 100 founders,
+        Pro rises to the full $99/year. Free forever for light use.
+      </p>
+
+      <div class="pricing-grid">
+        <!-- FREE -->
+        <div class="tier">
+          <div class="tier__name">Free</div>
+          <div class="tier__tagline">Try the connection.</div>
+          <div class="tier__price">
+            <span class="tier__price-amount">$0</span>
+            <span class="tier__price-period">forever</span>
+          </div>
+          <div class="tier__price-alt">&nbsp;</div>
+          <ul class="tier__features">
+            <li>1 task provider, 1 calendar, 1 wearable</li>
+            <li>10 AI messages per day</li>
+            <li>Basic daily context (no cross-domain)</li>
+            <li>iOS app + Telegram bot</li>
+            <li>Community support</li>
+          </ul>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary">Join the waitlist</a>
+        </div>
+
+        <!-- PRO -->
+        <div class="tier tier--featured">
+          <div class="tier__badge">Most popular</div>
+          <div class="tier__name">Pro</div>
+          <div class="tier__tagline">Your actual operating system.</div>
+          <div class="tier__price">
+            <span class="tier__price-amount">$12</span>
+            <span class="tier__price-period">/mo</span>
+          </div>
+          <div class="tier__price-alt">or $99/yr · 30% off</div>
+          <ul class="tier__features">
+            <li>Unlimited provider connections</li>
+            <li>Cross-domain AI intelligence</li>
+            <li>300 AI messages/day</li>
+            <li>Morning briefing + coach briefing</li>
+            <li>Real-time webhook sync</li>
+            <li>Priority email support</li>
+          </ul>
+          <a href="#waitlist" class="tier__cta tier__cta--primary" data-intent="founder">Reserve founder slot</a>
+        </div>
+
+        <!-- ULTRA -->
+        <div class="tier">
+          <div class="tier__name">Ultra</div>
+          <div class="tier__tagline">For people who live in 12 tabs.</div>
+          <div class="tier__price">
+            <span class="tier__price-amount">$29</span>
+            <span class="tier__price-period">/mo</span>
+          </div>
+          <div class="tier__price-alt">or $249/yr · 28% off</div>
+          <ul class="tier__features">
+            <li>Everything in Pro</li>
+            <li>Unlimited AI messages</li>
+            <li>5-minute sync priority</li>
+            <li>Custom MCP integrations</li>
+            <li>Early access to new skills</li>
+            <li>Direct founder access</li>
+          </ul>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary">Join the waitlist</a>
+        </div>
+      </div>
+
+      <!-- Founder banner -->
+      <div class="founder-banner">
+        <div class="founder-banner__label">🏆 Founder pricing · First 100 users only</div>
+        <div class="founder-banner__title">
+          <span class="strike">$99/yr</span>$79/year — locked in forever
+        </div>
+        <p class="founder-banner__text">
+          The first 100 people who reserve a founder slot lock in Pro for $79/year
+          for the life of their account. Not $79 for year one — $79 every year,
+          forever, even as the price rises for everyone else.
+        </p>
+        <div class="founder-banner__counter">
+          <strong id="founder-banner-filled">—</strong> reserved ·
+          <strong id="founder-banner-remaining">—</strong> remaining
+        </div>
+        <div class="founder-banner__progress">
+          <div class="founder-banner__progress-fill" id="founder-progress-bar"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ FAQ ═══════════════════ -->
+  <section class="section" id="faq">
+    <div class="container">
+      <div class="section__label">FAQ</div>
+      <h2 class="section__title">Questions people actually ask.</h2>
+      <p class="section__subtitle">
+        Missing something? Email <a href="mailto:felipe@nexushub.me" style="color: var(--brand-300); text-decoration: underline;">felipe@nexushub.me</a> — the founder reads every message.
+      </p>
+
+      <div class="faq">
+        <details class="faq__item">
+          <summary class="faq__question">What does "pre-alpha" mean for me?</summary>
+          <div class="faq__answer">
+            <p>It means Nexus Hub is running in production for a tiny group of early users and it works — but the feature set is still being shaped. Pre-alpha users get: (a) a lifetime price lock at founder pricing, (b) a direct line to the founder, (c) heavy influence on which integrations ship next.</p>
+            <p>What it doesn't mean: bugs that corrupt your data. All sync is one-way-read-only to start, then write-back is gated behind an explicit setting per provider.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">Do I have to move off Todoist/Notion/my calendar?</summary>
+          <div class="faq__answer">
+            <p>No. That's the whole point. Nexus Hub is the AI layer <em>above</em> your existing tools. You keep using Todoist for the quick-add keyboard shortcut you love. You keep using Notion for the second-brain setup you've tuned. You keep using Google Calendar for the invite flow.</p>
+            <p>Nexus Hub reads from all of them, reasons across them, and writes changes back to the one you pick as your default. If you cancel Nexus Hub tomorrow, all your data stays exactly where it was.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">Why is this better than Motion, Reclaim, or Sunsama?</summary>
+          <div class="faq__answer">
+            <p>Those tools are great at what they do, but they all live in a single domain — calendar and tasks. They don't know your HRV is low, they don't know you have content filming Thursday, they don't know your deadline just moved.</p>
+            <p>Nexus Hub's differentiator is cross-domain reasoning: the AI sees your fitness readiness, your content pipeline, your finances, and your calendar at the same time, and the recommendations come from intersecting all of them. "Move the hard workout to Thursday" isn't a calendar optimization — it's a fitness decision informed by content deadlines.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">I have ADHD. Will this actually help or just add another app?</summary>
+          <div class="faq__answer">
+            <p>Honest answer: it's designed for you specifically. The core insight is that ADHD makes you pay a "context-switch tax" every time you open a new app to check on something. Nexus Hub collapses all those checks into one chat interface (either iOS app or Telegram bot, your choice) so the 17 times a day you ask "what am I supposed to be doing right now?" become one place to ask, not twelve.</p>
+            <p>The daily context block also means the AI doesn't need to be reminded who you are every conversation. It already knows.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">What data do you store? Is this secure?</summary>
+          <div class="faq__answer">
+            <p>OAuth tokens are encrypted at rest with per-user AES-256 keys. Your task/calendar/wearable data lives in a local SQLite database on the server and is never sold, shared, or used to train any model. The AI itself runs through Claude (Anthropic) and Gemini (Google) under Nexus Hub's own API keys — your data isn't sent to them for training purposes under their enterprise terms.</p>
+            <p>You can export your entire dataset as JSON via the admin portal and delete your account with one click. No dark patterns.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">Is there an iOS app? Android?</summary>
+          <div class="faq__answer">
+            <p>Native iOS app is in beta now (SwiftUI, iOS 17+). Android is planned for after alpha — if you want it sooner, say so in your waitlist signup. You can also use Nexus Hub entirely through the Telegram bot if you prefer text.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">When will Pro be available?</summary>
+          <div class="faq__answer">
+            <p>Founder slot reservations are open now. We're admitting people into the alpha in batches as we harden each integration. If you reserve a founder slot, expect access within 4–8 weeks and a personal onboarding email from the founder.</p>
+            <p>General waitlist access opens after the first 100 founders are onboarded — that's our hardening phase.</p>
+          </div>
+        </details>
+
+        <details class="faq__item">
+          <summary class="faq__question">What if I'm not one of the first 100?</summary>
+          <div class="faq__answer">
+            <p>You join the general waitlist. You'll get Pro at $99/year (which is still the industry's lowest price for cross-domain AI) and all the same features. The founder deal is specifically a thank-you to the people who took a chance before the product was fully baked.</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ FINAL CTA ═══════════════════ -->
+  <section class="final-cta" id="waitlist">
+    <div class="container">
+      <h2 class="final-cta__title">Ready to collapse your stack?</h2>
+      <p class="final-cta__subtitle">
+        Reserve a founder slot now. One field, one click, lifetime lock-in.
+      </p>
+
+      <form class="form" id="final-form" data-source="footer">
+        <input
+          type="email"
+          class="form__input"
+          placeholder="you@example.com"
+          name="email"
+          required
+          autocomplete="email"
+          aria-label="Email address">
+        <button type="submit" class="form__button">
+          Reserve founder slot →
+        </button>
+      </form>
+      <div class="form__message" id="final-form-message" aria-live="polite" style="margin-top: var(--s-4);"></div>
+
+      <p style="margin-top: var(--s-8); font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono);">
+        No credit card · Cancel anytime · Lock in $79/year forever
+      </p>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ FOOTER ═══════════════════ -->
+  <footer class="footer">
+    <div class="container footer__inner">
+      <div class="footer__brand">
+        <span class="brand__mark" style="width: 22px; height: 22px; font-size: 12px;">N</span>
+        <span>© 2026 Nexus Hub · Built by <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a></span>
+      </div>
+      <div class="footer__links">
+        <a href="#how">How it works</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+        <a href="mailto:felipe@nexushub.me">Contact</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ═══════════════════ SCRIPTS ═══════════════════ -->
+  <script>
+    // ── Founder counter (live from /waitlist/stats) ─────────────
+    //
+    // Polls the public stats endpoint on page load and updates the three
+    // counter displays: hero, pricing banner, progress bar. Also re-runs
+    // after a successful form submission so the counter reflects the new
+    // slot the user just claimed.
+    async function loadFounderStats() {
+      try {
+        const r = await fetch('/waitlist/stats', { credentials: 'omit' });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!data?.ok) return;
+        const filled = data.founder.filled ?? 0;
+        const remaining = data.founder.remaining ?? 100;
+        const max = data.founder.max ?? 100;
+
+        const heroFilled = document.getElementById('founder-filled');
+        if (heroFilled) heroFilled.textContent = filled;
+
+        const bannerFilled = document.getElementById('founder-banner-filled');
+        if (bannerFilled) bannerFilled.textContent = filled;
+
+        const bannerRemaining = document.getElementById('founder-banner-remaining');
+        if (bannerRemaining) bannerRemaining.textContent = remaining;
+
+        const bar = document.getElementById('founder-progress-bar');
+        if (bar) bar.style.width = ((filled / max) * 100).toFixed(1) + '%';
+      } catch { /* offline, silent fail — counter just shows — */ }
+    }
+
+    // ── Form handler (shared between hero + final CTA) ──────────
+    //
+    // Each form has a data-source attribute that tells the backend which
+    // CTA fired, so we can attribute conversions. On success:
+    //   - show the confirmation message
+    //   - refresh the counter
+    //   - disable the form to prevent double-submit
+    // On error (including 429 rate limit), show the error inline without
+    // clearing the field so the user can retry without retyping.
+    function attachFormHandler(formId, messageId) {
+      const form = document.getElementById(formId);
+      const msg = document.getElementById(messageId);
+      if (!form || !msg) return;
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const email = form.querySelector('input[name="email"]').value.trim();
+        if (!email) return;
+
+        const button = form.querySelector('button[type="submit"]');
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Reserving...';
+        msg.className = 'form__message';
+        msg.textContent = '';
+
+        // Collect UTM params from the current URL for attribution
+        const params = new URLSearchParams(location.search);
+
+        try {
+          const response = await fetch('/waitlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'omit',
+            body: JSON.stringify({
+              email,
+              intent: 'founder',
+              source: form.dataset.source || 'unknown',
+              utm_source: params.get('utm_source'),
+              utm_medium: params.get('utm_medium'),
+              utm_campaign: params.get('utm_campaign'),
+            }),
+          });
+
+          const data = await response.json();
+          if (response.ok && data.ok) {
+            const slot = data.founderSlot;
+            msg.className = 'form__message form__message--success';
+            msg.textContent = slot
+              ? `✓ Reserved — you're founder #${slot}. Check your email in a few minutes.`
+              : `✓ You're on the waitlist. We'll be in touch.`;
+            form.reset();
+            loadFounderStats();
+          } else if (response.status === 409) {
+            // Founder slots exhausted — retry as general waitlist
+            const retry = await fetch('/waitlist', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'omit',
+              body: JSON.stringify({
+                email,
+                intent: 'general',
+                source: form.dataset.source || 'unknown',
+              }),
+            });
+            const retryData = await retry.json();
+            if (retry.ok && retryData.ok) {
+              msg.className = 'form__message form__message--success';
+              msg.textContent = `✓ All founder slots filled. You're on the general waitlist at position ${retryData.position ?? '—'}.`;
+              form.reset();
+            } else {
+              msg.className = 'form__message form__message--error';
+              msg.textContent = retryData.error || 'Something went wrong. Try again.';
+            }
+          } else {
+            msg.className = 'form__message form__message--error';
+            msg.textContent = data.error || 'Something went wrong. Try again.';
+          }
+        } catch (err) {
+          msg.className = 'form__message form__message--error';
+          msg.textContent = 'Network error. Try again in a moment.';
+        } finally {
+          button.disabled = false;
+          button.textContent = originalText;
+        }
+      });
+    }
+
+    // ── Scroll reveal (progressive enhancement only) ─────────────
+    // Uses IntersectionObserver so it gracefully degrades on older browsers.
+    function initScrollReveal() {
+      if (!('IntersectionObserver' in window)) return;
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('reveal--visible');
+            observer.unobserve(entry.target);
+          }
+        });
+      }, { rootMargin: '0px 0px -80px 0px' });
+
+      document.querySelectorAll('.section').forEach((el) => {
+        el.classList.add('reveal');
+        observer.observe(el);
+      });
+    }
+
+    // ── Init ────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', () => {
+      attachFormHandler('hero-form', 'hero-form-message');
+      attachFormHandler('final-form', 'final-form-message');
+      loadFounderStats();
+      initScrollReveal();
+    });
+  </script>
+</body>
+</html>
