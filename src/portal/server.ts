@@ -1508,23 +1508,34 @@ export function createPortalServer(bot: Bot): http.Server {
     next();
   });
 
-  // ── GET / — serve the public landing page ────────────────────
+  // ── GET / — serve the admin dashboard ────────────────────────
   //
-  // Previously this served the admin portal HTML. After the nexushub.me
-  // launch, the landing page (unauthenticated, public) owns the root URL
-  // and the admin portal moved to /admin. Both hostname and path split are
-  // intentional: nexushub.me/ (Cloudflare Pages) is marketing, and
-  // api.nexushub.me/admin (Cloudflare Tunnel → backend) is the ops view.
-  app.get('/', (_req: Request, res: Response) => {
+  // The backend's root URL belongs to the admin portal. Two reasons:
+  //   1. The PUBLIC marketing landing lives on Cloudflare Pages
+  //      (nexushub.me CNAME → nexushub-landing.pages.dev), served from
+  //      the edge CDN — it never even hits this backend.
+  //   2. The only humans hitting this backend's root are the admin
+  //      (Felipe) via Tailscale on serverdominguez:8200 or via the
+  //      Cloudflare Tunnel at api.nexushub.me. Both want admin tools.
+  //
+  // The /admin path is preserved as a backwards-compatible alias.
+  // For previewing landing.html locally during development, use
+  // /landing-preview (defined below).
+
+  // ── GET /landing-preview — serve landing.html for local development ──
+  //
+  // Use this to preview landing.html changes before deploying to
+  // Cloudflare Pages via `wrangler pages deploy`. The actual public
+  // landing is served from Cloudflare Pages, NOT this route.
+  app.get('/landing-preview', (_req: Request, res: Response) => {
     const landingPath = path.join(__dirname, 'landing.html');
     if (fs.existsSync(landingPath)) {
-      // Landing page is public — safe to cache aggressively at the edge
-      res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
+      // No edge caching on the preview — devs always want the latest
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.type('html').send(fs.readFileSync(landingPath, 'utf-8'));
       return;
     }
-    // Fallback if landing.html is missing (shouldn't happen in prod)
-    res.status(503).send('Landing page not found');
+    res.status(503).send('Landing preview not found — run `npm run build` to copy landing.html into dist/');
   });
 
   // ── GET /admin — serve the admin dashboard HTML ───────────────
@@ -1553,8 +1564,11 @@ export function createPortalServer(bot: Bot): http.Server {
     }
     res.type('html').send(html);
   };
+  // Root and the legacy /portal alias both serve the admin dashboard.
+  // /admin is the canonical name; / is the convenience root for
+  // serverdominguez:8200 / api.nexushub.me where Felipe lives.
+  app.get('/', serveAdminDashboard);
   app.get('/admin', serveAdminDashboard);
-  // Backwards-compat alias so old bookmarks to /portal still work
   app.get('/portal', serveAdminDashboard);
 
   // ── GET /api/snapshot — full dashboard payload ─────────────────

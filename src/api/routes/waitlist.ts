@@ -125,11 +125,52 @@ export function countFounderSlots(): { filled: number; remaining: number; max: n
   }
 }
 
+// ─── CORS allow-list ────────────────────────────────────────────────
+//
+// The landing page lives on Cloudflare Pages (https://nexushub.me) but the
+// waitlist API lives on the backend (https://api.nexushub.me). That's a
+// cross-origin call, so we need explicit CORS allow headers on every
+// /waitlist response (and on the OPTIONS preflight that Chrome fires
+// before the POST).
+//
+// Allow-list is conservative — only the production landing hostnames plus
+// Cloudflare Pages preview URLs (which match *.nexushub-landing.pages.dev
+// for branch deploys). Anything else gets no CORS header, which means the
+// browser will block the response — but the request still hits the server,
+// the rate limiter still counts it, and the founder slot logic still runs.
+const CORS_ALLOWLIST = new Set<string>([
+  'https://nexushub.me',
+  'https://www.nexushub.me',
+]);
+const CORS_ALLOWLIST_REGEX = /^https:\/\/[a-z0-9-]+\.nexushub-landing\.pages\.dev$/;
+
+function applyCors(req: Request, res: Response): void {
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && (CORS_ALLOWLIST.has(origin) || CORS_ALLOWLIST_REGEX.test(origin))) {
+    res.set('Access-Control-Allow-Origin', origin);
+    res.set('Vary', 'Origin'); // tell caches the response varies by Origin
+    res.set('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.set('Access-Control-Max-Age', '600'); // cache preflight 10 min
+  }
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 export function createWaitlistRouter(): Router {
   const router = Router();
   const json = express.json({ limit: '32kb' });
+
+  // CORS middleware — runs on every /waitlist* request, including the
+  // OPTIONS preflight. Returns 204 immediately for preflights.
+  router.use((req: Request, res: Response, next) => {
+    applyCors(req, res);
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
 
   /**
    * POST /waitlist
