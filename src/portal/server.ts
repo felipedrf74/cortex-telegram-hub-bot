@@ -1054,6 +1054,46 @@ export function createPortalServer(bot: Bot): http.Server {
 
   app.use(express.json());
 
+  // ── AI provider routing (must initialize BEFORE any AI call) ─────────
+  //
+  // Two responsibilities:
+  //   1. initDomainRouting() loads the feature flags (gemini routing on/off,
+  //      include-secretary, per-domain set) from env + kv_store
+  //   2. createRoutingProvider() instantiates the actual TaskRoutingProvider
+  //      and stores it in the module-level _activeProvider singleton that
+  //      domain-handler.ts looks up via getActiveProvider()
+  //
+  // Without #2, getActiveProvider() returns null and every domain call falls
+  // through to the direct-Anthropic fallback path — which is what was
+  // happening before this fix. The dashboard would show "0 Gemini calls" no
+  // matter what the routing config said.
+  //
+  // This block runs unconditionally (NOT inside the iOS-gated block below)
+  // because the Telegram bot also routes through the same AI providers and
+  // needs the routing system regardless of whether iOS is enabled.
+  try {
+    const { initDomainRouting } = require('../services/domain-provider-router');
+    initDomainRouting();
+    const { createRoutingProvider, getActiveProvider } = require('../services/provider-registry');
+    createRoutingProvider();
+    const active = getActiveProvider();
+    if (active) {
+      const { getDomainProviderConfig } = require('../services/domain-provider-router');
+      const cfg = getDomainProviderConfig();
+      logger.info(
+        {
+          activeProvider: active.name || 'TaskRoutingProvider',
+          domains: cfg.map((d: { domain: string; provider: string }) => `${d.domain}→${d.provider}`).join(', '),
+        },
+        '✅ AI provider routing active',
+      );
+    } else {
+      logger.warn('createRoutingProvider() returned null — all AI calls will fall back to direct Anthropic');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to initialize AI provider routing — falling back to direct Anthropic on every call');
+  }
+
   // ── iOS API (mounted first — separate JWT auth, not portal token) ────
   if (config.ios?.enabled) {
     // Initialize SQLite-backed cache store (survives restarts)
@@ -1061,12 +1101,8 @@ export function createPortalServer(bot: Bot): http.Server {
       const { initCacheStore, clearExpired } = require('../services/cache-store');
       initCacheStore();
       setInterval(clearExpired, 60 * 60 * 1000);
-
-      // Initialize domain→provider routing (loads feature flags from env + kv_store)
-      const { initDomainRouting } = require('../services/domain-provider-router');
-      initDomainRouting();
     } catch (err) {
-      logger.error({ err }, 'Failed to initialize cache store or domain routing');
+      logger.error({ err }, 'Failed to initialize cache store');
     }
 
     const { createApiRouter } = require('../api/router');
@@ -1941,46 +1977,88 @@ export function createPortalServer(bot: Bot): http.Server {
   });
 
   // GET /api/domain-routing — domain→provider mapping for portal display
+  //
+  // Returns the live routing state: which provider is currently selected for
+  // each domain, the fallback, the default (what the code would say if no
+  // overrides), the include-secretary flag, and the active model name. The
+  // portal's Domain Routing card calls this on load and after every toggle.
   app.get('/api/domain-routing', (_req: Request, res: Response) => {
     try {
-      const { getDomainProviderConfig, isGeminiRoutingEnabled } = require('../services/domain-provider-router');
+      const {
+        getDomainProviderConfig,
+        isGeminiRoutingEnabled,
+        isGeminiIncludeSecretaryEnabled,
+      } = require('../services/domain-provider-router');
       const { getEffectiveDomainModel } = require('../services/model-config');
+      const { isGeminiProviderConfigured } = require('../services/gemini-provider');
       const domains = getDomainProviderConfig();
-      // Enrich with effective model per domain
-      const enriched = domains.map((d: any) => ({
+      // Enrich each row with the actual model name the provider would use
+      const enriched = domains.map((d: { domain: string; provider: string }) => ({
         ...d,
-        model: (() => { try { return getEffectiveDomainModel?.(d.provider, d.domain) || 'default'; } catch { return 'default'; } })(),
+        model: (() => {
+          try { return getEffectiveDomainModel?.(d.provider, d.domain) || 'default'; }
+          catch { return 'default'; }
+        })(),
       }));
-      res.json({ domains: enriched, geminiRoutingEnabled: isGeminiRoutingEnabled() });
+      res.json({
+        domains: enriched,
+        geminiRoutingEnabled: isGeminiRoutingEnabled(),
+        geminiIncludeSecretary: isGeminiIncludeSecretaryEnabled(),
+        geminiConfigured: (() => { try { return isGeminiProviderConfigured(); } catch { return false; } })(),
+      });
     } catch (err) {
-      res.json({ domains: [], geminiRoutingEnabled: false });
+      res.json({
+        domains: [],
+        geminiRoutingEnabled: false,
+        geminiIncludeSecretary: false,
+        geminiConfigured: false,
+      });
     }
   });
 
   // POST /api/domain-routing/toggle — toggle Gemini routing at runtime
+  //
+  // Body accepts any subset of:
+  //   { enabled: boolean }                — master Gemini routing on/off
+  //   { includeSecretary: boolean }        — also route secretary through Gemini
+  //   { domains: string[] }                — narrow the per-domain set
+  //
+  // After mutating any flag, clears the TaskRoutingProvider's cached
+  // domain→pair map so the next request picks up the new config without a
+  // pm2 restart.
   app.post('/api/domain-routing/toggle', express.json(), (req: Request, res: Response) => {
     try {
-      const { enabled, domains: geminiDomains } = req.body;
+      const { enabled, includeSecretary, domains: geminiDomains } = req.body;
       const VALID_DOMAINS = new Set(['secretary', 'triathlon', 'content', 'finance', 'cooking']);
       const router = require('../services/domain-provider-router');
 
       if (typeof enabled === 'boolean') {
         router.setGeminiRoutingEnabled(enabled);
       }
+      if (typeof includeSecretary === 'boolean') {
+        router.setGeminiIncludeSecretary(includeSecretary);
+      }
       if (Array.isArray(geminiDomains)) {
         // Validate: only accept known domain names
         const validated = geminiDomains.filter((d: unknown) => typeof d === 'string' && VALID_DOMAINS.has(d));
         router.setGeminiDomains(validated);
-        // Clear cached provider pairs so new routing takes effect immediately
-        try {
-          const { getActiveProvider } = require('../services/provider-registry');
-          const active = getActiveProvider();
-          if (active && typeof (active as any).clearDomainPairCache === 'function') {
-            (active as any).clearDomainPairCache();
-          }
-        } catch {}
       }
-      res.json({ ok: true, config: router.getDomainProviderConfig() });
+
+      // Always clear the cached provider pairs so any flag change takes effect immediately
+      try {
+        const { getActiveProvider } = require('../services/provider-registry');
+        const active = getActiveProvider();
+        if (active && typeof (active as { clearDomainPairCache?: () => void }).clearDomainPairCache === 'function') {
+          (active as { clearDomainPairCache: () => void }).clearDomainPairCache();
+        }
+      } catch {}
+
+      res.json({
+        ok: true,
+        config: router.getDomainProviderConfig(),
+        geminiRoutingEnabled: router.isGeminiRoutingEnabled(),
+        geminiIncludeSecretary: router.isGeminiIncludeSecretaryEnabled(),
+      });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }

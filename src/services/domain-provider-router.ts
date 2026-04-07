@@ -58,6 +58,13 @@ let _geminiRoutingEnabled = true;
 const DEFAULT_GEMINI_DOMAINS = ['triathlon', 'content', 'finance', 'cooking'];
 let _geminiDomains = new Set<string>(DEFAULT_GEMINI_DOMAINS);
 
+// Override flag — when true, even the secretary domain routes to Gemini.
+// This is used during evaluation runs where the operator wants to test Gemini's
+// tool-use quality on secretary workloads (the most demanding domain). Default
+// false because Claude's tool-use is typically more reliable; flip on via the
+// portal "Include Secretary in Gemini" toggle or GEMINI_INCLUDE_SECRETARY=true.
+let _geminiIncludeSecretary = false;
+
 /** Initialize from environment or kv_store */
 export function initDomainRouting(): void {
   // Env override — only disables if explicitly set to 'false'. Any other value
@@ -66,6 +73,13 @@ export function initDomainRouting(): void {
     _geminiRoutingEnabled = false;
   } else if (process.env.GEMINI_ROUTING_ENABLED === 'true') {
     _geminiRoutingEnabled = true;
+  }
+
+  // Env override for the include-secretary flag (off by default)
+  if (process.env.GEMINI_INCLUDE_SECRETARY === 'true') {
+    _geminiIncludeSecretary = true;
+  } else if (process.env.GEMINI_INCLUDE_SECRETARY === 'false') {
+    _geminiIncludeSecretary = false;
   }
 
   // Env can also narrow the domain set
@@ -81,6 +95,9 @@ export function initDomainRouting(): void {
     const row = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_routing_enabled'").get() as { value: string } | undefined;
     if (row) _geminiRoutingEnabled = row.value === 'true';
 
+    const includeSecRow = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_include_secretary'").get() as { value: string } | undefined;
+    if (includeSecRow) _geminiIncludeSecretary = includeSecRow.value === 'true';
+
     const domainsRow = db.prepare("SELECT value FROM kv_store WHERE key = 'gemini_domains'").get() as { value: string } | undefined;
     if (domainsRow && domainsRow.value) {
       _geminiDomains = new Set(domainsRow.value.split(',').map(d => d.trim()).filter(Boolean));
@@ -89,6 +106,7 @@ export function initDomainRouting(): void {
 
   logger.info({
     geminiRoutingEnabled: _geminiRoutingEnabled,
+    geminiIncludeSecretary: _geminiIncludeSecretary,
     geminiDomains: [..._geminiDomains],
   }, 'Domain provider routing initialized');
 }
@@ -113,6 +131,21 @@ export function setGeminiDomains(domains: string[]): void {
   logger.info({ domains }, 'Gemini domains updated');
 }
 
+/** Toggle whether secretary also routes through Gemini (persists to kv_store) */
+export function setGeminiIncludeSecretary(enabled: boolean): void {
+  _geminiIncludeSecretary = enabled;
+  try {
+    const { getDb } = require('./database');
+    getDb().prepare("INSERT OR REPLACE INTO kv_store (key, value) VALUES ('gemini_include_secretary', ?)").run(String(enabled));
+  } catch {}
+  logger.info({ enabled }, 'Gemini include-secretary toggled');
+}
+
+/** Whether the secretary domain currently routes through Gemini */
+export function isGeminiIncludeSecretaryEnabled(): boolean {
+  return _geminiIncludeSecretary;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────
 
 /**
@@ -120,10 +153,15 @@ export function setGeminiDomains(domains: string[]): void {
  * Respects the feature flag — if Gemini routing is disabled, returns 'anthropic' for all.
  */
 export function getProviderForDomain(domain: DomainName): ProviderName {
-  // Secretary ALWAYS stays on Anthropic
-  if (domain === 'secretary') return 'anthropic';
+  // Secretary normally stays on Anthropic for tool-use quality.
+  // Override only when the operator explicitly opts in via the
+  // include-secretary flag (used during evaluation runs).
+  if (domain === 'secretary') {
+    if (_geminiRoutingEnabled && _geminiIncludeSecretary) return 'gemini';
+    return 'anthropic';
+  }
 
-  // Check feature flag
+  // Check master feature flag
   if (!_geminiRoutingEnabled) return 'anthropic';
 
   // Check per-domain flag (gradual rollout)
@@ -141,20 +179,35 @@ export function getFallbackForDomain(domain: DomainName): ProviderName {
 
 /**
  * Get the full domain→provider config (for portal display).
+ *
+ * Returns one row per domain with the resolved primary provider, fallback
+ * provider, default provider (what the code says it should be), and a flag
+ * indicating whether Gemini is currently enabled for that domain. The portal
+ * uses this to render the routing table and the per-domain toggles.
  */
 export function getDomainProviderConfig(): Array<{
   domain: string;
   provider: ProviderName;
   fallback: ProviderName;
+  defaultProvider: ProviderName;
   geminiEnabled: boolean;
+  isSecretary: boolean;
 }> {
   const domains = ['secretary', 'triathlon', 'content', 'finance', 'cooking'];
-  return domains.map(domain => ({
-    domain,
-    provider: getProviderForDomain(domain as DomainName),
-    fallback: getFallbackForDomain(domain as DomainName),
-    geminiEnabled: _geminiRoutingEnabled && (_geminiDomains.size === 0 || _geminiDomains.has(domain)),
-  }));
+  return domains.map(domain => {
+    const isSecretary = domain === 'secretary';
+    const geminiEnabled = isSecretary
+      ? (_geminiRoutingEnabled && _geminiIncludeSecretary)
+      : (_geminiRoutingEnabled && (_geminiDomains.size === 0 || _geminiDomains.has(domain)));
+    return {
+      domain,
+      provider: getProviderForDomain(domain as DomainName),
+      fallback: getFallbackForDomain(domain as DomainName),
+      defaultProvider: DOMAIN_PROVIDER_MAP[domain] || 'anthropic',
+      geminiEnabled,
+      isSecretary,
+    };
+  });
 }
 
 /** Check if Gemini routing is currently enabled */
