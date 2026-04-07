@@ -17,6 +17,7 @@ import { notesRoutes } from './routes/notes';
 import { connectionRoutes } from './routes/connections';
 import { wearableRoutes } from './routes/wearable';
 import { usageRoutes } from './routes/usage';
+import { clientErrorsRoutes } from './routes/client-errors';
 
 /**
  * Creates the iOS API router.
@@ -45,6 +46,7 @@ export function createApiRouter(): Router {
         usage: 'GET /api/v1/usage, GET /api/v1/usage/range, GET /api/v1/usage/today',
         onboarding: 'GET/POST /api/v1/onboarding',
         settings: 'GET/PATCH /api/v1/settings',
+        clientErrors: 'POST /api/v1/client-errors',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -74,6 +76,11 @@ export function createApiRouter(): Router {
   router.use('/connections', connectionRoutes());
   router.use('/wearable', wearableRoutes());
   router.use('/usage', usageRoutes());
+
+  // Client error reporting (audit P0-9): write-only ingestion endpoint for
+  // iOS / web crash reports. JWT + rate-limit protected via the middleware
+  // chain above. Reads are admin-only and exposed via the portal, not here.
+  router.use('/client-errors', clientErrorsRoutes());
 
   // Content includes both data lookups (pipeline) and one AI generation
   // endpoint (POST /script). Mounting under one router for cohesion.
