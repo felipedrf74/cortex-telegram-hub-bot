@@ -1603,6 +1603,59 @@ table.legacy th {
         </table>
       </div>
 
+      <!-- ════════════════════ SECRETARY OPTIMIZATION (TASK-17) ═══════════ -->
+      <!--
+        Live operational metrics for the 4-layer secretary token optimization.
+        Counters are in-process and reset on pm2 restart, so this is a
+        rolling-window snapshot, not a billing record.
+
+        Rows:
+          1. Fastpath hit rate — % of secretary messages handled with zero
+             AI tokens. Healthy: 30-50%. Below 30% suggests the pattern
+             dictionary is missing common phrasings the user actually sends.
+          2. Avg fastpath latency — should be sub-100ms for pure DB reads,
+             higher when handlers call out to MS Graph / Outlook APIs.
+          3. Per-pattern hit counts — which fastpath patterns are pulling
+             their weight. Patterns with 0 hits are dead weight.
+      -->
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">⚡ Secretary Optimization (TASK-17)</div>
+          <span class="card-subtitle" id="secretary-opt-summary">Loading…</span>
+        </div>
+
+        <div class="grid grid-cols-3" style="padding: var(--space-3) var(--space-4);">
+          <div class="kpi-card">
+            <div class="kpi-label">Fastpath Hit Rate</div>
+            <div class="kpi-value" id="secretary-opt-hit-rate">—</div>
+            <div class="kpi-sub" id="secretary-opt-hits-total">— / — attempts</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Avg Fastpath Latency</div>
+            <div class="kpi-value" id="secretary-opt-latency">—</div>
+            <div class="kpi-sub">ms (target: &lt;100)</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Patterns Registered</div>
+            <div class="kpi-value" id="secretary-opt-pattern-count">—</div>
+            <div class="kpi-sub">in fastpath dictionary</div>
+          </div>
+        </div>
+
+        <table class="legacy" id="secretary-opt-patterns">
+          <thead>
+            <tr>
+              <th>Pattern</th>
+              <th class="text-right">Hits</th>
+              <th class="text-right">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="3"><div class="empty">Loading…</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+
       <div class="grid grid-cols-2 mt-4">
         <div class="card">
           <div class="card-header">
@@ -2844,6 +2897,77 @@ table.legacy th {
     }
   }
 
+  // ════════════════════════════════════════════════════════════
+  // Secretary Optimization (TASK-17 Layer 1+ metrics)
+  // ════════════════════════════════════════════════════════════
+  //
+  // Polls /api/secretary-metrics on the same 30s timer as the rest of
+  // the AI section. Renders three KPI cards (hit rate / latency /
+  // pattern count) and a per-pattern hit table. Counters are in-memory
+  // on the backend so they reset on pm2 restart — that's expected for
+  // operational telemetry. Non-fatal: if the endpoint errors, the card
+  // shows "—" placeholders and the rest of the dashboard keeps working.
+  async function loadSecretaryOptimization() {
+    try {
+      const r = await apiFetch('/api/secretary-metrics');
+      if (!r.ok) return;
+      const d = await r.json();
+      const fp = d.fastpath || {};
+
+      const hitRate = fp.hitRate || 0;
+      const hitRatePct = (hitRate * 100).toFixed(1) + '%';
+      const totalAttempts = fp.totalAttempts || 0;
+      const totalHits = fp.totalHits || 0;
+      const avgLatency = Math.round(fp.avgLatencyMs || 0);
+      const patterns = Array.isArray(fp.registeredPatterns) ? fp.registeredPatterns : [];
+      const hits = fp.hitsByPattern || {};
+
+      // KPI tiles
+      const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+      setText('secretary-opt-hit-rate', totalAttempts > 0 ? hitRatePct : '—');
+      setText('secretary-opt-hits-total', totalHits + ' / ' + totalAttempts + ' attempts');
+      setText('secretary-opt-latency', avgLatency > 0 ? String(avgLatency) : '—');
+      setText('secretary-opt-pattern-count', String(patterns.length));
+
+      // Header summary (uses the same color-coded thresholds documented
+      // in the API endpoint comment: >50% excellent, 30-50% healthy, <30% needs work)
+      const summary = document.getElementById('secretary-opt-summary');
+      if (summary) {
+        if (totalAttempts === 0) {
+          summary.textContent = 'No attempts yet — send a message to populate';
+        } else {
+          const verdict = hitRate >= 0.5 ? '✓ excellent' : hitRate >= 0.3 ? '· healthy' : '⚠ needs more patterns';
+          summary.textContent = totalHits + ' fastpath hits saved AI calls · ' + verdict;
+        }
+      }
+
+      // Per-pattern table — sorted by hit count descending
+      const tbody = document.querySelector('#secretary-opt-patterns tbody');
+      if (!tbody) return;
+      const rows = patterns
+        .map((p) => ({ id: p, count: hits[p] || 0 }))
+        .sort((a, b) => b.count - a.count);
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3"><div class="empty">No patterns registered</div></td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows
+        .map((row) => {
+          const share = totalHits > 0 ? ((row.count / totalHits) * 100).toFixed(0) + '%' : '—';
+          const muted = row.count === 0 ? ' style="opacity:0.5"' : '';
+          return '<tr' + muted + '>' +
+            '<td><code style="font-size:11px">' + esc(row.id) + '</code></td>' +
+            '<td class="text-right">' + row.count + '</td>' +
+            '<td class="text-right card-subtitle">' + share + '</td>' +
+          '</tr>';
+        })
+        .join('');
+    } catch (err) {
+      const tbody = document.querySelector('#secretary-opt-patterns tbody');
+      if (tbody) tbody.innerHTML = '<tr><td colspan="3"><div class="empty">Failed to load metrics</div></td></tr>';
+    }
+  }
+
   // Helper: POST to /api/domain-routing/toggle and refresh the view
   async function postRoutingChange(body, successMessage) {
     try {
@@ -3499,6 +3623,7 @@ table.legacy th {
     pollAll();
     loadModelConfig();
     loadDomainRouting();
+    loadSecretaryOptimization();
     loadQualityScores();
     loadErrorDist();
     loadCostByDomain();
@@ -3515,6 +3640,7 @@ table.legacy th {
     secondaryTimer = setInterval(() => {
       loadModelConfig();
       loadDomainRouting();
+      loadSecretaryOptimization();
       loadProviderHealth();
       loadQualityScores();
       loadErrorDist();

@@ -136,13 +136,17 @@ describe('Sub-Skill Architecture — anthropic.ts integration wiring', () => {
     expect(anthropicTs).toContain('getToolsForDomain(domain, TOOLS, serviceAvailabilityFilter)');
   });
 
-  it('callDomain uses per-domain tool filtering', () => {
-    expect(anthropicTs).toContain('getToolsForDomainCached(domain)');
+  it('callDomain uses per-domain + per-message tool filtering', () => {
+    // Layer 3 of TASK-17 introduced getToolsForCall(domain, currentMessage)
+    // which wraps the per-domain filter with message-intent narrowing.
+    // Both callDomain and continueWithToolResults must use the wrapper so
+    // the tool list is consistent across the tool loop iterations.
+    expect(anthropicTs).toContain('getToolsForCall(domain, currentMessage)');
   });
 
-  it('continueWithToolResults also uses per-domain tool filtering', () => {
+  it('continueWithToolResults also uses per-message tool filtering', () => {
     // Should appear at least twice (callDomain + continueWithToolResults)
-    const matches = anthropicTs.match(/getToolsForDomainCached\(domain\)/g) || [];
+    const matches = anthropicTs.match(/getToolsForCall\(domain, currentMessage\)/g) || [];
     expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 

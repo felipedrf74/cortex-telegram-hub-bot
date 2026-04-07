@@ -465,6 +465,7 @@ function repairTruncatedCalendarJson(text: string): ImageCalendarResult | null {
 // ─── Dynamic Tool Filtering ─────────────────────────────────────────
 
 import { getToolsForDomain } from '../skills/skill-manager';
+import { getFilteredToolsForMessage, secretaryNeedsSonnet } from './secretary-tools';
 
 /** Service availability filter — removes tools for unconfigured services. */
 function serviceAvailabilityFilter(tool: Anthropic.Tool): boolean {
@@ -487,21 +488,60 @@ function getToolsForDomainCached(domain: DomainName): Anthropic.Tool[] {
   return getToolsForDomain(domain, TOOLS, serviceAvailabilityFilter);
 }
 
+/**
+ * Layer 3 wrapper: returns the per-domain tool array narrowed further by
+ * the message intent. For secretary, filters via `getToolPacksForMessage`
+ * — typical reduction from 25 tools → 3-8 tools. For other domains,
+ * passes through unchanged (their per-domain filtering already lives in
+ * the skill manager).
+ */
+function getToolsForCall(domain: DomainName, message: string): Anthropic.Tool[] {
+  const domainTools = getToolsForDomainCached(domain);
+  return getFilteredToolsForMessage(domain, message, domainTools);
+}
+
 // Legacy fallback: global filtered tools for any code still using getCachedTools
 let _cachedToolsArray: Anthropic.Tool[] | null = null;
 
 // ─── Model selection helpers ─────────────────────────────────────────
 
-function getModelForDomain(domain: DomainName): string {
-  // Check for domain-specific override first
+/**
+ * Layer 4: Adaptive model selection.
+ *
+ * Secretary historically pinned to Sonnet 4.6 ($3/$15 per MTK). Layer 4
+ * inspects the message and routes simple data-read queries to Haiku 4.5
+ * ($0.80/$4 per MTK — about 1/3 the cost) while complex reasoning stays
+ * on Sonnet. The classifier (`secretaryNeedsSonnet`) lives in
+ * secretary-tools.ts so Layer 2 + 3 + 4 share one source of truth for
+ * the keyword logic.
+ *
+ * The optional `message` argument exists so old call sites that don't
+ * pass it (e.g. continuation calls inside a tool loop) keep behaving the
+ * same — they fall through to Sonnet, which is also the safe default.
+ *
+ * Override precedence:
+ *   1. Per-domain model override from kv_store (admin portal)
+ *   2. Adaptive Haiku/Sonnet (this function, when message provided)
+ *   3. Static tier default (Sonnet for secretary, Haiku for rest)
+ */
+function getModelForDomain(domain: DomainName, message?: string): string {
+  // Check for domain-specific override first — operator can pin a specific
+  // model from the portal regardless of message content
   try {
     const { getDomainModelOverride } = require('./model-config');
     const override = getDomainModelOverride('anthropic', domain);
     if (override) return override;
   } catch { /* model-config not loaded yet */ }
 
-  // Tier-based routing: Sonnet for secretary, Haiku for everything else
-  if (domain === 'secretary') return config.anthropic.model;
+  // Layer 4: adaptive routing for secretary
+  if (domain === 'secretary') {
+    if (message && !secretaryNeedsSonnet(message)) {
+      return config.anthropic.classifierModel; // Haiku — ~1/3 cost
+    }
+    return config.anthropic.model; // Sonnet — full reasoning
+  }
+
+  // Other domains keep using the classifier model (Haiku) by default
   return config.anthropic.classifierModel;
 }
 
@@ -581,9 +621,22 @@ export async function callDomain(
     const knowledgeBlock = buildKnowledgePromptBlock();
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
-  // Per-domain tool filtering via sub-skill system
-  const domainTools = getToolsForDomainCached(domain);
+  // Layer 3: per-domain + per-message tool filtering. For secretary this
+  // narrows ~25 tools down to 3-8 by intent (saves ~3,000 input tokens).
+  // For other domains, getToolsForCall passes through unchanged.
+  const domainTools = getToolsForCall(domain, currentMessage);
   const useTools = domainTools.length > 0;
+
+  // Layer 5: history reduction for simple secretary queries.
+  // The full 10-message history (~2,000 tokens) is overkill for "show my
+  // tasks" — Haiku doesn't need that much context to answer. Simple
+  // queries get the last 2 turns (4 messages) instead of 10. Complex
+  // queries keep the full history because Sonnet uses it for reasoning
+  // continuity across multi-step plans.
+  let historyToSend = history;
+  if (domain === 'secretary' && !secretaryNeedsSonnet(currentMessage)) {
+    historyToSend = history.slice(-4);
+  }
 
   // Prompt caching: static system prompt cached, dynamic state in user message
   const system: Anthropic.TextBlockParam[] = [
@@ -593,14 +646,14 @@ export async function callDomain(
   // State context prepended to user message (keeps system prompt cacheable)
   const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
   const messages: Anthropic.MessageParam[] = [
-    ...history.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user' as const, content: `${contextPrefix}${currentMessage}` },
   ];
 
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
-      model: getModelForDomain(domain),
+      model: getModelForDomain(domain, currentMessage),
       max_tokens: maxTokensOverride || getMaxTokensForDomain(domain),
       system,
       messages,
@@ -644,19 +697,32 @@ export async function continueWithToolResults(
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ];
 
+  // Layer 5: same history-reduction logic as the initial callDomain.
+  // Must use the SAME criteria so the tool loop sees a consistent
+  // history shape across iterations (otherwise the model could lose
+  // a tool_use block referenced by a tool_result).
+  let historyToSend = history;
+  if (domain === 'secretary' && !secretaryNeedsSonnet(currentMessage)) {
+    historyToSend = history.slice(-4);
+  }
+
   const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
   const messages: Anthropic.MessageParam[] = [
-    ...history.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user', content: `${contextPrefix}${currentMessage}` },
     ...toolConversation,
   ];
 
-  const domainTools = getToolsForDomainCached(domain);
+  // Layer 3: same per-message tool filtering as the initial callDomain.
+  // Critical: must use the SAME currentMessage so the tool set is stable
+  // across iterations of the tool loop — otherwise the AI could be told
+  // about a tool on call 1 and lose access to it on call 2.
+  const domainTools = getToolsForCall(domain, currentMessage);
   const useTools = domainTools.length > 0;
   let response: Anthropic.Message;
   try {
     response = await trackedCreate(client, {
-      model: getModelForDomain(domain),
+      model: getModelForDomain(domain, currentMessage),
       max_tokens: getMaxTokensForDomain(domain),
       system,
       messages,

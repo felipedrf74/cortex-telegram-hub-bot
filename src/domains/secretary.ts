@@ -13,49 +13,98 @@ import { getSharedMemorySummary } from '../state/shared-memory';
 import { isGarminConfigured, getActivitiesByDate, getBodyBatteryEvents, GarminActivity } from '../services/garmin';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
+import { tryFastpath } from '../services/secretary-fastpath';
+import { analyzeIntent } from '../services/secretary-tools';
 import Anthropic from '@anthropic-ai/sdk';
 
 const DOMAIN: DomainName = 'secretary';
 
-// Short-lived cache for state context — avoids redundant API calls on rapid messages
-let _stateContextCache: { value: string; expiresAt: number } | null = null;
+// Short-lived cache for state context — avoids redundant API calls on rapid messages.
+// Layer 2: cache is now keyed by the message-driven "context shape" (which sources
+// were actually fetched) so that switching from "show tasks" to "what's my week"
+// invalidates the cache instead of returning stale partial data.
+let _stateContextCache: { value: string; expiresAt: number; shape: string } | null = null;
 const STATE_CONTEXT_TTL = 30_000; // 30 seconds
 
-async function buildStateContext(): Promise<string> {
-  if (_stateContextCache && Date.now() < _stateContextCache.expiresAt) {
-    return _stateContextCache.value;
-  }
+/**
+ * Test-only: clear the in-process state context cache so each test starts
+ * with a fresh fetch path. Production code never needs this — the cache
+ * naturally expires after STATE_CONTEXT_TTL or when the shape changes.
+ */
+export function _resetStateContextCacheForTesting(): void {
+  _stateContextCache = null;
+}
 
-  const parts: string[] = [];
-  parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
-
+/**
+ * Layer 2: Smart Context Selection.
+ *
+ * Instead of fetching ALL six data sources on every message, analyze the
+ * message intent and only fetch what's needed. The keyword classifier is
+ * the same one Layer 3 uses for tool selection (single source of truth).
+ *
+ * Token economics:
+ *   - Before: ~2,500 tokens of state context on every call
+ *   - After:  ~300-1,500 tokens depending on which sources were needed
+ *   - Saving: ~1,000-2,000 tokens per call
+ *
+ * Cache shape key: when an ambiguous message loads everything, the cache
+ * value is reusable for any subsequent intent. When a specific intent
+ * loads only one source, the cache is only valid for the same shape — so
+ * a "show tasks" cache hit on a follow-up "what's my week" would miss
+ * (calendar wasn't loaded the first time) and re-run with calendar.
+ */
+async function buildStateContext(message: string = ''): Promise<string> {
   // Check which sub-skills are enabled to skip unnecessary API calls
   const tasksEnabled = isSubmoduleEnabled('secretary', 'tasks');
   const calendarEnabled = isSubmoduleEnabled('secretary', 'calendar');
   const emailEnabled = isSubmoduleEnabled('secretary', 'email');
   const remindersEnabled = isSubmoduleEnabled('secretary', 'reminders');
 
+  // Layer 2: figure out which data sources the message actually needs.
+  // Ambiguous queries (short follow-ups, freeform questions) load everything
+  // — same behavior as before the optimization. Specific queries load just
+  // their slice. Garmin always loads if Garmin is configured because the
+  // training context is cheap and useful for cross-domain reasoning.
+  const intent = analyzeIntent(message);
+  const needs = {
+    tasks: intent.ambiguous || intent.tasks,
+    calendar: intent.ambiguous || intent.calendar,
+    email: intent.ambiguous || intent.email,
+    reminders: intent.ambiguous || intent.reminders || intent.tasks, // reminders are cheap, often paired with tasks
+    garmin: intent.ambiguous || intent.garmin,
+  };
+
+  // Cache shape key — invalidates when the set of fetched sources changes
+  const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}`;
+
+  if (_stateContextCache && _stateContextCache.shape === shape && Date.now() < _stateContextCache.expiresAt) {
+    return _stateContextCache.value;
+  }
+
+  const parts: string[] = [];
+  parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
+
   // Build date range for Garmin: last 3 days
   const today = now();
   const threeDaysAgo = today.minus({ days: 3 }).toFormat('yyyy-MM-dd');
   const todayStr = today.toFormat('yyyy-MM-dd');
 
-  // Fetch all data sources in parallel (skip disabled sub-skills)
+  // Fetch only what `needs` says we need (skip disabled sub-skills + skip unneeded sources)
   const [todoResult, reminders, calendarResult, unreadResult, garminActivities, garminBodyBattery] = await Promise.all([
-    tasksEnabled && isOutlookTodoConfigured()
+    needs.tasks && tasksEnabled && isOutlookTodoConfigured()
       ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
-    remindersEnabled ? Promise.resolve(getRemindersForToday(0)) : Promise.resolve([]),
-    calendarEnabled && isAnyCalendarConfigured()
+    needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(0)) : Promise.resolve([]),
+    needs.calendar && calendarEnabled && isAnyCalendarConfigured()
       ? getEvents(startOfDay(), endOfDay()).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
-    emailEnabled && isOutlookMailConfigured()
+    needs.email && emailEnabled && isOutlookMailConfigured()
       ? getUnreadCount().catch(() => null)
       : Promise.resolve(null),
-    isGarminConfigured()
+    needs.garmin && isGarminConfigured()
       ? getActivitiesByDate(threeDaysAgo, todayStr).catch(() => [] as GarminActivity[])
       : Promise.resolve([] as GarminActivity[]),
-    isGarminConfigured()
+    needs.garmin && isGarminConfigured()
       ? getBodyBatteryEvents(todayStr).catch(() => null)
       : Promise.resolve(null),
   ]);
@@ -173,14 +222,38 @@ async function buildStateContext(): Promise<string> {
   if (sharedCtx) parts.push(sharedCtx);
 
   const result = parts.join('\n');
-  _stateContextCache = { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL };
+  _stateContextCache = { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL, shape };
   return result;
 }
 
 export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
   const uid = userId ?? 0;
+
+  // ── Layer 1: Command Fastpath ──────────────────────────────────
+  // Intercept deterministic data-read patterns before any AI call.
+  // Identical Telegram-HTML output to the AI path; users can't tell the
+  // difference. Errors fall through to the AI path automatically.
+  // See src/services/secretary-fastpath.ts for the pattern dictionary.
+  const fastpath = await tryFastpath(uid, message);
+  if (fastpath.matched && fastpath.response) {
+    // Record in conversation history so the next AI turn has context
+    // about what the user just asked. Tag the assistant message with the
+    // pattern id so future debugging can spot fastpath responses in logs.
+    addToConversation(uid, DOMAIN, 'user', message);
+    addToConversation(
+      uid,
+      DOMAIN,
+      'assistant',
+      `[fastpath:${fastpath.patternId}]\n${fastpath.response.text}`,
+    );
+    return fastpath.response;
+  }
+
   const history = getConversationHistory(uid, DOMAIN);
-  const stateContext = await buildStateContext();
+  // Layer 2: pass the message so buildStateContext can fetch only what
+  // the message actually needs (saves ~1,000-2,000 input tokens on
+  // intent-typed queries; ambiguous queries fall back to fetching all).
+  const stateContext = await buildStateContext(message);
 
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;

@@ -2074,6 +2074,51 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/secretary-metrics — TASK-17 4-layer optimization stats
+  //
+  // Returns a snapshot of the in-memory metrics from secretary-fastpath.ts
+  // (Layer 1) plus a count of registered fastpath patterns. The portal's
+  // Secretary Optimization card polls this on the same 30s timer as the
+  // rest of the AI section. Counters reset on pm2 restart — this is
+  // operational telemetry, not a billing record.
+  //
+  // Hit-rate interpretation guide:
+  //   - >50% : excellent — most secretary traffic is zero-token
+  //   - 30-50%: healthy — patterns covering common queries
+  //   - <30% : pattern dictionary likely missing common phrasings;
+  //            consider adding patterns for whatever the AI is handling
+  //            most often (check the cost-by-skill table for hints)
+  app.get('/api/secretary-metrics', (_req: Request, res: Response) => {
+    try {
+      const { getFastpathMetrics, getFastpathPatterns } = require('../services/secretary-fastpath');
+      const metrics = getFastpathMetrics();
+      res.json({
+        ok: true,
+        fastpath: {
+          totalAttempts: metrics.totalAttempts,
+          totalHits: metrics.totalHits,
+          hitRate: metrics.hitRate,
+          avgLatencyMs: metrics.avgLatencyMs,
+          hitsByPattern: metrics.hitsByPattern,
+          registeredPatterns: getFastpathPatterns(),
+        },
+      });
+    } catch (err) {
+      res.json({
+        ok: false,
+        message: (err as Error).message,
+        fastpath: {
+          totalAttempts: 0,
+          totalHits: 0,
+          hitRate: 0,
+          avgLatencyMs: 0,
+          hitsByPattern: {},
+          registeredPatterns: [],
+        },
+      });
+    }
+  });
+
   // GET /api/model-config — current model state for all providers
   app.get('/api/model-config', (_req: Request, res: Response) => {
     try {

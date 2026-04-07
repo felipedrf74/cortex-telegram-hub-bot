@@ -129,8 +129,13 @@ describe('handleSecretary', () => {
       stopReason: 'end_turn',
     } as any);
 
-    await handleSecretary('Check email');
-    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'user', 'Check email');
+    // Use a phrasing that does NOT match any TASK-17 Layer 1 fastpath
+    // pattern, so this test exercises the full AI flow it was designed
+    // for. "Triage my emails today" → no fastpath match → AI path runs
+    // → mocked callDomain returns 'Done.' → addToConversation gets the
+    // raw assistant text (no fastpath wrapper).
+    await handleSecretary('Triage my email backlog');
+    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'user', 'Triage my email backlog');
     expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'assistant', 'Done.');
   });
 
