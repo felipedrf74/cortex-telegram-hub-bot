@@ -1,5 +1,7 @@
 <!DOCTYPE html>
-<html lang="en">
+<!-- Default lang = pt (Portuguese). The language toggle in the nav swaps every
+     translatable string and updates the <html lang> attribute on the fly. -->
+<html lang="pt">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
@@ -7,12 +9,12 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0A0A0B">
 
-  <title>Nexus Hub — The AI that actually connects your life</title>
-  <meta name="description" content="One AI that reads your calendar, tasks, training, content pipeline, and wearable — then understands how they affect each other. Stop managing 12 apps. Built for creators, solopreneurs, and anyone with ADHD.">
+  <title>Nexus Hub — A IA que finalmente conecta a tua vida</title>
+  <meta name="description" content="Uma IA que lê o teu calendário, tarefas, treinos, pipeline de conteúdo e wearable — e percebe como tudo se afecta. Pára de gerir 12 apps. Feito para criadores, solopreneurs e quem tem TDAH.">
 
-  <!-- Open Graph + Twitter cards -->
-  <meta property="og:title" content="Nexus Hub — The AI that actually connects your life">
-  <meta property="og:description" content="Your HRV is low. Your hard workout just moved to Thursday. Your deep-work block shifted to Tuesday morning. Nexus Hub is the first AI that crosses fitness, tasks, calendar, and content.">
+  <!-- Open Graph + Twitter cards (PT defaults; SPA-like swap updates them on language change) -->
+  <meta property="og:title" content="Nexus Hub — A IA que finalmente conecta a tua vida">
+  <meta property="og:description" content="O teu HRV está baixo. O treino pesado passou para quinta. O bloco de deep-work passou para terça de manhã. Nexus Hub é a primeira IA que cruza fitness, tarefas, calendário e conteúdo.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://nexushub.me">
   <meta name="twitter:card" content="summary_large_image">
@@ -176,6 +178,40 @@
                   transform var(--duration-fast) var(--ease-out);
     }
     .nav__cta:hover { background: var(--brand-400); transform: translateY(-1px); }
+
+    /* ─── LANGUAGE TOGGLE (segmented PT | EN switch) ─────────── */
+    /* Sits in the nav between the link cluster and the CTA. Two
+       buttons styled as a single pill — the active one fills with the
+       brand color, the inactive one is muted. Persists choice in
+       localStorage so the user only picks once. */
+    .lang-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0;
+      padding: 2px;
+      background: var(--bg-overlay);
+      border: 1px solid var(--border-default);
+      border-radius: var(--r-full);
+      margin-right: var(--s-3);
+    }
+    .lang-toggle__btn {
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      border-radius: var(--r-full);
+      transition: color var(--duration-fast) var(--ease-out),
+                  background var(--duration-fast) var(--ease-out);
+      font-family: var(--font-mono);
+    }
+    .lang-toggle__btn:hover { color: var(--text-secondary); }
+    .lang-toggle__btn[aria-pressed="true"] {
+      background: var(--brand-500);
+      color: var(--bg-canvas);
+    }
+    .lang-toggle__btn[aria-pressed="true"]:hover { color: var(--bg-canvas); }
 
     /* ─── HERO ───────────────────────────────────────────────── */
     .hero {
@@ -907,17 +943,24 @@
   <!-- ═══════════════════ NAV ═══════════════════ -->
   <nav class="nav">
     <div class="container nav__inner">
-      <a href="#" class="brand" aria-label="Nexus Hub home">
+      <a href="#" class="brand" aria-label="Nexus Hub">
         <span class="brand__mark">N</span>
         <span>Nexus Hub</span>
       </a>
       <div class="nav__links">
-        <a href="#how">How it works</a>
-        <a href="#integrations">Integrations</a>
-        <a href="#pricing">Pricing</a>
-        <a href="#faq">FAQ</a>
+        <a href="#how" data-i18n="nav.how">Como funciona</a>
+        <a href="#integrations" data-i18n="nav.integrations">Integrações</a>
+        <a href="#pricing" data-i18n="nav.pricing">Preços</a>
+        <a href="#faq" data-i18n="nav.faq">FAQ</a>
       </div>
-      <a href="#waitlist" class="nav__cta">Reserve your slot →</a>
+      <div style="display: flex; align-items: center;">
+        <!-- Language toggle: PT is the default. State persists in localStorage. -->
+        <div class="lang-toggle" role="group" aria-label="Language">
+          <button type="button" class="lang-toggle__btn" data-lang="pt" aria-pressed="true">PT</button>
+          <button type="button" class="lang-toggle__btn" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <a href="#waitlist" class="nav__cta" data-i18n="nav.cta">Reservar lugar →</a>
+      </div>
     </div>
   </nav>
 
@@ -927,39 +970,45 @@
       <div class="hero__inner">
         <div class="hero__eyebrow">
           <span class="dot"></span>
-          <span>Pre-alpha · Founder pricing open</span>
+          <span data-i18n="hero.eyebrow">Pré-alpha · Preço de fundador aberto</span>
         </div>
 
-        <h1 class="hero__title">
-          One AI that actually <span class="accent">connects your life.</span>
+        <!-- Hero title contains a styled <span> so it uses data-i18n-html -->
+        <h1 class="hero__title" data-i18n-html="hero.title">
+          Uma IA que finalmente <span class="accent">conecta a tua vida.</span>
         </h1>
 
-        <p class="hero__subtitle">
-          Your calendar, tasks, training, content pipeline, and wearable —
-          all talking to each other. Built for creators, solopreneurs, and
-          anyone who's tired of juggling 12 productivity apps that don't know
-          the others exist.
+        <p class="hero__subtitle" data-i18n="hero.subtitle">
+          O teu calendário, tarefas, treinos, pipeline de conteúdo e wearable —
+          a falar todos uns com os outros. Feito para criadores, solopreneurs
+          e quem está farto de fazer malabarismo com 12 apps de produtividade
+          que não sabem que as outras existem.
         </p>
 
         <form class="form" id="hero-form" data-source="hero">
           <input
             type="email"
             class="form__input"
-            placeholder="you@example.com"
+            placeholder="tu@exemplo.com"
             name="email"
             required
             autocomplete="email"
-            aria-label="Email address">
-          <button type="submit" class="form__button">
-            Reserve founder slot →
+            data-i18n-placeholder="form.placeholder"
+            data-i18n-aria-label="form.email_label"
+            aria-label="Endereço de email">
+          <button type="submit" class="form__button" data-i18n="form.cta">
+            Reservar lugar de fundador →
           </button>
         </form>
 
         <div class="form__message" id="hero-form-message" aria-live="polite"></div>
 
         <div class="hero__counter" id="hero-counter">
-          <strong id="founder-filled">—</strong> of <strong>100</strong> founder slots reserved
-          <span class="dim">· $79/yr lifetime lock-in</span>
+          <strong id="founder-filled">—</strong>
+          <span data-i18n="hero.counter_of">de</span>
+          <strong>100</strong>
+          <span data-i18n="hero.counter_label">lugares de fundador reservados</span>
+          <span class="dim" data-i18n="hero.counter_price">· $79/ano para sempre</span>
         </div>
       </div>
     </div>
@@ -968,42 +1017,42 @@
   <!-- ═══════════════════ PROBLEM ═══════════════════ -->
   <section class="section section--alt">
     <div class="container">
-      <div class="section__label">The problem</div>
-      <h2 class="section__title">You're running your life across 12 apps that don't talk.</h2>
-      <p class="section__subtitle">
-        Your calendar doesn't know you slept 5 hours last night. Your task manager
-        doesn't know you're filming on Thursday. Your training app doesn't know
-        you have a deadline. The mental load of keeping them in sync is the work.
+      <div class="section__label" data-i18n="problem.label">O problema</div>
+      <h2 class="section__title" data-i18n="problem.title">Estás a viver a tua vida em 12 apps que não falam entre si.</h2>
+      <p class="section__subtitle" data-i18n="problem.subtitle">
+        O teu calendário não sabe que dormiste 5 horas. O teu gestor de tarefas
+        não sabe que vais filmar quinta-feira. A tua app de treino não sabe que
+        tens uma deadline. A carga mental de os manter sincronizados é o trabalho.
       </p>
 
       <div class="problem-grid">
         <div class="problem-card">
           <div class="problem-card__icon">🧠</div>
-          <h3 class="problem-card__title">ADHD tax</h3>
-          <p class="problem-card__body">
-            Every switch between apps resets your working memory. By the time
-            you've opened Notion, Todoist, Google Calendar, Apple Health, and
-            your content spreadsheet, you've forgotten what you came in for.
+          <h3 class="problem-card__title" data-i18n="problem.card1_title">Imposto de TDAH</h3>
+          <p class="problem-card__body" data-i18n="problem.card1_body">
+            Cada troca entre apps faz reset à tua memória de trabalho. Quando já
+            abriste o Notion, o Todoist, o Google Calendar, o Apple Health e a
+            tua folha de conteúdo, já te esqueceste para que tinhas vindo.
           </p>
         </div>
 
         <div class="problem-card">
           <div class="problem-card__icon">⚡</div>
-          <h3 class="problem-card__title">Solopreneur scatter</h3>
-          <p class="problem-card__body">
-            You're a founder, a marketer, an athlete, a creator, and an operator.
-            Each role has its own tools. None of them know about the others.
-            The "integration" is you, retyping everything at 11pm.
+          <h3 class="problem-card__title" data-i18n="problem.card2_title">Dispersão de solopreneur</h3>
+          <p class="problem-card__body" data-i18n="problem.card2_body">
+            És fundador, marketeer, atleta, criador e operador. Cada papel tem
+            as suas ferramentas. Nenhuma sabe das outras. A "integração" és tu,
+            a reescrever tudo às 11 da noite.
           </p>
         </div>
 
         <div class="problem-card">
           <div class="problem-card__icon">🎬</div>
-          <h3 class="problem-card__title">Creator overwhelm</h3>
-          <p class="problem-card__body">
-            Ideas in one app, scripts in another, filming schedule on a third,
-            fitness routine on a fourth. You miss publish dates because your
-            body was tired and no tool saw it coming.
+          <h3 class="problem-card__title" data-i18n="problem.card3_title">Sobrecarga de criador</h3>
+          <p class="problem-card__body" data-i18n="problem.card3_body">
+            Ideias numa app, scripts noutra, calendário de filmagens numa terceira,
+            rotina de fitness numa quarta. Falhas datas de publicação porque o
+            teu corpo estava cansado e nenhuma ferramenta viu vir.
           </p>
         </div>
       </div>
@@ -1013,14 +1062,15 @@
   <!-- ═══════════════════ CROSS-DOMAIN SHOWCASE ═══════════════════ -->
   <section class="section" id="how">
     <div class="container">
-      <div class="section__label">The difference</div>
-      <h2 class="section__title">
-        This is what your AI actually sees every morning.
+      <div class="section__label" data-i18n="showcase.label">A diferença</div>
+      <h2 class="section__title" data-i18n="showcase.title">
+        Isto é o que a tua IA vê todas as manhãs.
       </h2>
-      <p class="section__subtitle">
-        Not marketing copy. This is the real context block Nexus Hub builds
-        every day at 5am and injects into every AI conversation — so it always
-        knows what's going on across your entire life before you even ask.
+      <p class="section__subtitle" data-i18n="showcase.subtitle">
+        Não é copy de marketing. Este é o bloco de contexto real que o Nexus Hub
+        constrói todos os dias às 5 da manhã e injecta em cada conversa com a IA
+        — para que ela saiba sempre o que se passa em toda a tua vida antes de
+        sequer perguntares.
       </p>
 
       <div class="showcase">
@@ -1028,46 +1078,47 @@
           <div class="showcase__dots">
             <span></span><span></span><span></span>
           </div>
-          <div class="showcase__title">daily-context.txt · auto-built 5:00 AM</div>
+          <div class="showcase__title" data-i18n="showcase.terminal_title">daily-context.txt · auto-construído 5:00 AM</div>
         </div>
-        <div class="showcase__body">
+        <!-- Showcase body uses data-i18n-html because each row contains styled spans -->
+        <div class="showcase__body" data-i18n-html="showcase.body">
           <div class="row">
-            <span class="label">TASKS:</span>
-            <span class="value">3 overdue</span>
-            <span class="dim">(edit podcast, review PR, tax filing),</span>
-            <span class="value">5 due this week</span>, <span class="value">12 pending</span>
+            <span class="label">TAREFAS:</span>
+            <span class="value">3 atrasadas</span>
+            <span class="dim">(editar podcast, rever PR, declaração de IRS),</span>
+            <span class="value">5 esta semana</span>, <span class="value">12 pendentes</span>
           </div>
           <div class="row">
-            <span class="label">CALENDAR:</span>
-            <span class="value">4 events today</span>
-            <span class="dim">(standup 9am, dev 11am, gym 6am, film 3pm)</span>
+            <span class="label">CALENDÁRIO:</span>
+            <span class="value">4 eventos hoje</span>
+            <span class="dim">(standup 9h, dev 11h, ginásio 6h, filmagem 15h)</span>
           </div>
           <div class="row">
-            <span class="label">TRAINING:</span>
-            <span class="value">Upper Body</span>
-            <span class="dim">today, readiness</span>
+            <span class="label">TREINO:</span>
+            <span class="value">Tronco superior</span>
+            <span class="dim">hoje, prontidão</span>
             <span class="value">72/100</span>
-            <span class="dim">(yellow), adherence</span>
+            <span class="dim">(amarelo), adesão</span>
             <span class="value">80%</span>
           </div>
           <div class="row">
-            <span class="label">CONTENT:</span>
-            <span class="value">3 ideas</span>
-            <span class="dim">in pipeline, "carnivore 30 days" due Thursday</span>
+            <span class="label">CONTEÚDO:</span>
+            <span class="value">3 ideias</span>
+            <span class="dim">em pipeline, "carnívoro 30 dias" para quinta</span>
           </div>
           <div class="row">
             <span class="label">WEARABLE:</span>
-            <span class="dim">Sleep</span>
+            <span class="dim">Sono</span>
             <span class="value">7.2h</span><span class="dim">, HRV</span>
             <span class="value">45ms</span>
-            <span class="dim">(below avg), BB</span>
+            <span class="dim">(abaixo da média), BB</span>
             <span class="value">65</span>
           </div>
         </div>
-        <div class="showcase__footer">
-          Every AI response starts from here. That's how it catches conflicts you
-          don't even see — <strong>"your HRV is low, move the hard workout to Thursday
-          and shift deep-work to Tuesday morning."</strong>
+        <div class="showcase__footer" data-i18n-html="showcase.footer">
+          Cada resposta da IA começa aqui. É assim que apanha conflitos que nem
+          tu vês — <strong>"o teu HRV está baixo, passa o treino pesado para
+          quinta e o bloco de deep-work para terça de manhã."</strong>
         </div>
       </div>
     </div>
@@ -1076,43 +1127,44 @@
   <!-- ═══════════════════ HOW IT WORKS ═══════════════════ -->
   <section class="section section--alt">
     <div class="container">
-      <div class="section__label">How it works</div>
-      <h2 class="section__title">Three layers. Zero lock-in.</h2>
-      <p class="section__subtitle">
-        You keep using the apps you love. Nexus Hub reads from all of them,
-        reasons across them, and writes back to whichever one you pick as your
-        default. Nothing gets trapped.
+      <div class="section__label" data-i18n="how.label">Como funciona</div>
+      <h2 class="section__title" data-i18n="how.title">Três camadas. Zero lock-in.</h2>
+      <p class="section__subtitle" data-i18n="how.subtitle">
+        Continuas a usar as apps que adoras. O Nexus Hub lê de todas elas,
+        raciocina entre elas, e escreve de volta para a que escolheres como
+        default. Nada fica preso.
       </p>
 
       <div class="steps">
         <div class="step">
           <div class="step__num">01</div>
-          <h3 class="step__title">Connect everything you already use</h3>
-          <p class="step__body">
+          <h3 class="step__title" data-i18n="how.step1_title">Liga tudo o que já usas</h3>
+          <p class="step__body" data-i18n="how.step1_body">
             Todoist, Microsoft To Do, Notion, Google Calendar, Outlook, Garmin,
-            Strava, Whoop, Apple Health. One OAuth click each. Your data stays
-            in your existing apps — we just aggregate.
+            Strava, Whoop, Apple Health. Um clique de OAuth em cada. Os teus
+            dados ficam nas apps que já tens — nós só agregamos.
           </p>
         </div>
 
         <div class="step">
           <div class="step__num">02</div>
-          <h3 class="step__title">The AI reads it all, constantly</h3>
-          <p class="step__body">
-            Every 15 minutes we pull incremental changes from each provider
-            and normalize them into one store. A daily context summary is
-            pre-built so every AI conversation starts with the full picture —
-            at a fixed token cost.
+          <h3 class="step__title" data-i18n="how.step2_title">A IA lê tudo, constantemente</h3>
+          <p class="step__body" data-i18n="how.step2_body">
+            A cada 15 minutos puxamos as alterações incrementais de cada provider
+            e normalizamos tudo num único store. Um resumo de contexto diário é
+            pré-construído para que cada conversa com a IA comece com o quadro
+            completo — a um custo fixo de tokens.
           </p>
         </div>
 
         <div class="step">
           <div class="step__num">03</div>
-          <h3 class="step__title">Ask anything in plain English</h3>
-          <p class="step__body">
-            "Plan my week." "What should I skip if HRV stays low?" "Move my
-            workout and find a recording slot." The AI writes changes back
-            to your default provider. No new tool to learn.
+          <h3 class="step__title" data-i18n="how.step3_title">Pergunta o que quiseres em linguagem natural</h3>
+          <p class="step__body" data-i18n="how.step3_body">
+            "Planeia a minha semana." "O que devo saltar se o HRV continuar baixo?"
+            "Move o meu treino e encontra um slot para gravar." A IA escreve as
+            mudanças de volta para o teu provider default. Sem ferramenta nova
+            para aprender.
           </p>
         </div>
       </div>
@@ -1122,26 +1174,27 @@
   <!-- ═══════════════════ INTEGRATIONS ═══════════════════ -->
   <section class="section" id="integrations">
     <div class="container">
-      <div class="section__label">Connects to</div>
-      <h2 class="section__title">Works with your existing stack.</h2>
-      <p class="section__subtitle">
-        Nexus Hub is the layer above — it doesn't replace your favorite apps,
-        it makes them finally work together. More integrations in beta.
+      <div class="section__label" data-i18n="integrations.label">Liga-se a</div>
+      <h2 class="section__title" data-i18n="integrations.title">Funciona com a tua stack actual.</h2>
+      <p class="section__subtitle" data-i18n="integrations.subtitle">
+        O Nexus Hub é a camada por cima — não substitui as tuas apps favoritas,
+        fá-las finalmente trabalhar em conjunto. Mais integrações em beta.
       </p>
 
       <div class="integrations-grid">
-        <div class="integration"><div class="integration__icon">✅</div><div><div class="integration__name">Todoist</div><div class="integration__tag">webhook · live sync</div></div></div>
-        <div class="integration"><div class="integration__icon">📓</div><div><div class="integration__name">Notion</div><div class="integration__tag">database mapping</div></div></div>
-        <div class="integration"><div class="integration__icon">📋</div><div><div class="integration__name">Microsoft To Do</div><div class="integration__tag">Graph API</div></div></div>
-        <div class="integration"><div class="integration__icon">📅</div><div><div class="integration__name">Google Calendar</div><div class="integration__tag">read · write</div></div></div>
-        <div class="integration"><div class="integration__icon">📧</div><div><div class="integration__name">Outlook + Gmail</div><div class="integration__tag">mail triage</div></div></div>
-        <div class="integration"><div class="integration__icon">⌚</div><div><div class="integration__name">Garmin Connect</div><div class="integration__tag">HRV · sleep · load</div></div></div>
-        <div class="integration"><div class="integration__icon">🏃</div><div><div class="integration__name">Strava</div><div class="integration__tag">activities</div></div></div>
-        <div class="integration"><div class="integration__icon">💪</div><div><div class="integration__name">Whoop</div><div class="integration__tag">recovery</div></div></div>
-        <div class="integration"><div class="integration__icon">🍎</div><div><div class="integration__name">Apple Health</div><div class="integration__tag">iOS bridge</div></div></div>
-        <div class="integration"><div class="integration__icon">💰</div><div><div class="integration__name">Finance tracker</div><div class="integration__tag">invoices · tax</div></div></div>
-        <div class="integration"><div class="integration__icon">🎬</div><div><div class="integration__name">Content pipeline</div><div class="integration__tag">YouTube · IG</div></div></div>
-        <div class="integration"><div class="integration__icon">💬</div><div><div class="integration__name">Telegram bot</div><div class="integration__tag">chat interface</div></div></div>
+        <!-- Integration brand names stay constant; only the descriptive tags need translation -->
+        <div class="integration"><div class="integration__icon">✅</div><div><div class="integration__name">Todoist</div><div class="integration__tag" data-i18n="integrations.todoist_tag">webhook · sync ao vivo</div></div></div>
+        <div class="integration"><div class="integration__icon">📓</div><div><div class="integration__name">Notion</div><div class="integration__tag" data-i18n="integrations.notion_tag">mapeamento de bases de dados</div></div></div>
+        <div class="integration"><div class="integration__icon">📋</div><div><div class="integration__name">Microsoft To Do</div><div class="integration__tag" data-i18n="integrations.msft_tag">Graph API</div></div></div>
+        <div class="integration"><div class="integration__icon">📅</div><div><div class="integration__name">Google Calendar</div><div class="integration__tag" data-i18n="integrations.gcal_tag">leitura · escrita</div></div></div>
+        <div class="integration"><div class="integration__icon">📧</div><div><div class="integration__name">Outlook + Gmail</div><div class="integration__tag" data-i18n="integrations.mail_tag">triagem de email</div></div></div>
+        <div class="integration"><div class="integration__icon">⌚</div><div><div class="integration__name">Garmin Connect</div><div class="integration__tag" data-i18n="integrations.garmin_tag">HRV · sono · carga</div></div></div>
+        <div class="integration"><div class="integration__icon">🏃</div><div><div class="integration__name">Strava</div><div class="integration__tag" data-i18n="integrations.strava_tag">actividades</div></div></div>
+        <div class="integration"><div class="integration__icon">💪</div><div><div class="integration__name">Whoop</div><div class="integration__tag" data-i18n="integrations.whoop_tag">recuperação</div></div></div>
+        <div class="integration"><div class="integration__icon">🍎</div><div><div class="integration__name">Apple Health</div><div class="integration__tag" data-i18n="integrations.apple_tag">ponte iOS</div></div></div>
+        <div class="integration"><div class="integration__icon">💰</div><div><div class="integration__name" data-i18n="integrations.finance_name">Tracker financeiro</div><div class="integration__tag" data-i18n="integrations.finance_tag">facturas · IRS</div></div></div>
+        <div class="integration"><div class="integration__icon">🎬</div><div><div class="integration__name" data-i18n="integrations.content_name">Pipeline de conteúdo</div><div class="integration__tag" data-i18n="integrations.content_tag">YouTube · IG</div></div></div>
+        <div class="integration"><div class="integration__icon">💬</div><div><div class="integration__name" data-i18n="integrations.telegram_name">Bot Telegram</div><div class="integration__tag" data-i18n="integrations.telegram_tag">interface de chat</div></div></div>
       </div>
     </div>
   </section>
@@ -1149,89 +1202,93 @@
   <!-- ═══════════════════ PRICING ═══════════════════ -->
   <section class="section section--alt" id="pricing">
     <div class="container">
-      <div class="section__label">Pricing</div>
-      <h2 class="section__title">Priced for people who actually use it.</h2>
-      <p class="section__subtitle">
-        Founder slots include lifetime price lock. After the first 100 founders,
-        Pro rises to the full $99/year. Free forever for light use.
+      <div class="section__label" data-i18n="pricing.label">Preços</div>
+      <h2 class="section__title" data-i18n="pricing.title">Preço pensado para quem realmente usa.</h2>
+      <p class="section__subtitle" data-i18n="pricing.subtitle">
+        Os lugares de fundador incluem lock-in vitalício de preço. Depois dos
+        primeiros 100 fundadores, o Pro sobe para os $99/ano. Free para sempre
+        para uso leve.
       </p>
 
       <div class="pricing-grid">
         <!-- FREE -->
         <div class="tier">
-          <div class="tier__name">Free</div>
-          <div class="tier__tagline">Try the connection.</div>
+          <div class="tier__name" data-i18n="pricing.free_name">Free</div>
+          <div class="tier__tagline" data-i18n="pricing.free_tagline">Experimenta a conexão.</div>
           <div class="tier__price">
             <span class="tier__price-amount">$0</span>
-            <span class="tier__price-period">forever</span>
+            <span class="tier__price-period" data-i18n="pricing.free_period">para sempre</span>
           </div>
           <div class="tier__price-alt">&nbsp;</div>
           <ul class="tier__features">
-            <li>1 task provider, 1 calendar, 1 wearable</li>
-            <li>10 AI messages per day</li>
-            <li>Basic daily context (no cross-domain)</li>
-            <li>iOS app + Telegram bot</li>
-            <li>Community support</li>
+            <li data-i18n="pricing.free_f1">1 provider de tarefas, 1 calendário, 1 wearable</li>
+            <li data-i18n="pricing.free_f2">10 mensagens com a IA por dia</li>
+            <li data-i18n="pricing.free_f3">Contexto diário básico (sem cross-domain)</li>
+            <li data-i18n="pricing.free_f4">App iOS + bot Telegram</li>
+            <li data-i18n="pricing.free_f5">Suporte comunitário</li>
           </ul>
-          <a href="#waitlist" class="tier__cta tier__cta--secondary">Join the waitlist</a>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-i18n="pricing.free_cta">Entrar na waitlist</a>
         </div>
 
         <!-- PRO -->
         <div class="tier tier--featured">
-          <div class="tier__badge">Most popular</div>
-          <div class="tier__name">Pro</div>
-          <div class="tier__tagline">Your actual operating system.</div>
+          <div class="tier__badge" data-i18n="pricing.pro_badge">Mais popular</div>
+          <div class="tier__name" data-i18n="pricing.pro_name">Pro</div>
+          <div class="tier__tagline" data-i18n="pricing.pro_tagline">O teu verdadeiro sistema operativo.</div>
           <div class="tier__price">
             <span class="tier__price-amount">$12</span>
-            <span class="tier__price-period">/mo</span>
+            <span class="tier__price-period" data-i18n="pricing.pro_period">/mês</span>
           </div>
-          <div class="tier__price-alt">or $99/yr · 30% off</div>
+          <div class="tier__price-alt" data-i18n="pricing.pro_alt">ou $99/ano · 30% desconto</div>
           <ul class="tier__features">
-            <li>Unlimited provider connections</li>
-            <li>Cross-domain AI intelligence</li>
-            <li>300 AI messages/day</li>
-            <li>Morning briefing + coach briefing</li>
-            <li>Real-time webhook sync</li>
-            <li>Priority email support</li>
+            <li data-i18n="pricing.pro_f1">Conexões de providers ilimitadas</li>
+            <li data-i18n="pricing.pro_f2">Inteligência IA cross-domain</li>
+            <li data-i18n="pricing.pro_f3">300 mensagens IA por dia</li>
+            <li data-i18n="pricing.pro_f4">Briefing matinal + briefing de treino</li>
+            <li data-i18n="pricing.pro_f5">Sync via webhook em tempo real</li>
+            <li data-i18n="pricing.pro_f6">Suporte por email prioritário</li>
           </ul>
-          <a href="#waitlist" class="tier__cta tier__cta--primary" data-intent="founder">Reserve founder slot</a>
+          <a href="#waitlist" class="tier__cta tier__cta--primary" data-intent="founder" data-i18n="pricing.pro_cta">Reservar lugar de fundador</a>
         </div>
 
         <!-- ULTRA -->
         <div class="tier">
-          <div class="tier__name">Ultra</div>
-          <div class="tier__tagline">For people who live in 12 tabs.</div>
+          <div class="tier__name" data-i18n="pricing.ultra_name">Ultra</div>
+          <div class="tier__tagline" data-i18n="pricing.ultra_tagline">Para quem vive em 12 separadores.</div>
           <div class="tier__price">
             <span class="tier__price-amount">$29</span>
-            <span class="tier__price-period">/mo</span>
+            <span class="tier__price-period" data-i18n="pricing.ultra_period">/mês</span>
           </div>
-          <div class="tier__price-alt">or $249/yr · 28% off</div>
+          <div class="tier__price-alt" data-i18n="pricing.ultra_alt">ou $249/ano · 28% desconto</div>
           <ul class="tier__features">
-            <li>Everything in Pro</li>
-            <li>Unlimited AI messages</li>
-            <li>5-minute sync priority</li>
-            <li>Custom MCP integrations</li>
-            <li>Early access to new skills</li>
-            <li>Direct founder access</li>
+            <li data-i18n="pricing.ultra_f1">Tudo do Pro</li>
+            <li data-i18n="pricing.ultra_f2">Mensagens IA ilimitadas</li>
+            <li data-i18n="pricing.ultra_f3">Sync prioritário de 5 minutos</li>
+            <li data-i18n="pricing.ultra_f4">Integrações MCP personalizadas</li>
+            <li data-i18n="pricing.ultra_f5">Acesso antecipado a novas skills</li>
+            <li data-i18n="pricing.ultra_f6">Acesso directo ao fundador</li>
           </ul>
-          <a href="#waitlist" class="tier__cta tier__cta--secondary">Join the waitlist</a>
+          <a href="#waitlist" class="tier__cta tier__cta--secondary" data-i18n="pricing.ultra_cta">Entrar na waitlist</a>
         </div>
       </div>
 
       <!-- Founder banner -->
       <div class="founder-banner">
-        <div class="founder-banner__label">🏆 Founder pricing · First 100 users only</div>
-        <div class="founder-banner__title">
-          <span class="strike">$99/yr</span>$79/year — locked in forever
+        <div class="founder-banner__label" data-i18n="founder.label">🏆 Preço de fundador · Apenas os primeiros 100 utilizadores</div>
+        <div class="founder-banner__title" data-i18n-html="founder.title">
+          <span class="strike">$99/ano</span>$79/ano — bloqueado para sempre
         </div>
-        <p class="founder-banner__text">
-          The first 100 people who reserve a founder slot lock in Pro for $79/year
-          for the life of their account. Not $79 for year one — $79 every year,
-          forever, even as the price rises for everyone else.
+        <p class="founder-banner__text" data-i18n="founder.text">
+          As primeiras 100 pessoas que reservarem um lugar de fundador bloqueiam
+          o Pro a $79/ano para a vida da conta. Não são $79 só no primeiro ano —
+          $79 todos os anos, para sempre, mesmo enquanto o preço sobe para todos
+          os outros.
         </p>
         <div class="founder-banner__counter">
-          <strong id="founder-banner-filled">—</strong> reserved ·
-          <strong id="founder-banner-remaining">—</strong> remaining
+          <strong id="founder-banner-filled">—</strong>
+          <span data-i18n="founder.reserved">reservados</span> ·
+          <strong id="founder-banner-remaining">—</strong>
+          <span data-i18n="founder.remaining">restantes</span>
         </div>
         <div class="founder-banner__progress">
           <div class="founder-banner__progress-fill" id="founder-progress-bar"></div>
@@ -1243,72 +1300,73 @@
   <!-- ═══════════════════ FAQ ═══════════════════ -->
   <section class="section" id="faq">
     <div class="container">
-      <div class="section__label">FAQ</div>
-      <h2 class="section__title">Questions people actually ask.</h2>
-      <p class="section__subtitle">
-        Missing something? Email <a href="mailto:felipe@nexushub.me" style="color: var(--brand-300); text-decoration: underline;">felipe@nexushub.me</a> — the founder reads every message.
+      <div class="section__label" data-i18n="faq.label">FAQ</div>
+      <h2 class="section__title" data-i18n="faq.title">Perguntas que as pessoas fazem mesmo.</h2>
+      <p class="section__subtitle" data-i18n-html="faq.subtitle">
+        Falta alguma coisa? Envia email para <a href="mailto:felipe@nexushub.me" style="color: var(--brand-300); text-decoration: underline;">felipe@nexushub.me</a> — o fundador lê todas as mensagens.
       </p>
 
+      <!-- FAQ items use data-i18n-html for both question and answer because answers contain <p> tags. -->
       <div class="faq">
         <details class="faq__item">
-          <summary class="faq__question">What does "pre-alpha" mean for me?</summary>
-          <div class="faq__answer">
-            <p>It means Nexus Hub is running in production for a tiny group of early users and it works — but the feature set is still being shaped. Pre-alpha users get: (a) a lifetime price lock at founder pricing, (b) a direct line to the founder, (c) heavy influence on which integrations ship next.</p>
-            <p>What it doesn't mean: bugs that corrupt your data. All sync is one-way-read-only to start, then write-back is gated behind an explicit setting per provider.</p>
+          <summary class="faq__question" data-i18n="faq.q1">O que significa "pré-alpha" para mim?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a1">
+            <p>Significa que o Nexus Hub está em produção para um pequeno grupo de utilizadores iniciais e funciona — mas o conjunto de funcionalidades ainda está a ser moldado. Os utilizadores pré-alpha recebem: (a) um lock vitalício no preço de fundador, (b) uma linha directa ao fundador, (c) influência forte sobre que integrações vêm a seguir.</p>
+            <p>O que não significa: bugs que corrompem os teus dados. Toda a sincronização começa como leitura unidireccional, e a escrita é depois activada explicitamente por provider.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">Do I have to move off Todoist/Notion/my calendar?</summary>
-          <div class="faq__answer">
-            <p>No. That's the whole point. Nexus Hub is the AI layer <em>above</em> your existing tools. You keep using Todoist for the quick-add keyboard shortcut you love. You keep using Notion for the second-brain setup you've tuned. You keep using Google Calendar for the invite flow.</p>
-            <p>Nexus Hub reads from all of them, reasons across them, and writes changes back to the one you pick as your default. If you cancel Nexus Hub tomorrow, all your data stays exactly where it was.</p>
+          <summary class="faq__question" data-i18n="faq.q2">Tenho de sair do Todoist/Notion/calendário?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a2">
+            <p>Não. É exactamente esse o ponto. O Nexus Hub é a camada de IA <em>por cima</em> das tuas ferramentas actuais. Continuas a usar o Todoist pelo atalho de quick-add que adoras. Continuas a usar o Notion pelo setup de second-brain que afinaste. Continuas a usar o Google Calendar pelo fluxo de convites.</p>
+            <p>O Nexus Hub lê de todas elas, raciocina entre elas, e escreve as alterações de volta para a que escolheres como default. Se cancelares o Nexus Hub amanhã, todos os teus dados ficam exactamente onde estavam.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">Why is this better than Motion, Reclaim, or Sunsama?</summary>
-          <div class="faq__answer">
-            <p>Those tools are great at what they do, but they all live in a single domain — calendar and tasks. They don't know your HRV is low, they don't know you have content filming Thursday, they don't know your deadline just moved.</p>
-            <p>Nexus Hub's differentiator is cross-domain reasoning: the AI sees your fitness readiness, your content pipeline, your finances, and your calendar at the same time, and the recommendations come from intersecting all of them. "Move the hard workout to Thursday" isn't a calendar optimization — it's a fitness decision informed by content deadlines.</p>
+          <summary class="faq__question" data-i18n="faq.q3">Porque é que isto é melhor que o Motion, Reclaim ou Sunsama?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a3">
+            <p>Essas ferramentas são óptimas no que fazem, mas vivem todas num único domínio — calendário e tarefas. Não sabem que o teu HRV está baixo, não sabem que tens filmagens quinta, não sabem que a tua deadline acabou de mudar.</p>
+            <p>O diferencial do Nexus Hub é o raciocínio cross-domain: a IA vê a tua prontidão de fitness, o teu pipeline de conteúdo, as tuas finanças e o teu calendário ao mesmo tempo, e as recomendações vêm da intersecção de tudo isso. "Passa o treino pesado para quinta" não é uma optimização de calendário — é uma decisão de fitness informada pelas deadlines de conteúdo.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">I have ADHD. Will this actually help or just add another app?</summary>
-          <div class="faq__answer">
-            <p>Honest answer: it's designed for you specifically. The core insight is that ADHD makes you pay a "context-switch tax" every time you open a new app to check on something. Nexus Hub collapses all those checks into one chat interface (either iOS app or Telegram bot, your choice) so the 17 times a day you ask "what am I supposed to be doing right now?" become one place to ask, not twelve.</p>
-            <p>The daily context block also means the AI doesn't need to be reminded who you are every conversation. It already knows.</p>
+          <summary class="faq__question" data-i18n="faq.q4">Tenho TDAH. Isto vai ajudar mesmo ou só adiciona mais uma app?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a4">
+            <p>Resposta honesta: foi desenhado especificamente para ti. A intuição central é que o TDAH faz-te pagar um "imposto de mudança de contexto" cada vez que abres uma app nova para verificar uma coisa. O Nexus Hub colapsa todas essas verificações numa única interface de chat (app iOS ou bot Telegram, à tua escolha) — para que as 17 vezes por dia em que perguntas "o que é que eu devia estar a fazer agora?" se tornem um único sítio para perguntar, não doze.</p>
+            <p>O bloco de contexto diário também significa que a IA não precisa que lhe lembres quem és em cada conversa. Ela já sabe.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">What data do you store? Is this secure?</summary>
-          <div class="faq__answer">
-            <p>OAuth tokens are encrypted at rest with per-user AES-256 keys. Your task/calendar/wearable data lives in a local SQLite database on the server and is never sold, shared, or used to train any model. The AI itself runs through Claude (Anthropic) and Gemini (Google) under Nexus Hub's own API keys — your data isn't sent to them for training purposes under their enterprise terms.</p>
-            <p>You can export your entire dataset as JSON via the admin portal and delete your account with one click. No dark patterns.</p>
+          <summary class="faq__question" data-i18n="faq.q5">Que dados guardam? É seguro?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a5">
+            <p>Os tokens OAuth são encriptados em repouso com chaves AES-256 por utilizador. Os teus dados de tarefas/calendário/wearable vivem numa base de dados SQLite local no servidor e nunca são vendidos, partilhados, ou usados para treinar qualquer modelo. A IA em si corre através do Claude (Anthropic) e Gemini (Google) com as chaves API do próprio Nexus Hub — os teus dados não são enviados para treino sob os termos enterprise deles.</p>
+            <p>Podes exportar todo o teu dataset como JSON pelo portal de admin e apagar a conta com um clique. Sem dark patterns.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">Is there an iOS app? Android?</summary>
-          <div class="faq__answer">
-            <p>Native iOS app is in beta now (SwiftUI, iOS 17+). Android is planned for after alpha — if you want it sooner, say so in your waitlist signup. You can also use Nexus Hub entirely through the Telegram bot if you prefer text.</p>
+          <summary class="faq__question" data-i18n="faq.q6">Existe app iOS? Android?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a6">
+            <p>App iOS nativa em beta agora (SwiftUI, iOS 17+). Android está planeado para depois do alpha — se a quiseres mais cedo, diz-nos no signup da waitlist. Também podes usar o Nexus Hub inteiramente pelo bot Telegram se preferires texto.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">When will Pro be available?</summary>
-          <div class="faq__answer">
-            <p>Founder slot reservations are open now. We're admitting people into the alpha in batches as we harden each integration. If you reserve a founder slot, expect access within 4–8 weeks and a personal onboarding email from the founder.</p>
-            <p>General waitlist access opens after the first 100 founders are onboarded — that's our hardening phase.</p>
+          <summary class="faq__question" data-i18n="faq.q7">Quando vai estar disponível o Pro?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a7">
+            <p>As reservas de lugar de fundador estão abertas agora. Estamos a admitir pessoas no alpha em lotes à medida que endurecemos cada integração. Se reservares um lugar de fundador, espera acesso dentro de 4 a 8 semanas e um email de onboarding pessoal do fundador.</p>
+            <p>O acesso pela waitlist geral abre depois dos primeiros 100 fundadores estarem onboarded — essa é a fase de hardening.</p>
           </div>
         </details>
 
         <details class="faq__item">
-          <summary class="faq__question">What if I'm not one of the first 100?</summary>
-          <div class="faq__answer">
-            <p>You join the general waitlist. You'll get Pro at $99/year (which is still the industry's lowest price for cross-domain AI) and all the same features. The founder deal is specifically a thank-you to the people who took a chance before the product was fully baked.</p>
+          <summary class="faq__question" data-i18n="faq.q8">E se eu não for um dos primeiros 100?</summary>
+          <div class="faq__answer" data-i18n-html="faq.a8">
+            <p>Entras na waitlist geral. Vais ter o Pro a $99/ano (que continua a ser o preço mais baixo da indústria para IA cross-domain) e todas as mesmas funcionalidades. O deal de fundador é especificamente um agradecimento às pessoas que arriscaram antes do produto estar totalmente cozinhado.</p>
           </div>
         </details>
       </div>
@@ -1318,28 +1376,30 @@
   <!-- ═══════════════════ FINAL CTA ═══════════════════ -->
   <section class="final-cta" id="waitlist">
     <div class="container">
-      <h2 class="final-cta__title">Ready to collapse your stack?</h2>
-      <p class="final-cta__subtitle">
-        Reserve a founder slot now. One field, one click, lifetime lock-in.
+      <h2 class="final-cta__title" data-i18n="final.title">Pronto para colapsar a tua stack?</h2>
+      <p class="final-cta__subtitle" data-i18n="final.subtitle">
+        Reserva um lugar de fundador agora. Um campo, um clique, lock vitalício.
       </p>
 
       <form class="form" id="final-form" data-source="footer">
         <input
           type="email"
           class="form__input"
-          placeholder="you@example.com"
+          placeholder="tu@exemplo.com"
           name="email"
           required
           autocomplete="email"
-          aria-label="Email address">
-        <button type="submit" class="form__button">
-          Reserve founder slot →
+          data-i18n-placeholder="form.placeholder"
+          data-i18n-aria-label="form.email_label"
+          aria-label="Endereço de email">
+        <button type="submit" class="form__button" data-i18n="form.cta">
+          Reservar lugar de fundador →
         </button>
       </form>
       <div class="form__message" id="final-form-message" aria-live="polite" style="margin-top: var(--s-4);"></div>
 
-      <p style="margin-top: var(--s-8); font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono);">
-        No credit card · Cancel anytime · Lock in $79/year forever
+      <p style="margin-top: var(--s-8); font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono);" data-i18n="final.fine_print">
+        Sem cartão de crédito · Cancela quando quiseres · Bloqueia $79/ano para sempre
       </p>
     </div>
   </section>
@@ -1349,19 +1409,436 @@
     <div class="container footer__inner">
       <div class="footer__brand">
         <span class="brand__mark" style="width: 22px; height: 22px; font-size: 12px;">N</span>
-        <span>© 2026 Nexus Hub · Built by <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a></span>
+        <span data-i18n-html="footer.copyright">© 2026 Nexus Hub · Construído por <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a></span>
       </div>
       <div class="footer__links">
-        <a href="#how">How it works</a>
-        <a href="#pricing">Pricing</a>
-        <a href="#faq">FAQ</a>
-        <a href="mailto:felipe@nexushub.me">Contact</a>
+        <a href="#how" data-i18n="nav.how">Como funciona</a>
+        <a href="#pricing" data-i18n="nav.pricing">Preços</a>
+        <a href="#faq" data-i18n="nav.faq">FAQ</a>
+        <a href="mailto:felipe@nexushub.me" data-i18n="footer.contact">Contacto</a>
       </div>
     </div>
   </footer>
 
   <!-- ═══════════════════ SCRIPTS ═══════════════════ -->
   <script>
+    // ════════════════════════════════════════════════════════════
+    // i18n SYSTEM — Portuguese (default) / English
+    // ════════════════════════════════════════════════════════════
+    //
+    // Strategy:
+    //   1. Every translatable element has a data-i18n="key.path" attribute
+    //      (or data-i18n-html for content with inline tags, or
+    //      data-i18n-placeholder / data-i18n-aria-label for input attrs).
+    //   2. The I18N table holds the literal strings for both languages.
+    //   3. setLanguage(lang) walks every [data-i18n*] node and applies
+    //      the matching translation. It also updates <html lang>, <title>,
+    //      OG/Twitter meta tags, and the active state on the toggle.
+    //   4. Selection is persisted in localStorage under 'nexushub.lang'.
+    //      First visit defaults to 'pt'.
+    //
+    // Adding a new translatable string:
+    //   1. Put data-i18n="section.key" on the element.
+    //   2. Add the matching key to BOTH I18N.pt and I18N.en below.
+    //   3. Done — no other wiring needed.
+    const I18N = {
+      pt: {
+        // Document-level
+        'document.title': 'Nexus Hub — A IA que finalmente conecta a tua vida',
+        'document.description': 'Uma IA que lê o teu calendário, tarefas, treinos, pipeline de conteúdo e wearable — e percebe como tudo se afecta. Pára de gerir 12 apps. Feito para criadores, solopreneurs e quem tem TDAH.',
+        'document.og_description': 'O teu HRV está baixo. O treino pesado passou para quinta. O bloco de deep-work passou para terça de manhã. Nexus Hub é a primeira IA que cruza fitness, tarefas, calendário e conteúdo.',
+
+        // Nav
+        'nav.how': 'Como funciona',
+        'nav.integrations': 'Integrações',
+        'nav.pricing': 'Preços',
+        'nav.faq': 'FAQ',
+        'nav.cta': 'Reservar lugar →',
+
+        // Hero
+        'hero.eyebrow': 'Pré-alpha · Preço de fundador aberto',
+        'hero.title': 'Uma IA que finalmente <span class="accent">conecta a tua vida.</span>',
+        'hero.subtitle': "O teu calendário, tarefas, treinos, pipeline de conteúdo e wearable — a falar todos uns com os outros. Feito para criadores, solopreneurs e quem está farto de fazer malabarismo com 12 apps de produtividade que não sabem que as outras existem.",
+        'hero.counter_of': 'de',
+        'hero.counter_label': 'lugares de fundador reservados',
+        'hero.counter_price': '· $79/ano para sempre',
+
+        // Form (shared across hero + final CTA)
+        'form.placeholder': 'tu@exemplo.com',
+        'form.email_label': 'Endereço de email',
+        'form.cta': 'Reservar lugar de fundador →',
+        'form.reserving': 'A reservar...',
+        'form.success_founder': "✓ Reservado — és o fundador #{slot}. Verifica o teu email dentro de minutos.",
+        'form.success_general': '✓ Estás na waitlist. Falamos em breve.',
+        'form.exhausted': '✓ Todos os lugares de fundador estão preenchidos. Estás na waitlist geral na posição {position}.',
+        'form.error_generic': 'Algo correu mal. Tenta outra vez.',
+        'form.error_network': 'Erro de rede. Tenta outra vez daqui a um momento.',
+
+        // Problem section
+        'problem.label': 'O problema',
+        'problem.title': 'Estás a viver a tua vida em 12 apps que não falam entre si.',
+        'problem.subtitle': 'O teu calendário não sabe que dormiste 5 horas. O teu gestor de tarefas não sabe que vais filmar quinta-feira. A tua app de treino não sabe que tens uma deadline. A carga mental de os manter sincronizados é o trabalho.',
+        'problem.card1_title': 'Imposto de TDAH',
+        'problem.card1_body': 'Cada troca entre apps faz reset à tua memória de trabalho. Quando já abriste o Notion, o Todoist, o Google Calendar, o Apple Health e a tua folha de conteúdo, já te esqueceste para que tinhas vindo.',
+        'problem.card2_title': 'Dispersão de solopreneur',
+        'problem.card2_body': 'És fundador, marketeer, atleta, criador e operador. Cada papel tem as suas ferramentas. Nenhuma sabe das outras. A "integração" és tu, a reescrever tudo às 11 da noite.',
+        'problem.card3_title': 'Sobrecarga de criador',
+        'problem.card3_body': 'Ideias numa app, scripts noutra, calendário de filmagens numa terceira, rotina de fitness numa quarta. Falhas datas de publicação porque o teu corpo estava cansado e nenhuma ferramenta viu vir.',
+
+        // Showcase
+        'showcase.label': 'A diferença',
+        'showcase.title': 'Isto é o que a tua IA vê todas as manhãs.',
+        'showcase.subtitle': 'Não é copy de marketing. Este é o bloco de contexto real que o Nexus Hub constrói todos os dias às 5 da manhã e injecta em cada conversa com a IA — para que ela saiba sempre o que se passa em toda a tua vida antes de sequer perguntares.',
+        'showcase.terminal_title': 'daily-context.txt · auto-construído 5:00 AM',
+        'showcase.body': '<div class="row"><span class="label">TAREFAS:</span> <span class="value">3 atrasadas</span> <span class="dim">(editar podcast, rever PR, declaração de IRS),</span> <span class="value">5 esta semana</span>, <span class="value">12 pendentes</span></div><div class="row"><span class="label">CALENDÁRIO:</span> <span class="value">4 eventos hoje</span> <span class="dim">(standup 9h, dev 11h, ginásio 6h, filmagem 15h)</span></div><div class="row"><span class="label">TREINO:</span> <span class="value">Tronco superior</span> <span class="dim">hoje, prontidão</span> <span class="value">72/100</span> <span class="dim">(amarelo), adesão</span> <span class="value">80%</span></div><div class="row"><span class="label">CONTEÚDO:</span> <span class="value">3 ideias</span> <span class="dim">em pipeline, "carnívoro 30 dias" para quinta</span></div><div class="row"><span class="label">WEARABLE:</span> <span class="dim">Sono</span> <span class="value">7.2h</span><span class="dim">, HRV</span> <span class="value">45ms</span> <span class="dim">(abaixo da média), BB</span> <span class="value">65</span></div>',
+        'showcase.footer': 'Cada resposta da IA começa aqui. É assim que apanha conflitos que nem tu vês — <strong>"o teu HRV está baixo, passa o treino pesado para quinta e o bloco de deep-work para terça de manhã."</strong>',
+
+        // How it works
+        'how.label': 'Como funciona',
+        'how.title': 'Três camadas. Zero lock-in.',
+        'how.subtitle': 'Continuas a usar as apps que adoras. O Nexus Hub lê de todas elas, raciocina entre elas, e escreve de volta para a que escolheres como default. Nada fica preso.',
+        'how.step1_title': 'Liga tudo o que já usas',
+        'how.step1_body': 'Todoist, Microsoft To Do, Notion, Google Calendar, Outlook, Garmin, Strava, Whoop, Apple Health. Um clique de OAuth em cada. Os teus dados ficam nas apps que já tens — nós só agregamos.',
+        'how.step2_title': 'A IA lê tudo, constantemente',
+        'how.step2_body': 'A cada 15 minutos puxamos as alterações incrementais de cada provider e normalizamos tudo num único store. Um resumo de contexto diário é pré-construído para que cada conversa com a IA comece com o quadro completo — a um custo fixo de tokens.',
+        'how.step3_title': 'Pergunta o que quiseres em linguagem natural',
+        'how.step3_body': '"Planeia a minha semana." "O que devo saltar se o HRV continuar baixo?" "Move o meu treino e encontra um slot para gravar." A IA escreve as mudanças de volta para o teu provider default. Sem ferramenta nova para aprender.',
+
+        // Integrations
+        'integrations.label': 'Liga-se a',
+        'integrations.title': 'Funciona com a tua stack actual.',
+        'integrations.subtitle': 'O Nexus Hub é a camada por cima — não substitui as tuas apps favoritas, fá-las finalmente trabalhar em conjunto. Mais integrações em beta.',
+        'integrations.todoist_tag': 'webhook · sync ao vivo',
+        'integrations.notion_tag': 'mapeamento de bases de dados',
+        'integrations.msft_tag': 'Graph API',
+        'integrations.gcal_tag': 'leitura · escrita',
+        'integrations.mail_tag': 'triagem de email',
+        'integrations.garmin_tag': 'HRV · sono · carga',
+        'integrations.strava_tag': 'actividades',
+        'integrations.whoop_tag': 'recuperação',
+        'integrations.apple_tag': 'ponte iOS',
+        'integrations.finance_name': 'Tracker financeiro',
+        'integrations.finance_tag': 'facturas · IRS',
+        'integrations.content_name': 'Pipeline de conteúdo',
+        'integrations.content_tag': 'YouTube · IG',
+        'integrations.telegram_name': 'Bot Telegram',
+        'integrations.telegram_tag': 'interface de chat',
+
+        // Pricing
+        'pricing.label': 'Preços',
+        'pricing.title': 'Preço pensado para quem realmente usa.',
+        'pricing.subtitle': 'Os lugares de fundador incluem lock-in vitalício de preço. Depois dos primeiros 100 fundadores, o Pro sobe para os $99/ano. Free para sempre para uso leve.',
+        'pricing.free_name': 'Free',
+        'pricing.free_tagline': 'Experimenta a conexão.',
+        'pricing.free_period': 'para sempre',
+        'pricing.free_f1': '1 provider de tarefas, 1 calendário, 1 wearable',
+        'pricing.free_f2': '10 mensagens com a IA por dia',
+        'pricing.free_f3': 'Contexto diário básico (sem cross-domain)',
+        'pricing.free_f4': 'App iOS + bot Telegram',
+        'pricing.free_f5': 'Suporte comunitário',
+        'pricing.free_cta': 'Entrar na waitlist',
+        'pricing.pro_badge': 'Mais popular',
+        'pricing.pro_name': 'Pro',
+        'pricing.pro_tagline': 'O teu verdadeiro sistema operativo.',
+        'pricing.pro_period': '/mês',
+        'pricing.pro_alt': 'ou $99/ano · 30% desconto',
+        'pricing.pro_f1': 'Conexões de providers ilimitadas',
+        'pricing.pro_f2': 'Inteligência IA cross-domain',
+        'pricing.pro_f3': '300 mensagens IA por dia',
+        'pricing.pro_f4': 'Briefing matinal + briefing de treino',
+        'pricing.pro_f5': 'Sync via webhook em tempo real',
+        'pricing.pro_f6': 'Suporte por email prioritário',
+        'pricing.pro_cta': 'Reservar lugar de fundador',
+        'pricing.ultra_name': 'Ultra',
+        'pricing.ultra_tagline': 'Para quem vive em 12 separadores.',
+        'pricing.ultra_period': '/mês',
+        'pricing.ultra_alt': 'ou $249/ano · 28% desconto',
+        'pricing.ultra_f1': 'Tudo do Pro',
+        'pricing.ultra_f2': 'Mensagens IA ilimitadas',
+        'pricing.ultra_f3': 'Sync prioritário de 5 minutos',
+        'pricing.ultra_f4': 'Integrações MCP personalizadas',
+        'pricing.ultra_f5': 'Acesso antecipado a novas skills',
+        'pricing.ultra_f6': 'Acesso directo ao fundador',
+        'pricing.ultra_cta': 'Entrar na waitlist',
+
+        // Founder banner
+        'founder.label': '🏆 Preço de fundador · Apenas os primeiros 100 utilizadores',
+        'founder.title': '<span class="strike">$99/ano</span>$79/ano — bloqueado para sempre',
+        'founder.text': 'As primeiras 100 pessoas que reservarem um lugar de fundador bloqueiam o Pro a $79/ano para a vida da conta. Não são $79 só no primeiro ano — $79 todos os anos, para sempre, mesmo enquanto o preço sobe para todos os outros.',
+        'founder.reserved': 'reservados',
+        'founder.remaining': 'restantes',
+
+        // FAQ
+        'faq.label': 'FAQ',
+        'faq.title': 'Perguntas que as pessoas fazem mesmo.',
+        'faq.subtitle': 'Falta alguma coisa? Envia email para <a href="mailto:felipe@nexushub.me" style="color: var(--brand-300); text-decoration: underline;">felipe@nexushub.me</a> — o fundador lê todas as mensagens.',
+        'faq.q1': 'O que significa "pré-alpha" para mim?',
+        'faq.a1': '<p>Significa que o Nexus Hub está em produção para um pequeno grupo de utilizadores iniciais e funciona — mas o conjunto de funcionalidades ainda está a ser moldado. Os utilizadores pré-alpha recebem: (a) um lock vitalício no preço de fundador, (b) uma linha directa ao fundador, (c) influência forte sobre que integrações vêm a seguir.</p><p>O que não significa: bugs que corrompem os teus dados. Toda a sincronização começa como leitura unidireccional, e a escrita é depois activada explicitamente por provider.</p>',
+        'faq.q2': 'Tenho de sair do Todoist/Notion/calendário?',
+        'faq.a2': '<p>Não. É exactamente esse o ponto. O Nexus Hub é a camada de IA <em>por cima</em> das tuas ferramentas actuais. Continuas a usar o Todoist pelo atalho de quick-add que adoras. Continuas a usar o Notion pelo setup de second-brain que afinaste. Continuas a usar o Google Calendar pelo fluxo de convites.</p><p>O Nexus Hub lê de todas elas, raciocina entre elas, e escreve as alterações de volta para a que escolheres como default. Se cancelares o Nexus Hub amanhã, todos os teus dados ficam exactamente onde estavam.</p>',
+        'faq.q3': 'Porque é que isto é melhor que o Motion, Reclaim ou Sunsama?',
+        'faq.a3': '<p>Essas ferramentas são óptimas no que fazem, mas vivem todas num único domínio — calendário e tarefas. Não sabem que o teu HRV está baixo, não sabem que tens filmagens quinta, não sabem que a tua deadline acabou de mudar.</p><p>O diferencial do Nexus Hub é o raciocínio cross-domain: a IA vê a tua prontidão de fitness, o teu pipeline de conteúdo, as tuas finanças e o teu calendário ao mesmo tempo, e as recomendações vêm da intersecção de tudo isso. "Passa o treino pesado para quinta" não é uma optimização de calendário — é uma decisão de fitness informada pelas deadlines de conteúdo.</p>',
+        'faq.q4': 'Tenho TDAH. Isto vai ajudar mesmo ou só adiciona mais uma app?',
+        'faq.a4': '<p>Resposta honesta: foi desenhado especificamente para ti. A intuição central é que o TDAH faz-te pagar um "imposto de mudança de contexto" cada vez que abres uma app nova para verificar uma coisa. O Nexus Hub colapsa todas essas verificações numa única interface de chat (app iOS ou bot Telegram, à tua escolha) — para que as 17 vezes por dia em que perguntas "o que é que eu devia estar a fazer agora?" se tornem um único sítio para perguntar, não doze.</p><p>O bloco de contexto diário também significa que a IA não precisa que lhe lembres quem és em cada conversa. Ela já sabe.</p>',
+        'faq.q5': 'Que dados guardam? É seguro?',
+        'faq.a5': '<p>Os tokens OAuth são encriptados em repouso com chaves AES-256 por utilizador. Os teus dados de tarefas/calendário/wearable vivem numa base de dados SQLite local no servidor e nunca são vendidos, partilhados, ou usados para treinar qualquer modelo. A IA em si corre através do Claude (Anthropic) e Gemini (Google) com as chaves API do próprio Nexus Hub — os teus dados não são enviados para treino sob os termos enterprise deles.</p><p>Podes exportar todo o teu dataset como JSON pelo portal de admin e apagar a conta com um clique. Sem dark patterns.</p>',
+        'faq.q6': 'Existe app iOS? Android?',
+        'faq.a6': '<p>App iOS nativa em beta agora (SwiftUI, iOS 17+). Android está planeado para depois do alpha — se a quiseres mais cedo, diz-nos no signup da waitlist. Também podes usar o Nexus Hub inteiramente pelo bot Telegram se preferires texto.</p>',
+        'faq.q7': 'Quando vai estar disponível o Pro?',
+        'faq.a7': '<p>As reservas de lugar de fundador estão abertas agora. Estamos a admitir pessoas no alpha em lotes à medida que endurecemos cada integração. Se reservares um lugar de fundador, espera acesso dentro de 4 a 8 semanas e um email de onboarding pessoal do fundador.</p><p>O acesso pela waitlist geral abre depois dos primeiros 100 fundadores estarem onboarded — essa é a fase de hardening.</p>',
+        'faq.q8': 'E se eu não for um dos primeiros 100?',
+        'faq.a8': '<p>Entras na waitlist geral. Vais ter o Pro a $99/ano (que continua a ser o preço mais baixo da indústria para IA cross-domain) e todas as mesmas funcionalidades. O deal de fundador é especificamente um agradecimento às pessoas que arriscaram antes do produto estar totalmente cozinhado.</p>',
+
+        // Final CTA
+        'final.title': 'Pronto para colapsar a tua stack?',
+        'final.subtitle': 'Reserva um lugar de fundador agora. Um campo, um clique, lock vitalício.',
+        'final.fine_print': 'Sem cartão de crédito · Cancela quando quiseres · Bloqueia $79/ano para sempre',
+
+        // Footer
+        'footer.copyright': '© 2026 Nexus Hub · Construído por <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a>',
+        'footer.contact': 'Contacto',
+      },
+
+      en: {
+        // Document-level
+        'document.title': 'Nexus Hub — The AI that actually connects your life',
+        'document.description': 'One AI that reads your calendar, tasks, training, content pipeline, and wearable — then understands how they affect each other. Stop managing 12 apps. Built for creators, solopreneurs, and anyone with ADHD.',
+        'document.og_description': "Your HRV is low. Your hard workout just moved to Thursday. Your deep-work block shifted to Tuesday morning. Nexus Hub is the first AI that crosses fitness, tasks, calendar, and content.",
+
+        // Nav
+        'nav.how': 'How it works',
+        'nav.integrations': 'Integrations',
+        'nav.pricing': 'Pricing',
+        'nav.faq': 'FAQ',
+        'nav.cta': 'Reserve your slot →',
+
+        // Hero
+        'hero.eyebrow': 'Pre-alpha · Founder pricing open',
+        'hero.title': 'One AI that actually <span class="accent">connects your life.</span>',
+        'hero.subtitle': "Your calendar, tasks, training, content pipeline, and wearable — all talking to each other. Built for creators, solopreneurs, and anyone who's tired of juggling 12 productivity apps that don't know the others exist.",
+        'hero.counter_of': 'of',
+        'hero.counter_label': 'founder slots reserved',
+        'hero.counter_price': '· $79/yr lifetime lock-in',
+
+        // Form
+        'form.placeholder': 'you@example.com',
+        'form.email_label': 'Email address',
+        'form.cta': 'Reserve founder slot →',
+        'form.reserving': 'Reserving...',
+        'form.success_founder': "✓ Reserved — you're founder #{slot}. Check your email in a few minutes.",
+        'form.success_general': "✓ You're on the waitlist. We'll be in touch.",
+        'form.exhausted': "✓ All founder slots filled. You're on the general waitlist at position {position}.",
+        'form.error_generic': 'Something went wrong. Try again.',
+        'form.error_network': 'Network error. Try again in a moment.',
+
+        // Problem
+        'problem.label': 'The problem',
+        'problem.title': "You're running your life across 12 apps that don't talk.",
+        'problem.subtitle': "Your calendar doesn't know you slept 5 hours last night. Your task manager doesn't know you're filming on Thursday. Your training app doesn't know you have a deadline. The mental load of keeping them in sync is the work.",
+        'problem.card1_title': 'ADHD tax',
+        'problem.card1_body': "Every switch between apps resets your working memory. By the time you've opened Notion, Todoist, Google Calendar, Apple Health, and your content spreadsheet, you've forgotten what you came in for.",
+        'problem.card2_title': 'Solopreneur scatter',
+        'problem.card2_body': "You're a founder, a marketer, an athlete, a creator, and an operator. Each role has its own tools. None of them know about the others. The \"integration\" is you, retyping everything at 11pm.",
+        'problem.card3_title': 'Creator overwhelm',
+        'problem.card3_body': "Ideas in one app, scripts in another, filming schedule on a third, fitness routine on a fourth. You miss publish dates because your body was tired and no tool saw it coming.",
+
+        // Showcase
+        'showcase.label': 'The difference',
+        'showcase.title': 'This is what your AI actually sees every morning.',
+        'showcase.subtitle': "Not marketing copy. This is the real context block Nexus Hub builds every day at 5am and injects into every AI conversation — so it always knows what's going on across your entire life before you even ask.",
+        'showcase.terminal_title': 'daily-context.txt · auto-built 5:00 AM',
+        'showcase.body': '<div class="row"><span class="label">TASKS:</span> <span class="value">3 overdue</span> <span class="dim">(edit podcast, review PR, tax filing),</span> <span class="value">5 due this week</span>, <span class="value">12 pending</span></div><div class="row"><span class="label">CALENDAR:</span> <span class="value">4 events today</span> <span class="dim">(standup 9am, dev 11am, gym 6am, film 3pm)</span></div><div class="row"><span class="label">TRAINING:</span> <span class="value">Upper Body</span> <span class="dim">today, readiness</span> <span class="value">72/100</span> <span class="dim">(yellow), adherence</span> <span class="value">80%</span></div><div class="row"><span class="label">CONTENT:</span> <span class="value">3 ideas</span> <span class="dim">in pipeline, "carnivore 30 days" due Thursday</span></div><div class="row"><span class="label">WEARABLE:</span> <span class="dim">Sleep</span> <span class="value">7.2h</span><span class="dim">, HRV</span> <span class="value">45ms</span> <span class="dim">(below avg), BB</span> <span class="value">65</span></div>',
+        'showcase.footer': 'Every AI response starts from here. That\'s how it catches conflicts you don\'t even see — <strong>"your HRV is low, move the hard workout to Thursday and shift deep-work to Tuesday morning."</strong>',
+
+        // How it works
+        'how.label': 'How it works',
+        'how.title': 'Three layers. Zero lock-in.',
+        'how.subtitle': 'You keep using the apps you love. Nexus Hub reads from all of them, reasons across them, and writes back to whichever one you pick as your default. Nothing gets trapped.',
+        'how.step1_title': 'Connect everything you already use',
+        'how.step1_body': 'Todoist, Microsoft To Do, Notion, Google Calendar, Outlook, Garmin, Strava, Whoop, Apple Health. One OAuth click each. Your data stays in your existing apps — we just aggregate.',
+        'how.step2_title': 'The AI reads it all, constantly',
+        'how.step2_body': 'Every 15 minutes we pull incremental changes from each provider and normalize them into one store. A daily context summary is pre-built so every AI conversation starts with the full picture — at a fixed token cost.',
+        'how.step3_title': 'Ask anything in plain English',
+        'how.step3_body': '"Plan my week." "What should I skip if HRV stays low?" "Move my workout and find a recording slot." The AI writes changes back to your default provider. No new tool to learn.',
+
+        // Integrations
+        'integrations.label': 'Connects to',
+        'integrations.title': 'Works with your existing stack.',
+        'integrations.subtitle': "Nexus Hub is the layer above — it doesn't replace your favorite apps, it makes them finally work together. More integrations in beta.",
+        'integrations.todoist_tag': 'webhook · live sync',
+        'integrations.notion_tag': 'database mapping',
+        'integrations.msft_tag': 'Graph API',
+        'integrations.gcal_tag': 'read · write',
+        'integrations.mail_tag': 'mail triage',
+        'integrations.garmin_tag': 'HRV · sleep · load',
+        'integrations.strava_tag': 'activities',
+        'integrations.whoop_tag': 'recovery',
+        'integrations.apple_tag': 'iOS bridge',
+        'integrations.finance_name': 'Finance tracker',
+        'integrations.finance_tag': 'invoices · tax',
+        'integrations.content_name': 'Content pipeline',
+        'integrations.content_tag': 'YouTube · IG',
+        'integrations.telegram_name': 'Telegram bot',
+        'integrations.telegram_tag': 'chat interface',
+
+        // Pricing
+        'pricing.label': 'Pricing',
+        'pricing.title': 'Priced for people who actually use it.',
+        'pricing.subtitle': 'Founder slots include lifetime price lock. After the first 100 founders, Pro rises to the full $99/year. Free forever for light use.',
+        'pricing.free_name': 'Free',
+        'pricing.free_tagline': 'Try the connection.',
+        'pricing.free_period': 'forever',
+        'pricing.free_f1': '1 task provider, 1 calendar, 1 wearable',
+        'pricing.free_f2': '10 AI messages per day',
+        'pricing.free_f3': 'Basic daily context (no cross-domain)',
+        'pricing.free_f4': 'iOS app + Telegram bot',
+        'pricing.free_f5': 'Community support',
+        'pricing.free_cta': 'Join the waitlist',
+        'pricing.pro_badge': 'Most popular',
+        'pricing.pro_name': 'Pro',
+        'pricing.pro_tagline': 'Your actual operating system.',
+        'pricing.pro_period': '/mo',
+        'pricing.pro_alt': 'or $99/yr · 30% off',
+        'pricing.pro_f1': 'Unlimited provider connections',
+        'pricing.pro_f2': 'Cross-domain AI intelligence',
+        'pricing.pro_f3': '300 AI messages/day',
+        'pricing.pro_f4': 'Morning briefing + coach briefing',
+        'pricing.pro_f5': 'Real-time webhook sync',
+        'pricing.pro_f6': 'Priority email support',
+        'pricing.pro_cta': 'Reserve founder slot',
+        'pricing.ultra_name': 'Ultra',
+        'pricing.ultra_tagline': 'For people who live in 12 tabs.',
+        'pricing.ultra_period': '/mo',
+        'pricing.ultra_alt': 'or $249/yr · 28% off',
+        'pricing.ultra_f1': 'Everything in Pro',
+        'pricing.ultra_f2': 'Unlimited AI messages',
+        'pricing.ultra_f3': '5-minute sync priority',
+        'pricing.ultra_f4': 'Custom MCP integrations',
+        'pricing.ultra_f5': 'Early access to new skills',
+        'pricing.ultra_f6': 'Direct founder access',
+        'pricing.ultra_cta': 'Join the waitlist',
+
+        // Founder banner
+        'founder.label': '🏆 Founder pricing · First 100 users only',
+        'founder.title': '<span class="strike">$99/yr</span>$79/year — locked in forever',
+        'founder.text': 'The first 100 people who reserve a founder slot lock in Pro for $79/year for the life of their account. Not $79 for year one — $79 every year, forever, even as the price rises for everyone else.',
+        'founder.reserved': 'reserved',
+        'founder.remaining': 'remaining',
+
+        // FAQ
+        'faq.label': 'FAQ',
+        'faq.title': 'Questions people actually ask.',
+        'faq.subtitle': 'Missing something? Email <a href="mailto:felipe@nexushub.me" style="color: var(--brand-300); text-decoration: underline;">felipe@nexushub.me</a> — the founder reads every message.',
+        'faq.q1': 'What does "pre-alpha" mean for me?',
+        'faq.a1': '<p>It means Nexus Hub is running in production for a tiny group of early users and it works — but the feature set is still being shaped. Pre-alpha users get: (a) a lifetime price lock at founder pricing, (b) a direct line to the founder, (c) heavy influence on which integrations ship next.</p><p>What it doesn\'t mean: bugs that corrupt your data. All sync is one-way-read-only to start, then write-back is gated behind an explicit setting per provider.</p>',
+        'faq.q2': 'Do I have to move off Todoist/Notion/my calendar?',
+        'faq.a2': '<p>No. That\'s the whole point. Nexus Hub is the AI layer <em>above</em> your existing tools. You keep using Todoist for the quick-add keyboard shortcut you love. You keep using Notion for the second-brain setup you\'ve tuned. You keep using Google Calendar for the invite flow.</p><p>Nexus Hub reads from all of them, reasons across them, and writes changes back to the one you pick as your default. If you cancel Nexus Hub tomorrow, all your data stays exactly where it was.</p>',
+        'faq.q3': 'Why is this better than Motion, Reclaim, or Sunsama?',
+        'faq.a3': '<p>Those tools are great at what they do, but they all live in a single domain — calendar and tasks. They don\'t know your HRV is low, they don\'t know you have content filming Thursday, they don\'t know your deadline just moved.</p><p>Nexus Hub\'s differentiator is cross-domain reasoning: the AI sees your fitness readiness, your content pipeline, your finances, and your calendar at the same time, and the recommendations come from intersecting all of them. "Move the hard workout to Thursday" isn\'t a calendar optimization — it\'s a fitness decision informed by content deadlines.</p>',
+        'faq.q4': 'I have ADHD. Will this actually help or just add another app?',
+        'faq.a4': '<p>Honest answer: it\'s designed for you specifically. The core insight is that ADHD makes you pay a "context-switch tax" every time you open a new app to check on something. Nexus Hub collapses all those checks into one chat interface (either iOS app or Telegram bot, your choice) so the 17 times a day you ask "what am I supposed to be doing right now?" become one place to ask, not twelve.</p><p>The daily context block also means the AI doesn\'t need to be reminded who you are every conversation. It already knows.</p>',
+        'faq.q5': 'What data do you store? Is this secure?',
+        'faq.a5': '<p>OAuth tokens are encrypted at rest with per-user AES-256 keys. Your task/calendar/wearable data lives in a local SQLite database on the server and is never sold, shared, or used to train any model. The AI itself runs through Claude (Anthropic) and Gemini (Google) under Nexus Hub\'s own API keys — your data isn\'t sent to them for training purposes under their enterprise terms.</p><p>You can export your entire dataset as JSON via the admin portal and delete your account with one click. No dark patterns.</p>',
+        'faq.q6': 'Is there an iOS app? Android?',
+        'faq.a6': '<p>Native iOS app is in beta now (SwiftUI, iOS 17+). Android is planned for after alpha — if you want it sooner, say so in your waitlist signup. You can also use Nexus Hub entirely through the Telegram bot if you prefer text.</p>',
+        'faq.q7': 'When will Pro be available?',
+        'faq.a7': '<p>Founder slot reservations are open now. We\'re admitting people into the alpha in batches as we harden each integration. If you reserve a founder slot, expect access within 4–8 weeks and a personal onboarding email from the founder.</p><p>General waitlist access opens after the first 100 founders are onboarded — that\'s our hardening phase.</p>',
+        'faq.q8': "What if I'm not one of the first 100?",
+        'faq.a8': "<p>You join the general waitlist. You'll get Pro at $99/year (which is still the industry's lowest price for cross-domain AI) and all the same features. The founder deal is specifically a thank-you to the people who took a chance before the product was fully baked.</p>",
+
+        // Final CTA
+        'final.title': 'Ready to collapse your stack?',
+        'final.subtitle': 'Reserve a founder slot now. One field, one click, lifetime lock-in.',
+        'final.fine_print': 'No credit card · Cancel anytime · Lock in $79/year forever',
+
+        // Footer
+        'footer.copyright': '© 2026 Nexus Hub · Built by <a href="mailto:felipe@nexushub.me" style="color: var(--text-secondary);">Felipe Dominguez</a>',
+        'footer.contact': 'Contact',
+      },
+    };
+
+    // Persisted choice key. First-visit fallback is 'pt'.
+    const LANG_STORAGE_KEY = 'nexushub.lang';
+    function getStoredLang() {
+      try {
+        const v = localStorage.getItem(LANG_STORAGE_KEY);
+        return v === 'pt' || v === 'en' ? v : 'pt';
+      } catch { return 'pt'; }
+    }
+    function storeLang(lang) {
+      try { localStorage.setItem(LANG_STORAGE_KEY, lang); } catch { /* private mode */ }
+    }
+
+    // Apply a language across the entire DOM. This is idempotent —
+    // calling it twice in a row is harmless. Also updates document
+    // metadata (title, OG/Twitter) and the toggle's aria-pressed state.
+    function setLanguage(lang) {
+      if (lang !== 'pt' && lang !== 'en') lang = 'pt';
+      const dict = I18N[lang];
+      if (!dict) return;
+
+      // 1. Walk every element with a data-i18n attribute and update text/HTML.
+      document.querySelectorAll('[data-i18n]').forEach((el) => {
+        const key = el.getAttribute('data-i18n');
+        const value = dict[key];
+        if (value !== undefined) el.textContent = value;
+      });
+      document.querySelectorAll('[data-i18n-html]').forEach((el) => {
+        const key = el.getAttribute('data-i18n-html');
+        const value = dict[key];
+        if (value !== undefined) el.innerHTML = value;
+      });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+        const key = el.getAttribute('data-i18n-placeholder');
+        const value = dict[key];
+        if (value !== undefined) el.setAttribute('placeholder', value);
+      });
+      document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
+        const key = el.getAttribute('data-i18n-aria-label');
+        const value = dict[key];
+        if (value !== undefined) el.setAttribute('aria-label', value);
+      });
+
+      // 2. Update document metadata for SEO and social shares.
+      document.documentElement.setAttribute('lang', lang);
+      if (dict['document.title']) document.title = dict['document.title'];
+      const setMeta = (selector, value) => {
+        const el = document.querySelector(selector);
+        if (el && value !== undefined) el.setAttribute('content', value);
+      };
+      setMeta('meta[name="description"]',         dict['document.description']);
+      setMeta('meta[property="og:title"]',        dict['document.title']);
+      setMeta('meta[property="og:description"]',  dict['document.og_description']);
+
+      // 3. Update the toggle's aria-pressed state for the active language.
+      document.querySelectorAll('.lang-toggle__btn').forEach((btn) => {
+        btn.setAttribute('aria-pressed', btn.getAttribute('data-lang') === lang ? 'true' : 'false');
+      });
+
+      // 4. Persist the choice.
+      storeLang(lang);
+    }
+
+    // Wire up the toggle buttons. Both buttons share a single click
+    // handler that reads data-lang and calls setLanguage.
+    function initLanguageToggle() {
+      document.querySelectorAll('.lang-toggle__btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const lang = btn.getAttribute('data-lang');
+          setLanguage(lang);
+        });
+      });
+    }
+
+    // Helper for form messages — pulls a translated string from the
+    // current language with simple {placeholder} interpolation.
+    function tr(key, vars) {
+      const lang = getStoredLang();
+      const raw = (I18N[lang] && I18N[lang][key]) || (I18N.en && I18N.en[key]) || key;
+      if (!vars) return raw;
+      return raw.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
+    }
+
     // ── Founder counter (live from /waitlist/stats) ─────────────
     //
     // Polls the public stats endpoint on page load and updates the three
@@ -1414,7 +1891,7 @@
         const button = form.querySelector('button[type="submit"]');
         const originalText = button.textContent;
         button.disabled = true;
-        button.textContent = 'Reserving...';
+        button.textContent = tr('form.reserving');
         msg.className = 'form__message';
         msg.textContent = '';
 
@@ -1441,8 +1918,8 @@
             const slot = data.founderSlot;
             msg.className = 'form__message form__message--success';
             msg.textContent = slot
-              ? `✓ Reserved — you're founder #${slot}. Check your email in a few minutes.`
-              : `✓ You're on the waitlist. We'll be in touch.`;
+              ? tr('form.success_founder', { slot })
+              : tr('form.success_general');
             form.reset();
             loadFounderStats();
           } else if (response.status === 409) {
@@ -1460,19 +1937,19 @@
             const retryData = await retry.json();
             if (retry.ok && retryData.ok) {
               msg.className = 'form__message form__message--success';
-              msg.textContent = `✓ All founder slots filled. You're on the general waitlist at position ${retryData.position ?? '—'}.`;
+              msg.textContent = tr('form.exhausted', { position: retryData.position ?? '—' });
               form.reset();
             } else {
               msg.className = 'form__message form__message--error';
-              msg.textContent = retryData.error || 'Something went wrong. Try again.';
+              msg.textContent = retryData.error || tr('form.error_generic');
             }
           } else {
             msg.className = 'form__message form__message--error';
-            msg.textContent = data.error || 'Something went wrong. Try again.';
+            msg.textContent = data.error || tr('form.error_generic');
           }
         } catch (err) {
           msg.className = 'form__message form__message--error';
-          msg.textContent = 'Network error. Try again in a moment.';
+          msg.textContent = tr('form.error_network');
         } finally {
           button.disabled = false;
           button.textContent = originalText;
@@ -1501,6 +1978,10 @@
 
     // ── Init ────────────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', () => {
+      // Apply the stored (or default 'pt') language BEFORE the user
+      // sees anything, so there's no English flash.
+      setLanguage(getStoredLang());
+      initLanguageToggle();
       attachFormHandler('hero-form', 'hero-form-message');
       attachFormHandler('final-form', 'final-form-message');
       loadFounderStats();

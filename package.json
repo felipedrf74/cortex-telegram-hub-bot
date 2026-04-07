@@ -4,7 +4,7 @@
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html",
+    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
