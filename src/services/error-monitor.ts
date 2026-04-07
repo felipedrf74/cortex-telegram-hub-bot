@@ -53,8 +53,54 @@ export interface ErrorTrends {
 type DbProvider = () => any;
 let _getDb: DbProvider | null = null;
 
+// ── Boot Buffer ──────────────────────────────────────────────────
+// Errors that fire BEFORE setDbProvider() is called (e.g. config validation
+// throws, EADDRINUSE on portal port, missing env vars) cannot be persisted
+// to error_log because the DB connection isn't ready yet. Without buffering,
+// these errors only land in PM2's stderr file — invisible to the admin
+// portal which queries the error_log table. Production data showed
+// error_log stuck at 10 rows (all April 3 EADDRINUSE) while file logs
+// continued growing for 4 days afterwards. See audit P0-6.
+//
+// We hold up to 100 entries in memory; once setDbProvider() runs, we flush
+// them all to error_log in a single transaction-friendly loop.
+const _bootBuffer: ErrorRecord[] = [];
+const BOOT_BUFFER_MAX = 100;
+
 export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
+  // Flush any errors that were buffered before the DB came online.
+  if (_bootBuffer.length > 0) {
+    const buffered = _bootBuffer.splice(0);
+    let flushed = 0;
+    for (const record of buffered) {
+      try {
+        persistToDb(record);
+        flushed++;
+      } catch (err) {
+        logger.warn({ err }, 'Error monitor: failed to flush boot-buffered error');
+      }
+    }
+    logger.info({ count: flushed }, 'Error monitor: flushed boot-buffered errors to error_log');
+  }
+}
+
+/** Internal: write a record to error_log. Caller guarantees _getDb is set. */
+function persistToDb(record: ErrorRecord): void {
+  if (!_getDb) return;
+  const contextJson = record.context ? JSON.stringify(record.context) : null;
+  const shouldAlertFlag = record.level !== 'warning';
+  _getDb().prepare(`
+    INSERT INTO error_log (level, source, message, stack, context, alerted)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    record.level,
+    record.source,
+    record.message.slice(0, 2000),
+    record.stack?.slice(0, 4000) ?? null,
+    contextJson,
+    shouldAlertFlag && _alertFn ? 1 : 0,
+  );
 }
 
 // ── Telegram Alert Callback ──────────────────────────────────────
@@ -90,26 +136,19 @@ function shouldAlert(key: string): boolean {
 export function captureError(record: ErrorRecord, alert?: boolean): void {
   const shouldSendAlert = alert ?? (record.level !== 'warning');
 
-  // Persist to SQLite
+  // Persist to SQLite — or buffer if DB isn't ready yet (boot-time errors)
   let alerted = 0;
   if (_getDb) {
     try {
-      const contextJson = record.context ? JSON.stringify(record.context) : null;
-      _getDb().prepare(`
-        INSERT INTO error_log (level, source, message, stack, context, alerted)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(
-        record.level,
-        record.source,
-        record.message.slice(0, 2000),
-        record.stack?.slice(0, 4000) ?? null,
-        contextJson,
-        shouldSendAlert && _alertFn ? 1 : 0,
-      );
+      persistToDb(record);
       alerted = shouldSendAlert ? 1 : 0;
     } catch (err) {
       logger.warn({ err }, 'Error monitor: failed to persist error');
     }
+  } else if (_bootBuffer.length < BOOT_BUFFER_MAX) {
+    // Boot-phase: buffer the error so it can be persisted once setDbProvider runs.
+    // Bounded at 100 to prevent memory bloat in catastrophic boot loops.
+    _bootBuffer.push(record);
   }
 
   // Push to in-memory telemetry ring buffer

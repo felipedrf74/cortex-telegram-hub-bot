@@ -109,8 +109,17 @@ export function setJobFailureNotifier(fn: FailureNotifier): void {
  * Wraps an async job callback with timing and success/failure tracking.
  * On failure, sends a Telegram notification (if notifier is registered)
  * and re-throws so existing logger.error calls continue to work.
+ *
+ * The callback may return the sentinel string `'skipped'` to indicate that
+ * the job was a no-op and should NOT be persisted to job_history. This is
+ * for high-frequency cron jobs (e.g. reminders every minute) whose work
+ * queue is empty 99%+ of the time — we want them to wake up and check, but
+ * we don't want a row in job_history for every empty check. Existing void
+ * callbacks remain unchanged: backwards-compatible.
  */
-export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<void> {
+export type JobResult = void | 'skipped';
+
+export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promise<void> {
   const wrapped = async () => {
     // Skip if the owning sub-skill is disabled
     if (!isJobEnabled(name)) {
@@ -119,7 +128,10 @@ export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<vo
     }
 
     const status = jobMap.get(name);
-    if (!status) return fn(); // unregistered — run without tracking
+    if (!status) {
+      await fn(); // unregistered — run without tracking
+      return;
+    }
 
     const startIso = new Date().toISOString();
     status.lastRunAt = startIso;
@@ -128,9 +140,16 @@ export function wrapJob(name: string, fn: () => Promise<void>): () => Promise<vo
     const start = Date.now();
 
     try {
-      await fn();
-      status.lastResult = 'success';
+      const result = await fn();
       status.lastDurationMs = Date.now() - start;
+      // Skipped jobs don't get persisted or pushed to the activity ring —
+      // they wake up, see no work, and exit silently. Status still updates
+      // so the portal shows lastRunAt, but job_history is not written.
+      if (result === 'skipped') {
+        status.lastResult = 'success';
+        return;
+      }
+      status.lastResult = 'success';
       pushEvent({
         ts: startIso,
         type: 'job',

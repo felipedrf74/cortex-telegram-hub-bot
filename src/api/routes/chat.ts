@@ -105,6 +105,30 @@ export function chatRoutes(): Router {
         return;
       }
 
+      // ── Cost cap enforcement ─────────────────────────────────────
+      // Per-user daily $-cap. Reject before invoking the AI pipeline if
+      // the user is over their quota. The per-minute rate limiter (60
+      // req/min) is not enough on its own — at $0.04/Sonnet call × 60/min
+      // that's $144/hour potential bleed. The cap stops bleed at ~$1/day
+      // per user. See audit P0-3 / QW-7. Configure with PER_USER_DAILY_USD_CAP env.
+      const { isUserOverDailyCap } = require('../../services/cost-guardrail');
+      const cap = isUserOverDailyCap(userId);
+      if (cap.over) {
+        logger.warn(
+          { userId, spentUsd: cap.spentUsd, capUsd: cap.capUsd, platform: 'ios' },
+          'iOS chat: user over daily cost cap',
+        );
+        res.status(429).json({
+          error: {
+            code: 'COST_CAP_EXCEEDED',
+            message: `Daily AI cost cap of $${cap.capUsd.toFixed(2)} reached. Resets at midnight UTC.`,
+            spentUsd: cap.spentUsd,
+            capUsd: cap.capUsd,
+          },
+        });
+        return;
+      }
+
       // Build active conversation context
       let activeContext = null;
       const lastState = lastActiveDomain.get(userId);

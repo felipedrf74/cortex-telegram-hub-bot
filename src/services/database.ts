@@ -75,6 +75,31 @@ function runMigrations(): void {
     .filter((f) => f.endsWith('.sql'))
     .sort();
 
+  // Lint: warn on numeric prefix collisions. Apply order between two files
+  // sharing the same prefix is filesystem-sort-dependent (locale, OS), so
+  // collisions are silent timebombs for cross-environment schema drift.
+  // We log loudly here so future devs (and AI agents in the factory) get
+  // a flag the moment they introduce one. See audit P0-5.
+  const prefixMap = new Map<string, string[]>();
+  for (const f of files) {
+    const m = f.match(/^(\d{3})_/);
+    if (m) {
+      const prefix = m[1];
+      const list = prefixMap.get(prefix) ?? [];
+      list.push(f);
+      prefixMap.set(prefix, list);
+    }
+  }
+  const collisions = [...prefixMap.entries()].filter(([, list]) => list.length > 1);
+  if (collisions.length > 0) {
+    for (const [prefix, list] of collisions) {
+      logger.warn(
+        { prefix, files: list },
+        `Migration prefix collision: ${list.length} files share prefix ${prefix}. Apply order is locale-dependent. Future migrations should use unique prefixes (e.g. ${prefix}a_, ${prefix}b_) or timestamp prefixes (YYYYMMDD_).`,
+      );
+    }
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

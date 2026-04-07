@@ -146,8 +146,14 @@ export function startScheduler(bot: Bot): void {
   seedJobLastRunFromHistory();
 
   // ── Reminder checker (every minute) ────────────────────────────────
+  // Fast-path: getDueReminders() is a single indexed SELECT. If it returns
+  // an empty array (the common case when there are no active reminders),
+  // we return 'skipped' so wrapJob does NOT persist a job_history row.
+  // This eliminates ~6,700 wasted rows/week observed in production at 1
+  // active user — see audit P0-2.
   cron.schedule('* * * * *', wrapJob('reminders', async () => {
     const dueReminders = getDueReminders();
+    if (dueReminders.length === 0) return 'skipped';
     for (const reminder of dueReminders) {
       const targetUserId = (reminder as any).user_id as number;
       try {

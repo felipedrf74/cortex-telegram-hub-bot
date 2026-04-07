@@ -1,5 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+// MUST be first: installs process error handlers BEFORE config validation
+// can throw at module load. Without this, boot-time crashes (missing env
+// vars, EADDRINUSE, etc.) bypass the error_log table — see audit P0-6.
+import './boot';
+
 import { config } from './config';
 import { logger } from './utils/logger';
 import { initDatabase, closeDatabase, getDb } from './services/database';
@@ -11,7 +16,6 @@ import { createPortalServer } from './portal/server';
 import {
   setDbProvider as setErrorDbProvider,
   setAlertCallback,
-  installProcessHandlers,
 } from './services/error-monitor';
 import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
@@ -45,8 +49,10 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'Task provider adapter registration failed');
   }
 
-  // Install process-level error handlers (unhandledRejection, uncaughtException)
-  installProcessHandlers();
+  // Process-level error handlers were installed by ./boot at module load
+  // (must run BEFORE config import). The error-monitor's boot buffer has
+  // already accumulated any boot-phase errors and setErrorDbProvider() above
+  // flushed them to error_log.
 
   // Create bot
   const bot = createBot();
@@ -56,13 +62,18 @@ async function main(): Promise<void> {
 
   // Wire Telegram alerting for critical errors (owner-only — never send internals to regular users)
   const { getOwnerUserIds } = require('./services/scheduler');
-  setAlertCallback(async (message: string) => {
+  const ownerAlert = async (message: string) => {
     for (const userId of getOwnerUserIds()) {
       try {
         await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
       } catch { /* swallow — don't cascade alert failures */ }
     }
-  });
+  };
+  setAlertCallback(ownerAlert);
+
+  // Wire same Telegram alerting for cost guardrail tier crossings (50/80/100%)
+  const { setCostAlertCallback } = require('./services/cost-guardrail');
+  setCostAlertCallback(ownerAlert);
 
   // Start scheduler (reminders, daily briefing, weekly review)
   startScheduler(bot);
