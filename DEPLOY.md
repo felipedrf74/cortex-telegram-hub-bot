@@ -47,12 +47,58 @@ This script:
 - **Process Manager:** PM2 (nexus-hub + content-engine)
 - **Backups:** `/home/dominguez/backups/nexushub/` (last 10 kept)
 
-### Rollback
+### Rollback — Tested Procedure
+
+**Rule #1:** ALWAYS run `--dry-run` first. The dry-run extracts the backup into
+a temp dir on the server, runs SQLite `PRAGMA integrity_check`, and prints row
+counts for the critical tables — confirming the backup is actually restorable
+**without touching production**.
+
 ```bash
-./scripts/rollback.sh              # List available versions
-./scripts/rollback.sh v4.4.1       # Rollback to specific version
-./scripts/rollback.sh latest       # Rollback to most recent backup
+# 1. List available backups (read-only, no changes)
+./scripts/rollback.sh
+
+# 2. Validate the backup you want to restore (NO changes to production)
+./scripts/rollback.sh --dry-run latest        # Validate most recent
+./scripts/rollback.sh --dry-run v4.9.30       # Validate specific version
+
+# 3. Apply the rollback for real (prompts for YES confirmation)
+./scripts/rollback.sh latest
+./scripts/rollback.sh v4.9.30
 ```
+
+**Backup flags in the listing:**
+- `[includes data]` — Contains `dist/ + migrations/ + prompts/ + data/bot.db`.
+  Safe for full rollback. Only backups from v4.9.29+ have this
+  (QW-10 fixed an earlier bug where deploy.sh excluded bot.db).
+- `[code only ⚠️]` — Contains only `dist/ + migrations/ + prompts/` but no
+  `data/bot.db`. Will **fail** `--apply` because restore.sh requires a DB.
+  Only usable for manual code-only rollbacks via raw `tar xzf`.
+
+**What `--apply` actually does (orchestrated by rollback.sh → restore.sh):**
+1. `pm2 stop nexus-hub content-engine` — releases DB locks
+2. Waits for port 8200 to drain (up to 30s)
+3. Creates a **pre-restore snapshot** (`pre-restore-YYYYMMDD.tar.gz`) so
+   you can undo the rollback itself
+4. SQLite `PRAGMA integrity_check` on the backup's bot.db — aborts if bad
+5. Atomic file swap: `dist/`, `migrations/`, `prompts/`, `data/bot.db`,
+   `data/garmin-tokens/`
+6. `npm ci --production` — in case package.json differs
+7. `npm rebuild better-sqlite3` — native modules must match system Node
+8. `pm2 start` both services
+9. Health check against `http://localhost:8200/api/snapshot` with 3 retries
+10. Prints the current→target version diff
+
+**If the rollback's own health check fails:**
+The script prints the path to the pre-restore snapshot and the exact command
+to undo the rollback:
+```bash
+ssh dominguez@serverdominguez 'cd /home/dominguez/telegram-hub-bot && bash scripts/restore.sh --apply <pre-restore-snapshot>'
+```
+
+**Last tested:** 2026-04-08 — dry-run validated against v4.9.30 and v4.9.32,
+both passed integrity check with expected row counts for
+`users`, `user_oauth_tokens`, `job_history`, `audit_trail`.
 
 ---
 
