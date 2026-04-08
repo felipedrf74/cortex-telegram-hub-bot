@@ -69,18 +69,23 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     stores it in the contextvar for the duration of the request, and
     echoes it back in the response. This is the FastAPI side of the
     distributed tracing handshake.
+
+    NOTE: We deliberately do NOT call _request_id_var.reset(token) in a
+    finally block. ContextVars in async code are per-Task — Starlette runs
+    each request in its own task, and when the task ends the contextvar
+    value is released automatically. If we DID reset() in finally, we'd
+    clear the value BEFORE uvicorn's access log fires (uvicorn writes its
+    access log after the middleware chain completes), which means every
+    request line would show `reqId=-` regardless of what was in the header.
     """
 
     async def dispatch(self, request: Request, call_next):
         incoming = request.headers.get("x-request-id")
         request_id = incoming or _generate_request_id()
-        token = _request_id_var.set(request_id)
-        try:
-            response = await call_next(request)
-            response.headers["x-request-id"] = request_id
-            return response
-        finally:
-            _request_id_var.reset(token)
+        _request_id_var.set(request_id)
+        response = await call_next(request)
+        response.headers["x-request-id"] = request_id
+        return response
 
 
 class RequestIdFilter(logging.Filter):
@@ -96,18 +101,35 @@ class RequestIdFilter(logging.Filter):
 
 
 # Configure root logging with the request_id filter applied to the handler.
-# Doing this on the root logger means uvicorn/fastapi/starlette logs ALSO
-# pick up the request ID, not just our own logger.
-_handler = logging.StreamHandler()
-_handler.setFormatter(
-    logging.Formatter(
-        "%(asctime)s %(levelname)s [%(name)s] [reqId=%(request_id)s] %(message)s"
-    )
-)
-_handler.addFilter(RequestIdFilter())
+# We have to be aggressive here because uvicorn configures its OWN loggers
+# (`uvicorn`, `uvicorn.access`, `uvicorn.error`) at startup with their own
+# handlers — those handlers don't inherit from root, so just configuring
+# root isn't enough. We rebuild the relevant loggers explicitly.
+_FORMAT = "%(asctime)s %(levelname)s [%(name)s] [reqId=%(request_id)s] %(message)s"
+_filter = RequestIdFilter()
+
+
+def _make_handler() -> logging.StreamHandler:
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter(_FORMAT))
+    h.addFilter(_filter)
+    return h
+
+
+# Root + our app logger
 _root = logging.getLogger()
-_root.handlers = [_handler]
+_root.handlers = [_make_handler()]
 _root.setLevel(logging.INFO)
+
+# Override uvicorn's loggers so the access log line ALSO carries reqId.
+# Without this, uvicorn writes its access log in its own bare format and
+# the trace ID is invisible on the request line — it'd only show up on
+# our application's logger.info() calls inside the handler.
+for _name in ("uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"):
+    _lg = logging.getLogger(_name)
+    _lg.handlers = [_make_handler()]
+    _lg.propagate = False  # don't double-log via root
+    _lg.setLevel(logging.INFO)
 
 logger = logging.getLogger("content-engine")
 
