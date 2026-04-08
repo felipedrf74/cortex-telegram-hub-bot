@@ -5,7 +5,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { DomainMessage, DomainName } from '../domains/types';
 import { trackedCreate } from '../portal/anthropic-hook';
-import { completeOneShotWithFallback } from './gemini-provider';
+import { completeOneShotWithFallback, completeVisionOneShotWithFallback } from './gemini-provider';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';
 
@@ -323,26 +323,13 @@ export interface ImageTaskResult {
 export type ImageClassificationResult = ImageInvoiceResult | ImageCalendarResult | ImageTaskResult;
 
 /**
- * Unified image classifier: determines whether the image is an invoice, calendar, or task list,
- * and extracts the relevant structured data in a single Haiku vision call.
+ * Build the classify-and-extract system prompt for a given date context.
+ * Extracted as a function because the prompt template interpolates today's
+ * date + timezone + year, so it has to be rebuilt per call. Used by both
+ * the Gemini-first path and the Anthropic fallback so they stay identical.
  */
-export async function classifyAndExtractImage(
-  imageBase64: string,
-  mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
-  caption?: string
-): Promise<ImageClassificationResult> {
-  const today = new Date().toISOString().split('T')[0];
-  const currentYear = new Date().getFullYear();
-  const tz = config.app.timezone || 'Europe/Lisbon';
-
-  const prompt = caption
-    ? `The user sent this image with caption: "${caption}"\n\nClassify and extract the content.`
-    : `Classify and extract the content of this image.`;
-
-  const response = await trackedCreate(client, {
-    model: config.anthropic.classifierModel, // Haiku — cheap vision
-    max_tokens: 4096,
-    system: `You classify images into exactly ONE of three categories and extract structured data. Return ONLY valid JSON.
+function buildImageClassifierSystemPrompt(today: string, currentYear: number, tz: string): string {
+  return `You classify images into exactly ONE of three categories and extract structured data. Return ONLY valid JSON.
 
 CATEGORY 1 — INVOICE / RECEIPT:
 Indicators: nota fiscal, recibo, fatura, comprovante de pagamento, NF-e, NFS-e, receipt, invoice, bill, payment proof, ticket de compra, cupom fiscal, line items with prices, tax totals, business letterhead with amounts.
@@ -375,25 +362,84 @@ Return:
 
 NOT a document: personal photos, selfies, food photos, memes, screenshots of chat messages → return {"type":"task","title":"Photo","subtasks":[]}.
 
-When uncertain between calendar and task, prefer "task".`,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-        { type: 'text', text: prompt },
-      ],
-    }],
-  }, 'classify_image');
+When uncertain between calendar and task, prefer "task".`;
+}
 
-  const stopReason = response.stop_reason;
+/**
+ * Unified image classifier: determines whether the image is an invoice, calendar, or task list,
+ * and extracts the relevant structured data in a single vision call.
+ *
+ * Gemini-first (gemini-2.5-flash vision) ≈ $0.0001/call. Falls back to
+ * Anthropic Haiku vision (~$0.001/call) on failure. ~10× cost reduction
+ * while every photo upload still works identically for the user.
+ *
+ * NOTE on pause_turn / max_tokens repair: Gemini doesn't have the same
+ * pause_turn semantics as Anthropic, but it DOES return a finish reason
+ * (MAX_TOKENS, STOP, SAFETY, etc.) via the response candidate. We preserve
+ * the existing "repair truncated calendar JSON" path for the Anthropic
+ * fallback. The Gemini response gets a best-effort JSON.parse and the
+ * same task fallback on failure.
+ */
+export async function classifyAndExtractImage(
+  imageBase64: string,
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
+  caption?: string
+): Promise<ImageClassificationResult> {
+  const today = new Date().toISOString().split('T')[0];
+  const currentYear = new Date().getFullYear();
+  const tz = config.app.timezone || 'Europe/Lisbon';
 
-  let text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+  const systemPrompt = buildImageClassifierSystemPrompt(today, currentYear, tz);
+  const userPrompt = caption
+    ? `The user sent this image with caption: "${caption}"\n\nClassify and extract the content.`
+    : `Classify and extract the content of this image.`;
 
-  // Strip markdown fences
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  // Gemini vision supports jpeg/png/webp but NOT gif as of 2026-04.
+  // Anthropic Haiku supports all four. Pick the provider based on the
+  // mime type up front rather than letting Gemini 400 on gifs.
+  const canUseGemini = mediaType !== 'image/gif';
+  let stopReason: string | null = null;
+
+  // Shared Anthropic fallback thunk — used either as the fallback inside
+  // the vision wrapper (jpeg/png/webp) or called directly (gif).
+  const anthropicFallback = async (): Promise<string> => {
+    const response = await trackedCreate(client, {
+      model: config.anthropic.classifierModel, // Haiku — cheap vision
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+          { type: 'text', text: userPrompt },
+        ],
+      }],
+    }, 'classify_image');
+    stopReason = response.stop_reason;
+    return response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+  };
+
+  let rawText: string;
+  if (canUseGemini) {
+    const result = await completeVisionOneShotWithFallback(
+      systemPrompt,
+      userPrompt,
+      { base64: imageBase64, mimeType: mediaType },
+      'classify_image',
+      anthropicFallback,
+      { maxTokens: 4096, temperature: 0 },
+    );
+    rawText = result.text;
+  } else {
+    // gif — Gemini doesn't support this mime type, go straight to Anthropic
+    rawText = await anthropicFallback();
+  }
+
+  // Strip markdown fences (either provider may wrap JSON in ```json … ```)
+  let text = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
   try {
     const parsed = JSON.parse(text);
@@ -404,7 +450,9 @@ When uncertain between calendar and task, prefer "task".`,
     logger.info({ imageType: parsed.type, eventCount: parsed.events?.length, confidence: parsed.confidence }, 'Image classified');
     return parsed as ImageClassificationResult;
   } catch (err) {
-    // If the model was cut off by max_tokens, try to repair truncated calendar JSON
+    // If the model was cut off by max_tokens (Anthropic path only —
+    // stopReason is only populated when the fallback fired), try to
+    // repair truncated calendar JSON.
     if (stopReason === 'max_tokens' && text.includes('"type"') && text.includes('"calendar"')) {
       const repaired = repairTruncatedCalendarJson(text);
       if (repaired) {
