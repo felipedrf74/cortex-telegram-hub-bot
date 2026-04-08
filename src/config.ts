@@ -44,6 +44,21 @@ export const config = {
       .split(',')
       .map((id) => parseInt(id.trim(), 10))
       .filter((id) => !isNaN(id)),
+    // Webhook mode (Month 2 audit item). When TELEGRAM_WEBHOOK_URL is set,
+    // the bot uses webhook delivery instead of long-polling. Default: empty
+    // (= long-polling). Setting/unsetting this env var is the safety switch
+    // — flip it back to "" and restart the bot to instantly revert to
+    // polling mode without any code rollback.
+    //
+    // The URL must be HTTPS and reachable by Telegram (not localhost).
+    // For Nexus Hub: https://api.nexushub.me/webhooks/telegram
+    //
+    // TELEGRAM_WEBHOOK_SECRET is an optional 1-256 char token from
+    // [A-Za-z0-9_-]. Telegram echoes it back in the
+    // X-Telegram-Bot-Api-Secret-Token header on every delivery, and
+    // grammy verifies it. Strongly recommended in production.
+    webhookUrl: process.env.TELEGRAM_WEBHOOK_URL || '',
+    webhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET || '',
   },
   isStaging: IS_STAGING,
   anthropic: {

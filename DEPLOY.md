@@ -48,6 +48,58 @@ against the staging install: health, snapshot shape, cost-by-domain shape,
 provider stats, PM2 state, DB integrity), and only proceeds to
 `deploy.sh` if all 13 pass. See `STAGING.md` for the full staging runbook.
 
+### Telegram Delivery Mode: Long-Polling vs Webhooks
+
+The bot supports both delivery modes. Long-polling is the default; webhooks
+are opt-in via env var.
+
+**Long-polling (current default):**
+- The bot makes a long-running `getUpdates` request to Telegram every few seconds.
+- Pros: zero infrastructure setup, works behind any firewall, no public URL needed.
+- Cons: Holds an open connection to Telegram constantly. Only one process can poll
+  per bot token. ~1-3s message delivery latency.
+
+**Webhooks (opt-in):**
+- Telegram POSTs each update to `https://api.nexushub.me/webhooks/telegram`
+  via the existing cloudflared tunnel → portal on :8200.
+- Pros: Lower latency (Telegram pushes to us instantly). No long-running
+  connection. Multiple processes COULD share the same token (though we still
+  run only one because of cron / state).
+- Cons: Requires a public HTTPS endpoint reachable from Telegram's IPs.
+
+**Switching to webhooks** (low-risk, reversible):
+
+1. Add to `.env`:
+   ```
+   TELEGRAM_WEBHOOK_URL=https://api.nexushub.me/webhooks/telegram
+   TELEGRAM_WEBHOOK_SECRET=<random 32+ char string>
+   ```
+2. Restart the bot: `./scripts/deploy.sh` (or just `pm2 restart nexus-hub` if no code changes)
+3. The bot will:
+   - Call `bot.api.deleteWebhook()` to clean any stale registration
+   - Call `bot.api.setWebhook(url, { secret_token })` to register the new one
+   - SKIP `bot.start()` (no long-polling)
+   - Mount `POST /webhooks/telegram` on the portal Express server
+4. Verify: `pm2 logs nexus-hub --nostream | grep "WEBHOOK mode"` should show the registration succeeded
+
+**Reverting to long-polling** (instant, no code rollback needed):
+
+1. Remove (or comment out) `TELEGRAM_WEBHOOK_URL` in `.env`
+2. Restart: `pm2 restart nexus-hub`
+3. The bot detects the missing env var and goes back to `bot.start()` with long-polling
+4. The webhook registration on Telegram's side becomes a no-op — Telegram falls back to allowing getUpdates
+
+The webhook code path is gated entirely on `TELEGRAM_WEBHOOK_URL` being non-empty.
+There's no migration step or DB change to undo. Setting and unsetting one env var
+is the entire toggle.
+
+**If `setWebhook()` fails at boot** (Telegram API blip, network issue), the bot
+automatically falls back to long-polling for that boot — see the try/catch in
+`src/index.ts`. So a transient Telegram outage during a deploy can't lock you
+into a half-broken webhook state.
+
+---
+
 ### 🟡 Direct Deploy (skip staging — use only for trivial fixes)
 
 ```bash

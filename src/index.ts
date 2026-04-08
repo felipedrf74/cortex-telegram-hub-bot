@@ -121,6 +121,52 @@ async function main(): Promise<void> {
     return; // Returning here keeps the process alive via portalServer
   }
 
+  // Webhook mode (Month 2 audit item).
+  //
+  // When TELEGRAM_WEBHOOK_URL is set, we register the URL with Telegram
+  // and skip the long-polling loop entirely. The webhook route is already
+  // mounted by createPortalServer → createWebhookRouter(bot) above. From
+  // this point on, Telegram POSTs every update to /webhooks/telegram and
+  // grammy's webhookCallback dispatches it through the same middleware
+  // chain that long-polling would have used.
+  //
+  // Why this is the lowest-risk possible migration:
+  //   - Default state is unchanged: no env var → long-polling (current)
+  //   - Webhook is opt-in via env var only — no code path is silently
+  //     activated
+  //   - Reverting is a one-line .env change + restart — no code rollback
+  //   - The setWebhook call is wrapped in try/catch so a Telegram API
+  //     blip during boot doesn't take the whole bot down
+  //   - We deleteWebhook first so any stale registration from a previous
+  //     attempt is cleaned up before we set the new one
+  //   - drop_pending_updates: false because we DON'T want to lose
+  //     messages that came in during deploy / restart
+  if (config.telegram.webhookUrl) {
+    try {
+      logger.info(
+        { url: config.telegram.webhookUrl, hasSecret: !!config.telegram.webhookSecret },
+        'Registering Telegram webhook...',
+      );
+      // Clean up any stale webhook from a previous run / a different URL.
+      // No-op if none registered.
+      await bot.api.deleteWebhook({ drop_pending_updates: false });
+      // Register the new one. Telegram immediately starts posting updates
+      // to this URL.
+      await bot.api.setWebhook(config.telegram.webhookUrl, {
+        secret_token: config.telegram.webhookSecret || undefined,
+        drop_pending_updates: false,
+        // We don't restrict allowed_updates here — same as long polling,
+        // we accept everything Telegram sends and let grammy filter.
+      });
+      logger.info({ url: config.telegram.webhookUrl }, '✅ Telegram webhook registered — running in WEBHOOK mode');
+      setBotPollingActive(true); // The bot IS now serving updates, just via HTTP not polling
+      return; // Skip the polling loop — process stays alive via portalServer
+    } catch (err) {
+      logger.error({ err }, 'Failed to register Telegram webhook — falling back to long-polling');
+      // Fall through to the polling loop below
+    }
+  }
+
   // Start bot with retry logic for 409 Conflict (multiple polling instances).
   // Uses exponential backoff: 45s → 90s → 180s to give Telegram time to release the lock.
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

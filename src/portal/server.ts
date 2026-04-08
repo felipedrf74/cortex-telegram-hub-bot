@@ -1087,13 +1087,18 @@ export function createPortalServer(bot: Bot): http.Server {
     });
   });
 
-  // ── Webhook router (TASK-16b) ──────────────────────────────────────
+  // ── Webhook router (TASK-16b + Month 2: Telegram webhooks) ─────────
   // Mounted BEFORE express.json() because the Todoist webhook needs the
   // raw bytes for HMAC verification. The router uses its own scoped
   // express.raw() parser and JSON.parses the body manually after verifying.
+  //
+  // The Telegram webhook handler (mounted ONLY when config.telegram.webhookUrl
+  // is set) uses its OWN scoped express.json() inside the route definition,
+  // so it works fine even though the global express.json() runs later.
+  // Passing `bot` here gives the router access to grammy's webhookCallback.
   try {
     const { createWebhookRouter } = require('../api/routes/webhooks');
-    app.use('/webhooks', createWebhookRouter());
+    app.use('/webhooks', createWebhookRouter(bot));
   } catch (err) {
     logger.warn({ err }, 'Webhook router failed to mount (non-fatal)');
   }
