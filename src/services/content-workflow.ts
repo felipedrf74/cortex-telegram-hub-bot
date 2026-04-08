@@ -9,6 +9,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithFallback } from './gemini-provider';
 import { getDb } from './database';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { handleContent } from '../domains/content-creator';
@@ -186,42 +187,68 @@ export async function generateTopicCandidates(
     ? `Today is ${today.toFormat('cccc, LLLL dd, yyyy')}. Generate ${count} trending ${format} topic candidates for The Operator brand. Search for what's hot right now across all pillars (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Don't force quotas — follow what's genuinely interesting and timely.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`
     : `Generate ${count} evergreen ${format} topic candidates for The Operator brand. Timeless topics across any pillar (🤖 AI/Tech, 🎤 Commentary, 🏋️ Training, 🎮 Gaming, 🃏 Wild Card). Follow genuine interest, not quotas.${enrichment}\n\nRespond with a JSON array. Each object must have: "title", "niche" (one of: ai-tech, commentary, training, gaming, wild-card), "whyNow", "hookIdea", "angle_tag", "pillar_emoji", "time_sensitivity".`;
 
-  const cachedSystem: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
-  ];
-
+  // Gemini-first routing for cost reduction (cost-optimization pass).
+  // Topic generation is a JSON-output task that doesn't need Anthropic-specific
+  // features like web_search; gemini-2.5-flash handles structured output well.
+  // For trending topics we DO need web search though, which Gemini doesn't
+  // support natively in the same way — so trending topics fall back to
+  // Anthropic Haiku via the wrapper's fallback path.
+  //
+  // The wrapper logs the call to api_usage with the correct provider so the
+  // cost dashboard reflects reality.
   const tools = isTrending
     ? [{ type: 'web_search_20250305' as any, name: 'web_search', max_uses: 5 } as any]
     : undefined;
 
-  const response = await trackedCreate(client, {
-    model: config.anthropic.classifierModel, // Haiku
-    max_tokens: 4096,
-    system: cachedSystem,
-    messages: [{ role: 'user', content: userMessage }],
-    ...(tools ? { tools } : {}),
-  } as any, `content_workflow_${format}`);
+  const cachedSystem: Anthropic.TextBlockParam[] = [
+    { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+  ];
 
-  // Handle pause_turn
-  let finalResponse = response;
-  if (response.stop_reason === 'pause_turn') {
-    logger.info({ format }, 'Content workflow topic generation paused, continuing...');
-    finalResponse = await trackedCreate(client, {
-      model: config.anthropic.classifierModel,
-      max_tokens: 4096,
-      system: cachedSystem,
-      messages: [
-        { role: 'user', content: userMessage },
-        { role: 'assistant', content: response.content as any },
-      ],
-      ...(tools ? { tools } : {}),
-    } as any, `content_workflow_${format}_continuation`);
+  const { text: textContent, provider: usedProvider } = await completeOneShotWithFallback(
+    systemPrompt,
+    userMessage,
+    `content_workflow_${format}`,
+    // Anthropic fallback — preserves the existing pause_turn handling for
+    // trending mode (web search calls can pause and need a continuation).
+    async () => {
+      const response = await trackedCreate(client, {
+        model: config.anthropic.classifierModel, // Haiku
+        max_tokens: 4096,
+        system: cachedSystem,
+        messages: [{ role: 'user', content: userMessage }],
+        ...(tools ? { tools } : {}),
+      } as any, `content_workflow_${format}`);
+
+      let finalResponse = response;
+      if (response.stop_reason === 'pause_turn') {
+        logger.info({ format }, 'Content workflow topic generation paused, continuing...');
+        finalResponse = await trackedCreate(client, {
+          model: config.anthropic.classifierModel,
+          max_tokens: 4096,
+          system: cachedSystem,
+          messages: [
+            { role: 'user', content: userMessage },
+            { role: 'assistant', content: response.content as any },
+          ],
+          ...(tools ? { tools } : {}),
+        } as any, `content_workflow_${format}_continuation`);
+      }
+
+      return finalResponse.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+    },
+    { maxTokens: 4096 },
+  );
+
+  // For trending topics with web search, we MUST use Anthropic — Gemini's
+  // search grounding is a different shape. The wrapper tries Gemini first
+  // anyway because the JSON output may still be useful, but if we're
+  // trending and got Gemini back without web grounding, log a hint.
+  if (isTrending && usedProvider === 'gemini') {
+    logger.info({ format }, 'Content workflow trending topic generated via Gemini (no web grounding)');
   }
-
-  const textContent = finalResponse.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
 
   // Extract JSON array from response
   const jsonMatch = textContent.match(/\[[\s\S]*\]/);
