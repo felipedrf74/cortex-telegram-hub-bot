@@ -3312,8 +3312,14 @@ table.legacy th {
   // _activeCostRange module-level state. Without this the background timer
   // would reset the view to 7d every 30 seconds, making the 1d/30d
   // buttons feel broken because clicking them only worked for <30 seconds.
+  //
+  // MUST be assigned to `window` — the whole <script> is wrapped in an
+  // IIFE with 'use strict', so plain `function foo()` declarations stay
+  // private to that closure. Inline onclick="loadCostByDomain(1)" runs
+  // in the global scope and looks the function up on window. Without
+  // this assignment the buttons are dead (silent reference error).
   let _activeCostRange = 7;
-  async function loadCostByDomain(days) {
+  window.loadCostByDomain = async function(days) {
     try {
       if (days == null) days = _activeCostRange;
       _activeCostRange = days;
@@ -3443,7 +3449,7 @@ table.legacy th {
         '</tr>';
       }).join('');
     } catch { /* silent */ }
-  }
+  };
 
   // ════════════════════════════════════════════════════════════
   // Settings
