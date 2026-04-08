@@ -700,6 +700,12 @@ a { color: inherit; text-decoration: none; }
   border-color: var(--error);
 }
 .btn-sm { padding: 4px 8px; font-size: 11px; }
+.btn-sm-active {
+  background: var(--accent-bg, rgba(255, 107, 53, 0.12));
+  border-color: var(--accent, #ff6b35);
+  color: var(--accent, #ff6b35);
+  font-weight: 600;
+}
 .btn-xs {
   padding: 2px 6px;
   font-size: 10px;
@@ -1656,26 +1662,64 @@ table.legacy th {
         </table>
       </div>
 
-      <div class="grid grid-cols-2 mt-4">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">💸 Cost by Skill (7d)</div>
-            <span class="card-subtitle" id="cost-by-domain-total">—</span>
-          </div>
-          <table class="legacy" id="cost-by-domain-table">
-            <thead><tr><th>Skill</th><th>Provider</th><th class="text-right">Calls</th><th class="text-right">Tokens</th><th class="text-right">Cost</th></tr></thead>
-            <tbody><tr><td colspan="5"><div class="empty">Loading…</div></td></tr></tbody>
-          </table>
+      <!-- ════════════════════ PER-ENDPOINT COST DASHBOARD (Quarter) ════════════════════ -->
+      <!--
+        Full breakdown by (category × provider × model). Three levers:
+        1. Range selector — 1d / 7d / 30d toggles re-query /api/cost-by-domain
+           with a new ?days= parameter.
+        2. Provider split strip — shows total cost per provider with the
+           Gemini share as a percentage. This is the "how's the Gemini
+           migration going?" indicator.
+        3. Daily cost sparkline — trend line so you can see whether costs
+           are creeping up day over day.
+
+        The table has an extra "Model" column (critical for telling sonnet
+        vs haiku apart within the same provider) and a "$/Call" column
+        which is the best single signal for what to optimize first.
+      -->
+      <div class="card mt-4" id="cost-breakdown-card">
+        <div class="card-header">
+          <div class="card-title">💸 Per-Endpoint Cost Breakdown</div>
+          <span class="card-subtitle" id="cost-by-domain-total">—</span>
         </div>
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">📊 Agent Quality Scores (30d)</div>
+
+        <!-- Range selector + provider split strip -->
+        <div style="display:flex;flex-wrap:wrap;gap:var(--space-3);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--border-subtle);background:var(--bg-overlay);">
+          <div class="flex" style="gap:var(--space-1)">
+            <button class="btn-sm" id="cost-range-1" onclick="loadCostByDomain(1)">1d</button>
+            <button class="btn-sm" id="cost-range-7" onclick="loadCostByDomain(7)">7d</button>
+            <button class="btn-sm" id="cost-range-30" onclick="loadCostByDomain(30)">30d</button>
           </div>
-          <table class="legacy" id="quality-scores-table">
-            <thead><tr><th>Agent</th><th class="text-right">Score</th><th class="text-right">Tasks</th><th class="text-right">Pass %</th></tr></thead>
-            <tbody><tr><td colspan="4"><div class="empty">Loading…</div></td></tr></tbody>
-          </table>
+          <div id="cost-provider-split" style="flex:1;display:flex;gap:var(--space-3);font-size:11px;font-family:var(--font-mono)"></div>
+          <canvas id="cost-sparkline" width="180" height="32" style="opacity:0.9"></canvas>
         </div>
+
+        <table class="legacy" id="cost-by-domain-table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Provider</th>
+              <th>Model</th>
+              <th class="text-right">Calls</th>
+              <th class="text-right">$/Call</th>
+              <th class="text-right">Tokens</th>
+              <th class="text-right">Avg ms</th>
+              <th class="text-right">p95 ms</th>
+              <th class="text-right">Cost</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="9"><div class="empty">Loading…</div></td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">📊 Agent Quality Scores (30d)</div>
+        </div>
+        <table class="legacy" id="quality-scores-table">
+          <thead><tr><th>Agent</th><th class="text-right">Score</th><th class="text-right">Tasks</th><th class="text-right">Pass %</th></tr></thead>
+          <tbody><tr><td colspan="4"><div class="empty">Loading…</div></td></tr></tbody>
+        </table>
       </div>
 
       <div class="card mt-4">
@@ -3077,12 +3121,25 @@ table.legacy th {
     } catch { /* silent */ }
   }
 
-  // Loads per-skill cost aggregated from api_usage. This replaced the old
-  // loadTaskMetrics which read from task_execution_metrics (only populated by
-  // the Notion agent dispatcher, so it was always empty for real users).
-  async function loadCostByDomain() {
+  // Per-endpoint cost dashboard (Quarter). Loads /api/cost-by-domain for a
+  // given window, renders a full breakdown table by (category × provider ×
+  // model), a provider-split strip showing the Anthropic vs Gemini cost
+  // distribution, and a 30-day sparkline of total daily cost.
+  //
+  // Accepts a `days` argument so the range selector buttons can re-request
+  // without a page reload. Also highlights the active button via the
+  // .btn-sm-active class.
+  let _activeCostRange = 7;
+  async function loadCostByDomain(days = 7) {
     try {
-      const r = await apiFetch('/api/cost-by-domain?days=7');
+      _activeCostRange = days;
+      // Update button active state
+      [1, 7, 30].forEach(d => {
+        const btn = document.getElementById('cost-range-' + d);
+        if (btn) btn.classList.toggle('btn-sm-active', d === days);
+      });
+
+      const r = await apiFetch('/api/cost-by-domain?days=' + days);
       if (!r.ok) return;
       const d = await r.json();
       if (!d.ok) return;
@@ -3092,18 +3149,59 @@ table.legacy th {
       const rows = d.detailed || [];
 
       if (totalEl) {
-        totalEl.textContent = '$' + (d.totalCost || 0).toFixed(3) + ' · ' + (d.totalCalls || 0) + ' calls';
+        totalEl.textContent = '$' + (d.totalCost || 0).toFixed(3) + ' · ' +
+          (d.totalCalls || 0) + ' calls · last ' + days + 'd';
       }
 
+      // ── Provider split strip ─────────────────────────────────
+      const splitEl = document.getElementById('cost-provider-split');
+      if (splitEl) {
+        const providerColors = {
+          anthropic: '#D97757', openai: '#10A37F', gemini: '#4285F4', unknown: '#888',
+        };
+        splitEl.innerHTML = (d.providerSplit || []).map(p => {
+          const color = providerColors[p.provider] || '#888';
+          return '<span><span style="color:' + color + '">●</span> ' +
+            esc(p.provider) + ' <strong>$' + (p.cost || 0).toFixed(3) + '</strong>' +
+            ' <span class="text-tertiary">(' + (p.percentOfCost || 0).toFixed(1) + '%)</span>' +
+            '</span>';
+        }).join('');
+      }
+
+      // ── Sparkline ─────────────────────────────────────────────
+      const canvas = document.getElementById('cost-sparkline');
+      if (canvas && d.dailySeries && d.dailySeries.length > 0) {
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+        const series = d.dailySeries;
+        const maxCost = Math.max(...series.map(p => p.cost || 0), 0.0001);
+        ctx.strokeStyle = 'rgba(217, 119, 87, 0.9)'; // anthropic orange
+        ctx.fillStyle = 'rgba(217, 119, 87, 0.15)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        series.forEach((p, i) => {
+          const x = (i / Math.max(series.length - 1, 1)) * (W - 2) + 1;
+          const y = H - (((p.cost || 0) / maxCost) * (H - 4)) - 2;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        // Fill under the line
+        ctx.lineTo(W - 1, H);
+        ctx.lineTo(1, H);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // ── Detailed table ────────────────────────────────────────
       if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5"><div class="empty">No AI usage in the last 7 days</div></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9"><div class="empty">No AI usage in the last ' + days + ' days</div></td></tr>';
         return;
       }
 
-      // Icons + colors per known skill name so the table has texture
       const skillIcons = {
         secretary: '📋', triathlon: '🏊', content: '🎬', finance: '💰', cooking: '👨‍🍳',
-        classify: '🧭', chat: '💬', unknown: '❔',
+        classify: '🧭', chat: '💬', coach: '🏋️', knowledge: '🧠', unknown: '❔',
       };
       const providerColors = {
         anthropic: '#D97757', openai: '#10A37F', gemini: '#4285F4', unknown: '#888',
@@ -3112,18 +3210,48 @@ table.legacy th {
       // Find max cost for the inline bar
       const maxCost = Math.max(...rows.map(r => r.cost || 0), 0.0001);
 
+      // Shorten verbose model names for display
+      function shortModel(m) {
+        if (!m) return '—';
+        return m
+          .replace('claude-', '')
+          .replace('-20251001', '')
+          .replace('-20260101', '')
+          .replace('gemini-', 'g-');
+      }
+
+      // Match icon against a category like "domain_secretary" → "secretary"
+      function categoryIcon(cat) {
+        const lowered = (cat || '').toLowerCase();
+        for (const key of Object.keys(skillIcons)) {
+          if (lowered.includes(key)) return skillIcons[key];
+        }
+        return '⚙️';
+      }
+
       tbody.innerHTML = rows.map(r => {
-        const icon = skillIcons[r.domain] || '⚙️';
+        const icon = categoryIcon(r.category);
         const pColor = providerColors[r.provider] || '#888';
         const barPct = ((r.cost || 0) / maxCost * 100).toFixed(0);
         const costFmt = '$' + (r.cost || 0).toFixed(r.cost >= 0.01 ? 3 : 4);
+        const perCallFmt = '$' + (r.costPerCall || 0).toFixed(r.costPerCall >= 0.01 ? 3 : 4);
+        const avgMs = Math.round(r.avgDurationMs || 0).toLocaleString();
+        const p95Ms = Math.round(r.p95DurationMs || 0).toLocaleString();
+        // Warn color if p95 is > 2× avg (wide distribution, long tail)
+        const p95Color = (r.p95DurationMs > r.avgDurationMs * 2)
+          ? 'color:var(--warning, #f59e0b)'
+          : '';
         return '<tr>' +
           '<td><span style="margin-right:6px">' + icon + '</span>' +
-            '<span class="mono" style="font-size:12px">' + esc(r.domain) + '</span>' +
+            '<span class="mono" style="font-size:11px">' + esc(r.category) + '</span>' +
           '</td>' +
           '<td><span class="mono" style="font-size:11px;color:' + pColor + '">● ' + esc(r.provider) + '</span></td>' +
+          '<td><span class="mono" style="font-size:10px;color:var(--text-tertiary)">' + esc(shortModel(r.model)) + '</span></td>' +
           '<td class="text-right mono" style="font-size:11px">' + (r.calls || 0).toLocaleString() + '</td>' +
+          '<td class="text-right mono" style="font-size:11px">' + perCallFmt + '</td>' +
           '<td class="text-right mono" style="font-size:11px">' + Math.round(r.tokens || 0).toLocaleString() + '</td>' +
+          '<td class="text-right mono" style="font-size:11px">' + avgMs + '</td>' +
+          '<td class="text-right mono" style="font-size:11px;' + p95Color + '">' + p95Ms + '</td>' +
           '<td class="text-right mono" style="position:relative">' +
             '<div style="position:absolute;left:0;top:50%;transform:translateY(-50%);width:' + barPct + '%;height:70%;background:var(--accent-bg,rgba(255,107,53,0.12));border-radius:3px;z-index:0"></div>' +
             '<span style="position:relative;z-index:1;font-weight:600">' + costFmt + '</span>' +

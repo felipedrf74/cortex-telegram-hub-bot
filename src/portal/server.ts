@@ -2646,56 +2646,52 @@ export function createPortalServer(bot: Bot): http.Server {
    * Aggregates api_usage by the `category` column (which is the domain/skill
    * name set by each provider's logging path: 'secretary', 'triathlon', 'content',
    * 'finance', 'cooking', 'classify', etc). Returns per-domain spend for the
-   * last 7 days so the portal can show which skill is costing the most.
+   * requested window so the portal can show which skill is costing the most.
    *
-   * This is what the "Task Execution Costs" panel actually wanted — the old
-   * source (task_execution_metrics) only logs Notion agent dispatches, which
-   * an end user never triggers.
+   * Quarter: Per-endpoint cost dashboard. The SQL grouping is now three-way
+   * — (category, provider, model) — because within a single provider we run
+   * Sonnet for some domains and Haiku for others with VERY different per-call
+   * costs (Sonnet is ~5× Haiku). A single "domain_secretary / anthropic" row
+   * hid whether we were on the expensive tier or not. The `model` dimension
+   * makes that immediately visible and lets the operator spot migration
+   * opportunities (e.g. "domain_secretary still on sonnet, move to haiku").
+   *
+   * p95DurationMs is computed in JavaScript from the raw duration_ms values
+   * loaded for the window — SQLite doesn't have percentile_cont and the
+   * table is small (~20 rows/day) so there's no perf concern. The p95 vs
+   * avg gap is the signal for "long-tail slow calls" that avg alone hides.
+   *
+   * dailySeries returns a per-day rollup for the whole window so the portal
+   * can render a cost-over-time sparkline without a second round trip.
    */
   app.get('/api/cost-by-domain', (req: Request, res: Response) => {
     try {
       const days = Math.min(Math.max(parseInt(req.query.days as string || '7', 10), 1), 90);
       const db = getDb();
-      const rows = db.prepare(`
+
+      // Raw rows for the window — we need per-row duration_ms to compute p95
+      // in JS. Cheap because the table is tiny (~20 rows/day) and the ts
+      // index makes the range filter fast.
+      const rawRows = db.prepare(`
         SELECT
-          COALESCE(category, 'unknown') AS domain,
+          COALESCE(category, 'unknown') AS category,
           COALESCE(provider, 'anthropic') AS provider,
-          COUNT(*) AS calls,
-          COALESCE(SUM(cost_usd), 0) AS cost,
-          COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
-          COALESCE(AVG(duration_ms), 0) AS avgDurationMs
+          COALESCE(model, 'unknown') AS model,
+          input_tokens,
+          output_tokens,
+          cost_usd,
+          duration_ms,
+          ts
         FROM api_usage
         WHERE ts >= date('now', '-' || ? || ' days')
-        GROUP BY category, provider
-        ORDER BY cost DESC
-      `).all(days) as Array<{
-        domain: string;
-        provider: string;
-        calls: number;
-        cost: number;
-        tokens: number;
-        avgDurationMs: number;
-      }>;
+      `).all(days) as import('./cost-breakdown').ApiUsageRow[];
 
-      const totalCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
-      const totalCalls = rows.reduce((s, r) => s + (r.calls || 0), 0);
+      // All aggregation + percentile logic lives in cost-breakdown.ts so it
+      // can be unit-tested without mocking better-sqlite3.
+      const { computeCostBreakdown } = require('./cost-breakdown') as typeof import('./cost-breakdown');
+      const breakdown = computeCostBreakdown(rawRows, days);
 
-      // Also aggregate at the domain level (summed across providers) for the
-      // simpler "cost by skill" view.
-      const byDomain = new Map<string, { calls: number; cost: number; tokens: number; providers: string[] }>();
-      for (const r of rows) {
-        const existing = byDomain.get(r.domain) || { calls: 0, cost: 0, tokens: 0, providers: [] };
-        existing.calls += r.calls;
-        existing.cost += r.cost;
-        existing.tokens += r.tokens;
-        if (!existing.providers.includes(r.provider)) existing.providers.push(r.provider);
-        byDomain.set(r.domain, existing);
-      }
-      const domains = Array.from(byDomain.entries())
-        .map(([domain, stats]) => ({ domain, ...stats }))
-        .sort((a, b) => b.cost - a.cost);
-
-      res.json({ ok: true, days, totalCost, totalCalls, domains, detailed: rows });
+      res.json({ ok: true, ...breakdown });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
