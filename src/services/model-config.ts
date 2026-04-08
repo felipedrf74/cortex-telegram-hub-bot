@@ -267,6 +267,20 @@ export function getAllModelStates(): ProviderModelState[] {
 
 /**
  * Known model options per provider (for portal dropdown population).
+ *
+ * IMPORTANT: only include models that ACTUALLY exist on the provider's API.
+ * Adding a model name that doesn't exist will let the operator silently
+ * select it via the dropdown, then crash on the next call. We learned this
+ * the hard way with `gemini-3-flash` (committed in v4.9.22 fix) — it sounds
+ * plausible but Google's API only ships gemini-2.5-flash and gemini-2.5-pro.
+ *
+ * Verify a model exists by:
+ *   Anthropic: https://docs.anthropic.com/en/docs/about-claude/models
+ *   OpenAI:    https://platform.openai.com/docs/models
+ *   Gemini:    https://ai.google.dev/gemini-api/docs/models/gemini
+ *
+ * The chat tier is the "expensive but smart" model. The classifier tier is
+ * the "cheap and fast" model used for short / structured / classifying tasks.
  */
 export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: string[] }> = {
   anthropic: {
@@ -278,8 +292,11 @@ export const MODEL_OPTIONS: Record<ProviderName, { chat: string[]; classifier: s
     classifier: ['gpt-5-nano', 'gpt-5-mini', 'gpt-4.1-nano'],
   },
   gemini: {
-    chat: ['gemini-3-flash', 'gemini-2.5-flash', 'gemini-3.1-pro'],
-    classifier: ['gemini-2.5-flash-lite', 'gemini-3-flash'],
+    // Only models that exist on Google's API as of 2026-04. gemini-2.5-pro
+    // is the SOTA reasoning model; gemini-2.5-flash is the workhorse;
+    // gemini-2.5-flash-lite is the cheap-fast classifier tier.
+    chat: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'],
+    classifier: ['gemini-2.5-flash-lite', 'gemini-2.5-flash'],
   },
 };
 
