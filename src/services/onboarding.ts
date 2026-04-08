@@ -173,6 +173,228 @@ export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
       },
     ],
   },
+
+  // ─── Phase 2 Slice B — Per-sport profiling questionnaires ────────
+  //
+  // Each sport coach (gym/running/cycling/swim) needs specific baseline
+  // data before it can generate useful prescriptions. These are 6-8
+  // questions each, 5-10 per the Phase 1 decision 1.5 anchor range.
+  // They're OPT-IN — the user only answers a sport's questionnaire
+  // when they care about that sport. Running-only users never see
+  // FTP questions; gym-only users never see 400m swim times.
+  //
+  // The existing `fitness` questionnaire stays as-is for backwards
+  // compatibility — users who filled it out before Phase 2 keep that
+  // data. The new sport-specific profiles layer on top.
+
+  'triathlon-gym': {
+    id: 'triathlon-gym',
+    title: '🏋️ Strength Training Profile',
+    description: 'Tell the gym coach about your lifting background',
+    steps: [
+      {
+        key: 'training_age',
+        prompt: 'How long have you been seriously strength training?',
+        type: 'choice',
+        options: ['< 1 year', '1-3 years', '3-5 years', '5+ years'],
+      },
+      {
+        key: 'current_split',
+        prompt: 'What training split do you prefer?',
+        type: 'choice',
+        options: ['Full body', 'Upper/Lower', 'Push-Pull-Legs', 'Body part split', 'No preference'],
+      },
+      {
+        key: 'primary_goal',
+        prompt: 'What is your primary gym goal right now?',
+        type: 'choice',
+        options: ['Strength (1RM)', 'Hypertrophy', 'Powerlifting', 'General fitness', 'Support other sports'],
+      },
+      {
+        key: 'squat_1rm_kg',
+        prompt: 'Approximate squat 1RM in kg (estimate if unsure, 0 if new)',
+        type: 'number',
+        validation: /^\d{1,3}(\.\d)?$/,
+      },
+      {
+        key: 'bench_1rm_kg',
+        prompt: 'Approximate bench press 1RM in kg (estimate if unsure, 0 if new)',
+        type: 'number',
+        validation: /^\d{1,3}(\.\d)?$/,
+      },
+      {
+        key: 'deadlift_1rm_kg',
+        prompt: 'Approximate deadlift 1RM in kg (estimate if unsure, 0 if new)',
+        type: 'number',
+        validation: /^\d{1,3}(\.\d)?$/,
+      },
+      {
+        key: 'sessions_per_week',
+        prompt: 'How many gym sessions can you realistically do per week?',
+        type: 'choice',
+        options: ['1-2', '3', '4', '5+'],
+      },
+      {
+        key: 'equipment_access',
+        prompt: 'What equipment do you have access to?',
+        type: 'choice',
+        options: ['Full commercial gym', 'Garage gym (barbell + rack)', 'Home gym (basic)', 'Bodyweight only'],
+      },
+    ],
+  },
+
+  'triathlon-running': {
+    id: 'triathlon-running',
+    title: '🏃 Running Profile',
+    description: 'Tell the running coach about your running background',
+    steps: [
+      {
+        key: 'weekly_mileage_km',
+        prompt: 'Current weekly mileage in km (0 if just starting)',
+        type: 'number',
+        validation: /^\d{1,3}(\.\d)?$/,
+      },
+      {
+        key: 'longest_recent_run_km',
+        prompt: 'Longest run in the past month (km)',
+        type: 'number',
+        validation: /^\d{1,3}(\.\d)?$/,
+      },
+      {
+        key: 'easy_pace_min_per_km',
+        prompt: 'Comfortable easy pace in min/km (e.g. 6:00)',
+        type: 'text',
+        validation: /^\d{1,2}:\d{2}$/,
+      },
+      {
+        key: 'target_race',
+        prompt: 'What is your next target race?',
+        type: 'choice',
+        options: ['5k', '10k', 'Half marathon', 'Marathon', 'Ultra', 'None — general fitness'],
+      },
+      {
+        key: 'target_race_date',
+        prompt: 'Target race date (YYYY-MM-DD) or "none"',
+        type: 'text',
+      },
+      {
+        key: 'preferred_workouts',
+        prompt: 'Which workout types do you enjoy most?',
+        type: 'multi_choice',
+        options: ['Easy runs', 'Tempo', 'Intervals', 'Long runs', 'Hills', 'Trail'],
+      },
+      {
+        key: 'injury_history',
+        prompt: 'Any running-related injuries in the past 12 months? (type "none" if none)',
+        type: 'text',
+      },
+      {
+        key: 'weekly_availability_days',
+        prompt: 'How many days per week can you run?',
+        type: 'choice',
+        options: ['2', '3', '4', '5', '6+'],
+      },
+    ],
+  },
+
+  'triathlon-cycling': {
+    id: 'triathlon-cycling',
+    title: '🚴 Cycling Profile',
+    description: 'Tell the cycling coach about your riding background',
+    steps: [
+      {
+        key: 'ftp_watts',
+        prompt: 'Current FTP in watts (0 if unknown — we can estimate)',
+        type: 'number',
+        validation: /^\d{1,3}$/,
+      },
+      {
+        key: 'weekly_hours',
+        prompt: 'How many hours per week do you typically ride?',
+        type: 'choice',
+        options: ['< 3 hours', '3-6 hours', '6-10 hours', '10+ hours'],
+      },
+      {
+        key: 'primary_discipline',
+        prompt: 'What kind of riding do you do most?',
+        type: 'choice',
+        options: ['Road', 'Gravel', 'MTB', 'Indoor trainer', 'Commute', 'Mixed'],
+      },
+      {
+        key: 'target_event',
+        prompt: 'Next target event?',
+        type: 'choice',
+        options: ['Road race', 'Time trial', 'Gran fondo', 'Gravel event', 'Triathlon bike leg', 'None'],
+      },
+      {
+        key: 'power_meter',
+        prompt: 'Do you train with a power meter?',
+        type: 'choice',
+        options: ['Yes — outdoor + indoor', 'Indoor only (smart trainer)', 'No — HR + RPE'],
+      },
+      {
+        key: 'terrain_preference',
+        prompt: 'Terrain preference?',
+        type: 'choice',
+        options: ['Flat', 'Rolling hills', 'Mountains', 'Mixed'],
+      },
+      {
+        key: 'weekly_availability_days',
+        prompt: 'How many days per week can you ride?',
+        type: 'choice',
+        options: ['2', '3', '4', '5', '6+'],
+      },
+    ],
+  },
+
+  'triathlon-swim': {
+    id: 'triathlon-swim',
+    title: '🏊 Swim Profile',
+    description: 'Tell the swim coach about your swimming background',
+    steps: [
+      {
+        key: 'experience',
+        prompt: 'What is your swimming background?',
+        type: 'choice',
+        options: ['Total beginner', 'Recreational', 'Fitness swimmer', 'Competitive (past or current)'],
+      },
+      {
+        key: 'primary_stroke',
+        prompt: 'Your most comfortable stroke?',
+        type: 'choice',
+        options: ['Freestyle', 'Backstroke', 'Breaststroke', 'Butterfly', 'Equally comfortable'],
+      },
+      {
+        key: 'time_400m_freestyle_min',
+        prompt: 'Approximate 400m freestyle time (mm:ss, "unknown" if new)',
+        type: 'text',
+      },
+      {
+        key: 'pool_access',
+        prompt: 'What pool access do you have?',
+        type: 'choice',
+        options: ['25m indoor', '50m indoor', '25m outdoor', '50m outdoor', 'Open water', 'Limited/none'],
+      },
+      {
+        key: 'goal',
+        prompt: 'Primary swim goal?',
+        type: 'choice',
+        options: ['Fitness', 'Technique improvement', 'Distance event', 'Triathlon swim leg', 'Competition'],
+      },
+      {
+        key: 'sessions_per_week',
+        prompt: 'How many swim sessions per week can you do?',
+        type: 'choice',
+        options: ['1', '2', '3', '4+'],
+      },
+      {
+        key: 'equipment_access',
+        prompt: 'Swim equipment available?',
+        type: 'multi_choice',
+        options: ['Pull buoy', 'Paddles', 'Fins', 'Snorkel', 'Kickboard', 'Tempo trainer', 'None yet'],
+      },
+    ],
+  },
 };
 
 // ── Session Management ─────────────────────────────────────────────
@@ -313,6 +535,79 @@ function saveProfile(userId: number, profileType: string, data: Record<string, s
   `).run(userId, profileType, JSON.stringify(data));
 }
 
+// ── Phase 3 Slice A — Chat-triggered onboarding helpers ──
+//
+// The existing questionnaire engine (startOrResume → answerStep → save)
+// runs the user through a fixed-order Q&A and saves the profile only
+// when every step is complete. That works for the iOS onboarding
+// wizard, but it's too rigid for chat: the user might volunteer their
+// squat 1RM while you're asking about training age. The chat coach
+// needs to ingest answers in any order.
+//
+// These helpers bypass the session state machine and operate directly
+// on the user_profiles row:
+//
+//   upsertProfileField      → write a single field
+//   getMissingProfileFields → list fields the user hasn't answered yet
+//   isProfileComplete       → boolean "we have everything we need"
+//
+// The coach LLM calls `upsertProfileField` via a new tool
+// (`save_athlete_profile_field`) and the state context injection
+// tells it which fields are still missing on every turn.
+
+/**
+ * Upsert a single profile field. Creates the profile row if it
+ * doesn't exist, otherwise merges the new value into existing `data`.
+ * Used by the chat coach to persist answers one at a time.
+ */
+export function upsertProfileField(
+  userId: number,
+  profileType: string,
+  fieldKey: string,
+  value: string,
+): void {
+  const db = getDb();
+  const existing = getProfile(userId, profileType);
+  const data: Record<string, string> = { ...(existing?.data ?? {}) };
+  data[fieldKey] = value;
+  db.prepare(`
+    INSERT INTO user_profiles (user_id, profile_type, data)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id, profile_type) DO UPDATE SET
+      data = excluded.data,
+      updated_at = datetime('now')
+  `).run(userId, profileType, JSON.stringify(data));
+  logger.info({ userId, profileType, fieldKey }, 'Profile field upserted via chat');
+}
+
+/**
+ * Return the questionnaire steps whose field key is NOT yet present
+ * in the user's stored profile. Order matches the questionnaire
+ * definition so the coach can ask questions in a stable sequence.
+ */
+export function getMissingProfileFields(
+  userId: number,
+  profileType: string,
+): QuestionStep[] {
+  const def = getQuestionnaire(profileType);
+  if (!def) return [];
+  const profile = getProfile(userId, profileType);
+  const answered = new Set(Object.keys(profile?.data ?? {}));
+  return def.steps.filter((step) => !answered.has(step.key));
+}
+
+/**
+ * True when every question in the questionnaire has an answer in the
+ * user's stored profile. Used to decide whether to inject the
+ * onboarding-pending block into the triathlon coach's state context.
+ */
+export function isProfileComplete(
+  userId: number,
+  profileType: string,
+): boolean {
+  return getMissingProfileFields(userId, profileType).length === 0;
+}
+
 /** Get a user profile. Returns null if not found. */
 export function getProfile(userId: number, profileType: string): UserProfile | null {
   const db = getDb();
@@ -348,6 +643,139 @@ export function getQuestionnaire(id: string): QuestionnaireDefinition | undefine
   return QUESTIONNAIRES[id];
 }
 
+/** Alias kept for the iOS API route (onboarding.ts line 103). */
+export function getAllQuestionnaires(): QuestionnaireDefinition[] {
+  return Object.values(QUESTIONNAIRES);
+}
+
+// ── Phase 2 Slice B — Profile formatter for coach prompt injection ──
+
+/**
+ * The labels used when rendering a profile as a prompt block. We keep
+ * these here (rather than in the coach persona files) so the formatter
+ * owns the whole output — the coach just reads the block.
+ *
+ * Friendly labels matter: the coach LLM reads "Squat 1RM: 140 kg", not
+ * "squat_1rm_kg: 140". Without humanizing the keys, the prompt would
+ * look like a database dump.
+ */
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  // Shared fitness
+  experience_level: 'Training experience',
+  weekly_frequency: 'Weekly frequency',
+  training_goals: 'Goals',
+  injuries: 'Injuries / limitations',
+  available_equipment: 'Equipment access',
+  // Gym
+  training_age: 'Strength training experience',
+  current_split: 'Preferred split',
+  primary_goal: 'Gym goal',
+  squat_1rm_kg: 'Squat 1RM (kg)',
+  bench_1rm_kg: 'Bench 1RM (kg)',
+  deadlift_1rm_kg: 'Deadlift 1RM (kg)',
+  sessions_per_week: 'Sessions per week',
+  equipment_access: 'Equipment access',
+  // Running
+  weekly_mileage_km: 'Weekly mileage (km)',
+  longest_recent_run_km: 'Longest recent run (km)',
+  easy_pace_min_per_km: 'Easy pace (min/km)',
+  target_race: 'Target race',
+  target_race_date: 'Target race date',
+  preferred_workouts: 'Preferred workout types',
+  injury_history: 'Injury history',
+  weekly_availability_days: 'Days available per week',
+  // Cycling
+  ftp_watts: 'FTP (watts)',
+  weekly_hours: 'Weekly hours',
+  primary_discipline: 'Primary discipline',
+  target_event: 'Target event',
+  power_meter: 'Power meter',
+  terrain_preference: 'Terrain preference',
+  // Swim
+  experience: 'Swim experience',
+  primary_stroke: 'Primary stroke',
+  time_400m_freestyle_min: '400m freestyle time',
+  pool_access: 'Pool access',
+  goal: 'Swim goal',
+  // Diet
+  diet_type: 'Diet',
+  weight_kg: 'Weight (kg)',
+  height_cm: 'Height (cm)',
+  allergies: 'Allergies',
+  meal_frequency: 'Meal frequency',
+  nutrition_goal: 'Nutrition goal',
+};
+
+/** Map profile types to their header label for the prompt block. */
+const PROFILE_TYPE_HEADERS: Record<string, string> = {
+  fitness: 'Fitness basics',
+  'triathlon-gym': 'Strength profile',
+  'triathlon-running': 'Running profile',
+  'triathlon-cycling': 'Cycling profile',
+  'triathlon-swim': 'Swim profile',
+  diet: 'Nutrition profile',
+};
+
+/** Humanize a snake_case field name, falling back when no label is defined. */
+function labelFor(key: string): string {
+  return PROFILE_FIELD_LABELS[key] ?? key.replace(/_/g, ' ');
+}
+
+/**
+ * Render a single profile as a prompt-friendly block. Used by
+ * formatAthleteProfileBlock but also exported for tests.
+ *
+ * Example output:
+ *   [Strength profile]
+ *   - Strength training experience: 3-5 years
+ *   - Squat 1RM (kg): 150
+ *   - Bench 1RM (kg): 100
+ */
+export function renderProfile(profile: UserProfile): string {
+  const header = PROFILE_TYPE_HEADERS[profile.profile_type] ?? profile.profile_type;
+  const lines: string[] = [`[${header}]`];
+  for (const [key, value] of Object.entries(profile.data)) {
+    // Skip empty, "none", or zero-valued numeric answers for clarity.
+    // profile.data is typed as Record<string, string>, so all numeric
+    // answers arrive as their string representation ("0", "0.0").
+    if (value === '' || value == null) continue;
+    if (value === 'none' || value === 'None') continue;
+    if (value === '0' || value === '0.0') continue;
+    lines.push(`- ${labelFor(key)}: ${value}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Build the athlete profile block to inject into the triathlon coach
+ * state context. Returns an empty string when the user has no profiles
+ * (so the caller can conditionally prepend without adding whitespace).
+ *
+ * Only profiles under the triathlon umbrella are returned — we don't
+ * want to leak the cooking `diet` profile into the triathlon prompt.
+ * The sport-specific profiles are always included; the generic
+ * `fitness` profile is included as supplemental context.
+ */
+export function formatAthleteProfileBlock(userId: number): string {
+  const profiles = getAllProfiles(userId);
+  const relevant = profiles.filter((p) =>
+    p.profile_type === 'fitness' ||
+    p.profile_type.startsWith('triathlon-'),
+  );
+  if (relevant.length === 0) return '';
+
+  // Sort so the display is deterministic: core fitness first, then
+  // sport profiles alphabetical. A stable ordering makes diffs easy.
+  relevant.sort((a, b) => {
+    if (a.profile_type === 'fitness') return -1;
+    if (b.profile_type === 'fitness') return 1;
+    return a.profile_type.localeCompare(b.profile_type);
+  });
+
+  const blocks = relevant.map(renderProfile);
+  return `<athlete_profile>\n${blocks.join('\n\n')}\n</athlete_profile>`;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 function parseSession(row: any): OnboardingSession {
@@ -365,10 +793,18 @@ function parseSession(row: any): OnboardingSession {
 
 // ── Skill → Questionnaire Mapping ───────────────────────────────────
 
-/** Maps skills to their onboarding questionnaire IDs */
-export const SKILL_ONBOARDING_MAP: Record<string, string | null> = {
+/**
+ * Maps skills to their onboarding questionnaire IDs.
+ *
+ * Phase 2 Slice B: triathlon now maps to an ARRAY of questionnaires —
+ * the core `fitness` sheet from Phase 1 plus 4 sport-specific sheets.
+ * A user who only cares about running can answer `triathlon-running`
+ * and skip the swim questions entirely. The old single-string form
+ * is still accepted for domains that don't need multiple sheets.
+ */
+export const SKILL_ONBOARDING_MAP: Record<string, string | string[] | null> = {
   secretary: null,
-  triathlon: 'fitness',
+  triathlon: ['fitness', 'triathlon-gym', 'triathlon-running', 'triathlon-cycling', 'triathlon-swim'],
   content: null,
   cooking: 'diet',
   finance: null,
@@ -377,8 +813,20 @@ export const SKILL_ONBOARDING_MAP: Record<string, string | null> = {
 /** Reverse: which skill does this questionnaire serve? */
 export const QUESTIONNAIRE_SKILL_MAP: Record<string, string> = {
   fitness: 'triathlon',
+  'triathlon-gym': 'triathlon',
+  'triathlon-running': 'triathlon',
+  'triathlon-cycling': 'triathlon',
+  'triathlon-swim': 'triathlon',
   diet: 'cooking',
 };
+
+/** Normalize the polymorphic mapping value to an array of questionnaire IDs. */
+function questionnairesForSkill(skill: string): string[] {
+  const mapped = SKILL_ONBOARDING_MAP[skill];
+  if (!mapped) return [];
+  if (Array.isArray(mapped)) return mapped;
+  return [mapped];
+}
 
 /**
  * Get questionnaire IDs enabled for a user based on their skill access.
@@ -390,10 +838,14 @@ export function getEnabledQuestionnaires(userId: number): string[] {
       return getAvailableQuestionnaires();
     }
 
-    return Object.entries(SKILL_ONBOARDING_MAP)
-      .filter(([skill, qId]) => qId !== null && isSkillEnabled(userId, skill))
-      .map(([, qId]) => qId!)
-      .filter(qId => !!getQuestionnaire(qId));
+    const enabled: string[] = [];
+    for (const [skill] of Object.entries(SKILL_ONBOARDING_MAP)) {
+      if (!isSkillEnabled(userId, skill)) continue;
+      for (const qId of questionnairesForSkill(skill)) {
+        if (getQuestionnaire(qId)) enabled.push(qId);
+      }
+    }
+    return enabled;
   } catch {
     return getAvailableQuestionnaires(); // fallback to all if skill system not loaded
   }

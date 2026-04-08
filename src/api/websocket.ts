@@ -92,6 +92,42 @@ export function attachWebSocket(server: http.Server): void {
         const messageId = `msg-${Date.now()}`;
 
         const route = await routeMessage(msg.text);
+
+        // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
+        // Same gate as the REST chat endpoint. We emit an 'error' frame
+        // with enough detail for the client to render a tier-upgrade
+        // prompt, then close the message flow without invoking the
+        // domain handler (so no tokens are spent on blocked users).
+        try {
+          const { getUserByTelegramId } = require('../services/user-service');
+          const { checkTierAccess } = require('../services/skill-tiers');
+          const user = getUserByTelegramId(userId);
+          if (user) {
+            const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
+            if (!tierResult.allowed) {
+              logger.info(
+                { userId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
+                'iOS WebSocket tier gate blocked',
+              );
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'error',
+                  code: 'TIER_REQUIRED',
+                  message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
+                  details: {
+                    domain: route.domain,
+                    userTier: tierResult.userTier,
+                    requiredTier: tierResult.requiredTier,
+                  },
+                }));
+              }
+              return;
+            }
+          }
+        } catch (err) {
+          logger.warn({ err }, 'iOS WebSocket tier gate check failed — falling through (fail-open)');
+        }
+
         const handlers = getDomainHandlers();
         const handler = handlers[route.domain];
 

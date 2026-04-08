@@ -583,11 +583,15 @@ describe('QA: Questionnaire definition integrity', () => {
     expect(QUESTIONNAIRES.homeschool.steps).toHaveLength(5);
   });
 
-  it('validation regex is only present on number-type steps', () => {
+  it('validation regex is only present on number or text steps', () => {
+    // Phase 2 Slice B: text-type steps can carry a format regex too,
+    // for things like "pace min/km" ("6:00") or ISO dates. Choice /
+    // multi_choice steps never need a regex because the options are
+    // an enumerated list.
     for (const def of Object.values(QUESTIONNAIRES)) {
       for (const step of def.steps) {
         if (step.validation) {
-          expect(step.type).toBe('number');
+          expect(['number', 'text'], `step ${def.id}.${step.key}`).toContain(step.type);
         }
       }
     }

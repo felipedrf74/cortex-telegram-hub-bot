@@ -59,13 +59,29 @@ export function getOrCreateUser(telegramId: number, profile: {
   const existing = getUserByTelegramId(telegramId);
   if (existing) return existing;
 
+  // Phase 1 default: new users start on 'pro' with full skill access.
+  // Admin (owner) can manually downgrade via the portal Skills tab.
+  // The SQL column default on users.tier is still 'free' as a safe
+  // fallback — we explicitly INSERT the tier column here to override it.
   const db = getDb();
   db.prepare(`
-    INSERT INTO users (telegram_id, username, first_name, last_name, invite_code)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(telegramId, profile.username || null, profile.firstName || null, profile.lastName || null, profile.inviteCode || null);
+    INSERT INTO users (
+      telegram_id, username, first_name, last_name, invite_code,
+      tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd
+    )
+    VALUES (?, ?, ?, ?, ?, 'pro', 200, 500000, 5.0)
+  `).run(
+    telegramId,
+    profile.username || null,
+    profile.firstName || null,
+    profile.lastName || null,
+    profile.inviteCode || null,
+  );
 
-  logger.info({ telegramId, username: profile.username, inviteCode: profile.inviteCode }, 'New user registered');
+  logger.info(
+    { telegramId, username: profile.username, inviteCode: profile.inviteCode, tier: 'pro' },
+    'New user registered',
+  );
   return getUserByTelegramId(telegramId)!;
 }
 

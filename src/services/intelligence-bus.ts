@@ -14,6 +14,7 @@ export type SignalPriority = 'urgent' | 'normal' | 'background';
 export type SignalStatus = 'active' | 'consumed' | 'dismissed' | 'expired';
 
 export type SignalType =
+  // ─── Content mesh signals (GLOBAL — user_id IS NULL) ──────────────
   | 'hook_effectiveness'
   | 'pillar_performance'
   | 'retention_pattern'
@@ -34,7 +35,46 @@ export type SignalType =
   // Cross-agent learning signals (v2)
   | 'learning_digest'
   | 'content_formula'
-  | 'audience_insight';
+  | 'audience_insight'
+  // ─── Training signals (PER-USER — user_id REQUIRED) ───────────────
+  // Load markers — a just-completed session's stress footprint, read by
+  // sibling coaches to downgrade their next prescription for the same user.
+  | 'gym_load_today'         // gym coach wrote after a session (RPE, volume)
+  | 'running_load_today'     // running coach wrote after a run (distance, RPE)
+  | 'cycling_load_today'     // cycle coach wrote after a ride (TSS, NP)
+  | 'swim_load_today'        // swim coach wrote after a session (distance)
+  // High-specificity load signals — triggers for concrete cross-sport rules
+  | 'high_leg_load'          // gym/running: any leg-heavy session at RPE >= 8
+  | 'high_shoulder_load'     // gym/swim: overhead press or volume swim
+  // Garmin/wellness signals — wellness layer writes, any coach reads
+  | 'low_sleep'              // < 60 sleep score or < 6 h total
+  | 'low_hrv'                // HRV below 7-day baseline
+  | 'low_readiness'          // Garmin training readiness < 40
+  // Planning signals — forward-looking intent for cross-sport coordination
+  | 'planned_hard_run'       // running coach scheduled a hard session today/tomorrow
+  | 'planned_hard_ride'      // cycle coach scheduled a hard session today/tomorrow
+  | 'planned_race_this_week' // any sport coach: race on the calendar within 7 days
+  // Calendar integration — secretary reads these to detect conflicts
+  | 'training_session_scheduled'  // any sport coach wrote a calendar event for a session
+  | 'calendar_conflict'           // secretary wrote back: a user event collides with training
+  // ─── Phase 4 Slice C — Adherence signals ─────────────────────────
+  // Computed from weekly session completion data vs the active plan's
+  // planned session count. Published daily (or on any training tab
+  // open) with a 24h TTL so they refresh themselves as the week
+  // progresses. Sport coaches read these to auto-deload a user who
+  // keeps missing sessions OR push harder for a user who's perfect.
+  | 'low_adherence'               // < 60% of planned sessions completed this week
+  | 'high_adherence'              // 100% completed AND planned >= 3 sessions
+  // ─── Phase 4 Slice G — Plan drift signal ─────────────────────────
+  // The user's ACTUAL sport distribution over the past 4 weeks
+  // diverges from the sport their active plan is built around.
+  // Example: the plan is a hybrid block, but every logged session
+  // has been running for three straight weeks. Sport coaches read
+  // this to either (a) gently nudge the user back toward plan
+  // balance or (b) pivot the plan to match what the user is
+  // actually doing. Published daily via the weekly-activity fetch,
+  // with a 48h TTL so it refreshes as new sessions land.
+  | 'plan_drift';
 
 export interface AgentSignal {
   id: number;
@@ -46,6 +86,8 @@ export interface AgentSignal {
   status: SignalStatus;
   created_at: string;
   expires_at: string;
+  /** Telegram user ID, or null for global signals (content mesh). */
+  user_id: number | null;
 }
 
 export interface AgentRunRecord {
@@ -62,6 +104,7 @@ export interface AgentRunRecord {
 // ─── Signal Expiry Defaults (hours) ─────────────────────────────────
 
 const EXPIRY_HOURS: Record<SignalType, number> = {
+  // Content mesh
   trending_spike: 24,
   competitor_upload: 48,
   hook_effectiveness: 60 * 24,      // 60 days
@@ -83,6 +126,42 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   learning_digest: 7 * 24,           // 7 days — weekly digest cycle
   content_formula: 90 * 24,          // 90 days — validated formulas are durable
   audience_insight: 30 * 24,         // 30 days — audience behavior shifts
+  // ─── Training signals — shorter, training context is hour-level ───
+  // Load markers: the "stress footprint" of a session only matters for
+  // the next 24-36 hours for cross-sport interference. After that, the
+  // body has moved on.
+  gym_load_today:         36,       // 1.5 days — covers next-day training decisions
+  running_load_today:     36,
+  cycling_load_today:     36,
+  swim_load_today:        36,
+  high_leg_load:          48,       // 2 days — tendon/CNS fatigue lingers
+  high_shoulder_load:     48,
+  // Wellness signals: sleep/HRV/readiness readings are daily. They
+  // should expire at roughly the boundary of "today" in the user's TZ.
+  low_sleep:              24,
+  low_hrv:                24,
+  low_readiness:          24,
+  // Planning signals: forward intent has natural shelf life up to the
+  // planned session itself. We default to 48h; specific writers can
+  // override with an explicit expires_at tied to the session start.
+  planned_hard_run:       48,
+  planned_hard_ride:      48,
+  planned_race_this_week: 7 * 24,
+  // Calendar coordination
+  training_session_scheduled: 72,   // 3 days — covers lookahead planning
+  calendar_conflict:          24,   // 1 day — conflicts are urgent
+  // Adherence — reset daily. Re-computed on every training tab open
+  // (via the /activity/weekly endpoint), so if the user finishes a
+  // session and their adherence flips, the next fetch supersedes
+  // the previous signal. 24h ensures a stale signal can't linger
+  // past midnight if the trigger path isn't hit for a day.
+  low_adherence:              24,
+  high_adherence:             24,
+  // Plan drift — slower-moving than daily adherence. A user who
+  // drifts from strength to running won't flip back in 24h, so the
+  // 48h TTL lets the signal persist across a missed fetch while
+  // still auto-expiring if the pattern corrects itself.
+  plan_drift:                 48,
 };
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
@@ -112,6 +191,10 @@ function db(): DbLike | null {
 /**
  * Write a new signal to the bus.
  * Returns the signal ID, or -1 on failure.
+ *
+ * Content mesh signals (channel-wide truths) leave `user_id` undefined
+ * and write as GLOBAL rows. Training signals MUST pass a user_id so the
+ * bus can isolate one user's training state from another's.
  */
 export function writeSignal(signal: {
   source_agent: string;
@@ -119,6 +202,8 @@ export function writeSignal(signal: {
   payload: Record<string, any>;
   priority?: SignalPriority;
   expires_at?: string;
+  /** Telegram user ID for per-user signals. Omit for global content signals. */
+  user_id?: number;
 }): number {
   const d = db();
   if (!d) return -1;
@@ -129,14 +214,15 @@ export function writeSignal(signal: {
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
 
     const result = d.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, user_id)
+      VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       signal.source_agent,
       signal.signal_type,
       JSON.stringify(signal.payload),
       priority,
       expires_at,
+      signal.user_id ?? null,
     );
     return (result as any).lastInsertRowid ?? -1;
   } catch {
@@ -146,25 +232,44 @@ export function writeSignal(signal: {
 
 /**
  * Read active signals of the given types that haven't been consumed by this consumer.
+ *
+ * If `userId` is passed, results are filtered to GLOBAL signals (user_id IS NULL)
+ * PLUS signals owned by that specific user. This is the path training coaches
+ * take — they isolate one athlete's state from another while still picking up
+ * any globally relevant content.
+ *
+ * If `userId` is omitted (default), only GLOBAL signals are returned. This
+ * preserves existing content-agent behavior — no agent that passes `undefined`
+ * for userId accidentally sees another user's training data.
  */
 export function readSignals(
   consumer: string,
   signalTypes: SignalType[],
   limit = 50,
+  userId?: number,
 ): AgentSignal[] {
   const d = db();
   if (!d) return [];
   try {
     const placeholders = signalTypes.map(() => '?').join(',');
+    const userScopeClause =
+      userId !== undefined
+        ? 'AND (user_id IS NULL OR user_id = ?)'
+        : 'AND user_id IS NULL';
+    const params: any[] = [...signalTypes];
+    if (userId !== undefined) params.push(userId);
+    params.push(limit);
+
     const rows = d.prepare(`
       SELECT * FROM agent_signals
       WHERE status = 'active'
         AND signal_type IN (${placeholders})
+        ${userScopeClause}
       ORDER BY
         CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
         created_at DESC
       LIMIT ?
-    `).all(...signalTypes, limit) as any[];
+    `).all(...params) as any[];
 
     return rows
       .map(parseSignalRow)
@@ -317,5 +422,6 @@ function parseSignalRow(row: any): AgentSignal {
     status: row.status,
     created_at: row.created_at,
     expires_at: row.expires_at,
+    user_id: row.user_id ?? null,
   };
 }

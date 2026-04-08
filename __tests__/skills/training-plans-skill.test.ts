@@ -36,19 +36,51 @@ describe('Training Plans Sub-Skill Config', () => {
     expect(owner!.subSkill).toBe('training-plans');
   });
 
-  it('triathlon skill version is 2.0.0 after training plans addition', () => {
+  it('triathlon skill is at version 3.0.0 after Phase 1 sport sub-skill split', () => {
     const triathlon = DEFAULT_SKILLS['triathlon'];
-    expect(triathlon.version).toBe('2.0.0');
+    expect(triathlon.version).toBe('3.0.0');
   });
 
-  it('triathlon skill still has calendar, reminders, notes, shared-memory sub-skills', () => {
+  it('triathlon has 4 sport sub-skills (gym/running/cycle/swim) + capability sub-skills', () => {
     const triathlon = getSkillDefinition('triathlon');
     const names = triathlon.subSkills.map(s => s.name);
+    // Sport sub-skills — persona shells with per-sport prompts
+    expect(names).toContain('gym');
+    expect(names).toContain('running');
+    expect(names).toContain('cycle');
+    expect(names).toContain('swim');
+    // Shared capability sub-skills
     expect(names).toContain('training-plans');
     expect(names).toContain('calendar');
     expect(names).toContain('reminders');
     expect(names).toContain('notes');
     expect(names).toContain('shared-memory');
-    expect(names).toHaveLength(5);
+    expect(names).toContain('recovery');
+    expect(names).toHaveLength(10);
+  });
+
+  it('sport sub-skills declare coach personas + prompt files', () => {
+    const triathlon = getSkillDefinition('triathlon');
+    // The sub-skill name and prompt filename can differ — Phase 2
+    // Slice A renamed the cycle prompt to `cycling.md` so it matches
+    // the sport classifier's `cycling` enum value. Map each sub-skill
+    // name to the expected prompt filename stem explicitly.
+    const sportSkills: Record<'gym' | 'running' | 'cycle' | 'swim', string> = {
+      gym: 'gym',
+      running: 'running',
+      cycle: 'cycling',
+      swim: 'swim',
+    };
+    for (const name of Object.keys(sportSkills) as Array<keyof typeof sportSkills>) {
+      const sub = triathlon.subSkills.find(s => s.name === name)!;
+      expect(sub, `sport sub-skill ${name} exists`).toBeDefined();
+      expect(sub.coachPersona, `${name} has a coach persona`).toBeDefined();
+      expect(sub.promptFile, `${name} has a prompt file`).toBe(`triathlon/${sportSkills[name]}.md`);
+      // Sport sub-skills are persona shells — they own no tools themselves,
+      // they depend on training-plans + calendar + shared-memory
+      expect(sub.tools).toHaveLength(0);
+      expect(sub.dependencies).toContain('training-plans');
+      expect(sub.dependencies).toContain('calendar');
+    }
   });
 });

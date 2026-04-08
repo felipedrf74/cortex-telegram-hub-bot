@@ -9,7 +9,73 @@ import * as msTodo from './microsoft-todo';
 import * as trainingPlans from './training-plans';
 import * as financeTracker from './finance-tracker';
 import * as cookingChef from './cooking-chef';
+import * as trainingSignals from './training-signals';
+import * as onboarding from './onboarding';
 import { logger } from '../utils/logger';
+
+// ─── Phase 3 Slice A — profile field whitelist ───────────────────
+//
+// save_athlete_profile_field accepts a `profile_type` from the LLM,
+// which could hallucinate a value. Gate it against the known set of
+// triathlon-umbrella profiles so a stray call to e.g. "diet" or
+// "homeschool" during a triathlon conversation can't write the wrong
+// table. The tool is declared in the TOOLS list as triathlon-scoped,
+// but tool filtering is best-effort; this is the authoritative check.
+const ALLOWED_PROFILE_TYPES = new Set([
+  'fitness',
+  'triathlon-gym',
+  'triathlon-running',
+  'triathlon-cycling',
+  'triathlon-swim',
+]);
+
+// ─── Phase 1 Slice B helpers ─────────────────────────────────────────
+
+/**
+ * Map a training plan sport string to the canonical sport enum used by
+ * training-signals.ts. Accepts variations ("bike"→"cycling", "strength"→"gym").
+ * Returns null if the sport is unknown (signal publishing is skipped).
+ */
+function normalizeSport(sport: string): 'gym' | 'running' | 'cycling' | 'swim' | null {
+  const s = sport.toLowerCase().trim();
+  if (['gym', 'strength', 'lifting', 'weight', 'weights', 'musculacao', 'musculação'].includes(s)) return 'gym';
+  if (['run', 'running', 'corrida'].includes(s)) return 'running';
+  if (['bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal'].includes(s)) return 'cycling';
+  if (['swim', 'swimming', 'natacao', 'natação'].includes(s)) return 'swim';
+  return null;
+}
+
+/**
+ * Detect whether a gym session is leg-heavy by inspecting title + exercises.
+ * Used to decide if we publish `high_leg_load` in addition to the generic
+ * session load signal.
+ */
+function isLegHeavySession(title: string, exercisesJson: string | null): boolean {
+  const haystack = `${title} ${exercisesJson ?? ''}`.toLowerCase();
+  const legPatterns = [
+    'squat', 'deadlift', 'lunge', 'leg press', 'leg curl', 'leg extension',
+    'rdl', 'romanian', 'hip thrust', 'split squat', 'bulgarian', 'hack squat',
+    'front squat', 'back squat', 'sumo',
+    // pt-BR
+    'agachamento', 'levantamento terra', 'afundo', 'leg day', 'lower body', 'inferior',
+  ];
+  return legPatterns.some((p) => haystack.includes(p));
+}
+
+/**
+ * Detect whether a gym session is shoulder-heavy — triggers `high_shoulder_load`
+ * for the swim coach.
+ */
+function isShoulderHeavySession(title: string, exercisesJson: string | null): boolean {
+  const haystack = `${title} ${exercisesJson ?? ''}`.toLowerCase();
+  const shoulderPatterns = [
+    'overhead press', 'ohp', 'military press', 'shoulder press', 'push press',
+    'lateral raise', 'front raise', 'upright row', 'arnold press',
+    'desenvolvimento', 'elevação lateral', 'elevacao lateral',
+    'pull up', 'pullup', 'chin up', 'lat pull', 'rows', 'barra fixa',
+  ];
+  return shoulderPatterns.some((p) => haystack.includes(p));
+}
 
 export async function executeToolCall(
   toolName: string,
@@ -271,6 +337,64 @@ export async function executeToolCall(
         return { success: removed, key: input.key };
       }
 
+      // ── Phase 3 Slice A — Chat-triggered onboarding ──
+      case 'save_athlete_profile_field': {
+        if (!userId) {
+          return { error: 'save_athlete_profile_field requires a user_id (authenticated context)' };
+        }
+        const profileType = String(input.profile_type ?? '');
+        const fieldKey = String(input.field_key ?? '');
+        const value = String(input.value ?? '');
+
+        if (!ALLOWED_PROFILE_TYPES.has(profileType)) {
+          return {
+            error: `profile_type "${profileType}" is not in the triathlon profile set. Allowed: ${Array.from(ALLOWED_PROFILE_TYPES).join(', ')}`,
+          };
+        }
+        if (!fieldKey || !value) {
+          return { error: 'field_key and value are required' };
+        }
+
+        // Validate the field key actually belongs to the questionnaire
+        // so a typo or hallucinated key doesn't write garbage into the
+        // profile's data blob.
+        const questionnaire = onboarding.getQuestionnaire(profileType);
+        if (!questionnaire) {
+          return { error: `Questionnaire ${profileType} not defined` };
+        }
+        const step = questionnaire.steps.find((s) => s.key === fieldKey);
+        if (!step) {
+          return {
+            error: `field_key "${fieldKey}" is not a step in questionnaire "${profileType}"`,
+            allowed_fields: questionnaire.steps.map((s) => s.key),
+          };
+        }
+
+        // If the step has a format regex (e.g. running pace "6:00"),
+        // surface a validation error back to the coach so it can ask
+        // again rather than persisting an invalid answer.
+        if (step.validation && !step.validation.test(value)) {
+          return {
+            error: `value "${value}" does not match the expected format for ${fieldKey}`,
+            expected: step.prompt,
+          };
+        }
+
+        onboarding.upsertProfileField(userId, profileType, fieldKey, value);
+
+        // Report what's still pending so the coach knows when to stop
+        // asking. The coach can use this to thank the user and segue
+        // back to the original request once the list is empty.
+        const remaining = onboarding.getMissingProfileFields(userId, profileType);
+        return {
+          success: true,
+          profile_type: profileType,
+          saved_field: fieldKey,
+          remaining_fields: remaining.map((s) => s.key),
+          profile_complete: remaining.length === 0,
+        };
+      }
+
       // ── Training Plan tools ──
       case 'create_training_plan': {
         const plan = trainingPlans.createPlan({
@@ -348,6 +472,65 @@ export async function executeToolCall(
           actual_exercises_json: input.actual_exercises_json,
           notes: input.notes,
         });
+
+        // ─── Phase 1 Slice B — Signal A publishing ───
+        // Publish a per-user load marker so sibling sport coaches can
+        // downgrade tomorrow's prescription. Also fire high_leg_load /
+        // high_shoulder_load when thresholds are met.
+        //
+        // We deliberately keep this inside a try/catch and log — signal
+        // publishing is fire-and-forget and must never fail the user's
+        // log-completion request.
+        try {
+          if (userId != null && userId > 0) {
+            const plan = trainingPlans.getPlanById(session.plan_id);
+            const sport = plan ? normalizeSport(plan.sport) : null;
+            const rpe = typeof input.rpe_overall === 'number' ? input.rpe_overall : 0;
+
+            if (sport && rpe > 0) {
+              trainingSignals.publishSessionLoad({
+                userId,
+                sport,
+                rpe,
+                duration_min: input.duration_minutes,
+                notes: input.notes,
+              });
+
+              if (sport === 'gym' && rpe >= 8) {
+                if (isLegHeavySession(session.title, input.actual_exercises_json ?? session.exercises_json)) {
+                  trainingSignals.publishHighLegLoad({
+                    userId,
+                    source: 'gym',
+                    rpe,
+                    details: { notes: session.title },
+                  });
+                }
+                if (isShoulderHeavySession(session.title, input.actual_exercises_json ?? session.exercises_json)) {
+                  trainingSignals.publishHighShoulderLoad({
+                    userId,
+                    rpe,
+                    details: { notes: session.title },
+                  });
+                }
+              }
+
+              // Running sessions at high RPE with meaningful distance also
+              // stress the legs — publish high_leg_load so gym coach and
+              // cycling coach reduce lower-body volume tomorrow.
+              if (sport === 'running' && rpe >= 8) {
+                trainingSignals.publishHighLegLoad({
+                  userId,
+                  source: 'running',
+                  rpe,
+                  details: { mileage: undefined, notes: session.title },
+                });
+              }
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, sessionId: input.session_id }, 'training-signals publish failed after log_training_completion');
+        }
+
         return { success: true, completion_id: completion.id, session_title: session.title };
       }
 

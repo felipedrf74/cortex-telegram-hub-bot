@@ -142,7 +142,20 @@ export async function handleDomainMessage(
     // Track last active domain for photo routing and conversation continuity
     if (userId) lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
 
-    // Check if the user has access to this skill
+    // Check if the user has access to this skill (two layers).
+    //
+    // Layer 1 — explicit enable/disable (migration 032, `user_skill_overrides`):
+    //   admin-controlled boolean gate. When false, the admin has explicitly
+    //   turned off this skill for this user regardless of tier.
+    //
+    // Layer 2 — tier gate (migration 045, `skill_tiers` via skill-tiers.ts):
+    //   Phase 1 Slice C. Checks user.tier against the catalog + config
+    //   fallback. Blocks when the user's tier is below the skill's
+    //   required tier AND no per-user override grants access.
+    //
+    // Both layers must pass — Layer 1 fires first so an explicit admin
+    // disable overrides the tier check (useful for muting a pro user
+    // from a pro skill without downgrading their whole tier).
     try {
       const { isSkillEnabled } = require('../services/user-skill-access');
       if (userId && !isSkillEnabled(userId, route.domain)) {
@@ -152,6 +165,37 @@ export async function handleDomainMessage(
         return;
       }
     } catch { /* skill access not loaded — allow */ }
+
+    try {
+      if (userId) {
+        const { getUserByTelegramId, getUserLanguage } = require('../services/user-service');
+        const { checkTierAccess } = require('../services/skill-tiers');
+        const { t } = require('../utils/i18n');
+        const user = getUserByTelegramId(userId);
+        if (user) {
+          // Gate against the parent skill. Sub-skill-level gating happens
+          // deeper (tool filtering), so the chat entrypoint only needs to
+          // check whether the user can reach this domain at all.
+          const result = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
+          if (!result.allowed) {
+            await ctx.reply(
+              t('skill_tier_required', getUserLanguage(userId), {
+                tier: result.requiredTier,
+                current: result.userTier,
+              }),
+              { parse_mode: 'HTML' },
+            );
+            logger.info(
+              { userId, domain: route.domain, userTier: result.userTier, requiredTier: result.requiredTier, reason: result.reason },
+              'tier gate blocked message',
+            );
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'tier gate check failed — falling through (fail-open)');
+    }
 
     const handler = domainHandlers[route.domain];
     const response = await handler(route.strippedMessage, ctx.from?.id);

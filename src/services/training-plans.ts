@@ -10,6 +10,19 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from './unified-calendar';
+import { publishTrainingSessionScheduled } from './training-signals';
+
+// ─── Phase 1 Slice B helper ─────────────────────────────────────────
+
+/** Map a training plan sport string to the canonical sport enum for signals. */
+function normalizeSportForSignals(sport: string): 'gym' | 'running' | 'cycling' | 'swim' | null {
+  const s = sport.toLowerCase().trim();
+  if (['gym', 'strength', 'lifting', 'weight', 'weights', 'musculacao', 'musculação'].includes(s)) return 'gym';
+  if (['run', 'running', 'corrida'].includes(s)) return 'running';
+  if (['bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal'].includes(s)) return 'cycling';
+  if (['swim', 'swimming', 'natacao', 'natação'].includes(s)) return 'swim';
+  return null;
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -555,6 +568,13 @@ export async function createCalendarBlockers(
     else if (isConnected(userId, 'google')) calendarSource = 'google';
   } catch { /* oauth-store not available */ }
 
+  // Resolve sport once for the batch — all sessions belong to the same plan.
+  let batchSport: 'gym' | 'running' | 'cycling' | 'swim' | null = null;
+  if (sessions.length > 0) {
+    const plan = getPlanById(sessions[0].plan_id);
+    if (plan) batchSport = normalizeSportForSignals(plan.sport);
+  }
+
   let created = 0;
   let failed = 0;
 
@@ -579,6 +599,26 @@ export async function createCalendarBlockers(
 
       linkSessionToCalendar(session.id, event.id || event.summary, calendarSource || 'outlook');
       created++;
+
+      // ─── Phase 1 Slice B — Signal C publishing ───
+      // Let the secretary (and sibling sport coaches) know this session
+      // now occupies a calendar slot. The secretary will cross-reference
+      // future user events against these signals to detect conflicts.
+      if (batchSport) {
+        try {
+          publishTrainingSessionScheduled({
+            userId,
+            sport: batchSport,
+            sessionId: session.id,
+            startTimeIso: new Date(startISO).toISOString(),
+            endTimeIso: new Date(endISO).toISOString(),
+            title: session.title,
+            calendarEventId: event.id || event.summary,
+          });
+        } catch (err) {
+          logger.warn({ err, sessionId: session.id }, 'publishTrainingSessionScheduled failed');
+        }
+      }
     } catch (err) {
       logger.warn({ err, session: session.title, userId }, 'Failed to create calendar blocker');
       failed++;

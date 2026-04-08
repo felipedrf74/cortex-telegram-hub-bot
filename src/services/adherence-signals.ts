@@ -1,0 +1,481 @@
+// Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+
+/**
+ * Adherence Signals Orchestrator — Phase 4 Slice C
+ *
+ * Composes session-analytics + training-signals into a single
+ * entry-point that computes weekly adherence for a user and publishes
+ * the appropriate cross-skill signal (or does nothing if the user is
+ * in the normal band).
+ *
+ * Thresholds (locked by tests):
+ *
+ *   adherence < 60%              → low_adherence (urgent)
+ *   adherence = 100% AND planned >= 3 → high_adherence (normal)
+ *   everything in between        → no signal
+ *
+ * The 100% threshold includes a planned >= 3 gate so a trivial week
+ * (1/1 sessions, or worse 0/0) never triggers a false "crushing it"
+ * signal. A 0/0 week isn't "perfect adherence" — it's "no plan".
+ *
+ * Idempotency: re-running this function on the same user while a
+ * signal of the relevant type is already active is a no-op. The bus
+ * supports duplicate rows, but we want the UI + coach context to
+ * see one signal per type per user at a time. The check reads the
+ * active signals for this user and skips publishing if a matching
+ * row already exists.
+ */
+
+import { readSignals } from './intelligence-bus';
+import {
+  computeWeeklyAdherence,
+  type WeeklyAdherence,
+  getWeeklyActivitySummary,
+  type SportKey,
+} from './session-analytics';
+import {
+  publishLowAdherence,
+  publishHighAdherence,
+  publishPlanDrift,
+} from './training-signals';
+import { logger } from '../utils/logger';
+import { getDb } from './database';
+import { now } from '../utils/date-parser';
+
+// ─── Thresholds ─────────────────────────────────────────────────
+
+/** Adherence fraction below which we publish `low_adherence`. */
+export const LOW_ADHERENCE_THRESHOLD = 0.60;
+
+/**
+ * Minimum planned sessions in a week before `high_adherence` is
+ * eligible to fire. Prevents 1/1 weeks from generating false positives
+ * when the user is just starting out or has a minimal plan.
+ */
+export const HIGH_ADHERENCE_MIN_PLANNED = 3;
+
+// ─── Result type ────────────────────────────────────────────────
+
+/**
+ * What happened when the orchestrator ran. The `action` field lets
+ * tests and callers know whether a new signal was written, a stale
+ * signal was kept, or nothing matched the thresholds.
+ */
+export interface AdherenceSignalResult {
+  adherence: WeeklyAdherence;
+  action:
+    | 'published_low'    // new low_adherence row written
+    | 'published_high'   // new high_adherence row written
+    | 'skipped_existing' // matching signal already active, no duplicate write
+    | 'skipped_neutral'  // user is in the 60–100% band, nothing to publish
+    | 'skipped_no_plan'  // no active plan, nothing to compute
+    | 'skipped_no_sessions'; // plan exists but this week has zero planned sessions
+}
+
+// ─── Core orchestrator ──────────────────────────────────────────
+
+/**
+ * Compute this user's weekly adherence and publish the matching
+ * signal if a threshold is crossed AND no active signal of that type
+ * already exists.
+ *
+ * Called from the /api/v1/training/activity/weekly endpoint on every
+ * fetch — which means every time the iOS Training tab opens, we
+ * re-evaluate and maybe publish a signal. The idempotency gate
+ * means the bus never grows by more than one row per user per day
+ * even under aggressive tab-bouncing.
+ */
+export function publishAdherenceSignalsForUser(userId: number): AdherenceSignalResult {
+  const adherence = computeWeeklyAdherence(userId);
+
+  if (!adherence.hasActivePlan) {
+    return { adherence, action: 'skipped_no_plan' };
+  }
+  if (adherence.planned === 0) {
+    return { adherence, action: 'skipped_no_sessions' };
+  }
+
+  // ── Decide which threshold (if any) the user hit ──
+  const isLow = adherence.ratio < LOW_ADHERENCE_THRESHOLD;
+  const isHigh =
+    adherence.ratio >= 1.0 && adherence.planned >= HIGH_ADHERENCE_MIN_PLANNED;
+
+  if (!isLow && !isHigh) {
+    return { adherence, action: 'skipped_neutral' };
+  }
+
+  // ── Idempotency: skip if a matching signal already exists ──
+  //
+  // We use a dedicated 'adherence.orchestrator' consumer key so
+  // this read doesn't mark signals as consumed from the coaches'
+  // perspective — the sport coaches have their own readers.
+  const targetType = isLow ? 'low_adherence' : 'high_adherence';
+  try {
+    const existing = readSignals(
+      'adherence.orchestrator',
+      [targetType],
+      5,
+      userId,
+    );
+    if (existing.length > 0) {
+      logger.debug(
+        { userId, targetType, existingIds: existing.map((s) => s.id) },
+        'adherence signal already active — skipping duplicate publish',
+      );
+      return { adherence, action: 'skipped_existing' };
+    }
+  } catch (err) {
+    // If the read fails, fall through and publish anyway. Bus
+    // failures shouldn't silently drop signals.
+    logger.warn({ err, userId }, 'adherence existing-check failed — publishing anyway');
+  }
+
+  // ── Publish ──
+  if (isLow) {
+    publishLowAdherence({
+      userId,
+      completed: adherence.completed,
+      planned: adherence.planned,
+      weekStart: adherence.weekStart,
+      weekEnd: adherence.weekEnd,
+      reason: adherence.skipped > 0
+        ? `${adherence.skipped} session(s) explicitly skipped`
+        : `${adherence.planned - adherence.completed} session(s) missed`,
+    });
+    logger.info(
+      { userId, completed: adherence.completed, planned: adherence.planned, pct: adherence.percentage },
+      'low_adherence signal published',
+    );
+    return { adherence, action: 'published_low' };
+  }
+
+  // isHigh
+  publishHighAdherence({
+    userId,
+    completed: adherence.completed,
+    planned: adherence.planned,
+    weekStart: adherence.weekStart,
+    weekEnd: adherence.weekEnd,
+  });
+  logger.info(
+    { userId, completed: adherence.completed, planned: adherence.planned },
+    'high_adherence signal published',
+  );
+  return { adherence, action: 'published_high' };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Phase 4 Slice G — Plan drift detector
+// ═══════════════════════════════════════════════════════════════
+//
+// Adherence answers "how many of the planned sessions is the user
+// doing?". Plan drift answers the orthogonal question: "of the
+// sessions the user IS doing, do they actually match the plan's
+// sport?"
+//
+// Example: a hybrid plan schedules 2 gym + 3 run sessions per week.
+// The user does 3 runs (so 60% adherence) but skips every gym day
+// and adds a Saturday run instead. Adherence looks moderate — but
+// the user has effectively pivoted to a running-only program
+// without telling the coach. Plan drift catches that.
+//
+// Algorithm:
+//
+//   1. Resolve the user's active plan's declared sport (from
+//      fitness_training_plans.sport). Normalize to a canonical
+//      SportKey so the rest of the code can compare directly.
+//   2. Count completions by sport over a 4-week lookback via the
+//      existing session-analytics pipeline — no new SQL.
+//   3. Find the DOMINANT sport (most sessions).
+//   4. If the dominant sport doesn't match the plan's sport AND the
+//      dominant sport's share is ≥ DRIFT_THRESHOLD_PCT of the total,
+//      fire a `plan_drift` signal.
+//
+// Threshold choice: 60%. Below this the user is still loosely
+// following the plan; above this they're clearly prioritizing a
+// different sport. The threshold is exposed as a constant so the
+// tests can pin it.
+//
+// "Hybrid" plans are a special case — they don't have a single
+// target sport. We treat them as "any sport distribution is fine
+// unless one sport exceeds 80%" (a higher bar than single-sport
+// plans, since hybrid tolerates more variance by design).
+
+// ─── Thresholds ─────────────────────────────────────────────────
+
+/** Window over which we measure sport distribution. */
+export const PLAN_DRIFT_WINDOW_WEEKS = 4;
+
+/** Minimum dominant-sport share to fire drift for single-sport plans. */
+export const PLAN_DRIFT_SINGLE_PCT = 0.60;
+
+/** Minimum dominant-sport share for hybrid plans. Higher because
+ *  hybrid tolerates more imbalance by design. */
+export const PLAN_DRIFT_HYBRID_PCT = 0.80;
+
+/** Minimum total sessions in the window before we bother checking
+ *  drift. Below this, we don't have enough signal. */
+export const PLAN_DRIFT_MIN_SESSIONS = 4;
+
+// ─── Result type ────────────────────────────────────────────────
+
+export interface PlanDriftResult {
+  action:
+    | 'published_drift'
+    | 'skipped_existing'
+    | 'skipped_no_plan'
+    | 'skipped_not_enough_sessions'
+    | 'skipped_in_band'
+    | 'skipped_unknown_sport';
+  planSport: string | null;
+  dominantSport: SportKey | null;
+  driftPct: number;
+  sessionsInWindow: number;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+/**
+ * Normalize the raw `fitness_training_plans.sport` column to a
+ * SportKey we can compare directly against the session-analytics
+ * output. Hybrid plans return the sentinel string 'hybrid' since
+ * no single SportKey represents them.
+ */
+function normalizePlanSport(raw: string | null | undefined): SportKey | 'hybrid' | null {
+  if (!raw) return null;
+  const s = raw.toLowerCase().trim();
+  if (['strength', 'gym', 'lift', 'lifting'].includes(s)) return 'gym';
+  if (['running', 'run'].includes(s)) return 'running';
+  if (['cycling', 'cycle', 'bike'].includes(s)) return 'cycling';
+  if (['swim', 'swimming'].includes(s)) return 'swim';
+  if (['hybrid', 'multi', 'multisport', 'cross'].includes(s)) return 'hybrid';
+  return null;
+}
+
+/**
+ * Count sessions per sport over the last N weeks by aggregating the
+ * weekly activity summaries. We rely on session-analytics' existing
+ * sport normalization instead of re-querying the DB with new SQL.
+ *
+ * Per-week errors are swallowed and logged at `warn`: a single bad
+ * week (transient DB lock, corrupt row in a historical week)
+ * shouldn't take down the whole detector. Callers downstream see
+ * partial counts, and the MIN_SESSIONS gate naturally handles the
+ * degraded case by returning `skipped_not_enough_sessions` if too
+ * much of the window was lost.
+ */
+function countSessionsBySportOverWindow(
+  userId: number,
+  weeks: number,
+): Record<SportKey, number> {
+  const counts: Record<SportKey, number> = {
+    gym: 0, running: 0, cycling: 0, swim: 0, other: 0,
+  };
+  const ref = now();
+  for (let i = 0; i < weeks; i++) {
+    try {
+      const weekRef = ref.minus({ weeks: i });
+      const summary = getWeeklyActivitySummary(userId, weekRef);
+      for (const sport of Object.keys(counts) as SportKey[]) {
+        counts[sport] += summary.bySport[sport].completions;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, userId, weekOffset: i },
+        'plan-drift weekly summary failed for one week — continuing with partial counts',
+      );
+    }
+  }
+  return counts;
+}
+
+/**
+ * Find the active plan's declared sport. Returns null when there's
+ * no active plan — the caller should skip drift detection entirely
+ * in that case.
+ *
+ * DB errors are logged at `warn` (not `debug`) because a schema
+ * failure here silently disables drift detection for every user.
+ * If the `fitness_training_plans` table is missing or the `sport`
+ * column is dropped in a future migration, this function starts
+ * returning null for every caller — indistinguishable from "no
+ * active plan" to the caller. Elevating to `warn` ensures schema
+ * regressions show up in production log scrapes.
+ */
+function getActivePlanSport(userId: number): string | null {
+  const db = getDb();
+  try {
+    const row = db.prepare(`
+      SELECT sport FROM fitness_training_plans
+      WHERE user_id = ? AND status = 'active'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(userId) as { sport: string } | undefined;
+    return row?.sport ?? null;
+  } catch (err) {
+    logger.warn({ err, userId }, 'plan-drift active plan lookup failed — drift detection disabled for this user');
+    return null;
+  }
+}
+
+// ─── Core detector ──────────────────────────────────────────────
+
+/**
+ * Detect and (maybe) publish plan drift for a user. Idempotent:
+ * a `plan_drift` row already active for this user is not
+ * republished. Called from the same weekly-activity fetch path as
+ * the adherence orchestrator so drift and adherence share the same
+ * "once per tab open" rhythm.
+ */
+export function publishPlanDriftSignalForUser(userId: number): PlanDriftResult {
+  const empty: PlanDriftResult = {
+    action: 'skipped_no_plan',
+    planSport: null,
+    dominantSport: null,
+    driftPct: 0,
+    sessionsInWindow: 0,
+  };
+
+  const rawPlanSport = getActivePlanSport(userId);
+  if (!rawPlanSport) return empty;
+
+  const normalized = normalizePlanSport(rawPlanSport);
+  if (!normalized) {
+    return { ...empty, action: 'skipped_unknown_sport', planSport: rawPlanSport };
+  }
+
+  // Tally sessions by sport across the window
+  const counts = countSessionsBySportOverWindow(userId, PLAN_DRIFT_WINDOW_WEEKS);
+  const totalSessions = (Object.values(counts) as number[]).reduce((s, n) => s + n, 0);
+
+  // "Active" sessions exclude the `other` bucket (recovery, mobility,
+  // cross-training). Four stretching sessions don't tell us anything
+  // about sport preference, so we shouldn't treat them as enough
+  // signal to run drift detection.
+  const activeSessions = totalSessions - counts.other;
+
+  if (activeSessions < PLAN_DRIFT_MIN_SESSIONS) {
+    return {
+      action: 'skipped_not_enough_sessions',
+      planSport: rawPlanSport,
+      dominantSport: null,
+      driftPct: 0,
+      sessionsInWindow: totalSessions,
+    };
+  }
+
+  // Identify the dominant sport, excluding 'other' from the winner
+  // race — "other" is a catch-all for recovery/mobility and
+  // shouldn't be read as the user's primary training focus.
+  const sportEntries = (Object.entries(counts) as Array<[SportKey, number]>)
+    .filter(([sport]) => sport !== 'other');
+  sportEntries.sort((a, b) => b[1] - a[1]);
+
+  // Defensive guard: if SportKey ever grows and every non-'other'
+  // bucket is zero, `sportEntries[0]` destructure would crash. The
+  // activeSessions gate above prevents this today, but the explicit
+  // check is a one-liner insurance policy for future enum growth.
+  const topEntry = sportEntries[0];
+  if (!topEntry || topEntry[1] === 0) {
+    return {
+      action: 'skipped_not_enough_sessions',
+      planSport: rawPlanSport,
+      dominantSport: null,
+      driftPct: 0,
+      sessionsInWindow: totalSessions,
+    };
+  }
+  const [dominantSport, dominantCount] = topEntry;
+  const dominantPct = dominantCount / totalSessions;
+
+  // Decide the drift threshold based on plan type
+  const threshold = normalized === 'hybrid'
+    ? PLAN_DRIFT_HYBRID_PCT
+    : PLAN_DRIFT_SINGLE_PCT;
+
+  // Is the dominant sport materially different from the plan?
+  const isDriftingFromSinglePlan =
+    normalized !== 'hybrid' && dominantSport !== normalized;
+  const isDriftingFromHybrid =
+    normalized === 'hybrid' && dominantPct >= PLAN_DRIFT_HYBRID_PCT;
+
+  if (!isDriftingFromSinglePlan && !isDriftingFromHybrid) {
+    return {
+      action: 'skipped_in_band',
+      planSport: rawPlanSport,
+      dominantSport,
+      driftPct: dominantPct * 100,
+      sessionsInWindow: totalSessions,
+    };
+  }
+
+  // Single-sport drift also needs the dominant share to cross the
+  // threshold — a single extra run shouldn't trip a gym→run drift.
+  if (isDriftingFromSinglePlan && dominantPct < threshold) {
+    return {
+      action: 'skipped_in_band',
+      planSport: rawPlanSport,
+      dominantSport,
+      driftPct: dominantPct * 100,
+      sessionsInWindow: totalSessions,
+    };
+  }
+
+  // ── Idempotency: skip if a plan_drift row already exists ──
+  //
+  // Note: `readSignals` swallows DB errors internally and returns []
+  // (intelligence-bus.ts ~line 277). That means on a bus read
+  // failure, we fall through to the publish path — which will
+  // potentially write duplicate rows. This is an accepted trade-off:
+  // dropping drift signals silently on transient failures is worse
+  // than writing an extra row we'd have skipped, and the adherence
+  // orchestrator takes the same approach. Do NOT wrap this in a
+  // try/catch expecting it to protect against throws — it can't.
+  const existing = readSignals(
+    'adherence.orchestrator',
+    ['plan_drift'],
+    5,
+    userId,
+  );
+  if (existing.length > 0) {
+    logger.debug(
+      { userId, existingIds: existing.map((s) => s.id) },
+      'plan_drift already active — skipping duplicate publish',
+    );
+    return {
+      action: 'skipped_existing',
+      planSport: rawPlanSport,
+      dominantSport,
+      driftPct: dominantPct * 100,
+      sessionsInWindow: totalSessions,
+    };
+  }
+
+  // ── Publish ──
+  publishPlanDrift({
+    userId,
+    planSport: rawPlanSport,
+    dominantSport,
+    driftPct: dominantPct * 100,
+    sessionsInWindow: totalSessions,
+    windowWeeks: PLAN_DRIFT_WINDOW_WEEKS,
+  });
+  logger.info(
+    {
+      userId,
+      planSport: rawPlanSport,
+      dominantSport,
+      driftPct: dominantPct * 100,
+      sessionsInWindow: totalSessions,
+    },
+    'plan_drift signal published',
+  );
+
+  return {
+    action: 'published_drift',
+    planSport: rawPlanSport,
+    dominantSport,
+    driftPct: dominantPct * 100,
+    sessionsInWindow: totalSessions,
+  };
+}

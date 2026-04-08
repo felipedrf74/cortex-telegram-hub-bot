@@ -4,6 +4,83 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError } from '../response-helpers';
+import {
+  QUESTIONNAIRES,
+  getProfile,
+  getQuestionnaire,
+  upsertProfileField,
+  getMissingProfileFields,
+} from '../../services/onboarding';
+
+// ─── Phase 3 Slice C — Profile detail helpers ────────────────────
+//
+// The set of profiles the iOS AthleteProfileView surfaces. Keeps it
+// scoped to training — diet and homeschool live elsewhere and don't
+// belong in the athlete profile screen.
+const ATHLETE_PROFILE_TYPES = [
+  'fitness',
+  'triathlon-gym',
+  'triathlon-running',
+  'triathlon-cycling',
+  'triathlon-swim',
+] as const;
+
+type AthleteProfileType = (typeof ATHLETE_PROFILE_TYPES)[number];
+
+const ATHLETE_PROFILE_SET = new Set<string>(ATHLETE_PROFILE_TYPES);
+
+/**
+ * Build the full detail response for the athlete profile screen.
+ * For each profile: title, description, every field with its current
+ * value (or null if unanswered) and its schema metadata so the iOS
+ * edit sheet can render a type-appropriate input.
+ */
+function buildAthleteProfileDetail(userId: number) {
+  const profiles = ATHLETE_PROFILE_TYPES.map((profileType) => {
+    const questionnaire = getQuestionnaire(profileType);
+    if (!questionnaire) return null;
+    const profile = getProfile(userId, profileType);
+    const data = profile?.data ?? {};
+
+    const fields = questionnaire.steps.map((step) => {
+      const answered = Object.prototype.hasOwnProperty.call(data, step.key);
+      return {
+        key: step.key,
+        prompt: step.prompt,
+        type: step.type,
+        options: step.options ?? null,
+        value: answered ? data[step.key] : null,
+        answered,
+      };
+    });
+
+    const completedFieldCount = fields.filter((f) => f.answered).length;
+    const totalFieldCount = fields.length;
+
+    return {
+      type: profileType,
+      title: questionnaire.title,
+      description: questionnaire.description,
+      fields,
+      completedFieldCount,
+      totalFieldCount,
+      isComplete: completedFieldCount === totalFieldCount,
+      updatedAt: profile?.updated_at ?? null,
+    };
+  }).filter((p): p is NonNullable<typeof p> => p !== null);
+
+  const totalAnswered = profiles.reduce((sum, p) => sum + p.completedFieldCount, 0);
+  const totalFields = profiles.reduce((sum, p) => sum + p.totalFieldCount, 0);
+
+  return {
+    profiles,
+    summary: {
+      totalAnswered,
+      totalFields,
+      allComplete: totalAnswered === totalFields && totalFields > 0,
+    },
+  };
+}
 
 export function onboardingRoutes(): Router {
   const router = Router();
@@ -116,6 +193,125 @@ export function onboardingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS profile fetch failed');
       sendSuccess(res, { profiles: [] });
+    }
+  });
+
+  /**
+   * GET /api/v1/onboarding/profile/detail
+   *
+   * Phase 3 Slice C — full athlete profile view for iOS. Returns ALL
+   * triathlon-umbrella profiles (fitness + 4 sport profiles) with:
+   *   - title, description from the questionnaire
+   *   - every field's schema metadata (prompt, type, options)
+   *   - every field's current value (or null if unanswered)
+   *   - per-profile progress (answered/total/isComplete)
+   *   - a summary block with the user's overall progress
+   *
+   * The existing /profile endpoint only returns COMPLETED profiles —
+   * it's for /pending triage. This endpoint is the read path for the
+   * iOS profile view where the user wants to see what they answered
+   * AND what they haven't, so they can tap in and fill the gaps.
+   */
+  router.get('/profile/detail', async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    try {
+      const payload = buildAthleteProfileDetail(userId);
+      sendSuccess(res, payload);
+    } catch (err: any) {
+      logger.error({ err, userId }, 'iOS onboarding/profile/detail failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to load profile detail', 500);
+    }
+  });
+
+  /**
+   * PATCH /api/v1/onboarding/profile/:type/field
+   *
+   * Phase 3 Slice C — edit a single athlete profile field without
+   * going through the sequential questionnaire flow. Used by the iOS
+   * profile view's inline edit sheet. Write path mirrors the chat
+   * onboarding tool (`save_athlete_profile_field`) — same upsert,
+   * same validation, same response shape.
+   *
+   * URL: /profile/:type/field
+   * Body: { fieldKey: string, value: string }
+   *
+   * 400 on:
+   *   - profile type not in the triathlon umbrella
+   *   - field key not defined in the questionnaire
+   *   - value fails the step's regex validation (e.g. pace "6:00")
+   *   - missing body fields
+   * 404 on:
+   *   - profile type valid but questionnaire not found (shouldn't happen)
+   */
+  router.patch('/profile/:type/field', async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const profileType = String(req.params.type ?? '');
+    const { fieldKey, value } = (req.body ?? {}) as { fieldKey?: unknown; value?: unknown };
+
+    // Whitelist the profile type — prevents PATCHing into `diet`
+    // or `homeschool` via this route.
+    if (!ATHLETE_PROFILE_SET.has(profileType)) {
+      sendError(
+        res,
+        'BAD_REQUEST',
+        `profile type "${profileType}" is not an athlete profile`,
+        400,
+      );
+      return;
+    }
+
+    if (typeof fieldKey !== 'string' || fieldKey.length === 0) {
+      sendError(res, 'BAD_REQUEST', 'fieldKey (string) is required');
+      return;
+    }
+    if (typeof value !== 'string') {
+      sendError(res, 'BAD_REQUEST', 'value (string) is required');
+      return;
+    }
+
+    const questionnaire = getQuestionnaire(profileType);
+    if (!questionnaire) {
+      sendError(res, 'NOT_FOUND', `Questionnaire ${profileType} not defined`, 404);
+      return;
+    }
+
+    const step = questionnaire.steps.find((s) => s.key === fieldKey);
+    if (!step) {
+      sendError(
+        res,
+        'BAD_REQUEST',
+        `fieldKey "${fieldKey}" is not a step in questionnaire "${profileType}"`,
+        400,
+      );
+      return;
+    }
+
+    // Enforce the step's format regex (e.g. pace "mm:ss") so the
+    // PATCH path has the same correctness guarantees as the chat
+    // tool-call path.
+    if (step.validation && !step.validation.test(value)) {
+      sendError(
+        res,
+        'BAD_REQUEST',
+        `value "${value}" does not match the expected format for ${fieldKey}`,
+        400,
+      );
+      return;
+    }
+
+    try {
+      upsertProfileField(userId, profileType, fieldKey, value);
+      const remaining = getMissingProfileFields(userId, profileType);
+      sendSuccess(res, {
+        profileType,
+        fieldKey,
+        value,
+        remainingFields: remaining.map((s) => s.key),
+        profileComplete: remaining.length === 0,
+      });
+    } catch (err: any) {
+      logger.error({ err, userId, profileType, fieldKey }, 'PATCH profile field failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to update profile field', 500);
     }
   });
 

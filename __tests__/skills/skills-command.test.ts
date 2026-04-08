@@ -123,10 +123,15 @@ describe('/skills command — getAllSkillStatuses()', () => {
     expect(subNames).toEqual(['briefings', 'calendar', 'email', 'notes', 'reminders', 'shared-memory', 'tasks']);
   });
 
-  it('triathlon has 5 sub-modules', () => {
+  it('triathlon has 10 sub-modules (4 sport personas + 6 shared capabilities after Phase 1 split)', () => {
     const skills = getAllSkillStatuses();
     const triathlon = skills.find(s => s.name === 'triathlon')!;
-    expect(triathlon.subSkills).toHaveLength(5);
+    expect(triathlon.subSkills).toHaveLength(10);
+    const names = triathlon.subSkills.map(s => s.name).sort();
+    expect(names).toEqual([
+      'calendar', 'cycle', 'gym', 'notes', 'recovery',
+      'reminders', 'running', 'shared-memory', 'swim', 'training-plans',
+    ]);
   });
 
   it('content has 11 sub-modules (v2.0.0 with granular agent sub-skills)', () => {
@@ -135,17 +140,24 @@ describe('/skills command — getAllSkillStatuses()', () => {
     expect(content.subSkills).toHaveLength(11);
   });
 
-  it('sub-skills have toolCount >= 0 (agent sub-skills may have no tools)', () => {
+  it('sub-skills have toolCount >= 0 (agent and persona sub-skills may have no tools)', () => {
     const skills = getAllSkillStatuses();
     for (const skill of skills) {
       for (const sub of skill.subSkills) {
         expect(sub.toolCount).toBeGreaterThanOrEqual(0);
       }
     }
-    // Most sub-skills have tools; content v2 agent sub-skills are cron-driven with no tools
+    // Phase 1 adds 4 triathlon "persona" sub-skills (gym/running/cycle/swim)
+    // that own a prompt file but NO tools (they depend on training-plans +
+    // calendar + shared-memory for actual tools). Combined with the 7 content
+    // agent sub-skills that also have no tools, the tools-per-sub-skill
+    // ratio is lower — roughly 50%. The check is now "at least 40% of
+    // sub-skills have tools" to keep the spirit of the original test
+    // (most sub-skills should still carry real tools) while accepting
+    // persona and agent shells.
     const allSubs = skills.flatMap(s => s.subSkills);
     const withTools = allSubs.filter(s => s.toolCount > 0);
-    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.6);
+    expect(withTools.length).toBeGreaterThan(allSubs.length * 0.4);
   });
 });
 
@@ -163,7 +175,8 @@ describe('/skill <name> command — getSkillStatus()', () => {
   it('returns correct detail for triathlon', () => {
     const skill = getSkillStatus('triathlon');
     expect(skill.name).toBe('triathlon');
-    expect(skill.description).toContain('Triathlon');
+    // v3.0.0 rebranded parent description to "Multisport" — covers 4 sports
+    expect(skill.description.toLowerCase()).toContain('multisport');
   });
 
   it('returns correct detail for content', () => {

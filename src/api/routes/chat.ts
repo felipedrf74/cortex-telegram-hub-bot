@@ -149,6 +149,39 @@ export function chatRoutes(): Router {
       // Track domain for continuity
       lastActiveDomain.set(userId, { domain: route.domain, timestamp: Date.now() });
 
+      // ─── Phase 1 Slice C — Tier gate for iOS chat entrypoint ───
+      // Same two-layer check as the Telegram handler: explicit disable
+      // first, then tier requirement. Fail-open on errors so a bus of
+      // signal service issue never locks users out of their data.
+      try {
+        const { getUserByTelegramId } = require('../../services/user-service');
+        const { checkTierAccess } = require('../../services/skill-tiers');
+        const user = getUserByTelegramId(userId);
+        if (user) {
+          const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
+          if (!tierResult.allowed) {
+            logger.info(
+              { userId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
+              'iOS tier gate blocked message',
+            );
+            res.status(403).json({
+              error: {
+                code: 'TIER_REQUIRED',
+                message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
+                details: {
+                  domain: route.domain,
+                  userTier: tierResult.userTier,
+                  requiredTier: tierResult.requiredTier,
+                },
+              },
+            });
+            return;
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, 'iOS tier gate check failed — falling through (fail-open)');
+      }
+
       // Execute domain handler
       const handlers = getDomainHandlers();
       const handler = handlers[route.domain];

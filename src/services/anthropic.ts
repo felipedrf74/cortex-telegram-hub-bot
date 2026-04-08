@@ -8,6 +8,8 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback, completeVisionOneShotWithFallback } from './gemini-provider';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';
+import { readTrainingContextAll, formatTrainingContextForPrompt } from './training-signals';
+import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -16,7 +18,42 @@ const client = new Anthropic({
 
 // ─── Domain System Prompts (loaded from prompts/*.md) ─────────────────
 
-export function getDomainSystemPrompt(domain: DomainName): string {
+/**
+ * Load the system prompt for a domain.
+ *
+ * Phase 2 Slice A: when `domain === 'triathlon'` and a `message` is
+ * provided, the loader runs the sport classifier and prefers the
+ * matching persona file (`triathlon/gym.md`, `triathlon/running.md`,
+ * `triathlon/cycling.md`, `triathlon/swim.md`). If classification is
+ * ambiguous or the persona file is missing, falls back to the generic
+ * `triathlon.md`.
+ *
+ * Other domains ignore the `message` parameter — they always load
+ * `<domain>.md`. This keeps the signature uniform across providers so
+ * the three provider implementations (Anthropic, Gemini, OpenAI) can
+ * share one entry point.
+ *
+ * @param domain  The routed domain from the classifier.
+ * @param message Optional user message — used for sub-skill routing.
+ */
+export function getDomainSystemPrompt(domain: DomainName, message?: string): string {
+  if (domain === 'triathlon' && message) {
+    const promptName = getTriathlonPromptNameForMessage(message);
+    try {
+      return loadPrompt(promptName);
+    } catch (err) {
+      // Persona file missing on disk — fall through to the generic
+      // triathlon prompt rather than crashing the request. Log once
+      // so a misplaced file is noticed but the user still gets a
+      // coach response.
+      if (promptName !== 'triathlon') {
+        logger.warn(
+          { err, promptName },
+          'Triathlon persona prompt missing — falling back to generic triathlon.md',
+        );
+      }
+    }
+  }
   return loadPrompt(domain);
 }
 
@@ -90,6 +127,34 @@ export const TOOLS: Anthropic.Tool[] = [
   // ── Shared memory tools (cross-domain context) ──
   { name: 'shared_memory_set', description: 'Store a cross-domain fact visible to all domains (e.g. "marathon_date: March 15"). Use for info relevant across secretary/triathlon/content.', input_schema: { type: 'object' as const, properties: { key: { type: 'string', description: 'Short snake_case identifier' }, value: { type: 'string' }, expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' } }, required: ['key', 'value'] } },
   { name: 'shared_memory_remove', description: 'Remove a cross-domain fact by key', input_schema: { type: 'object' as const, properties: { key: { type: 'string' } }, required: ['key'] } },
+  // ── Phase 3 Slice A — Chat-triggered onboarding ──
+  // The sport coach personas use this tool to persist athlete profile
+  // answers they collect inline during chat. Each call upserts a
+  // single field of a single profile (triathlon-gym / triathlon-running
+  // / triathlon-cycling / triathlon-swim / fitness). The state context
+  // injects the list of pending fields so the coach knows what to ask.
+  {
+    name: 'save_athlete_profile_field',
+    description: 'Save a single field of the user\'s athlete profile during chat-triggered onboarding. Use when the user volunteers profile information (1RM, mileage, FTP, pool access, etc.) that matches a pending profile field listed in <onboarding_pending>. One call per field — call repeatedly as the user answers multiple questions in one turn.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        profile_type: {
+          type: 'string',
+          description: 'Exact profile ID from <onboarding_pending> (e.g. "triathlon-gym", "triathlon-running", "triathlon-cycling", "triathlon-swim", "fitness")',
+        },
+        field_key: {
+          type: 'string',
+          description: 'Exact field key from the pending list (e.g. "squat_1rm_kg", "weekly_mileage_km", "ftp_watts")',
+        },
+        value: {
+          type: 'string',
+          description: 'The user\'s answer. For numbers, pass the bare number as a string (e.g. "150"). For choice/multi-choice, pass the exact option label as shown in the prompt.',
+        },
+      },
+      required: ['profile_type', 'field_key', 'value'],
+    },
+  },
   // ── Training Plan tools ──
   {
     name: 'create_training_plan', description: 'Create a new periodized training plan with weeks and sessions. Creates the plan shell — then add weeks and sessions.',
@@ -709,7 +774,10 @@ export async function callDomain(
   // full options bag with pre-computed tools / tier / max-tokens.
   const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
 
-  let systemPrompt = getDomainSystemPrompt(domain);
+  // Phase 2 Slice A: pass `currentMessage` so the loader can run the
+  // sport classifier for triathlon messages and pick the right coach
+  // persona prompt file. Non-triathlon domains ignore the message arg.
+  let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
     const knowledgeBlock = buildKnowledgePromptBlock();
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
@@ -741,8 +809,29 @@ export async function callDomain(
     { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
   ];
 
+  // ─── Phase 1 Slice B — Training cross-skill state injection ───
+  // For the triathlon domain, read the cross-skill signal bus and prepend
+  // a machine-readable block describing what the user's other sport
+  // coaches / wellness sync have observed. This lets the coach persona
+  // downgrade intensity, avoid leg stress, skip hard work on low sleep,
+  // etc. We inject into the per-request state context (NOT the system
+  // prompt) so prompt caching stays intact.
+  let trainingContextBlock = '';
+  if (domain === 'triathlon' && userId != null && userId > 0) {
+    try {
+      const ctx = readTrainingContextAll({ userId });
+      if (ctx.signals.length > 0) {
+        trainingContextBlock = `\n\n${formatTrainingContextForPrompt(ctx, 'multisport')}`;
+      }
+    } catch (err) {
+      logger.warn({ err, userId }, 'readTrainingContextAll failed — continuing without signal injection');
+    }
+  }
+
   // State context prepended to user message (keeps system prompt cacheable)
-  const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+  const contextPrefix = stateContext || trainingContextBlock
+    ? `[Current State]\n${stateContext}${trainingContextBlock}\n\n`
+    : '';
   const messages: Anthropic.MessageParam[] = [
     ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user' as const, content: `${contextPrefix}${currentMessage}` },
@@ -790,7 +879,12 @@ export async function continueWithToolResults(
   // tool set + model tier + history shape stay stable across the loop.
   const opts = normalizeCallDomainOptions(options);
 
-  let systemPrompt = getDomainSystemPrompt(domain);
+  // Phase 2 Slice A: use `currentMessage` for triathlon sub-skill
+  // routing. The continuation call MUST resolve to the same persona
+  // file as the initial callDomain — otherwise a single conversation
+  // could bounce between coaches mid-tool-loop. Passing the same
+  // currentMessage guarantees the classifier produces the same answer.
+  let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
     const knowledgeBlock = buildKnowledgePromptBlock();
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
@@ -813,7 +907,26 @@ export async function continueWithToolResults(
     historyToSend = history.slice(-4);
   }
 
-  const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+  // Phase 1 Slice B — mirror the same training-context injection as
+  // callDomain so multi-turn tool loops keep seeing the cross-skill
+  // signals on every continuation. This keeps the coach's behavior
+  // consistent across iterations — the injected block doesn't move
+  // between turns of a single user request.
+  let trainingContextBlock = '';
+  if (domain === 'triathlon' && userId != null && userId > 0) {
+    try {
+      const ctx = readTrainingContextAll({ userId });
+      if (ctx.signals.length > 0) {
+        trainingContextBlock = `\n\n${formatTrainingContextForPrompt(ctx, 'multisport')}`;
+      }
+    } catch (err) {
+      logger.warn({ err, userId }, 'readTrainingContextAll failed in continueWithToolResults');
+    }
+  }
+
+  const contextPrefix = stateContext || trainingContextBlock
+    ? `[Current State]\n${stateContext}${trainingContextBlock}\n\n`
+    : '';
   const messages: Anthropic.MessageParam[] = [
     ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user', content: `${contextPrefix}${currentMessage}` },

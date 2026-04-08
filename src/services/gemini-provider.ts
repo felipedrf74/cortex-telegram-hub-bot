@@ -627,7 +627,9 @@ ${message}`;
     // Layer 4: tier-aware model selection
     const routing = resolveGeminiModel(domain, opts.modelTier);
 
-    const systemPrompt = getDomainSystemPrompt(domain);
+    // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
+    // routing picks the sport-specific coach persona prompt.
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
@@ -699,7 +701,10 @@ ${message}`;
     const opts = normalizeCallDomainOptions(options);
 
     const routing = resolveGeminiModel(domain, opts.modelTier);
-    const systemPrompt = getDomainSystemPrompt(domain);
+    // Phase 2 Slice A: same persona routing as callDomain — continuation
+    // uses the same currentMessage so the classifier resolves to the
+    // same coach file. Mid-turn persona swaps would break tool chains.
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 

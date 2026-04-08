@@ -14,6 +14,11 @@ import {
   getHrvData, getSleepData, getBodyBatteryEvents,
   getTrainingReadiness, getActivitiesByDate,
 } from './garmin';
+import {
+  publishLowSleep,
+  publishLowHrv,
+  publishLowReadiness,
+} from './training-signals';
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -204,6 +209,39 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
 
   const recommendation = getRecommendation(compositeScore);
   const reasoning = buildReasoning(factors, recommendation);
+
+  // ─── Phase 1 Slice B — Signal B publishing ───
+  // Fan out per-factor wellness signals so sport coaches can adapt
+  // their prescriptions without re-running the full Garmin pipeline.
+  // Wrapped in try/catch — signal publishing must never break scoring.
+  try {
+    // low_sleep: trigger when sleep score is poor OR total hours are short
+    if (sleepScore < 50 || sleepDuration < 6) {
+      publishLowSleep({
+        userId,
+        score: Math.round(sleepScore),
+        totalHours: sleepDuration,
+      });
+    }
+    // low_hrv: trigger when HRV is down vs baseline AND scored poor
+    if (hrvTrend === 'down' && hrvScore < 50 && weeklyHrv > 0) {
+      publishLowHrv({
+        userId,
+        hrv_ms: todayHrv,
+        baseline_ms: weeklyHrv,
+      });
+    }
+    // low_readiness: composite below the reduce_25pct cutoff (40)
+    if (compositeScore < 40) {
+      publishLowReadiness({
+        userId,
+        score: compositeScore,
+        reason: reasoning,
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, userId }, 'training-signals publish failed after calculateReadiness');
+  }
 
   return { score: compositeScore, factors, recommendation, reasoning };
 }

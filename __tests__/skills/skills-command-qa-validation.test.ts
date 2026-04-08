@@ -126,7 +126,9 @@ describe('QA: /skill <name> handler — dynamic domain resolution', () => {
 describe('QA: Sub-module counts match skill-config', () => {
   const expectedCounts: Record<string, number> = {
     secretary: 7,  // tasks, calendar, email, reminders, notes, shared-memory, briefings
-    triathlon: 5,  // training-plans, calendar, reminders, notes, shared-memory
+    // Phase 1: 4 sport persona sub-skills (gym/running/cycle/swim) + 6 shared capability sub-skills
+    // (training-plans, calendar, reminders, notes, shared-memory, recovery)
+    triathlon: 10,
     content: 11,   // notes, shared-memory, research-pipeline, script-generator, seo-tracker, reaction-radar, voice-evolution, performance-intel, pipeline-tracker, topic-scheduler, meme-scout
     finance: 4,    // expenses, tax, notes, shared-memory
     cooking: 5,    // recipes, meal-planning, shopping, notes, shared-memory

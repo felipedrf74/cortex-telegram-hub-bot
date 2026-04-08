@@ -62,14 +62,18 @@ describe('user-service', () => {
   });
 
   describe('getOrCreateUser', () => {
-    it('creates user on first call', () => {
+    it('creates user on first call with Phase 1 default pro tier', () => {
       const user = getOrCreateUser(123456, { username: 'alice', firstName: 'Alice' });
       expect(user.telegram_id).toBe(123456);
       expect(user.username).toBe('alice');
       expect(user.first_name).toBe('Alice');
-      expect(user.tier).toBe('free');
+      // Phase 1: new users default to pro so they get all skills;
+      // admin manually downgrades to free via portal if needed.
+      expect(user.tier).toBe('pro');
       expect(user.status).toBe('active');
-      expect(user.daily_message_limit).toBe(40);
+      expect(user.daily_message_limit).toBe(200);
+      expect(user.daily_token_limit).toBe(500000);
+      expect(user.daily_cost_limit_usd).toBe(5.0);
     });
 
     it('returns existing on second call', () => {

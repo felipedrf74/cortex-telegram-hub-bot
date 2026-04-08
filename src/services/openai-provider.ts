@@ -224,7 +224,9 @@ ${message}`;
     maxTokensOverride?: number,
   ): Promise<AICallResult> {
     const routing = getModelRouting(config.openai, domain, 'openai');
-    const systemPrompt = getDomainSystemPrompt(domain);
+    // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
+    // routing picks the sport-specific coach persona prompt.
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
@@ -262,7 +264,9 @@ ${message}`;
     toolConversation: AIToolResultMessage[],
   ): Promise<AICallResult> {
     const routing = getModelRouting(config.openai, domain, 'openai');
-    const systemPrompt = getDomainSystemPrompt(domain);
+    // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
+    // routing picks the sport-specific coach persona prompt.
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
@@ -335,7 +339,8 @@ ${message}`;
     stateContext: string,
   ): AsyncGenerator<string, AICallResult, undefined> {
     const routing = getModelRouting(config.openai, domain, 'openai');
-    const systemPrompt = getDomainSystemPrompt(domain);
+    // Phase 2 Slice A: same persona routing for the streaming path.
+    const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [

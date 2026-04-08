@@ -14,6 +14,19 @@ import type { DomainName, DefaultDomainName } from '../domains/types';
 
 // ── Types ────────────────────────────────────────────────────────
 
+/** Minimum user tier required to access a skill or sub-skill. */
+export type SkillTier = 'free' | 'pro' | 'owner';
+
+/** Ordinal rank: higher = more privileged. Used for tier gate comparison. */
+export const TIER_RANK: Record<SkillTier, number> = { free: 0, pro: 1, owner: 2 };
+
+/** Coaching personas — each sport gets its own prompt file. */
+export type CoachPersona =
+  | 'strength'      // triathlon.gym
+  | 'endurance_run' // triathlon.running
+  | 'cycling'       // triathlon.cycle
+  | 'swim';         // triathlon.swim
+
 export interface SubSkillDefinition {
   name: string;
   description: string;
@@ -21,6 +34,9 @@ export interface SubSkillDefinition {
   enabledByDefault: boolean;
   cronJobs?: string[];              // cron job IDs owned by this sub-skill
   dependencies?: string[];          // names of other sub-skills this depends on
+  requiredTier?: SkillTier;         // minimum user tier to access (default: inherits from parent skill)
+  promptFile?: string;              // relative path under prompts/ for per-sub-skill coach persona
+  coachPersona?: CoachPersona;      // which coaching persona this sub-skill represents
 }
 
 export interface ClassificationHint {
@@ -41,6 +57,7 @@ export interface SkillDefinition {
   version: string;
   subSkills: SubSkillDefinition[];
   routing: SkillRouteConfig;        // route configuration for message classification
+  requiredTier?: SkillTier;         // minimum user tier to access this parent skill (default: 'pro')
 }
 
 // ── Default Skill Definitions ────────────────────────────────────
@@ -49,6 +66,7 @@ const SECRETARY_SKILL: SkillDefinition = {
   name: 'secretary',
   description: 'Personal assistant — tasks, calendar, email, reminders, notes, briefings',
   version: '2.0.0',
+  requiredTier: 'free',
   routing: {
     patternRoutes: [
       /^\/(sec|agenda|schedule|todo|todos|done|undone|remind|email|week|day|plan|review|move|cancel)\b/i,
@@ -127,24 +145,83 @@ const SECRETARY_SKILL: SkillDefinition = {
 
 const TRIATHLON_SKILL: SkillDefinition = {
   name: 'triathlon',
-  description: 'Triathlon coaching — training plans, calendar, Garmin integration',
-  version: '2.0.0',
+  description: 'Multisport coaching — gym, running, cycling, swimming, nutrition, recovery',
+  version: '3.0.0',
+  requiredTier: 'pro',
   routing: {
     patternRoutes: [
-      /^\/(train|gym|run|bike|checkin|meal|macros|deload|pain|running|cycling)\b/i,
+      /^\/(train|gym|run|bike|cycle|cycling|swim|checkin|meal|macros|deload|pain|running|recovery)\b/i,
     ],
-    keywordRoute: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|sets?\s*[x×]\s*\d|protein|carnivore|training(?:\s+plan)?|macros|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery\s+day|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|prote[ií]na|dieta\s+carn[ií]vora|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|s[eé]ries?\s*[x×]\s*\d|academia)\b/i,
+    keywordRoute: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|swim(?:ming)?\s+(?:plan|set)?|pool|open\s+water|sets?\s*[x×]\s*\d|protein|carnivore|training(?:\s+plan)?|macros|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery\s+day|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|freestyle|backstroke|breaststroke|butterfly|CSS|pace\s+per\s+100m?|treino|corrida|pedal(?:ada)?|nat[aã]o|piscina|muscula[çc][aã]o|prote[ií]na|dieta\s+carn[ií]vora|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|s[eé]ries?\s*[x×]\s*\d|academia)\b/i,
     classificationHint: {
       label: 'triathlon',
-      description: 'gym workouts, running, cycling, training plans, nutrition, carnivore diet, recovery, soreness, performance, body composition, supplements, electrolytes',
-      examples: ['plan my workout', 'how much protein should I eat?', 'running intervals tomorrow'],
+      description: 'gym workouts, running, cycling, swimming, training plans, nutrition, carnivore diet, recovery, soreness, performance, body composition, supplements, electrolytes',
+      examples: [
+        'plan my workout',
+        'how much protein should I eat?',
+        'running intervals tomorrow',
+        'swim set for today',
+        'FTP test this week',
+      ],
     },
   },
   subSkills: [
+    // ── Sport sub-skills — coaching PERSONAS, not tool bundles ──
+    //
+    // Each sport sub-skill is a thin persona shell: it owns the prompt
+    // file (gym.md / running.md / ...) and declares which capability
+    // sub-skills it needs via `dependencies`. Enabling a sport sub-skill
+    // cascades to enabling the shared `training-plans` + `calendar` +
+    // `shared-memory` capability modules, which actually expose the tools.
+    // This prevents the same tool from appearing in multiple sub-skills'
+    // `tools` arrays — there is exactly one owner for each tool.
+    {
+      name: 'gym',
+      description: 'Strength coach — powerlifting, hypertrophy, general fitness. Specialized persona for lifting-focused users.',
+      enabledByDefault: true,
+      requiredTier: 'pro',
+      coachPersona: 'strength',
+      promptFile: 'triathlon/gym.md',
+      tools: [],
+      dependencies: ['training-plans', 'calendar', 'shared-memory'],
+    },
+    {
+      name: 'running',
+      description: 'Endurance running coach — 5k/10k/half/marathon periodization, pace work, injury-aware progression.',
+      enabledByDefault: true,
+      requiredTier: 'pro',
+      coachPersona: 'endurance_run',
+      promptFile: 'triathlon/running.md',
+      tools: [],
+      dependencies: ['training-plans', 'calendar', 'shared-memory'],
+    },
+    {
+      name: 'cycle',
+      description: 'Cycling coach — FTP-based zone training, road/gravel/trainer workouts, event preparation.',
+      enabledByDefault: true,
+      requiredTier: 'pro',
+      coachPersona: 'cycling',
+      promptFile: 'triathlon/cycling.md',
+      tools: [],
+      dependencies: ['training-plans', 'calendar', 'shared-memory'],
+    },
+    {
+      name: 'swim',
+      description: 'Swim coach — stroke technique, CSS/threshold pace work, pool and open water.',
+      enabledByDefault: true,
+      requiredTier: 'pro',
+      coachPersona: 'swim',
+      promptFile: 'triathlon/swim.md',
+      tools: [],
+      dependencies: ['training-plans', 'calendar', 'shared-memory'],
+    },
+
+    // ── Shared capability sub-skills — cross-sport plumbing ──
     {
       name: 'training-plans',
-      description: 'AI-generated periodized training plans with auto-adjustment',
+      description: 'Shared training-plan CRUD used by all sport sub-skills',
       enabledByDefault: true,
+      requiredTier: 'pro',
       tools: [
         'create_training_plan', 'add_training_week', 'add_training_session',
         'get_training_plan', 'log_training_completion', 'update_training_session',
@@ -156,6 +233,7 @@ const TRIATHLON_SKILL: SkillDefinition = {
       name: 'calendar',
       description: 'Calendar event management for training schedule',
       enabledByDefault: true,
+      requiredTier: 'pro',
       tools: [
         'get_calendar_events', 'create_calendar_event',
         'update_calendar_event', 'delete_calendar_event',
@@ -165,19 +243,35 @@ const TRIATHLON_SKILL: SkillDefinition = {
       name: 'reminders',
       description: 'Training reminders',
       enabledByDefault: true,
+      requiredTier: 'pro',
       tools: ['set_reminder'],
     },
     {
       name: 'notes',
       description: 'Training notes and search',
       enabledByDefault: true,
+      requiredTier: 'pro',
       tools: ['save_note', 'search_notes'],
     },
     {
       name: 'shared-memory',
-      description: 'Cross-domain shared facts (race dates, training state)',
+      description: 'Cross-domain shared facts (race dates, training state) plus chat-triggered athlete profile onboarding',
       enabledByDefault: true,
-      tools: ['shared_memory_set', 'shared_memory_remove'],
+      requiredTier: 'pro',
+      // Phase 3 Slice A: save_athlete_profile_field lives here because
+      // every sport persona needs to persist profile answers during
+      // chat-triggered onboarding, and they already depend on
+      // shared-memory. Piggybacking on this module means no extra
+      // dependency edges in the sport sub-skills.
+      tools: ['shared_memory_set', 'shared_memory_remove', 'save_athlete_profile_field'],
+    },
+    {
+      name: 'recovery',
+      description: 'Shared recovery protocols, deload logic, soreness tracking',
+      enabledByDefault: true,
+      requiredTier: 'pro',
+      tools: [],
+      dependencies: ['shared-memory'],
     },
   ],
 };

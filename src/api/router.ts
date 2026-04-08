@@ -19,6 +19,8 @@ import { wearableRoutes } from './routes/wearable';
 import { usageRoutes } from './routes/usage';
 import { clientErrorsRoutes } from './routes/client-errors';
 import { auditTrailRoutes } from './routes/audit-trail';
+import { skillsRoutes } from './routes/skills';
+import { signalsRoutes } from './routes/signals';
 
 /**
  * Creates the iOS API router.
@@ -49,6 +51,8 @@ export function createApiRouter(): Router {
         settings: 'GET/PATCH /api/v1/settings',
         clientErrors: 'POST /api/v1/client-errors',
         auditTrail: 'GET /api/v1/audit-trail/me',
+        skills: 'GET /api/v1/skills/catalog, POST/DELETE /api/v1/skills/override (owner only)',
+        signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -78,6 +82,14 @@ export function createApiRouter(): Router {
   router.use('/connections', connectionRoutes());
   router.use('/wearable', wearableRoutes());
   router.use('/usage', usageRoutes());
+
+  // Phase 1 Slice D — Skills catalog for iOS Skills tab. Pure read of
+  // skill-config + skill_tiers + per-user override state; no LLM calls.
+  router.use('/skills', skillsRoutes());
+
+  // Phase 3 Slice B — Cross-skill signal observability. Read-only
+  // view of what the coaching system is adapting to right now.
+  router.use('/signals', signalsRoutes());
 
   // Client error reporting (audit P0-9): write-only ingestion endpoint for
   // iOS / web crash reports. JWT + rate-limit protected via the middleware

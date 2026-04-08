@@ -50,6 +50,10 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
     'pt-BR': '🔒 Esta funcionalidade não está habilitada para sua conta.',
     'en-US': '🔒 This feature is not enabled for your account.',
   },
+  'skill_tier_required': {
+    'pt-BR': '🔒 Esta funcionalidade requer o plano <b>{tier}</b>. Seu plano atual: <b>{current}</b>. Peça ao administrador para atualizar seu acesso.',
+    'en-US': '🔒 This feature requires the <b>{tier}</b> tier. Your current tier: <b>{current}</b>. Ask the admin to upgrade your access.',
+  },
   'registration_closed': {
     'pt-BR': '🔐 O registro está fechado no momento. Peça um código de convite ao administrador.',
     'en-US': '🔐 Registration is currently closed. Ask an admin for an invite code.',

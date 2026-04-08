@@ -87,7 +87,9 @@ function createUser(db: Database.Database, telegramId: number, tier: string = 'f
   `).run(telegramId, tier);
 }
 
-// Helper: complete a questionnaire fully
+// Helper: complete a questionnaire fully. Phase 2 Slice B: some text
+// steps carry format regexes (e.g. running pace `6:00`), so we pick
+// an answer that satisfies the most common patterns we ship.
 function completeQuestionnaire(userId: number, qId: string): void {
   startOrResume(userId, qId);
   const def = getQuestionnaire(qId)!;
@@ -98,7 +100,16 @@ function completeQuestionnaire(userId: number, qId: string): void {
     } else if (step.type === 'number') {
       answerStep(userId, qId, '75');
     } else {
-      answerStep(userId, qId, 'test answer');
+      // text step — pick a value that satisfies the step's validation
+      // regex if one is defined. Otherwise use a generic fallback.
+      let answer = 'test answer';
+      if (step.validation) {
+        // Try a handful of canonical formats we use in Slice B
+        const candidates = ['6:00', '2026-01-01', '80'];
+        const match = candidates.find((c) => step.validation!.test(c));
+        if (match) answer = match;
+      }
+      answerStep(userId, qId, answer);
     }
   }
 }
@@ -120,11 +131,19 @@ describe('skill-gated onboarding', () => {
   // ── Mapping constants ──
 
   describe('SKILL_ONBOARDING_MAP', () => {
-    it('maps triathlon to fitness', () => {
-      expect(SKILL_ONBOARDING_MAP.triathlon).toBe('fitness');
+    it('maps triathlon to the full sport-specific questionnaire set', () => {
+      // Phase 2 Slice B: triathlon now maps to an array of 5 questionnaires —
+      // the shared `fitness` core plus 4 sport-specific sheets.
+      const mapped = SKILL_ONBOARDING_MAP.triathlon;
+      expect(Array.isArray(mapped)).toBe(true);
+      expect(mapped).toContain('fitness');
+      expect(mapped).toContain('triathlon-gym');
+      expect(mapped).toContain('triathlon-running');
+      expect(mapped).toContain('triathlon-cycling');
+      expect(mapped).toContain('triathlon-swim');
     });
 
-    it('maps cooking to diet', () => {
+    it('maps cooking to diet (single-string form still supported)', () => {
       expect(SKILL_ONBOARDING_MAP.cooking).toBe('diet');
     });
 
@@ -146,6 +165,13 @@ describe('skill-gated onboarding', () => {
       expect(QUESTIONNAIRE_SKILL_MAP.fitness).toBe('triathlon');
     });
 
+    it('reverse maps sport-specific sheets to triathlon', () => {
+      expect(QUESTIONNAIRE_SKILL_MAP['triathlon-gym']).toBe('triathlon');
+      expect(QUESTIONNAIRE_SKILL_MAP['triathlon-running']).toBe('triathlon');
+      expect(QUESTIONNAIRE_SKILL_MAP['triathlon-cycling']).toBe('triathlon');
+      expect(QUESTIONNAIRE_SKILL_MAP['triathlon-swim']).toBe('triathlon');
+    });
+
     it('reverse maps diet to cooking', () => {
       expect(QUESTIONNAIRE_SKILL_MAP.diet).toBe('cooking');
     });
@@ -154,21 +180,30 @@ describe('skill-gated onboarding', () => {
   // ── getEnabledQuestionnaires ──
 
   describe('getEnabledQuestionnaires', () => {
-    it('returns fitness and diet when all skills enabled (default)', () => {
+    it('returns fitness (+ sport-specific) and diet when all skills enabled (default)', () => {
       createUser(testDb, 100);
       const result = getEnabledQuestionnaires(100);
-      // Default: all skills enabled, so both skill-linked questionnaires returned
+      // Default: all skills enabled, so skill-linked questionnaires returned.
+      // Phase 2 Slice B adds 4 sport-specific sheets under triathlon.
       expect(result).toContain('fitness');
+      expect(result).toContain('triathlon-gym');
+      expect(result).toContain('triathlon-running');
+      expect(result).toContain('triathlon-cycling');
+      expect(result).toContain('triathlon-swim');
       expect(result).toContain('diet');
       // Should NOT include homeschool (no skill mapping)
       expect(result).not.toContain('homeschool');
     });
 
-    it('excludes fitness when triathlon skill is disabled', () => {
+    it('excludes all triathlon sheets when triathlon skill is disabled', () => {
       createUser(testDb, 101);
       setSkillAccess(101, 'triathlon', false);
       const result = getEnabledQuestionnaires(101);
       expect(result).not.toContain('fitness');
+      expect(result).not.toContain('triathlon-gym');
+      expect(result).not.toContain('triathlon-running');
+      expect(result).not.toContain('triathlon-cycling');
+      expect(result).not.toContain('triathlon-swim');
       expect(result).toContain('diet'); // cooking still enabled
     });
 
@@ -176,7 +211,10 @@ describe('skill-gated onboarding', () => {
       createUser(testDb, 102);
       setSkillAccess(102, 'cooking', false);
       const result = getEnabledQuestionnaires(102);
-      expect(result).toContain('fitness'); // triathlon still enabled
+      // triathlon still enabled → fitness + sport-specific sheets all present
+      expect(result).toContain('fitness');
+      expect(result).toContain('triathlon-gym');
+      expect(result).toContain('triathlon-swim');
       expect(result).not.toContain('diet');
     });
 
@@ -221,7 +259,14 @@ describe('skill-gated onboarding', () => {
 
     it('returns empty when all enabled questionnaires are completed', () => {
       createUser(testDb, 202);
+      // Phase 2 Slice B: triathlon now has 5 sheets (fitness + 4 sport
+      // profiles). We must complete all of them alongside diet for
+      // pending to drain to zero.
       completeQuestionnaire(202, 'fitness');
+      completeQuestionnaire(202, 'triathlon-gym');
+      completeQuestionnaire(202, 'triathlon-running');
+      completeQuestionnaire(202, 'triathlon-cycling');
+      completeQuestionnaire(202, 'triathlon-swim');
       completeQuestionnaire(202, 'diet');
 
       const pending = getPendingOnboardings(202);

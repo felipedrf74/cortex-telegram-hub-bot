@@ -61,6 +61,20 @@ async function main(): Promise<void> {
     logger.warn({ err }, 'Task provider adapter registration failed');
   }
 
+  // Phase 3 Slice D — Validate that every sub-skill's declared
+  // `promptFile` in skill-config.ts actually exists on disk. This is
+  // a fail-soft check: a missing persona prompt logs loudly but does
+  // NOT block boot (the runtime fallback in getDomainSystemPrompt
+  // handles it gracefully by loading the generic domain prompt).
+  // Runs here so the error is visible at startup rather than at the
+  // moment a user sends a triathlon message and silently falls back.
+  try {
+    const { runStartupPromptValidation } = require('./skills/prompt-validator');
+    runStartupPromptValidation();
+  } catch (err) {
+    logger.warn({ err }, 'Prompt validation check threw — continuing boot');
+  }
+
   // Process-level error handlers were installed by ./boot at module load
   // (must run BEFORE config import). The error-monitor's boot buffer has
   // already accumulated any boot-phase errors and setErrorDbProvider() above

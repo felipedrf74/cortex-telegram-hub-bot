@@ -9,10 +9,95 @@ import { executeToolCall } from '../services/tool-executor';
 import { getActivePlanSummary } from '../services/training-plans';
 import { getActiveProvider } from '../services/provider-registry';
 import { getDailyContext } from '../services/context-engine';
+import {
+  formatAthleteProfileBlock,
+  getMissingProfileFields,
+  getQuestionnaire,
+  type QuestionStep,
+} from '../services/onboarding';
+import { classifySport, type Sport } from '../router/sport-classifier';
+import {
+  getStrengthProgression,
+  formatStrengthProgressionForPrompt,
+  getCardioProgression,
+  formatCardioProgressionForPrompt,
+} from '../services/progression-analytics';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
+
+// ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
+//
+// Map the sport classifier's enum to the profile type that owns its
+// questionnaire. The sport enum and the profile id differ by a hyphen
+// prefix; this mapping stays local so the classifier enum doesn't
+// leak into the onboarding module.
+const SPORT_TO_PROFILE_TYPE: Record<Sport, string> = {
+  gym: 'triathlon-gym',
+  running: 'triathlon-running',
+  cycling: 'triathlon-cycling',
+  swim: 'triathlon-swim',
+};
+
+/**
+ * Build the onboarding-pending block that tells the sport coach to
+ * pause and collect profile data before prescribing. Returns an empty
+ * string when:
+ *   - No message provided (state context rebuild without a fresh turn)
+ *   - Sport classifier doesn't confidently identify a sport
+ *   - The sport's profile is already complete
+ *   - Fewer than 0 fields are missing (should never happen — belt)
+ *
+ * The block uses XML-tag-style delimiters so the coach persona prompt
+ * can reference `<onboarding_pending>` unambiguously.
+ */
+function buildOnboardingPendingBlock(userId: number, message: string): string {
+  if (!message || message.trim().length === 0) return '';
+  const result = classifySport(message);
+  if (!result.sport || result.confidence < 0.7) return '';
+
+  const profileType = SPORT_TO_PROFILE_TYPE[result.sport];
+  let missing: QuestionStep[];
+  try {
+    missing = getMissingProfileFields(userId, profileType);
+  } catch {
+    return '';
+  }
+  if (missing.length === 0) return '';
+
+  const questionnaire = getQuestionnaire(profileType);
+  const title = questionnaire?.title ?? profileType;
+
+  const lines: string[] = [];
+  lines.push(`<onboarding_pending sport="${result.sport}" profile="${profileType}">`);
+  lines.push(
+    `The user has NOT completed their ${title} yet. Before generating any specific training prescription (workout, plan, intensity target, session structure), collect the missing profile data by asking the user ONE QUESTION AT A TIME.`,
+  );
+  lines.push('');
+  lines.push(
+    'As the user answers (including when they volunteer an answer inside a longer message), save each one with the save_athlete_profile_field tool. The tool returns the remaining pending fields so you know when you\'re done.',
+  );
+  lines.push('');
+  lines.push('Rules:');
+  lines.push('- Ask ONE question per turn. Do not dump the whole list.');
+  lines.push('- Use the exact field_key and profile_type below when calling the tool.');
+  lines.push(
+    "- For choice/multi_choice fields, offer the options verbatim. For number fields, accept the user's number and pass it as a string.",
+  );
+  lines.push('- If the user types "skip" or "later", thank them, stop asking, and answer the original question using generic guidance.');
+  lines.push(`- Once all fields are saved, thank the user and address their ORIGINAL question from this conversation about ${result.sport}.`);
+  lines.push('');
+  lines.push(`Missing fields (${missing.length}):`);
+  for (const step of missing) {
+    const kind = step.type === 'choice' || step.type === 'multi_choice'
+      ? ` [options: ${(step.options ?? []).join(' | ')}]`
+      : ` [${step.type}]`;
+    lines.push(`- ${step.key}${kind}: ${step.prompt}`);
+  }
+  lines.push('</onboarding_pending>');
+  return lines.join('\n');
+}
 
 // ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
 
@@ -47,8 +132,18 @@ export function getLastCoachState(userId: number): LastCoachState | null {
 /**
  * Shared state context builder for simple domains (triathlon, content).
  * Only fetches local to-dos — no external API calls needed.
+ *
+ * `message` is optional for backwards compatibility with call sites
+ * that don't have it yet (tests, direct repl debugging). When
+ * provided, the triathlon branch uses it to run the sport classifier
+ * and inject the onboarding-pending block if the user hasn't
+ * completed the matching sport profile (Phase 3 Slice A).
  */
-export async function buildSimpleStateContext(domain: DomainName, userId?: number): Promise<string> {
+export async function buildSimpleStateContext(
+  domain: DomainName,
+  userId?: number,
+  message?: string,
+): Promise<string> {
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
@@ -107,6 +202,90 @@ export async function buildSimpleStateContext(domain: DomainName, userId?: numbe
     }
   }
 
+  // Phase 2 Slice B — athlete profile injection for triathlon domain.
+  // Reads the user's completed onboarding questionnaires (fitness +
+  // triathlon-gym/running/cycling/swim) and formats them as an
+  // <athlete_profile> block the coach persona can reference directly.
+  // Empty string when the user hasn't completed any — we don't add
+  // noise to the prompt.
+  if (domain === 'triathlon' && userId) {
+    try {
+      const profileBlock = formatAthleteProfileBlock(userId);
+      if (profileBlock) parts.push(`\n${profileBlock}`);
+    } catch {
+      // Profile tables may not exist yet — skip silently
+    }
+  }
+
+  // Phase 3 Slice A — Chat-triggered onboarding for triathlon domain.
+  // When the classifier confidently identifies a sport in the user's
+  // message AND that sport's profile is incomplete, prepend an
+  // <onboarding_pending> block so the coach persona pauses and
+  // collects the missing profile data before prescribing.
+  //
+  // This runs AFTER the athlete_profile block so the coach sees both
+  // "what you already know" and "what's still missing" in one pass.
+  if (domain === 'triathlon' && userId && message) {
+    try {
+      const onboardingBlock = buildOnboardingPendingBlock(userId, message);
+      if (onboardingBlock) parts.push(`\n${onboardingBlock}`);
+    } catch (err) {
+      logger.warn({ err, userId }, 'buildOnboardingPendingBlock failed — skipping');
+    }
+  }
+
+  // Phase 4 Slice D + F — Progression injection for triathlon.
+  // Reads the last 8 weeks of logged completions and emits a
+  // unified <athlete_progression> block containing strength lifts
+  // plus running + cycling weekly volume. Each sport independently
+  // returns empty string when the user has no data, so the block
+  // only shows up for the sports the user actually trains.
+  if (domain === 'triathlon' && userId) {
+    try {
+      const strength = getStrengthProgression(userId, 8);
+      const running = getCardioProgression(userId, 'running', 8);
+      const cycling = getCardioProgression(userId, 'cycling', 8);
+
+      const strengthBlock = formatStrengthProgressionForPrompt(strength);
+      const runningBlock = formatCardioProgressionForPrompt(running);
+      const cyclingBlock = formatCardioProgressionForPrompt(cycling);
+
+      // Build the unified block only if at least one sport has data.
+      // The strength formatter returns a tagged <athlete_progression>
+      // wrapper; the cardio formatters return raw multi-line sections.
+      // Splice the cardio sections inside the strength wrapper so the
+      // whole thing lands as one XML-ish block, or wrap cardio alone
+      // if there's no strength data.
+      const cardioSections = [runningBlock, cyclingBlock].filter(Boolean);
+      let combined = '';
+      if (strengthBlock && cardioSections.length > 0) {
+        const closingTag = '</athlete_progression>';
+        const insertAt = strengthBlock.lastIndexOf(closingTag);
+        if (insertAt >= 0) {
+          combined =
+            strengthBlock.slice(0, insertAt) +
+            '\n' +
+            cardioSections.join('\n') +
+            '\n' +
+            strengthBlock.slice(insertAt);
+        } else {
+          combined = strengthBlock + '\n' + cardioSections.join('\n');
+        }
+      } else if (strengthBlock) {
+        combined = strengthBlock;
+      } else if (cardioSections.length > 0) {
+        combined =
+          `<athlete_progression window_weeks="8">\n` +
+          cardioSections.join('\n') +
+          `\n</athlete_progression>`;
+      }
+
+      if (combined) parts.push(`\n${combined}`);
+    } catch (err) {
+      logger.warn({ err, userId }, 'progression block build failed — skipping');
+    }
+  }
+
   // Cross-domain shared context
   const sharedCtx = getSharedMemorySummary(userId ?? 0);
   if (sharedCtx) parts.push(sharedCtx);
@@ -143,7 +322,10 @@ export async function handleSimpleDomain(
   maxTokensOverride?: number,
 ): Promise<DomainResponse> {
   const history = getConversationHistory(userId ?? 0, domain);
-  const stateContext = await buildSimpleStateContext(domain, userId);
+  // Phase 3 Slice A: pass the incoming message so the triathlon
+  // branch of buildSimpleStateContext can run the sport classifier
+  // and inject the onboarding-pending block when appropriate.
+  const stateContext = await buildSimpleStateContext(domain, userId, message);
 
   try {
     // Get the active routing provider (handles fallback + circuit breaker)

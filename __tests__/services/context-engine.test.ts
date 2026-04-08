@@ -158,8 +158,17 @@ describe('buildDailyContext', () => {
     upsertTask(USER_ID, makeTask({ title: 'Persist me' }));
     await buildDailyContext(USER_ID);
 
+    // NOTE: we do NOT filter by `date = date('now')` here. `buildDailyContext`
+    // writes the cache row with `todayString()` — which uses the
+    // Europe/Lisbon timezone via `date-parser.now()`. SQLite's `date('now')`
+    // uses UTC. Between 00:00 and 01:00 local time (Lisbon DST) these
+    // produce different dates and the filter would drop the row the
+    // service just wrote. The test's intent is "a cache row exists for
+    // this user after a build" — dropping the date filter preserves that
+    // intent without encoding the cross-midnight flake. Each test case
+    // runs on a fresh in-memory DB so there's only one row per user.
     const row = testDb.prepare(
-      "SELECT context_summary FROM daily_context_cache WHERE user_id = ? AND date = date('now')",
+      'SELECT context_summary FROM daily_context_cache WHERE user_id = ?',
     ).get(USER_ID) as { context_summary: string } | undefined;
 
     expect(row).toBeDefined();

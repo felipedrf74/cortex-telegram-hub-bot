@@ -223,6 +223,155 @@ export function trainingRoutes(): Router {
     }
   });
 
+  /**
+   * GET /api/v1/training/activity/weekly
+   *
+   * Phase 4 Slice A — longitudinal session activity summary for the
+   * current week, with per-sport breakdowns (gym/running/cycling/swim/
+   * other), total duration, average RPE, and streak info over a 90-day
+   * lookback.
+   *
+   * Pure SQL aggregation over `training_completions` — no LLM calls.
+   * Cheap enough to call on every training tab open; cached briefly
+   * to deduplicate repeat opens within a few seconds.
+   */
+  /**
+   * GET /api/v1/training/progression/cardio
+   *
+   * Phase 4 Slice F — longitudinal cardio progression for running
+   * or cycling. Same shape philosophy as /progression/strength but
+   * aggregates by WEEK rather than per-exercise, since cardio
+   * sessions don't have per-lift 1RM trajectories.
+   *
+   * Query params:
+   *   sport — "running" or "cycling". Required. 400 if missing.
+   *   weeks — lookback window in weeks. Defaults to 8. Clamped [1,52].
+   *
+   * Cached 2 minutes keyed on (userId, sport, weeks).
+   */
+  router.get('/progression/cardio', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const sportRaw = typeof req.query.sport === 'string' ? req.query.sport : '';
+    if (sportRaw !== 'running' && sportRaw !== 'cycling') {
+      sendError(res, 'BAD_REQUEST', 'sport query param must be "running" or "cycling"', 400);
+      return;
+    }
+    const sport = sportRaw as 'running' | 'cycling';
+
+    const weeksRaw = Number(req.query.weeks);
+    const weeks = Number.isFinite(weeksRaw)
+      ? Math.min(52, Math.max(1, Math.floor(weeksRaw)))
+      : 8;
+
+    const cacheKey = `cardio-progression:${userId}:${sport}:${weeks}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      sendSuccess(res, cached, { cached: true });
+      return;
+    }
+
+    try {
+      const { getCardioProgression } = require('../../services/progression-analytics');
+      const report = getCardioProgression(userId, sport, weeks);
+      setCache(cacheKey, report, 120);
+      sendSuccess(res, report);
+    } catch (err: any) {
+      logger.error({ err, userId, sport, weeks }, 'GET /progression/cardio failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to load cardio progression', 500);
+    }
+  });
+
+  /**
+   * GET /api/v1/training/progression/strength
+   *
+   * Phase 4 Slice D — longitudinal strength progression. Returns a
+   * per-lift trajectory over the past N weeks (default 8) extracted
+   * from training_completions.actual_exercises_json. Drives the iOS
+   * progression view (Slice E) and mirrors the exact shape the coach
+   * context injection uses.
+   *
+   * Query params:
+   *   weeks — lookback window in weeks. Defaults to 8. Clamped to
+   *           the range [1, 52] to prevent pathological reads.
+   *
+   * Pure SQL + in-memory aggregation. Cached 2 minutes — strength
+   * data changes only when the user logs a session, so a longer TTL
+   * than the weekly-activity endpoint is fine.
+   */
+  router.get('/progression/strength', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const weeksRaw = Number(req.query.weeks);
+    const weeks = Number.isFinite(weeksRaw)
+      ? Math.min(52, Math.max(1, Math.floor(weeksRaw)))
+      : 8;
+
+    const cacheKey = `strength-progression:${userId}:${weeks}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+      sendSuccess(res, cached, { cached: true });
+      return;
+    }
+
+    try {
+      const { getStrengthProgression } = require('../../services/progression-analytics');
+      const report = getStrengthProgression(userId, weeks);
+      setCache(cacheKey, report, 120); // 2 minutes
+      sendSuccess(res, report);
+    } catch (err: any) {
+      logger.error({ err, userId, weeks }, 'GET /progression/strength failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to load strength progression', 500);
+    }
+  });
+
+  router.get('/activity/weekly', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const cacheKey = `training-activity-weekly:${userId}`;
+
+    const cached = getCached(cacheKey);
+    if (cached) {
+      sendSuccess(res, cached, { cached: true });
+      return;
+    }
+
+    try {
+      const { getWeeklyActivitySummary } = require('../../services/session-analytics');
+      const summary = getWeeklyActivitySummary(userId);
+
+      // Phase 4 Slice C — Publish adherence signals as a side effect
+      // of this fetch. The orchestrator is idempotent (skips when a
+      // matching signal is already active), so calling it on every
+      // tab open doesn't flood the bus. Wrapped in try/catch because
+      // a bus write failure shouldn't take down the weekly summary.
+      try {
+        const { publishAdherenceSignalsForUser } = require('../../services/adherence-signals');
+        publishAdherenceSignalsForUser(userId);
+      } catch (err) {
+        logger.warn({ err, userId }, 'adherence signal publish failed — summary still returned');
+      }
+
+      // Phase 4 Slice G — Publish plan drift signal when the user's
+      // actual sport distribution over the past 4 weeks diverges
+      // from their plan's declared sport. Same idempotency pattern
+      // as adherence — safe to call on every tab open.
+      try {
+        const { publishPlanDriftSignalForUser } = require('../../services/adherence-signals');
+        publishPlanDriftSignalForUser(userId);
+      } catch (err) {
+        logger.warn({ err, userId }, 'plan drift signal publish failed — summary still returned');
+      }
+
+      // Short TTL — users commonly refresh the training tab right
+      // after logging a session, and they want to see the new row
+      // show up. 60s is enough to deduplicate tab bounces without
+      // making the data feel stale.
+      setCache(cacheKey, summary, 60);
+      sendSuccess(res, summary);
+    } catch (err: any) {
+      logger.error({ err, userId }, 'GET /activity/weekly failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to load weekly activity', 500);
+    }
+  });
+
   return router;
 }
 
