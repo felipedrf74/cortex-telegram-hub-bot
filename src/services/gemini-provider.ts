@@ -167,6 +167,193 @@ export async function completeOneShot(
 }
 
 /**
+ * Single-prompt completion with Google Search grounding enabled.
+ *
+ * Gemini 2.5 Flash exposes Google Search as a built-in tool — the model
+ * decides when to search, fetches live results, and grounds its output
+ * against them. This is the Gemini equivalent of Anthropic's web_search_*
+ * tool, and the only Google-side way to get live-internet context into
+ * a response.
+ *
+ * Important: Google Search grounding requires a model that supports it.
+ * As of 2026-04, gemini-2.5-flash and gemini-2.5-pro both support it;
+ * flash-lite does NOT. Default here is flash.
+ *
+ * Cost note: grounded calls have a small surcharge (Google's published
+ * list is ~$0.035/1K grounded queries). Still cheaper than Anthropic
+ * web_search by a wide margin because the base Gemini tokens are so
+ * much cheaper to begin with.
+ *
+ * Throws on Gemini errors so the caller can fall back to Anthropic.
+ */
+export async function completeOneShotWithSearch(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  options?: { model?: string; maxTokens?: number; temperature?: number },
+): Promise<{ text: string; sources: string[] }> {
+  if (!isGeminiProviderConfigured()) {
+    throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
+  }
+  const model = options?.model ?? config.gemini.model;
+  const maxTokens = options?.maxTokens ?? 4096;
+  const temperature = options?.temperature ?? 0.7;
+  const client = getClient();
+
+  // The Google Search tool is declared via the `tools` array with a single
+  // item shaped `{ googleSearchRetrieval: {} }`. The SDK's type defs don't
+  // include this in the public Tool union yet, so we cast. An empty config
+  // object means "use default search retrieval behavior" — Google's
+  // recommendation for most use cases.
+  const genModel = client.getGenerativeModel({
+    model,
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature,
+    },
+    tools: [{ googleSearchRetrieval: {} }] as any,
+  });
+
+  const start = Date.now();
+  const result = await withTimeout(
+    genModel.generateContent([{ text: userPrompt }]),
+    config.aiSafety.callTimeoutMs,
+  );
+  const durationMs = Date.now() - start;
+
+  const usage = result.response.usageMetadata;
+  if (usage) {
+    logGeminiUsage(
+      model,
+      category,
+      {
+        promptTokenCount: usage.promptTokenCount ?? 0,
+        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+      },
+      durationMs,
+    );
+  }
+
+  // Extract grounding sources (URLs) for transparency. When search was
+  // actually used, Google attaches a `groundingMetadata` field with the
+  // list of web chunks it pulled from. This lets the caller show citations
+  // or log which URLs the model consulted.
+  const sources: string[] = [];
+  try {
+    const candidates = (result.response as any).candidates;
+    const metadata = candidates?.[0]?.groundingMetadata;
+    const chunks = metadata?.groundingChunks || [];
+    for (const chunk of chunks) {
+      const uri = chunk?.web?.uri;
+      if (typeof uri === 'string') sources.push(uri);
+    }
+  } catch {
+    /* grounding metadata is optional — not every prompt triggers search */
+  }
+
+  return { text: extractText(result), sources };
+}
+
+/**
+ * Single-prompt chat completion with an image input (vision mode).
+ *
+ * Gemini accepts inline base64 images via `{ inlineData: { mimeType, data } }`
+ * as part of the user prompt's Parts array. This wraps that plus the usual
+ * logging and error handling so invoice-filer / future vision callers don't
+ * have to repeat the boilerplate.
+ *
+ * Default model is `gemini-2.5-flash` because flash-lite doesn't support
+ * vision inputs as of 2026-04 — verify in Google's model list before
+ * downgrading. Cost is similar to Claude Haiku vision but ~6× cheaper
+ * than Sonnet vision.
+ *
+ * Throws on Gemini errors so the caller can fall back to Anthropic
+ * (see completeVisionOneShotWithFallback below).
+ */
+export async function completeVisionOneShot(
+  systemPrompt: string,
+  userPrompt: string,
+  image: { base64: string; mimeType: string },
+  category: string,
+  options?: { model?: string; maxTokens?: number; temperature?: number },
+): Promise<string> {
+  if (!isGeminiProviderConfigured()) {
+    throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
+  }
+  // Default to flash — flash-lite doesn't support vision. If the caller
+  // explicitly passed a model, respect it (they might have tested a
+  // pro-vision tier for a higher-quality use case).
+  const model = options?.model ?? config.gemini.model;
+  const maxTokens = options?.maxTokens ?? 1024;
+  const temperature = options?.temperature ?? 0.2; // low — we want structured JSON
+  const client = getClient();
+  const genModel = client.getGenerativeModel({
+    model,
+    systemInstruction: systemPrompt,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature,
+    },
+  });
+
+  const start = Date.now();
+  const result = await withTimeout(
+    genModel.generateContent([
+      // Image MUST come before the text prompt — Gemini's own docs recommend
+      // this order because vision models attend to the image first and then
+      // the instruction. Flipping the order degrades accuracy noticeably.
+      { inlineData: { mimeType: image.mimeType, data: image.base64 } },
+      { text: userPrompt },
+    ]),
+    config.aiSafety.callTimeoutMs,
+  );
+  const durationMs = Date.now() - start;
+
+  const usage = result.response.usageMetadata;
+  if (usage) {
+    logGeminiUsage(
+      model,
+      category,
+      {
+        promptTokenCount: usage.promptTokenCount ?? 0,
+        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+      },
+      durationMs,
+    );
+  }
+
+  return extractText(result);
+}
+
+/**
+ * Vision equivalent of completeOneShotWithFallback — tries Gemini vision
+ * first, falls back to a caller-supplied Anthropic vision path on failure.
+ *
+ * Identical shape to the non-vision wrapper so call sites can mechanically
+ * swap in vision support without restructuring their error-handling.
+ */
+export async function completeVisionOneShotWithFallback(
+  systemPrompt: string,
+  userPrompt: string,
+  image: { base64: string; mimeType: string },
+  category: string,
+  anthropicFallback: () => Promise<string>,
+  options?: { model?: string; maxTokens?: number; temperature?: number },
+): Promise<{ text: string; provider: 'gemini' | 'anthropic' }> {
+  if (isGeminiProviderConfigured()) {
+    try {
+      const text = await completeVisionOneShot(systemPrompt, userPrompt, image, category, options);
+      return { text, provider: 'gemini' };
+    } catch (err) {
+      logger.warn({ err, category }, 'Gemini vision one-shot failed, falling back to Anthropic');
+    }
+  }
+  const text = await anthropicFallback();
+  return { text, provider: 'anthropic' };
+}
+
+/**
  * Convenience wrapper around `completeOneShot` that automatically falls back
  * to a caller-supplied Anthropic path on Gemini failure (or when Gemini is
  * not configured). Returns the result text plus which provider produced it.

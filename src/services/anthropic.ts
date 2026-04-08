@@ -5,6 +5,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { DomainMessage, DomainName } from '../domains/types';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithFallback } from './gemini-provider';
 import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt } from '../utils/prompt-loader';
 
@@ -587,20 +588,39 @@ Last assistant message: "${activeConversationContext.lastAssistantMessage.substr
 ${message}`;
     }
 
-    const response = await trackedCreate(client, {
-      model: config.anthropic.classifierModel,
-      max_tokens: 100,
-      system: getClassifierSystemPrompt(),
-      messages: [{ role: 'user', content: classifierInput }],
-    }, 'classify_message');
+    // Gemini-first routing for cost reduction (post-webhook optimization).
+    // Classification is a ~50-token input / <20-token output JSON task —
+    // gemini-2.5-flash-lite handles it at ~$0.00007/call vs Haiku at
+    // ~$0.0005/call (~7× cheaper). The wrapper logs the call to api_usage
+    // with the correct provider so the cost dashboard reflects reality.
+    //
+    // Falls back to Anthropic Haiku automatically if Gemini is down or
+    // GEMINI_API_KEY is unset. Deliberately using the classifier-tier
+    // model (flash-lite) via explicit model override because
+    // config.gemini.classifierModel is gemini-2.5-flash-lite — the
+    // cheapest Gemini model. No reason to pay for flash here.
+    const systemPrompt = getClassifierSystemPrompt();
+    const { text: rawText } = await completeOneShotWithFallback(
+      systemPrompt,
+      classifierInput,
+      'classify_message',
+      async () => {
+        const response = await trackedCreate(client, {
+          model: config.anthropic.classifierModel,
+          max_tokens: 100,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: classifierInput }],
+        }, 'classify_message');
+        return response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('');
+      },
+      { model: config.gemini.classifierModel, maxTokens: 100, temperature: 0 },
+    );
 
-    let text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    // Strip markdown code fences (Haiku sometimes wraps JSON)
-    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // Strip markdown code fences (either provider may wrap JSON)
+    const text = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
 
     const parsed = JSON.parse(text);
     const domain = parsed.domain as DomainName;

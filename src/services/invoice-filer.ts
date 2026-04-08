@@ -10,6 +10,7 @@ import sharp from 'sharp';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeVisionOneShotWithFallback } from './gemini-provider';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -66,20 +67,19 @@ export function isInvoiceFilingConfigured(): boolean {
 // ─── Invoice Analysis (Haiku Vision) ────────────────────────────────
 
 /**
- * Single Haiku vision call to detect if image is an invoice AND extract
- * structured metadata simultaneously. Cost: ~$0.001 per call.
+ * Single vision call to detect if image is an invoice AND extract
+ * structured metadata simultaneously.
+ *
+ * Gemini-first (gemini-2.5-flash vision) ≈ $0.0001/call, with Anthropic
+ * Haiku vision as fallback (~$0.001/call). ~10× cost reduction when
+ * Gemini is available, identical output shape either way.
+ *
+ * The user's caption (if any) goes in the user prompt, not the system
+ * prompt, so the model treats it as input data rather than an instruction
+ * — important because captions can say things like "is this an invoice?"
+ * that we don't want leaking into system-level behavior.
  */
-export async function analyzeInvoiceImage(
-  imageBase64: string,
-  mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
-  caption?: string
-): Promise<InvoiceAnalysis> {
-  const captionCtx = caption ? `\nCaption from user: "${caption}"` : '';
-
-  const response = await trackedCreate(client, {
-    model: config.anthropic.classifierModel,
-    max_tokens: 400,
-    system: `You analyze images to determine if they are invoices, receipts, or payment documents.
+const INVOICE_SYSTEM_PROMPT = `You analyze images to determine if they are invoices, receipts, or payment documents.
 Return ONLY valid JSON:
 {
   "isInvoice": boolean,
@@ -95,20 +95,46 @@ IS an invoice/receipt: nota fiscal, recibo, fatura, comprovante de pagamento, NF
 NOT an invoice: personal photos, selfies, food photos, memes, screenshots of messages, whiteboards, maps, non-financial documents.
 
 For dates: look for "Data:", "Emissão:", "Date:", "Data de emissão:", or any prominent date. Convert to ISO 8601.
-For amounts: look for "Total:", "Valor:", "Total a pagar:", "Amount:".`,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-        { type: 'text', text: `Analyze this image.${captionCtx}` },
-      ],
-    }],
-  }, 'invoice_filing');
+For amounts: look for "Total:", "Valor:", "Total a pagar:", "Amount:".`;
 
-  let text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+export async function analyzeInvoiceImage(
+  imageBase64: string,
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
+  caption?: string
+): Promise<InvoiceAnalysis> {
+  const captionCtx = caption ? `\nCaption from user: "${caption}"` : '';
+  const userPrompt = `Analyze this image.${captionCtx}`;
+
+  const { text: rawText, provider: usedProvider } = await completeVisionOneShotWithFallback(
+    INVOICE_SYSTEM_PROMPT,
+    userPrompt,
+    { base64: imageBase64, mimeType: mediaType },
+    'invoice_filing',
+    async () => {
+      // Anthropic fallback — preserves original behavior in case Gemini
+      // is down or returns malformed JSON
+      const response = await trackedCreate(client, {
+        model: config.anthropic.classifierModel,
+        max_tokens: 400,
+        system: INVOICE_SYSTEM_PROMPT,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+            { type: 'text', text: userPrompt },
+          ],
+        }],
+      }, 'invoice_filing');
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+    },
+    { maxTokens: 400, temperature: 0 },
+  );
+  logger.debug({ usedProvider, category: 'invoice_filing' }, 'Invoice analysis provider');
+
+  let text = rawText;
 
   // Strip markdown fences
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();

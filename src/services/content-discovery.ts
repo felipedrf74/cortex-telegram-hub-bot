@@ -7,6 +7,7 @@ import { config } from '../config';
 import { now } from '../utils/date-parser';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
+import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
 import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
 
@@ -98,37 +99,50 @@ Remember: my audience is Brazilian men (18-35) who want growth and hate laziness
 
   logger.info('Starting daily content discovery with web search...');
 
-  // Prompt caching: system prompt cached for reuse in pause_turn continuations
-  const cachedSystem: Anthropic.TextBlockParam[] = [
-    { type: 'text', text: DISCOVERY_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
-  ];
+  // Gemini-first routing with Google Search grounding (post-webhook cost
+  // optimization). Gemini 2.5 Flash supports live Google Search as a
+  // built-in tool — cheaper than Anthropic's web_search_* surface, and
+  // the search infrastructure IS Google's index, so for news/trending
+  // discovery specifically it's the obvious right tool regardless of cost.
+  //
+  // Falls back to Anthropic Haiku with web_search_* if Gemini is down
+  // or GEMINI_API_KEY is unset. The fallback preserves the existing
+  // pause_turn handling for Anthropic's long-running web_search tool.
+  let fullContent = '';
+  let searchCount = 0;
+  let usedProvider: 'gemini' | 'anthropic' = 'anthropic';
 
-  const response = await trackedCreate(client, {
-    model: config.anthropic.classifierModel, // Haiku — structured templated output doesn't need Sonnet
-    max_tokens: 4096,
-    system: cachedSystem,
-    messages: [{ role: 'user', content: userMessage }],
-    tools: [
-      {
-        type: 'web_search_20250305' as any,
-        name: 'web_search',
-        max_uses: 5,
-      } as any,
-    ],
-  } as any, 'content_discovery');
+  if (isGeminiProviderConfigured()) {
+    try {
+      const { text, sources } = await completeOneShotWithSearch(
+        DISCOVERY_SYSTEM_PROMPT,
+        userMessage,
+        'content_discovery',
+        { maxTokens: 4096, temperature: 0.7 },
+      );
+      fullContent = text;
+      // Gemini reports sources via groundingChunks instead of a
+      // server_tool_use counter — use that as the searchCount proxy.
+      searchCount = sources.length;
+      usedProvider = 'gemini';
+      logger.info({ sourceCount: sources.length }, 'Content discovery via Gemini Google Search grounding');
+    } catch (err) {
+      logger.warn({ err }, 'Gemini content discovery failed, falling back to Anthropic');
+    }
+  }
 
-  // Handle pause_turn — Claude may need to continue after a long search session
-  let finalResponse = response;
-  if (response.stop_reason === 'pause_turn') {
-    logger.info('Content discovery paused, continuing...');
-    finalResponse = await trackedCreate(client, {
-      model: config.anthropic.classifierModel,
+  if (usedProvider !== 'gemini') {
+    // Anthropic fallback — preserves the pause_turn handling because
+    // Claude's web_search_* tool can return pause_turn mid-search.
+    const cachedSystem: Anthropic.TextBlockParam[] = [
+      { type: 'text', text: DISCOVERY_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+    ];
+
+    const response = await trackedCreate(client, {
+      model: config.anthropic.classifierModel, // Haiku — structured templated output doesn't need Sonnet
       max_tokens: 4096,
       system: cachedSystem,
-      messages: [
-        { role: 'user', content: userMessage },
-        { role: 'assistant', content: response.content as any },
-      ],
+      messages: [{ role: 'user', content: userMessage }],
       tools: [
         {
           type: 'web_search_20250305' as any,
@@ -136,17 +150,39 @@ Remember: my audience is Brazilian men (18-35) who want growth and hate laziness
           max_uses: 5,
         } as any,
       ],
-    } as any, 'content_discovery_continuation');
+    } as any, 'content_discovery');
+
+    // Handle pause_turn — Claude may need to continue after a long search session
+    let finalResponse = response;
+    if (response.stop_reason === 'pause_turn') {
+      logger.info('Content discovery paused, continuing...');
+      finalResponse = await trackedCreate(client, {
+        model: config.anthropic.classifierModel,
+        max_tokens: 4096,
+        system: cachedSystem,
+        messages: [
+          { role: 'user', content: userMessage },
+          { role: 'assistant', content: response.content as any },
+        ],
+        tools: [
+          {
+            type: 'web_search_20250305' as any,
+            name: 'web_search',
+            max_uses: 5,
+          } as any,
+        ],
+      } as any, 'content_discovery_continuation');
+    }
+
+    // Extract text content (skip search result blocks)
+    fullContent = finalResponse.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n\n');
+
+    // Count web searches used
+    searchCount = (finalResponse.usage as any)?.server_tool_use?.web_search_requests || 0;
   }
-
-  // Extract text content (skip search result blocks)
-  const fullContent = finalResponse.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n\n');
-
-  // Count web searches used
-  const searchCount = (finalResponse.usage as any)?.server_tool_use?.web_search_requests || 0;
 
   // Extract idea titles (lines starting with "## Idea" or "### Ideia" — model may use either format or language)
   const ideas = fullContent
