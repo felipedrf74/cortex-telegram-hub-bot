@@ -24,22 +24,51 @@
 
 ## How to Deploy to Production
 
-**DO NOT** rely on GitHub Actions CD for deployment. Use the local deploy script from Felipe's Mac:
+**DO NOT** rely on GitHub Actions CD for deployment. Two paths from Felipe's Mac:
 
-<!-- NOTE: Local path references old folder name. Update when folder is renamed. -->
+### 🟢 Recommended: Validated Promote (staging → prod)
+
+For any change beyond a one-line typo, use the validated-promote pipeline:
+
 ```bash
 cd ~/Desktop/Custom\ Connectors/Cortex/cortex-telegram-hub-bot
+
+# 1. Ship the change to staging
+./scripts/deploy-staging.sh
+
+# 2. (Optional) Let staging soak for 5 min so cron jobs fire at least once
+
+# 3. Promote to prod — runs smoke tests automatically and refuses to
+#    promote if any fail
+./scripts/promote-to-prod.sh
+```
+
+`promote-to-prod.sh` runs `staging-smoke.sh` first (13 automated assertions
+against the staging install: health, snapshot shape, cost-by-domain shape,
+provider stats, PM2 state, DB integrity), and only proceeds to
+`deploy.sh` if all 13 pass. See `STAGING.md` for the full staging runbook.
+
+### 🟡 Direct Deploy (skip staging — use only for trivial fixes)
+
+```bash
 ./scripts/deploy.sh
 ```
 
-This script:
+This is the underlying script that `promote-to-prod.sh` ultimately calls.
+Use it directly only when:
+- The change is a one-line typo or comment fix
+- Staging is broken and you need an emergency hotfix
+- You've already validated locally and don't need the smoke-test gate
+
+It still does:
 1. Type-checks TypeScript locally
 2. Builds the project
 3. Stops PM2 services on server
 4. Rsyncs files (excludes .env, data/, logs/, node_modules/)
 5. Installs production dependencies
-6. Starts PM2 services
-7. Runs health checks
+6. Rebuilds native modules against system Node
+7. Starts PM2 services
+8. Runs health checks
 
 ### Deploy Target
 - **Server:** `dominguez@serverdominguez` (resolves locally, not from cloud)
