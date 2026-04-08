@@ -239,8 +239,11 @@ export const config = {
   },
 } as const;
 
-// Fail-fast: empty allowedUserIds would silently reject all messages
-if (config.telegram.allowedUserIds.length === 0) {
+// Fail-fast: empty allowedUserIds would silently reject all messages.
+// Skipped in staging because Telegram is optional there — see requiredInProd
+// above. In staging the bot may not even start, so an empty allowlist isn't
+// a security risk, just a "no fallback users registered" warning.
+if (!IS_STAGING && config.telegram.allowedUserIds.length === 0) {
   throw new Error('TELEGRAM_ALLOWED_USER_IDS parsed to empty list — check env var format (comma-separated numeric IDs)');
 }
 

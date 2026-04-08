@@ -142,20 +142,35 @@ ssh "$SERVER" "
 "
 
 # ── 8. Health check ──────────────────────────────────
+# IMPORTANT: do NOT pipe curl into `head` here — `head` always succeeds
+# even on empty input, which would mask curl's failure exit code via the
+# && chain and the script would print "OK" when nothing is actually
+# listening. We use curl -o /dev/null and check $? directly instead.
 echo ""
 echo "🏥 Health check (waiting 10s for startup)..."
 sleep 10
 
 # Content engine
-ssh "$SERVER" "curl -sf http://localhost:8101/health 2>/dev/null && echo ' ✅ Staging content engine OK' || echo ' ⚠️  Staging content engine not responding'"
+ssh "$SERVER" "
+  if curl -sf -o /dev/null http://localhost:8101/health 2>/dev/null; then
+    echo ' ✅ Staging content engine OK'
+  else
+    echo ' ⚠️  Staging content engine not responding (port 8101)'
+  fi
+"
 
-# Portal — read PORTAL_TOKEN from the STAGING .env
+# Portal — read PORTAL_TOKEN from the STAGING .env. Note: we hit /api/snapshot
+# (not /health) because /health returns 503 when status is "degraded", which
+# is the EXPECTED state for staging-without-bot (bot.polling = false). The
+# /api/snapshot endpoint returns 200 regardless of bot polling state.
 STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
-if [ -n "$STAGING_TOKEN" ]; then
-  ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $STAGING_TOKEN' http://localhost:8201/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Staging portal OK' || echo ' ⚠️  Staging portal not responding'"
-else
-  ssh "$SERVER" "curl -sf http://localhost:8201/health 2>/dev/null && echo ' ✅ Staging portal OK' || echo ' ⚠️  Staging portal not responding'"
-fi
+ssh "$SERVER" "
+  if curl -sf -o /dev/null -H 'Authorization: Bearer ${STAGING_TOKEN:-x}' http://localhost:8201/api/snapshot 2>/dev/null; then
+    echo ' ✅ Staging portal OK'
+  else
+    echo ' ⚠️  Staging portal not responding (port 8201)'
+  fi
+"
 
 echo ""
 echo "═══════════════════════════════════════════════"
