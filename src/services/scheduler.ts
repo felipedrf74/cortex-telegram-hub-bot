@@ -327,6 +327,33 @@ export function startScheduler(bot: Bot): void {
         logger.warn({ err, table }, 'Retention cleanup failed for table');
       }
     }
+
+    // ── audit_trail: partial retention (Phase 0.C) ─────────────────
+    // User-meaningful audit rows (action='export','delete','login', etc)
+    // are kept for 180 days for GDPR compliance. The noisy machine-generated
+    // decrypt rows (from oauth-store.getTokens) are trimmed aggressively
+    // at 30 days because they're high-volume and low forensic value beyond
+    // "something accessed this token". The partial index from migration
+    // 044 makes the DELETE fast. See migrations/044_audit_trail_retention.sql
+    // for the full rationale.
+    try {
+      const { getDb } = require('./database');
+      const db = getDb();
+      const decryptResult = db
+        .prepare(`DELETE FROM audit_trail WHERE action = 'decrypt' AND resource LIKE 'oauth.%' AND ts < datetime('now', '-30 days')`)
+        .run();
+      if (decryptResult.changes > 0) {
+        logger.info({ deleted: decryptResult.changes }, 'Retention cleanup: audit_trail decrypt rows');
+      }
+      const otherResult = db
+        .prepare(`DELETE FROM audit_trail WHERE action != 'decrypt' AND ts < datetime('now', '-180 days')`)
+        .run();
+      if (otherResult.changes > 0) {
+        logger.info({ deleted: otherResult.changes }, 'Retention cleanup: audit_trail non-decrypt rows');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Retention cleanup failed for audit_trail');
+    }
   }), { timezone: tz });
 
   // ── Unified task store: per-provider sync (every 15 min) ───────────

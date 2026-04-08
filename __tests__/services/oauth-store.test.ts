@@ -49,6 +49,7 @@ import {
   storeTokens, getTokens, isConnected, disconnectProvider,
   getUserConnections, migrateOwnerTokens, ProviderNotConnectedError,
   assertOAuthEncryptionConfigured, encryptPlaintextOAuthTokens,
+  _resetDecryptCacheForTests,
 } from '../../src/services/oauth-store';
 
 describe('oauth-store', () => {
@@ -61,6 +62,9 @@ describe('oauth-store', () => {
     // not the legacy plaintext fallback that no longer exists.
     process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';
     delete process.env.FINANCE_ENCRYPTION_KEY;
+    // Clear the decrypted-token LRU cache between cases so one test
+    // can't pollute another's cache-hit assertions (Phase 0.C).
+    _resetDecryptCacheForTests();
   });
 
   afterEach(() => {
@@ -310,6 +314,122 @@ describe('oauth-store', () => {
       const second = encryptPlaintextOAuthTokens();
       expect(second.encryptedRows).toBe(0);
       expect(second.alreadyEncrypted).toBe(1);
+    });
+  });
+
+  // ── Decrypted-token cache (Phase 0.C audit trail bomb fix) ─────────
+  //
+  // These tests pin the cache behavior so a future refactor can't
+  // silently re-introduce the per-request decrypt + audit-row pattern
+  // that produced 10,670 oauth.outlook decrypt rows/day pre-fix.
+  //
+  // Cache-hit detection strategy: spy on testDb.prepare. Cache HITS
+  // must NOT hit the 'SELECT * FROM user_oauth_tokens' code path at
+  // all, so counting calls to that exact statement tells us whether
+  // the cache served the read or the DB did.
+  describe('decrypted token cache', () => {
+    it('avoids a DB SELECT on repeated getTokens within the TTL', () => {
+      storeTokens(555, 'outlook', {
+        accessToken: 'at_cache', refreshToken: 'rt_cache', tokenType: 'Bearer',
+        expiresAt: null, scopes: ['mail'],
+      });
+
+      // Install a spy that counts SELECT * FROM user_oauth_tokens calls
+      const originalPrepare = testDb.prepare.bind(testDb);
+      let selectCount = 0;
+      (testDb as any).prepare = (sql: string) => {
+        if (sql.includes('SELECT * FROM user_oauth_tokens')) {
+          selectCount++;
+        }
+        return originalPrepare(sql);
+      };
+
+      // First read: cache miss → 1 DB SELECT
+      expect(getTokens(555, 'outlook')!.refreshToken).toBe('rt_cache');
+      expect(selectCount).toBe(1);
+
+      // 50 more reads in rapid succession: all cache hits → still 1 SELECT
+      for (let i = 0; i < 50; i++) {
+        expect(getTokens(555, 'outlook')!.refreshToken).toBe('rt_cache');
+      }
+      expect(selectCount).toBe(1);
+    });
+
+    it('storeTokens invalidates the cache so re-auth is immediately visible', () => {
+      storeTokens(777, 'google', {
+        accessToken: 'at_v1', refreshToken: 'rt_v1', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+      // Warm the cache
+      expect(getTokens(777, 'google')!.refreshToken).toBe('rt_v1');
+
+      // Simulate re-auth with fresh tokens
+      storeTokens(777, 'google', {
+        accessToken: 'at_v2', refreshToken: 'rt_v2', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+
+      // Next read must see the NEW tokens (cache was invalidated)
+      expect(getTokens(777, 'google')!.refreshToken).toBe('rt_v2');
+    });
+
+    it('disconnectProvider invalidates the cache so getTokens immediately returns null', () => {
+      storeTokens(333, 'notion', {
+        accessToken: 'at', refreshToken: 'rt', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+      expect(getTokens(333, 'notion')).not.toBeNull(); // warm the cache
+      disconnectProvider(333, 'notion');
+      // Cache was invalidated — next read goes to DB and gets null
+      expect(getTokens(333, 'notion')).toBeNull();
+    });
+
+    it('keeps cache entries separate per provider for the same user', () => {
+      storeTokens(444, 'google', {
+        accessToken: 'at_g', refreshToken: 'rt_g', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+      storeTokens(444, 'outlook', {
+        accessToken: 'at_o', refreshToken: 'rt_o', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+
+      expect(getTokens(444, 'google')!.refreshToken).toBe('rt_g');
+      expect(getTokens(444, 'outlook')!.refreshToken).toBe('rt_o');
+
+      // Re-reads still return the correct per-provider cached values
+      // (no bleed between providers)
+      expect(getTokens(444, 'google')!.refreshToken).toBe('rt_g');
+      expect(getTokens(444, 'outlook')!.refreshToken).toBe('rt_o');
+    });
+
+    it('keeps cache entries separate per user for the same provider', () => {
+      storeTokens(101, 'google', {
+        accessToken: 'at_101', refreshToken: 'rt_101', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+      storeTokens(102, 'google', {
+        accessToken: 'at_102', refreshToken: 'rt_102', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+
+      expect(getTokens(101, 'google')!.refreshToken).toBe('rt_101');
+      expect(getTokens(102, 'google')!.refreshToken).toBe('rt_102');
+      // Reading 101 again should NOT see 102's tokens
+      expect(getTokens(101, 'google')!.refreshToken).toBe('rt_101');
+    });
+
+    it('returning null for missing provider does not corrupt cache', () => {
+      // Cold lookup with no row: must return null and NOT cache a null
+      expect(getTokens(999, 'google')).toBeNull();
+
+      // Now a row is stored — the next lookup must return the real tokens
+      // (not a stale null from the cache).
+      storeTokens(999, 'google', {
+        accessToken: 'at', refreshToken: 'rt', tokenType: 'Bearer',
+        expiresAt: null, scopes: [],
+      });
+      expect(getTokens(999, 'google')!.refreshToken).toBe('rt');
     });
   });
 });

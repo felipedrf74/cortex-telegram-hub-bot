@@ -5,12 +5,22 @@
  *
  * Tokens are encrypted at rest using AES-256-GCM with per-user key derivation.
  * Uses the existing encryption utilities from src/utils/encryption.ts.
+ *
+ * In-memory cache: decrypted tokens are cached per (userId, provider) pair
+ * for DECRYPT_CACHE_TTL_MS to prevent the audit-trail bomb discovered in
+ * April 2026. Without this cache, every Google/Outlook API call triggered
+ * a fresh SELECT + decrypt + audit_trail INSERT, producing ~11,000 rows/day
+ * for a single user. With the cache, we decrypt at most once per TTL window
+ * and write exactly one audit row per actual decryption. The cache is
+ * invalidated on storeTokens() and disconnectProvider() so re-auth is
+ * immediately visible. See Phase 0.C in the product roadmap.
  */
 
 import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { encryptValue, decryptValue } from '../utils/encryption';
+import { LRUMap } from '../utils/lru-map';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -102,6 +112,56 @@ function decrypt(value: string, userId: number): string {
     // (`encryptPlaintextOAuthTokens`) should have already encrypted them.
     return value;
   }
+}
+
+// ─── Decrypted-token cache ──────────────────────────────────────────
+//
+// Caches the DECRYPTED OAuthTokens object per (userId, provider) pair so
+// repeated reads within a TTL window don't trigger fresh DB reads +
+// decrypt + audit-log writes.
+//
+// The cache holds plaintext tokens in memory, which is already the case
+// while the process is running — every API call holds them in closures
+// for the duration of the request. Caching them for a bounded time does
+// not expand the attack surface: if an attacker has code execution on
+// the Node process, they can read request-scoped plaintext tokens just
+// as easily as cached ones. The risk profile is identical.
+//
+// TTL: 10 minutes. The shortest typical OAuth access token lifetime is
+// 1 hour (Google, Outlook), but the refresh token doesn't rotate on
+// every refresh — it's stable across days. 10 minutes gives us a strong
+// performance win while keeping the window small enough that a credential
+// revoked in the portal is respected within ~10 minutes even without
+// explicit invalidation. Store + disconnect operations invalidate the
+// cache immediately so explicit re-auth is instantly visible.
+//
+// Max size: 256 entries. With N providers × M users, this supports
+// 256/7 ≈ 36 fully-connected users before eviction starts. That's more
+// than we'll have for a long while and costs ~100KB of memory.
+const DECRYPT_CACHE_TTL_MS = 10 * 60 * 1000;
+const DECRYPT_CACHE_SIZE = 256;
+
+interface CachedEntry {
+  tokens: OAuthTokens;
+  cachedAt: number;
+}
+
+const _decryptedTokenCache = new LRUMap<string, CachedEntry>(DECRYPT_CACHE_SIZE);
+
+function cacheKey(userId: number, provider: OAuthProvider): string {
+  return `${userId}:${provider}`;
+}
+
+function invalidateTokenCache(userId: number, provider: OAuthProvider): void {
+  _decryptedTokenCache.delete(cacheKey(userId, provider));
+}
+
+/**
+ * Test-only: clear the entire decrypted-token cache. Exported so tests
+ * can reset state between cases without touching the LRU internals.
+ */
+export function _resetDecryptCacheForTests(): void {
+  _decryptedTokenCache.clear();
 }
 
 /**
@@ -198,28 +258,60 @@ export function storeTokens(userId: number, provider: OAuthProvider, tokens: OAu
     tokens.expiresAt,
     JSON.stringify(tokens.scopes),
   );
+  // Fresh tokens from a new OAuth exchange — blow away any cached copy
+  // of the old tokens so the next getTokens() immediately picks up the
+  // new ones instead of waiting out the 10-minute TTL.
+  invalidateTokenCache(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens stored');
 }
 
 /**
  * Retrieve decrypted tokens for a user+provider. Returns null if not connected.
  *
- * Audit P0-10: every token decryption is logged because OAuth refresh tokens
+ * Audit P0-10: token decryptions are logged because OAuth refresh tokens
  * grant ongoing access to a user's third-party account (Google/Outlook/...).
- * Knowing exactly when each token was decrypted is the bare minimum forensic
- * trail for "did anything weird access my Google data?". Logged at level
- * 'decrypt' so it can be filtered out from user-facing audit views (which
- * usually only show explicit user actions).
+ * Knowing when each token was decrypted is the bare minimum forensic trail
+ * for "did anything weird access my Google data?".
+ *
+ * Cache behavior (Phase 0.C — April 2026):
+ *   - Hot path: in-memory cache hit → return cached tokens WITHOUT hitting
+ *     the DB or writing an audit row. This is the normal case for every
+ *     Google/Outlook API call within 10 minutes of the previous read.
+ *   - Cold path: cache miss → DB read + decrypt + SINGLE audit row + cache.
+ *
+ * Before this cache, a single user generated ~11,000 audit rows/day
+ * because every Graph API call fired a fresh decrypt. After: ~1 row per
+ * 10-minute window per active provider ≈ 144 rows/day worst case. The
+ * audit is still complete enough for forensic use — you can tell WHEN
+ * the tokens were materialized into memory, which is what matters for
+ * "was the refresh token exfiltrated". The in-memory cache does not
+ * expand the attack surface: a code-execution attacker could read any
+ * request-scoped plaintext token just as easily.
  */
 export function getTokens(userId: number, provider: OAuthProvider): OAuthTokens | null {
+  // ── Cache hit: return without touching DB or audit trail ──
+  const key = cacheKey(userId, provider);
+  const cached = _decryptedTokenCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < DECRYPT_CACHE_TTL_MS) {
+    return cached.tokens;
+  }
+
+  // ── Cache miss: DB read + decrypt + ONE audit row + cache ──
   const db = getDb();
   const row = db.prepare(
     'SELECT * FROM user_oauth_tokens WHERE user_id = ? AND provider = ?'
   ).get(userId, provider) as any | undefined;
 
-  if (!row) return null;
+  if (!row) {
+    // Expire stale cache entries for non-existent tokens (e.g. disconnected
+    // in another process). Doesn't fix cross-process staleness but handles
+    // the in-process case.
+    _decryptedTokenCache.delete(key);
+    return null;
+  }
 
   // Lazy require to avoid a cycle (audit-trail → database → oauth-store).
+  // This is the ONE audit row per actual decryption (not per getTokens call).
   try {
     const { logAudit } = require('./audit-trail');
     logAudit({
@@ -230,13 +322,16 @@ export function getTokens(userId: number, provider: OAuthProvider): OAuthTokens 
     });
   } catch { /* audit-trail not available — non-critical */ }
 
-  return {
+  const tokens: OAuthTokens = {
     accessToken: decrypt(row.access_token, userId),
     refreshToken: decrypt(row.refresh_token, userId),
     tokenType: row.token_type,
     expiresAt: row.expires_at,
     scopes: JSON.parse(row.scopes || '[]'),
   };
+
+  _decryptedTokenCache.set(key, { tokens, cachedAt: Date.now() });
+  return tokens;
 }
 
 /**
@@ -256,6 +351,9 @@ export function isConnected(userId: number, provider: OAuthProvider): boolean {
 export function disconnectProvider(userId: number, provider: OAuthProvider): void {
   const db = getDb();
   db.prepare('DELETE FROM user_oauth_tokens WHERE user_id = ? AND provider = ?').run(userId, provider);
+  // Blow away the cached decrypted tokens so the next getTokens() returns
+  // null immediately instead of serving stale data for up to 10 minutes.
+  invalidateTokenCache(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens removed');
 }
 

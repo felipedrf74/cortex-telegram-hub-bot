@@ -44,7 +44,7 @@ import {
   findNexusUserByTodoistId,
   _resetTodoistUserCacheForTests,
 } from '../../../src/services/task-store/todoist-adapter';
-import { storeTokens } from '../../../src/services/oauth-store';
+import { storeTokens, _resetDecryptCacheForTests } from '../../../src/services/oauth-store';
 
 const USER_ID = 42;
 
@@ -72,6 +72,13 @@ beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
   _resetTodoistUserCacheForTests();
+  // Clear the oauth-store's in-memory decrypted-token cache (Phase 0.C)
+  // between test cases. Without this reset, a prior test that called
+  // storeTokens(42, 'todoist', ...) would leave a cached entry that
+  // bleeds into the next case's fresh testDb, causing "not connected"
+  // assertions to fail because getTokens returns the stale cached
+  // object instead of the null from the empty DB.
+  _resetDecryptCacheForTests();
   // OAuth encryption is now mandatory at runtime (audit P0-7).
   process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';
 });

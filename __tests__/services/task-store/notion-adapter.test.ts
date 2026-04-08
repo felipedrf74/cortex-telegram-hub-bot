@@ -59,7 +59,7 @@ import {
   extractSchema,
   NotionDatabaseMapping,
 } from '../../../src/services/task-store/notion-mapping';
-import { storeTokens } from '../../../src/services/oauth-store';
+import { storeTokens, _resetDecryptCacheForTests } from '../../../src/services/oauth-store';
 
 const USER_ID = 77;
 const OTHER_USER_ID = 88;
@@ -105,6 +105,9 @@ function mockFetchResponse(body: any, status = 200): Response {
 beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
+  // Clear the oauth-store's in-memory decrypted-token cache (Phase 0.C)
+  // between test cases to prevent state bleed across tests.
+  _resetDecryptCacheForTests();
   // OAuth encryption is now mandatory at runtime (audit P0-7).
   process.env.OAUTH_ENCRYPTION_KEY = 'test-key-deterministic-for-vitest-32chars';
 });
