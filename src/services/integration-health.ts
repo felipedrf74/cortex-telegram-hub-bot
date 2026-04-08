@@ -66,24 +66,67 @@ function persist(result: ProbeResult): void {
 // ── Per-provider probes ─────────────────────────────────────────────
 
 async function probeGarmin(): Promise<ProbeResult> {
-  const start = Date.now();
+  // CRITICAL: do NOT call keepAlive() here — the probe runs every 5 minutes,
+  // and the real garmin_keepalive cron only runs every 30 minutes. If the
+  // probe calls keepAlive() directly, we 6x the load on Garmin's SSO server
+  // which triggers its rate-limiter (persistent via rate_limit_until.txt)
+  // and actively prevents natural recovery. This is the observer-effect
+  // bug that broke Garmin after v4.9.30 shipped — see commit notes.
+  //
+  // Instead, we mirror the most recent garmin_keepalive job_history row.
+  // The cron is the source of truth; the probe just reflects its state.
+  // If the latest row is >1 hour old, we assume the cron itself is broken
+  // and report fail — that's a different failure mode worth alerting on.
   try {
-    const { isGarminConfigured, keepAlive } = require('./garmin');
+    const { isGarminConfigured } = require('./garmin');
     if (!isGarminConfigured()) {
       return { provider: 'garmin', status: 'skipped', latencyMs: null, errorMessage: 'not configured' };
     }
-    const ok = await keepAlive();
+
+    const row = getDb()
+      .prepare(
+        `SELECT result, duration_ms, error_message, ts
+         FROM job_history
+         WHERE job_name = 'garmin_keepalive'
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get() as
+      | { result: string; duration_ms: number | null; error_message: string | null; ts: string }
+      | undefined;
+
+    if (!row) {
+      return {
+        provider: 'garmin',
+        status: 'fail',
+        latencyMs: null,
+        errorMessage: 'no garmin_keepalive history — cron may not be registered',
+      };
+    }
+
+    // If the latest row is >90 minutes old, the cron itself is broken or
+    // paused (garmin_keepalive runs every 30 min, so >90 min = 3 missed runs).
+    // That's worse than a single keepAlive failure — report it distinctly.
+    const ageMinutes = (Date.now() - new Date(row.ts + 'Z').getTime()) / 60_000;
+    if (ageMinutes > 90) {
+      return {
+        provider: 'garmin',
+        status: 'fail',
+        latencyMs: null,
+        errorMessage: `stale: last keepalive was ${Math.round(ageMinutes)}min ago`,
+      };
+    }
+
     return {
       provider: 'garmin',
-      status: ok ? 'ok' : 'fail',
-      latencyMs: Date.now() - start,
-      errorMessage: ok ? null : 'keepAlive returned false',
+      status: row.result === 'success' ? 'ok' : 'fail',
+      latencyMs: row.duration_ms,
+      errorMessage: row.result === 'success' ? null : row.error_message ?? 'unknown failure',
     };
   } catch (err: any) {
     return {
       provider: 'garmin',
       status: 'fail',
-      latencyMs: Date.now() - start,
+      latencyMs: null,
       errorMessage: err?.message ?? String(err),
     };
   }

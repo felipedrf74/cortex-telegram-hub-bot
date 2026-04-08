@@ -187,3 +187,109 @@ export async function uploadToDrive(
     return null;
   }
 }
+
+// ── Backup upload (off-site disaster recovery) ──────────────────────
+
+const BACKUP_FOLDER_NAME = 'Nexus Hub Backups';
+
+/**
+ * Upload a daily database backup tarball to Google Drive under a dedicated
+ * top-level folder ("Nexus Hub Backups"). This is our off-site disaster
+ * recovery path — the local VPS could be fully destroyed and we'd still
+ * have the DB because Drive syncs are geo-replicated by Google.
+ *
+ * Design notes:
+ *   - Lives in its own root folder (NOT under "Nexus Hub IDEAS") because
+ *     backups have a different retention + access policy than content files.
+ *     You probably want to share IDEAS with collaborators but never share
+ *     backups.
+ *   - Uses `application/gzip` mimetype so Drive treats it as a downloadable
+ *     binary, not a compressible text blob.
+ *   - Retention: keeps the most recent 30 files by default. The `retain`
+ *     parameter lets the caller override. Older backups are moved to
+ *     Drive's trash (not hard-deleted) so they're recoverable for 30 days
+ *     via Google's own trash.
+ *   - Authorization: goes through `getDrive()` → `buildGoogleOAuth2Client()`
+ *     → oauth-store (post-P1 bridge). As soon as `/connect google` completes
+ *     and populates a fresh refresh token, backups start uploading without
+ *     any code change or restart.
+ *
+ * Returns the Drive file ID on success, or null if uploads are disabled,
+ * Google auth is broken, or any other error. Never throws — the local
+ * backup is the fallback.
+ *
+ * @param localPath  Absolute path to the backup tarball
+ * @param filename   Filename to use in Drive (e.g. nexushub-backup-2026-04-08.tar.gz)
+ * @param retain     How many most-recent backups to keep in Drive (default 30)
+ */
+export async function uploadBackupToDrive(
+  localPath: string,
+  filename: string,
+  retain = 30,
+): Promise<string | null> {
+  if (!isGoogleDriveEnabled()) return null;
+  if (!fs.existsSync(localPath)) {
+    logger.warn({ localPath }, 'uploadBackupToDrive: local file not found');
+    return null;
+  }
+
+  try {
+    const drive = getDrive();
+    const backupFolderId = await getOrCreateFolder(BACKUP_FOLDER_NAME);
+
+    // Upload the tarball
+    const res = await drive.files.create({
+      requestBody: {
+        name: filename,
+        parents: [backupFolderId],
+      },
+      media: {
+        mimeType: 'application/gzip',
+        body: fs.createReadStream(localPath),
+      },
+      fields: 'id, webViewLink, size',
+    });
+
+    const fileId = res.data.id!;
+    const size = res.data.size ? Number(res.data.size) : null;
+    logger.info(
+      { filename, fileId, sizeBytes: size, webLink: res.data.webViewLink },
+      'Backup uploaded to Google Drive',
+    );
+
+    // Retention: list all files in the backup folder, sort by createdTime
+    // descending, trash anything beyond the `retain` window. Google's trash
+    // holds files for 30 days so a bad retention decision is recoverable.
+    try {
+      const listRes = await drive.files.list({
+        q: `'${backupFolderId}' in parents and trashed=false`,
+        orderBy: 'createdTime desc',
+        fields: 'files(id, name, createdTime)',
+        pageSize: 100,
+      });
+      const files = listRes.data.files || [];
+      if (files.length > retain) {
+        const toTrash = files.slice(retain);
+        for (const f of toTrash) {
+          try {
+            await drive.files.update({ fileId: f.id!, requestBody: { trashed: true } });
+            logger.info({ filename: f.name, fileId: f.id }, 'Trashed old Drive backup (retention)');
+          } catch (err: any) {
+            logger.warn({ err: err.message, fileId: f.id }, 'Failed to trash old Drive backup');
+          }
+        }
+      }
+    } catch (err: any) {
+      // Retention failure is non-fatal — the upload already succeeded.
+      logger.warn({ err: err.message }, 'Drive backup retention pass failed (upload still OK)');
+    }
+
+    return fileId;
+  } catch (err: any) {
+    logger.warn(
+      { err: err.message, filename },
+      'Google Drive backup upload failed — local backup is still valid',
+    );
+    return null;
+  }
+}

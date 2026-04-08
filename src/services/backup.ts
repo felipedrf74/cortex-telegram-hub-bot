@@ -82,8 +82,40 @@ export async function runDatabaseBackup(): Promise<string> {
     'Database backup created',
   );
 
-  // Step 5: Rotate old backups
+  // Step 5: Rotate old local backups
   rotateBackups(backupDir, config.backup.retentionDays);
+
+  // Step 6: Off-site upload to Google Drive (non-blocking — local backup
+  // is the source of truth; Drive is the disaster-recovery replica).
+  //
+  // The upload goes through google-drive.ts → google-auth.ts bridge →
+  // oauth-store, so it automatically picks up whatever the latest Google
+  // refresh token is. If Google is disconnected (e.g. before /connect
+  // google completes), the upload silently no-ops and runDatabaseBackup
+  // still returns the local path unchanged. See uploadBackupToDrive() for
+  // retention + error handling. Audit ref: Weeks 2-4 off-site backup.
+  try {
+    const { uploadBackupToDrive, isGoogleDriveEnabled } = require('./google-drive');
+    if (isGoogleDriveEnabled()) {
+      const driveFileId = await uploadBackupToDrive(finalPath, path.basename(finalPath));
+      if (driveFileId) {
+        logger.info(
+          { driveFileId, backup: path.basename(finalPath) },
+          'Backup replicated to Google Drive',
+        );
+      } else {
+        logger.info(
+          'Google Drive backup upload returned null — check Drive credentials or run /connect google',
+        );
+      }
+    } else {
+      logger.debug('Google Drive not enabled — backup is local-only');
+    }
+  } catch (err: any) {
+    // Never fail the whole backup flow because Drive failed. Local backup
+    // is the source of truth; Drive is just the off-site replica.
+    logger.warn({ err: err.message }, 'Drive upload failed; local backup retained');
+  }
 
   return finalPath;
 }
