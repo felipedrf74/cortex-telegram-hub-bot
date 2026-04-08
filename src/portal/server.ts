@@ -19,6 +19,7 @@ import crypto from 'crypto';
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { runWithContext, generateRequestId } from '../utils/request-context';
 import { getDb } from '../services/database';
 import {
   getRecentEvents,
@@ -1031,10 +1032,18 @@ async function handleAction(
 export function createPortalServer(bot: Bot): http.Server {
   const app = express();
 
-  // ── Request logging middleware (audit QW-15) ───────────────────────
-  // Structured pino log for every HTTP request with method, path, status,
-  // duration, and (when JWT-authenticated) userId. Mounted FIRST so it
-  // covers webhooks, waitlist, iOS API, and the admin portal alike.
+  // ── Request logging + tracing middleware (audit QW-15 + Quarter) ───
+  // Wraps every HTTP request in two layers:
+  //   1. A request-context (Quarter: distributed tracing) so all log
+  //      calls during the request automatically include reqId/src/userId.
+  //      If the upstream sent us an X-Request-Id header, we honor it
+  //      (this is what makes "follow a single request through the bot
+  //      → portal → content-engine" possible). Otherwise we generate a
+  //      fresh ID and echo it back in the response so the client can
+  //      reference it in bug reports.
+  //   2. A structured pino log on res.finish with method, path, status,
+  //      duration, and userId. The reqId is added automatically by the
+  //      logger mixin so we don't have to thread it manually.
   //
   // We hook res.on('finish') instead of wrapping res.end to keep the
   // middleware non-invasive. The auth middleware (further down the chain)
@@ -1042,33 +1051,40 @@ export function createPortalServer(bot: Bot): http.Server {
   // fires we can read it from the modified request object.
   //
   // Why not pino-http? pino-http is a separate package and the project's
-  // CLAUDE.md says "no third-party HTTP libs". A 20-line bespoke middleware
+  // CLAUDE.md says "no third-party HTTP libs". A 30-line bespoke middleware
   // does the same job here.
   app.use((req: Request, res: Response, next: NextFunction) => {
-    const start = process.hrtime.bigint();
-    const path = req.path;
-    res.on('finish', () => {
-      const durationMs = Number((process.hrtime.bigint() - start) / 1_000_000n);
-      const userId = (req as any).userId as number | undefined;
-      const isHealthOrSnapshot = path === '/health' || path === '/api/snapshot';
-      // Skip noisy health-check polling at info level — log them at debug
-      // so they're visible if you crank up LOG_LEVEL but don't fill the
-      // normal log stream. The portal dashboard polls /api/snapshot every
-      // 5 seconds.
-      const logLevel = isHealthOrSnapshot ? 'debug' : 'info';
-      logger[logLevel](
-        {
-          method: req.method,
-          path,
-          status: res.statusCode,
-          durationMs,
-          userId,
-          ip: req.ip || req.socket?.remoteAddress,
-        },
-        'http',
-      );
+    const incomingId = req.header('x-request-id');
+    const requestId = incomingId || generateRequestId();
+    // Echo the ID back so the client can quote it in bug reports.
+    res.setHeader('x-request-id', requestId);
+
+    runWithContext({ requestId, source: 'http' }, () => {
+      const start = process.hrtime.bigint();
+      const path = req.path;
+      res.on('finish', () => {
+        const durationMs = Number((process.hrtime.bigint() - start) / 1_000_000n);
+        const userId = (req as any).userId as number | undefined;
+        const isHealthOrSnapshot = path === '/health' || path === '/api/snapshot';
+        // Skip noisy health-check polling at info level — log them at debug
+        // so they're visible if you crank up LOG_LEVEL but don't fill the
+        // normal log stream. The portal dashboard polls /api/snapshot every
+        // 5 seconds.
+        const logLevel = isHealthOrSnapshot ? 'debug' : 'info';
+        logger[logLevel](
+          {
+            method: req.method,
+            path,
+            status: res.statusCode,
+            durationMs,
+            userId,
+            ip: req.ip || req.socket?.remoteAddress,
+          },
+          'http',
+        );
+      });
+      next();
     });
-    next();
   });
 
   // ── Webhook router (TASK-16b) ──────────────────────────────────────

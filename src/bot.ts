@@ -16,6 +16,7 @@
 import { Bot, GrammyError, HttpError } from 'grammy';
 import { config } from './config';
 import { logger } from './utils/logger';
+import { runWithContext, generateRequestId } from './utils/request-context';
 import { DomainName } from './domains/types';
 
 // ── Domain Handlers ──
@@ -60,6 +61,24 @@ const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Prom
 
 export function createBot(): Bot {
   const bot = new Bot(config.telegram.botToken);
+
+  // ── Tracing Middleware (Quarter: distributed tracing) ──
+  // FIRST in the chain — every other middleware (auth, rate limit,
+  // telemetry, command handlers) runs inside this AsyncLocalStorage
+  // store, so all log lines emitted during the message lifecycle
+  // automatically pick up `reqId`, `src`, and `userId` via the pino
+  // mixin in src/utils/logger.ts.
+  //
+  // Each Telegram update gets a fresh requestId; we don't honor any
+  // upstream ID (Telegram doesn't propagate one). The userId comes
+  // straight from ctx.from.id when present.
+  bot.use(async (ctx, next) => {
+    const requestId = generateRequestId();
+    return runWithContext(
+      { requestId, source: 'telegram', userId: ctx.from?.id },
+      () => next(),
+    );
+  });
 
   // ── Auth Middleware (DB-backed with legacy whitelist fallback) ──
   bot.use(async (ctx, next) => {

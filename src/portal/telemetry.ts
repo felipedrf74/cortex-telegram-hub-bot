@@ -13,6 +13,7 @@
  */
 import type { Bot } from 'grammy';
 import { logger } from '../utils/logger';
+import { runWithContext, generateRequestId } from '../utils/request-context';
 
 // ─── Activity Event Ring Buffer ──────────────────────────────────────
 
@@ -121,59 +122,69 @@ export type JobResult = void | 'skipped';
 
 export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promise<void> {
   const wrapped = async () => {
-    // Skip if the owning sub-skill is disabled
-    if (!isJobEnabled(name)) {
-      logger.debug({ job: name }, 'Cron job skipped — sub-skill disabled');
-      return;
-    }
+    // Each cron tick runs inside its own request context so all log lines
+    // emitted during the job (and any HTTP calls it makes to content-engine
+    // or external APIs) carry the same reqId. The source is "cron:<name>"
+    // so logs can be filtered to a single job's history. (Quarter: tracing.)
+    const requestId = generateRequestId();
+    return runWithContext(
+      { requestId, source: `cron:${name}` as const },
+      async () => {
+        // Skip if the owning sub-skill is disabled
+        if (!isJobEnabled(name)) {
+          logger.debug({ job: name }, 'Cron job skipped — sub-skill disabled');
+          return;
+        }
 
-    const status = jobMap.get(name);
-    if (!status) {
-      await fn(); // unregistered — run without tracking
-      return;
-    }
+        const status = jobMap.get(name);
+        if (!status) {
+          await fn(); // unregistered — run without tracking
+          return;
+        }
 
-    const startIso = new Date().toISOString();
-    status.lastRunAt = startIso;
-    status.lastResult = 'running';
-    status.lastError = null;
-    const start = Date.now();
+        const startIso = new Date().toISOString();
+        status.lastRunAt = startIso;
+        status.lastResult = 'running';
+        status.lastError = null;
+        const start = Date.now();
 
-    try {
-      const result = await fn();
-      status.lastDurationMs = Date.now() - start;
-      // Skipped jobs don't get persisted or pushed to the activity ring —
-      // they wake up, see no work, and exit silently. Status still updates
-      // so the portal shows lastRunAt, but job_history is not written.
-      if (result === 'skipped') {
-        status.lastResult = 'success';
-        return;
-      }
-      status.lastResult = 'success';
-      pushEvent({
-        ts: startIso,
-        type: 'job',
-        summary: `${status.label}: success (${status.lastDurationMs}ms)`,
-        durationMs: status.lastDurationMs,
-      });
-      persistJobRun(name, 'success', status.lastDurationMs);
-    } catch (err: any) {
-      status.lastResult = 'failed';
-      status.lastDurationMs = Date.now() - start;
-      status.lastError = err?.message ?? String(err);
-      pushEvent({
-        ts: startIso,
-        type: 'error',
-        summary: `${status.label}: failed — ${(status.lastError ?? '').slice(0, 80)}`,
-        durationMs: status.lastDurationMs,
-      });
-      persistJobRun(name, 'failed', status.lastDurationMs, status.lastError);
-      // Notify user via Telegram (swallow notification errors to avoid masking the original)
-      if (_failureNotifier) {
-        _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
-      }
-      throw err; // re-throw so existing catch blocks in scheduler still fire
-    }
+        try {
+          const result = await fn();
+          status.lastDurationMs = Date.now() - start;
+          // Skipped jobs don't get persisted or pushed to the activity ring —
+          // they wake up, see no work, and exit silently. Status still updates
+          // so the portal shows lastRunAt, but job_history is not written.
+          if (result === 'skipped') {
+            status.lastResult = 'success';
+            return;
+          }
+          status.lastResult = 'success';
+          pushEvent({
+            ts: startIso,
+            type: 'job',
+            summary: `${status.label}: success (${status.lastDurationMs}ms)`,
+            durationMs: status.lastDurationMs,
+          });
+          persistJobRun(name, 'success', status.lastDurationMs);
+        } catch (err: any) {
+          status.lastResult = 'failed';
+          status.lastDurationMs = Date.now() - start;
+          status.lastError = err?.message ?? String(err);
+          pushEvent({
+            ts: startIso,
+            type: 'error',
+            summary: `${status.label}: failed — ${(status.lastError ?? '').slice(0, 80)}`,
+            durationMs: status.lastDurationMs,
+          });
+          persistJobRun(name, 'failed', status.lastDurationMs, status.lastError);
+          // Notify user via Telegram (swallow notification errors to avoid masking the original)
+          if (_failureNotifier) {
+            _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
+          }
+          throw err; // re-throw so existing catch blocks in scheduler still fire
+        }
+      },
+    );
   };
 
   // Store the wrapped callback so DST watchdog can re-invoke missed jobs

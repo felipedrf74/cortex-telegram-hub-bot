@@ -9,6 +9,7 @@ import { getDb } from '../services/database';
 import { writeSignal } from '../services/intelligence-bus';
 import { escapeHtml } from '../utils/telegram-formatter';
 import { logger } from '../utils/logger';
+import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { config } from '../config';
 
 const CONTENT_ENGINE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
@@ -75,9 +76,16 @@ async function extractAndStore(title: string, author: string): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 180_000);
 
+    // Distributed tracing: propagate the current requestId so the Python
+    // content-engine can log it. Same pattern as engineFetch in
+    // services/content-engine.ts. (Quarter audit item.)
+    const requestId = getCurrentRequestId() || generateRequestId();
     const resp = await fetch(`${CONTENT_ENGINE_URL}/books/extract`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Request-Id': requestId,
+      },
       body: JSON.stringify({ title, author }),
       signal: controller.signal,
     });

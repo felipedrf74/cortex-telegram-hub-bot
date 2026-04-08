@@ -6,6 +6,7 @@ import path from 'path';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { uploadToDrive } from './google-drive';
 
 // ── File Saver for large outputs ────────────────────────────────────
@@ -367,11 +368,31 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
   const url = `${BASE_URL}${path}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Distributed tracing: propagate the current requestId to the Python
+  // content-engine via X-Request-Id (Quarter audit item). When this fetch
+  // happens inside a request context (Telegram message, HTTP request,
+  // or cron tick), getCurrentRequestId() returns the same ID that the
+  // upstream is logging. The Python service has matching middleware in
+  // content-engine/main.py that reads X-Request-Id and threads it through
+  // its own contextvars-backed logging filter. Result: a single grep on
+  // the requestId surfaces every log line from both services for one
+  // logical operation.
+  //
+  // If we're outside any context (rare — startup work or unwrapped
+  // background code) we still generate one so the content-engine call
+  // is traceable from the Python side at least.
+  const requestId = getCurrentRequestId() || generateRequestId();
+
   try {
     const res = await fetch(url, {
       ...options,
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...options?.headers },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Request-Id': requestId,
+        ...options?.headers,
+      },
     });
     if (!res.ok) {
       const body = await res.text();
