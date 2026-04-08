@@ -3,11 +3,18 @@
 import { google, calendar_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { withTimeout } from '../utils/timeout';
 import {
   buildGoogleOAuth2Client,
   isGoogleConfigured,
   registerGoogleClientReset,
 } from './google-auth';
+
+// Google API calls are bounded to 15s. Google Calendar / Drive / Gmail
+// normally respond in <2s, but under Google outages they can hang for
+// minutes. 15s is aggressive enough to unblock a stuck cron but generous
+// enough to absorb normal network variance. Audit Month 2 #4.
+const GOOGLE_API_TIMEOUT_MS = 15_000;
 
 let calendarClient: calendar_v3.Calendar | null = null;
 
@@ -44,14 +51,17 @@ export interface CalendarEvent {
 export async function getEvents(startDate: string, endDate: string): Promise<CalendarEvent[]> {
   try {
     const calendar = getCalendar();
-    const response = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: new Date(startDate).toISOString(),
-      timeMax: new Date(endDate).toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-      maxResults: 50,
-    });
+    const response = await withTimeout(
+      calendar.events.list({
+        calendarId: 'primary',
+        timeMin: new Date(startDate).toISOString(),
+        timeMax: new Date(endDate).toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 50,
+      }),
+      GOOGLE_API_TIMEOUT_MS,
+    );
 
     return (response.data.items || []).map((event) => ({
       id: event.id || '',
@@ -76,15 +86,18 @@ export async function createEvent(data: {
 }): Promise<CalendarEvent> {
   try {
     const calendar = getCalendar();
-    const response = await calendar.events.insert({
-      calendarId: 'primary',
-      requestBody: {
-        summary: data.title,
-        start: { dateTime: data.start, timeZone: config.app.timezone },
-        end: { dateTime: data.end, timeZone: config.app.timezone },
-        description: data.description,
-      },
-    });
+    const response = await withTimeout(
+      calendar.events.insert({
+        calendarId: 'primary',
+        requestBody: {
+          summary: data.title,
+          start: { dateTime: data.start, timeZone: config.app.timezone },
+          end: { dateTime: data.end, timeZone: config.app.timezone },
+          description: data.description,
+        },
+      }),
+      GOOGLE_API_TIMEOUT_MS,
+    );
 
     return {
       id: response.data.id || '',
@@ -114,11 +127,14 @@ export async function updateEvent(data: {
     if (data.new_start) requestBody.start = { dateTime: data.new_start, timeZone: config.app.timezone };
     if (data.new_end) requestBody.end = { dateTime: data.new_end, timeZone: config.app.timezone };
 
-    const response = await calendar.events.patch({
-      calendarId: 'primary',
-      eventId: data.event_id,
-      requestBody,
-    });
+    const response = await withTimeout(
+      calendar.events.patch({
+        calendarId: 'primary',
+        eventId: data.event_id,
+        requestBody,
+      }),
+      GOOGLE_API_TIMEOUT_MS,
+    );
 
     return {
       id: response.data.id || data.event_id,
@@ -136,10 +152,13 @@ export async function updateEvent(data: {
 export async function deleteEvent(eventId: string): Promise<void> {
   try {
     const calendar = getCalendar();
-    await calendar.events.delete({
-      calendarId: 'primary',
-      eventId,
-    });
+    await withTimeout(
+      calendar.events.delete({
+        calendarId: 'primary',
+        eventId,
+      }),
+      GOOGLE_API_TIMEOUT_MS,
+    );
   } catch (err) {
     logger.error({ err }, 'Failed to delete calendar event');
     throw err;

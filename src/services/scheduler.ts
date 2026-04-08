@@ -339,17 +339,46 @@ export function startScheduler(bot: Bot): void {
   cron.schedule('*/15 * * * *', wrapJob('task_sync', async () => {
     try {
       const { syncAllProviders } = require('./task-store/sync-engine');
-      for (const userId of getActiveUserIds()) {
-        try {
-          const results = await syncAllProviders(userId);
-          if (results.length > 0) {
-            const upserted = results.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0);
-            if (upserted > 0) {
-              logger.debug({ userId, upserted, providers: results.length }, 'Task sync completed');
+      const users = getActiveUserIds();
+      if (users.length === 0) return 'skipped';
+
+      // Parallelize per-user sync with a concurrency bound. The previous
+      // sequential loop (for...of + await) was O(N × per-user-latency) —
+      // at 100 users × ~5s/sync × 96 runs/day = 13 hours/day of bot time
+      // just on task_sync. Promise.allSettled with a 5-wide semaphore
+      // collapses that to O(N/5 × per-user-latency) while avoiding the
+      // "all 100 users hammer Todoist/Notion simultaneously" failure mode
+      // that pure Promise.all would produce. Each user's failure is
+      // isolated by the inner try/catch — allSettled confirms none of
+      // them throw out of the settled result. Audit Month 2 #2.
+      const CONCURRENCY = 5;
+      let upsertedTotal = 0;
+      for (let i = 0; i < users.length; i += CONCURRENCY) {
+        const batch = users.slice(i, i + CONCURRENCY);
+        const settled = await Promise.allSettled(
+          batch.map(async (userId) => {
+            try {
+              const results = await syncAllProviders(userId);
+              const upserted = results.reduce((s: number, r: any) => s + (r.tasksUpserted || 0), 0);
+              return { userId, upserted, providers: results.length };
+            } catch (err) {
+              logger.warn({ err, userId }, 'Task sync failed for user');
+              return { userId, upserted: 0, providers: 0 };
+            }
+          }),
+        );
+        for (const s of settled) {
+          if (s.status === 'fulfilled') {
+            upsertedTotal += s.value.upserted;
+            if (s.value.upserted > 0) {
+              logger.debug(s.value, 'Task sync completed');
             }
           }
-        } catch (err) {
-          logger.warn({ err, userId }, 'Task sync failed for user');
+          // Rejected results are impossible because the inner try/catch
+          // converts all throws to { upserted: 0 } — but log defensively.
+          else {
+            logger.warn({ reason: s.reason }, 'Task sync batch rejection');
+          }
         }
       }
     } catch (err) {

@@ -114,8 +114,18 @@ export function setAlertCallback(fn: AlertCallback): void {
 }
 
 // ── Rate Limiter (suppress duplicate alerts within 60s) ──────────
+//
+// LRU-bounded at 1000 unique alert keys. Without the bound, every unique
+// error source+message combination would add a permanent entry here — and
+// at multi-user scale with varied errors, that's unbounded memory growth.
+// 1000 keys is plenty for a 60-second cooldown window because even at
+// 100 errors/second the window rotates faster than the LRU eviction
+// (~1000 unique keys in 60s would require 16 unique errors/sec, which
+// is itself an alert-worthy condition). Audit Month 2 #3.
 
-const _alertCooldowns = new Map<string, number>();
+import { LRUMap } from '../utils/lru-map';
+
+const _alertCooldowns = new LRUMap<string, number>(1000);
 const ALERT_COOLDOWN_MS = 60_000;
 
 function shouldAlert(key: string): boolean {

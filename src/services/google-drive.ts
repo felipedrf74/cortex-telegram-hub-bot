@@ -21,7 +21,14 @@ import fs from 'fs';
 import { google, drive_v3 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { withTimeout } from '../utils/timeout';
 import { buildGoogleOAuth2Client, registerGoogleClientReset } from './google-auth';
+
+// Drive operations are bounded to 30s — higher than Calendar because
+// file uploads (backups, DOCX) can legitimately take longer than metadata
+// queries. Folder lookups and list operations complete in <2s normally.
+// Audit Month 2 #4.
+const DRIVE_API_TIMEOUT_MS = 30_000;
 
 const ROOT_FOLDER_NAME = 'Nexus Hub IDEAS';
 const SUBFOLDERS = ['RESEARCH', 'IDEAS', 'SCRIPTS', 'VISUALS', 'REPORTS'] as const;
@@ -74,7 +81,10 @@ async function getOrCreateFolder(name: string, parentId?: string): Promise<strin
     ? `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`
     : `name='${name}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false`;
 
-  const res = await drive.files.list({ q: query, fields: 'files(id, name)', spaces: 'drive' });
+  const res = await withTimeout(
+    drive.files.list({ q: query, fields: 'files(id, name)', spaces: 'drive' }),
+    DRIVE_API_TIMEOUT_MS,
+  );
 
   if (res.data.files && res.data.files.length > 0) {
     const id = res.data.files[0].id!;
@@ -83,14 +93,17 @@ async function getOrCreateFolder(name: string, parentId?: string): Promise<strin
   }
 
   // Create folder
-  const createRes = await drive.files.create({
-    requestBody: {
-      name,
-      mimeType: 'application/vnd.google-apps.folder',
-      parents: parentId ? [parentId] : undefined,
-    },
-    fields: 'id',
-  });
+  const createRes = await withTimeout(
+    drive.files.create({
+      requestBody: {
+        name,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: parentId ? [parentId] : undefined,
+      },
+      fields: 'id',
+    }),
+    DRIVE_API_TIMEOUT_MS,
+  );
 
   const id = createRes.data.id!;
   folderIdCache.set(cacheKey, id);
@@ -163,18 +176,22 @@ export async function uploadToDrive(
     const rootId = await getRootFolderId();
     const folderId = await getOrCreateFolder(subfolder, rootId);
 
-    // Upload file
-    const res = await drive.files.create({
-      requestBody: {
-        name: filename,
-        parents: [folderId],
-      },
-      media: {
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        body: fs.createReadStream(localPath),
-      },
-      fields: 'id, webViewLink',
-    });
+    // Upload file — uses a longer timeout because file uploads stream
+    // and can legitimately take a while on large DOCX files.
+    const res = await withTimeout(
+      drive.files.create({
+        requestBody: {
+          name: filename,
+          parents: [folderId],
+        },
+        media: {
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          body: fs.createReadStream(localPath),
+        },
+        fields: 'id, webViewLink',
+      }),
+      DRIVE_API_TIMEOUT_MS,
+    );
 
     const fileId = res.data.id!;
     const webLink = res.data.webViewLink || `https://drive.google.com/file/d/${fileId}/view`;
@@ -237,18 +254,22 @@ export async function uploadBackupToDrive(
     const drive = getDrive();
     const backupFolderId = await getOrCreateFolder(BACKUP_FOLDER_NAME);
 
-    // Upload the tarball
-    const res = await drive.files.create({
-      requestBody: {
-        name: filename,
-        parents: [backupFolderId],
-      },
-      media: {
-        mimeType: 'application/gzip',
-        body: fs.createReadStream(localPath),
-      },
-      fields: 'id, webViewLink, size',
-    });
+    // Upload the tarball — backups are small (~3MB) but we give them a
+    // generous timeout because network variance + re-auth can add latency.
+    const res = await withTimeout(
+      drive.files.create({
+        requestBody: {
+          name: filename,
+          parents: [backupFolderId],
+        },
+        media: {
+          mimeType: 'application/gzip',
+          body: fs.createReadStream(localPath),
+        },
+        fields: 'id, webViewLink, size',
+      }),
+      DRIVE_API_TIMEOUT_MS,
+    );
 
     const fileId = res.data.id!;
     const size = res.data.size ? Number(res.data.size) : null;
@@ -261,18 +282,24 @@ export async function uploadBackupToDrive(
     // descending, trash anything beyond the `retain` window. Google's trash
     // holds files for 30 days so a bad retention decision is recoverable.
     try {
-      const listRes = await drive.files.list({
-        q: `'${backupFolderId}' in parents and trashed=false`,
-        orderBy: 'createdTime desc',
-        fields: 'files(id, name, createdTime)',
-        pageSize: 100,
-      });
+      const listRes = await withTimeout(
+        drive.files.list({
+          q: `'${backupFolderId}' in parents and trashed=false`,
+          orderBy: 'createdTime desc',
+          fields: 'files(id, name, createdTime)',
+          pageSize: 100,
+        }),
+        DRIVE_API_TIMEOUT_MS,
+      );
       const files = listRes.data.files || [];
       if (files.length > retain) {
         const toTrash = files.slice(retain);
         for (const f of toTrash) {
           try {
-            await drive.files.update({ fileId: f.id!, requestBody: { trashed: true } });
+            await withTimeout(
+              drive.files.update({ fileId: f.id!, requestBody: { trashed: true } }),
+              DRIVE_API_TIMEOUT_MS,
+            );
             logger.info({ filename: f.name, fileId: f.id }, 'Trashed old Drive backup (retention)');
           } catch (err: any) {
             logger.warn({ err: err.message, fileId: f.id }, 'Failed to trash old Drive backup');

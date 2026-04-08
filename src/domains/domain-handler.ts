@@ -12,6 +12,7 @@ import { getDailyContext } from '../services/context-engine';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import type { CoachRecommendation } from '../services/garmin-coach';
+import { LRUMap } from '../utils/lru-map';
 
 // ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
 
@@ -21,7 +22,14 @@ interface LastCoachState {
   timestamp: number;
 }
 
-const lastCoachStates = new Map<number, LastCoachState>();
+// LRU-bounded at 500 users. At 1 user that's ~1 entry; at multi-user scale
+// (up to 500 active) it's naturally bounded and the oldest user's coach
+// state gets evicted when a 501st arrives. Audit Month 2 #3.
+//
+// Size chosen: 500 > any plausible active-user count for a single-server
+// deployment. Each entry is ~a few KB (recommendations array + summary
+// string truncated to 500 chars), so 500 × ~2KB = ~1MB max footprint.
+const lastCoachStates = new LRUMap<number, LastCoachState>(500);
 const COACH_STATE_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Store the latest coach briefing so the triathlon domain can reference it */
@@ -29,7 +37,7 @@ export function setLastCoachState(userId: number, recs: CoachRecommendation[], s
   lastCoachStates.set(userId, { recommendations: recs, briefingSummary: summary, timestamp: Date.now() });
 }
 
-/** Get the last coach state if it's still fresh */
+/** Get the last coach state if it's still fresh (within TTL). */
 export function getLastCoachState(userId: number): LastCoachState | null {
   const state = lastCoachStates.get(userId);
   if (!state || Date.now() - state.timestamp > COACH_STATE_TTL) return null;

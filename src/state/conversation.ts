@@ -28,17 +28,31 @@ export function getConversationHistory(userId: number, domain: DomainName): Doma
 
 export function addToConversation(userId: number, domain: DomainName, role: 'user' | 'assistant', content: string): void {
   const db = getDb();
-  db.prepare(`
-    INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)
-  `).run(userId, domain, role, content);
+  // Atomic INSERT + prune. Wrapping in a transaction guarantees either
+  // both run or neither runs — so a prune failure can't leave the table
+  // above its cap, and an INSERT failure won't accidentally prune the
+  // last row of the previous history. better-sqlite3's `db.transaction`
+  // returns a callable that BEGIN/COMMITs around the inner function and
+  // ROLLBACKs on throw. Audit Month 2 #5.
+  const writeTx = db.transaction((
+    u: number,
+    d: DomainName,
+    r: 'user' | 'assistant',
+    c: string,
+  ) => {
+    db.prepare(`
+      INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, ?, ?)
+    `).run(u, d, r, c);
 
-  // Prune old rows beyond 2× the read limit to keep the table bounded
-  const maxKeep = (HISTORY_LIMITS[domain] ?? 8) * 2;
-  db.prepare(`
-    DELETE FROM conversations WHERE user_id = ? AND domain = ? AND id NOT IN (
-      SELECT id FROM conversations WHERE user_id = ? AND domain = ? ORDER BY created_at DESC LIMIT ?
-    )
-  `).run(userId, domain, userId, domain, maxKeep);
+    // Prune old rows beyond 2× the read limit to keep the table bounded
+    const maxKeep = (HISTORY_LIMITS[d] ?? 8) * 2;
+    db.prepare(`
+      DELETE FROM conversations WHERE user_id = ? AND domain = ? AND id NOT IN (
+        SELECT id FROM conversations WHERE user_id = ? AND domain = ? ORDER BY created_at DESC LIMIT ?
+      )
+    `).run(u, d, u, d, maxKeep);
+  });
+  writeTx(userId, domain, role, content);
 }
 
 /**

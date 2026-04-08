@@ -3,11 +3,16 @@
 import { google, gmail_v1 } from 'googleapis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { withTimeout } from '../utils/timeout';
 import {
   buildGoogleOAuth2Client,
   isGoogleConfigured,
   registerGoogleClientReset,
 } from './google-auth';
+
+// Gmail API calls are bounded to 15s — same rationale as google-calendar.ts.
+// Gmail list + get operations normally respond in <2s. Audit Month 2 #4.
+const GMAIL_API_TIMEOUT_MS = 15_000;
 
 let gmailClient: gmail_v1.Gmail | null = null;
 
@@ -41,22 +46,28 @@ export interface EmailMessage {
 export async function searchEmails(query: string, maxResults = 10): Promise<EmailMessage[]> {
   try {
     const gmail = getGmail();
-    const response = await gmail.users.messages.list({
-      userId: 'me',
-      q: query,
-      maxResults,
-    });
+    const response = await withTimeout(
+      gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults,
+      }),
+      GMAIL_API_TIMEOUT_MS,
+    );
 
     if (!response.data.messages) return [];
 
     const emails: EmailMessage[] = [];
     for (const msg of response.data.messages.slice(0, maxResults)) {
-      const detail = await gmail.users.messages.get({
-        userId: 'me',
-        id: msg.id!,
-        format: 'metadata',
-        metadataHeaders: ['From', 'To', 'Subject', 'Date'],
-      });
+      const detail = await withTimeout(
+        gmail.users.messages.get({
+          userId: 'me',
+          id: msg.id!,
+          format: 'metadata',
+          metadataHeaders: ['From', 'To', 'Subject', 'Date'],
+        }),
+        GMAIL_API_TIMEOUT_MS,
+      );
 
       const headers = detail.data.payload?.headers || [];
       const getHeader = (name: string) => headers.find((h) => h.name === name)?.value || '';
@@ -82,11 +93,14 @@ export async function searchEmails(query: string, maxResults = 10): Promise<Emai
 export async function readEmail(messageId: string): Promise<EmailMessage & { body: string }> {
   try {
     const gmail = getGmail();
-    const detail = await gmail.users.messages.get({
-      userId: 'me',
-      id: messageId,
-      format: 'full',
-    });
+    const detail = await withTimeout(
+      gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'full',
+      }),
+      GMAIL_API_TIMEOUT_MS,
+    );
 
     const headers = detail.data.payload?.headers || [];
     const getHeader = (name: string) => headers.find((h) => h.name === name)?.value || '';
