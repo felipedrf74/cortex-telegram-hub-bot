@@ -3,9 +3,31 @@
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
+// STAGING flag set by ecosystem.staging.config.js. When true, certain
+// "production-only" required env vars (TELEGRAM_BOT_TOKEN, etc.) become
+// optional so the staging install can boot without a second bot. The bot
+// startup code in src/index.ts checks isStaging() and skips bot.start()
+// when there's no token. Quarter audit item: staging environment.
+const IS_STAGING = process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
+
 function required(key: string): string {
   const value = process.env[key];
   if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+}
+
+/**
+ * Like required() but returns an empty string instead of throwing when
+ * STAGING=true. Use this for env vars that are critical in production but
+ * can be safely missing in a staging install (e.g. a second Telegram bot
+ * token that the operator doesn't want to provision yet).
+ */
+function requiredInProd(key: string): string {
+  const value = process.env[key];
+  if (!value) {
+    if (IS_STAGING) return '';
     throw new Error(`Missing required environment variable: ${key}`);
   }
   return value;
@@ -17,12 +39,13 @@ function optional(key: string, fallback: string): string {
 
 export const config = {
   telegram: {
-    botToken: required('TELEGRAM_BOT_TOKEN'),
-    allowedUserIds: required('TELEGRAM_ALLOWED_USER_IDS')
+    botToken: requiredInProd('TELEGRAM_BOT_TOKEN'),
+    allowedUserIds: requiredInProd('TELEGRAM_ALLOWED_USER_IDS')
       .split(',')
       .map((id) => parseInt(id.trim(), 10))
       .filter((id) => !isNaN(id)),
   },
+  isStaging: IS_STAGING,
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
     model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',

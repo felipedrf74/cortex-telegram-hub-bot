@@ -107,6 +107,20 @@ async function main(): Promise<void> {
   // causing EADDRINUSE on the next deploy. See audit P0-4.
   setShutdownCallback(() => shutdown('error-handler'));
 
+  // Staging install without a bot token: skip bot.start() entirely.
+  // Everything ELSE (the portal, content-engine integration, scheduled
+  // jobs, the iOS API, AI calls) runs normally — only Telegram message
+  // ingestion is disabled. This lets staging test 95% of the system
+  // without the operator having to provision a second @BotFather bot.
+  // Quarter audit item: staging environment.
+  if (!config.telegram.botToken && config.isStaging) {
+    logger.warn(
+      'STAGING mode without TELEGRAM_BOT_TOKEN — skipping Telegram bot.start(). ' +
+      'Portal + content-engine + crons will run normally.',
+    );
+    return; // Returning here keeps the process alive via portalServer
+  }
+
   // Start bot with retry logic for 409 Conflict (multiple polling instances).
   // Uses exponential backoff: 45s → 90s → 180s to give Telegram time to release the lock.
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

@@ -60,7 +60,14 @@ const DOMAIN_HANDLERS: Record<string, (message: string, userId?: number) => Prom
 // ─── Bot Factory ────────────────────────────────────────────────────
 
 export function createBot(): Bot {
-  const bot = new Bot(config.telegram.botToken);
+  // Staging install with no Telegram bot token: create a Bot with a
+  // placeholder so the rest of the system (setBotRef, scheduler, portal,
+  // ownerAlert wiring) still works. We just won't call bot.start() in
+  // index.ts when in this mode, so no Telegram API calls are made.
+  // This lets staging exercise everything EXCEPT message ingestion
+  // without requiring the operator to create a second @BotFather bot.
+  const token = config.telegram.botToken || 'staging-no-bot-token-placeholder';
+  const bot = new Bot(token);
 
   // ── Tracing Middleware (Quarter: distributed tracing) ──
   // FIRST in the chain — every other middleware (auth, rate limit,
