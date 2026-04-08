@@ -73,9 +73,11 @@ import {
   getSkillStatus,
   getAllSkillStatuses,
   invalidateToolCache,
+  checkSubSkillToggle,
 } from '../../src/skills/skill-manager';
 import * as registry from '../../src/skills/registry';
-import { DEFAULT_SKILLS } from '../../src/skills/skill-config';
+import { isSubmoduleEnabled } from '../../src/skills/registry';
+import { DEFAULT_SKILLS, registerSkill } from '../../src/skills/skill-config';
 
 // ── Fake tools for testing ──────────────────────────────────────
 
@@ -328,6 +330,139 @@ describe('SkillManager — toggle API', () => {
 
   it('disableSkill returns true for valid skill', () => {
     expect(disableSkill('secretary')).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// DEPENDENCY ENFORCEMENT (Phase 0.F cherry-pick from agent/flex 51c1db6)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Pins the behavior where a sub-skill with `dependencies: [...]` CANNOT
+// be enabled until all dependencies are enabled, AND disabling a
+// dependency cascade-disables its dependents. These tests use a
+// dynamically registered skill so they don't rely on any particular
+// default skill declaring dependencies.
+
+describe('SkillManager — dependency enforcement', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+    invalidateToolCache();
+    seedDefaultSkills();
+  });
+  afterEach(() => { testDb.close(); });
+
+  it('checkSubSkillToggle returns ok when sub-skill has no dependencies', () => {
+    // secretary:email has no deps in the default config
+    const result = checkSubSkillToggle('secretary', 'email');
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('enableSubSkill blocks when a dependency is disabled (simulated skill)', () => {
+    // Simulate a dep by registering a fake skill in the in-memory
+    // config registry AND the DB-backed runtime registry. We do this
+    // because seedDefaultSkills only seeds DEFAULT_SKILLS, so a new
+    // runtime-registered skill needs an explicit install() call to
+    // get its row in installed_skills + skill_submodules.
+    registerSkill({
+      name: 'fakeDepSkill',
+      description: 'fake skill (test dep)',
+      version: '1.0.0',
+      routing: {
+        patternRoutes: [],
+        keywordRoute: /^$/,
+        classificationHint: { label: 'fakeDepSkill', enabled: true },
+      },
+      subSkills: [
+        {
+          name: 'dep-parent',
+          description: 'dep parent',
+          tools: [],
+          enabledByDefault: true,
+        },
+        {
+          name: 'dep-child',
+          description: 'dep child',
+          tools: [],
+          enabledByDefault: true,
+          dependencies: ['dep-parent'],
+        },
+      ],
+    });
+    registry.install({
+      name: 'fakeDepSkill',
+      description: 'fake skill (test dep)',
+      version: '1.0.0',
+      submodules: [
+        { module_name: 'dep-parent' },
+        { module_name: 'dep-child' },
+      ],
+    });
+    registry.enable('fakeDepSkill' as any);
+    registry.enableSubmodule('fakeDepSkill' as any, 'dep-parent');
+    registry.enableSubmodule('fakeDepSkill' as any, 'dep-child');
+
+    // Parent enabled, child enable succeeds
+    expect(enableSubSkill('fakeDepSkill' as any, 'dep-child')).toBe(true);
+
+    // Disable parent — child should cascade-disable
+    expect(disableSubSkill('fakeDepSkill' as any, 'dep-parent')).toBe(true);
+
+    // Now child can't be re-enabled until parent comes back
+    const check = checkSubSkillToggle('fakeDepSkill' as any, 'dep-child');
+    expect(check.ok).toBe(false);
+    expect(check.error).toMatch(/dep-parent/);
+
+    // Explicit enable also fails
+    expect(enableSubSkill('fakeDepSkill' as any, 'dep-child')).toBe(false);
+
+    // Re-enable parent, child can now be enabled again
+    expect(enableSubSkill('fakeDepSkill' as any, 'dep-parent')).toBe(true);
+    expect(enableSubSkill('fakeDepSkill' as any, 'dep-child')).toBe(true);
+  });
+
+  it('disableSubSkill cascade-disables ALL dependents in one call', () => {
+    registerSkill({
+      name: 'fakeCascadeSkill',
+      description: 'cascade test',
+      version: '1.0.0',
+      routing: {
+        patternRoutes: [],
+        keywordRoute: /^$/,
+        classificationHint: { label: 'fakeCascadeSkill', enabled: true },
+      },
+      subSkills: [
+        { name: 'base', description: 'base', tools: [], enabledByDefault: true },
+        { name: 'child-a', description: 'a', tools: [], enabledByDefault: true, dependencies: ['base'] },
+        { name: 'child-b', description: 'b', tools: [], enabledByDefault: true, dependencies: ['base'] },
+      ],
+    });
+    registry.install({
+      name: 'fakeCascadeSkill',
+      description: 'cascade test',
+      version: '1.0.0',
+      submodules: [
+        { module_name: 'base' },
+        { module_name: 'child-a' },
+        { module_name: 'child-b' },
+      ],
+    });
+    registry.enable('fakeCascadeSkill' as any);
+    registry.enableSubmodule('fakeCascadeSkill' as any, 'base');
+    registry.enableSubmodule('fakeCascadeSkill' as any, 'child-a');
+    registry.enableSubmodule('fakeCascadeSkill' as any, 'child-b');
+
+    // All three start enabled
+    expect(isSubmoduleEnabled('fakeCascadeSkill' as any, 'base')).toBe(true);
+    expect(isSubmoduleEnabled('fakeCascadeSkill' as any, 'child-a')).toBe(true);
+    expect(isSubmoduleEnabled('fakeCascadeSkill' as any, 'child-b')).toBe(true);
+
+    // Disable the base — both children should cascade off
+    disableSubSkill('fakeCascadeSkill' as any, 'base');
+    expect(isSubmoduleEnabled('fakeCascadeSkill' as any, 'base')).toBe(false);
+    expect(isSubmoduleEnabled('fakeCascadeSkill' as any, 'child-a')).toBe(false);
+    expect(isSubmoduleEnabled('fakeCascadeSkill' as any, 'child-b')).toBe(false);
   });
 });
 

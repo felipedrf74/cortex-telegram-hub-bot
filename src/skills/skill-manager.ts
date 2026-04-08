@@ -12,7 +12,13 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { DomainName } from '../domains/types';
-import { DEFAULT_SKILLS, getSkillDefinition, getCronJobOwner } from './skill-config';
+import {
+  DEFAULT_SKILLS,
+  getSkillDefinition,
+  getCronJobOwner,
+  getSubSkillDependencies,
+  getSubSkillDependents,
+} from './skill-config';
 import type { SkillDefinition } from './skill-config';
 import * as registry from './registry';
 import { logger } from '../utils/logger';
@@ -166,17 +172,86 @@ function getEnabledToolNames(domain: DomainName): Set<string> {
   return toolNames;
 }
 
-// ── Toggle API (for portal UI) ───────────────────────────────────
+// ── Toggle API (for portal UI + /skill command) ──────────────────
+//
+// enableSubSkill/disableSubSkill return plain `boolean` to preserve the
+// existing caller contract. To know WHY an enable failed (dependency
+// not met vs sub-skill not found), use checkSubSkillToggle() below.
+//
+// Dependency enforcement: a sub-skill with `dependencies: ['foo']`
+// cannot be enabled until `foo` is enabled, and disabling `foo`
+// cascade-disables every sub-skill that depended on it. This prevents
+// half-configured states like "coach-briefing enabled but garmin-sync
+// disabled" which would just error on every call.
 
-/** Enable a sub-skill for a domain. Invalidates tool cache. */
+/** Structured toggle result with optional reason on failure. */
+export interface ToggleResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Attempt to enable a sub-skill with dependency validation.
+ * Returns `{ok: true}` on success, `{ok: false, error}` if a dependency
+ * is not enabled or the sub-skill doesn't exist.
+ */
+export function checkSubSkillToggle(
+  domain: DomainName,
+  subSkillName: string,
+): ToggleResult {
+  const deps = getSubSkillDependencies(domain, subSkillName);
+  if (deps.length > 0) {
+    const enabled = new Set(registry.getEnabledSubmodules(domain));
+    const unmet = deps.filter(d => !enabled.has(d));
+    if (unmet.length > 0) {
+      return {
+        ok: false,
+        error: `Requires ${unmet.join(', ')} to be enabled first`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Enable a sub-skill for a domain. Validates dependencies first — if any
+ * required sub-skill is not enabled, returns false WITHOUT enabling.
+ * Invalidates the tool cache on success.
+ *
+ * To get the failure reason, call checkSubSkillToggle() first.
+ */
 export function enableSubSkill(domain: DomainName, subSkillName: string): boolean {
+  const check = checkSubSkillToggle(domain, subSkillName);
+  if (!check.ok) {
+    logger.warn(
+      { domain, subSkillName, error: check.error },
+      'Sub-skill enable blocked by dependency check',
+    );
+    return false;
+  }
   const result = registry.enableSubmodule(domain, subSkillName);
   if (result) invalidateToolCache();
   return result;
 }
 
-/** Disable a sub-skill for a domain. Invalidates tool cache. */
+/**
+ * Disable a sub-skill for a domain. CASCADE: any sub-skill that declares
+ * this one as a dependency will be auto-disabled too, logged for visibility.
+ * Invalidates the tool cache on success.
+ */
 export function disableSubSkill(domain: DomainName, subSkillName: string): boolean {
+  // Cascade-disable dependents first so we don't end up with orphaned
+  // enabled-but-broken sub-skills.
+  const dependents = getSubSkillDependents(domain, subSkillName);
+  for (const dep of dependents) {
+    if (registry.isSubmoduleEnabled(domain, dep)) {
+      registry.disableSubmodule(domain, dep);
+      logger.info(
+        { domain, subSkill: dep, reason: `${subSkillName} disabled` },
+        'Cascade-disabled dependent sub-skill',
+      );
+    }
+  }
   const result = registry.disableSubmodule(domain, subSkillName);
   if (result) invalidateToolCache();
   return result;

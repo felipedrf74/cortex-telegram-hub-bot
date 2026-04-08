@@ -2023,7 +2023,7 @@ export function createPortalServer(bot: Bot): http.Server {
         res.json({ ok: true, sprint: false, message: 'Sprint mode disabled' });
       } else {
         writeSignal({
-          source_agent: 'mission-control',
+          source_agent: 'portal',
           signal_type: 'content_sprint_mode',
           payload: { enabled: true, activated_at: new Date().toISOString() },
           priority: 'urgent',

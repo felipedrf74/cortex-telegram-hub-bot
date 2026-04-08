@@ -20,7 +20,7 @@ A multi-domain AI-powered Telegram personal assistant that unifies task manageme
 9. [Message Routing & AI Classification](#9-message-routing--ai-classification)
 10. [Scheduled Jobs](#10-scheduled-jobs)
 11. [Integrations](#11-integrations)
-12. [Mission Control Portal](#12-mission-control-portal)
+12. [Admin Portal](#12-admin-portal)
 13. [Google Drive Integration](#13-google-drive-integration)
 14. [Database Schema](#14-database-schema)
 15. [Deployment](#15-deployment)
@@ -883,7 +883,7 @@ API usage is tracked in the `api_usage` SQLite table with per-call cost calculat
 
 ---
 
-## 12. Mission Control Portal
+## 12. Admin Portal
 
 **URL:** `http://localhost:8200` (configurable via `PORTAL_PORT`)
 

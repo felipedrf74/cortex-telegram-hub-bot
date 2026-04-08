@@ -14,6 +14,10 @@
 
 import { logger } from '../utils/logger';
 import { pushEvent } from '../portal/telemetry';
+import {
+  captureException as sentryCaptureException,
+  isEnabled as isSentryEnabled,
+} from './error-tracker';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -179,6 +183,33 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
       const icon = record.level === 'fatal' ? '🔴' : '🟠';
       const msg = `${icon} <b>${escapeHtml(record.level.toUpperCase())}</b> [${escapeHtml(record.source)}]\n\n<code>${escapeHtml(record.message.slice(0, 300))}</code>`;
       _alertFn(msg).catch(() => {});
+    }
+  }
+
+  // Forward to Sentry (if SENTRY_DSN is configured). No-ops silently
+  // when Sentry isn't initialized, so local/staging without a DSN just
+  // keeps the SQLite + Telegram alerting behavior and nothing else.
+  //
+  // We map ErrorLevel → Sentry's SeverityLevel: 'fatal' stays 'fatal',
+  // 'warning' stays 'warning', everything else is 'error'. The record's
+  // context becomes Sentry `extra` data, and source/level become tags
+  // so you can filter in the Sentry UI.
+  if (isSentryEnabled()) {
+    try {
+      const sentryLevel: 'fatal' | 'warning' | 'error' =
+        record.level === 'fatal' ? 'fatal' :
+        record.level === 'warning' ? 'warning' : 'error';
+      const errLike = record.stack
+        ? Object.assign(new Error(record.message), { stack: record.stack })
+        : new Error(record.message);
+      sentryCaptureException(errLike, {
+        level: sentryLevel,
+        source: record.source,
+        extra: record.context,
+        tags: { source: record.source, level: record.level },
+      });
+    } catch {
+      // Never let Sentry forwarding break the local capture path.
     }
   }
 }

@@ -90,18 +90,30 @@ export const config = {
   },
   // ── Provider Fallback Routing ─────────────────────────────────────
   // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'
+  //
+  // Defaults are now GEMINI-first for every task type (April 2026 cost
+  // migration). Anthropic is retained as the reliability fallback because
+  // Sonnet 4.6's tool-use chain is still more deterministic on edge cases.
+  // Previous defaults had chat+toolUse primary=anthropic, which was a
+  // correct choice at the time but stale by the time the Gemini migration
+  // shipped — the env vars in prod .env (AI_*_PRIMARY=gemini) were the
+  // only thing keeping the runtime on Gemini. If an operator removes
+  // those env vars on a fresh deploy (staging first-run, for instance),
+  // the old defaults would silently revert cost back to Anthropic. This
+  // change makes the Gemini-first behavior the code default too, so the
+  // env vars are an OVERRIDE not a LIFELINE.
   providerRouting: {
     classify: {
       primary: process.env.AI_CLASSIFY_PRIMARY || 'gemini',
       fallback: process.env.AI_CLASSIFY_FALLBACK || 'anthropic',
     },
     chat: {
-      primary: process.env.AI_CHAT_PRIMARY || 'anthropic',
-      fallback: process.env.AI_CHAT_FALLBACK || 'gemini',
+      primary: process.env.AI_CHAT_PRIMARY || 'gemini',
+      fallback: process.env.AI_CHAT_FALLBACK || 'anthropic',
     },
     toolUse: {
-      primary: process.env.AI_TOOL_USE_PRIMARY || 'anthropic',
-      fallback: process.env.AI_TOOL_USE_FALLBACK || 'gemini',
+      primary: process.env.AI_TOOL_USE_PRIMARY || 'gemini',
+      fallback: process.env.AI_TOOL_USE_FALLBACK || 'anthropic',
     },
     circuitBreaker: {
       failureThreshold: parseInt(process.env.AI_CB_FAILURE_THRESHOLD || '3', 10),
@@ -155,6 +167,18 @@ export const config = {
     uberHeadless: (process.env.UBER_HEADLESS || 'true') === 'true',
     uberRidesEnabled: (process.env.UBER_RIDES_ENABLED || 'true') === 'true',
     uberEatsEnabled: (process.env.UBER_EATS_ENABLED || 'true') === 'true',
+  },
+  // ── Sentry Error Tracking ────────────────────────────────────────────
+  // Cloud-based error monitoring alongside our existing SQLite + Telegram
+  // alerting. Free tier gives 5K errors/month which is plenty. Set SENTRY_DSN
+  // in prod .env to enable; leave empty for local/staging to run without it.
+  // tracesSampleRate defaults to 0 (errors only, no APM traces) to preserve
+  // the free-tier quota — flip to 0.1 if you want 10% of requests traced.
+  sentry: {
+    dsn: process.env.SENTRY_DSN || '',
+    environment: optional('SENTRY_ENVIRONMENT', 'development'),
+    release: process.env.SENTRY_RELEASE || '',
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0'),
   },
   // ── Todoist (TASK-16b — task provider with webhooks) ───────────────
   todoist: {

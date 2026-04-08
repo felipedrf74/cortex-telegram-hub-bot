@@ -18,6 +18,7 @@ import {
   setAlertCallback,
   setShutdownCallback,
 } from './services/error-monitor';
+import { init as initSentry, flush as flushSentry } from './services/error-tracker';
 import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
 
@@ -26,6 +27,16 @@ const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release
 
 async function main(): Promise<void> {
   logger.info('Starting Telegram Hub Bot...');
+
+  // Initialize Sentry FIRST — must be before any other init so it can
+  // capture startup errors (DB open failure, missing env vars, etc.).
+  // No-ops gracefully if SENTRY_DSN is empty, so local/staging work.
+  initSentry({
+    dsn: config.sentry.dsn,
+    environment: config.sentry.environment,
+    release: config.sentry.release || undefined,
+    tracesSampleRate: config.sentry.tracesSampleRate,
+  });
 
   // Initialize database
   initDatabase();
@@ -94,6 +105,10 @@ async function main(): Promise<void> {
     if (portalServer) {
       await new Promise<void>((resolve) => portalServer!.close(() => resolve()));
     }
+    // Drain Sentry's event queue before the process exits so in-flight
+    // error reports aren't lost. 2s timeout — beyond that we move on.
+    // No-ops if Sentry was never initialized (empty DSN).
+    try { await flushSentry(2000); } catch { /* best effort */ }
     closeDatabase();
     process.exit(0);
   };
