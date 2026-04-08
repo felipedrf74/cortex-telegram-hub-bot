@@ -570,6 +570,20 @@ async function finishLogin(httpClient: any, ticket: string): Promise<void> {
 let _client: InstanceType<typeof GarminConnect> | null = null;
 let _authenticated = false;
 
+/**
+ * Serialized client-bootstrap promise. Prevents the MFA email flood caused
+ * by multiple parallel callers (e.g. iOS dashboard fanout calling
+ * getDailySummary + getReadiness + getSleep + getActivitiesByDate at once)
+ * each racing into loginWithMfa() and each submitting a fresh credential
+ * POST to Garmin SSO, which generates a separate MFA email per request.
+ *
+ * With this guard, the first caller starts the login and every concurrent
+ * caller awaits the same promise. Only ONE loginWithMfa() runs even under
+ * a 10-wide parallel fanout. When the bootstrap resolves, the promise is
+ * cleared so future stale-token recovery can re-trigger it if needed.
+ */
+let _clientBootstrapPromise: Promise<InstanceType<typeof GarminConnect>> | null = null;
+
 export function isGarminConfigured(): boolean {
   return !!(config.garmin.email && config.garmin.password);
 }
@@ -577,44 +591,69 @@ export function isGarminConfigured(): boolean {
 /**
  * Get an authenticated Garmin Connect client.
  * First tries to load persisted tokens; if expired or missing, does a fresh login.
+ *
+ * Concurrency: all callers awaiting a cold client share the same bootstrap
+ * promise. See _clientBootstrapPromise above for why.
  */
 async function getClient(): Promise<InstanceType<typeof GarminConnect>> {
+  // Fast path — already authenticated
   if (_client && _authenticated) return _client;
 
-  _client = new GarminConnect({
-    username: config.garmin.email,
-    password: config.garmin.password,
-  });
-
-  const tokenDir = config.garmin.tokenPath;
-
-  // Try loading persisted tokens first
-  try {
-    if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
-      _client.loadTokenByFile(tokenDir);
-      // Validate by making a lightweight call
-      await _client.getUserSettings();
-      _authenticated = true;
-      logger.info('Garmin: loaded saved tokens');
-      return _client;
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Garmin: saved tokens expired or invalid, re-authenticating');
+  // Serialized path — if a bootstrap is already in flight, wait for it
+  if (_clientBootstrapPromise) {
+    logger.debug('Garmin: bootstrap in progress, awaiting shared promise');
+    return _clientBootstrapPromise;
   }
 
-  // Fresh login — go directly to our MFA-aware flow (avoids the library's
-  // own login() which makes an unprotected SSO request that can trigger Cloudflare)
-  if (isRateLimited()) throw new Error('Garmin SSO rate-limited — skipping login');
+  // Slow path — kick off a single bootstrap that everyone else awaits
+  _clientBootstrapPromise = (async () => {
+    const client = new GarminConnect({
+      username: config.garmin.email,
+      password: config.garmin.password,
+    });
+
+    const tokenDir = config.garmin.tokenPath;
+
+    // Try loading persisted tokens first
+    try {
+      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+        client.loadTokenByFile(tokenDir);
+        // Validate by making a lightweight call
+        await client.getUserSettings();
+        _client = client;
+        _authenticated = true;
+        logger.info('Garmin: loaded saved tokens');
+        return client;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Garmin: saved tokens expired or invalid, re-authenticating');
+    }
+
+    // Fresh login — go directly to our MFA-aware flow (avoids the library's
+    // own login() which makes an unprotected SSO request that can trigger Cloudflare)
+    if (isRateLimited()) throw new Error('Garmin SSO rate-limited — skipping login');
+    try {
+      await loginWithMfa(client);
+      if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+      client.exportTokenToFile(tokenDir);
+      _client = client;
+      _authenticated = true;
+      logger.info('Garmin: login successful (MFA-aware flow), tokens saved');
+      return client;
+    } catch (err) {
+      _authenticated = false;
+      throw new Error(`Garmin login failed: ${(err as Error).message}`);
+    }
+  })();
+
   try {
-    await loginWithMfa(_client);
-    if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
-    _client.exportTokenToFile(tokenDir);
-    _authenticated = true;
-    logger.info('Garmin: login successful (MFA-aware flow), tokens saved');
-    return _client;
-  } catch (err) {
-    _authenticated = false;
-    throw new Error(`Garmin login failed: ${(err as Error).message}`);
+    return await _clientBootstrapPromise;
+  } finally {
+    // Clear the promise slot so a future stale-token recovery can start
+    // a fresh bootstrap. This runs after the awaiting caller sees the
+    // resolved value, so concurrent waiters that arrived earlier all
+    // see the same resolved client.
+    _clientBootstrapPromise = null;
   }
 }
 
@@ -687,7 +726,21 @@ async function attemptReLogin(): Promise<boolean> {
 
 /**
  * Keep-alive: refresh tokens proactively. Exported for use by the scheduler.
- * Strategy: try OAuth2 refresh first, then full re-login as fallback.
+ *
+ * Strategy: OAuth2 refresh ONLY. Never attempt a full re-login from here.
+ *
+ * Rationale: keep-alive runs on a fixed 30-minute cron. If the tokens are
+ * beyond OAuth2 refresh (refresh token revoked, 400 invalid_grant, etc.),
+ * triggering a full loginWithMfa() here would send a Garmin MFA email
+ * EVERY 30 minutes until someone enters the code via Telegram — and in
+ * practice the scheduler doesn't have an interactive bot context so the
+ * MFA code would never arrive, leading to an infinite email flood.
+ *
+ * The correct recovery path for dead sessions is lazy: the next
+ * user-initiated Garmin call (via safeGet → serializedAuthRecovery) will
+ * detect the 403 and run ONE recovery attempt with MFA notification
+ * wired to the interactive user. Until then, the bot runs without live
+ * Garmin data — which is better than spamming Felipe's inbox.
  */
 export async function keepAlive(): Promise<boolean> {
   if (!isGarminConfigured()) return false;
@@ -700,23 +753,25 @@ export async function keepAlive(): Promise<boolean> {
     return false;
   }
 
-  // Step 1: Try proactive OAuth2 refresh (no SSO login needed)
+  // Step 1: Try proactive OAuth2 refresh (no SSO login needed, no email)
   if (await refreshOAuth2()) {
     // Validate with a lightweight call
     try {
       const client = await getClient();
       await client.getUserSettings();
       return true;
-    } catch {
-      logger.warn('Garmin: OAuth2 refresh succeeded but validation failed, trying re-login');
+    } catch (err) {
+      logger.warn({ err }, 'Garmin: OAuth2 refresh succeeded but validation failed — deferring to lazy recovery');
+      return false;
     }
   }
 
-  // Check rate limit again (refreshOAuth2 → getClient may have set it)
-  if (isRateLimited() || isMfaPending()) return false;
-
-  // Step 2: Try full re-login (only once — may trigger MFA)
-  return attemptReLogin();
+  // OAuth2 refresh failed. DO NOT trigger loginWithMfa here — that would
+  // send a Garmin MFA email every 30 minutes. Instead, mark the keepalive
+  // as failed and let the next user-initiated call run recovery with a
+  // real MFA notification path.
+  logger.warn('Garmin: OAuth2 refresh failed — keepalive skipping re-login to avoid MFA email flood. Will recover lazily on next user call.');
+  return false;
 }
 
 /**
@@ -756,8 +811,40 @@ function extractErrorStatus(err: unknown): number | null {
 let _authRecoveryPromise: Promise<boolean> | null = null;
 
 /**
+ * Cooldown for full-login recovery attempts. Set whenever Step 3
+ * (attemptReLogin) runs so we don't re-trigger a full MFA flow on every
+ * single 403 for the next RECOVERY_COOLDOWN_MS. This is the second layer
+ * of defense against MFA email floods from iOS dashboard fanouts.
+ *
+ * If a user really needs Garmin to recover during this window, they can
+ * explicitly run /garmin-reauth (or the in-app re-connect flow) which
+ * bypasses this cooldown. Passive API calls just fail gracefully and
+ * return null data until the cooldown expires or the OAuth2 token
+ * refreshes cleanly.
+ */
+const RECOVERY_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
+let _lastFullLoginAttempt = 0;
+
+function isFullLoginOnCooldown(): boolean {
+  return Date.now() - _lastFullLoginAttempt < RECOVERY_COOLDOWN_MS;
+}
+
+/**
  * Ensures only ONE auth recovery runs at a time.
  * All concurrent 403 callers await the same promise.
+ *
+ * Steps in order of invasiveness:
+ *   1. OAuth2 refresh (silent, no email)
+ *   2. Token reload from disk (silent, no email)
+ *   3. Full re-login via loginWithMfa (SENDS MFA EMAIL — rate-limited
+ *      to once per 15 min via _lastFullLoginAttempt cooldown)
+ *
+ * The cooldown exists because iOS dashboard opens trigger 4 parallel
+ * Garmin calls — and even though this promise is serialized within a
+ * single fanout, a user reopening the app a minute later would trigger
+ * a fresh fanout that bypasses the serialization and could send another
+ * MFA email. The cooldown bounds the blast radius to ~4 emails/hour
+ * worst case instead of ~40 emails/hour.
  */
 async function serializedAuthRecovery(): Promise<boolean> {
   if (_authRecoveryPromise) {
@@ -793,7 +880,16 @@ async function serializedAuthRecovery(): Promise<boolean> {
         }
       }
 
-      // Step 3: Full re-login (may trigger MFA — only once)
+      // Step 3: Full re-login (may trigger MFA — only once per cooldown window)
+      if (isFullLoginOnCooldown()) {
+        const secondsLeft = Math.ceil((RECOVERY_COOLDOWN_MS - (Date.now() - _lastFullLoginAttempt)) / 1000);
+        logger.warn(
+          { secondsLeft },
+          'Garmin: full re-login on cooldown (MFA email throttling), failing recovery without new login',
+        );
+        return false;
+      }
+      _lastFullLoginAttempt = Date.now();
       return attemptReLogin();
     } finally {
       _authRecoveryPromise = null;

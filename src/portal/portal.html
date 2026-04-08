@@ -1770,7 +1770,22 @@ table.legacy th {
       <div class="section-header">
         <div>
           <h1 class="section-title">Skills</h1>
-          <div class="section-subtitle">Skill packages and sub-skill toggles (global)</div>
+          <div class="section-subtitle" id="skills-subtitle">Skill packages and sub-skill toggles</div>
+        </div>
+      </div>
+
+      <!-- User scope selector — defaults to Global. When a user is picked,
+           toggles call /api/users/:id/skills (per-user override) instead of
+           the global /api/skills/toggle endpoint. Switching back to Global
+           reloads the global view. -->
+      <div class="card" style="margin-bottom:var(--space-3)">
+        <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);">
+          <span class="text-muted" style="font-size:12px;font-weight:600">Scope:</span>
+          <select id="skills-user-select" onchange="onSkillsUserChange(this)" style="min-width:240px;padding:6px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-primary);font-size:13px">
+            <option value="global">🌐 Global (affects all users)</option>
+          </select>
+          <span class="card-subtitle" id="skills-scope-hint" style="font-size:11px;margin-left:auto">Toggles here affect ALL users. Pick a user to set per-user overrides.</span>
+          <button id="skills-reset-user" class="btn btn-xs" style="display:none" onclick="resetSelectedUserSkills()">Reset to defaults</button>
         </div>
       </div>
 
@@ -2123,6 +2138,7 @@ table.legacy th {
     if (section === 'waitlist') loadWaitlist();
     if (section === 'audit') loadAuditTrail();
     if (section === 'jobs') loadQuickActions();
+    if (section === 'skills') loadSkillsUserSelector();
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -2236,7 +2252,14 @@ table.legacy th {
     renderDomainStatus(snap.domainStatus || []);
 
     // Skills section: skill modules
-    renderSkillsGrid(snap.skillStatus || []);
+    // Skills grid: if a per-user scope is active, keep THAT view and let
+    // loadUserSkills drive the render. The background snapshot poller
+    // would otherwise reset the grid to the global view every 15 seconds.
+    if (_skillsScopeUserId == null) {
+      renderSkillsGrid(snap.skillStatus || []);
+    } else {
+      loadUserSkills(_skillsScopeUserId);
+    }
 
     // Jobs section: scheduled runs + history
     renderNextRuns(snap.nextRuns || []);
@@ -2325,39 +2348,193 @@ table.legacy th {
     }).join('') + '</div>';
   }
 
+  // Skills scope state. When _skillsScopeUserId is null we're in global
+  // mode (the historical behavior) and toggles go to /api/skills/toggle.
+  // When it's a Telegram ID, we render the per-user override view and
+  // toggles go to /api/users/:id/skills (which layers on top of the
+  // global state). The scope is switched via the dropdown above the grid.
+  let _skillsScopeUserId = null;
+
   function renderSkillsGrid(skills) {
     const el = document.getElementById('skills-grid');
     if (!skills || skills.length === 0) {
       el.innerHTML = '<div class="empty">No skills loaded</div>';
       return;
     }
-    el.innerHTML = skills.map(s => {
-      const subs = (s.subSkills || []).map(sub => {
-        const onChange = "toggleSubSkill('" + esc(s.name) + "','" + esc(sub.name) + "',this.checked)";
+
+    // Normalize shape so we can reuse the renderer for both:
+    //   global  (from /api/snapshot.skillStatus)  — fields: name, subSkills[].name, subSkills[].description, subSkills[].toolCount
+    //   per-user (from /api/users/:id/skills)     — fields: skill, subSkills[].id, subSkills[].label, no toolCount
+    const normalized = skills.map(s => ({
+      key: s.name || s.skill,
+      label: s.label || s.name || s.skill,
+      description: s.description || '',
+      enabled: s.enabled,
+      source: s.source || 'default',
+      subSkills: (s.subSkills || []).map(sub => ({
+        key: sub.name || sub.id,
+        label: sub.description || sub.label || sub.name || sub.id,
+        enabled: sub.enabled,
+        source: sub.source || 'default',
+        toolCount: sub.toolCount,
+      })),
+    }));
+
+    el.innerHTML = normalized.map(s => {
+      const subs = s.subSkills.map(sub => {
+        const onChange = "onSkillToggle('" + esc(s.key) + "','" + esc(sub.key) + "',this.checked)";
+        const overrideBadge = sub.source === 'override'
+          ? '<span class="badge badge-accent" style="font-size:9px;margin-left:4px">override</span>'
+          : '';
+        const toolCount = sub.toolCount != null
+          ? '<span class="text-tertiary mono" style="margin-left:auto;font-size:10px">' + sub.toolCount + ' tools</span>'
+          : '';
         return '<div class="sub-skill">' +
           '<label class="toggle">' +
             '<input type="checkbox" ' + (sub.enabled ? 'checked' : '') + ' onchange="' + onChange + '">' +
             '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
           '</label>' +
-          '<span class="toggle-label">' + esc(sub.description || sub.name) + '</span>' +
-          '<span class="text-tertiary mono" style="margin-left:auto;font-size:10px">' + (sub.toolCount || 0) + ' tools</span>' +
+          '<span class="toggle-label">' + esc(sub.label) + '</span>' +
+          overrideBadge +
+          toolCount +
         '</div>';
       }).join('');
-      const masterChange = "toggleSkillMaster('" + esc(s.name) + "',this.checked)";
+      const masterChange = "onSkillToggle('" + esc(s.key) + "',null,this.checked)";
+      const masterBadge = s.source === 'override'
+        ? '<span class="badge badge-accent" style="font-size:9px;margin-left:4px">override</span>'
+        : '';
       return '<div class="skill-card">' +
         '<div class="skill-header">' +
           '<span class="skill-icon">🧩</span>' +
-          '<span class="skill-name">' + esc(s.name) + '</span>' +
+          '<span class="skill-name">' + esc(s.label) + '</span>' +
+          masterBadge +
           '<label class="toggle">' +
             '<input type="checkbox" ' + (s.enabled ? 'checked' : '') + ' onchange="' + masterChange + '">' +
             '<span class="toggle-track"><span class="toggle-thumb"></span></span>' +
           '</label>' +
         '</div>' +
-        '<div class="text-muted" style="font-size:11px;margin-bottom:8px">' + esc(s.description || '') + '</div>' +
+        '<div class="text-muted" style="font-size:11px;margin-bottom:8px">' + esc(s.description) + '</div>' +
         subs +
         '</div>';
     }).join('');
   }
+
+  // Populate the user selector dropdown with registered users (from
+  // /api/users). Called when the Skills section becomes visible.
+  async function loadSkillsUserSelector() {
+    try {
+      if (!allUsers || allUsers.length === 0) {
+        const r = await apiFetch('/api/users');
+        if (r.ok) {
+          const d = await r.json();
+          allUsers = d.users || [];
+        }
+      }
+      const sel = document.getElementById('skills-user-select');
+      if (!sel) return;
+      // Keep the "Global" option at index 0 and append users after it
+      const currentValue = sel.value;
+      sel.innerHTML = '<option value="global">🌐 Global (affects all users)</option>' +
+        allUsers.map(u => {
+          const label = [u.first_name || '', u.last_name || ''].filter(Boolean).join(' ').trim()
+            || u.username
+            || ('#' + u.telegram_id);
+          return '<option value="' + esc(String(u.telegram_id)) + '">👤 ' + esc(label) + ' (' + esc(String(u.telegram_id)) + ')</option>';
+        }).join('');
+      // Restore the previously-selected value across reloads
+      if (currentValue && sel.querySelector('option[value="' + currentValue + '"]')) {
+        sel.value = currentValue;
+      }
+    } catch { /* silent — Skills page still works with just Global */ }
+  }
+
+  // Wired to the dropdown onchange. Switches the scope state and
+  // re-renders the grid from the appropriate data source.
+  window.onSkillsUserChange = function(sel) {
+    const val = sel.value;
+    const resetBtn = document.getElementById('skills-reset-user');
+    const hint = document.getElementById('skills-scope-hint');
+    const subtitle = document.getElementById('skills-subtitle');
+
+    if (val === 'global') {
+      _skillsScopeUserId = null;
+      if (resetBtn) resetBtn.style.display = 'none';
+      if (hint) hint.textContent = 'Toggles here affect ALL users. Pick a user to set per-user overrides.';
+      if (subtitle) subtitle.textContent = 'Skill packages and sub-skill toggles';
+      // The snapshot poller picks up skillStatus, so we just force a
+      // fresh render from the cached snapshot. If the cache is empty
+      // we re-fetch the snapshot directly.
+      pollAll();
+    } else {
+      _skillsScopeUserId = parseInt(val, 10);
+      if (resetBtn) resetBtn.style.display = '';
+      if (hint) hint.textContent = 'Showing per-user overrides. Toggles affect ONLY this user.';
+      if (subtitle) subtitle.textContent = 'Per-user skill overrides — user ID ' + _skillsScopeUserId;
+      loadUserSkills(_skillsScopeUserId);
+    }
+  };
+
+  async function loadUserSkills(telegramId) {
+    try {
+      const r = await apiFetch('/api/users/' + telegramId + '/skills');
+      if (!r.ok) return;
+      const d = await r.json();
+      renderSkillsGrid(d.skills || []);
+    } catch { /* silent */ }
+  }
+
+  window.resetSelectedUserSkills = async function() {
+    if (!_skillsScopeUserId) return;
+    if (!confirm('Reset all skill overrides for user ' + _skillsScopeUserId + '?\n\nThis reverts every skill and sub-skill back to the global default for this user.')) return;
+    try {
+      const r = await apiFetch('/api/users/' + _skillsScopeUserId + '/skills/reset', { method: 'POST' });
+      if (r.ok) {
+        showToast('User overrides reset');
+        loadUserSkills(_skillsScopeUserId);
+      }
+    } catch { showToast('Reset failed', false); }
+  };
+
+  // Dispatcher called by both master-skill and sub-skill checkboxes in the
+  // rendered grid. Routes to the right backend endpoint based on scope.
+  //
+  //   subSkill = null  → master-skill toggle
+  //   subSkill ≠ null  → sub-skill toggle
+  window.onSkillToggle = async function(skill, subSkill, enabled) {
+    try {
+      if (_skillsScopeUserId) {
+        // Per-user override
+        const r = await apiFetch('/api/users/' + _skillsScopeUserId + '/skills', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skill, subSkill: subSkill || undefined, enabled }),
+        });
+        if (r.ok) {
+          showToast(skill + (subSkill ? ':' + subSkill : '') + (enabled ? ' enabled' : ' disabled') + ' for user');
+          loadUserSkills(_skillsScopeUserId);
+        } else {
+          showToast('Toggle failed', false);
+        }
+      } else {
+        // Global toggle — keep historical endpoint shapes
+        if (subSkill) {
+          const r = await apiFetch('/api/skills/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain: skill, subSkill, enabled }),
+          });
+          const d = await r.json();
+          if (d.ok) showToast(skill + ':' + subSkill + (enabled ? ' enabled' : ' disabled'));
+          else showToast('Toggle failed', false);
+        } else {
+          const ep = '/api/skills/' + encodeURIComponent(skill) + (enabled ? '/enable' : '/disable');
+          const r = await apiFetch(ep, { method: 'POST' });
+          if (r.ok) showToast(skill + (enabled ? ' enabled' : ' disabled'));
+          else showToast('Toggle failed', false);
+        }
+      }
+    } catch { showToast('Toggle failed', false); }
+  };
 
   function renderNextRuns(nextRuns) {
     const tbody = document.querySelector('#next-runs-table tbody');
@@ -3129,9 +3306,16 @@ table.legacy th {
   // Accepts a `days` argument so the range selector buttons can re-request
   // without a page reload. Also highlights the active button via the
   // .btn-sm-active class.
+  //
+  // When called without arguments (e.g. from the 30-second background
+  // refresh timer), preserves the user's currently-selected range via the
+  // _activeCostRange module-level state. Without this the background timer
+  // would reset the view to 7d every 30 seconds, making the 1d/30d
+  // buttons feel broken because clicking them only worked for <30 seconds.
   let _activeCostRange = 7;
-  async function loadCostByDomain(days = 7) {
+  async function loadCostByDomain(days) {
     try {
+      if (days == null) days = _activeCostRange;
       _activeCostRange = days;
       // Update button active state
       [1, 7, 30].forEach(d => {
