@@ -24,6 +24,7 @@ import { signalsRoutes } from './routes/signals';
 import { cookingRoutes } from './routes/cooking';
 import { financeRoutes } from './routes/finance';
 import { invoicesRoutes } from './routes/invoices';
+import { contentDashboardRoutes } from './routes/content-dashboard';
 
 /**
  * Creates the iOS API router.
@@ -66,6 +67,13 @@ export function createApiRouter(): Router {
 
   // Public routes (no JWT required)
   router.use('/auth', authRoutes());
+
+  // Admin portal content dashboard — gated by its OWN portal-token
+  // middleware, NOT by the iOS JWT. Mounted here (before authMiddleware)
+  // so that `/api/v1/admin/content-dashboard` is reachable by the
+  // admin portal's `Authorization: Bearer <PORTAL_TOKEN>` header without
+  // having to register as an iOS device first.
+  router.use('/admin/content-dashboard', contentDashboardRoutes());
 
   // Protected routes (require JWT + rate limiting).
   // The middleware order matters: auth runs first to populate req.userId,
