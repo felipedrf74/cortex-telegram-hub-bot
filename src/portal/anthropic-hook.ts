@@ -83,15 +83,35 @@ export async function trackedCreate(
   const cost = computeCost(params.model, usage);
 
   // Persist to SQLite (non-critical — swallow errors)
+  //
+  // April 9 2026: fixed a long-standing latent bug where the INSERT
+  // omitted `user_id` entirely. Migration 029 added the `user_id`
+  // column to `api_usage` with `NOT NULL DEFAULT 0` so every existing
+  // row silently got user_id=0. That meant:
+  //
+  //   • `cost-guardrail.isUserOverDailyCap(userId)` queries
+  //     `WHERE user_id = ?` and found zero rows for any real user
+  //     (they all had user_id=0), so the per-user cost cap was
+  //     effectively disabled for everyone
+  //   • Per-domain cost attribution per user was impossible
+  //   • The admin portal's per-user cost breakdown would show
+  //     every call under user_id=0
+  //
+  // Fix: persist `options?.userId ?? 0` into the INSERT. Calls that
+  // legitimately don't have a user attached (classifier passes, scheduled
+  // briefings, etc.) still fall back to 0 — same as before — so no
+  // behaviour changes for those paths. Calls that DO have a userId now
+  // write it, enabling per-user enforcement for the first time.
   try {
     getDb().prepare(`
       INSERT INTO api_usage
-        (category, model, input_tokens, output_tokens,
+        (category, model, user_id, input_tokens, output_tokens,
          cache_read_tokens, cache_write_tokens, cost_usd, duration_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       category,
       params.model,
+      options?.userId ?? 0,
       usage.input_tokens,
       usage.output_tokens,
       usage.cache_read_input_tokens ?? 0,

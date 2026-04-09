@@ -386,6 +386,14 @@ describe('GeminiProvider', () => {
   // ── Token usage tracking ──────────────────────────────────────────
 
   describe('token usage tracking', () => {
+    // April 9 2026: the api_usage INSERT now includes `user_id` at
+    // position 2 (between `model` and `input_tokens`). Position shift:
+    //   Old: (category, model, input_tokens, output_tokens, cost, duration)
+    //   New: (category, model, user_id, input_tokens, output_tokens, cost, duration)
+    // All three tests in this describe block updated to match the new
+    // shape. When the caller doesn't pass a userId, we expect 0 (the
+    // default fallback baked into logGeminiUsage).
+
     it('logs to api_usage table after classify', async () => {
       mockGeminiResponse('{"domain":"secretary","confidence":0.9}');
 
@@ -394,6 +402,7 @@ describe('GeminiProvider', () => {
       expect(mockDbRun).toHaveBeenCalledWith(
         'gemini_classify',
         'gemini-2.0-flash',
+        0, // user_id — classifier calls don't carry a user
         100,
         50,
         expect.any(Number),
@@ -409,6 +418,7 @@ describe('GeminiProvider', () => {
       expect(mockDbRun).toHaveBeenCalledWith(
         'gemini_domain_secretary',
         expect.any(String),
+        0, // user_id — callDomain in this test doesn't pass a user
         100,
         50,
         expect.any(Number),
@@ -435,7 +445,9 @@ describe('GeminiProvider', () => {
       await provider.classify('hello');
 
       // gemini-2.0-flash: 1M input × $0.10/MTK = $0.10
-      const costArg = mockDbRun.mock.calls[0]?.[4];
+      // Column positions: 0=category, 1=model, 2=user_id, 3=input,
+      // 4=output, 5=cost, 6=duration → cost is now at index 5.
+      const costArg = mockDbRun.mock.calls[0]?.[5];
       expect(costArg).toBeCloseTo(0.10, 2);
     });
 

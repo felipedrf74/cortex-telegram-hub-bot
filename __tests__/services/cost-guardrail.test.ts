@@ -52,7 +52,7 @@ function applyMigrations(db: Database.Database): void {
 }
 
 import { checkQuota } from '../../src/services/usage-metering';
-import { checkGlobalCostGuardrail } from '../../src/services/cost-guardrail';
+import { checkGlobalCostGuardrail, isUserOverDailyCap, getUserDailySpend } from '../../src/services/cost-guardrail';
 
 describe('checkQuota', () => {
   beforeEach(() => {
@@ -156,5 +156,116 @@ describe('checkGlobalCostGuardrail', () => {
   it('returns correct limit from config', () => {
     const result = checkGlobalCostGuardrail();
     expect(result.limitUsd).toBe(10.0);
+  });
+});
+
+/**
+ * Per-user cost cap tests (April 9 2026).
+ *
+ * These tests exercise the `isUserOverDailyCap` + `getUserDailySpend`
+ * functions that query `api_usage.user_id` — the column added in
+ * migration 029 that was silently unused until the April 9 bug fix
+ * in `anthropic-hook.ts` and `gemini-provider.ts` that made both
+ * INSERT statements actually persist the user_id.
+ *
+ * Before the fix, every row had user_id=0 (the migration default)
+ * so the per-user cap never fired. These tests verify the post-fix
+ * behavior: cap fires for users over the threshold, isolates users
+ * from each other's spend, and handles the edge cases (unknown user,
+ * fallback to 0).
+ */
+describe('isUserOverDailyCap', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('returns over=false when user has no spend today', () => {
+    const result = isUserOverDailyCap(12345);
+    expect(result.over).toBe(false);
+    expect(result.spentUsd).toBe(0);
+  });
+
+  it('returns over=true when user exceeds PER_USER_DAILY_USD_CAP (default $1.00)', () => {
+    // Insert $1.50 of spend for user 42 (default cap is $1.00)
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'claude-sonnet-4-6', 42, 1000, 500, 1.50, 100)
+    `).run();
+
+    const result = isUserOverDailyCap(42);
+    expect(result.over).toBe(true);
+    expect(result.spentUsd).toBe(1.5);
+  });
+
+  it('isolates users from each other — spend by user 42 does not count against user 99', () => {
+    // User 42 spent $2.00
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'claude-sonnet-4-6', 42, 5000, 2000, 2.00, 200)
+    `).run();
+
+    // User 99 spent $0.10
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_secretary', 'claude-haiku-4-5-20251001', 99, 100, 50, 0.10, 50)
+    `).run();
+
+    expect(isUserOverDailyCap(42).over).toBe(true);
+    expect(isUserOverDailyCap(42).spentUsd).toBe(2.0);
+    expect(isUserOverDailyCap(99).over).toBe(false);
+    expect(isUserOverDailyCap(99).spentUsd).toBe(0.1);
+  });
+
+  it('ignores rows written without a userId (user_id=0 fallback)', () => {
+    // A system call with no attached user (e.g. scheduled coach briefing)
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('coach_analysis', 'claude-sonnet-4-6', 0, 3000, 1000, 0.80, 150)
+    `).run();
+
+    // The system row is under user_id=0, not user 42
+    expect(isUserOverDailyCap(42).over).toBe(false);
+    expect(isUserOverDailyCap(42).spentUsd).toBe(0);
+    // Querying for user 0 explicitly DOES include the system row, however
+    expect(isUserOverDailyCap(0).spentUsd).toBe(0.8);
+  });
+});
+
+describe('getUserDailySpend', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('returns zero totals for unknown user', () => {
+    const result = getUserDailySpend(99999);
+    expect(result.totalUsd).toBe(0);
+    expect(result.messageCount).toBe(0);
+  });
+
+  it('aggregates message count and cost for a specific user', () => {
+    // Insert three calls for user 7, totaling $0.40 and 3 messages
+    const stmt = testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES (?, ?, 7, ?, ?, ?, ?)
+    `);
+    stmt.run('domain_secretary', 'claude-haiku-4-5-20251001', 100, 50, 0.10, 50);
+    stmt.run('domain_content', 'claude-sonnet-4-6', 500, 200, 0.15, 120);
+    stmt.run('domain_triathlon', 'claude-sonnet-4-6', 800, 300, 0.15, 180);
+
+    const result = getUserDailySpend(7);
+    expect(result.totalUsd).toBeCloseTo(0.4, 2);
+    expect(result.messageCount).toBe(3);
   });
 });

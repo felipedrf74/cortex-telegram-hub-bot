@@ -84,14 +84,22 @@ function logGeminiUsage(
   category: string,
   usage: { promptTokenCount: number; candidatesTokenCount: number },
   durationMs: number,
+  userId: number = 0,
 ): void {
   try {
     const cost = computeGeminiCost(model, usage);
     const db = getDb();
+    // April 9 2026: persist `user_id` into the INSERT. Previously
+    // omitted, so every Gemini row silently had user_id=0 via the
+    // `NOT NULL DEFAULT 0` from migration 029 — see the matching
+    // fix in `src/portal/anthropic-hook.ts` for the full story.
+    // Per-user cost enforcement (cost-guardrail.isUserOverDailyCap)
+    // was effectively disabled until both INSERT statements were
+    // updated.
     db.prepare(`
-      INSERT INTO api_usage (category, model, input_tokens, output_tokens, cost_usd, duration_ms, provider)
-      VALUES (?, ?, ?, ?, ?, ?, 'gemini')
-    `).run(category, model, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'gemini')
+    `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
 
     pushEvent({
       ts: new Date().toISOString(),
@@ -125,7 +133,7 @@ export async function completeOneShot(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
 ): Promise<string> {
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
@@ -160,6 +168,7 @@ export async function completeOneShot(
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
       },
       durationMs,
+      options?.userId ?? 0,
     );
   }
 
@@ -190,7 +199,7 @@ export async function completeOneShotWithSearch(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
 ): Promise<{ text: string; sources: string[] }> {
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
@@ -232,6 +241,7 @@ export async function completeOneShotWithSearch(
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
       },
       durationMs,
+      options?.userId ?? 0,
     );
   }
 
@@ -276,7 +286,7 @@ export async function completeVisionOneShot(
   userPrompt: string,
   image: { base64: string; mimeType: string },
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
 ): Promise<string> {
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
@@ -320,6 +330,7 @@ export async function completeVisionOneShot(
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
       },
       durationMs,
+      options?.userId ?? 0,
     );
   }
 
@@ -339,7 +350,7 @@ export async function completeVisionOneShotWithFallback(
   image: { base64: string; mimeType: string },
   category: string,
   anthropicFallback: () => Promise<string>,
-  options?: { model?: string; maxTokens?: number; temperature?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
 ): Promise<{ text: string; provider: 'gemini' | 'anthropic' }> {
   if (isGeminiProviderConfigured()) {
     try {
@@ -380,7 +391,7 @@ export async function completeOneShotWithFallback(
   userPrompt: string,
   category: string,
   anthropicFallback: () => Promise<string>,
-  options?: { model?: string; maxTokens?: number; temperature?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
 ): Promise<{ text: string; provider: 'gemini' | 'anthropic' }> {
   if (isGeminiProviderConfigured()) {
     try {
