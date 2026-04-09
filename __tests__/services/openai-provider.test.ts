@@ -315,9 +315,14 @@ describe('OpenAIProvider', () => {
 
       await provider.callDomain('secretary', [], 'hi', '');
 
+      // April 9 2026: INSERT now includes `user_id` at position 2.
+      // See the matching comment in gemini-provider.test.ts for the
+      // full column-position history. Callers that don't pass a
+      // userId fall back to 0, so we expect 0 here.
       expect(mockDbRun).toHaveBeenCalledWith(
         'openai_domain_secretary',
         'gpt-4o',
+        0, // user_id — not passed through AIProvider.callDomain today
         150,
         50,
         expect.any(Number),
@@ -351,8 +356,10 @@ describe('OpenAIProvider', () => {
 
       await provider.classify('hello');
 
-      // gpt-4o-mini: 1M input tokens × $0.15/MTK = $0.15
-      const costArg = mockDbRun.mock.calls[0]?.[4];
+      // gpt-4o-mini: 1M input tokens × $0.15/MTK = $0.15.
+      // Column positions after the April 9 2026 user_id insertion:
+      // 0=category, 1=model, 2=user_id, 3=input, 4=output, 5=cost, 6=duration
+      const costArg = mockDbRun.mock.calls[0]?.[5];
       expect(costArg).toBeCloseTo(0.15, 2);
     });
 
@@ -365,8 +372,9 @@ describe('OpenAIProvider', () => {
 
       await provider.callDomain('secretary', [], 'test', '');
 
-      // gpt-4o: 1M in × $2.50 + 1M out × $10.00 = $12.50
-      const costArg = mockDbRun.mock.calls[0]?.[4];
+      // gpt-4o: 1M in × $2.50 + 1M out × $10.00 = $12.50.
+      // Cost moved from position 4 to 5 after user_id was inserted at 2.
+      const costArg = mockDbRun.mock.calls[0]?.[5];
       expect(costArg).toBeCloseTo(12.50, 2);
     });
 
@@ -381,6 +389,7 @@ describe('OpenAIProvider', () => {
       expect(mockDbRun).toHaveBeenCalledWith(
         'openai_classify',
         expect.any(String),
+        expect.any(Number), // user_id (added April 9 2026)
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),
@@ -399,6 +408,7 @@ describe('OpenAIProvider', () => {
       expect(mockDbRun).toHaveBeenCalledWith(
         'openai_tool_continuation',
         expect.any(String),
+        expect.any(Number), // user_id (added April 9 2026)
         expect.any(Number),
         expect.any(Number),
         expect.any(Number),

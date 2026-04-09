@@ -42,6 +42,31 @@ function computeCost(model: string, usage: Anthropic.Usage): number {
 /**
  * Call `client.messages.create()` with usage tracking.
  *
+ * ── ANTHROPIC KILL SWITCH (April 9 2026) ──────────────────────────
+ *
+ * `trackedCreate` is the single chokepoint through which every
+ * Anthropic API call in the codebase flows. To guarantee zero Claude
+ * expenses, this function now HARD-THROWS unless the caller explicitly
+ * sets `ANTHROPIC_ENABLED=true` in the environment. Default is disabled.
+ *
+ * Why: the cost dashboard on April 9 2026 showed $0.20/day of Claude
+ * spend from fallback call sites (garmin-coach `coach_analysis`,
+ * content-workflow `content_workflow_youtube`, anthropic.ts
+ * `classify_message` fallback) even though commit 339c43e had flipped
+ * the domain router to Gemini-first. The router flip only affected the
+ * primary path; every `completeOneShotWithFallback` call site still
+ * had an Anthropic thunk as its fallback, which fired whenever Gemini
+ * had any transient issue.
+ *
+ * Changing the thunks one-by-one is error-prone (easy to miss one).
+ * Throwing at the choke point guarantees coverage — any caller that
+ * still hits this function gets a loud, clear error instead of
+ * silently spending tokens.
+ *
+ * To re-enable Anthropic temporarily (e.g. for a specific test or a
+ * one-off migration), set `ANTHROPIC_ENABLED=true` in the process env.
+ * The production `.env` on the server should leave it unset.
+ *
  * @param client   The Anthropic SDK instance
  * @param params   Standard create-message params
  * @param category Identifies the call site: 'classify_message', 'classify_image',
@@ -55,6 +80,21 @@ export async function trackedCreate(
   category: string,
   options?: { userId?: number; isUserMessage?: boolean; timeoutMs?: number },
 ): Promise<Anthropic.Message> {
+  // ── Kill switch — see the doc block above ──
+  if (process.env.ANTHROPIC_ENABLED !== 'true') {
+    const msg =
+      `[anthropic-hook] Anthropic API is disabled. ` +
+      `Set ANTHROPIC_ENABLED=true to re-enable. Blocked call: category=${category}, ` +
+      `model=${params.model}, userId=${options?.userId ?? 0}. ` +
+      `If you're seeing this in a fallback path, the caller should be migrated to ` +
+      `the OpenAI fallback — see completeOneShotWithFallback in gemini-provider.ts.`;
+    logger.warn(
+      { category, model: params.model, userId: options?.userId ?? 0 },
+      'Anthropic call blocked by kill switch',
+    );
+    throw new Error(msg);
+  }
+
   const start = Date.now();
 
   // Use streaming for long operations: high max_tokens or Sonnet model

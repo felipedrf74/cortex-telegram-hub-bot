@@ -54,11 +54,20 @@ const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
 /**
  * Wrapper that records usage metrics for every OpenAI API call.
  * Writes to api_usage table and pushes telemetry event.
+ *
+ * April 9 2026: added `userId` parameter + persisted it in the INSERT.
+ * Previously `trackedCompletion` had the same latent bug as Anthropic
+ * and Gemini — the `user_id` column existed in `api_usage` (from
+ * migration 029) but was never written, so per-user cost attribution
+ * for OpenAI calls showed user_id=0 for everyone. Fixed at the same
+ * time as the Anthropic kill switch was added so new OpenAI traffic
+ * (from the Gemini fallback path) is attributed correctly from day one.
  */
 async function trackedCompletion(
   client: OpenAI,
   params: OpenAI.ChatCompletionCreateParamsNonStreaming,
   category: string,
+  userId: number = 0,
 ): Promise<OpenAI.ChatCompletion> {
   const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
 
@@ -79,9 +88,9 @@ async function trackedCompletion(
     try {
       const db = getDb();
       db.prepare(`
-        INSERT INTO api_usage (category, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-        VALUES (?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-      `).run(category, model, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+        VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
+      `).run(category, model, userId, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
     } catch (e) {
       logger.warn({ err: e }, 'Failed to log OpenAI usage to database');
     }
@@ -95,6 +104,127 @@ async function trackedCompletion(
   }
 
   return response;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ONE-SHOT HELPERS — added April 9 2026 to mirror Gemini's shape
+// ═══════════════════════════════════════════════════════════════════
+//
+// These exports give the Gemini fallback wrappers a shape-compatible
+// OpenAI implementation they can call without building an OpenAI
+// prompt from scratch. The contract matches `gemini-provider`'s
+// `completeOneShot` / `completeVisionOneShot` exactly so the fallback
+// wrappers can swap providers without special-casing either one.
+//
+// Why helpers instead of reusing `OpenAIProvider.callDomain`:
+//   • `callDomain` is heavy — it builds the system prompt via the
+//     domain router, applies per-domain tool packs, maps message
+//     history. The fallback wrappers want a SIMPLE one-shot: system
+//     prompt + user prompt in, text out. No tools, no history.
+//   • The AIProvider interface evolved for the domain-routed path.
+//     The fallback path has different requirements (single call, no
+//     conversation state, explicit category for cost attribution).
+
+/**
+ * Single-prompt chat completion via OpenAI. Mirrors the Gemini provider's
+ * `completeOneShot` in shape so the fallback wrappers can swap providers
+ * transparently.
+ *
+ * Default model is `gpt-4o-mini` because most fallback paths are
+ * classification + summarization calls where the quality difference
+ * vs full `gpt-4o` doesn't justify the 16× cost multiplier. Callers
+ * that need gpt-4o quality can override via `options.model`.
+ *
+ * Throws on OpenAI errors so the caller can report a hard failure.
+ */
+export async function completeOneShot(
+  systemPrompt: string,
+  userPrompt: string,
+  category: string,
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+): Promise<string> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
+  }
+  const model = options?.model ?? 'gpt-4o-mini';
+  const maxTokens = options?.maxTokens ?? 2500;
+  const temperature = options?.temperature ?? 0.7;
+
+  const response = await withRetry(() =>
+    trackedCompletion(
+      getClient(),
+      {
+        model,
+        max_tokens: maxTokens,
+        temperature,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      },
+      category,
+      options?.userId ?? 0,
+    ),
+  );
+
+  return response.choices[0]?.message?.content ?? '';
+}
+
+/**
+ * Single-prompt chat completion with an image input (vision mode) via
+ * GPT-4o. Mirrors `gemini-provider.completeVisionOneShot`.
+ *
+ * GPT-4o expects images as `{ type: 'image_url', image_url: { url } }`
+ * where the url is a base64 data URL. We build it from the passed
+ * `image.base64` + `image.mimeType`, then send the standard chat
+ * completion with the image bundled into the user message content.
+ *
+ * The classifier-tier `gpt-4o-mini` DOES support vision as of 2026-04,
+ * and costs roughly 10× less than `gpt-4o`, so that's the default.
+ * Override via `options.model` if you need higher quality.
+ *
+ * Throws on OpenAI errors so the caller can report a hard failure.
+ */
+export async function completeVisionOneShot(
+  systemPrompt: string,
+  userPrompt: string,
+  image: { base64: string; mimeType: string },
+  category: string,
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+): Promise<string> {
+  if (!isOpenAIConfigured()) {
+    throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
+  }
+  const model = options?.model ?? 'gpt-4o-mini';
+  const maxTokens = options?.maxTokens ?? 1024;
+  const temperature = options?.temperature ?? 0.2; // low — vision callers typically want structured JSON
+
+  const dataUrl = `data:${image.mimeType};base64,${image.base64}`;
+
+  const response = await withRetry(() =>
+    trackedCompletion(
+      getClient(),
+      {
+        model,
+        max_tokens: maxTokens,
+        temperature,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'image_url', image_url: { url: dataUrl } },
+              { type: 'text', text: userPrompt },
+            ],
+          },
+        ],
+      },
+      category,
+      options?.userId ?? 0,
+    ),
+  );
+
+  return response.choices[0]?.message?.content ?? '';
 }
 
 // ─── Retry on 429 / 5xx ─────────────────────────────────────────────
@@ -397,10 +527,15 @@ ${message}`;
 
       try {
         const db = getDb();
+        // April 9 2026: persist user_id (same fix as the non-streaming
+        // trackedCompletion above). Streaming callers don't currently
+        // pass userId through — the AIProvider interface's streamDomain
+        // method predates per-user cost attribution. Fallback to 0
+        // until the interface is extended.
         db.prepare(`
-          INSERT INTO api_usage (category, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
-          VALUES (?, ?, ?, ?, 0, 0, ?, ?, 'openai')
-        `).run(`openai_stream_${domain}`, model, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
+          INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, duration_ms, provider)
+          VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'openai')
+        `).run(`openai_stream_${domain}`, model, 0, usage.prompt_tokens, usage.completion_tokens, costUsd, durationMs);
       } catch (e) {
         logger.warn({ err: e }, 'Failed to log OpenAI streaming usage');
       }

@@ -62,7 +62,20 @@ export const config = {
   },
   isStaging: IS_STAGING,
   anthropic: {
-    apiKey: required('ANTHROPIC_API_KEY'),
+    // April 9 2026 — Anthropic kill switch. The cost dashboard showed
+    // $0.20/day still burning on Claude calls via fallback paths
+    // (coach_analysis on Sonnet, content_workflow_youtube on Haiku,
+    // classify_message fallback on Haiku) even though the domain router
+    // was flipped to Gemini-first in commit 339c43e. The fix is
+    // belt-and-suspenders:
+    //   1. ANTHROPIC_API_KEY is now OPTIONAL (was `required()`). If
+    //      unset, the SDK throws on the first call — one safety net.
+    //   2. `anthropic-hook.trackedCreate` hard-throws unless
+    //      `ANTHROPIC_ENABLED === 'true'`. Default is disabled.
+    //      Re-enable per-session with `ANTHROPIC_ENABLED=true` env.
+    //   3. The fallback position in `providerRouting` below is now
+    //      `openai` instead of `anthropic`. GPT is the new fallback.
+    apiKey: process.env.ANTHROPIC_API_KEY || '',
     model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
     classifierModel: process.env.ANTHROPIC_CLASSIFIER_MODEL || 'claude-haiku-4-5-20251001',
     maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
@@ -103,17 +116,23 @@ export const config = {
   // change makes the Gemini-first behavior the code default too, so the
   // env vars are an OVERRIDE not a LIFELINE.
   providerRouting: {
+    // April 9 2026 — fallback defaults flipped from 'anthropic' to
+    // 'openai'. Gemini stays primary (the post-cost-migration default).
+    // When Gemini fails, the router now tries GPT instead of Claude.
+    // Anthropic is only reachable when BOTH an explicit env var points
+    // at it AND `ANTHROPIC_ENABLED=true` is set in the environment —
+    // see `anthropic-hook.trackedCreate` for the hard gate.
     classify: {
       primary: process.env.AI_CLASSIFY_PRIMARY || 'gemini',
-      fallback: process.env.AI_CLASSIFY_FALLBACK || 'anthropic',
+      fallback: process.env.AI_CLASSIFY_FALLBACK || 'openai',
     },
     chat: {
       primary: process.env.AI_CHAT_PRIMARY || 'gemini',
-      fallback: process.env.AI_CHAT_FALLBACK || 'anthropic',
+      fallback: process.env.AI_CHAT_FALLBACK || 'openai',
     },
     toolUse: {
       primary: process.env.AI_TOOL_USE_PRIMARY || 'gemini',
-      fallback: process.env.AI_TOOL_USE_FALLBACK || 'anthropic',
+      fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
     },
     circuitBreaker: {
       failureThreshold: parseInt(process.env.AI_CB_FAILURE_THRESHOLD || '3', 10),

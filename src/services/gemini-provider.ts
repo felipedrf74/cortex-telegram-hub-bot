@@ -339,10 +339,19 @@ export async function completeVisionOneShot(
 
 /**
  * Vision equivalent of completeOneShotWithFallback — tries Gemini vision
- * first, falls back to a caller-supplied Anthropic vision path on failure.
+ * first, then tries OpenAI vision (GPT-4o), then the caller-supplied
+ * Anthropic thunk as a last resort (gated on ANTHROPIC_ENABLED=true).
  *
- * Identical shape to the non-vision wrapper so call sites can mechanically
- * swap in vision support without restructuring their error-handling.
+ * April 9 2026: fallback order changed from `gemini → anthropic` to
+ * `gemini → openai → anthropic (gated)`. The Anthropic thunk parameter
+ * is preserved for backwards compatibility with every existing call
+ * site, but it's now ONLY executed if the operator explicitly opts in
+ * via the `ANTHROPIC_ENABLED=true` env var. Default is disabled, which
+ * means in production this wrapper goes Gemini → OpenAI → throw.
+ *
+ * Return type still exposes `'anthropic'` as a possible provider for
+ * the re-enabled path — callers don't need to change their type
+ * handling if they were already switching on the provider field.
  */
 export async function completeVisionOneShotWithFallback(
   systemPrompt: string,
@@ -351,17 +360,52 @@ export async function completeVisionOneShotWithFallback(
   category: string,
   anthropicFallback: () => Promise<string>,
   options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
-): Promise<{ text: string; provider: 'gemini' | 'anthropic' }> {
+): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
+  // Stage 1: Gemini (primary)
   if (isGeminiProviderConfigured()) {
     try {
       const text = await completeVisionOneShot(systemPrompt, userPrompt, image, category, options);
       return { text, provider: 'gemini' };
     } catch (err) {
-      logger.warn({ err, category }, 'Gemini vision one-shot failed, falling back to Anthropic');
+      logger.warn({ err, category }, 'Gemini vision one-shot failed, trying OpenAI fallback');
     }
   }
-  const text = await anthropicFallback();
-  return { text, provider: 'anthropic' };
+
+  // Stage 2: OpenAI (new fallback — replaces Anthropic as of April 9 2026)
+  // Dynamic require to avoid a circular import chain between the two
+  // provider modules at load time.
+  try {
+    const openai = require('./openai-provider') as typeof import('./openai-provider');
+    if (openai.isOpenAIConfigured()) {
+      const text = await openai.completeVisionOneShot(
+        systemPrompt,
+        userPrompt,
+        image,
+        `${category}_openai_fallback`,
+        options,
+      );
+      return { text, provider: 'openai' };
+    }
+  } catch (err) {
+    logger.warn({ err, category }, 'OpenAI vision fallback also failed, trying Anthropic (if enabled)');
+  }
+
+  // Stage 3: Anthropic thunk — only if the operator has explicitly
+  // re-enabled Anthropic via the env var. Default is disabled, so this
+  // branch normally never runs. If the thunk's internal trackedCreate
+  // call fires, the kill switch in anthropic-hook.ts will throw before
+  // the SDK actually hits Anthropic.
+  if (process.env.ANTHROPIC_ENABLED === 'true') {
+    const text = await anthropicFallback();
+    return { text, provider: 'anthropic' };
+  }
+
+  throw new Error(
+    `[completeVisionOneShotWithFallback] All providers failed for category='${category}'. ` +
+    `Gemini: ${isGeminiProviderConfigured() ? 'failed' : 'not configured'}. ` +
+    `OpenAI: ${process.env.OPENAI_API_KEY ? 'failed' : 'not configured'}. ` +
+    `Anthropic: disabled (set ANTHROPIC_ENABLED=true to re-enable).`,
+  );
 }
 
 /**
@@ -392,17 +436,47 @@ export async function completeOneShotWithFallback(
   category: string,
   anthropicFallback: () => Promise<string>,
   options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
-): Promise<{ text: string; provider: 'gemini' | 'anthropic' }> {
+): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
+  // Stage 1: Gemini (primary)
   if (isGeminiProviderConfigured()) {
     try {
       const text = await completeOneShot(systemPrompt, userPrompt, category, options);
       return { text, provider: 'gemini' };
     } catch (err) {
-      logger.warn({ err, category }, 'Gemini one-shot failed, falling back to Anthropic');
+      logger.warn({ err, category }, 'Gemini one-shot failed, trying OpenAI fallback');
     }
   }
-  const text = await anthropicFallback();
-  return { text, provider: 'anthropic' };
+
+  // Stage 2: OpenAI (new fallback — April 9 2026).
+  // See `completeVisionOneShotWithFallback` above for the full rationale.
+  // Dynamic require to avoid circular import between provider modules.
+  try {
+    const openai = require('./openai-provider') as typeof import('./openai-provider');
+    if (openai.isOpenAIConfigured()) {
+      const text = await openai.completeOneShot(
+        systemPrompt,
+        userPrompt,
+        `${category}_openai_fallback`,
+        options,
+      );
+      return { text, provider: 'openai' };
+    }
+  } catch (err) {
+    logger.warn({ err, category }, 'OpenAI fallback also failed, trying Anthropic (if enabled)');
+  }
+
+  // Stage 3: Anthropic thunk — only if explicitly re-enabled
+  if (process.env.ANTHROPIC_ENABLED === 'true') {
+    const text = await anthropicFallback();
+    return { text, provider: 'anthropic' };
+  }
+
+  throw new Error(
+    `[completeOneShotWithFallback] All providers failed for category='${category}'. ` +
+    `Gemini: ${isGeminiProviderConfigured() ? 'failed' : 'not configured'}. ` +
+    `OpenAI: ${process.env.OPENAI_API_KEY ? 'failed' : 'not configured'}. ` +
+    `Anthropic: disabled (set ANTHROPIC_ENABLED=true to re-enable).`,
+  );
 }
 
 // ─── Tool format conversion ─────────────────────────────────────────
