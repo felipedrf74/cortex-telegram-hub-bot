@@ -19,6 +19,7 @@ import { collectUberInvoices, formatUberNotification, isUberConfigured } from '.
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
+import { sendPushNotification } from './apns-sender';
 import { isCronJobEnabled } from '../skills/skill-manager';
 import { CronExpressionParser } from 'cron-parser';
 import { flushQueue, getPendingCount } from './invoice-queue';
@@ -164,6 +165,17 @@ export function startScheduler(bot: Bot): void {
       } catch (err) {
         logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
       }
+      // Parallel iOS push. sendPushNotification already no-ops cleanly when
+      // APNs isn't configured and swallows its own errors, so we don't wrap
+      // it in try/catch — failures are logged inside the sender.
+      await sendPushNotification(targetUserId, {
+        title: 'Reminder',
+        body: reminder.message,
+        sound: 'default',
+        threadId: 'reminders',
+        category: 'REMINDER',
+        data: { reminderId: reminder.id, type: 'reminder' },
+      });
       markReminderFired(reminder.id);
     }
   }));
@@ -207,12 +219,30 @@ export function startScheduler(bot: Bot): void {
       }
     }
 
+    // Build a short APNs summary separate from the rich Telegram HTML.
+    // iOS pushes should be terse — the user taps through to the app for detail.
+    const pushBody =
+      dueToday.length > 0 && overdue.length > 0
+        ? `${dueToday.length} due today · ${overdue.length} overdue`
+        : dueToday.length > 0
+          ? `${dueToday.length} task${dueToday.length === 1 ? '' : 's'} due today`
+          : `${overdue.length} overdue task${overdue.length === 1 ? '' : 's'}`;
+
     for (const userId of getActiveUserIds()) {
       try {
         await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send end-of-day summary');
       }
+      await sendPushNotification(userId, {
+        title: 'End-of-day summary',
+        body: pushBody,
+        badge: dueToday.length + overdue.length,
+        sound: 'default',
+        threadId: 'end_of_day',
+        category: 'TASK_SUMMARY',
+        data: { type: 'end_of_day', dueToday: dueToday.length, overdue: overdue.length },
+      });
     }
   }), { timezone: tz });
 
@@ -220,11 +250,33 @@ export function startScheduler(bot: Bot): void {
   cron.schedule(dailyCron, wrapJob('daily_briefing', async () => {
     if (!config.todo.digestEnabled) return;
     await sendDailyBriefing(bot);
+    // sendDailyBriefing sends rich HTML via Telegram. Pair with a terse push
+    // per active user — the full briefing stays in the app, push is the nudge.
+    for (const userId of getActiveUserIds()) {
+      await sendPushNotification(userId, {
+        title: 'Good morning',
+        body: 'Your daily briefing is ready',
+        sound: 'default',
+        threadId: 'daily_briefing',
+        category: 'BRIEFING',
+        data: { type: 'daily_briefing' },
+      });
+    }
   }), { timezone: tz });
 
   // ── Weekly review (Friday 17:00) ───────────────────────────────────
   cron.schedule('0 17 * * 5', wrapJob('weekly_review', async () => {
     await sendWeeklyReview(bot);
+    for (const userId of getActiveUserIds()) {
+      await sendPushNotification(userId, {
+        title: 'Weekly review',
+        body: 'Your week in review is ready',
+        sound: 'default',
+        threadId: 'weekly_review',
+        category: 'BRIEFING',
+        data: { type: 'weekly_review' },
+      });
+    }
   }), { timezone: tz });
 
   // ── Shared list task notifications (every 5 min) ───────────────────

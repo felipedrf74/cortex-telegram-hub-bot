@@ -289,6 +289,27 @@ export const config = {
     rateLimit: parseInt(process.env.IOS_API_RATE_LIMIT || '60', 10),
     inviteCode: process.env.IOS_INVITE_CODE || '',
   },
+  // ── Apple Push Notification Service (APNs) ────────────────────────
+  // Token-based auth only (modern .p8 approach). All four env vars must
+  // be present for the sender to actually dispatch — when any are missing,
+  // the sender logs a single warn on first call and then no-ops for every
+  // subsequent call. This means the iOS app ships + the crons run even
+  // when APNs isn't fully configured yet, without touching the app code.
+  //
+  // APNS_AUTH_KEY_P8 can be either:
+  //   (a) the full raw contents of the .p8 file (including BEGIN/END lines),
+  //       with newlines preserved as \n when set via a single-line .env
+  //   (b) the file path to the .p8 (e.g. "/home/dominguez/secrets/AuthKey_AB.p8")
+  // The sender auto-detects which one was passed (file path = exists on disk).
+  apns: {
+    enabled: (process.env.APNS_ENABLED || 'false') === 'true',
+    teamId: process.env.APNS_TEAM_ID || '',
+    keyId: process.env.APNS_KEY_ID || '',
+    bundleId: process.env.APNS_BUNDLE_ID || 'me.nexushub.app',
+    authKey: process.env.APNS_AUTH_KEY_P8 || '',
+    // 'production' → api.push.apple.com, 'sandbox' → api.sandbox.push.apple.com
+    environment: (process.env.APNS_ENVIRONMENT || 'production') as 'production' | 'sandbox',
+  },
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
     callTimeoutMs: parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10),
