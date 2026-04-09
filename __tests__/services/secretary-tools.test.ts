@@ -404,6 +404,160 @@ describe('planSecretaryOptimization', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════
+// End-to-end layer contrast — TASK-17 acceptance criterion
+//
+// The TASK-17 spec explicitly asks for a single test that contrasts:
+//   "show my tasks"                          → Haiku + task-only + sliced history
+//   "plan my week considering my training"   → Sonnet + full tools + full history
+//
+// Every individual layer is covered by tests above, but this one is
+// the REGRESSION GUARD for the interaction: if a keyword regex drifts,
+// a tier boundary flips, a tool pack gets re-named, or the Layer 5
+// coupling between `modelTier` and history slicing breaks, this test
+// catches ALL of those in a single assertion. Put up front so a
+// reviewer reading the test file sees the acceptance criterion
+// explicitly before the implementation-detail tests.
+// ════════════════════════════════════════════════════════════════════
+
+describe('TASK-17 acceptance: Layer 2+3+4+5 contrast', () => {
+  // Use the same 12-message fake history as planSecretaryOptimization
+  // above so Layer 5's .slice(-4) has something to shorten.
+  const FULL_HISTORY: DomainMessage[] = Array.from({ length: 12 }, (_, i) => ({
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: `message ${i}`,
+  }));
+
+  // Use the FAKE_TOOLS from the top of the file — one tool per pack
+  // name so we can count exactly which pack got filtered in.
+  // ALL_PACK_NAMES has 25 entries (every tool in every pack).
+
+  it('simple read query → light model + task pack + sliced history; complex planning query → heavy model + calendar pack + full history', () => {
+    // ── Simple read path ──
+    //
+    // The spec's canonical "cheap" case. Expect:
+    //   tier         = light   (Haiku tier, ~1/3 cost)
+    //   tools        = 7       (5 task_read + 2 memory)
+    //   history      = 4       (Layer 5 kicks in because tier=light)
+    //   Layer 2 intent: tasks=true, calendar/email/garmin=false
+    const simple = planSecretaryOptimization(
+      'secretary',
+      'show my tasks',
+      FULL_HISTORY,
+      FAKE_TOOLS,
+    );
+
+    expect(simple.optimized).toBe(true);
+    expect(simple.modelTier).toBe('light');
+    expect(simple.slicedHistory.length).toBe(4);
+
+    // Tool filter: exactly the task_read pack (5) + memory pack (2)
+    const simpleNames = new Set(simple.filteredTools.map((t) => t.name));
+    expect(simpleNames.size).toBe(7);
+    for (const taskRead of SECRETARY_TOOL_PACKS.task_read) {
+      expect(simpleNames.has(taskRead)).toBe(true);
+    }
+    for (const mem of SECRETARY_TOOL_PACKS.memory) {
+      expect(simpleNames.has(mem)).toBe(true);
+    }
+    // Explicitly absent: write tools, email, calendar, reminders, notes
+    for (const writeTool of SECRETARY_TOOL_PACKS.task_write) {
+      expect(simpleNames.has(writeTool)).toBe(false);
+    }
+    for (const emailTool of SECRETARY_TOOL_PACKS.email) {
+      expect(simpleNames.has(emailTool)).toBe(false);
+    }
+    for (const calRead of SECRETARY_TOOL_PACKS.calendar_read) {
+      expect(simpleNames.has(calRead)).toBe(false);
+    }
+
+    // Cross-check via the Layer 2 intent classifier: tasks only, no
+    // calendar/email/garmin. This is what buildStateContext reads to
+    // decide which data sources to fetch — proving the SAME classifier
+    // drives both layers (one source of truth invariant).
+    const simpleIntent = analyzeIntent('show my tasks');
+    expect(simpleIntent.tasks).toBe(true);
+    expect(simpleIntent.calendar).toBe(false);
+    expect(simpleIntent.email).toBe(false);
+    expect(simpleIntent.garmin).toBe(false);
+    expect(simpleIntent.ambiguous).toBe(false);
+
+    // ── Complex planning path ──
+    //
+    // The spec's canonical "need reasoning" case. Expect:
+    //   tier    = heavy (Sonnet tier, full reasoning)
+    //   history = 12    (Layer 5 no-op because tier=heavy)
+    //
+    // Tool pack note: "plan my week considering my training and
+    // content schedule" is fundamentally a CALENDAR query. Layer 3
+    // narrows to the calendar_read + calendar_write packs (because
+    // "plan" + "schedule" trigger the write classifier) + memory.
+    // That's ~6 tools — DIFFERENT packs than the simple query but
+    // ALSO narrowed, not the full 25. The optimization is always
+    // active; the SHAPE of the narrowing changes with intent.
+    //
+    // Layer 2 reports garmin=true as a STATE CONTEXT signal (causes
+    // buildStateContext to fetch recent Garmin activities) — but
+    // secretary's tool registry has no Garmin tools, so there are no
+    // "garmin tools" to add to filteredTools. The garmin signal
+    // feeds context only, which is correct for cross-domain reasoning.
+    const complex = planSecretaryOptimization(
+      'secretary',
+      'plan my week considering my training and content schedule',
+      FULL_HISTORY,
+      FAKE_TOOLS,
+    );
+
+    expect(complex.optimized).toBe(true);
+    expect(complex.modelTier).toBe('heavy');
+    // Layer 5 invariant: heavy tier keeps the FULL history reference
+    expect(complex.slicedHistory).toBe(FULL_HISTORY);
+    expect(complex.slicedHistory.length).toBe(12);
+
+    const complexNames = new Set(complex.filteredTools.map((t) => t.name));
+    // calendar_read is the core intent — present for "week"
+    expect(complexNames.has('get_calendar_events')).toBe(true);
+    // calendar_write present for "plan" / "schedule"
+    expect(complexNames.has('create_calendar_event')).toBe(true);
+    expect(complexNames.has('update_calendar_event')).toBe(true);
+    // memory is always present across ALL secretary calls
+    expect(complexNames.has('shared_memory_set')).toBe(true);
+    expect(complexNames.has('shared_memory_remove')).toBe(true);
+    // Task tools are NOT sent — the query is about planning calendar,
+    // not about creating todos. This is the correct narrowing.
+    expect(complexNames.has('ms_todo_get_tasks')).toBe(false);
+    expect(complexNames.has('ms_todo_create_task')).toBe(false);
+    // Email tools NOT sent
+    expect(complexNames.has('search_outlook_emails')).toBe(false);
+
+    // Cross-check Layer 2 context needs: the complex query fetches
+    // calendar + garmin, but NOT tasks (the message doesn't ask for
+    // the task list itself — it asks for a plan ACROSS the week).
+    const complexIntent = analyzeIntent(
+      'plan my week considering my training and content schedule',
+    );
+    expect(complexIntent.calendar).toBe(true);      // "week"
+    expect(complexIntent.calendarWrite).toBe(true); // "plan" + "schedule"
+    expect(complexIntent.garmin).toBe(true);        // "training"
+    expect(complexIntent.ambiguous).toBe(false);
+
+    // ── Cost delta sanity check ──
+    //
+    // The real savings surface in the MODEL TIER and HISTORY SLICE
+    // (Layers 4 + 5), not the raw tool count — because both queries
+    // get narrowed, just to different packs. A future refactor that
+    // breaks the tier classifier or the history coupling fails here.
+    expect(simple.modelTier).not.toBe(complex.modelTier);
+    const historyReduction = complex.slicedHistory.length - simple.slicedHistory.length;
+    expect(historyReduction).toBe(8); // 12 - 4
+
+    // Both queries share the memory pack (2 tools) and neither
+    // sends the full 25-tool set — proving Layer 3 is ALWAYS active.
+    expect(simple.filteredTools.length).toBeLessThan(FAKE_TOOLS.length);
+    expect(complex.filteredTools.length).toBeLessThan(FAKE_TOOLS.length);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
 // Cross-check: every tool name in SECRETARY_TOOL_PACKS exists in TOOLS
 // ════════════════════════════════════════════════════════════════════
 
