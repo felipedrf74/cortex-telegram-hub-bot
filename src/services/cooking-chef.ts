@@ -120,6 +120,93 @@ export function deleteRecipe(userId: number, recipeId: number): boolean {
   return result.changes > 0;
 }
 
+/**
+ * Fetch a single recipe by id, scoped to user_id. Returns null
+ * if not found or owned by another user.
+ */
+export function getRecipeById(userId: number, recipeId: number): Recipe | null {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT * FROM recipes WHERE id = ? AND user_id = ?',
+  ).get(recipeId, userId) as any;
+  return row ? parseRecipe(row) : null;
+}
+
+/**
+ * Partial update — only the fields present in `updates` are written.
+ * Ingredients arrays are serialized to JSON before persisting (same
+ * convention as addRecipe). Returns the updated row, or null if no
+ * row matched (wrong id or cross-user write attempt).
+ *
+ * Always bumps updated_at on any successful write — drives the
+ * "most recently edited" sort order that `getRecipes` uses.
+ */
+export function updateRecipe(
+  userId: number,
+  recipeId: number,
+  updates: {
+    title?: string;
+    ingredients?: Ingredient[];
+    instructions?: string | null;
+    prepTime?: number | null;
+    cookTime?: number | null;
+    servings?: number;
+    tags?: string | null;
+    source?: string | null;
+  },
+): Recipe | null {
+  const db = getDb();
+
+  // Build the SET clause dynamically so we only touch fields the
+  // caller actually wants to change.
+  const setParts: string[] = [];
+  const params: any[] = [];
+
+  if (updates.title !== undefined) {
+    setParts.push('title = ?');
+    params.push(updates.title);
+  }
+  if (updates.ingredients !== undefined) {
+    setParts.push('ingredients = ?');
+    params.push(JSON.stringify(updates.ingredients));
+  }
+  if (updates.instructions !== undefined) {
+    setParts.push('instructions = ?');
+    params.push(updates.instructions);
+  }
+  if (updates.prepTime !== undefined) {
+    setParts.push('prep_time_min = ?');
+    params.push(updates.prepTime);
+  }
+  if (updates.cookTime !== undefined) {
+    setParts.push('cook_time_min = ?');
+    params.push(updates.cookTime);
+  }
+  if (updates.servings !== undefined) {
+    setParts.push('servings = ?');
+    params.push(updates.servings);
+  }
+  if (updates.tags !== undefined) {
+    setParts.push('tags = ?');
+    params.push(updates.tags);
+  }
+  if (updates.source !== undefined) {
+    setParts.push('source = ?');
+    params.push(updates.source);
+  }
+
+  if (setParts.length > 0) {
+    setParts.push("updated_at = datetime('now')");
+    const sql = `UPDATE recipes SET ${setParts.join(', ')} WHERE id = ? AND user_id = ?`;
+    params.push(recipeId, userId);
+    const result = db.prepare(sql).run(...params);
+    if (result.changes === 0) return null;
+    logger.info({ userId, recipeId }, 'Recipe updated');
+  }
+
+  return getRecipeById(userId, recipeId);
+}
+
 // ── Meal Planning ──────────────────────────────────────────────────
 
 export function setMealPlan(

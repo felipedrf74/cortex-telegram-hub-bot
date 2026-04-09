@@ -33,6 +33,8 @@ import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
   addRecipe,
   getRecipes,
+  getRecipeById,
+  updateRecipe,
   deleteRecipe,
   setMealPlan,
   getMealPlan,
@@ -40,7 +42,11 @@ import {
   generateShoppingList,
   getShoppingList,
   type Ingredient,
+  type Recipe,
 } from '../../services/cooking-chef';
+import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
+import { DateTime } from 'luxon';
+import { config } from '../../config';
 
 export function cookingRoutes(): Router {
   const router = Router();
@@ -104,6 +110,87 @@ export function cookingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS cooking recipe create failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to create recipe', 500);
+    }
+  }));
+
+  /**
+   * GET /api/v1/cooking/recipes/:id
+   * Fetch a single recipe. Used by the iOS RecipeDetailView when
+   * the user taps a row from the recipes list.
+   */
+  router.get('/recipes/:id', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const recipeId = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(recipeId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+
+    try {
+      const recipe = getRecipeById(userId, recipeId);
+      if (!recipe) {
+        sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
+        return;
+      }
+      sendSuccess(res, { recipe });
+    } catch (err: any) {
+      logger.error({ err, userId, recipeId }, 'iOS cooking recipe fetch failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch recipe', 500);
+    }
+  }));
+
+  /**
+   * PATCH /api/v1/cooking/recipes/:id
+   * Partial update. Only the fields present in the body are written.
+   * Returns 404 on missing or cross-user recipes.
+   */
+  router.patch('/recipes/:id', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const recipeId = parseInt(req.params.id, 10);
+    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source } = req.body;
+
+    if (Number.isNaN(recipeId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+
+    // Reject completely-empty bodies.
+    if (title === undefined && ingredients === undefined && instructions === undefined
+        && prepTime === undefined && cookTime === undefined && servings === undefined
+        && tags === undefined && source === undefined) {
+      sendError(res, 'BAD_REQUEST', 'At least one field must be provided');
+      return;
+    }
+
+    if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
+      sendError(res, 'BAD_REQUEST', 'title must be a non-empty string when provided');
+      return;
+    }
+    if (ingredients !== undefined && !Array.isArray(ingredients)) {
+      sendError(res, 'BAD_REQUEST', 'ingredients must be an array when provided');
+      return;
+    }
+
+    try {
+      const updated = updateRecipe(userId, recipeId, {
+        title: title !== undefined ? title.trim() : undefined,
+        ingredients: ingredients as Ingredient[] | undefined,
+        instructions,
+        prepTime,
+        cookTime,
+        servings,
+        tags,
+        source,
+      });
+      if (!updated) {
+        sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
+        return;
+      }
+      sendSuccess(res, { recipe: updated });
+    } catch (err: any) {
+      logger.error({ err, userId, recipeId }, 'iOS cooking recipe update failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to update recipe', 500);
     }
   }));
 
@@ -248,6 +335,151 @@ export function cookingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId, week }, 'iOS cooking shopping-list generate failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to generate shopping list', 500);
+    }
+  }));
+
+  // ─── Calendar integration (TASK-14 Phase 3) ──────────────────────
+
+  /**
+   * POST /api/v1/cooking/meal-plan/create-prep-event
+   * Body: {
+   *   week: YYYY-MM-DD,              // ISO Monday of the target week
+   *   dayOfWeek?: number,            // 0-6, 0=Sunday, default 0 (Sunday)
+   *   startHour?: number,            // 0-23, default 14 (2pm)
+   *   durationMinutes?: number,      // default 120 (2 hours)
+   * }
+   *
+   * Reads the week's meal plan, aggregates a "what to prep" summary
+   * from the planned recipes, and creates ONE calendar event via the
+   * unified-calendar service (auto-selects Outlook if configured,
+   * else Google). Returns the created event's metadata so the iOS
+   * UI can link out to it.
+   *
+   * The created event title is "Meal prep — <N meals>" and the
+   * description lists every planned meal for the week with its
+   * date and type. This gives the user a full context of what
+   * they're prepping without needing to flip back to the app.
+   *
+   * Rationale: user wanted to be asked before calendar events are
+   * created, not have them auto-created every time a meal is set.
+   * The iOS Cooking landing page shows a "Schedule prep" button
+   * that presents a confirmation sheet; tapping confirm hits this
+   * endpoint.
+   */
+  router.post('/meal-plan/create-prep-event', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const { week, dayOfWeek, startHour, durationMinutes } = req.body;
+
+    if (!week || typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
+      sendError(res, 'BAD_REQUEST', 'week is required and must be YYYY-MM-DD');
+      return;
+    }
+
+    // Defaults: Sunday at 14:00 for 120 minutes. These match what
+    // the iOS confirmation sheet shows as the default selection.
+    const dow = typeof dayOfWeek === 'number' && dayOfWeek >= 0 && dayOfWeek <= 6
+      ? dayOfWeek
+      : 0;
+    const hour = typeof startHour === 'number' && startHour >= 0 && startHour <= 23
+      ? startHour
+      : 14;
+    const duration = typeof durationMinutes === 'number' && durationMinutes > 0 && durationMinutes <= 480
+      ? durationMinutes
+      : 120;
+
+    if (!isAnyCalendarConfigured()) {
+      sendError(
+        res,
+        'CALENDAR_NOT_CONFIGURED',
+        'No calendar provider is configured. Connect Google Calendar or Outlook in Settings first.',
+        400,
+      );
+      return;
+    }
+
+    try {
+      // Compute the target week's Monday (parse `week` as a local date).
+      const tz = config.app.timezone;
+      const mondayDate = DateTime.fromISO(week, { zone: tz });
+      if (!mondayDate.isValid) {
+        sendError(res, 'BAD_REQUEST', `Invalid date: ${week}`);
+        return;
+      }
+
+      // Read the week's meal plan so we can summarize what's being prepped.
+      // Week ends on Sunday (6 days after Monday).
+      const weekEnd = mondayDate.plus({ days: 6 }).toFormat('yyyy-LL-dd');
+      const meals = getMealPlan(userId, week, weekEnd);
+
+      if (meals.length === 0) {
+        sendError(
+          res,
+          'NO_MEALS_PLANNED',
+          'No meals are planned for this week. Add some meals to the plan before scheduling prep.',
+          400,
+        );
+        return;
+      }
+
+      // Find the target day: dayOfWeek is 0-6 where 0=Sunday, so the
+      // target day within the ISO week (Monday=1, ..., Sunday=7) is
+      // computed as: Sunday→(Mon+6), Monday→(Mon+0), Tuesday→(Mon+1), etc.
+      // Simplest: offset from Monday. Sunday = 6, Monday = 0, ..., Saturday = 5.
+      const dayOffsetFromMonday = dow === 0 ? 6 : dow - 1;
+      const eventDay = mondayDate.plus({ days: dayOffsetFromMonday });
+
+      // Set the event time. Use the configured timezone explicitly so
+      // the event lands at the right local hour regardless of server TZ.
+      const startDt = eventDay.set({ hour, minute: 0, second: 0, millisecond: 0 });
+      const endDt = startDt.plus({ minutes: duration });
+
+      // Build a description that lists every planned meal for the week.
+      const mealLines = meals.map((m) => {
+        const mealDate = DateTime.fromISO(m.date).toFormat('EEE LLL d');
+        return `• ${mealDate} ${m.meal_type}: ${m.title}`;
+      });
+      const description = [
+        'Meal prep for the week. Planned meals:',
+        '',
+        ...mealLines,
+        '',
+        'Scheduled from Nexus Hub iOS — Cooking skill.',
+      ].join('\n');
+
+      const title = meals.length === 1
+        ? `Meal prep — ${meals[0].title}`
+        : `Meal prep — ${meals.length} meals`;
+
+      // unified-calendar uses ISO strings that the underlying Google
+      // API interprets with the event's timeZone field. Our helper
+      // passes config.app.timezone for the timeZone, so ISO without
+      // offset works correctly.
+      const event = await createCalendarEvent({
+        title,
+        start: startDt.toISO() || startDt.toFormat("yyyy-LL-dd'T'HH:mm:ss"),
+        end: endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss"),
+        description,
+      });
+
+      logger.info(
+        { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },
+        'iOS meal prep calendar event created',
+      );
+
+      sendSuccess(res, {
+        event: {
+          id: event.id,
+          title: event.summary,
+          start: event.start,
+          end: event.end,
+          source: event.source,
+          htmlLink: event.htmlLink,
+        },
+        mealCount: meals.length,
+      });
+    } catch (err: any) {
+      logger.error({ err, userId, week }, 'iOS meal prep event creation failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to create prep event', 500);
     }
   }));
 
