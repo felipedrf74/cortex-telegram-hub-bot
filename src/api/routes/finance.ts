@@ -425,13 +425,20 @@ DO NOT include any explanation, markdown, or code fences. Return only the JSON.`
       : 'Parse this receipt and extract the structured fields.';
 
     // ── Call Gemini ───────────────────────────────────────────
+    // April 9 2026: pass `userId` so the cost row in api_usage
+    // attributes this call to the real user. Before the A1 fix
+    // that persisted user_id in the INSERT, this was pointless —
+    // the column existed but was never written. Now that it's
+    // wired, we can actually enforce per-user caps on receipt
+    // parsing and attribute the cost to the right person for
+    // the pricing model math.
     try {
       const rawText = await completeVisionOneShot(
         systemPrompt,
         userPrompt,
         { base64: imageBase64, mimeType },
         'parse-receipt',   // usage category for logGeminiUsage
-        { maxTokens: 512, temperature: 0.1 },
+        { maxTokens: 512, temperature: 0.1, userId },
       );
 
       // Gemini sometimes wraps JSON in ```json fences even when told

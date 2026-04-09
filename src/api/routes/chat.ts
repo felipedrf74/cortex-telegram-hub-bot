@@ -184,8 +184,13 @@ export function chatRoutes(): Router {
         } catch { /* conversation state not available */ }
       }
 
-      // Route the message (handles both commands and natural language)
-      const route = await routeMessage(text, activeContext);
+      // Route the message (handles both commands and natural language).
+      // April 9 2026: thread userId into routeMessage so the classifier
+      // cost row in api_usage attributes this call to the real user
+      // instead of user_id=0. Without this, every iOS chat message's
+      // classification cost was orphaned under user_id=0 and the
+      // per-user cap (isUserOverDailyCap) couldn't see the spend.
+      const route = await routeMessage(text, activeContext, userId);
       logger.info({ domain: route.domain, method: route.method, confidence: route.confidence, platform: 'ios' }, 'iOS message routed');
 
       // Track domain for continuity

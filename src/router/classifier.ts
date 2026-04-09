@@ -89,11 +89,21 @@ export function buildClassifierHints(): string {
 
 // ─── Claude-based classification ────────────────────────────────────
 
+/**
+ * Route a user message through Claude classification.
+ *
+ * April 9 2026: added optional `userId` so the downstream
+ * `trackedCreate` / `completeOneShotWithFallback` calls attribute
+ * the classification cost row to the real user. Callers that don't
+ * have a user in scope (tests, scheduled jobs) can omit it and the
+ * row falls back to `user_id = 0` as before.
+ */
 export async function classifyWithClaude(
   message: string,
   activeContext?: ConversationContext | null,
+  userId?: number,
 ): Promise<ClassificationResult> {
-  const result = await classifyMessage(message, activeContext ?? undefined);
+  const result = await classifyMessage(message, activeContext ?? undefined, userId);
   logger.debug({ result }, 'Claude classification result');
   return result;
 }

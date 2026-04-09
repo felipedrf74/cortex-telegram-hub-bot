@@ -33,9 +33,22 @@ export function isSystemCommand(message: string): string | null {
   return null;
 }
 
+/**
+ * Route a user message to the right domain.
+ *
+ * Three-stage pipeline:
+ *   1. Pattern match (free, exact slash commands)
+ *   2. Keyword match (free, noun-based fast path)
+ *   3. Claude/Gemini classification (paid, for ambiguous messages)
+ *
+ * April 9 2026: added optional `userId` so stage 3 can attribute
+ * the classification cost row to the real user in `api_usage`.
+ * Stages 1 and 2 are free and don't need the user id.
+ */
 export async function routeMessage(
   message: string,
   activeContext?: ConversationContext | null,
+  userId?: number,
 ): Promise<RouteResult> {
   // Step 1: Try pattern matching (explicit /commands always win)
   const patternDomain = patternMatch(message);
@@ -65,7 +78,8 @@ export async function routeMessage(
 
   // Step 3: Claude classifier for genuinely ambiguous messages.
   // Pass activeContext if available so the classifier has conversation history.
-  const classification = await classifyWithClaude(message, activeContext ?? undefined);
+  // Pass userId so the api_usage row attributes the cost to the caller.
+  const classification = await classifyWithClaude(message, activeContext ?? undefined, userId);
   logger.debug(
     { domain: classification.domain, confidence: classification.confidence, method: 'classifier', hadActiveContext: !!activeContext },
     'Routed by classifier',

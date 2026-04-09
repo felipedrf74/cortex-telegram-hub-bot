@@ -305,10 +305,15 @@ describe('Integration: Claude classifier → domain handler', () => {
     expect(route.domain).toBe('triathlon');
     expect(route.confidence).toBe(0.92);
 
-    // Verify classifyMessage was called with context
+    // Verify classifyMessage was called with context.
+    // April 9 2026: third arg is the new optional `userId` — undefined
+    // here because this integration test doesn't exercise the
+    // per-user attribution path. Routes that DO attribute (iOS chat,
+    // future Telegram handlers) pass the real userId through.
     expect(mockClassifyMessage).toHaveBeenCalledWith(
       'move it to Wednesday',
       activeContext,
+      undefined,
     );
   });
 
@@ -845,7 +850,8 @@ describe('Integration: Classification tier priority', () => {
     const route = await routeMessage('I feel creative today');
     expect(route.method).toBe('classifier');
     expect(route.domain).toBe('content');
-    expect(mockClassifyMessage).toHaveBeenCalledWith('I feel creative today', undefined);
+    // Third arg: new optional `userId` (see April 9 2026 note above)
+    expect(mockClassifyMessage).toHaveBeenCalledWith('I feel creative today', undefined, undefined);
   });
 });
 
@@ -1008,7 +1014,8 @@ describe('Scenario: Ambiguous message → Haiku classifier → most likely domai
     expect(route.confidence).toBe(0.72);
 
     // Verify classifier was called (Haiku in production, mocked here)
-    expect(mockClassifyMessage).toHaveBeenCalledWith('como estou indo?', undefined);
+    // Third arg: new optional `userId` (see April 9 2026 note above)
+    expect(mockClassifyMessage).toHaveBeenCalledWith('como estou indo?', undefined, undefined);
   });
 
   it('classifier respects minimum confidence threshold', async () => {
@@ -1042,7 +1049,8 @@ describe('Scenario: Ambiguous message → Haiku classifier → most likely domai
     expect(route.confidence).toBe(0.88);
 
     // Verify context was passed to classifier
-    expect(mockClassifyMessage).toHaveBeenCalledWith('sim, para 4 pessoas', activeContext);
+    // Third arg: new optional `userId` (see April 9 2026 note above)
+    expect(mockClassifyMessage).toHaveBeenCalledWith('sim, para 4 pessoas', activeContext, undefined);
   });
 });
 

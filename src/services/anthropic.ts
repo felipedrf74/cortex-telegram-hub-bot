@@ -448,7 +448,8 @@ When uncertain between calendar and task, prefer "task".`;
 export async function classifyAndExtractImage(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
-  caption?: string
+  caption?: string,
+  userId?: number,
 ): Promise<ImageClassificationResult> {
   const today = new Date().toISOString().split('T')[0];
   const currentYear = new Date().getFullYear();
@@ -479,7 +480,7 @@ export async function classifyAndExtractImage(
           { type: 'text', text: userPrompt },
         ],
       }],
-    }, 'classify_image');
+    }, 'classify_image', { userId });
     stopReason = response.stop_reason;
     return response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -495,7 +496,7 @@ export async function classifyAndExtractImage(
       { base64: imageBase64, mimeType: mediaType },
       'classify_image',
       anthropicFallback,
-      { maxTokens: 4096, temperature: 0 },
+      { maxTokens: 4096, temperature: 0, userId },
     );
     rawText = result.text;
   } else {
@@ -689,6 +690,7 @@ function getMaxTokensForDomain(domain: DomainName): number {
 export async function classifyMessage(
   message: string,
   activeConversationContext?: { domain: DomainName; lastAssistantMessage: string } | null,
+  userId?: number,
 ): Promise<{ domain: DomainName; confidence: number }> {
   try {
     // Build the classifier input — include active conversation context if available
@@ -723,13 +725,13 @@ ${message}`;
           max_tokens: 100,
           system: systemPrompt,
           messages: [{ role: 'user', content: classifierInput }],
-        }, 'classify_message');
+        }, 'classify_message', { userId });
         return response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)
           .join('');
       },
-      { model: config.gemini.classifierModel, maxTokens: 100, temperature: 0 },
+      { model: config.gemini.classifierModel, maxTokens: 100, temperature: 0, userId },
     );
 
     // Strip markdown code fences (either provider may wrap JSON)
