@@ -49,6 +49,8 @@ import { escapeHtml } from '../utils/telegram-formatter';
 import type { DomainName, DomainResponse } from '../domains/types';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
+import type { Lang } from '../utils/i18n';
+import { getUserLanguage } from './user-service';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -63,8 +65,12 @@ export interface FastpathResult {
 interface PatternEntry {
   id: string;
   pattern: RegExp;
-  /** Returns the formatted response. May throw — caller catches and falls through to AI. */
-  handler: (userId: number, match: RegExpMatchArray) => Promise<DomainResponse>;
+  /**
+   * Returns the formatted response. Receives `lang` so the handler can
+   * pick localized copy. May throw — caller catches and falls through
+   * to the AI pipeline.
+   */
+  handler: (userId: number, match: RegExpMatchArray, lang: Lang) => Promise<DomainResponse>;
   /** Optional sub-skill the pattern depends on. If disabled, the pattern is skipped. */
   requires?: 'tasks' | 'calendar' | 'email' | 'reminders';
 }
@@ -72,6 +78,139 @@ interface PatternEntry {
 // ─── Helpers ────────────────────────────────────────────────────────
 
 const SECRETARY: DomainName = 'secretary';
+
+// ─── Bilingual copy table ───────────────────────────────────────────
+//
+// Added April 2026 to support the iOS LanguageRouter + Telegram
+// per-user language preference. Every user-facing string the fastpath
+// emits flows through this table so a single switch on `lang` picks
+// the correct template.
+//
+// Adding a new key: add it to BOTH 'pt-BR' and 'en-US' columns. The
+// `Copy` type is exhaustive so a missing key is a compile error, not
+// a runtime fallthrough.
+
+type CopyKey =
+  | 'agendaHeader'
+  | 'agendaEmpty'
+  | 'tasksHeader'
+  | 'tasksPending'
+  | 'tasksOverdue'
+  | 'tasksDueToday'
+  | 'remindersHeader'
+  | 'emailsHeader'
+  | 'emailsUnreadSuffix'
+  | 'weekHeader'
+  | 'weekFree'
+  | 'pendingTasksHeader'
+  | 'pendingTasksEmpty'
+  | 'moreTasksSuffix'
+  | 'tasksErrorFetch'
+  | 'overdueHeader'
+  | 'overdueHeaderPlural'
+  | 'overdueEmpty'
+  | 'overdueDueLabel'
+  | 'emailConfigMissing'
+  | 'inboxClean'
+  | 'emailUnreadLine'
+  | 'reminderInvalidTime'
+  | 'reminderSavedError'
+  | 'reminderSetPrefix'
+  | 'reminderDayToday'
+  | 'reminderDayTomorrow'
+  | 'taskCreated'
+  | 'taskCreateError'
+  | 'taskCreateErrorDetail'
+  | 'taskCreateNoList'
+  | 'taskEmptyTitle';
+
+interface DayNamesCopy {
+  dayNames: readonly [string, string, string, string, string, string, string];
+}
+
+type Copy = Record<CopyKey, string> & DayNamesCopy;
+
+const COPY: Record<Lang, Copy> = {
+  'pt-BR': {
+    agendaHeader: 'AGENDA:',
+    agendaEmpty: 'Sem eventos hoje',
+    tasksHeader: 'TAREFAS:',
+    tasksPending: 'pendentes',
+    tasksOverdue: 'atrasadas',
+    tasksDueToday: 'Para hoje:',
+    remindersHeader: 'LEMBRETES:',
+    emailsHeader: 'E-MAILS:',
+    emailsUnreadSuffix: 'não lidos',
+    weekHeader: 'SEMANA',
+    weekFree: 'livre',
+    pendingTasksHeader: 'Tarefas Pendentes',
+    pendingTasksEmpty: '✅ Sem tarefas pendentes!',
+    moreTasksSuffix: 'mais',
+    tasksErrorFetch: '⚠️ Erro ao buscar tarefas. Tente novamente em instantes.',
+    overdueHeader: 'Tarefa Atrasada',
+    overdueHeaderPlural: 'Tarefas Atrasadas',
+    overdueEmpty: '✅ Nenhuma tarefa atrasada!',
+    overdueDueLabel: 'prazo:',
+    emailConfigMissing: '⚠️ Email não configurado. Use /connect outlook para vincular.',
+    inboxClean: '📧 Caixa de entrada limpa! ✨',
+    emailUnreadLine: '📧 Você tem <b>%COUNT%</b> e-mail%S% não lido%S%.',
+    reminderInvalidTime: '❌ Horário inválido:',
+    reminderSavedError: '⚠️ Erro ao salvar lembrete.',
+    reminderSetPrefix: '⏰ Lembrete definido para',
+    reminderDayToday: 'hoje',
+    reminderDayTomorrow: 'amanhã',
+    taskCreated: '✅ Tarefa criada em',
+    taskCreateError: '⚠️ Erro ao criar tarefa. Tente novamente.',
+    taskCreateErrorDetail: '⚠️ Erro ao criar tarefa:',
+    taskCreateNoList: '⚠️ Lista padrão do Microsoft To Do não encontrada. Configure em /settings.',
+    taskEmptyTitle: '❌ Título da tarefa não pode estar vazio.',
+    dayNames: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'],
+  },
+  'en-US': {
+    agendaHeader: 'AGENDA:',
+    agendaEmpty: 'No events today',
+    tasksHeader: 'TASKS:',
+    tasksPending: 'pending',
+    tasksOverdue: 'overdue',
+    tasksDueToday: 'Due today:',
+    remindersHeader: 'REMINDERS:',
+    emailsHeader: 'EMAILS:',
+    emailsUnreadSuffix: 'unread',
+    weekHeader: 'WEEK',
+    weekFree: 'free',
+    pendingTasksHeader: 'Pending Tasks',
+    pendingTasksEmpty: '✅ No pending tasks!',
+    moreTasksSuffix: 'more',
+    tasksErrorFetch: '⚠️ Couldn\'t fetch tasks. Please try again shortly.',
+    overdueHeader: 'Overdue Task',
+    overdueHeaderPlural: 'Overdue Tasks',
+    overdueEmpty: '✅ No overdue tasks!',
+    overdueDueLabel: 'due:',
+    emailConfigMissing: '⚠️ Email not configured. Use /connect outlook to link.',
+    inboxClean: '📧 Inbox clean! ✨',
+    emailUnreadLine: '📧 You have <b>%COUNT%</b> unread email%S%.',
+    reminderInvalidTime: '❌ Invalid time:',
+    reminderSavedError: '⚠️ Couldn\'t save reminder.',
+    reminderSetPrefix: '⏰ Reminder set for',
+    reminderDayToday: 'today',
+    reminderDayTomorrow: 'tomorrow',
+    taskCreated: '✅ Task created in',
+    taskCreateError: '⚠️ Couldn\'t create task. Try again.',
+    taskCreateErrorDetail: '⚠️ Couldn\'t create task:',
+    taskCreateNoList: '⚠️ Microsoft To Do default list not found. Configure in /settings.',
+    taskEmptyTitle: '❌ Task title cannot be empty.',
+    dayNames: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+  },
+};
+
+/**
+ * Returns the date-fns-style locale code for a given app Lang.
+ * Used for toLocaleDateString() when we want the user's language to
+ * drive the numeric date formatting ("04/09/2026" vs "09/04/2026").
+ */
+function localeForLang(lang: Lang): string {
+  return lang === 'pt-BR' ? 'pt-BR' : 'en-US';
+}
 
 /**
  * Filter a task list to those due today, in the configured timezone.
@@ -155,7 +294,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   {
     id: 'day_overview',
     pattern: /^(?:what(?:'s| is) my day|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|qual(?:'s)? minha agenda(?: hoje)?)[\s?!.]*$/i,
-    handler: async (userId) => {
+    handler: async (userId, _match, lang) => {
+      const c = COPY[lang];
       const tasksOk = isSubmoduleEnabled('secretary', 'tasks');
       const calOk = isSubmoduleEnabled('secretary', 'calendar');
       const emailOk = isSubmoduleEnabled('secretary', 'email');
@@ -171,17 +311,23 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         remOk ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
       ]);
 
-      const todayStr = now().toFormat('cccc, dd LLLL yyyy');
+      // Date header in the user's locale. PT-BR puts day before
+      // month ("terça, 09 abril 2026"); EN puts month before day
+      // ("Tuesday, April 09 2026"). Luxon reads the TOKENS but
+      // the LOCALE of the formatter is set via .setLocale().
+      const todayStr = now()
+        .setLocale(localeForLang(lang))
+        .toFormat(lang === 'pt-BR' ? 'cccc, dd LLLL yyyy' : 'cccc, LLLL dd yyyy');
       let msg = `📅 <b>${todayStr}</b>\n\n`;
 
       // Calendar events block
       if (events.length > 0) {
-        msg += `📋 <b>AGENDA:</b>\n`;
+        msg += `📋 <b>${c.agendaHeader}</b>\n`;
         for (const e of events) {
           msg += `▸ ${formatTime(e.start)}–${formatTime(e.end)}  ${escapeHtml(e.summary)}\n`;
         }
       } else if (calOk && isAnyCalendarConfigured()) {
-        msg += `📋 <b>AGENDA:</b> Sem eventos hoje\n`;
+        msg += `📋 <b>${c.agendaHeader}</b> ${c.agendaEmpty}\n`;
       }
 
       // Tasks block
@@ -190,10 +336,10 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         const overdue = filterOverdue(tasks);
         const dueToday = filterDueToday(tasks);
 
-        msg += `\n📌 <b>TAREFAS:</b> ${tasks.length} pendentes`;
-        if (overdue.length > 0) msg += ` | ⚠️ ${overdue.length} atrasadas`;
+        msg += `\n📌 <b>${c.tasksHeader}</b> ${tasks.length} ${c.tasksPending}`;
+        if (overdue.length > 0) msg += ` | ⚠️ ${overdue.length} ${c.tasksOverdue}`;
         if (dueToday.length > 0) {
-          msg += `\n<b>Para hoje:</b>\n`;
+          msg += `\n<b>${c.tasksDueToday}</b>\n`;
           for (const t of dueToday.slice(0, 5)) {
             msg += `▸ ${escapeHtml(t.title)}\n`;
           }
@@ -204,7 +350,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
 
       // Reminders block
       if (reminders.length > 0) {
-        msg += `\n⏰ <b>LEMBRETES:</b>\n`;
+        msg += `\n⏰ <b>${c.remindersHeader}</b>\n`;
         for (const r of reminders.slice(0, 5)) {
           msg += `▸ ${formatTime(r.remind_at)} ${escapeHtml(r.message)}\n`;
         }
@@ -214,7 +360,9 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       if (emailOk && isOutlookMailConfigured()) {
         try {
           const unread = await getUnreadCount();
-          if (unread && unread > 0) msg += `\n📧 <b>E-MAILS:</b> ${unread} não lidos\n`;
+          if (unread && unread > 0) {
+            msg += `\n📧 <b>${c.emailsHeader}</b> ${unread} ${c.emailsUnreadSuffix}\n`;
+          }
         } catch { /* silent */ }
       }
 
@@ -228,13 +376,13 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'week_overview',
     pattern: /^(?:what(?:'s| is) my week|(?:show|mostra) (?:my |a |minha )?(?:week|semana)|(?:como|o que)(?: está)? (?:a |minha )?semana|\/week|this week|esta semana)[\s?!.]*$/i,
     requires: 'calendar',
-    handler: async (_userId) => {
+    handler: async (_userId, _match, lang) => {
+      const c = COPY[lang];
       const events = isAnyCalendarConfigured()
         ? await getEvents(startOfWeek(), endOfWeek()).catch(() => [])
         : [];
 
-      const dayNames = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
-      let msg = `📅 <b>SEMANA</b>\n\n`;
+      let msg = `📅 <b>${c.weekHeader}</b>\n\n`;
 
       // Group by yyyy-MM-dd in the configured timezone
       const byDay = new Map<string, typeof events>();
@@ -250,7 +398,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         const d = weekStart.plus({ days: i });
         const dateStr = d.toFormat('yyyy-MM-dd');
         const dayEvents = byDay.get(dateStr) || [];
-        const dayLabel = dayNames[i];
+        const dayLabel = c.dayNames[i];
         const dateLabel = d.toFormat('dd/MM');
 
         if (dayEvents.length > 0) {
@@ -259,7 +407,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
             msg += `  ▸ ${formatTime(e.start)} ${escapeHtml(e.summary)}\n`;
           }
         } else {
-          msg += `<b>${dayLabel} ${dateLabel}</b> — livre\n`;
+          msg += `<b>${dayLabel} ${dateLabel}</b> — ${c.weekFree}\n`;
         }
       }
 
@@ -273,7 +421,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'show_tasks',
     pattern: /^(?:show|list|mostra|lista) (?:my |minhas? )?(?:tasks?|todos?|tarefas?)[\s?!.]*$|^\/(?:tasks?|todos?)[\s?!.]*$/i,
     requires: 'tasks',
-    handler: async (_userId) => {
+    handler: async (_userId, _match, lang) => {
+      const c = COPY[lang];
       const result = await getAllPendingTasks().catch(() => ({
         success: false as const,
         data: [],
@@ -281,28 +430,29 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       }));
 
       if (!result.success) {
-        return { text: '⚠️ Erro ao buscar tarefas. Tente novamente em instantes.', domain: SECRETARY };
+        return { text: c.tasksErrorFetch, domain: SECRETARY };
       }
       if (result.data.length === 0) {
-        return { text: '✅ Sem tarefas pendentes!', domain: SECRETARY };
+        return { text: c.pendingTasksEmpty, domain: SECRETARY };
       }
 
-      let msg = `📋 <b>Tarefas Pendentes</b> (${result.data.length})\n\n`;
+      let msg = `📋 <b>${c.pendingTasksHeader}</b> (${result.data.length})\n\n`;
       const byList = new Map<string, TodoTask[]>();
       for (const t of result.data) {
         if (!byList.has(t.listName)) byList.set(t.listName, []);
         byList.get(t.listName)!.push(t);
       }
 
+      const locale = localeForLang(lang);
       for (const [listName, tasks] of byList) {
         msg += `<b>${escapeHtml(listName)}</b> (${tasks.length})\n`;
         for (const t of tasks.slice(0, 10)) {
           const dueLabel = t.dueDateTime
-            ? ` 📅 ${new Date(t.dueDateTime).toLocaleDateString('pt-BR')}`
+            ? ` 📅 ${new Date(t.dueDateTime).toLocaleDateString(locale)}`
             : '';
           msg += `  ▸ ${escapeHtml(t.title)}${dueLabel}\n`;
         }
-        if (tasks.length > 10) msg += `  ... +${tasks.length - 10} mais\n`;
+        if (tasks.length > 10) msg += `  ... +${tasks.length - 10} ${c.moreTasksSuffix}\n`;
         msg += '\n';
       }
 
@@ -316,18 +466,23 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'unread_emails',
     pattern: /^(?:(?:how many )?unread(?: emails?)?|(?:quantos? )?(?:e-?mails? )?não lidos?|check (?:my )?(?:e-?)?mails?|inbox|\/(?:unread|mail|inbox))[\s?!.]*$/i,
     requires: 'email',
-    handler: async (_userId) => {
+    handler: async (_userId, _match, lang) => {
+      const c = COPY[lang];
       if (!isOutlookMailConfigured()) {
-        return {
-          text: '⚠️ Email não configurado. Use /connect outlook para vincular.',
-          domain: SECRETARY,
-        };
+        return { text: c.emailConfigMissing, domain: SECRETARY };
       }
       const count = await getUnreadCount();
-      const msg = count > 0
-        ? `📧 Você tem <b>${count}</b> e-mail${count > 1 ? 's' : ''} não lido${count > 1 ? 's' : ''}.`
-        : `📧 Caixa de entrada limpa! ✨`;
-      return { text: msg, domain: SECRETARY };
+      if (count === 0) {
+        return { text: c.inboxClean, domain: SECRETARY };
+      }
+      // The EN line doesn't need the Portuguese "email/emails" suffix
+      // agreement AND the "não lido/não lidos" adjective agreement,
+      // but we keep %S% in the template so a single replace handles
+      // both languages cleanly.
+      const text = c.emailUnreadLine
+        .replace('%COUNT%', String(count))
+        .replace(/%S%/g, count > 1 ? 's' : '');
+      return { text, domain: SECRETARY };
     },
   },
 
@@ -337,27 +492,30 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'overdue_tasks',
     pattern: /^(?:overdue|show overdue|atrasad[ao]s?|tarefas? atrasad[ao]s?|\/overdue)[\s?!.]*$/i,
     requires: 'tasks',
-    handler: async (_userId) => {
+    handler: async (_userId, _match, lang) => {
+      const c = COPY[lang];
       const result = await getAllPendingTasks().catch(() => ({
         success: false as const,
         data: [],
         error: 'API error',
       }));
       if (!result.success) {
-        return { text: '⚠️ Erro ao buscar tarefas.', domain: SECRETARY };
+        return { text: c.tasksErrorFetch, domain: SECRETARY };
       }
 
       const overdue = filterOverdue(result.data);
       if (overdue.length === 0) {
-        return { text: '✅ Nenhuma tarefa atrasada!', domain: SECRETARY };
+        return { text: c.overdueEmpty, domain: SECRETARY };
       }
 
-      let msg = `⚠️ <b>${overdue.length} Tarefa${overdue.length > 1 ? 's' : ''} Atrasada${overdue.length > 1 ? 's' : ''}</b>\n\n`;
+      const header = overdue.length > 1 ? c.overdueHeaderPlural : c.overdueHeader;
+      let msg = `⚠️ <b>${overdue.length} ${header}</b>\n\n`;
+      const locale = localeForLang(lang);
       for (const t of overdue.slice(0, 10)) {
-        const d = new Date(t.dueDateTime!).toLocaleDateString('pt-BR');
-        msg += `▸ ${escapeHtml(t.title)} <i>(prazo: ${d})</i>\n`;
+        const d = new Date(t.dueDateTime!).toLocaleDateString(locale);
+        msg += `▸ ${escapeHtml(t.title)} <i>(${c.overdueDueLabel} ${d})</i>\n`;
       }
-      if (overdue.length > 10) msg += `\n... +${overdue.length - 10} mais`;
+      if (overdue.length > 10) msg += `\n... +${overdue.length - 10} ${c.moreTasksSuffix}`;
 
       return { text: msg.trim(), domain: SECRETARY };
     },
@@ -371,13 +529,14 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'set_reminder',
     pattern: /^(?:remind(?:er)?(?:\s+me)?|lembra?(?:\s+me)?|avisa?(?:\s+me)?)(?:\s+(?:at|às|as))?\s+(\d{1,2}[:.]\d{2})\s*[:-]?\s*(.+)$/i,
     requires: 'reminders',
-    handler: async (userId, match) => {
+    handler: async (userId, match, lang) => {
+      const c = COPY[lang];
       const timeStr = match[1].replace('.', ':');
       const message = match[2].trim();
       const [h, m] = timeStr.split(':').map(Number);
 
       if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) {
-        return { text: `❌ Horário inválido: ${timeStr}`, domain: SECRETARY };
+        return { text: `${c.reminderInvalidTime} ${timeStr}`, domain: SECRETARY };
       }
 
       // If the requested time has already passed today, schedule for tomorrow
@@ -390,12 +549,14 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         setReminder(userId, { message, remind_at: remindAt.toISO()! });
       } catch (err) {
         logger.warn({ err, userId }, 'fastpath set_reminder DB write failed');
-        return { text: '⚠️ Erro ao salvar lembrete.', domain: SECRETARY };
+        return { text: c.reminderSavedError, domain: SECRETARY };
       }
 
-      const dayLabel = remindAt.toFormat('dd/MM') === now().toFormat('dd/MM') ? 'hoje' : 'amanhã';
+      const dayLabel = remindAt.toFormat('dd/MM') === now().toFormat('dd/MM')
+        ? c.reminderDayToday
+        : c.reminderDayTomorrow;
       return {
-        text: `⏰ Lembrete definido para <b>${timeStr}</b> (${dayLabel}): ${escapeHtml(message)}`,
+        text: `${c.reminderSetPrefix} <b>${timeStr}</b> (${dayLabel}): ${escapeHtml(message)}`,
         domain: SECRETARY,
       };
     },
@@ -409,40 +570,68 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'quick_add_task',
     pattern: /^(?:add task|nova tarefa|adicionar? tarefa)[:\s]+(.+)$/i,
     requires: 'tasks',
-    handler: async (_userId, match) => {
+    handler: async (_userId, match, lang) => {
+      const c = COPY[lang];
       const title = match[1].trim();
       if (!title) {
-        return { text: '❌ Título da tarefa não pode estar vazio.', domain: SECRETARY };
+        return { text: c.taskEmptyTitle, domain: SECRETARY };
       }
 
       try {
         const list = await getDefaultList();
         if (!list) {
-          return {
-            text: '⚠️ Lista padrão do Microsoft To Do não encontrada. Configure em /settings.',
-            domain: SECRETARY,
-          };
+          return { text: c.taskCreateNoList, domain: SECRETARY };
         }
         const result = await createTask(list.id, list.displayName, { title });
         if (!result.success) {
           return {
-            text: `⚠️ Erro ao criar tarefa: ${result.error || 'desconhecido'}`,
+            text: `${c.taskCreateErrorDetail} ${result.error || 'unknown'}`,
             domain: SECRETARY,
           };
         }
         return {
-          text: `✅ Tarefa criada em <b>${escapeHtml(list.displayName)}</b>: ${escapeHtml(title)}`,
+          text: `${c.taskCreated} <b>${escapeHtml(list.displayName)}</b>: ${escapeHtml(title)}`,
           domain: SECRETARY,
         };
       } catch (err) {
         logger.warn({ err }, 'fastpath quick_add_task failed');
-        return { text: `⚠️ Erro ao criar tarefa. Tente novamente.`, domain: SECRETARY };
+        return { text: c.taskCreateError, domain: SECRETARY };
       }
     },
   },
 ];
 
 // ─── Public API ─────────────────────────────────────────────────────
+
+/**
+ * Resolve the language to use for a fastpath response.
+ *
+ * Priority:
+ *   1. Explicit `langOverride` (used by the iOS chat route after it
+ *      reads the X-Language header and calls setUserLanguage as a
+ *      side effect — the override avoids re-querying the DB in the
+ *      hot path).
+ *   2. `getUserLanguage(userId)` from the SQLite user row. This
+ *      reflects both the Telegram `/language` command preference
+ *      AND the iOS X-Language header (because the iOS chat route
+ *      writes through to setUserLanguage at the request boundary).
+ *   3. Default 'pt-BR' (legacy app default) for anonymous callers
+ *      and tests that don't provide a userId.
+ *
+ * Wrapped in try/catch because `user-service` reads SQLite — if the
+ * DB is unavailable we'd rather respond in pt-BR than crash the
+ * fastpath.
+ */
+function resolveLang(userId: number, langOverride?: Lang): Lang {
+  if (langOverride) return langOverride;
+  if (!userId) return 'pt-BR';
+  try {
+    return getUserLanguage(userId);
+  } catch (err) {
+    logger.debug({ err, userId }, 'fastpath: getUserLanguage lookup failed, defaulting to pt-BR');
+    return 'pt-BR';
+  }
+}
 
 /**
  * Try to handle a secretary message via fastpath (zero AI tokens).
@@ -456,13 +645,26 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
  *     the existing AI path, never to a hard failure.
  *   - Pattern requires a sub-skill that's disabled → pattern is skipped,
  *     next pattern is tried. Same fall-through to AI if nothing matches.
+ *
+ * Language handling:
+ *   - If `langOverride` is passed (iOS route → X-Language header),
+ *     that wins unconditionally.
+ *   - Otherwise we read `getUserLanguage(userId)` from the DB, which
+ *     is kept in sync by the iOS chat route's setUserLanguage call
+ *     and by the Telegram /language command. Telegram users get
+ *     their preferred language automatically.
  */
-export async function tryFastpath(userId: number, message: string): Promise<FastpathResult> {
+export async function tryFastpath(
+  userId: number,
+  message: string,
+  langOverride?: Lang,
+): Promise<FastpathResult> {
   _metrics.totalAttempts++;
   const trimmed = message.trim();
   if (!trimmed) return { matched: false };
 
   const startedAt = Date.now();
+  const lang = resolveLang(userId, langOverride);
 
   for (const entry of FASTPATH_PATTERNS) {
     const match = trimmed.match(entry.pattern);
@@ -475,13 +677,13 @@ export async function tryFastpath(userId: number, message: string): Promise<Fast
     }
 
     try {
-      const response = await entry.handler(userId, match);
+      const response = await entry.handler(userId, match, lang);
       const latency = Date.now() - startedAt;
       _metrics.totalHits++;
       _metrics.totalLatencyMs += latency;
       _metrics.hitsByPattern[entry.id] = (_metrics.hitsByPattern[entry.id] || 0) + 1;
       logger.info(
-        { userId, pattern: entry.id, latencyMs: latency },
+        { userId, pattern: entry.id, lang, latencyMs: latency },
         'Secretary fastpath matched',
       );
       return { matched: true, response, patternId: entry.id };
@@ -500,4 +702,24 @@ export async function tryFastpath(userId: number, message: string): Promise<Fast
 /** Get all registered fastpath pattern IDs (for portal display + tests). */
 export function getFastpathPatterns(): string[] {
   return FASTPATH_PATTERNS.map((p) => p.id);
+}
+
+/**
+ * Normalize an inbound `X-Language` HTTP header value into the
+ * internal `Lang` type. The iOS `LanguageRouter` sends "pt-BR" or
+ * "en"; we also accept common aliases defensively. Unknown values
+ * fall back to 'pt-BR' (the legacy app default).
+ *
+ * Exported so the iOS chat route can call it at the request
+ * boundary without importing the full i18n layer.
+ */
+export function normalizeLangHeader(
+  header: string | string[] | undefined,
+): Lang {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (!raw) return 'pt-BR';
+  const lower = raw.toLowerCase();
+  if (lower.startsWith('pt')) return 'pt-BR';
+  if (lower.startsWith('en')) return 'en-US';
+  return 'pt-BR';
 }

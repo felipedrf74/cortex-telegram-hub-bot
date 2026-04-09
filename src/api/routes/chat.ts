@@ -64,6 +64,48 @@ export function chatRoutes(): Router {
       return;
     }
 
+    // ── X-Language header handling (April 2026) ─────────────────
+    // The iOS app's `LanguageRouter` auto-detects the user's
+    // language from the chat input and sends the result as an
+    // X-Language header ("pt-BR" / "en"). We normalize it and
+    // write through to `setUserLanguage` at the REQUEST boundary
+    // so every downstream caller (`handleSecretary` → fastpath →
+    // prompt injection) reads the most recent language via the
+    // same `getUserLanguage` call they already use.
+    //
+    // Writing to the DB instead of threading `lang` through every
+    // function signature means:
+    //   (a) The Telegram handler keeps working unchanged — it
+    //       reads the same user row as the iOS route.
+    //   (b) The preference survives across sessions and devices.
+    //   (c) Future features (notifications, email templates,
+    //       briefings) read the current language without needing
+    //       to know whether the request came from iOS or Telegram.
+    //
+    // Wrapped in try/catch because a missing user row or a
+    // transient DB lock should never block the chat flow.
+    try {
+      const { normalizeLangHeader } = require('../../services/secretary-fastpath');
+      const headerValue = req.header('x-language');
+      if (headerValue) {
+        const lang = normalizeLangHeader(headerValue);
+        const { setUserLanguage, getUserLanguage } = require('../../services/user-service');
+        // Only write if the language actually changed — spares a
+        // DB write on every request from apps that send the
+        // header unconditionally.
+        const current = getUserLanguage(userId);
+        if (current !== lang) {
+          setUserLanguage(userId, lang);
+          logger.debug(
+            { userId, from: current, to: lang, platform: 'ios' },
+            'iOS X-Language header flipped user language preference',
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'iOS X-Language header handling failed — continuing with existing preference');
+    }
+
     try {
       // Check cache for known deterministic commands (saves $0.02-0.05 per hit)
       const normalizedText = text.trim().toLowerCase();

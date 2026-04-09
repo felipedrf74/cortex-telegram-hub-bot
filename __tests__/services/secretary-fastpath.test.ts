@@ -45,6 +45,15 @@ vi.mock('../../src/skills/registry', () => ({
   isSubmoduleEnabled: vi.fn(() => true),
 }));
 
+// Mock user-service so tests can control per-user language without
+// seeding a real SQLite user row. Default returns 'pt-BR' so every
+// existing test that doesn't override keeps its previous behavior.
+// Bilingual tests below override `getUserLanguage` via `vi.mocked`.
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: vi.fn(() => 'pt-BR'),
+  setUserLanguage: vi.fn(),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }));
@@ -468,5 +477,236 @@ describe('secretary-fastpath / metrics', () => {
   it('avgLatencyMs is non-negative', async () => {
     await tryFastpath(UID, "what's my day?");
     expect(getFastpathMetrics().avgLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Bilingual responses (April 2026)
+//
+// Every handler accepts a `lang` parameter and routes its user-facing
+// copy through the COPY table. These tests cover the EN branch so
+// the existing PT tests + these new EN tests together prove the
+// table is complete for every key the code reads.
+// ════════════════════════════════════════════════════════════════════
+
+import * as userSvc from '../../src/services/user-service';
+import { normalizeLangHeader } from '../../src/services/secretary-fastpath';
+
+describe('secretary-fastpath / bilingual — EN', () => {
+  beforeEach(() => {
+    // Force EN for every test in this block. Individual tests can
+    // still override via langOverride argument, but the default
+    // mirrors the iOS path where setUserLanguage has already
+    // written 'en-US' to the user row.
+    vi.mocked(userSvc.getUserLanguage).mockReturnValue('en-US');
+
+    // `vi.clearAllMocks()` in the outer beforeEach clears CALL
+    // HISTORY but NOT `.mockImplementation` overrides. The
+    // "shows error when DB write fails" test earlier in the file
+    // leaves `setReminder` throwing, which would bleed into our
+    // happy-path set_reminder test below. Reset it to a clean
+    // no-op function explicitly.
+    vi.mocked(reminders.setReminder).mockReset();
+    vi.mocked(reminders.setReminder).mockImplementation(
+      (() => ({ id: 1 })) as any,
+    );
+  });
+
+  // ── day_overview ──
+  it('day_overview returns English copy when user lang is en-US', async () => {
+    vi.mocked(calendar.getEvents).mockResolvedValue([]);
+    const result = await tryFastpath(UID, "what's my day?");
+    expect(result.matched).toBe(true);
+    // English header + empty-state copy
+    expect(result.response!.text).toContain('AGENDA:');
+    expect(result.response!.text).toContain('No events today');
+    // Should NOT contain the Portuguese strings
+    expect(result.response!.text).not.toContain('Sem eventos hoje');
+  });
+
+  it('day_overview shows English task copy', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 't1', title: 'Pay tax', dueDateTime: yesterday, listName: 'Inbox', listId: 'L1' } as any,
+      ],
+    });
+    const result = await tryFastpath(UID, "what's my day?");
+    expect(result.response!.text).toContain('TASKS:');
+    expect(result.response!.text).toContain('1 pending');
+    expect(result.response!.text).toContain('1 overdue');
+    expect(result.response!.text).not.toContain('pendentes');
+  });
+
+  it('day_overview shows English email header', async () => {
+    vi.mocked(mail.getUnreadCount).mockResolvedValue(7);
+    const result = await tryFastpath(UID, "what's my day?");
+    expect(result.response!.text).toContain('EMAILS:');
+    expect(result.response!.text).toContain('7 unread');
+    expect(result.response!.text).not.toContain('não lidos');
+  });
+
+  // ── week_overview ──
+  it('week_overview uses English day names and WEEK header', async () => {
+    vi.mocked(calendar.getEvents).mockResolvedValue([]);
+    const result = await tryFastpath(UID, "what's my week?");
+    expect(result.matched).toBe(true);
+    expect(result.response!.text).toContain('WEEK');
+    expect(result.response!.text).toContain('Mon');
+    expect(result.response!.text).toContain('free'); // "— free" in English
+    expect(result.response!.text).not.toContain('SEMANA');
+    expect(result.response!.text).not.toContain('livre');
+  });
+
+  // ── show_tasks ──
+  it('show_tasks uses "Pending Tasks" header in English', async () => {
+    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 't1', title: 'Buy milk', dueDateTime: null, listName: 'Inbox', listId: 'L1' } as any,
+      ],
+    });
+    const result = await tryFastpath(UID, 'show my tasks');
+    expect(result.response!.text).toContain('Pending Tasks');
+    expect(result.response!.text).not.toContain('Tarefas Pendentes');
+  });
+
+  it('show_tasks returns English empty-state', async () => {
+    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
+    const result = await tryFastpath(UID, 'show my tasks');
+    expect(result.response!.text).toContain('No pending tasks!');
+    expect(result.response!.text).not.toContain('Sem tarefas pendentes');
+  });
+
+  // ── unread_emails ──
+  it('unread_emails uses English unread line', async () => {
+    vi.mocked(mail.getUnreadCount).mockResolvedValue(3);
+    const result = await tryFastpath(UID, 'unread emails');
+    expect(result.response!.text).toContain('<b>3</b> unread emails');
+    expect(result.response!.text).not.toContain('e-mails');
+  });
+
+  it('unread_emails uses English zero-state', async () => {
+    vi.mocked(mail.getUnreadCount).mockResolvedValue(0);
+    const result = await tryFastpath(UID, 'inbox');
+    expect(result.response!.text).toContain('Inbox clean!');
+    expect(result.response!.text).not.toContain('Caixa de entrada');
+  });
+
+  it('unread_emails uses English config-missing line', async () => {
+    vi.mocked(mail.isOutlookMailConfigured).mockReturnValue(false);
+    const result = await tryFastpath(UID, 'unread emails');
+    expect(result.response!.text).toContain('Email not configured');
+    expect(result.response!.text).not.toContain('Email não configurado');
+  });
+
+  // ── overdue_tasks ──
+  it('overdue_tasks uses "Overdue Task(s)" header in English', async () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+      success: true,
+      data: [
+        { id: 't1', title: 'Pay tax', dueDateTime: yesterday, listName: 'Inbox', listId: 'L1' } as any,
+        { id: 't2', title: 'Review doc', dueDateTime: yesterday, listName: 'Inbox', listId: 'L1' } as any,
+      ],
+    });
+    const result = await tryFastpath(UID, 'overdue');
+    expect(result.response!.text).toContain('2 Overdue Tasks');
+    expect(result.response!.text).toContain('due:');
+    expect(result.response!.text).not.toContain('Atrasada');
+    expect(result.response!.text).not.toContain('prazo:');
+  });
+
+  it('overdue_tasks empty state is English', async () => {
+    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
+    const result = await tryFastpath(UID, 'overdue');
+    expect(result.response!.text).toContain('No overdue tasks!');
+    expect(result.response!.text).not.toContain('Nenhuma tarefa');
+  });
+
+  // ── set_reminder ──
+  it('set_reminder uses English "Reminder set for" prefix', async () => {
+    const result = await tryFastpath(UID, 'remind me at 10:00 take vitamins');
+    expect(result.response!.text).toContain('Reminder set for');
+    expect(result.response!.text).toContain('10:00');
+    expect(result.response!.text).toContain('take vitamins');
+    expect(result.response!.text).not.toContain('Lembrete definido');
+  });
+
+  it('set_reminder invalid time message is English', async () => {
+    const result = await tryFastpath(UID, 'remind me at 25:00 invalid');
+    expect(result.response!.text).toContain('Invalid time:');
+    expect(result.response!.text).not.toContain('Horário inválido');
+  });
+
+  // ── quick_add_task ──
+  it('quick_add_task uses English "Task created" confirmation', async () => {
+    vi.mocked(todo.getDefaultList).mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
+    vi.mocked(todo.createTask).mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
+    const result = await tryFastpath(UID, 'add task: buy milk');
+    expect(result.response!.text).toContain('Task created');
+    expect(result.response!.text).not.toContain('Tarefa criada');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Language override (explicit langOverride parameter)
+// ════════════════════════════════════════════════════════════════════
+
+describe('secretary-fastpath / language override', () => {
+  beforeEach(() => {
+    // User row says pt-BR, but the override should win.
+    vi.mocked(userSvc.getUserLanguage).mockReturnValue('pt-BR');
+  });
+
+  it('langOverride=en-US produces English copy even when user row is pt-BR', async () => {
+    const result = await tryFastpath(UID, "what's my day?", 'en-US');
+    expect(result.matched).toBe(true);
+    expect(result.response!.text).toContain('AGENDA:');
+    expect(result.response!.text).toContain('No events today');
+  });
+
+  it('langOverride=pt-BR produces Portuguese copy even when user row is en-US', async () => {
+    vi.mocked(userSvc.getUserLanguage).mockReturnValue('en-US');
+    const result = await tryFastpath(UID, "what's my day?", 'pt-BR');
+    expect(result.response!.text).toContain('Sem eventos hoje');
+  });
+
+  it('no override + no user row → pt-BR (legacy default)', async () => {
+    // userId=0 skips the getUserLanguage call entirely (anonymous)
+    const result = await tryFastpath(0, "what's my day?");
+    expect(result.response!.text).toContain('Sem eventos hoje');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// normalizeLangHeader — boundary parser
+// ════════════════════════════════════════════════════════════════════
+
+describe('secretary-fastpath / normalizeLangHeader', () => {
+  it.each([
+    ['pt-BR', 'pt-BR'],
+    ['pt-br', 'pt-BR'],
+    ['pt', 'pt-BR'],
+    ['pt_BR', 'pt-BR'],
+    ['en', 'en-US'],
+    ['en-US', 'en-US'],
+    ['en-GB', 'en-US'],
+    ['EN', 'en-US'],
+  ])('maps "%s" → %s', (input, expected) => {
+    expect(normalizeLangHeader(input)).toBe(expected);
+  });
+
+  it.each([
+    ['undefined', undefined],
+    ['empty string', ''],
+    ['unknown value', 'it-IT'],
+  ])('falls back to pt-BR for %s', (_label, input) => {
+    expect(normalizeLangHeader(input)).toBe('pt-BR');
+  });
+
+  it('accepts array values (Express passes repeated headers as arrays)', () => {
+    expect(normalizeLangHeader(['en', 'pt-BR'])).toBe('en-US');
   });
 });
