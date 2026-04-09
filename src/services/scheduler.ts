@@ -629,6 +629,32 @@ export function startScheduler(bot: Bot): void {
     const { getActivePlan, getCurrentWeek, getWeeklyAdherence, computeAdjustmentRecommendation, updateWeekAdjustment, getWeeksForPlan } = require('./training-plans');
     const { calculateReadiness, persistReadinessScore } = require('./readiness-scorer');
 
+    // ── Pre-authenticate Garmin silently BEFORE touching any Garmin API ──
+    //
+    // The cron has no interactive user to answer an MFA code, so the
+    // recovery path inside `ensureAuthenticated` must skip full re-login
+    // — otherwise the garth library triggers `loginWithMfa` which sends
+    // a security passcode email to Felipe's inbox every Sunday at 19:00.
+    // This mirrors the fix in the `garmin_coach` cron above (see the
+    // matching block on the daily coach briefing — same reasoning, same
+    // pattern).
+    //
+    // When silent auth fails we DO NOT early-return the whole cron. The
+    // weekly plan adjustment has two inputs:
+    //   1. Adherence (pure SQL, no Garmin needed)
+    //   2. Readiness score (Garmin-backed, optional enhancement)
+    // Adherence-only adjustments are still valuable and preserve the
+    // cron's primary purpose on weeks where Garmin is down. The
+    // `garminAvailable` flag below gates ONLY the readiness call.
+    let garminAvailable = false;
+    if (isGarminConfigured()) {
+      logger.info('Training plan adjust starting — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
+      garminAvailable = await garminEnsureAuth({ silent: true });
+      if (!garminAvailable) {
+        logger.warn('Training plan adjust: Garmin session unrecoverable in silent mode — adherence-only adjustments this week (no MFA email triggered)');
+      }
+    }
+
     for (const userId of getActiveUserIds()) {
       const plan = getActivePlan(userId);
       if (!plan) continue;
@@ -639,16 +665,21 @@ export function startScheduler(bot: Bot): void {
       const stats = getWeeklyAdherence(plan.id, currentWeek.id);
       if (stats.completedSessions === 0 && stats.skippedSessions === 0) continue; // no data yet
 
-      // Calculate and persist readiness score
+      // Calculate and persist readiness score (only when Garmin session
+      // is confirmed available — prevents cascading 5× raw Garmin calls
+      // against a dead session, each of which would independently retry
+      // and could re-trigger the MFA login path we just bypassed).
       let readinessScore: number | null = null;
       let readinessRec = '';
-      try {
-        const readiness = await calculateReadiness(userId);
-        persistReadinessScore(userId, readiness);
-        readinessScore = readiness.score;
-        readinessRec = readiness.recommendation;
-      } catch (err) {
-        logger.warn({ err, userId }, 'Readiness calculation failed — using adherence only');
+      if (garminAvailable) {
+        try {
+          const readiness = await calculateReadiness(userId);
+          persistReadinessScore(userId, readiness);
+          readinessScore = readiness.score;
+          readinessRec = readiness.recommendation;
+        } catch (err) {
+          logger.warn({ err, userId }, 'Readiness calculation failed — using adherence only');
+        }
       }
 
       const recommendation = computeAdjustmentRecommendation(stats);
