@@ -21,6 +21,9 @@ import { clientErrorsRoutes } from './routes/client-errors';
 import { auditTrailRoutes } from './routes/audit-trail';
 import { skillsRoutes } from './routes/skills';
 import { signalsRoutes } from './routes/signals';
+import { cookingRoutes } from './routes/cooking';
+import { financeRoutes } from './routes/finance';
+import { invoicesRoutes } from './routes/invoices';
 
 /**
  * Creates the iOS API router.
@@ -53,6 +56,9 @@ export function createApiRouter(): Router {
         auditTrail: 'GET /api/v1/audit-trail/me',
         skills: 'GET /api/v1/skills/catalog, POST/DELETE /api/v1/skills/override (owner only)',
         signals: 'GET /api/v1/signals/active — active cross-skill training signals for the current user',
+        cooking: 'GET/POST/DELETE /api/v1/cooking/{recipes|meal-plan|shopping-list}',
+        finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
+        invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -104,6 +110,14 @@ export function createApiRouter(): Router {
   // Content includes both data lookups (pipeline) and one AI generation
   // endpoint (POST /script). Mounting under one router for cohesion.
   router.use('/content', contentRoutes());
+
+  // TASK-14 Phase 1 — Cooking / Finance / Invoices routes that expose
+  // the existing domain services (cooking-chef, finance-tracker,
+  // invoice-collector) to the iOS Skills landing pages. Token-zero
+  // CRUD — the AI pipeline is not touched by any route below.
+  router.use('/cooking', cookingRoutes());
+  router.use('/finance', financeRoutes());
+  router.use('/invoices', invoicesRoutes());
 
   // Onboarding (questionnaires + profile)
   router.use('/onboarding', onboardingRoutes());
