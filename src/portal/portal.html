@@ -1366,6 +1366,11 @@ table.legacy th {
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7L21.74 9.32A2 2 0 0019.74 7H14z"/></svg></span>
         <span class="nav-label">Skills</span>
       </a>
+      <a class="nav-item" data-nav="content">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></span>
+        <span class="nav-label">Content</span>
+        <span class="nav-badge mono" id="nav-content-badge"></span>
+      </a>
     </nav>
 
     <div class="nav-section-label" style="margin-top: var(--space-5)">Configuration</div>
@@ -1806,6 +1811,151 @@ table.legacy th {
       </div>
     </section>
 
+    <!-- ════════════════════ CONTENT ════════════════════ -->
+    <section class="section" data-section="content">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Content Creation</h1>
+          <div class="section-subtitle">Commands, books, YouTube research, agent mesh, triggers, voice DNA, pipeline</div>
+        </div>
+        <div class="section-actions">
+          <button class="btn btn-ghost btn-sm" id="content-refresh-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8M21 3v5h-5"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI strip -->
+      <div class="grid grid-cols-4" style="margin-bottom:var(--space-4)">
+        <div class="kpi-card">
+          <div class="kpi-label">Pipeline active</div>
+          <div class="kpi-value" id="content-kpi-pipeline">—</div>
+          <div class="kpi-sub" id="content-kpi-pipeline-sub">ideas → editing</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Books extracted</div>
+          <div class="kpi-value" id="content-kpi-books">—</div>
+          <div class="kpi-sub" id="content-kpi-books-sub">of library</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Reference channels</div>
+          <div class="kpi-value" id="content-kpi-channels">—</div>
+          <div class="kpi-sub" id="content-kpi-channels-sub">active sources</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Active signals</div>
+          <div class="kpi-value" id="content-kpi-signals">—</div>
+          <div class="kpi-sub">intelligence bus</div>
+        </div>
+      </div>
+
+      <!-- Pipeline -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">🎬 Content Pipeline</div>
+          <span class="card-subtitle" id="content-pipeline-meta">—</span>
+        </div>
+        <div id="content-pipeline-stages" class="grid grid-cols-auto" style="margin-bottom:var(--space-4)"></div>
+        <div id="content-pipeline-recent"></div>
+      </div>
+
+      <!-- Agent mesh graph -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">🕸️ Agent Mesh Graph</div>
+          <span class="card-subtitle">How content agents communicate via the intelligence bus</span>
+        </div>
+        <div style="overflow-x:auto">
+          <svg id="content-agent-graph" width="1040" height="520" style="display:block;max-width:100%;background:var(--bg-tertiary);border-radius:var(--radius-lg)">
+            <text x="20" y="30" fill="var(--text-secondary)" font-size="12">Loading agent graph…</text>
+          </svg>
+        </div>
+        <div id="content-agent-legend" style="margin-top:var(--space-3);display:flex;flex-wrap:wrap;gap:var(--space-2);font-size:11px;color:var(--text-secondary)"></div>
+      </div>
+
+      <!-- Triggers -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">⏰ Content Triggers</div>
+          <span class="card-subtitle">Cron jobs in the content domain</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table" id="content-triggers-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Schedule</th>
+                <th>Last run</th>
+                <th>Duration</th>
+                <th>Next fire</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="content-triggers-tbody">
+              <tr><td colspan="6"><div class="empty">Loading triggers…</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2" style="margin-bottom:var(--space-4)">
+        <!-- Books -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📚 Book Library</div>
+            <span class="card-subtitle" id="content-books-meta">—</span>
+          </div>
+          <div id="content-books-list"><div class="empty">Loading books…</div></div>
+        </div>
+
+        <!-- Reaction radar -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">📡 Reaction Radar</div>
+            <span class="card-subtitle" id="content-radar-meta">—</span>
+          </div>
+          <div id="content-radar-list"><div class="empty">Loading reactions…</div></div>
+        </div>
+      </div>
+
+      <!-- YouTube research -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">🎥 YouTube Research</div>
+          <span class="card-subtitle" id="content-youtube-meta">—</span>
+        </div>
+        <div class="grid grid-cols-2">
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Reference channels</div>
+            <div id="content-youtube-channels"><div class="empty">Loading channels…</div></div>
+          </div>
+          <div>
+            <div class="card-subtitle" style="margin-bottom:var(--space-2);font-weight:600">Analyzed videos</div>
+            <div id="content-youtube-videos"><div class="empty">Loading videos…</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Voice DNA cards -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">🎙️ Voice DNA</div>
+          <span class="card-subtitle">Extracted from reference channels + voice evolution</span>
+        </div>
+        <div id="content-voice-dna" class="grid grid-cols-auto"><div class="empty">Loading voice DNA…</div></div>
+      </div>
+
+      <!-- Commands -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div class="card-header">
+          <div class="card-title">⌨️ Content Commands</div>
+          <span class="card-subtitle">Chat slash commands with usage over the last 7 and 30 days</span>
+        </div>
+        <div id="content-commands-groups"><div class="empty">Loading commands…</div></div>
+      </div>
+    </section>
+
     <!-- ════════════════════ SETTINGS ════════════════════ -->
     <section class="section" data-section="settings">
       <div class="section-header">
@@ -2117,7 +2267,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'users', 'ai', 'jobs', 'skills', 'settings', 'invites', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'users', 'ai', 'jobs', 'skills', 'content', 'settings', 'invites', 'waitlist', 'audit'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -2139,6 +2289,7 @@ table.legacy th {
     if (section === 'audit') loadAuditTrail();
     if (section === 'jobs') loadQuickActions();
     if (section === 'skills') loadSkillsUserSelector();
+    if (section === 'content') loadContentDashboard();
   }
 
   document.querySelectorAll('[data-nav]').forEach(el => {
@@ -3890,6 +4041,424 @@ table.legacy th {
   });
 
   // ════════════════════════════════════════════════════════════
+  // Content dashboard
+  // ════════════════════════════════════════════════════════════
+  let contentDashboardCache = null;
+
+  async function loadContentDashboard() {
+    try {
+      const r = await apiFetch('/api/v1/admin/content-dashboard');
+      if (!r.ok) {
+        document.getElementById('content-commands-groups').innerHTML =
+          '<div class="empty">Failed to load content dashboard (' + r.status + ')</div>';
+        return;
+      }
+      const data = await r.json();
+      contentDashboardCache = data;
+      renderContentDashboard(data);
+    } catch (err) {
+      document.getElementById('content-commands-groups').innerHTML =
+        '<div class="empty">Network error loading content dashboard</div>';
+    }
+  }
+
+  function renderContentDashboard(d) {
+    if (!d || d.ok !== true) return;
+    renderContentKpis(d);
+    renderContentPipeline(d.pipeline || { stages: {}, recent: [] });
+    renderContentAgentGraph(d.agentGraph || { nodes: [], edges: [] });
+    renderContentTriggers(d.triggers || []);
+    renderContentBooks(d.books || { rows: [] });
+    renderContentReactionRadar(d.reactionRadar || { recentSignals: [] });
+    renderContentYouTube(d.youtube || { channels: [], videos: [] });
+    renderContentVoiceDna(d.voiceDna || []);
+    renderContentCommands(d.commands || []);
+
+    // Update the nav badge with the active signal count
+    const badge = document.getElementById('nav-content-badge');
+    if (badge) {
+      const n = d.activeSignals || 0;
+      badge.textContent = n > 0 ? String(n) : '';
+    }
+  }
+
+  function renderContentKpis(d) {
+    const pipe = d.pipeline || {};
+    const books = d.books || {};
+    const yt = d.youtube || { totals: {} };
+    const total = pipe.totalActive != null ? pipe.totalActive : 0;
+    const published = pipe.publishedThisWeek || 0;
+    document.getElementById('content-kpi-pipeline').textContent = fmtNum(total);
+    document.getElementById('content-kpi-pipeline-sub').textContent =
+      published + ' published this week';
+    document.getElementById('content-kpi-books').textContent = fmtNum(books.extracted || 0);
+    document.getElementById('content-kpi-books-sub').textContent =
+      'of ' + fmtNum(books.total || 0) + ' · ' + fmtNum(books.pending || 0) + ' pending';
+    document.getElementById('content-kpi-channels').textContent =
+      fmtNum((yt.totals && yt.totals.activeChannels) || 0);
+    document.getElementById('content-kpi-channels-sub').textContent =
+      'of ' + fmtNum((yt.totals && yt.totals.channels) || 0) + ' total';
+    document.getElementById('content-kpi-signals').textContent = fmtNum(d.activeSignals || 0);
+  }
+
+  const CONTENT_PIPELINE_STAGES = ['approved', 'scripted', 'filming', 'editing', 'published'];
+  const CONTENT_PIPELINE_LABELS = {
+    approved: 'Approved',
+    scripted: 'Scripted',
+    filming: 'Filming',
+    editing: 'Editing',
+    published: 'Published',
+  };
+
+  function renderContentPipeline(p) {
+    const stagesEl = document.getElementById('content-pipeline-stages');
+    const recentEl = document.getElementById('content-pipeline-recent');
+    const metaEl = document.getElementById('content-pipeline-meta');
+
+    const stageBoxes = CONTENT_PIPELINE_STAGES.map(s => {
+      const count = (p.stages && p.stages[s]) || 0;
+      return '<div class="kpi-card" style="padding:var(--space-3)">' +
+        '<div class="kpi-label">' + esc(CONTENT_PIPELINE_LABELS[s]) + '</div>' +
+        '<div class="kpi-value" style="font-size:24px">' + fmtNum(count) + '</div>' +
+        '</div>';
+    }).join('');
+    stagesEl.innerHTML = stageBoxes;
+
+    let metaParts = [];
+    if (p.bottleneck) {
+      metaParts.push(
+        '⚠️ Bottleneck: ' + esc(p.bottleneck.stage) +
+        ' (' + p.bottleneck.count + ' stuck, ~' + p.bottleneck.avgDays + 'd)',
+      );
+    }
+    if (p.publishedThisWeek != null) {
+      metaParts.push(p.publishedThisWeek + ' published this week');
+    }
+    metaEl.textContent = metaParts.join(' · ') || '—';
+
+    const rows = (p.recent || []).slice(0, 15);
+    if (rows.length === 0) {
+      recentEl.innerHTML = '<div class="empty">No pipeline items yet</div>';
+      return;
+    }
+    recentEl.innerHTML =
+      '<div style="overflow-x:auto"><table class="data-table">' +
+      '<thead><tr><th>Topic</th><th>Niche</th><th>Stage</th><th>Updated</th><th>Published</th></tr></thead>' +
+      '<tbody>' +
+      rows.map(r => {
+        const pubCell = r.publishedUrl
+          ? '<a href="' + esc(r.publishedUrl) + '" target="_blank" rel="noopener" style="color:var(--accent)">View</a>'
+          : '—';
+        return '<tr>' +
+          '<td>' + esc(r.topicTitle) + '</td>' +
+          '<td class="text-muted">' + esc(r.niche || '—') + '</td>' +
+          '<td><span class="badge badge-' + esc(stageToBadge(r.stage)) + '">' + esc(r.stage) + '</span></td>' +
+          '<td class="text-muted">' + relativeTime(r.updatedAt) + '</td>' +
+          '<td>' + pubCell + '</td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table></div>';
+  }
+
+  function stageToBadge(stage) {
+    if (stage === 'published') return 'success';
+    if (stage === 'editing' || stage === 'filming') return 'info';
+    if (stage === 'scripted') return 'warning';
+    return 'neutral';
+  }
+
+  // ── Agent mesh graph ──
+  const CONTENT_AGENT_POSITIONS = {
+    channel_learner:   { x:  80, y:  90 },
+    book_extractor:    { x:  80, y: 230 },
+    voice_evolution:   { x: 310, y: 140 },
+    performance_agent: { x:  80, y: 380 },
+    reaction_radar:    { x: 540, y:  80 },
+    content_discovery: { x: 540, y: 220 },
+    seo_agent:         { x: 310, y: 380 },
+    content_workflow:  { x: 770, y: 180 },
+    pipeline_agent:    { x: 770, y: 340 },
+    autoresearch:      { x: 540, y: 440 },
+  };
+
+  function renderContentAgentGraph(g) {
+    const svg = document.getElementById('content-agent-graph');
+    if (!svg) return;
+    const nodes = g.nodes || [];
+    const edges = g.edges || [];
+
+    const nodeMap = {};
+    nodes.forEach(n => { nodeMap[n.id] = n; });
+
+    // Build edges as curves
+    const edgeSvg = edges.map((e, i) => {
+      const from = CONTENT_AGENT_POSITIONS[e.from];
+      const to = CONTENT_AGENT_POSITIONS[e.to];
+      if (!from || !to) return '';
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const mx = from.x + dx / 2 + (dy > 0 ? 30 : -30);
+      const my = from.y + dy / 2;
+      const markerId = 'arrow-' + i;
+      return (
+        '<defs><marker id="' + markerId + '" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-tertiary)"/>' +
+        '</marker></defs>' +
+        '<path d="M ' + (from.x + 70) + ' ' + from.y + ' Q ' + mx + ' ' + my + ' ' + (to.x - 70) + ' ' + to.y + '" ' +
+        'fill="none" stroke="var(--text-tertiary)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#' + markerId + ')" opacity="0.65"/>' +
+        '<text x="' + mx + '" y="' + (my - 4) + '" text-anchor="middle" fill="var(--text-tertiary)" font-size="9" font-family="ui-monospace, monospace">' + esc(e.signal) + '</text>'
+      );
+    }).join('');
+
+    // Build nodes
+    const nodeSvg = nodes.map(n => {
+      const p = CONTENT_AGENT_POSITIONS[n.id] || { x: 0, y: 0 };
+      const statusColor =
+        n.lastStatus === 'success' ? 'var(--domain-secretary)' :
+        n.lastStatus === 'failed' ? '#E25C5C' :
+        n.lastStatus === 'never' ? 'var(--text-tertiary)' :
+        'var(--text-secondary)';
+      const runsLabel = n.totalRuns > 0
+        ? (n.totalRuns + ' runs · ' + (n.signalsProduced || 0) + ' signals')
+        : 'never run';
+      return (
+        '<g transform="translate(' + (p.x - 70) + ',' + (p.y - 28) + ')">' +
+        '<rect width="140" height="56" rx="10" fill="var(--bg-secondary)" stroke="var(--border)" stroke-width="1.5"/>' +
+        '<circle cx="12" cy="12" r="4" fill="' + statusColor + '"/>' +
+        '<text x="22" y="16" fill="var(--text-primary)" font-size="12" font-weight="600">' + esc(n.label) + '</text>' +
+        '<text x="12" y="34" fill="var(--text-secondary)" font-size="10">' + esc(runsLabel) + '</text>' +
+        '<text x="12" y="48" fill="var(--text-tertiary)" font-size="9">' + esc(n.cron ? '⏰ ' + n.cron : 'on demand') + '</text>' +
+        '</g>'
+      );
+    }).join('');
+
+    svg.innerHTML = edgeSvg + nodeSvg;
+
+    // Build the legend
+    const legend = document.getElementById('content-agent-legend');
+    legend.innerHTML =
+      '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--domain-secretary);margin-right:6px"></span>last run OK</span>' +
+      '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#E25C5C;margin-right:6px"></span>last run failed</span>' +
+      '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--text-tertiary);margin-right:6px"></span>never run</span>' +
+      '<span style="margin-left:auto;font-family:ui-monospace,monospace">' +
+      nodes.length + ' agents · ' + edges.length + ' signal routes</span>';
+  }
+
+  function renderContentTriggers(triggers) {
+    const tbody = document.getElementById('content-triggers-tbody');
+    if (!triggers || triggers.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6"><div class="empty">No content triggers registered</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = triggers.map(t => {
+      const statusBadge = '<span class="badge badge-' + esc(triggerStatusClass(t.status)) + '">' + esc(t.lastResult || 'never') + '</span>';
+      return '<tr>' +
+        '<td><div>' + esc(t.label) + '</div><div class="text-muted mono" style="font-size:10px">' + esc(t.name) + '</div></td>' +
+        '<td class="mono">' + esc(t.cronHuman || t.cronExpression) + '</td>' +
+        '<td class="text-muted">' + (t.lastRunAt ? shortDateTime(t.lastRunAt) + ' · ' + relativeTime(t.lastRunAt) : '—') + '</td>' +
+        '<td class="text-muted mono">' + (t.lastDurationMs != null ? t.lastDurationMs + 'ms' : '—') + '</td>' +
+        '<td class="text-muted">' + (t.nextFireAt ? shortDateTime(t.nextFireAt) : '—') + '</td>' +
+        '<td>' + statusBadge + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function triggerStatusClass(s) {
+    if (s === 'ok') return 'success';
+    if (s === 'failed') return 'error';
+    if (s === 'running') return 'info';
+    return 'neutral';
+  }
+
+  function renderContentBooks(books) {
+    const el = document.getElementById('content-books-list');
+    const meta = document.getElementById('content-books-meta');
+    meta.textContent = (books.extracted || 0) + '/' + (books.total || 0) + ' extracted';
+    const rows = books.rows || [];
+    if (rows.length === 0) {
+      el.innerHTML = '<div class="empty">No books yet</div>';
+      return;
+    }
+    el.innerHTML = rows.slice(0, 20).map(b => {
+      const statusBadge = '<span class="badge badge-' +
+        (b.status === 'extracted' ? 'success' : b.status === 'pending' || b.status === 'extracting' ? 'warning' : 'neutral') +
+        '" style="font-size:10px">' + esc(b.status) + '</span>';
+      const frameworksPreview = (b.frameworks && b.frameworks.length > 0)
+        ? '<div class="text-muted" style="font-size:11px;margin-top:4px">Frameworks: ' +
+            esc(b.frameworks.slice(0, 3).join(', ')) + '</div>'
+        : '';
+      const thesis = b.thesis
+        ? '<div class="text-muted" style="font-size:11px;margin-top:4px;line-height:1.4">' + esc(b.thesis).slice(0, 220) + (b.thesis.length > 220 ? '…' : '') + '</div>'
+        : '';
+      return '<div style="padding:var(--space-3) 0;border-bottom:1px solid var(--border)">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
+          '<div><div style="font-weight:600;font-size:13px">' + esc(b.title) + '</div>' +
+          '<div class="text-muted" style="font-size:11px">' + esc(b.author) + ' · ' + (b.timesReferenced || 0) + ' refs</div>' +
+          '</div>' + statusBadge + '</div>' +
+        thesis + frameworksPreview +
+        '</div>';
+    }).join('');
+  }
+
+  function renderContentReactionRadar(rr) {
+    const el = document.getElementById('content-radar-list');
+    const meta = document.getElementById('content-radar-meta');
+    meta.textContent = (rr.activeSignals || 0) + ' active · last ' + (rr.lastRunAt ? relativeTime(rr.lastRunAt) : 'never');
+    const rows = rr.recentSignals || [];
+    if (rows.length === 0) {
+      el.innerHTML = '<div class="empty">No recent reactions</div>';
+      return;
+    }
+    el.innerHTML = rows.slice(0, 12).map(s => {
+      const pri = s.priority === 'urgent' ? 'badge-error' : s.priority === 'normal' ? 'badge-info' : 'badge-neutral';
+      const dotColor = s.status === 'active' ? 'var(--domain-secretary)' : 'var(--text-tertiary)';
+      return '<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border);display:flex;gap:var(--space-3);align-items:flex-start">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';margin-top:6px;flex-shrink:0"></span>' +
+        '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:12px;font-weight:500">' + esc(s.summary) + '</div>' +
+        '<div class="text-muted" style="font-size:10px;margin-top:2px">' + esc(s.type) + ' · ' + relativeTime(s.createdAt) + '</div>' +
+        '</div>' +
+        '<span class="badge ' + pri + '" style="font-size:10px">' + esc(s.priority) + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderContentYouTube(yt) {
+    const chEl = document.getElementById('content-youtube-channels');
+    const vdEl = document.getElementById('content-youtube-videos');
+    const metaEl = document.getElementById('content-youtube-meta');
+    const t = yt.totals || {};
+    metaEl.textContent =
+      (t.activeChannels || 0) + '/' + (t.channels || 0) + ' channels · ' +
+      (t.studies || 0) + ' studies · ' + (t.transcripts || 0) + ' transcripts';
+
+    const channels = yt.channels || [];
+    if (channels.length === 0) {
+      chEl.innerHTML = '<div class="empty">No reference channels yet</div>';
+    } else {
+      chEl.innerHTML = channels.slice(0, 15).map(c => {
+        const statusBadge = '<span class="badge badge-' +
+          (c.status === 'active' ? 'success' :
+           c.status === 'pending' || c.status === 'analyzing' ? 'warning' :
+           c.status === 'failed' ? 'error' : 'neutral') +
+          '" style="font-size:10px">' + esc(c.status) + '</span>';
+        const nameLine = c.name ? esc(c.name) : c.url.slice(0, 48);
+        const analyzed = c.videosAnalyzed || 0;
+        const lastAt = c.lastAnalyzedAt ? relativeTime(c.lastAnalyzedAt) : 'never';
+        const errorLine = c.errorMessage
+          ? '<div class="text-muted" style="font-size:10px;color:#E25C5C">' + esc(c.errorMessage).slice(0, 120) + '</div>'
+          : '';
+        return '<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border)">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
+          '<div style="min-width:0;flex:1"><div style="font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(nameLine) + '</div>' +
+          '<div class="text-muted mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="' + esc(c.url) + '" target="_blank" rel="noopener" style="color:inherit">' + esc(c.url) + '</a></div></div>' +
+          statusBadge + '</div>' +
+          '<div class="text-muted" style="font-size:10px;margin-top:4px">' + analyzed + ' videos · ' + lastAt + '</div>' +
+          errorLine +
+          '</div>';
+      }).join('');
+    }
+
+    const videos = yt.videos || [];
+    if (videos.length === 0) {
+      vdEl.innerHTML = '<div class="empty">No videos analyzed yet</div>';
+    } else {
+      vdEl.innerHTML = videos.slice(0, 15).map(v => {
+        const badge = v.hasStudy
+          ? '<span class="badge badge-success" style="font-size:10px">' + esc(v.studyType || 'study') + '</span>'
+          : '<span class="badge badge-neutral" style="font-size:10px">transcript</span>';
+        const titleLine = v.title || v.videoId;
+        return '<div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border)">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
+          '<div style="min-width:0;flex:1"><div style="font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="' + esc(v.youtubeUrl) + '" target="_blank" rel="noopener" style="color:inherit">' + esc(titleLine) + '</a></div>' +
+          '<div class="text-muted" style="font-size:10px">' + esc(v.channelName || '—') + ' · ' + relativeTime(v.createdAt) + '</div></div>' +
+          badge + '</div></div>';
+      }).join('');
+    }
+  }
+
+  function renderContentVoiceDna(voiceDna) {
+    const el = document.getElementById('content-voice-dna');
+    if (!voiceDna || voiceDna.length === 0) {
+      el.innerHTML = '<div class="empty">No voice DNA extracted yet — run the channel learner or voice evolution agent.</div>';
+      return;
+    }
+    el.innerHTML = voiceDna.map((v, idx) => {
+      const textPreview = (v.text || '').slice(0, 320);
+      const hasMore = (v.text || '').length > 320;
+      const id = 'voicedna-' + idx;
+      return '<div class="card" style="background:var(--bg-tertiary)">' +
+        '<div class="card-header" style="margin-bottom:var(--space-2)">' +
+        '<div class="card-title" style="font-size:11px">' + esc(v.label) + '</div>' +
+        '<span class="card-subtitle">v' + v.version + ' · ' + relativeTime(v.updatedAt) + '</span>' +
+        '</div>' +
+        '<div id="' + id + '" style="font-size:12px;line-height:1.5;color:var(--text-primary);white-space:pre-wrap">' + esc(textPreview) + (hasMore ? '…' : '') + '</div>' +
+        (hasMore
+          ? '<button class="btn btn-sm btn-ghost" style="margin-top:var(--space-2)" onclick="expandVoiceDna(' + idx + ')">Expand</button>'
+          : '') +
+        (v.sources && v.sources.length > 0
+          ? '<div class="text-muted" style="font-size:10px;margin-top:var(--space-2)">Sources: ' + esc(v.sources.slice(0, 4).join(', ')) + (v.sources.length > 4 ? ' +' + (v.sources.length - 4) : '') + '</div>'
+          : '') +
+        '</div>';
+    }).join('');
+  }
+
+  window.expandVoiceDna = function(idx) {
+    if (!contentDashboardCache || !contentDashboardCache.voiceDna) return;
+    const v = contentDashboardCache.voiceDna[idx];
+    if (!v) return;
+    const el = document.getElementById('voicedna-' + idx);
+    if (el) el.textContent = v.text;
+  };
+
+  const CONTENT_COMMAND_GROUP_LABELS = {
+    discover: '🔎 Discovery',
+    research: '🎥 Research',
+    ideate: '💡 Ideation',
+    script: '✍️ Scripts',
+    visuals: '🖼️ Visuals',
+    analysis: '📊 Analysis',
+    library: '📚 Book Library',
+    seo: '🔍 SEO',
+    pipeline: '🚀 Pipeline',
+  };
+
+  function renderContentCommands(groups) {
+    const el = document.getElementById('content-commands-groups');
+    if (!groups || groups.length === 0) {
+      el.innerHTML = '<div class="empty">No content commands registered</div>';
+      return;
+    }
+    el.innerHTML = groups.map(g => {
+      const label = CONTENT_COMMAND_GROUP_LABELS[g.group] || g.group;
+      const rows = (g.rows || []).map(r => {
+        const cost = r.costUsd7d > 0 ? ' · ' + fmtCost(r.costUsd7d) : '';
+        return '<tr>' +
+          '<td class="mono">' + esc(r.label) + '</td>' +
+          '<td class="text-muted">' + esc(r.description) + '</td>' +
+          '<td class="num">' + fmtNum(r.calls7d) + '</td>' +
+          '<td class="num">' + fmtNum(r.calls30d) + cost + '</td>' +
+          '<td class="text-muted">' + (r.lastUsedAt ? relativeTime(r.lastUsedAt) : '—') + '</td>' +
+          '</tr>';
+      }).join('');
+      return '<div style="margin-bottom:var(--space-4)">' +
+        '<div class="card-title" style="font-size:11px;margin-bottom:var(--space-2)">' + esc(label) + '</div>' +
+        '<div style="overflow-x:auto"><table class="data-table">' +
+        '<thead><tr><th style="width:120px">Command</th><th>Description</th><th class="text-right" style="width:70px">7d</th><th class="text-right" style="width:110px">30d</th><th style="width:110px">Last used</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div></div>';
+    }).join('');
+  }
+
+  // Wire up the refresh button once the section exists
+  const contentRefreshBtn = document.getElementById('content-refresh-btn');
+  if (contentRefreshBtn) {
+    contentRefreshBtn.addEventListener('click', () => {
+      loadContentDashboard();
+      showToast('Refreshing content dashboard…', 'info');
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════
   // Quick actions (Jobs section)
   // ════════════════════════════════════════════════════════════
   const QUICK_ACTIONS = [
@@ -3969,6 +4538,7 @@ table.legacy th {
       if (currentSection === 'audit') loadAuditTrail();
       if (currentSection === 'invites') loadInviteCodes();
       if (currentSection === 'waitlist') loadWaitlist();
+      if (currentSection === 'content') loadContentDashboard();
     }, 30000);
 
     // Initial section from URL hash
