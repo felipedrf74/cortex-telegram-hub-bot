@@ -11,16 +11,18 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { saveNote, searchNotes } from '../../state/notes';
+import { saveNote, searchNotes, updateNote, deleteNote, getNoteById } from '../../state/notes';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 
 export function notesRoutes(): Router {
   const router = Router();
 
   /**
-   * GET /api/v1/notes?domain=general&query=foo&tag=bar
+   * GET /api/v1/notes?domain=general&query=foo&tag=bar&limit=100
    * Returns the most recent notes for the authenticated user, optionally
-   * filtered by domain, free-text search, or tag.
+   * filtered by domain, free-text search, or tag. Limit defaults to 20
+   * for chat-domain context reads and can be raised up to 100 for the
+   * iOS Notes list view where the user expects to see their full history.
    */
   router.get('/', asyncHandler(async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
@@ -28,9 +30,12 @@ export function notesRoutes(): Router {
     const domain = typeof req.query.domain === 'string' ? req.query.domain : undefined;
     const query = typeof req.query.query === 'string' ? req.query.query : undefined;
     const tag = typeof req.query.tag === 'string' ? req.query.tag : undefined;
+    const limit = req.query.limit
+      ? Math.min(parseInt(String(req.query.limit), 10) || 20, 100)
+      : 20;
 
     try {
-      const notes = searchNotes(userId, { domain, query, tag });
+      const notes = searchNotes(userId, { domain, query, tag, limit });
       sendSuccess(res, {
         notes: notes.map(formatNote),
         count: notes.length,
@@ -66,6 +71,85 @@ export function notesRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS notes create failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to save note', 500);
+    }
+  }));
+
+  /**
+   * PATCH /api/v1/notes/:id
+   * Body: { content?, domain?, tags? }
+   *
+   * Partial update — only the fields present in the body are modified.
+   * The state layer validates ownership (scoped to user_id) so this
+   * route cannot be used to patch another user's note. Returns 404
+   * if no matching note exists.
+   */
+  router.patch('/:id', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const noteId = parseInt(req.params.id, 10);
+    const { content, domain, tags } = req.body;
+
+    if (Number.isNaN(noteId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+
+    // Reject completely-empty bodies — they're almost certainly a client bug.
+    if (content === undefined && domain === undefined && tags === undefined) {
+      sendError(res, 'BAD_REQUEST', 'At least one of content, domain, or tags must be provided');
+      return;
+    }
+
+    if (content !== undefined && (typeof content !== 'string' || !content.trim())) {
+      sendError(res, 'BAD_REQUEST', 'content must be a non-empty string when provided');
+      return;
+    }
+
+    try {
+      const updated = updateNote(userId, noteId, {
+        content: content !== undefined ? content.trim() : undefined,
+        domain: domain !== undefined ? String(domain) : undefined,
+        // Accept explicit null to clear tags; pass-through otherwise.
+        tags: tags !== undefined ? (tags === null ? null : String(tags)) : undefined,
+      });
+
+      if (!updated) {
+        sendError(res, 'NOT_FOUND', 'Note not found or not owned by user', 404);
+        return;
+      }
+
+      logger.info({ userId, noteId }, 'iOS note updated');
+      sendSuccess(res, { note: formatNote(updated) });
+    } catch (err: any) {
+      logger.error({ err, userId, noteId }, 'iOS notes update failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to update note', 500);
+    }
+  }));
+
+  /**
+   * DELETE /api/v1/notes/:id
+   * Hard-delete. Scoped to the caller's user_id. Returns 404 if no
+   * matching row exists.
+   */
+  router.delete('/:id', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const noteId = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(noteId)) {
+      sendError(res, 'BAD_REQUEST', 'id must be a number');
+      return;
+    }
+
+    try {
+      const deleted = deleteNote(userId, noteId);
+      if (!deleted) {
+        sendError(res, 'NOT_FOUND', 'Note not found or not owned by user', 404);
+        return;
+      }
+      logger.info({ userId, noteId }, 'iOS note deleted');
+      sendSuccess(res, { deleted: true, id: noteId });
+    } catch (err: any) {
+      logger.error({ err, userId, noteId }, 'iOS notes delete failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to delete note', 500);
     }
   }));
 
