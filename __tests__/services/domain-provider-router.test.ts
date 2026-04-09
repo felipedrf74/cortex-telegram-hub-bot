@@ -9,15 +9,12 @@ import {
 
 describe('Domain Provider Router', () => {
   describe('getProviderForDomain', () => {
-    it('secretary always routes to anthropic', () => {
-      expect(getProviderForDomain('secretary')).toBe('anthropic');
-    });
-
-    // Gemini routing is ENABLED by default as of v4.9.13 — the cost-optimized
-    // path: secretary stays on Claude (tool-use quality), non-secretary domains
-    // move to Gemini (6x cheaper). The provider-fallback layer gracefully
-    // degrades to anthropic if GEMINI_API_KEY isn't set.
-    it('non-secretary domains default to gemini (enabled by default)', () => {
+    // April 2026 revision — no Claude models as primary ANYWHERE.
+    // Every domain (including secretary, which previously used Sonnet for
+    // tool-use quality) now defaults to Gemini 3 Flash. Anthropic stays
+    // wired in as the fallback so provider-fallback.ts has a safety net.
+    it('every domain routes to gemini by default', () => {
+      expect(getProviderForDomain('secretary')).toBe('gemini');
       expect(getProviderForDomain('triathlon')).toBe('gemini');
       expect(getProviderForDomain('content')).toBe('gemini');
       expect(getProviderForDomain('finance')).toBe('gemini');
@@ -26,11 +23,12 @@ describe('Domain Provider Router', () => {
   });
 
   describe('getFallbackForDomain', () => {
-    it('secretary fallback is openai', () => {
-      expect(getFallbackForDomain('secretary')).toBe('openai');
-    });
-
-    it('non-secretary fallback is anthropic', () => {
+    // Every domain falls back to Anthropic (Haiku 4.5) when the primary
+    // Gemini provider errors or circuit-breaks. Secretary previously fell
+    // back to OpenAI but now shares the Anthropic fallback with the other
+    // domains — one fewer provider wired into the production config.
+    it('every domain falls back to anthropic', () => {
+      expect(getFallbackForDomain('secretary')).toBe('anthropic');
       expect(getFallbackForDomain('triathlon')).toBe('anthropic');
       expect(getFallbackForDomain('content')).toBe('anthropic');
       expect(getFallbackForDomain('finance')).toBe('anthropic');
