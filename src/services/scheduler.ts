@@ -575,8 +575,17 @@ export function startScheduler(bot: Bot): void {
   // ── Garmin coach briefing (configurable time) ──────────────────────
   if (config.garmin.coachEnabled && isGarminConfigured()) {
     cron.schedule(coachCron, wrapJob('garmin_coach', async () => {
-      logger.info('Daily coach briefing starting — pre-authenticating Garmin');
-      await garminEnsureAuth();
+      logger.info('Daily coach briefing starting — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
+      // Silent mode: cron has no interactive user to answer an MFA
+      // code, so the recovery path must skip full re-login. If tokens
+      // are too stale even for OAuth2 refresh, the briefing runs with
+      // data gaps (logged as a warning) and the next user-initiated
+      // call will recover interactively. Fixes the daily Garmin
+      // passcode email that was landing in Felipe's inbox.
+      const authed = await garminEnsureAuth({ silent: true });
+      if (!authed) {
+        logger.warn('Coach briefing: Garmin session unrecoverable in silent mode — proceeding with whatever cached/partial data the briefing can assemble');
+      }
       const result = await generateCoachBriefing();
 
       if (result.errors.length > 0) {

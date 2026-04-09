@@ -778,8 +778,21 @@ export async function keepAlive(): Promise<boolean> {
  * Pre-authenticate: validate the session and recover if needed.
  * Call this BEFORE batch API calls (e.g. coach briefing) to avoid
  * 10+ parallel 403s all triggering separate MFA flows.
+ *
+ * Pass `{ silent: true }` from CRON contexts where no interactive
+ * user is present to respond to an MFA code. In silent mode the
+ * recovery path is restricted to Step 1 (OAuth2 refresh) and
+ * Step 2 (token reload from disk) — it explicitly SKIPS Step 3
+ * (full re-login via loginWithMfa), which is what has been
+ * sending the daily Garmin passcode emails. The cron paths
+ * include: `garmin_coach` (daily 21:00 briefing), any future
+ * scheduled data pulls. Interactive paths (Telegram commands,
+ * iOS in-app refresh button) should use the default (non-silent)
+ * so the user gets a legitimate MFA challenge they can answer.
  */
-export async function ensureAuthenticated(): Promise<boolean> {
+export async function ensureAuthenticated(
+  opts: { silent?: boolean } = {},
+): Promise<boolean> {
   if (!isGarminConfigured()) return false;
   try {
     const client = await getClient();
@@ -787,9 +800,72 @@ export async function ensureAuthenticated(): Promise<boolean> {
     logger.info('Garmin: pre-auth check passed');
     return true;
   } catch {
-    logger.warn('Garmin: pre-auth check failed, running recovery');
+    if (opts.silent) {
+      logger.warn('Garmin: pre-auth check failed in silent mode, running silent recovery (OAuth2 + token reload only)');
+      return silentAuthRecovery();
+    }
+    logger.warn('Garmin: pre-auth check failed, running full recovery');
     return serializedAuthRecovery();
   }
+}
+
+/**
+ * Silent auth recovery — the cron-safe sibling of serializedAuthRecovery.
+ *
+ * Only attempts Step 1 (OAuth2 refresh) and Step 2 (token reload from
+ * disk). Explicitly DOES NOT call attemptReLogin / loginWithMfa so a
+ * failing cron never triggers a Garmin passcode email. If both silent
+ * steps fail, returns false and the caller should degrade gracefully
+ * (coach briefing with data gaps, skipped job, etc.).
+ *
+ * This is the SAME failure mode keepAlive() already uses — we just
+ * plumbed a second entry point through ensureAuthenticated so the
+ * coach cron's pre-auth hook benefits from the same protection.
+ */
+async function silentAuthRecovery(): Promise<boolean> {
+  if (_authRecoveryPromise) {
+    logger.info('Garmin: silent recovery deferring to in-flight recovery promise');
+    return _authRecoveryPromise;
+  }
+  _authRecoveryPromise = (async () => {
+    try {
+      // Step 1: OAuth2 token refresh
+      try {
+        const client = await getClient();
+        await (client.client as any).refreshOauth2Token();
+        persistTokens();
+        await client.getUserSettings();
+        logger.info('Garmin: silent recovery — OAuth2 refresh succeeded');
+        return true;
+      } catch {
+        logger.warn('Garmin: silent recovery — OAuth2 refresh failed, trying token reload');
+      }
+
+      // Step 2: Reload tokens from disk
+      const tokenDir = config.garmin.tokenPath;
+      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+        try {
+          const client = await getClient();
+          client.loadTokenByFile(tokenDir);
+          await client.getUserSettings();
+          logger.info('Garmin: silent recovery — token reload succeeded');
+          return true;
+        } catch {
+          logger.warn('Garmin: silent recovery — token reload failed');
+        }
+      }
+
+      // Step 3 is INTENTIONALLY not attempted. Full re-login would
+      // send a passcode email to the user with no interactive context
+      // to answer it. Cron callers accept the graceful-degradation
+      // path instead.
+      logger.warn('Garmin: silent recovery exhausted (OAuth2 + reload both failed). Next user-initiated call will trigger interactive recovery.');
+      return false;
+    } finally {
+      _authRecoveryPromise = null;
+    }
+  })();
+  return _authRecoveryPromise;
 }
 
 /**
