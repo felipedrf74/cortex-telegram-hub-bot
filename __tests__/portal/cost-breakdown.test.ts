@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeCostBreakdown,
+  computeUserCostBreakdown,
   percentile,
   type ApiUsageRow,
 } from '../../src/portal/cost-breakdown';
@@ -293,5 +294,185 @@ describe('computeCostBreakdown', () => {
     expect(anthropic.cost).toBeGreaterThan(gemini.cost);
     expect(anthropic.percentOfCost).toBeGreaterThan(99);
     expect(gemini.percentOfCost).toBeLessThan(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PER-USER COST BREAKDOWN (April 9 2026 — Option G pricing calibration)
+// ═══════════════════════════════════════════════════════════════════
+
+describe('computeUserCostBreakdown', () => {
+  it('returns empty result when no user-attributed rows exist', () => {
+    // Only system rows (user_id=0 or missing)
+    const rows: ApiUsageRow[] = [
+      row({ cost_usd: 0.10 }),                          // no user_id
+      row({ user_id: 0, cost_usd: 0.20 }),              // system
+      row({ user_id: 0, cost_usd: 0.05 }),              // system
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    expect(out.totalCost).toBe(0);
+    expect(out.totalCalls).toBe(0);
+    expect(out.userCount).toBe(0);
+    expect(out.users).toEqual([]);
+    expect(out.avgCostPerUser).toBe(0);
+    expect(out.maxCostPerUser).toBe(0);
+  });
+
+  it('aggregates a single user\'s spend across multiple calls', () => {
+    const rows: ApiUsageRow[] = [
+      row({ user_id: 42, category: 'domain_content',   cost_usd: 0.50, ts: '2026-04-01 08:00:00' }),
+      row({ user_id: 42, category: 'domain_content',   cost_usd: 0.30, ts: '2026-04-02 10:00:00' }),
+      row({ user_id: 42, category: 'domain_secretary', cost_usd: 0.10, ts: '2026-04-03 11:00:00' }),
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    expect(out.userCount).toBe(1);
+    expect(out.users).toHaveLength(1);
+
+    const user = out.users[0];
+    expect(user.userId).toBe(42);
+    expect(user.totalCost).toBeCloseTo(0.90, 2);
+    expect(user.totalCalls).toBe(3);
+    expect(user.firstCallTs).toBe('2026-04-01 08:00:00');
+    expect(user.lastCallTs).toBe('2026-04-03 11:00:00');
+
+    // Top domains: content ($0.80) > secretary ($0.10)
+    expect(user.topDomains).toHaveLength(2);
+    expect(user.topDomains[0].domain).toBe('content');
+    expect(user.topDomains[0].cost).toBeCloseTo(0.80, 2);
+    expect(user.topDomains[1].domain).toBe('secretary');
+  });
+
+  it('sorts users by total cost descending and reports max', () => {
+    const rows: ApiUsageRow[] = [
+      // User 7 (small spender)
+      row({ user_id: 7,  cost_usd: 0.05 }),
+      // User 42 (big spender)
+      row({ user_id: 42, cost_usd: 2.00 }),
+      row({ user_id: 42, cost_usd: 1.50 }),
+      // User 99 (medium)
+      row({ user_id: 99, cost_usd: 0.80 }),
+      row({ user_id: 99, cost_usd: 0.20 }),
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    expect(out.userCount).toBe(3);
+    // Sorted descending by totalCost: 42 ($3.50) → 99 ($1.00) → 7 ($0.05)
+    expect(out.users[0].userId).toBe(42);
+    expect(out.users[0].totalCost).toBeCloseTo(3.50, 2);
+    expect(out.users[1].userId).toBe(99);
+    expect(out.users[1].totalCost).toBeCloseTo(1.00, 2);
+    expect(out.users[2].userId).toBe(7);
+    expect(out.users[2].totalCost).toBeCloseTo(0.05, 2);
+
+    expect(out.totalCost).toBeCloseTo(4.55, 2);
+    expect(out.maxCostPerUser).toBeCloseTo(3.50, 2);
+    expect(out.avgCostPerUser).toBeCloseTo(4.55 / 3, 2);
+  });
+
+  it('excludes system rows (user_id=0 or missing) from per-user totals', () => {
+    const rows: ApiUsageRow[] = [
+      row({ user_id: 42, cost_usd: 1.00 }),
+      row({ user_id: 0, cost_usd: 5.00 }),       // system scheduler
+      row({ cost_usd: 3.00 }),                   // pre-A1 historical row
+      row({ user_id: 99, cost_usd: 0.50 }),
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    // System rows silently dropped — aggregated total = 1.00 + 0.50 only
+    expect(out.totalCost).toBeCloseTo(1.50, 2);
+    expect(out.totalCalls).toBe(2);
+    expect(out.userCount).toBe(2);
+    // Neither system row should appear as a user
+    expect(out.users.find(u => u.userId === 0)).toBeUndefined();
+  });
+
+  it('strips the `domain_` prefix from categories for the topDomains rollup', () => {
+    const rows: ApiUsageRow[] = [
+      row({ user_id: 1, category: 'domain_secretary', cost_usd: 0.20 }),
+      row({ user_id: 1, category: 'domain_content',   cost_usd: 0.30 }),
+      row({ user_id: 1, category: 'classify_message', cost_usd: 0.02 }),  // non-domain category passed through as-is
+      row({ user_id: 1, category: 'parse-receipt',    cost_usd: 0.01 }),  // kebab-case, not a domain
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    const user = out.users[0];
+    const domains = user.topDomains.map(d => d.domain);
+    // The `domain_` prefix is stripped; the other categories pass through verbatim.
+    expect(domains).toContain('secretary');
+    expect(domains).toContain('content');
+    // topDomains is top-3, sorted descending. content ($0.30) + secretary ($0.20)
+    // fill slots 0 and 1; classify_message ($0.02) fills slot 2.
+    expect(user.topDomains[0].domain).toBe('content');
+    expect(user.topDomains[1].domain).toBe('secretary');
+    expect(user.topDomains[2].domain).toBe('classify_message');
+    // topDomains is capped at 3 entries — parse-receipt is dropped.
+    expect(user.topDomains).toHaveLength(3);
+  });
+
+  it('sums tokens across a user\'s calls', () => {
+    const rows: ApiUsageRow[] = [
+      row({ user_id: 5, input_tokens: 1000, output_tokens:  200, cost_usd: 0.10 }),
+      row({ user_id: 5, input_tokens:  500, output_tokens:  100, cost_usd: 0.05 }),
+      row({ user_id: 5, input_tokens: 2000, output_tokens:  400, cost_usd: 0.20 }),
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    expect(out.users[0].totalTokens).toBe(3500 + 700); // 4200
+  });
+
+  it('tracks first and last call timestamps per user correctly', () => {
+    const rows: ApiUsageRow[] = [
+      row({ user_id: 8, ts: '2026-03-15 12:00:00' }),
+      row({ user_id: 8, ts: '2026-03-02 09:30:00' }),
+      row({ user_id: 8, ts: '2026-03-28 18:45:00' }),
+      row({ user_id: 8, ts: '2026-03-10 14:00:00' }),
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    const user = out.users[0];
+    expect(user.firstCallTs).toBe('2026-03-02 09:30:00');
+    expect(user.lastCallTs).toBe('2026-03-28 18:45:00');
+  });
+
+  it('handles a mixed-provider row set (content creator scenario)', () => {
+    // Simulates a Hybrid Operator ("creator + athlete"): 3 users, all
+    // touching content + triathlon + secretary, with different mixes.
+    // Exactly the shape we'll see in the small-group beta.
+    const rows: ApiUsageRow[] = [
+      // User 1: content-heavy creator (burns tokens on script gen)
+      row({ user_id: 1, category: 'domain_content', provider: 'anthropic', model: 'claude-sonnet-4-6', cost_usd: 0.80, input_tokens: 8000, output_tokens: 3000 }),
+      row({ user_id: 1, category: 'domain_content', provider: 'anthropic', model: 'claude-sonnet-4-6', cost_usd: 0.60, input_tokens: 6000, output_tokens: 2000 }),
+      row({ user_id: 1, category: 'domain_secretary', provider: 'gemini', model: 'gemini-2.5-flash-lite', cost_usd: 0.001, input_tokens: 100, output_tokens: 50 }),
+
+      // User 2: athlete-heavy (coach briefings)
+      row({ user_id: 2, category: 'domain_triathlon', provider: 'anthropic', model: 'claude-sonnet-4-6', cost_usd: 0.50, input_tokens: 12000, output_tokens: 2000 }),
+      row({ user_id: 2, category: 'domain_secretary', provider: 'gemini', model: 'gemini-2.5-flash-lite', cost_usd: 0.002, input_tokens: 200, output_tokens: 100 }),
+
+      // User 3: full hybrid (everything)
+      row({ user_id: 3, category: 'domain_content',   provider: 'gemini',    model: 'gemini-2.5-flash', cost_usd: 0.10, input_tokens: 3000, output_tokens: 1000 }),
+      row({ user_id: 3, category: 'domain_triathlon', provider: 'anthropic', model: 'claude-sonnet-4-6', cost_usd: 0.30, input_tokens: 7000, output_tokens: 1500 }),
+      row({ user_id: 3, category: 'domain_secretary', provider: 'gemini',    model: 'gemini-2.5-flash-lite', cost_usd: 0.001, input_tokens: 80, output_tokens: 40 }),
+    ];
+
+    const out = computeUserCostBreakdown(rows, 30);
+    expect(out.userCount).toBe(3);
+
+    // User 1 (creator): $1.401
+    expect(out.users[0].userId).toBe(1);
+    expect(out.users[0].totalCost).toBeCloseTo(1.401, 3);
+    expect(out.users[0].topDomains[0].domain).toBe('content');
+
+    // User 2 (athlete): $0.502
+    expect(out.users[1].userId).toBe(2);
+    expect(out.users[1].totalCost).toBeCloseTo(0.502, 3);
+    expect(out.users[1].topDomains[0].domain).toBe('triathlon');
+
+    // User 3 (hybrid): $0.401
+    expect(out.users[2].userId).toBe(3);
+    expect(out.users[2].totalCost).toBeCloseTo(0.401, 3);
+    // Triathlon ($0.30) edges content ($0.10) for this user
+    expect(out.users[2].topDomains[0].domain).toBe('triathlon');
   });
 });
