@@ -84,6 +84,17 @@ export function createApiRouter(): Router {
   router.use(authMiddleware);
   router.use(rateLimitMiddleware);
 
+  // Garmin silent mode for ALL iOS API routes. iOS users can't enter
+  // MFA codes, so if the Garmin session expires, we return an error
+  // instead of triggering an MFA email flood. The user re-authenticates
+  // via the Telegram bot (/readiness) where MFA is interactive.
+  router.use((_req, _res, next) => {
+    const { setSilentMode } = require('../services/garmin');
+    setSilentMode(true);
+    _res.on('finish', () => setSilentMode(false));
+    next();
+  });
+
   // Chat is the ONLY route allowed to touch the AI pipeline.
   router.use('/chat', chatRoutes());
 

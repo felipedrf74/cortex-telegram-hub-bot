@@ -571,6 +571,17 @@ let _client: InstanceType<typeof GarminConnect> | null = null;
 let _authenticated = false;
 
 /**
+ * Silent mode flag — when true, getClient() will NOT trigger MFA
+ * login if tokens are expired. Set by iOS API middleware before
+ * calling Garmin functions, reset after the call completes.
+ *
+ * This avoids MFA email floods from iOS app background requests.
+ * Telegram bot commands leave this false so MFA works interactively.
+ */
+let _silentMode = false;
+export function setSilentMode(silent: boolean): void { _silentMode = silent; }
+
+/**
  * Serialized client-bootstrap promise. Prevents the MFA email flood caused
  * by multiple parallel callers (e.g. iOS dashboard fanout calling
  * getDailySummary + getReadiness + getSleep + getActivitiesByDate at once)
@@ -595,7 +606,16 @@ export function isGarminConfigured(): boolean {
  * Concurrency: all callers awaiting a cold client share the same bootstrap
  * promise. See _clientBootstrapPromise above for why.
  */
-async function getClient(): Promise<InstanceType<typeof GarminConnect>> {
+/**
+ * @param opts.silent  When true, return null instead of triggering MFA
+ *                     login if saved tokens are expired. Used by iOS API
+ *                     endpoints where no interactive user is present to
+ *                     enter an MFA code. Default: false (Telegram bot
+ *                     commands still get the full MFA flow).
+ */
+async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<typeof GarminConnect>> {
+  const silent = opts?.silent ?? _silentMode;
+
   // Fast path — already authenticated
   if (_client && _authenticated) return _client;
 
@@ -627,6 +647,20 @@ async function getClient(): Promise<InstanceType<typeof GarminConnect>> {
       }
     } catch (err) {
       logger.warn({ err }, 'Garmin: saved tokens expired or invalid, re-authenticating');
+    }
+
+    // ── Silent mode gate (April 10 2026) ────────────────────
+    // iOS API endpoints pass { silent: true } because there's no
+    // interactive user to answer an MFA code. Instead of triggering
+    // loginWithMfa (which sends an email the user can't respond to
+    // from the iOS app), we throw a descriptive error so the iOS
+    // endpoint returns a clean "Garmin session expired" response.
+    // The next Telegram bot command will trigger the real MFA flow
+    // where the user can respond.
+    if (silent) {
+      logger.warn('Garmin: tokens expired and silent mode is ON — skipping MFA login. ' +
+        'Send /readiness or /training in Telegram to re-authenticate with MFA.');
+      throw new Error('Garmin session expired — re-authenticate via Telegram bot');
     }
 
     // Fresh login — go directly to our MFA-aware flow (avoids the library's
