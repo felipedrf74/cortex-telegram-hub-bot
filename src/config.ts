@@ -310,6 +310,19 @@ export const config = {
     // 'production' → api.push.apple.com, 'sandbox' → api.sandbox.push.apple.com
     environment: (process.env.APNS_ENVIRONMENT || 'production') as 'production' | 'sandbox',
   },
+  // ── Stripe Billing ────────────────────────────────────────────────
+  // Web checkout: users subscribe at nexushub.me, Stripe webhook writes
+  // to the subscriptions table. iOS reads status via GET /billing/status.
+  // Empty values = Stripe not configured (billing endpoints return 503).
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    priceProMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
+    priceProYearly: process.env.STRIPE_PRICE_PRO_YEARLY || '',
+    priceMaxMonthly: process.env.STRIPE_PRICE_MAX_MONTHLY || '',
+    priceMaxYearly: process.env.STRIPE_PRICE_MAX_YEARLY || '',
+  },
+
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
     callTimeoutMs: parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10),

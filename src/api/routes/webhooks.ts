@@ -100,6 +100,62 @@ export function createWebhookRouter(bot?: Bot): Router {
     limit: '1mb',  // Todoist payloads are tiny; cap to defeat memory-DDoS
   });
 
+  // ── POST /webhooks/stripe ──────────────────────────────────────
+  // Stripe sends checkout.session.completed, customer.subscription.*,
+  // and invoice.payment_failed events here. Must verify the webhook
+  // signature against STRIPE_WEBHOOK_SECRET before processing.
+
+  router.post('/stripe', rawJson, async (req: Request, res: Response) => {
+    const rawBody = req.body as Buffer;
+    const signature = (req.headers['stripe-signature'] as string) || '';
+
+    try {
+      const {
+        isStripeConfigured,
+        handleCheckoutCompleted,
+        handleSubscriptionUpdated,
+        handleSubscriptionDeleted,
+        handleInvoicePaymentFailed,
+      } = require('../../services/stripe-service');
+
+      if (!isStripeConfigured()) {
+        res.status(503).json({ error: 'Stripe not configured' });
+        return;
+      }
+
+      const Stripe = require('stripe').default || require('stripe');
+      const stripe = new Stripe(config.stripe?.secretKey || '');
+
+      const event = stripe.webhooks.constructEvent(
+        rawBody,
+        signature,
+        config.stripe?.webhookSecret || '',
+      );
+
+      switch (event.type) {
+        case 'checkout.session.completed':
+          handleCheckoutCompleted(event.data.object);
+          break;
+        case 'customer.subscription.updated':
+          handleSubscriptionUpdated(event.data.object);
+          break;
+        case 'customer.subscription.deleted':
+          handleSubscriptionDeleted(event.data.object);
+          break;
+        case 'invoice.payment_failed':
+          handleInvoicePaymentFailed(event.data.object);
+          break;
+        default:
+          logger.debug({ type: event.type }, 'Stripe webhook event not handled');
+      }
+
+      res.status(200).json({ received: true });
+    } catch (err: any) {
+      logger.warn({ err: err.message }, 'Stripe webhook verification failed');
+      res.status(400).json({ error: 'Webhook signature verification failed' });
+    }
+  });
+
   // ── POST /webhooks/todoist ─────────────────────────────────────
 
   router.post('/todoist', rawJson, async (req: Request, res: Response) => {

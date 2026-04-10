@@ -27,6 +27,7 @@ import { invoicesRoutes } from './routes/invoices';
 import { contentDashboardRoutes } from './routes/content-dashboard';
 import { contentAdminWriteRoutes } from './routes/content-admin-write';
 import { healthDataRoutes } from './routes/health-data';
+import { billingRoutes } from './routes/billing';
 
 /**
  * Creates the iOS API router.
@@ -62,6 +63,7 @@ export function createApiRouter(): Router {
         cooking: 'GET/POST/DELETE /api/v1/cooking/{recipes|meal-plan|shopping-list}',
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
         invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
+        billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify}',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -141,6 +143,9 @@ export function createApiRouter(): Router {
   router.use('/cooking', cookingRoutes());
   router.use('/finance', financeRoutes());
   router.use('/invoices', invoicesRoutes());
+
+  // Billing — subscription status (token-zero), Stripe checkout, Apple verify
+  router.use('/billing', billingRoutes());
 
   // Onboarding (questionnaires + profile)
   router.use('/onboarding', onboardingRoutes());
