@@ -56,12 +56,16 @@ export function billingRoutes(): Router {
       return;
     }
 
-    // Validate that the priceId is one of our known prices
+    // Validate that the priceId is one of our known prices (USD + BRL)
     const validPrices = [
       config.stripe.priceProMonthly,
       config.stripe.priceProYearly,
       config.stripe.priceMaxMonthly,
       config.stripe.priceMaxYearly,
+      config.stripe.priceProMonthlyBrl,
+      config.stripe.priceProYearlyBrl,
+      config.stripe.priceMaxMonthlyBrl,
+      config.stripe.priceMaxYearlyBrl,
     ].filter(Boolean);
 
     if (!validPrices.includes(priceId)) {

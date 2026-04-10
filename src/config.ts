@@ -317,10 +317,16 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+    // USD prices
     priceProMonthly: process.env.STRIPE_PRICE_PRO_MONTHLY || '',
     priceProYearly: process.env.STRIPE_PRICE_PRO_YEARLY || '',
     priceMaxMonthly: process.env.STRIPE_PRICE_MAX_MONTHLY || '',
     priceMaxYearly: process.env.STRIPE_PRICE_MAX_YEARLY || '',
+    // BRL prices
+    priceProMonthlyBrl: process.env.STRIPE_PRICE_PRO_MONTHLY_BRL || '',
+    priceProYearlyBrl: process.env.STRIPE_PRICE_PRO_YEARLY_BRL || '',
+    priceMaxMonthlyBrl: process.env.STRIPE_PRICE_MAX_MONTHLY_BRL || '',
+    priceMaxYearlyBrl: process.env.STRIPE_PRICE_MAX_YEARLY_BRL || '',
   },
 
   // ── AI Safety ─────────────────────────────────────────────────────

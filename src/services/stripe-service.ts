@@ -37,10 +37,16 @@ export interface SubscriptionStatus {
 // this map resolves them to our internal plan names on checkout.
 function resolvePlan(priceId: string): { plan: string; period: string } {
   const { stripe: s } = config;
+  // USD prices
   if (priceId === s.priceProMonthly) return { plan: 'pro', period: 'monthly' };
   if (priceId === s.priceProYearly)  return { plan: 'pro', period: 'yearly' };
   if (priceId === s.priceMaxMonthly) return { plan: 'max', period: 'monthly' };
   if (priceId === s.priceMaxYearly)  return { plan: 'max', period: 'yearly' };
+  // BRL prices
+  if (priceId === s.priceProMonthlyBrl) return { plan: 'pro', period: 'monthly' };
+  if (priceId === s.priceProYearlyBrl)  return { plan: 'pro', period: 'yearly' };
+  if (priceId === s.priceMaxMonthlyBrl) return { plan: 'max', period: 'monthly' };
+  if (priceId === s.priceMaxYearlyBrl)  return { plan: 'max', period: 'yearly' };
   return { plan: 'pro', period: 'monthly' }; // fallback
 }
 
