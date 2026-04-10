@@ -807,6 +807,13 @@ export function startScheduler(bot: Bot): void {
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send channel relearn notification');
         }
+        await sendPushNotification(userId, {
+          title: 'Channel Re-Learn',
+          body: `${result.analyzed} channels analyzed${result.failed > 0 ? `, ${result.failed} failed` : ''}${result.synthesized ? ' — knowledge updated' : ''}`,
+          threadId: 'channel_relearn',
+          category: 'BRIEFING',
+          data: { type: 'channel_relearn', analyzed: result.analyzed, failed: result.failed, synthesized: result.synthesized },
+        });
       }
     }
   }), { timezone: tz });

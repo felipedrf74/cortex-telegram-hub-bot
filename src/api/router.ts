@@ -25,6 +25,7 @@ import { cookingRoutes } from './routes/cooking';
 import { financeRoutes } from './routes/finance';
 import { invoicesRoutes } from './routes/invoices';
 import { contentDashboardRoutes } from './routes/content-dashboard';
+import { contentAdminWriteRoutes } from './routes/content-admin-write';
 
 /**
  * Creates the iOS API router.
@@ -74,6 +75,7 @@ export function createApiRouter(): Router {
   // admin portal's `Authorization: Bearer <PORTAL_TOKEN>` header without
   // having to register as an iOS device first.
   router.use('/admin/content-dashboard', contentDashboardRoutes());
+  router.use('/admin/content', contentAdminWriteRoutes());
 
   // Protected routes (require JWT + rate limiting).
   // The middleware order matters: auth runs first to populate req.userId,

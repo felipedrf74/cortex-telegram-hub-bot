@@ -35,6 +35,7 @@ import {
   type ContentRefChannel,
 } from '../state/content-references';
 import { writeSignal } from './intelligence-bus';
+import { getDb } from './database';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -623,7 +624,73 @@ export async function processAllChannels(force = false): Promise<{
   let analyzed = 0;
   let failed = 0;
 
-  // Process pending channels first
+  // ── Recovery: resurrect stuck / failed channels ────────────────
+  //
+  // Bug fix (April 10 2026): getPendingChannels() only returns
+  // status='pending', getActiveChannels() only returns status='active'.
+  // Two absorbing states caused channels to go permanently dead:
+  //
+  //   1. 'analyzing' — if the Node process crashed mid-analysis (OOM,
+  //      PM2 restart, uncaught exception), the channel stays in
+  //      'analyzing' forever. No query picks it up.
+  //
+  //   2. 'failed' — the catch block in analyzeChannel correctly
+  //      transitions to 'failed', but the next cron run skips it
+  //      because neither query matches 'failed'.
+  //
+  // Fix: at the top of every processAllChannels() call, reset both
+  // absorbing states back to 'pending' so they're retried this cycle.
+  // Conditions are deliberately generous:
+  //
+  //   - 'analyzing' for >30 minutes → definitely stuck (normal
+  //     analysis completes in 30-120 seconds per channel)
+  //   - 'failed' for >12 hours → eligible for auto-retry (once per
+  //     cron cycle, so at most once per Sunday)
+  try {
+    const db = getDb();
+    const stuckAnalyzing = db.prepare(`
+      SELECT id, channel_name FROM content_ref_channels
+      WHERE status = 'analyzing'
+        AND updated_at < datetime('now', '-30 minutes')
+    `).all() as Array<{ id: number; channel_name: string | null }>;
+
+    for (const ch of stuckAnalyzing) {
+      updateChannelStatus(ch.id, 'pending', {
+        error_message: 'Auto-recovered from stuck analyzing state (process crash or timeout)',
+      });
+      logger.warn(
+        { channelId: ch.id, channelName: ch.channel_name },
+        'Channel was stuck in analyzing — reset to pending for retry',
+      );
+    }
+
+    const failedRetryable = db.prepare(`
+      SELECT id, channel_name FROM content_ref_channels
+      WHERE status = 'failed'
+        AND updated_at < datetime('now', '-12 hours')
+    `).all() as Array<{ id: number; channel_name: string | null }>;
+
+    for (const ch of failedRetryable) {
+      updateChannelStatus(ch.id, 'pending', { error_message: null });
+      logger.info(
+        { channelId: ch.id, channelName: ch.channel_name },
+        'Previously failed channel reset to pending for auto-retry',
+      );
+    }
+
+    if (stuckAnalyzing.length > 0 || failedRetryable.length > 0) {
+      logger.info(
+        { stuckRecovered: stuckAnalyzing.length, failedRetried: failedRetryable.length },
+        'Channel recovery complete — retrying recovered channels in this run',
+      );
+    }
+  } catch (err) {
+    // Recovery is best-effort — if it fails, proceed with whatever
+    // pending/active channels we can still find.
+    logger.error({ err }, 'Channel recovery query failed (non-critical, continuing)');
+  }
+
+  // Process pending channels first (now includes any just-recovered ones)
   const pending = getPendingChannels();
   for (const ch of pending) {
     const result = await analyzeChannel(ch.id);
