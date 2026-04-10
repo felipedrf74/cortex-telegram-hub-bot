@@ -18,8 +18,19 @@ import { logger } from '../utils/logger';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
-// Content pillars for trending detection
-const PILLAR_KEYWORDS: Record<string, string[]> = {
+// ── Pillar keywords — now read from DB (config_pillars, migration 048) ──
+//
+// April 10 2026: moved from hardcoded PILLAR_KEYWORDS object to the
+// config_pillars table so the admin portal can add/edit/remove pillars
+// without recompilation. The hardcoded values below are the FALLBACK
+// for when the DB table doesn't exist yet (e.g., migration hasn't run)
+// or is empty.
+//
+// The portal write surface (POST/PATCH/DELETE /admin/content/pillars)
+// was added in Session 2. The reaction radar now reads from DB on every
+// run so changes take effect on the next 4-hour cycle without restart.
+
+const FALLBACK_PILLAR_KEYWORDS: Record<string, string[]> = {
   politics: ['política', 'governo', 'lula', 'bolsonaro', 'esquerda', 'direita', 'estado', 'imposto', 'congresso', 'stf', 'regulação', 'censura', 'liberdade'],
   economics: ['economia', 'inflação', 'dólar', 'real', 'mercado', 'juros', 'selic', 'pib', 'recessão', 'investimento', 'cripto', 'bitcoin', 'banco central'],
   fitness: ['treino', 'musculação', 'corrida', 'maratona', 'dieta', 'suplemento', 'academia', 'crossfit', 'hipertrofia', 'atleta'],
@@ -27,6 +38,50 @@ const PILLAR_KEYWORDS: Record<string, string[]> = {
   selfdev: ['disciplina', 'hábito', 'produtividade', 'mentalidade', 'sucesso', 'foco', 'propósito', 'estoicismo'],
   geopolitics: ['guerra', 'china', 'eua', 'trump', 'brics', 'otan', 'israel', 'irã', 'ucrânia', 'rússia', 'petróleo'],
 };
+
+/**
+ * Load pillar keywords from the config_pillars DB table.
+ * Falls back to the hardcoded FALLBACK_PILLAR_KEYWORDS if:
+ *   - The table doesn't exist yet (migration 048 hasn't run)
+ *   - The table is empty (all pillars disabled or deleted)
+ *   - Any DB error occurs
+ *
+ * Called on every radar run (every 4 hours) so portal edits take effect
+ * without a process restart. The query is a trivial indexed SELECT on
+ * a table with <20 rows, so the cost is ~0.1ms.
+ */
+function getPillarKeywords(): Record<string, string[]> {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT name, keywords FROM config_pillars WHERE enabled = 1 ORDER BY name ASC`,
+    ).all() as Array<{ name: string; keywords: string }>;
+
+    if (rows.length === 0) {
+      return FALLBACK_PILLAR_KEYWORDS;
+    }
+
+    const result: Record<string, string[]> = {};
+    for (const row of rows) {
+      try {
+        result[row.name] = JSON.parse(row.keywords);
+      } catch {
+        // Malformed JSON in a pillar row — skip it, log once
+        logger.warn({ pillar: row.name }, 'Malformed keywords JSON in config_pillars');
+      }
+    }
+    return Object.keys(result).length > 0 ? result : FALLBACK_PILLAR_KEYWORDS;
+  } catch {
+    // Table doesn't exist or other DB error — fall back silently
+    return FALLBACK_PILLAR_KEYWORDS;
+  }
+}
+
+// The two call sites below use getPillarKeywords() directly so the
+// DB is queried on every radar run (every 4 hours). This ensures
+// portal edits take effect without a process restart.
+// Legacy references to PILLAR_KEYWORDS should be replaced with
+// getPillarKeywords() calls — grep to verify no stale usages.
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -191,7 +246,7 @@ function detectPillar(title: string): string {
   let bestPillar = 'none';
   let bestScore = 0;
 
-  for (const [pillar, keywords] of Object.entries(PILLAR_KEYWORDS)) {
+  for (const [pillar, keywords] of Object.entries(getPillarKeywords())) {
     const score = keywords.filter(kw => lower.includes(kw)).length;
     if (score > bestScore) {
       bestScore = score;
@@ -255,7 +310,7 @@ function scoreReactionPotential(
     pillarAlignment = 5;
     if (pillarRankings.has(video.pillar)) pillarAlignment += 2;
     // Multi-pillar bonus (title touches multiple pillars)
-    const pillarHits = Object.entries(PILLAR_KEYWORDS)
+    const pillarHits = Object.entries(getPillarKeywords())
       .filter(([_, kws]) => kws.some(k => lowerTitle.includes(k))).length;
     if (pillarHits >= 2) pillarAlignment = 10;
     else if (pillarHits === 1) pillarAlignment = Math.min(10, pillarAlignment + 2);
