@@ -26,6 +26,7 @@ import { financeRoutes } from './routes/finance';
 import { invoicesRoutes } from './routes/invoices';
 import { contentDashboardRoutes } from './routes/content-dashboard';
 import { contentAdminWriteRoutes } from './routes/content-admin-write';
+import { healthDataRoutes } from './routes/health-data';
 
 /**
  * Creates the iOS API router.
@@ -97,6 +98,7 @@ export function createApiRouter(): Router {
   router.use('/notes', notesRoutes());
   router.use('/connections', connectionRoutes());
   router.use('/wearable', wearableRoutes());
+  router.use('/health-data', healthDataRoutes());
   router.use('/usage', usageRoutes());
 
   // Phase 1 Slice D — Skills catalog for iOS Skills tab. Pure read of
