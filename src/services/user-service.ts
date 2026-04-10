@@ -17,14 +17,21 @@ import type { Lang } from '../utils/i18n';
 
 export interface User {
   id: number;
-  telegram_id: number;
+  telegram_id: number | null;
+  email: string | null;
+  password_hash: string | null;
+  apple_user_id: string | null;
+  google_user_id: string | null;
+  email_verified: number;
   username: string | null;
   first_name: string | null;
   last_name: string | null;
+  avatar_url: string | null;
   language: Lang;
   timezone: string;
-  tier: 'free' | 'pro' | 'owner';
+  tier: 'free' | 'pro' | 'max' | 'owner';
   status: 'active' | 'suspended' | 'banned';
+  auth_provider: 'telegram' | 'apple' | 'google' | 'email';
   invite_code: string | null;
   daily_message_limit: number;
   daily_token_limit: number;
@@ -83,6 +90,68 @@ export function getOrCreateUser(telegramId: number, profile: {
     'New user registered',
   );
   return getUserByTelegramId(telegramId)!;
+}
+
+// ─── Multi-auth user lookups ────────────────────────────────────────
+
+export function getUserById(id: number): User | null {
+  const db = getDb();
+  return (db.prepare('SELECT * FROM users WHERE id = ?').get(id) as User) ?? null;
+}
+
+export function getUserByAppleId(appleUserId: string): User | null {
+  const db = getDb();
+  return (db.prepare('SELECT * FROM users WHERE apple_user_id = ?').get(appleUserId) as User) ?? null;
+}
+
+export function getUserByGoogleId(googleUserId: string): User | null {
+  const db = getDb();
+  return (db.prepare('SELECT * FROM users WHERE google_user_id = ?').get(googleUserId) as User) ?? null;
+}
+
+export function getUserByEmail(email: string): User | null {
+  const db = getDb();
+  return (db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase()) as User) ?? null;
+}
+
+export function createAppleUser(appleUserId: string, profile: {
+  email?: string; firstName?: string; lastName?: string;
+}): User {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO users (apple_user_id, email, first_name, last_name, email_verified,
+      auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+    VALUES (?, ?, ?, ?, 1, 'apple', 'pro', 200, 500000, 5.0)
+  `).run(appleUserId, profile.email?.toLowerCase() || null, profile.firstName || null, profile.lastName || null);
+  logger.info({ appleUserId, email: profile.email }, 'New Apple user registered');
+  return getUserByAppleId(appleUserId)!;
+}
+
+export function createGoogleUser(googleUserId: string, profile: {
+  email: string; name?: string; picture?: string;
+}): User {
+  const db = getDb();
+  const [firstName, ...rest] = (profile.name || '').split(' ');
+  db.prepare(`
+    INSERT INTO users (google_user_id, email, first_name, last_name, avatar_url, email_verified,
+      auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+    VALUES (?, ?, ?, ?, ?, 1, 'google', 'pro', 200, 500000, 5.0)
+  `).run(googleUserId, profile.email.toLowerCase(), firstName || null, rest.join(' ') || null, profile.picture || null);
+  logger.info({ googleUserId, email: profile.email }, 'New Google user registered');
+  return getUserByGoogleId(googleUserId)!;
+}
+
+export function createEmailUser(email: string, passwordHash: string, profile: {
+  firstName: string;
+}): User {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO users (email, password_hash, first_name, email_verified,
+      auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+    VALUES (?, ?, ?, 0, 'email', 'pro', 200, 500000, 5.0)
+  `).run(email.toLowerCase(), passwordHash, profile.firstName);
+  logger.info({ email }, 'New email user registered');
+  return getUserByEmail(email)!;
 }
 
 export function isUserAuthorized(telegramId: number): boolean {
