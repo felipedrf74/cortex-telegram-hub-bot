@@ -1906,14 +1906,33 @@ table.legacy th {
             <div class="card-title">📚 Book Library</div>
             <span class="card-subtitle" id="content-books-meta">—</span>
           </div>
+          <!-- Add Book form -->
+          <div style="padding:var(--space-3);border-bottom:1px solid var(--border);display:flex;gap:var(--space-2);align-items:center">
+            <input type="text" id="add-book-title" placeholder="Title" style="flex:2;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+            <input type="text" id="add-book-author" placeholder="Author" style="flex:1;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+            <button class="btn btn-sm" onclick="addBook()" id="add-book-btn" style="white-space:nowrap">+ Add</button>
+          </div>
           <div id="content-books-list"><div class="empty">Loading books…</div></div>
         </div>
 
         <!-- Reaction radar -->
         <div class="card">
-          <div class="card-header">
-            <div class="card-title">📡 Reaction Radar</div>
-            <span class="card-subtitle" id="content-radar-meta">—</span>
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div class="card-title">📡 Reaction Radar</div>
+              <span class="card-subtitle" id="content-radar-meta">—</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="togglePillarEditor()" id="pillar-editor-toggle">⚙️ Pillars</button>
+          </div>
+          <!-- Pillar editor (hidden by default) -->
+          <div id="pillar-editor" style="display:none;padding:var(--space-3);border-bottom:1px solid var(--border)">
+            <div style="font-size:12px;font-weight:600;margin-bottom:var(--space-2)">Pillar Keywords (editable)</div>
+            <div id="pillar-editor-rows"></div>
+            <div style="display:flex;gap:var(--space-2);margin-top:var(--space-2)">
+              <input type="text" id="add-pillar-name" placeholder="New pillar name" style="flex:1;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+              <input type="text" id="add-pillar-keywords" placeholder="keyword1, keyword2, ..." style="flex:2;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+              <button class="btn btn-sm" onclick="addPillar()">+ Add</button>
+            </div>
           </div>
           <div id="content-radar-list"><div class="empty">Loading reactions…</div></div>
         </div>
@@ -1921,9 +1940,17 @@ table.legacy th {
 
       <!-- YouTube research -->
       <div class="card" style="margin-bottom:var(--space-4)">
-        <div class="card-header">
-          <div class="card-title">🎥 YouTube Research</div>
-          <span class="card-subtitle" id="content-youtube-meta">—</span>
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="card-title">🎥 YouTube Research</div>
+            <span class="card-subtitle" id="content-youtube-meta">—</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="triggerChannelRelearn()" id="channel-relearn-btn">🔄 Re-learn All</button>
+        </div>
+        <!-- Add Channel form -->
+        <div style="padding:var(--space-3);border-bottom:1px solid var(--border);display:flex;gap:var(--space-2);align-items:center">
+          <input type="text" id="add-channel-url" placeholder="YouTube channel URL or @handle" style="flex:1;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:12px">
+          <button class="btn btn-sm" onclick="addChannel()" id="add-channel-btn">+ Add Channel</button>
         </div>
         <div class="grid grid-cols-2">
           <div>
@@ -1939,9 +1966,12 @@ table.legacy th {
 
       <!-- Voice DNA cards -->
       <div class="card" style="margin-bottom:var(--space-4)">
-        <div class="card-header">
-          <div class="card-title">🎙️ Voice DNA</div>
-          <span class="card-subtitle">Extracted from reference channels + voice evolution</span>
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div class="card-title">🎙️ Voice DNA</div>
+            <span class="card-subtitle">Extracted from reference channels + voice evolution</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="triggerVoiceSynthesis()" id="voice-synthesize-btn">🧬 Synthesize Now</button>
         </div>
         <div id="content-voice-dna" class="grid grid-cols-auto"><div class="empty">Loading voice DNA…</div></div>
       </div>
@@ -4290,11 +4320,15 @@ table.legacy th {
       const thesis = b.thesis
         ? '<div class="text-muted" style="font-size:11px;margin-top:4px;line-height:1.4">' + esc(b.thesis).slice(0, 220) + (b.thesis.length > 220 ? '…' : '') + '</div>'
         : '';
+      const actions = b.status === 'failed'
+        ? '<button class="btn btn-ghost btn-sm" style="font-size:10px" onclick="retryBookExtraction(' + b.id + ')">🔁 Retry</button>'
+        : '';
+      const deleteBtn = '<button class="btn btn-ghost btn-sm" style="font-size:10px;color:var(--error)" onclick="deleteBook(' + b.id + ')">✕</button>';
       return '<div style="padding:var(--space-3) 0;border-bottom:1px solid var(--border)">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
           '<div><div style="font-weight:600;font-size:13px">' + esc(b.title) + '</div>' +
           '<div class="text-muted" style="font-size:11px">' + esc(b.author) + ' · ' + (b.timesReferenced || 0) + ' refs</div>' +
-          '</div>' + statusBadge + '</div>' +
+          '</div><div style="display:flex;gap:4px;align-items:center">' + actions + deleteBtn + statusBadge + '</div></div>' +
         thesis + frameworksPreview +
         '</div>';
     }).join('');
@@ -4352,7 +4386,11 @@ table.legacy th {
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:var(--space-2)">' +
           '<div style="min-width:0;flex:1"><div style="font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(nameLine) + '</div>' +
           '<div class="text-muted mono" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="' + esc(c.url) + '" target="_blank" rel="noopener" style="color:inherit">' + esc(c.url) + '</a></div></div>' +
-          statusBadge + '</div>' +
+          '<div style="display:flex;gap:4px;align-items:center">' +
+            '<button class="btn btn-ghost btn-sm" style="font-size:10px" onclick="reanalyzeChannel(' + c.id + ')" title="Re-analyze">🔄</button>' +
+            '<button class="btn btn-ghost btn-sm" style="font-size:10px;color:var(--error)" onclick="deleteChannel(' + c.id + ')" title="Remove">✕</button>' +
+            statusBadge +
+          '</div></div>' +
           '<div class="text-muted" style="font-size:10px;margin-top:4px">' + analyzed + ' videos · ' + lastAt + '</div>' +
           errorLine +
           '</div>';
@@ -4458,7 +4496,206 @@ table.legacy th {
     });
   }
 
-  // ════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // Content admin write handlers (portal forms → backend API)
+  // Added Session 5 — wires the HTML forms above to the 13
+  // POST/PUT/DELETE routes at /api/v1/admin/content/*
+  // ═══════════════════════════════════════════════════════════
+
+  // ── Books ─────────────────────────────────────────────────
+  window.addBook = async function() {
+    const title = document.getElementById('add-book-title').value.trim();
+    const author = document.getElementById('add-book-author').value.trim();
+    if (!title || !author) { showToast('Title and author required', 'error'); return; }
+    const btn = document.getElementById('add-book-btn');
+    btn.disabled = true; btn.textContent = '…';
+    try {
+      const res = await apiFetch('/api/v1/admin/content/books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, author }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showToast('Book added: ' + esc(title), 'success');
+        document.getElementById('add-book-title').value = '';
+        document.getElementById('add-book-author').value = '';
+        loadContentDashboard();
+      } else {
+        showToast(data.error?.message || 'Failed', 'error');
+      }
+    } catch (e) { showToast('Network error', 'error'); }
+    btn.disabled = false; btn.textContent = '+ Add';
+  };
+
+  window.retryBookExtraction = async function(id) {
+    showToast('Retrying extraction…', 'info');
+    try {
+      const res = await apiFetch('/api/v1/admin/content/books/' + id + '/retry', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.ok ? 'Extraction retried' : (data.error?.message || 'Failed'), data.ok ? 'success' : 'error');
+      loadContentDashboard();
+    } catch { showToast('Network error', 'error'); }
+  };
+
+  window.deleteBook = async function(id) {
+    if (!confirm('Delete this book?')) return;
+    try {
+      const res = await apiFetch('/api/v1/admin/content/books/' + id, { method: 'DELETE' });
+      const data = await res.json();
+      showToast(data.ok ? 'Book removed' : 'Failed', data.ok ? 'success' : 'error');
+      loadContentDashboard();
+    } catch { showToast('Network error', 'error'); }
+  };
+
+  // ── YouTube channels ──────────────────────────────────────
+  window.addChannel = async function() {
+    const url = document.getElementById('add-channel-url').value.trim();
+    if (!url) { showToast('Channel URL required', 'error'); return; }
+    const btn = document.getElementById('add-channel-btn');
+    btn.disabled = true; btn.textContent = 'Analyzing…';
+    try {
+      const res = await apiFetch('/api/v1/admin/content/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showToast('Channel added: ' + esc(data.channel?.name || url), 'success');
+        document.getElementById('add-channel-url').value = '';
+        loadContentDashboard();
+      } else {
+        showToast(data.error?.message || 'Failed', 'error');
+      }
+    } catch (e) { showToast('Network error', 'error'); }
+    btn.disabled = false; btn.textContent = '+ Add Channel';
+  };
+
+  window.triggerChannelRelearn = async function() {
+    const btn = document.getElementById('channel-relearn-btn');
+    btn.disabled = true; btn.textContent = '🔄 Running…';
+    showToast('Channel re-learn started (may take 30-60s)…', 'info');
+    try {
+      const res = await apiFetch('/api/v1/admin/content/channels/relearn', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        const r = data.result || {};
+        showToast('Re-learn done: ' + (r.analyzed || 0) + ' analyzed, ' + (r.failed || 0) + ' failed', 'success');
+        loadContentDashboard();
+      } else {
+        showToast(data.error?.message || 'Failed', 'error');
+      }
+    } catch { showToast('Network error', 'error'); }
+    btn.disabled = false; btn.textContent = '🔄 Re-learn All';
+  };
+
+  window.deleteChannel = async function(id) {
+    if (!confirm('Remove this channel?')) return;
+    try {
+      const res = await apiFetch('/api/v1/admin/content/channels/' + id, { method: 'DELETE' });
+      const data = await res.json();
+      showToast(data.ok ? 'Channel removed' : 'Failed', data.ok ? 'success' : 'error');
+      loadContentDashboard();
+    } catch { showToast('Network error', 'error'); }
+  };
+
+  window.reanalyzeChannel = async function(id) {
+    showToast('Re-analyzing channel…', 'info');
+    try {
+      const res = await apiFetch('/api/v1/admin/content/channels/' + id + '/reanalyze', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.ok ? 'Re-analysis complete' : (data.error?.message || 'Failed'), data.ok ? 'success' : 'error');
+      loadContentDashboard();
+    } catch { showToast('Network error', 'error'); }
+  };
+
+  // ── Reaction Radar pillars ────────────────────────────────
+  window.togglePillarEditor = function() {
+    const ed = document.getElementById('pillar-editor');
+    ed.style.display = ed.style.display === 'none' ? 'block' : 'none';
+    if (ed.style.display === 'block') loadPillars();
+  };
+
+  async function loadPillars() {
+    try {
+      const res = await apiFetch('/api/v1/admin/content/pillars');
+      const data = await res.json();
+      if (!data.ok) return;
+      const rows = data.pillars || [];
+      const el = document.getElementById('pillar-editor-rows');
+      el.innerHTML = rows.map(p => {
+        const kws = (p.keywords || []).join(', ');
+        return '<div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:var(--space-2)">' +
+          '<span style="font-size:12px;font-weight:600;min-width:80px">' + esc(p.name) + '</span>' +
+          '<input type="text" value="' + esc(kws) + '" style="flex:1;padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-primary);font-size:11px" ' +
+          'onchange="updatePillarKeywords(' + p.id + ', this.value)">' +
+          '<button class="btn btn-ghost btn-sm" style="font-size:11px;color:var(--error)" onclick="deletePillar(' + p.id + ')">✕</button>' +
+          '</div>';
+      }).join('');
+    } catch { /* silent */ }
+  }
+
+  window.addPillar = async function() {
+    const name = document.getElementById('add-pillar-name').value.trim();
+    const kwStr = document.getElementById('add-pillar-keywords').value.trim();
+    if (!name || !kwStr) { showToast('Name and keywords required', 'error'); return; }
+    const keywords = kwStr.split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      const res = await apiFetch('/api/v1/admin/content/pillars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, keywords }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showToast('Pillar "' + esc(name) + '" added', 'success');
+        document.getElementById('add-pillar-name').value = '';
+        document.getElementById('add-pillar-keywords').value = '';
+        loadPillars();
+      } else {
+        showToast(data.error?.message || 'Failed', 'error');
+      }
+    } catch { showToast('Network error', 'error'); }
+  };
+
+  window.updatePillarKeywords = async function(id, kwStr) {
+    const keywords = kwStr.split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      await apiFetch('/api/v1/admin/content/pillars/' + id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keywords }),
+      });
+      showToast('Pillar updated', 'success');
+    } catch { showToast('Update failed', 'error'); }
+  };
+
+  window.deletePillar = async function(id) {
+    if (!confirm('Delete this pillar?')) return;
+    try {
+      const res = await apiFetch('/api/v1/admin/content/pillars/' + id, { method: 'DELETE' });
+      const data = await res.json();
+      showToast(data.ok ? 'Pillar removed' : 'Failed', data.ok ? 'success' : 'error');
+      loadPillars();
+    } catch { showToast('Network error', 'error'); }
+  };
+
+  // ── Voice DNA ─────────────────────────────────────────────
+  window.triggerVoiceSynthesis = async function() {
+    const btn = document.getElementById('voice-synthesize-btn');
+    btn.disabled = true; btn.textContent = '🧬 Running…';
+    showToast('Voice synthesis started (may take 30-60s)…', 'info');
+    try {
+      const res = await apiFetch('/api/v1/admin/content/voice-dna/synthesize', { method: 'POST' });
+      const data = await res.json();
+      showToast(data.ok ? 'Synthesis complete' : (data.error?.message || 'Failed'), data.ok ? 'success' : 'error');
+      loadContentDashboard();
+    } catch { showToast('Network error', 'error'); }
+    btn.disabled = false; btn.textContent = '🧬 Synthesize Now';
+  };
+
+  // ═══════════════════════════════════════════════════════════
   // Quick actions (Jobs section)
   // ════════════════════════════════════════════════════════════
   const QUICK_ACTIONS = [
