@@ -24,17 +24,36 @@ export function authRoutes(): Router {
       return;
     }
 
-    // Validate invite code against configured env var only (no hardcoded fallbacks)
-    if (inviteCode !== config.ios.inviteCode) {
-      sendError(res, 'INVALID_INVITE', 'Invalid invite code', 403);
-      return;
-    }
+    // ── Invite code → user mapping ──────────────────────────────────
+    //
+    // Two-tier system:
+    //   • OWNER code (IOS_OWNER_CODE env) → maps to the real owner's
+    //     Telegram user ID with full data (calendar, tasks, etc.)
+    //   • BETA code (IOS_INVITE_CODE env) → maps to a sandboxed demo
+    //     user ID with NO linked integrations, so Apple reviewers and
+    //     beta testers never see the owner's personal data.
+    //
+    // The demo user ID is a synthetic constant (1000000001) that has
+    // no OAuth tokens, no Telegram account, and no personal data.
 
-    // Get or create user — for now, use the first allowed Telegram user
-    // (single-user system; multi-user would look up by invite code)
-    const userId = config.telegram.allowedUserIds[0];
-    if (!userId) {
-      sendError(res, 'NO_USER', 'No users configured', 500);
+    const ownerCode = config.ios.ownerCode || '';
+    const betaCode = config.ios.inviteCode || '';
+    const DEMO_USER_ID = 1000000001;
+
+    let userId: number;
+
+    if (ownerCode && inviteCode === ownerCode) {
+      // Owner: full access to real data
+      userId = config.telegram.allowedUserIds[0];
+      if (!userId) {
+        sendError(res, 'NO_USER', 'No users configured', 500);
+        return;
+      }
+    } else if (betaCode && inviteCode === betaCode) {
+      // Beta tester / Apple reviewer: sandboxed demo user
+      userId = DEMO_USER_ID;
+    } else {
+      sendError(res, 'INVALID_INVITE', 'Invalid invite code', 403);
       return;
     }
 

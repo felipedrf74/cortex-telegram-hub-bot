@@ -288,6 +288,7 @@ export const config = {
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
     rateLimit: parseInt(process.env.IOS_API_RATE_LIMIT || '60', 10),
     inviteCode: process.env.IOS_INVITE_CODE || '',
+    ownerCode: process.env.IOS_OWNER_CODE || '',
   },
   // ── Apple Push Notification Service (APNs) ────────────────────────
   // Token-based auth only (modern .p8 approach). All four env vars must
