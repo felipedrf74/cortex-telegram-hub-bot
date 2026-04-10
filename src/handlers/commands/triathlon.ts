@@ -276,6 +276,27 @@ export function registerTriathlonCommands(bot: Bot): void {
     });
   });
 
+  // ── /readiness shortcut — alias for /training readiness ──
+  // Users naturally type /readiness (not /training readiness).
+  // Without this alias, /readiness falls through to the AI chat
+  // pipeline where Gemini says "I don't have access to readiness data"
+  // even though the Garmin session is alive and the data is available.
+  bot.command('readiness', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) return;
+    const { getUserLanguage } = require('../../services/user-service');
+    const { t } = require('../../utils/i18n');
+    const lang: Lang = getUserLanguage(userId);
+    enqueue(userId, async () => {
+      try {
+        await handleTrainingReadiness(ctx, userId, lang);
+      } catch (err: any) {
+        logger.error({ err, userId }, '/readiness command failed');
+        await ctx.reply(`⚠️ ${escapeHtml(err.message || 'Readiness check failed')}`);
+      }
+    });
+  });
+
   // Training feedback callback (easy/perfect/hard inline buttons)
   bot.callbackQuery(/^tf:/, async (ctx) => {
     const userId = ctx.from?.id;
