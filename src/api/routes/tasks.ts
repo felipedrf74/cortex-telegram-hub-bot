@@ -422,6 +422,7 @@ export async function warmTaskCache(): Promise<void> {
       const pendingResult = await todo.getAllPendingTasks();
       if (pendingResult?.success) {
         // Raw TodoTask[] for the chat-fastpath module
+        // System-level warm cache (Telegram bot context, no specific userId)
         setCache('fastpath:pending-tasks', pendingResult.data, TASKS_CACHE_TTL);
       }
     } catch {
@@ -433,7 +434,7 @@ export async function warmTaskCache(): Promise<void> {
       lists.map(async (l: any) => {
         const listId = l.id;
         const listName = l.displayName || l.name || 'Tasks';
-        const cacheKey = `tasks:${listId}:notStarted`;
+        const cacheKey = `tasks:${listId}:notStarted`; // System-level warm (Telegram bot)
 
         // Skip if cache is still fresh
         if (getCached(cacheKey)) return;

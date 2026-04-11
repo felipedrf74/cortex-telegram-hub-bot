@@ -79,15 +79,16 @@ export function getTopicById(id: number): TopicCandidate & { format: string; sou
 
 // ─── Taste Profile ──────────────────────────────────────────────────
 
-export function buildTasteProfileBlock(): string {
+export function buildTasteProfileBlock(userId?: number): string {
   const db = getDb();
   const rows = db.prepare(
     `SELECT topic, niche, sentiment FROM content_topic_feedback
      WHERE sentiment IN ('approved', 'rejected')
        AND created_at > datetime('now', '-60 days')
+       ${userId != null ? 'AND user_id IN (0, ?)' : ''}
      ORDER BY created_at DESC
      LIMIT 100`,
-  ).all() as { topic: string; niche: string; sentiment: string }[];
+  ).all(...(userId != null ? [userId] : [])) as { topic: string; niche: string; sentiment: string }[];
 
   if (rows.length < 5) return '';
 
@@ -131,8 +132,15 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean)
     ? 'Focus on what is trending RIGHT NOW — viral debates, breaking news, hot takes from the last 24-48h. Every topic must be tied to something CURRENT.'
     : 'Focus on EVERGREEN topics — timeless ideas that will be relevant months from now. Personal growth frameworks, fitness principles, life lessons.';
 
+  // Get userId from AsyncLocalStorage context for per-user filtering
+  let contextUserId: number | undefined;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    contextUserId = getCurrentContext()?.userId;
+  } catch { /* outside request context */ }
+
   const knowledgeBlock = buildKnowledgePromptBlock();
-  const tasteBlock = buildTasteProfileBlock();
+  const tasteBlock = buildTasteProfileBlock(contextUserId);
 
   return loadPromptWithVars('topic-generation', {
     FORMAT_DESC: formatDesc,

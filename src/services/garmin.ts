@@ -634,15 +634,44 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
 
     const tokenDir = config.garmin.tokenPath;
 
-    // Try loading persisted tokens first
+    // Try loading from DB first (per-user tokens), then filesystem (owner legacy)
+    try {
+      const { getDb } = require('./database');
+      const db = getDb();
+      // Check for per-user DB tokens (from garmin_user_tokens table)
+      // For now, load the owner's tokens (userId from the request context
+      // or the config's allowed user). Future: per-user Garmin clients.
+      const dbTokens = db.prepare(
+        "SELECT tokens_json FROM garmin_user_tokens WHERE status = 'active' ORDER BY last_used DESC LIMIT 1"
+      ).get() as { tokens_json: string } | undefined;
+
+      if (dbTokens?.tokens_json && dbTokens.tokens_json !== '{}') {
+        try {
+          const tokenData = JSON.parse(dbTokens.tokens_json);
+          // Write to temp files for garth library compatibility
+          if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
+          if (tokenData.oauth1) fs.writeFileSync(`${tokenDir}/oauth1_token.json`, JSON.stringify(tokenData.oauth1));
+          if (tokenData.oauth2) fs.writeFileSync(`${tokenDir}/oauth2_token.json`, JSON.stringify(tokenData.oauth2));
+          client.loadTokenByFile(tokenDir);
+          await client.getUserSettings();
+          _client = client;
+          _authenticated = true;
+          logger.info('Garmin: loaded tokens from DB');
+          return client;
+        } catch (dbErr) {
+          logger.warn({ dbErr }, 'Garmin: DB tokens expired or invalid');
+        }
+      }
+    } catch { /* garmin_user_tokens table may not exist */ }
+
+    // Fallback: try filesystem tokens (legacy owner path)
     try {
       if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
         client.loadTokenByFile(tokenDir);
-        // Validate by making a lightweight call
         await client.getUserSettings();
         _client = client;
         _authenticated = true;
-        logger.info('Garmin: loaded saved tokens');
+        logger.info('Garmin: loaded saved tokens from filesystem');
         return client;
       }
     } catch (err) {
@@ -670,9 +699,23 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
       await loginWithMfa(client);
       if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
       client.exportTokenToFile(tokenDir);
+      // Also persist to DB for per-user retrieval
+      try {
+        const { getDb } = require('./database');
+        const ownerIds = config.telegram.allowedUserIds || [];
+        const ownerId = ownerIds[0] || 0;
+        const tokensJson = JSON.stringify(client.exportToken());
+        getDb().prepare(`
+          INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
+          VALUES (?, ?, ?, 'active')
+          ON CONFLICT(user_id) DO UPDATE SET
+            tokens_json = excluded.tokens_json, status = 'active',
+            last_refresh = datetime('now'), updated_at = datetime('now')
+        `).run(ownerId, config.garmin.email, tokensJson);
+      } catch { /* DB persist non-fatal */ }
       _client = client;
       _authenticated = true;
-      logger.info('Garmin: login successful (MFA-aware flow), tokens saved');
+      logger.info('Garmin: login successful (MFA-aware flow), tokens saved to file + DB');
       return client;
     } catch (err) {
       _authenticated = false;

@@ -32,6 +32,21 @@ export function initCacheStore(): void {
 }
 
 /**
+ * Build a per-user cache key. ALWAYS use this for user-facing data
+ * to prevent cross-user cache collisions.
+ *
+ * Usage:
+ *   const key = userCacheKey(userId, 'dashboard');
+ *   setCache(key, data, 300);
+ *
+ * For system-wide caches (model config, global stats), use raw keys.
+ */
+export function userCacheKey(userId: number | undefined, base: string): string {
+  if (userId == null) return base;
+  return `u:${userId}:${base}`;
+}
+
+/**
  * Get a cached value by key. Returns null if not found or expired.
  */
 export function getCached<T = unknown>(key: string): T | null {

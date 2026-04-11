@@ -81,18 +81,27 @@ export async function isDuplicateIdea(
 
   const db = getDb();
 
-  // Gather recent ideas from both tables
+  // Get userId from AsyncLocalStorage for per-user filtering
+  let uid: number | undefined;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    uid = getCurrentContext()?.userId;
+  } catch { /* outside request context */ }
+  const userFilter = uid != null ? 'AND user_id IN (0, ?)' : '';
+  const userArgs = uid != null ? [uid] : [];
+
+  // Gather recent ideas from both tables (per-user)
   const recentSaved = db.prepare(`
     SELECT title, angle_tag FROM saved_ideas
-    WHERE created_at > datetime('now', '-14 days')
+    WHERE created_at > datetime('now', '-14 days') ${userFilter}
     ORDER BY created_at DESC LIMIT 30
-  `).all() as { title: string; angle_tag: string | null }[];
+  `).all(...userArgs) as { title: string; angle_tag: string | null }[];
 
   const recentFeedback = db.prepare(`
     SELECT topic as title, angle_tag FROM content_topic_feedback
-    WHERE created_at > datetime('now', '-14 days')
+    WHERE created_at > datetime('now', '-14 days') ${userFilter}
     ORDER BY created_at DESC LIMIT 30
-  `).all() as { title: string; angle_tag: string | null }[];
+  `).all(...userArgs) as { title: string; angle_tag: string | null }[];
 
   const existingIdeas = [...recentSaved, ...recentFeedback];
 
@@ -164,23 +173,32 @@ Respond with JSON only: { "isDuplicate": boolean, "similarTo": string | null, "c
 export function getAngleDistribution(): { tag: string; count: number; pct: number }[] {
   const db = getDb();
 
+  // Per-user filtering via AsyncLocalStorage context
+  let uid: number | undefined;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    uid = getCurrentContext()?.userId;
+  } catch {}
+  const userFilter = uid != null ? 'AND user_id IN (0, ?)' : '';
+  const userArgs = uid != null ? [uid] : [];
+
   const ANGLE_TAGS = [
     'opinion', 'reaction', 'how-to', 'story', 'myth-bust',
     'comparison', 'data', 'framework', 'listicle', 'trending-take',
   ];
 
-  // Count from both tables
+  // Count from both tables (per-user)
   const savedAngles = db.prepare(`
     SELECT angle_tag, COUNT(*) as cnt FROM saved_ideas
-    WHERE angle_tag IS NOT NULL AND created_at > datetime('now', '-30 days')
+    WHERE angle_tag IS NOT NULL AND created_at > datetime('now', '-30 days') ${userFilter}
     GROUP BY angle_tag
-  `).all() as { angle_tag: string; cnt: number }[];
+  `).all(...userArgs) as { angle_tag: string; cnt: number }[];
 
   const feedbackAngles = db.prepare(`
     SELECT angle_tag, COUNT(*) as cnt FROM content_topic_feedback
-    WHERE angle_tag IS NOT NULL AND created_at > datetime('now', '-30 days')
+    WHERE angle_tag IS NOT NULL AND created_at > datetime('now', '-30 days') ${userFilter}
     GROUP BY angle_tag
-  `).all() as { angle_tag: string; cnt: number }[];
+  `).all(...userArgs) as { angle_tag: string; cnt: number }[];
 
   // Merge counts
   const counts = new Map<string, number>();
