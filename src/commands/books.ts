@@ -16,14 +16,26 @@ const CONTENT_ENGINE_URL = `http://localhost:${config.contentEngine.port}/api/v1
 
 // ── Seed books (extracted on first deploy if table is empty) ────────
 
-const SEED_BOOKS = [
-  { title: 'The Law', author: 'Frédéric Bastiat' },
-  { title: 'Economics in One Lesson', author: 'Henry Hazlitt' },
-  { title: 'Human Action', author: 'Ludwig von Mises' },
-  { title: 'The Road to Serfdom', author: 'Friedrich Hayek' },
-  { title: 'Democracy: The God That Failed', author: 'Hans-Hermann Hoppe' },
-  { title: 'Anatomy of the State', author: 'Murray Rothbard' },
-];
+// Seed books: read from config_seed_books table (migration 055).
+// Falls back to hardcoded array if the table doesn't exist yet.
+function getSeedBooks(): Array<{ title: string; author: string }> {
+  try {
+    const rows = getDb().prepare(
+      'SELECT title, author FROM config_seed_books WHERE enabled = 1'
+    ).all() as Array<{ title: string; author: string }>;
+    if (rows.length > 0) return rows;
+  } catch { /* table doesn't exist yet */ }
+  // Fallback (kept for safety until migration is confirmed applied)
+  return [
+    { title: 'The Law', author: 'Frédéric Bastiat' },
+    { title: 'Economics in One Lesson', author: 'Henry Hazlitt' },
+    { title: 'Human Action', author: 'Ludwig von Mises' },
+    { title: 'The Road to Serfdom', author: 'Friedrich Hayek' },
+    { title: 'Democracy: The God That Failed', author: 'Hans-Hermann Hoppe' },
+    { title: 'Anatomy of the State', author: 'Murray Rothbard' },
+  ];
+}
+const SEED_BOOKS = getSeedBooks();
 
 /**
  * Seed default books if the library is empty. Called on startup.

@@ -754,12 +754,23 @@ export async function addAndAnalyzeChannel(
 
 // ─── Seed default channels ──────────────────────────────────────────
 
-const DEFAULT_CHANNELS = [
-  'https://www.youtube.com/@danielbarada',
-  'https://www.youtube.com/@NewelOfKnowledge',
-  'https://www.youtube.com/@Jett.franzen',
-  'https://www.youtube.com/@DanKoeTalks',
-];
+// Default channels: read from config_default_channels table (migration 055).
+// Falls back to hardcoded array if the table doesn't exist yet.
+function getDefaultChannels(): string[] {
+  try {
+    const rows = getDb().prepare(
+      'SELECT url FROM config_default_channels WHERE enabled = 1'
+    ).all() as Array<{ url: string }>;
+    if (rows.length > 0) return rows.map(r => r.url);
+  } catch { /* table doesn't exist yet */ }
+  return [
+    'https://www.youtube.com/@danielbarada',
+    'https://www.youtube.com/@NewelOfKnowledge',
+    'https://www.youtube.com/@Jett.franzen',
+    'https://www.youtube.com/@DanKoeTalks',
+  ];
+}
+const DEFAULT_CHANNELS = getDefaultChannels();
 
 /**
  * Seed the default reference channels if the table is empty.

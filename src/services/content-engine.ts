@@ -364,6 +364,68 @@ export interface ReportResponse {
 
 const BASE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
 
+// ── Health check + Circuit Breaker ─────────────────────────────────
+
+let _lastHealthCheck = 0;
+let _isHealthy = true;
+let _consecutiveFailures = 0;
+const HEALTH_CHECK_INTERVAL_MS = 60_000; // 1 minute between probes
+const CIRCUIT_BREAKER_THRESHOLD = 3;     // 3 consecutive failures → fail-fast
+const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60_000; // 5 minutes
+
+/**
+ * Check if the Python content-engine is healthy.
+ * Returns cached result if checked recently.
+ */
+export async function isContentEngineHealthy(): Promise<boolean> {
+  if (Date.now() - _lastHealthCheck < HEALTH_CHECK_INTERVAL_MS) return _isHealthy;
+  try {
+    const res = await fetch(`${BASE_URL.replace('/api/v1', '')}/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    _isHealthy = res.ok;
+    _consecutiveFailures = _isHealthy ? 0 : _consecutiveFailures + 1;
+  } catch {
+    _isHealthy = false;
+    _consecutiveFailures++;
+  }
+  _lastHealthCheck = Date.now();
+  return _isHealthy;
+}
+
+/**
+ * Retry wrapper with exponential backoff.
+ * Retries up to 3 times with delays: 2s, 4s, 8s.
+ */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  // Circuit breaker: fail-fast if engine has been down
+  if (_consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+    if (Date.now() - _lastHealthCheck < CIRCUIT_BREAKER_COOLDOWN_MS) {
+      throw new Error('Content engine circuit breaker OPEN — too many consecutive failures. Cooling down.');
+    }
+    // Cooldown expired, reset and try
+    _consecutiveFailures = 0;
+  }
+
+  let lastError: Error = new Error('Unknown');
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await fn();
+      _consecutiveFailures = 0; // success resets the counter
+      return result;
+    } catch (err) {
+      lastError = err as Error;
+      _consecutiveFailures++;
+      if (attempt < maxRetries) {
+        const delayMs = Math.pow(2, attempt + 1) * 1000; // 2s, 4s, 8s
+        logger.warn({ attempt, delayMs, error: lastError.message }, 'Content engine call failed, retrying');
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 30_000): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const controller = new AbortController();
@@ -405,10 +467,10 @@ async function engineFetch<T>(path: string, options?: RequestInit, timeoutMs = 3
 }
 
 export async function deepSearch(query: string, niches?: string[], maxResults = 10): Promise<DeepSearchResponse> {
-  return engineFetch<DeepSearchResponse>('/deepsearch', {
+  return withRetry(() => engineFetch<DeepSearchResponse>('/deepsearch', {
     method: 'POST',
     body: JSON.stringify({ query, niches: niches || [], max_results: maxResults }),
-  }, 180_000); // deep search: 5 query variations + AI synthesis
+  }, 180_000)); // deep search: 5 query variations + AI synthesis
 }
 
 export async function getSources(query: string): Promise<SourcesResponse> {
