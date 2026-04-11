@@ -27,7 +27,7 @@ import {
   grantOverride,
   revokeOverride,
 } from '../../services/skill-tiers';
-import { getUserByTelegramId } from '../../services/user-service';
+import { getUserByTelegramId, getUserById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 
 // ─── Response shapes ────────────────────────────────────────────────
@@ -145,7 +145,9 @@ export function skillsRoutes(): Router {
    */
   router.get('/catalog', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const user = getUserByTelegramId(userId);
+    // userId from JWT may be autoincrement ID (iOS) or telegram_id (bot).
+    // Try both lookups to support multi-provider auth.
+    const user = getUserById(userId) || getUserByTelegramId(userId);
     if (!user) {
       sendError(res, 'USER_NOT_FOUND', `User ${userId} not registered`, 404);
       return;
@@ -189,7 +191,7 @@ export function skillsRoutes(): Router {
    */
   router.post('/override', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const caller = getUserByTelegramId(userId);
+    const caller = getUserById(userId) || getUserByTelegramId(userId);
     if (!caller || caller.tier !== 'owner') {
       sendError(res, 'FORBIDDEN', 'Only owner can grant skill overrides', 403);
       return;
@@ -236,7 +238,7 @@ export function skillsRoutes(): Router {
    */
   router.delete('/override', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const caller = getUserByTelegramId(userId);
+    const caller = getUserById(userId) || getUserByTelegramId(userId);
     if (!caller || caller.tier !== 'owner') {
       sendError(res, 'FORBIDDEN', 'Only owner can revoke skill overrides', 403);
       return;

@@ -203,7 +203,7 @@ export function chatRoutes(): Router {
       try {
         const { getUserByTelegramId } = require('../../services/user-service');
         const { checkTierAccess } = require('../../services/skill-tiers');
-        const user = getUserByTelegramId(userId);
+        const { getUserById } = require("../../services/user-service"); const user = getUserById(userId) || getUserByTelegramId(userId);
         if (user) {
           const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
           if (!tierResult.allowed) {
