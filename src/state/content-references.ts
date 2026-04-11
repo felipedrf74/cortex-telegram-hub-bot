@@ -61,6 +61,7 @@ export type PatternCategory = typeof PATTERN_CATEGORIES[number];
 export function addChannel(
   channelUrl: string,
   addedVia: 'manual' | 'portal' | 'bot' = 'manual',
+  userId: number = 0,
 ): ContentRefChannel {
   const db = getDb();
   // Normalize URL: strip trailing slashes, ensure consistent format
@@ -84,9 +85,9 @@ export function addChannel(
   }
 
   const result = db.prepare(`
-    INSERT INTO content_ref_channels (channel_url, added_via)
-    VALUES (?, ?)
-  `).run(normalized, addedVia);
+    INSERT INTO content_ref_channels (channel_url, added_via, user_id)
+    VALUES (?, ?, ?)
+  `).run(normalized, addedVia, userId);
 
   return db.prepare('SELECT * FROM content_ref_channels WHERE id = ?')
     .get(result.lastInsertRowid) as ContentRefChannel;
@@ -98,22 +99,37 @@ export function getChannel(id: number): ContentRefChannel | undefined {
     .get(id) as ContentRefChannel | undefined;
 }
 
-export function getAllChannels(): ContentRefChannel[] {
+export function getAllChannels(userId?: number): ContentRefChannel[] {
   const db = getDb();
+  if (userId != null) {
+    return db.prepare(
+      'SELECT * FROM content_ref_channels WHERE user_id IN (0, ?) ORDER BY status ASC, channel_name ASC',
+    ).all(userId) as ContentRefChannel[];
+  }
   return db.prepare(
     'SELECT * FROM content_ref_channels ORDER BY status ASC, channel_name ASC',
   ).all() as ContentRefChannel[];
 }
 
-export function getActiveChannels(): ContentRefChannel[] {
+export function getActiveChannels(userId?: number): ContentRefChannel[] {
   const db = getDb();
+  if (userId != null) {
+    return db.prepare(
+      "SELECT * FROM content_ref_channels WHERE status = 'active' AND user_id IN (0, ?) ORDER BY channel_name ASC",
+    ).all(userId) as ContentRefChannel[];
+  }
   return db.prepare(
     "SELECT * FROM content_ref_channels WHERE status = 'active' ORDER BY channel_name ASC",
   ).all() as ContentRefChannel[];
 }
 
-export function getPendingChannels(): ContentRefChannel[] {
+export function getPendingChannels(userId?: number): ContentRefChannel[] {
   const db = getDb();
+  if (userId != null) {
+    return db.prepare(
+      "SELECT * FROM content_ref_channels WHERE status = 'pending' AND user_id IN (0, ?) ORDER BY created_at ASC",
+    ).all(userId) as ContentRefChannel[];
+  }
   return db.prepare(
     "SELECT * FROM content_ref_channels WHERE status = 'pending' ORDER BY created_at ASC",
   ).all() as ContentRefChannel[];

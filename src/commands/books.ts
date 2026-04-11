@@ -51,8 +51,8 @@ export function seedBooksIfEmpty(sendAlert: (msg: string) => Promise<void>): voi
   // Insert all as 'pending', then extract sequentially in background
   for (const book of SEED_BOOKS) {
     db.prepare(`
-      INSERT OR IGNORE INTO book_library (title, author, extraction_status)
-      VALUES (?, ?, 'pending')
+      INSERT OR IGNORE INTO book_library (title, author, extraction_status, user_id)
+      VALUES (?, ?, 'pending', 0)
     `).run(book.title, book.author);
   }
 
