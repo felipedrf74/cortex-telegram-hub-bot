@@ -333,6 +333,23 @@ export function authRoutes(): Router {
     const passwordHash = await bcrypt.hash(password, 12);
     const user = createEmailUser(email, passwordHash, { firstName });
 
+    // Auto-send verification code after registration
+    try {
+      const { sendVerificationCode, isEmailConfigured } = require('../../services/email-sender');
+      if (isEmailConfigured()) {
+        const code = String(Math.floor(100000 + Math.random() * 900000));
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        const db = getDb();
+        db.prepare(`
+          INSERT INTO email_verification_codes (user_id, email, code, expires_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(user_id) DO UPDATE SET code = excluded.code, expires_at = excluded.expires_at
+        `).run(user.id, email.toLowerCase(), code, expiresAt);
+        // Fire-and-forget — don't block registration on email delivery
+        sendVerificationCode(email, code, firstName).catch(() => {});
+      }
+    } catch { /* email service not available — non-fatal */ }
+
     issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
   }));
 
@@ -363,6 +380,99 @@ export function authRoutes(): Router {
     }
 
     issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
+  }));
+
+  // ── Send Verification Code ─────────────────────────────────────────
+  // These verification routes need JWT auth but live in the public auth
+  // router. We inline the auth check via the authMiddleware import.
+  const { authMiddleware: verifyJwt } = require('../auth-middleware');
+
+  router.post('/send-verification', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+
+    const db = getDb();
+    const user = getUserById(userId);
+    if (!user?.email) {
+      sendError(res, 'NO_EMAIL', 'No email address on this account');
+      return;
+    }
+
+    if (user.email_verified) {
+      sendSuccess(res, { verified: true, message: 'Email already verified' });
+      return;
+    }
+
+    // Generate 6-digit code
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    // Store code (UPSERT — one active code per user)
+    db.prepare(`
+      INSERT INTO email_verification_codes (user_id, email, code, expires_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        code = excluded.code,
+        email = excluded.email,
+        expires_at = excluded.expires_at,
+        created_at = datetime('now')
+    `).run(userId, user.email, code, expiresAt);
+
+    // Send email
+    try {
+      const { sendVerificationCode, isEmailConfigured } = require('../../services/email-sender');
+      if (!isEmailConfigured()) {
+        logger.warn('Email not configured — verification code not sent');
+        // In dev, return the code so testing works
+        sendSuccess(res, { sent: false, message: 'Email service not configured', devCode: code });
+        return;
+      }
+      const sent = await sendVerificationCode(user.email, code, user.first_name || 'User');
+      sendSuccess(res, { sent, message: sent ? 'Verification code sent' : 'Failed to send email' });
+    } catch (err: any) {
+      logger.error({ err, userId }, 'Failed to send verification email');
+      sendError(res, 'EMAIL_FAILED', 'Failed to send verification email', 500);
+    }
+  }));
+
+  // ── Verify Email Code ─────────────────────────────────────────────
+  router.post('/verify-email', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const { code } = req.body;
+
+    if (!userId || !code) {
+      sendError(res, 'BAD_REQUEST', 'Authentication and code are required');
+      return;
+    }
+
+    const db = getDb();
+    const record = db.prepare(
+      'SELECT * FROM email_verification_codes WHERE user_id = ? AND code = ?'
+    ).get(userId, String(code)) as any;
+
+    if (!record) {
+      sendError(res, 'INVALID_CODE', 'Invalid verification code', 400);
+      return;
+    }
+
+    // Check expiry
+    if (new Date(record.expires_at) < new Date()) {
+      sendError(res, 'CODE_EXPIRED', 'Verification code has expired. Request a new one.', 400);
+      return;
+    }
+
+    // Mark email as verified
+    db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(userId);
+
+    // Clean up the code
+    db.prepare('DELETE FROM email_verification_codes WHERE user_id = ?').run(userId);
+
+    logAudit({
+      userId, actorId: userId, action: 'access', resource: 'auth.verify_email',
+      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+    });
+
+    logger.info({ userId }, 'Email verified successfully');
+    sendSuccess(res, { verified: true });
   }));
 
   return router;
