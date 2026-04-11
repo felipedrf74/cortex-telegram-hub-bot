@@ -90,15 +90,23 @@ export function onboardingRoutes(): Router {
     const { userId } = req as unknown as AuthenticatedRequest;
     try {
       const onboarding = require('../../services/onboarding');
-      const pending = onboarding.getPendingQuestionnaires(userId);
+      // getPendingOnboardings returns questionnaire IDs (strings),
+      // not full objects. Resolve each to its definition.
+      const pendingIds: string[] = onboarding.getPendingOnboardings(userId) || [];
+      const questionnaires = pendingIds.map((qId: string) => {
+        const def = onboarding.getQuestionnaire(qId);
+        if (!def) return null;
+        return {
+          id: qId,
+          title: def.title || qId,
+          description: def.description || null,
+          stepCount: def.steps?.length || 0,
+          currentStep: 0,
+          status: 'pending',
+        };
+      }).filter(Boolean);
 
-      sendSuccess(res, {
-        questionnaires: (pending || []).map((q: any) => ({
-          id: q.id, title: q.title, description: q.description || null,
-          stepCount: q.steps?.length || 0, currentStep: q.currentStep || 0,
-          status: q.status || 'pending',
-        })),
-      });
+      sendSuccess(res, { questionnaires });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding/pending failed');
       sendSuccess(res, { questionnaires: [] });
