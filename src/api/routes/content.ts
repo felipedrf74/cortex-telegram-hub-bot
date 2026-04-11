@@ -355,5 +355,102 @@ export function contentRoutes(): Router {
     }
   }));
 
+  // ═══════════════════════════════════════════════════════════════════
+  // BOOKS — per-user book library (iOS sync)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** GET /api/v1/content/books — user's book library (own + global) */
+  router.get('/books', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const db = require('../../services/database').getDb();
+    const books = db.prepare(
+      'SELECT id, title, author, core_thesis, extraction_status, personal_notes FROM book_library WHERE user_id IN (0, ?) ORDER BY title ASC'
+    ).all(userId);
+    sendSuccess(res, { books });
+  }));
+
+  /** POST /api/v1/content/books — add a book to user's library */
+  router.post('/books', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { title, author } = req.body;
+    if (!title || !author) { sendError(res, 'VALIDATION', 'title and author required', 400); return; }
+    const db = require('../../services/database').getDb();
+    const result = db.prepare(
+      'INSERT OR IGNORE INTO book_library (title, author, extraction_status, user_id) VALUES (?, ?, ?, ?)'
+    ).run(title.trim(), author.trim(), 'pending', userId);
+    sendSuccess(res, { id: result.lastInsertRowid, title: title.trim() }, { status: 201 });
+  }));
+
+  /** DELETE /api/v1/content/books/:id */
+  router.delete('/books/:id', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const id = parseInt(String(req.params.id), 10);
+    const db = require('../../services/database').getDb();
+    // Users can only delete their own books (not global ones)
+    const info = db.prepare('DELETE FROM book_library WHERE id = ? AND user_id = ?').run(id, userId);
+    if (info.changes === 0) { sendError(res, 'NOT_FOUND', 'Book not found or not owned by you', 404); return; }
+    sendSuccess(res, { removed: true });
+  }));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CHANNELS — per-user YouTube reference channels (iOS sync)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** GET /api/v1/content/channels — user's channels (own + global) */
+  router.get('/channels', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { getAllChannels } = require('../../state/content-references');
+    const channels = getAllChannels(userId);
+    sendSuccess(res, { channels });
+  }));
+
+  /** POST /api/v1/content/channels — add a channel */
+  router.post('/channels', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { url } = req.body;
+    if (!url) { sendError(res, 'VALIDATION', 'url required', 400); return; }
+    const { addChannel } = require('../../state/content-references');
+    const channel = addChannel(url.trim(), 'ios', userId);
+    sendSuccess(res, { channel: { id: channel.id, url: channel.channel_url, name: channel.channel_name } }, { status: 201 });
+  }));
+
+  /** DELETE /api/v1/content/channels/:id */
+  router.delete('/channels/:id', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const id = parseInt(String(req.params.id), 10);
+    const db = require('../../services/database').getDb();
+    const info = db.prepare('DELETE FROM content_ref_channels WHERE id = ? AND user_id = ?').run(id, userId);
+    if (info.changes === 0) { sendError(res, 'NOT_FOUND', 'Channel not found or not owned by you', 404); return; }
+    sendSuccess(res, { removed: true });
+  }));
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VOICE DNA — per-user brand voice (iOS sync)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** GET /api/v1/content/voice-dna — user's voice DNA entries */
+  router.get('/voice-dna', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const db = require('../../services/database').getDb();
+    const entries = db.prepare(
+      'SELECT id, category, label, payload FROM content_knowledge WHERE user_id IN (0, ?) ORDER BY category ASC'
+    ).all(userId);
+    sendSuccess(res, { entries });
+  }));
+
+  /** POST /api/v1/content/voice-dna — upsert a voice DNA entry */
+  router.post('/voice-dna', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { category, payload } = req.body;
+    if (!category || !payload) { sendError(res, 'VALIDATION', 'category and payload required', 400); return; }
+    const db = require('../../services/database').getDb();
+    db.prepare(`
+      INSERT INTO content_knowledge (category, label, payload, source, user_id, version)
+      VALUES (?, ?, ?, 'ios', ?, 1)
+      ON CONFLICT(category, user_id) DO UPDATE SET payload = excluded.payload, updated_at = datetime('now')
+    `).run(category, category, typeof payload === 'string' ? payload : JSON.stringify(payload), userId);
+    sendSuccess(res, { upserted: true });
+  }));
+
   return router;
 }
