@@ -136,6 +136,7 @@ export function calendarRoutes(): Router {
       : undefined;
 
     try {
+      const userId = (req as AuthenticatedRequest).userId;
       const event = await createEvent(
         {
           title: body.title.trim(),
@@ -144,6 +145,7 @@ export function calendarRoutes(): Router {
           description: body.description?.trim() || undefined,
         },
         source,
+        userId,
       );
 
       // Invalidate today's cache so the dashboard re-fetches on next poll.

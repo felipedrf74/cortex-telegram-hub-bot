@@ -74,10 +74,26 @@ export async function getEvents(startDate: string, endDate: string): Promise<Uni
 
 export async function createEvent(
   data: { title: string; start: string; end: string; description?: string; categories?: string[] },
-  target?: CalendarSource
+  target?: CalendarSource,
+  userId?: number,
 ): Promise<UnifiedCalendarEvent> {
-  // Default to outlook if configured, else google
-  const source = target || (outlookCal.isOutlookCalendarConfigured() ? 'outlook' : 'google');
+  // Per-user source resolution: check which provider the requesting
+  // user has OAuth tokens for. Falls back to global config for the
+  // Telegram codepath where userId isn't passed.
+  let source = target;
+  if (!source) {
+    if (userId) {
+      try {
+        const { isConnected } = require('./oauth-store');
+        if (isConnected(userId, 'outlook')) source = 'outlook';
+        else if (isConnected(userId, 'google')) source = 'google';
+      } catch { /* oauth-store not available */ }
+    }
+    // Fall back to global config check (owner / Telegram codepath)
+    if (!source) {
+      source = outlookCal.isOutlookCalendarConfigured() ? 'outlook' : 'google';
+    }
+  }
 
   if (source === 'outlook') {
     const event = await outlookCal.createEvent(data);

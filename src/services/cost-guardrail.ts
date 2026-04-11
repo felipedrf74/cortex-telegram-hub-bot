@@ -151,8 +151,25 @@ export function isUserOverDailyCap(
 
     // Owner bypass — check BEFORE subscription lookup so the owner
     // is never affected by subscriptions table issues.
-    const ownerIds = config.telegram.allowedUserIds || [];
-    if (ownerIds.includes(userId)) {
+    //
+    // Two paths: (1) direct Telegram ID match (bot codepath), or
+    // (2) iOS user whose `telegram_id` in the users table is an
+    // owner Telegram ID. Path 2 is needed because iOS auth creates
+    // users with an auto-increment `id` (e.g. 13) that doesn't
+    // match the Telegram ID (e.g. 7807541475).
+    const ownerTelegramIds = config.telegram.allowedUserIds || [];
+    let isOwner = ownerTelegramIds.includes(userId);
+    if (!isOwner) {
+      try {
+        const user = db.prepare(
+          "SELECT telegram_id FROM users WHERE id = ?"
+        ).get(userId) as { telegram_id: number | null } | undefined;
+        if (user?.telegram_id && ownerTelegramIds.includes(user.telegram_id)) {
+          isOwner = true;
+        }
+      } catch { /* users table may not exist */ }
+    }
+    if (isOwner) {
       plan = 'owner'; capUsd = 100; usageLevel = 'owner';
     }
 
