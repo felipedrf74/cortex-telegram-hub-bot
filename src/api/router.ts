@@ -27,6 +27,7 @@ import { invoicesRoutes } from './routes/invoices';
 import { contentDashboardRoutes } from './routes/content-dashboard';
 import { contentAdminWriteRoutes } from './routes/content-admin-write';
 import { healthDataRoutes } from './routes/health-data';
+import { garminAuthRoutes } from './routes/garmin-auth';
 import { billingRoutes } from './routes/billing';
 import { oauthInitiateRoutes } from './routes/oauth-initiate';
 
@@ -132,6 +133,7 @@ export function createApiRouter(): Router {
   router.use('/connections', connectionRoutes());
   router.use('/wearable', wearableRoutes());
   router.use('/health-data', healthDataRoutes());
+  router.use('/garmin', garminAuthRoutes());
   router.use('/usage', usageRoutes());
 
   // Phase 1 Slice D — Skills catalog for iOS Skills tab. Pure read of
