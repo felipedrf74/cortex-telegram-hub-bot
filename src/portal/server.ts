@@ -1654,8 +1654,14 @@ export function createPortalServer(bot: Bot): http.Server {
       return next();
     }
     if (!portalToken) {
-      // No token configured — allow (dev mode)
-      return next();
+      // No token configured — only allow from localhost/private IPs.
+      // Blocks access from tunnels (ngrok, cloudflared) and public networks.
+      const ip = req.ip || req.socket.remoteAddress || '';
+      const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.');
+      if (isLocal) return next();
+      // Not localhost + no token = reject
+      res.status(401).json({ error: 'PORTAL_TOKEN not set. Set it in .env for non-local access.' });
+      return;
     }
     const auth = req.headers.authorization;
     if (!auth || auth !== `Bearer ${portalToken}`) {

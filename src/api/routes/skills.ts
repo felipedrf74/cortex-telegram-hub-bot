@@ -145,8 +145,8 @@ export function skillsRoutes(): Router {
    */
   router.get('/catalog', (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    // userId from JWT may be autoincrement ID (iOS) or telegram_id (bot).
-    // Try both lookups to support multi-provider auth.
+    // userId from JWT is now always users.id (since v4.12.0).
+    // Telegram ID fallback kept for legacy sessions (7-day JWT expiry).
     const user = getUserById(userId) || getUserByTelegramId(userId);
     if (!user) {
       sendError(res, 'USER_NOT_FOUND', `User ${userId} not registered`, 404);

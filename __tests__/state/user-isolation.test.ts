@@ -207,4 +207,127 @@ describe('Per-user data isolation', () => {
       expect(hist[0].content).toBe('legacy message');
     });
   });
+
+  // ── Invoice isolation ──────────────────────────────────────────
+  describe('invoice_vendors isolation', () => {
+    it('user A vendor not visible to user B', () => {
+      testDb.prepare(
+        'INSERT INTO invoice_vendors (name, sender_pattern, user_id) VALUES (?, ?, ?)'
+      ).run('VendorA', 'a@example.com', USER_A);
+      testDb.prepare(
+        'INSERT INTO invoice_vendors (name, sender_pattern, user_id) VALUES (?, ?, ?)'
+      ).run('VendorB', 'b@example.com', USER_B);
+
+      const vendorsA = testDb.prepare(
+        'SELECT * FROM invoice_vendors WHERE user_id IN (0, ?)'
+      ).all(USER_A);
+      const vendorsB = testDb.prepare(
+        'SELECT * FROM invoice_vendors WHERE user_id IN (0, ?)'
+      ).all(USER_B);
+
+      expect(vendorsA).toHaveLength(1);
+      expect(vendorsB).toHaveLength(1);
+      expect((vendorsA[0] as any).name).toBe('VendorA');
+      expect((vendorsB[0] as any).name).toBe('VendorB');
+    });
+  });
+
+  describe('invoice_filings isolation', () => {
+    it('user A filing not visible to user B', () => {
+      testDb.prepare(
+        "INSERT INTO invoice_filings (vendor, source, status, user_id) VALUES (?, ?, ?, ?)"
+      ).run('TestVendor', 'photo', 'filed', USER_A);
+
+      const filingsA = testDb.prepare(
+        'SELECT * FROM invoice_filings WHERE user_id = ?'
+      ).all(USER_A);
+      const filingsB = testDb.prepare(
+        'SELECT * FROM invoice_filings WHERE user_id = ?'
+      ).all(USER_B);
+
+      expect(filingsA).toHaveLength(1);
+      expect(filingsB).toHaveLength(0);
+    });
+  });
+
+  // ── Content isolation ──────────────────────────────────────────
+  describe('content_ref_channels isolation', () => {
+    it('user A channel not visible to user B', () => {
+      testDb.prepare(
+        "INSERT INTO content_ref_channels (channel_url, status, user_id) VALUES (?, 'active', ?)"
+      ).run('https://youtube.com/@channelA', USER_A);
+      testDb.prepare(
+        "INSERT INTO content_ref_channels (channel_url, status, user_id) VALUES (?, 'active', ?)"
+      ).run('https://youtube.com/@channelB', USER_B);
+
+      const chA = testDb.prepare(
+        'SELECT * FROM content_ref_channels WHERE user_id IN (0, ?)'
+      ).all(USER_A);
+      const chB = testDb.prepare(
+        'SELECT * FROM content_ref_channels WHERE user_id IN (0, ?)'
+      ).all(USER_B);
+
+      expect(chA).toHaveLength(1);
+      expect(chB).toHaveLength(1);
+      expect((chA[0] as any).channel_url).toContain('channelA');
+      expect((chB[0] as any).channel_url).toContain('channelB');
+    });
+
+    it('same channel URL allowed for different users (composite uniqueness)', () => {
+      testDb.prepare(
+        "INSERT INTO content_ref_channels (channel_url, status, user_id) VALUES (?, 'active', ?)"
+      ).run('https://youtube.com/@shared', USER_A);
+
+      // Should NOT throw — different user_id makes it unique
+      expect(() => {
+        testDb.prepare(
+          "INSERT INTO content_ref_channels (channel_url, status, user_id) VALUES (?, 'active', ?)"
+        ).run('https://youtube.com/@shared', USER_B);
+      }).not.toThrow();
+    });
+  });
+
+  describe('book_library isolation', () => {
+    it('user A book not visible to user B', () => {
+      testDb.prepare(
+        "INSERT INTO book_library (title, author, extraction_status, user_id) VALUES (?, ?, 'pending', ?)"
+      ).run('Book A', 'Author A', USER_A);
+      testDb.prepare(
+        "INSERT INTO book_library (title, author, extraction_status, user_id) VALUES (?, ?, 'pending', ?)"
+      ).run('Book B', 'Author B', USER_B);
+
+      const booksA = testDb.prepare(
+        'SELECT * FROM book_library WHERE user_id IN (0, ?)'
+      ).all(USER_A);
+      const booksB = testDb.prepare(
+        'SELECT * FROM book_library WHERE user_id IN (0, ?)'
+      ).all(USER_B);
+
+      expect(booksA).toHaveLength(1);
+      expect(booksB).toHaveLength(1);
+    });
+  });
+
+  describe('saved_ideas isolation', () => {
+    it('user A idea not visible to user B', () => {
+      testDb.prepare(
+        "INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)"
+      ).run('Idea A', '2026-04-12', USER_A);
+      testDb.prepare(
+        "INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)"
+      ).run('Idea B', '2026-04-12', USER_B);
+
+      const ideasA = testDb.prepare(
+        "SELECT * FROM saved_ideas WHERE user_id IN (0, ?) AND status = 'saved'"
+      ).all(USER_A);
+      const ideasB = testDb.prepare(
+        "SELECT * FROM saved_ideas WHERE user_id IN (0, ?) AND status = 'saved'"
+      ).all(USER_B);
+
+      expect(ideasA).toHaveLength(1);
+      expect(ideasB).toHaveLength(1);
+      expect((ideasA[0] as any).title).toBe('Idea A');
+      expect((ideasB[0] as any).title).toBe('Idea B');
+    });
+  });
 });

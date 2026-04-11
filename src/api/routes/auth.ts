@@ -102,12 +102,17 @@ export function authRoutes(): Router {
     let userId: number;
 
     if (ownerCode && inviteCode === ownerCode) {
-      // Owner: full access to real data
-      userId = config.telegram.allowedUserIds[0];
-      if (!userId) {
+      // Owner: resolve the database users.id from their Telegram ID.
+      // This ensures the JWT carries users.id (not telegram_id) so
+      // downstream code only needs getUserById, never getUserByTelegramId.
+      const ownerTelegramId = config.telegram.allowedUserIds[0];
+      if (!ownerTelegramId) {
         sendError(res, 'NO_USER', 'No users configured', 500);
         return;
       }
+      const { getUserByTelegramId: findByTgId } = require('../../services/user-service');
+      const ownerUser = findByTgId(ownerTelegramId);
+      userId = ownerUser?.id ?? ownerTelegramId; // fallback to telegram_id if user row doesn't exist
     } else if (betaCode && inviteCode === betaCode) {
       // Beta tester / Apple reviewer: sandboxed demo user
       userId = DEMO_USER_ID;
