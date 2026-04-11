@@ -105,6 +105,32 @@ export function taskRoutes(): Router {
   });
 
   /**
+   * POST /api/v1/tasks/lists — create a new task list.
+   * Body: { name: string }
+   * Routes to MS To-Do createList or native adapter based on user.
+   */
+  router.post('/lists', async (req, res: Response) => {
+    try {
+      const userId = (req as any).userId;
+      const { name } = req.body;
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        sendError(res, 'VALIDATION', 'name is required', 400);
+        return;
+      }
+      const todo = getTodo(req);
+      const result = await todo.createList(name.trim());
+      // Invalidate lists cache
+      const cacheKey = userId ? `u:${userId}:task-lists` : 'task-lists';
+      const { clearCache } = require('../../services/cache-store');
+      clearCache(cacheKey);
+      sendSuccess(res, result.data, { status: 201 });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks/lists POST failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to create list', 500);
+    }
+  });
+
+  /**
    * GET /api/v1/tasks/filtered?filter=overdue|dueToday|all
    * Returns tasks across ALL lists in a single call (no N+1).
    * SWR-cached: 2 min fresh, 10 min stale grace.

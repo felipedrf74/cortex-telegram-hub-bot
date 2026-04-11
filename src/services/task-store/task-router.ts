@@ -151,6 +151,20 @@ function createNativeWrapper(userId: number) {
       return { success: true, data: undefined };
     },
 
+    async createList(displayName: string) {
+      const db = require('../database').getDb();
+      const maxPos = (db.prepare(
+        'SELECT COALESCE(MAX(position), 0) as m FROM native_task_lists WHERE user_id = ?'
+      ).get(userId) as { m: number }).m;
+      const result = db.prepare(
+        'INSERT INTO native_task_lists (user_id, name, position) VALUES (?, ?, ?)'
+      ).run(userId, displayName, maxPos + 1);
+      return {
+        success: true,
+        data: { id: String(result.lastInsertRowid), displayName },
+      };
+    },
+
     async getDefaultList() {
       const projects = await nativeAdapter.getProjects(userId);
       const defaultList = projects.find(p => p.isDefault) || projects[0];

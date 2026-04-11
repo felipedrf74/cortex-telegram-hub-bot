@@ -54,10 +54,19 @@ export function dashboardRoutes(): Router {
       const training = trainingResult.status === 'fulfilled' ? trainingResult.value : { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null };
       const content = contentResult.status === 'fulfilled' ? contentResult.value : { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null };
 
-      // Time-aware greeting
+      // Time-aware greeting with per-user display name
       const now = new Date();
       const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
       const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+
+      // Look up the user's first name — falls back to empty string
+      // so the greeting is "Good afternoon" instead of "Good afternoon, undefined"
+      let displayName = '';
+      try {
+        const { getUserById } = require('../../services/user-service');
+        const user = getUserById(userId);
+        displayName = user?.first_name || user?.username || '';
+      } catch { /* user-service not available */ }
 
       const startTime = (global as any).__startTime;
       const uptimeMs = startTime ? Date.now() - startTime : 0;
@@ -66,7 +75,7 @@ export function dashboardRoutes(): Router {
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
       const dashboard = {
-        greeting: `${greeting}, Felipe`,
+        greeting: displayName ? `${greeting}, ${displayName}` : greeting,
         date: now.toISOString().slice(0, 10),
         dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
         calendar,
@@ -143,8 +152,15 @@ export async function warmDashboardCache(userId: number): Promise<void> {
     const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
     const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
 
+    let warmDisplayName = '';
+    try {
+      const { getUserById } = require('../../services/user-service');
+      const user = getUserById(userId);
+      warmDisplayName = user?.first_name || user?.username || '';
+    } catch { /* */ }
+
     const response = {
-      greeting: `${greeting}, Felipe`,
+      greeting: warmDisplayName ? `${greeting}, ${warmDisplayName}` : greeting,
       date: now.toISOString().slice(0, 10),
       dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
       calendar: calendarResult.status === 'fulfilled' ? calendarResult.value : { today: [], upcoming: [] },
