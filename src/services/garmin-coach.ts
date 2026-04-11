@@ -141,30 +141,95 @@ export interface CoachBriefingResult {
   analysisMs: number;
 }
 
+// ─── Apple Health fallback for coach briefing ────────────────────────
+
+/**
+ * Build a GarminCoachData-compatible structure from Apple Health data
+ * stored in the apple_health_data table. Returns null if no data exists.
+ */
+async function tryAppleHealthFallback(userId: number | undefined, errors: string[]): Promise<GarminCoachData | null> {
+  if (!userId) return null;
+
+  try {
+    const { getDb } = require('./database');
+    const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+
+    const rows = db.prepare(
+      'SELECT data_type, data_json FROM apple_health_data WHERE user_id = ? AND date = ?'
+    ).all(userId, today) as Array<{ data_type: string; data_json: string }>;
+
+    if (rows.length === 0) return null;
+
+    const dataMap: Record<string, any> = {};
+    for (const row of rows) {
+      try { dataMap[row.data_type] = JSON.parse(row.data_json); } catch {}
+    }
+
+    // Build a partial GarminCoachData from Apple Health signals
+    const sleepData = dataMap.sleep;
+    const sleepObj = sleepData ? {
+      sleepScoreQualifier: sleepData.totalMinutes >= 420 ? 'GOOD' : sleepData.totalMinutes >= 360 ? 'FAIR' : 'POOR',
+      sleepDurationHours: (sleepData.totalMinutes || 0) / 60,
+      deepSleepMinutes: sleepData.deepMinutes || 0,
+      remSleepMinutes: sleepData.remMinutes || 0,
+      overallScore: Math.round((sleepData.totalMinutes || 0) / 480 * 100),
+    } : null;
+
+    const result: any = {
+      sleep: sleepObj,
+      restingHeartRate: dataMap.resting_hr?.bpm ?? null,
+      hrvMs: dataMap.hrv?.sdnn_ms ?? null,
+      bodyBattery: null,
+      stress: null,
+      activities: dataMap.workouts || [],
+      readiness: null,
+      steps: dataMap.steps?.count ?? 0,
+      errors: [],
+      source: 'apple_health',
+    };
+    return result;
+  } catch (err) {
+    errors.push(`Apple Health fallback failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 // ─── Main coach function ──────────────────────────────────────────────
 
-export async function generateCoachBriefing(): Promise<CoachBriefingResult> {
-  if (!isGarminConfigured()) {
-    throw new Error('Garmin not configured. Set GARMIN_EMAIL and GARMIN_PASSWORD.');
-  }
-
+export async function generateCoachBriefing(userId?: number): Promise<CoachBriefingResult> {
   const errors: string[] = [];
-
-  // Phase 1: Collect Garmin data
   const collectStart = Date.now();
-  let garminData: GarminCoachData;
-  try {
-    garminData = await fetchDailyCoachData();
-    errors.push(...garminData.errors);
-  } catch (err) {
-    logger.error({ err }, 'Garmin data collection failed completely');
-    return {
-      message: '⚠️ <b>Coach briefing failed</b>\n\nGarmin data unavailable tonight. Try /coach later or check connection.',
-      recommendations: [],
-      errors: [(err as Error).message],
-      dataCollectionMs: Date.now() - collectStart,
-      analysisMs: 0,
-    };
+  let garminData: GarminCoachData | null = null;
+
+  // ── Data source resolution ─────────────────────────────────
+  // Priority: Garmin (richer data) → Apple Health (HealthKit sync)
+  // Apple Health users sync via POST /health-data/sync from iOS;
+  // data lives in apple_health_data table.
+  if (isGarminConfigured()) {
+    try {
+      garminData = await fetchDailyCoachData();
+      errors.push(...garminData.errors);
+    } catch (err) {
+      logger.error({ err }, 'Garmin data collection failed completely');
+      // Try Apple Health fallback before giving up
+      garminData = await tryAppleHealthFallback(userId, errors);
+      if (!garminData) {
+        return {
+          message: '⚠️ Coach briefing failed\n\nHealth data unavailable. Connect Garmin or sync Apple Health.',
+          recommendations: [],
+          errors: [(err as Error).message],
+          dataCollectionMs: Date.now() - collectStart,
+          analysisMs: 0,
+        };
+      }
+    }
+  } else {
+    // No Garmin — try Apple Health
+    garminData = await tryAppleHealthFallback(userId, errors);
+    if (!garminData) {
+      throw new Error('No health data source configured. Connect Garmin or sync Apple Health from your iPhone.');
+    }
   }
   const dataCollectionMs = Date.now() - collectStart;
 
