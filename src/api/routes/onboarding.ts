@@ -169,8 +169,8 @@ export function onboardingRoutes(): Router {
       sendSuccess(res, {
         nextStep: result.nextStep ? {
           index: result.nextStep.index ?? (stepIndex + 1),
-          field: result.nextStep.field,
-          question: result.nextStep.question,
+          field: result.nextStep.key,       // questionnaire uses 'key' not 'field'
+          question: result.nextStep.prompt,  // questionnaire uses 'prompt' not 'question'
           type: result.nextStep.type,
           options: result.nextStep.options || null,
           min: result.nextStep.min ?? null,

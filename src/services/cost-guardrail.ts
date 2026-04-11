@@ -55,6 +55,11 @@ function todayKey(): string {
 // No free tier — unsubscribed users are blocked from AI entirely.
 const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '0.00');
 
+// ── Beta mode (paywall bypass) ─────────────────────────────────────
+// When PAYWALL_ENABLED=false, ALL users get owner-level access ($100/day).
+// Toggle via env var or the portal. Set to 'true' when subscriptions go live.
+const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
+
 /**
  * Check global daily spend against configured limits.
  * Sends Telegram alerts at 50% / 80% / 100% (each fires once per UTC day).
@@ -148,6 +153,13 @@ export function isUserOverDailyCap(
     let plan = 'none';
     let capUsd = DEFAULT_DAILY_CAP_USD;
     let usageLevel: 'none' | 'enhanced' | 'maximum' | 'owner' = 'none';
+
+    // Beta bypass: when paywall is disabled, every user gets owner-level
+    // access. This lets closed beta testers use all AI features without
+    // needing a subscription. Set PAYWALL_ENABLED=false in .env.
+    if (!PAYWALL_ENABLED) {
+      plan = 'beta'; capUsd = 100; usageLevel = 'owner';
+    }
 
     // Owner bypass — check BEFORE subscription lookup so the owner
     // is never affected by subscriptions table issues.
