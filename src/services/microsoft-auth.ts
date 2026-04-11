@@ -127,7 +127,29 @@ async function getAccessToken(): Promise<string> {
   return result.accessToken;
 }
 
+// ─── Per-request user override ──────────────────────────────────────
+// iOS API routes set this before calling microsoft-todo functions so
+// getGraphClient() returns a per-user client instead of the owner
+// singleton. Reset after each request via middleware.
+let _requestUserId: number | null = null;
+
+/** Set the per-request user override. Call with null to clear. */
+export function setRequestUserId(userId: number | null): void {
+  _requestUserId = userId;
+}
+
+/**
+ * Get a Microsoft Graph client. If a per-request userId is set (via
+ * setRequestUserId), returns a per-user client. Otherwise returns the
+ * owner singleton for backward compatibility with the Telegram bot.
+ */
 export function getGraphClient(): Client {
+  // Per-user override takes precedence
+  if (_requestUserId !== null) {
+    return getGraphClientForUser(_requestUserId);
+  }
+
+  // Owner singleton fallback (Telegram bot codepath)
   if (graphClient) return graphClient;
 
   graphClient = Client.init({
@@ -142,6 +164,25 @@ export function getGraphClient(): Client {
   });
 
   return graphClient;
+}
+
+/**
+ * Build a Graph client for a specific user. NOT cached — each call gets
+ * a fresh client that resolves the user's refresh token on demand.
+ * This is safe because MSAL handles token caching internally, and the
+ * per-call authProvider pattern means the Graph client itself is stateless.
+ */
+export function getGraphClientForUser(userId: number): Client {
+  return Client.init({
+    authProvider: async (done) => {
+      try {
+        const token = await getAccessTokenForUser(userId);
+        done(null, token);
+      } catch (err) {
+        done(err as Error, null);
+      }
+    },
+  });
 }
 
 export function isMicrosoftConfigured(): boolean {

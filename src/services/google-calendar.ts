@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
 import {
   buildGoogleOAuth2Client,
+  buildGoogleOAuth2ClientForUser,
   isGoogleConfigured,
   registerGoogleClientReset,
 } from './google-auth';
@@ -18,6 +19,15 @@ const GOOGLE_API_TIMEOUT_MS = 15_000;
 
 let calendarClient: calendar_v3.Calendar | null = null;
 
+// Per-request user override for multi-user isolation.
+// Same pattern as microsoft-auth.ts _requestUserId.
+let _calendarRequestUserId: number | null = null;
+
+/** Set the per-request Google Calendar user override. */
+export function setGoogleCalendarUserId(userId: number | null): void {
+  _calendarRequestUserId = userId;
+}
+
 // The Google client caches MUST be invalidated when /connect google writes
 // a fresh refresh token to oauth-store. The OAuth callback handler in
 // oauth-flow.ts calls resetGoogleClients() which fans out to every
@@ -25,10 +35,14 @@ let calendarClient: calendar_v3.Calendar | null = null;
 registerGoogleClientReset(() => { calendarClient = null; });
 
 function getCalendar(): calendar_v3.Calendar {
+  // Per-user override: return a fresh per-user client (not cached)
+  if (_calendarRequestUserId !== null) {
+    const oauth2Client = buildGoogleOAuth2ClientForUser(_calendarRequestUserId);
+    return google.calendar({ version: 'v3', auth: oauth2Client });
+  }
+
+  // Owner singleton fallback
   if (calendarClient) return calendarClient;
-  // Slow path: build a fresh client. The token resolution goes through
-  // oauth-store first (encrypted + audited via getTokens) and falls back
-  // to config.google.refreshToken for backward compat. See google-auth.ts.
   const oauth2Client = buildGoogleOAuth2Client();
   calendarClient = google.calendar({ version: 'v3', auth: oauth2Client });
   return calendarClient;

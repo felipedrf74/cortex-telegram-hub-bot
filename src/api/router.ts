@@ -87,6 +87,25 @@ export function createApiRouter(): Router {
   router.use(authMiddleware);
   router.use(rateLimitMiddleware);
 
+  // ── Per-user data isolation for ALL iOS API routes ─────────────────
+  // Sets request-scoped user overrides so all downstream service calls
+  // (Microsoft Graph, Google Calendar) use the authenticated user's
+  // tokens instead of the owner singleton. Cleared on response finish.
+  router.use((req, _res, next) => {
+    const userId = (req as any).userId;
+    if (userId) {
+      const { setRequestUserId } = require('../services/microsoft-auth');
+      const { setGoogleCalendarUserId } = require('../services/google-calendar');
+      setRequestUserId(userId);
+      setGoogleCalendarUserId(userId);
+      _res.on('finish', () => {
+        setRequestUserId(null);
+        setGoogleCalendarUserId(null);
+      });
+    }
+    next();
+  });
+
   // Garmin silent mode for ALL iOS API routes. iOS users can't enter
   // MFA codes, so if the Garmin session expires, we return an error
   // instead of triggering an MFA email flood. The user re-authenticates
