@@ -95,7 +95,15 @@ IS an invoice/receipt: nota fiscal, recibo, fatura, comprovante de pagamento, NF
 NOT an invoice: personal photos, selfies, food photos, memes, screenshots of messages, whiteboards, maps, non-financial documents.
 
 For dates: look for "Data:", "Emissão:", "Date:", "Data de emissão:", or any prominent date. Convert to ISO 8601.
-For amounts: look for "Total:", "Valor:", "Total a pagar:", "Amount:".`;
+
+For amounts — CRITICAL RULES:
+- Extract the FINAL GRAND TOTAL only — the last "Total" at the bottom of the receipt.
+- IGNORE subtotals, line item prices, tax-only amounts, and intermediate sums.
+- If there are multiple "Total" lines, use the LARGEST one (the final amount paid).
+- Include the currency symbol exactly as shown (€, R$, $, £).
+- Use the format with comma/period as shown on the document (e.g., "€ 4,38" not "€ 438,00").
+- Pay attention to decimal separators: European receipts use comma (4,38 = four euros thirty-eight cents).
+- Double-check: does the total make sense for the type of business? A kebab shop total of €438 is almost certainly a misread of €4,38.`;
 
 export async function analyzeInvoiceImage(
   imageBase64: string,

@@ -372,6 +372,290 @@ export function trainingRoutes(): Router {
     }
   });
 
+  /**
+   * POST /api/v1/training/plan/generate
+   *
+   * Token-efficient training plan generation. One AI call produces a
+   * full monthly plan — replaces the 70+ tool-call chat flow with a
+   * single structured JSON generation + bulk insert.
+   *
+   * Flow:
+   *   1. Read user's fitness profile from onboarding answers
+   *   2. Fetch calendar events for the next 4 weeks → find free slots
+   *   3. One Gemini call → get structured plan JSON
+   *   4. Bulk insert: plan + weeks + sessions + calendar events
+   *   5. Return plan summary to iOS
+   *
+   * Body: { objective: string, durationWeeks?: number, preferredTime?: string }
+   */
+  router.post('/plan/generate', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const { objective, durationWeeks = 4, preferredTime = '12:00' } = req.body;
+
+    if (!objective || typeof objective !== 'string') {
+      sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
+      return;
+    }
+
+    try {
+      const tp = require('../../services/training-plans');
+      const onboarding = require('../../services/onboarding');
+      const { getEvents } = require('../../services/unified-calendar');
+      const { completeOneShotWithFallback } = require('../../services/gemini-provider');
+
+      // ── Step 1: Check user profile ──────────────────────────────
+      const fitnessProfile = onboarding.getProfile?.(userId, 'fitness');
+      const gymProfile = onboarding.getProfile?.(userId, 'triathlon-gym');
+      const runProfile = onboarding.getProfile?.(userId, 'triathlon-running');
+
+      if (!fitnessProfile || Object.keys(fitnessProfile).length === 0) {
+        sendSuccess(res, {
+          needsProfile: true,
+          message: 'Complete your Fitness Profile first to generate a personalized plan.',
+          missingFields: onboarding.getMissingProfileFields?.(userId, 'fitness') || [],
+        });
+        return;
+      }
+
+      // ── Step 2: Get calendar free slots for next N weeks ────────
+      const now = new Date();
+      const endDate = new Date(now.getTime() + durationWeeks * 7 * 24 * 60 * 60 * 1000);
+      const startStr = now.toISOString().slice(0, 10);
+      const endStr = endDate.toISOString().slice(0, 10);
+
+      let busySlots: string[] = [];
+      try {
+        const events = await getEvents(startStr, endStr);
+        const allEvents = [...(events.today || []), ...(events.upcoming || [])];
+        busySlots = allEvents.map((e: any) => {
+          const start = e.start || e.startDateTime || '';
+          const title = e.subject || e.summary || e.title || '';
+          return `${start}: ${title}`;
+        }).slice(0, 50); // Cap to avoid context overflow
+      } catch {
+        // Calendar unavailable — plan without schedule constraints
+      }
+
+      // ── Step 3: One AI call → structured plan JSON ─────────────
+      const profileSummary = [
+        fitnessProfile ? `Fitness: ${JSON.stringify(fitnessProfile)}` : '',
+        gymProfile ? `Gym: ${JSON.stringify(gymProfile)}` : '',
+        runProfile ? `Running: ${JSON.stringify(runProfile)}` : '',
+      ].filter(Boolean).join('\n');
+
+      const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+      const planPrompt = `You are a sports coach creating a ${durationWeeks}-week training plan.
+
+ATHLETE PROFILE:
+${profileSummary}
+
+OBJECTIVE: ${objective}
+
+BUSY CALENDAR SLOTS (avoid these times):
+${busySlots.length > 0 ? busySlots.join('\n') : 'No calendar data — schedule freely.'}
+
+PREFERRED TRAINING TIME: ${preferredTime}
+
+START DATE: ${startStr}
+
+RULES:
+- Plan ${durationWeeks} weeks of training.
+- Week ${durationWeeks} should be a DELOAD week (lower volume/intensity).
+- Each session needs: day_of_week, session_type (gym/run/ride/swim/rest), title, duration_minutes, exercises as a list.
+- For gym sessions: include exercise name, sets, reps, RPE, rest_sec.
+- For cardio: include type, distance_km or duration, pace/zone, notes.
+- Respect the athlete's equipment, experience level, and injury history.
+- Place sessions on days that DON'T conflict with busy calendar slots.
+- Maximum 6 training days per week. At least 1 rest day.
+- Include warm-up and cool-down notes in the description.
+
+Return ONLY valid JSON in this exact shape:
+{
+  "planName": "string",
+  "sport": "hybrid|running|cycling|swimming|gym",
+  "periodization": "linear|undulating|block",
+  "weeks": [
+    {
+      "weekNumber": 1,
+      "focus": "base|strength|hypertrophy|endurance|speed|deload",
+      "intensityPct": 70,
+      "sessions": [
+        {
+          "dayOfWeek": "monday",
+          "sessionType": "gym|run|ride|swim|rest",
+          "title": "Upper Body A — Hypertrophy",
+          "durationMinutes": 65,
+          "description": "Full warm-up + exercises description for calendar body",
+          "exercises": [
+            { "name": "Incline DB Press", "sets": 4, "reps": 10, "rpe": "7-8", "restSec": 90 }
+          ]
+        }
+      ]
+    }
+  ]
+}`;
+
+      const { text: rawPlan } = await completeOneShotWithFallback(
+        'You are a structured training plan generator. Return ONLY valid JSON, no markdown.',
+        planPrompt,
+        'training_plan_generation',
+        { maxTokens: 4096, temperature: 0.3, userId },
+      );
+
+      // Parse the JSON — strip markdown fences if present
+      const cleaned = rawPlan.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      let planData: any;
+      try {
+        planData = JSON.parse(cleaned);
+      } catch (parseErr) {
+        logger.error({ rawPlan: rawPlan.slice(0, 500) }, 'Failed to parse plan JSON from AI');
+        sendError(res, 'AI_PARSE_ERROR', 'AI generated invalid plan JSON. Try again.', 500);
+        return;
+      }
+
+      // ── Step 4: Bulk insert plan + weeks + sessions ────────────
+      const plan = tp.createPlan({
+        user_id: userId,
+        name: planData.planName || `${objective} Plan`,
+        sport: planData.sport || 'hybrid',
+        goal: objective,
+        duration_weeks: durationWeeks,
+        periodization: planData.periodization || 'undulating',
+        start_date: startStr,
+        end_date: endStr,
+      });
+
+      let totalSessions = 0;
+      const calendarEvents: any[] = [];
+
+      for (const weekData of (planData.weeks || [])) {
+        const week = tp.createWeek({
+          plan_id: plan.id,
+          week_number: weekData.weekNumber || 1,
+          focus: weekData.focus || 'base',
+          intensity_pct: weekData.intensityPct || 70,
+          volume_sessions: weekData.sessions?.length || 0,
+        });
+
+        for (const sess of (weekData.sessions || [])) {
+          if (sess.sessionType === 'rest') continue;
+
+          const dayIndex = dayNames.indexOf(sess.dayOfWeek?.toLowerCase());
+          if (dayIndex < 0) continue;
+
+          // Calculate the actual date for this session
+          const weekStart = new Date(now);
+          weekStart.setDate(weekStart.getDate() + ((weekData.weekNumber - 1) * 7));
+          // Find the next occurrence of this day
+          const currentDay = weekStart.getDay(); // 0=Sun
+          const targetDay = dayIndex + 1; // 1=Mon
+          let daysUntil = targetDay - currentDay;
+          if (daysUntil <= 0) daysUntil += 7;
+          const sessionDate = new Date(weekStart);
+          sessionDate.setDate(sessionDate.getDate() + daysUntil);
+
+          const [prefH, prefM] = preferredTime.split(':').map(Number);
+          sessionDate.setHours(prefH || 12, prefM || 0, 0, 0);
+          const sessionEnd = new Date(sessionDate.getTime() + (sess.durationMinutes || 60) * 60 * 1000);
+
+          // Build calendar body with exercise details
+          let calBody = `${planData.planName || objective}\n\n`;
+          calBody += `${sess.title}\n\n`;
+          if (sess.exercises?.length) {
+            calBody += 'EXERCISES:\n';
+            sess.exercises.forEach((ex: any, i: number) => {
+              calBody += `${i + 1}. ${ex.name}`;
+              if (ex.sets && ex.reps) calBody += ` — ${ex.sets}×${ex.reps}`;
+              if (ex.rpe) calBody += ` @ RPE ${ex.rpe}`;
+              if (ex.restSec) calBody += ` | ${ex.restSec}s rest`;
+              if (ex.distance_km) calBody += ` — ${ex.distance_km}km`;
+              if (ex.pace) calBody += ` @ ${ex.pace}`;
+              calBody += '\n';
+            });
+          }
+          if (sess.description) calBody += `\n${sess.description}`;
+          calBody += `\n\nTIME: ~${sess.durationMinutes || 60} min total`;
+
+          const session = tp.createSession({
+            week_id: week.id,
+            plan_id: plan.id,
+            day_of_week: sess.dayOfWeek,
+            session_type: sess.sessionType,
+            title: sess.title,
+            description: sess.description || '',
+            exercises_json: JSON.stringify(sess.exercises || []),
+            duration_minutes: sess.durationMinutes || 60,
+            intensity_text: `RPE ${weekData.intensityPct || 70}%`,
+          });
+
+          // Queue calendar event creation
+          const emoji = sess.sessionType === 'gym' ? '💪' :
+                        sess.sessionType === 'run' ? '🏃' :
+                        sess.sessionType === 'ride' ? '🚴' :
+                        sess.sessionType === 'swim' ? '🏊' : '🏋️';
+
+          calendarEvents.push({
+            sessionId: session.id,
+            title: `${emoji} ${sess.title} (${sess.durationMinutes || 60}min)`,
+            start: sessionDate.toISOString(),
+            end: sessionEnd.toISOString(),
+            description: calBody,
+          });
+
+          totalSessions++;
+        }
+      }
+
+      // ── Step 5: Create calendar events (parallel) ──────────────
+      let eventsCreated = 0;
+      const { createEvent } = require('../../services/unified-calendar');
+
+      const eventResults = await Promise.allSettled(
+        calendarEvents.map(async (ev) => {
+          try {
+            const event = await createEvent(
+              { title: ev.title, start: ev.start, end: ev.end, description: ev.description },
+              undefined, // auto-detect source
+              userId,
+            );
+            tp.linkSessionToCalendar(ev.sessionId, event.id, event.source);
+            eventsCreated++;
+            return event;
+          } catch (err) {
+            logger.warn({ err, title: ev.title }, 'Failed to create calendar event for session');
+            return null;
+          }
+        })
+      );
+
+      logger.info({
+        userId, planId: plan.id, totalSessions, eventsCreated,
+        objective, durationWeeks,
+      }, 'Training plan generated and scheduled');
+
+      sendSuccess(res, {
+        planId: plan.id,
+        planName: planData.planName,
+        sport: planData.sport,
+        objective,
+        durationWeeks,
+        totalSessions,
+        eventsCreated,
+        weeks: (planData.weeks || []).map((w: any) => ({
+          weekNumber: w.weekNumber,
+          focus: w.focus,
+          sessionCount: w.sessions?.filter((s: any) => s.sessionType !== 'rest').length || 0,
+        })),
+        message: `Plan created! ${totalSessions} sessions scheduled across ${durationWeeks} weeks. ${eventsCreated} calendar events created.`,
+      }, { status: 201 });
+
+    } catch (err: any) {
+      logger.error({ err, userId }, 'Training plan generation failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to generate training plan', 500);
+    }
+  });
+
   return router;
 }
 
