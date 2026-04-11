@@ -132,8 +132,13 @@ export function onboardingRoutes(): Router {
         id: questionnaireId,
         title: questionnaire.title,
         steps: questionnaire.steps.map((s: any, i: number) => ({
-          index: i, field: s.field, question: s.question, type: s.type,
-          options: s.options || null, min: s.min ?? null, max: s.max ?? null,
+          index: i,
+          field: s.key,          // questionnaire uses 'key' not 'field'
+          question: s.prompt,    // questionnaire uses 'prompt' not 'question'
+          type: s.type,
+          options: s.options || null,
+          min: s.min ?? null,
+          max: s.max ?? null,
         })),
         currentStep: session?.current_step || 0,
       });
