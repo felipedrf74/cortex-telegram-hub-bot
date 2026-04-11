@@ -11,27 +11,28 @@ export function addVendor(
   name: string,
   senderPattern: string,
   subjectPatterns?: string,
+  userId: number = 0,
 ): InvoiceVendor {
   const db = getDb();
-  // Re-enable if the sender_pattern was previously disabled
+  // Re-enable if the sender_pattern was previously disabled (per-user)
   const existing = db.prepare(
-    'SELECT id FROM invoice_vendors WHERE sender_pattern = ?',
-  ).get(senderPattern) as { id: number } | undefined;
+    'SELECT id FROM invoice_vendors WHERE sender_pattern = ? AND user_id = ?',
+  ).get(senderPattern, userId) as { id: number } | undefined;
 
   if (existing) {
     db.prepare(`
       UPDATE invoice_vendors
       SET name = ?, subject_patterns = ?, enabled = 1
-      WHERE id = ?
-    `).run(name, subjectPatterns ?? null, existing.id);
+      WHERE id = ? AND user_id = ?
+    `).run(name, subjectPatterns ?? null, existing.id, userId);
     return db.prepare('SELECT * FROM invoice_vendors WHERE id = ?')
       .get(existing.id) as InvoiceVendor;
   }
 
   const result = db.prepare(`
-    INSERT INTO invoice_vendors (name, sender_pattern, subject_patterns)
-    VALUES (?, ?, ?)
-  `).run(name, senderPattern, subjectPatterns ?? null);
+    INSERT INTO invoice_vendors (name, sender_pattern, subject_patterns, user_id)
+    VALUES (?, ?, ?, ?)
+  `).run(name, senderPattern, subjectPatterns ?? null, userId);
 
   return db.prepare('SELECT * FROM invoice_vendors WHERE id = ?')
     .get(result.lastInsertRowid) as InvoiceVendor;

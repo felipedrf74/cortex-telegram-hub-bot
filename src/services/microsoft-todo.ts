@@ -142,22 +142,43 @@ export function clearSelfCreatedTasks(): void {
 
 // ─── List Cache (5-min TTL) ─────────────────────────────────────────
 
-let cachedLists: TodoList[] | null = null;
-let cachedListsAt = 0;
+// Per-user list cache keyed by userId (or 'owner' for the singleton)
+const listCacheMap = new Map<string, { lists: TodoList[]; at: number }>();
 const LIST_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+function getListCacheKey(): string {
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    const ctx = getCurrentContext();
+    return ctx?.userId ? `user:${ctx.userId}` : 'owner';
+  } catch { return 'owner'; }
+}
+
 export function invalidateListCache(): void {
-  cachedLists = null;
-  cachedListsAt = 0;
+  const key = getListCacheKey();
+  listCacheMap.delete(key);
+}
+
+// Legacy compat — access cached lists for the current user
+function getCachedLists(): TodoList[] | null {
+  const key = getListCacheKey();
+  const entry = listCacheMap.get(key);
+  if (!entry || Date.now() - entry.at > LIST_CACHE_TTL) return null;
+  return entry.lists;
+}
+
+function setCachedLists(lists: TodoList[]): void {
+  listCacheMap.set(getListCacheKey(), { lists, at: Date.now() });
 }
 
 // ─── Task Lists ─────────────────────────────────────────────────────
 
 export async function getLists(): Promise<ServiceResult<TodoList[]>> {
   try {
-    // Return cached lists if fresh
-    if (cachedLists && Date.now() - cachedListsAt < LIST_CACHE_TTL) {
-      return { success: true, data: cachedLists };
+    // Return cached lists if fresh (per-user cache)
+    const cached = getCachedLists();
+    if (cached) {
+      return { success: true, data: cached };
     }
 
     const client = getGraphClient();
@@ -175,8 +196,7 @@ export async function getLists(): Promise<ServiceResult<TodoList[]>> {
       wellknownListName: list.wellknownListName || undefined,
     }));
 
-    cachedLists = lists;
-    cachedListsAt = Date.now();
+    setCachedLists(lists);
 
     return { success: true, data: lists };
   } catch (err) {

@@ -142,15 +142,21 @@ export function contentRoutes(): Router {
 
   /** POST /api/v1/content/pipeline/:id/advance — move idea to next stage */
   router.post('/pipeline/:id/advance', async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
     const { id } = req.params;
 
     try {
       const db = require('../../services/database').getDb();
       const stageOrder = ['ideas', 'scripted', 'filmed', 'editing', 'published'];
 
-      const idea = db.prepare('SELECT stage FROM content_ideas WHERE id = ?').get(id) as { stage: string } | undefined;
+      // Ownership check: only advance your own ideas
+      const idea = db.prepare('SELECT stage, user_id FROM content_ideas WHERE id = ?').get(id) as { stage: string; user_id: number } | undefined;
       if (!idea) {
         sendError(res, 'NOT_FOUND', 'Idea not found', 404);
+        return;
+      }
+      if (idea.user_id !== 0 && idea.user_id !== userId) {
+        sendError(res, 'FORBIDDEN', 'Not your idea', 403);
         return;
       }
 
@@ -161,7 +167,7 @@ export function contentRoutes(): Router {
       }
 
       const nextStage = stageOrder[currentIdx + 1];
-      db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ?').run(nextStage, id);
+      db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ? AND user_id IN (0, ?)').run(nextStage, id, userId);
 
       sendSuccess(res, { advanced: true, newStage: nextStage });
     } catch (err: any) {

@@ -102,10 +102,10 @@ export function createApiRouter(): Router {
       setGoogleCalendarUserId(userId);
       // Also set AsyncLocalStorage context (race-safe — each request
       // gets its own context that propagates through async boundaries)
-      const { runInContext } = require('../utils/request-context');
-      const requestId = (req as any).requestId || require('../utils/request-context').generateRequestId();
+      const { runWithContext, generateRequestId } = require('../utils/request-context');
+      const requestId = (req as any).requestId || generateRequestId();
       // Wrap the rest of the middleware chain in a context
-      runInContext({ requestId, userId }, () => {
+      runWithContext({ requestId, userId }, () => {
         _res.on('finish', () => {
           setRequestUserId(null);
           setGoogleCalendarUserId(null);

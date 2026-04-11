@@ -18,14 +18,15 @@ export function recordFiling(data: {
   compressed_size_bytes?: number | null;
   status?: 'filed' | 'failed' | 'duplicate';
   error_message?: string | null;
+  user_id?: number;
 }): InvoiceFiling {
   const db = getDb();
   const stmt = db.prepare(`
     INSERT INTO invoice_filings
       (vendor, amount, document_date, invoice_number, source, source_ref,
        remote_path, folder_path, filename, file_size_bytes, compressed_size_bytes,
-       status, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       status, error_message, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const result = stmt.run(
     data.vendor,
@@ -41,6 +42,7 @@ export function recordFiling(data: {
     data.compressed_size_bytes ?? null,
     data.status ?? 'filed',
     data.error_message ?? null,
+    data.user_id ?? 0,
   );
   return db.prepare('SELECT * FROM invoice_filings WHERE id = ?')
     .get(result.lastInsertRowid) as InvoiceFiling;

@@ -84,7 +84,7 @@ export interface ContentDiscoveryResult {
   searchCount: number;   // how many web searches were used
 }
 
-export async function runContentDiscovery(): Promise<ContentDiscoveryResult> {
+export async function runContentDiscovery(userId?: number): Promise<ContentDiscoveryResult> {
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
   const dayName = today.toFormat('cccc');
@@ -223,9 +223,10 @@ Remember: my audience is Brazilian men (18-35) who want growth and hate laziness
         sourceDate: dateStr,
         source: 'discovery',
         score,
-        workflowEligible: isMainIdea, // main ideas are workflow-eligible
+        workflowEligible: isMainIdea,
         niche: undefined,
-      });
+        userId: userId ?? 0,
+      } as any);
       savedCount++;
     } catch (err) {
       logger.warn({ err, title }, 'Failed to save discovery idea to DB');

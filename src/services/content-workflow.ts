@@ -42,14 +42,15 @@ export function storeTopicCandidates(
   candidates: TopicCandidate[],
   format: 'reel' | 'youtube',
   sourceJob: string,
+  userId: number = 0,
 ): number[] {
   const db = getDb();
   const stmt = db.prepare(
-    `INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
+    `INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id)
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
   );
   return candidates.map((c) => {
-    const info = stmt.run(c.title, c.niche, format, sourceJob, c.hookIdea, c.whyNow, c.angleTag || null);
+    const info = stmt.run(c.title, c.niche, format, sourceJob, c.hookIdea, c.whyNow, c.angleTag || null, userId);
     return Number(info.lastInsertRowid);
   });
 }
