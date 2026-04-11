@@ -68,6 +68,46 @@ function getOwnerOutlookRefreshToken(): string | null {
   return config.outlook.refreshToken || null;
 }
 
+// ─── Per-user token resolution (multi-user) ─────────────────────────
+
+/**
+ * Get an Outlook refresh token for a specific user.
+ * Used by iOS API routes where each request carries a per-user JWT.
+ */
+export function getOutlookRefreshTokenForUser(userId: number): string | null {
+  try {
+    const { getTokens } = require('./oauth-store');
+    const tokens = getTokens(userId, 'outlook');
+    return tokens?.refreshToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get a Microsoft Graph access token for a specific user.
+ * Refreshes via MSAL using the user's stored refresh token.
+ */
+export async function getAccessTokenForUser(userId: number): Promise<string> {
+  const msal = getMsalClient();
+  const refreshToken = getOutlookRefreshTokenForUser(userId);
+  if (!refreshToken) {
+    throw new Error(`Outlook not connected for user ${userId}`);
+  }
+
+  const result = await msal.acquireTokenByRefreshToken({
+    refreshToken,
+    scopes: ALL_SCOPES,
+  });
+
+  if (!result?.accessToken) {
+    throw new Error(`Failed to acquire Graph token for user ${userId}`);
+  }
+
+  return result.accessToken;
+}
+
+/** @deprecated Use getAccessTokenForUser(userId) for multi-user. */
 async function getAccessToken(): Promise<string> {
   const msal = getMsalClient();
   const refreshToken = getOwnerOutlookRefreshToken();

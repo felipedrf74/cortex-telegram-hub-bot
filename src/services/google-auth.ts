@@ -60,13 +60,44 @@ export function getOwnerGoogleRefreshToken(): string | null {
  * Build a fresh OAuth2 client with the current best refresh token.
  * Throws if Google credentials are not configured.
  *
- * Callers should cache the resulting client at the service layer (each
- * google-* service has its own cached high-level client).
+ * @deprecated Use buildGoogleOAuth2ClientForUser(userId) for multi-user.
+ * This function is kept for the Telegram bot codepath which doesn't have
+ * per-request userId context.
  */
 export function buildGoogleOAuth2Client(): OAuth2Client {
   const refreshToken = getOwnerGoogleRefreshToken();
   if (!config.google.clientId || !config.google.clientSecret || !refreshToken) {
     throw new Error('Google credentials not configured');
+  }
+  const client = new google.auth.OAuth2(config.google.clientId, config.google.clientSecret);
+  client.setCredentials({ refresh_token: refreshToken });
+  return client;
+}
+
+// ─── Per-user token resolution (multi-user) ─────────────────────────
+
+/**
+ * Get a Google refresh token for a specific user from the encrypted
+ * oauth-store. Returns null if the user hasn't connected Google.
+ */
+export function getGoogleRefreshTokenForUser(userId: number): string | null {
+  try {
+    const { getTokens } = require('./oauth-store');
+    const tokens = getTokens(userId, 'google');
+    return tokens?.refreshToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build an OAuth2 client for a specific user. Used by iOS API routes
+ * where each request carries a per-user JWT.
+ */
+export function buildGoogleOAuth2ClientForUser(userId: number): OAuth2Client {
+  const refreshToken = getGoogleRefreshTokenForUser(userId);
+  if (!config.google.clientId || !config.google.clientSecret || !refreshToken) {
+    throw new Error(`Google not connected for user ${userId}`);
   }
   const client = new google.auth.OAuth2(config.google.clientId, config.google.clientSecret);
   client.setCredentials({ refresh_token: refreshToken });
