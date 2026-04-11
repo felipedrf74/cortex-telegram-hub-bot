@@ -121,7 +121,7 @@ export function onboardingRoutes(): Router {
     try {
       const onboarding = require('../../services/onboarding');
       const questionnaire = onboarding.getQuestionnaire(questionnaireId);
-      const session = onboarding.getSession(userId, questionnaireId);
+      const session = onboarding.getActiveSession?.(userId, questionnaireId) || null;
 
       if (!questionnaire) {
         sendError(res, 'NOT_FOUND', 'Questionnaire not found', 404);
