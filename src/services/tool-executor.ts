@@ -120,7 +120,16 @@ export async function executeToolCall(
 
       case 'ms_todo_create_task': {
         if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        const createRes = await getTaskProvider().createTask(input.list_id, input.list_name, {
+        // Auto-resolve default list when AI doesn't specify one
+        let listId = input.list_id;
+        let listName = input.list_name || 'Inbox';
+        if (!listId) {
+          try {
+            const defaultList = await getTaskProvider().getDefaultList?.();
+            if (defaultList) { listId = defaultList.id; listName = defaultList.displayName; }
+          } catch { /* use whatever the provider defaults to */ }
+        }
+        const createRes = await getTaskProvider().createTask(listId, listName, {
           title: input.title,
           body: input.body,
           importance: input.importance,
