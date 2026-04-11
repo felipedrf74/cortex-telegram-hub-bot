@@ -46,7 +46,7 @@ export function dashboardRoutes(): Router {
         fetchCalendar(),
         fetchTasks(),
         fetchTraining(userId),
-        fetchContent(),
+        fetchContent(userId),
       ]);
 
       const calendar = calendarResult.status === 'fulfilled' ? calendarResult.value : { today: [], upcoming: [] };
@@ -136,7 +136,7 @@ export async function warmDashboardCache(userId: number): Promise<void> {
 
   try {
     const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-      fetchCalendar(), fetchTasks(), fetchTraining(userId), fetchContent(),
+      fetchCalendar(), fetchTasks(), fetchTraining(userId), fetchContent(userId),
     ]);
 
     const now = new Date();
@@ -340,13 +340,12 @@ async function fetchTraining(userId: number) {
   };
 }
 
-async function fetchContent() {
+async function fetchContent(userId?: number) {
   try {
     const db = require('../../services/database').getDb();
-    const counts = db.prepare(`
-      SELECT stage, COUNT(*) as count FROM content_ideas
-      WHERE status != 'archived' GROUP BY stage
-    `).all() as { stage: string; count: number }[];
+    const counts = userId
+      ? db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' AND user_id = ? GROUP BY stage`).all(userId) as { stage: string; count: number }[]
+      : db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' GROUP BY stage`).all() as { stage: string; count: number }[];
 
     const pipelineCount = { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 };
     for (const row of counts) {

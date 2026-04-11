@@ -18,30 +18,31 @@ export function contentRoutes(): Router {
   const router = Router();
 
   /** GET /api/v1/content/pipeline */
-  router.get('/pipeline', async (_req, res: Response) => {
+  router.get('/pipeline', async (req, res: Response) => {
     try {
+      const { userId } = req as unknown as AuthenticatedRequest;
       const db = require('../../services/database').getDb();
 
-      // Try to load from content_ideas table
+      // Per-user content pipeline — each user only sees their own ideas
       const ideas = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'ideas' ORDER BY score DESC",
-      ).all() as any[];
+        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'ideas' AND user_id = ? ORDER BY score DESC",
+      ).all(userId) as any[];
 
       const scripted = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'scripted' ORDER BY created_at DESC",
-      ).all() as any[];
+        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'scripted' AND user_id = ? ORDER BY created_at DESC",
+      ).all(userId) as any[];
 
       const filmed = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'filmed' ORDER BY created_at DESC",
-      ).all() as any[];
+        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'filmed' AND user_id = ? ORDER BY created_at DESC",
+      ).all(userId) as any[];
 
       const editing = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'editing' ORDER BY created_at DESC",
-      ).all() as any[];
+        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'editing' AND user_id = ? ORDER BY created_at DESC",
+      ).all(userId) as any[];
 
       const published = db.prepare(
-        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'published' ORDER BY created_at DESC LIMIT 10",
-      ).all() as any[];
+        "SELECT id, title, score, created_at FROM content_ideas WHERE stage = 'published' AND user_id = ? ORDER BY created_at DESC LIMIT 10",
+      ).all(userId) as any[];
 
       const formatIdea = (row: any) => ({
         id: row.id?.toString(), title: row.title,
@@ -76,12 +77,13 @@ export function contentRoutes(): Router {
   });
 
   /** GET /api/v1/content/ideas — list all content ideas */
-  router.get('/ideas', async (_req, res: Response) => {
+  router.get('/ideas', async (req, res: Response) => {
     try {
+      const { userId } = req as unknown as AuthenticatedRequest;
       const db = require('../../services/database').getDb();
       const ideas = db.prepare(
-        'SELECT id, title, score, created_at, stage FROM content_ideas ORDER BY score DESC, created_at DESC',
-      ).all() as any[];
+        'SELECT id, title, score, created_at, stage FROM content_ideas WHERE user_id = ? ORDER BY score DESC, created_at DESC',
+      ).all(userId) as any[];
 
       sendSuccess(res, {
         ideas: ideas.map((row: any) => ({

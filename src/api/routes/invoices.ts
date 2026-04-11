@@ -61,14 +61,17 @@ export function invoicesRoutes(): Router {
   router.get('/vendors', asyncHandler(async (req, res: Response) => {
     try {
       const userId = (req as any).userId;
-      const { config } = require('../../config');
-      const ownerIds = config.telegram.allowedUserIds || [];
 
-      // Only the owner sees invoice vendors — new users get empty list
-      // until per-user vendor config is implemented (Phase 2 feature).
-      if (!ownerIds.includes(userId)) {
-        sendSuccess(res, { active: [], dbRows: [], builtinCount: 0, customCount: 0 });
-        return;
+      // Invoice scanning requires an Outlook connection (email access).
+      // Users without Outlook connected get an empty vendor list.
+      try {
+        const { isConnected } = require('../../services/oauth-store');
+        if (!isConnected(userId, 'outlook')) {
+          sendSuccess(res, { active: [], dbRows: [], builtinCount: 0, customCount: 0 });
+          return;
+        }
+      } catch {
+        // oauth-store not available — fall through to show vendors
       }
 
       // Builtins + currently-enabled custom vendors (what the collector
