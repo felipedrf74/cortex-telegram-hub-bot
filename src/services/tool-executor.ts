@@ -85,39 +85,42 @@ export async function executeToolCall(
   logger.info({ tool: toolName, input }, 'Executing tool call');
 
   try {
+    // Per-user task provider: resolves to MS To-Do, Todoist, or native
+    // adapter based on the user's OAuth connections. Falls back to the
+    // global msTodo singleton for Telegram bot calls (no userId).
+    const getTaskProvider = () => {
+      if (userId) {
+        return require('./task-store/task-router').getTaskProviderForUser(userId);
+      }
+      return msTodo;
+    };
+    // Guard for Telegram-only tools — lazy evaluation to avoid calling
+    // isOutlookTodoConfigured() for non-task tools.
+    const isMsTodoNotConfigured = () => !msTodo.isOutlookTodoConfigured() && !userId;
+
     switch (toolName) {
-      // ── Microsoft To Do tools ──
+      // ── Task tools (per-user routed) ──
       case 'ms_todo_get_lists':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured. Set Outlook credentials and ensure Tasks.ReadWrite permission.' };
-        }
-        return await msTodo.getLists();
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured. Set Outlook credentials and ensure Tasks.ReadWrite permission.' };
+        return await getTaskProvider().getLists();
 
       case 'ms_todo_create_list':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
-        return await msTodo.createList(input.name);
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        return await getTaskProvider().createList(input.name);
 
       case 'ms_todo_delete_list':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         return await msTodo.deleteList(input.list_id);
 
       case 'ms_todo_get_tasks':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
-        return await msTodo.getTasks(input.list_id, input.list_name, {
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        return await getTaskProvider().getTasks(input.list_id, input.list_name, {
           status: input.status,
         });
 
       case 'ms_todo_create_task': {
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
-        const createRes = await msTodo.createTask(input.list_id, input.list_name, {
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        const createRes = await getTaskProvider().createTask(input.list_id, input.list_name, {
           title: input.title,
           body: input.body,
           importance: input.importance,
@@ -130,13 +133,11 @@ export async function executeToolCall(
       }
 
       case 'ms_todo_update_task': {
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot update a task without its ID.' };
         }
-        const updateRes = await msTodo.updateTask(input.list_id, input.task_id, {
+        const updateRes = await getTaskProvider().updateTask(input.list_id, input.task_id, {
           title: input.title,
           body: input.body,
           importance: input.importance,
@@ -150,23 +151,18 @@ export async function executeToolCall(
       }
 
       case 'ms_todo_complete_task': {
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot complete a task without its ID.' };
         }
-        const completeRes = await msTodo.completeTask(input.list_id, input.task_id, input.list_name);
-        // Slim response: only return success + title (save tokens in tool conversation)
+        const completeRes = await getTaskProvider().completeTask(input.list_id, input.task_id, input.list_name);
         return completeRes.success
           ? { success: true, title: completeRes.data?.title || 'done' }
           : { success: false, error: completeRes.error };
       }
 
       case 'ms_todo_uncomplete_task': {
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot uncomplete a task without its ID.' };
         }
@@ -177,31 +173,26 @@ export async function executeToolCall(
       }
 
       case 'ms_todo_delete_task': {
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot delete a task without its ID.' };
         }
-        const deleteRes = await msTodo.deleteTask(input.list_id, input.task_id);
+        const deleteRes = await getTaskProvider().deleteTask(input.list_id, input.task_id);
         return deleteRes.success
           ? { success: true }
           : { success: false, error: deleteRes.error };
       }
 
       case 'ms_todo_search_tasks':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         return await msTodo.searchTasks(input.query);
 
       case 'ms_todo_get_due_tasks':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
-        }
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         return await msTodo.getTasksDueInRange(input.start_date, input.end_date);
 
       case 'ms_todo_move_task':
+        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
         if (!msTodo.isOutlookTodoConfigured()) {
           return { error: 'Microsoft To Do is not configured.' };
         }
