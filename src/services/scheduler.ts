@@ -622,6 +622,31 @@ export function startScheduler(bot: Bot): void {
         throw new Error('All refresh attempts failed — session may be dead');
       }
     }), { timezone: tz });
+
+    // Immediate keepalive on startup — closes the 30-minute gap between
+    // server restart and the first cron tick. Without this, a cron job
+    // (coach briefing, training plan adjust) could fire during the gap
+    // with expired tokens, triggering a full re-login → MFA email.
+    // Runs in silent mode so a dead session doesn't send an MFA email.
+    setTimeout(async () => {
+      try {
+        // Set silent mode so even if keepAlive somehow triggers a
+        // recovery path, it won't send an MFA email.
+        const { setSilentMode } = require('./garmin');
+        setSilentMode(true);
+        logger.info('Garmin: startup keepalive — refreshing tokens immediately (silent mode)');
+        const ok = await garminKeepAlive();
+        setSilentMode(false);
+        recordGarminRefresh(ok);
+        if (ok) {
+          logger.info('Garmin: startup keepalive successful — session is live');
+        } else {
+          logger.warn('Garmin: startup keepalive failed — session may be dead (no MFA triggered, silent mode)');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Garmin: startup keepalive error (non-fatal)');
+      }
+    }, 5000); // 5s delay to let other services initialize first
   }
 
   // ── Garmin coach briefing (configurable time) ──────────────────────
