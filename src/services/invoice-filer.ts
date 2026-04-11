@@ -33,6 +33,10 @@ export interface InvoiceAnalysis {
   vendor: string | null;
   totalAmount: string | null;
   invoiceNumber: string | null;
+  // Item-level validation fields (Option C enhancement)
+  itemCount?: number | null;         // How many line items visible
+  itemsSum?: string | null;          // Sum of individual item prices
+  validationNote?: string | null;    // Discrepancy explanation if any
 }
 
 export interface FilingResult {
@@ -88,7 +92,10 @@ Return ONLY valid JSON:
   "documentDateRaw": string|null (date exactly as shown on document),
   "vendor": string|null (business/company name),
   "totalAmount": string|null (total with currency, e.g. "€ 45,90"),
-  "invoiceNumber": string|null (NF, NFS-e, receipt number)
+  "invoiceNumber": string|null (NF, NFS-e, receipt number),
+  "itemCount": number|null (how many line items/products on the receipt),
+  "itemsSum": string|null (sum of individual item prices you can read, e.g. "€ 4,38"),
+  "validationNote": string|null (if totalAmount != itemsSum, explain the discrepancy)
 }
 
 IS an invoice/receipt: nota fiscal, recibo, fatura, comprovante de pagamento, NF-e, NFS-e, receipt, invoice, bill, payment proof, ticket de compra, cupom fiscal.
@@ -103,7 +110,13 @@ For amounts — CRITICAL RULES:
 - Include the currency symbol exactly as shown (€, R$, $, £).
 - Use the format with comma/period as shown on the document (e.g., "€ 4,38" not "€ 438,00").
 - Pay attention to decimal separators: European receipts use comma (4,38 = four euros thirty-eight cents).
-- Double-check: does the total make sense for the type of business? A kebab shop total of €438 is almost certainly a misread of €4,38.`;
+- Double-check: does the total make sense for the type of business? A kebab shop total of €438 is almost certainly a misread of €4,38.
+
+VALIDATION — Cross-check the total:
+- Count visible line items and sum their individual prices.
+- If itemsSum and totalAmount differ by more than 10%, set validationNote explaining why (e.g., "Total €438,00 but only 1 item at €4,38 — likely decimal misread").
+- If itemCount is 1-3 but totalAmount > €100, flag as suspicious in validationNote.
+- If you're unsure about the decimal placement, prefer the SMALLER amount (€4,38 over €438).`;
 
 export async function analyzeInvoiceImage(
   imageBase64: string,
@@ -149,6 +162,40 @@ export async function analyzeInvoiceImage(
 
   try {
     const parsed = JSON.parse(text) as InvoiceAnalysis;
+
+    // ── Post-processing validation ──────────────────────────────
+    // If the AI flagged a validation issue, or if the amount looks
+    // suspicious based on item count, auto-correct when possible.
+    if (parsed.totalAmount && parsed.itemsSum) {
+      const parseAmount = (s: string): number => {
+        const cleaned = s.replace(/[€$R£\s]/g, '').replace(',', '.');
+        return parseFloat(cleaned) || 0;
+      };
+      const total = parseAmount(parsed.totalAmount);
+      const itemSum = parseAmount(parsed.itemsSum);
+
+      // If items sum to ~X but total is 100× X, likely decimal misread
+      if (itemSum > 0 && total > 0 && total / itemSum > 50) {
+        logger.warn(
+          { total, itemSum, vendor: parsed.vendor, validationNote: parsed.validationNote },
+          'Invoice total vs item sum mismatch — auto-correcting to item sum'
+        );
+        parsed.totalAmount = parsed.itemsSum;
+        parsed.confidence = Math.min(parsed.confidence, 0.7); // downgrade confidence
+      }
+    }
+
+    // Suspicious: few items but very high total (e.g., 1 item at €438)
+    if (parsed.itemCount != null && parsed.itemCount <= 3 && parsed.totalAmount) {
+      const total = parseFloat(parsed.totalAmount.replace(/[€$R£\s]/g, '').replace(',', '.')) || 0;
+      if (total > 200) {
+        parsed.confidence = Math.min(parsed.confidence, 0.6);
+        if (!parsed.validationNote) {
+          parsed.validationNote = `Suspicious: ${parsed.itemCount} item(s) but total is ${parsed.totalAmount}`;
+        }
+      }
+    }
+
     logger.info(
       { isInvoice: parsed.isInvoice, confidence: parsed.confidence, vendor: parsed.vendor },
       'Invoice analysis complete'

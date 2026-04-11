@@ -147,6 +147,33 @@ export function chatRoutes(): Router {
         return;
       }
 
+      // ── Natural language plan-creation shortcut ───────────────────
+      // Intercept "criar plano" / "create training plan" before the AI
+      // pipeline. Returns a token-zero response directing the user to
+      // the Training tab's one-shot plan generator ($0.01 vs $0.15).
+      const planKeywords = [
+        'criar plano', 'cria um plano', 'crie um plano', 'novo plano de treino',
+        'gerar plano', 'create plan', 'create training plan', 'make me a plan',
+        'build a plan', 'generate a plan', 'new training plan',
+      ];
+      const lowerText = normalizedText.toLowerCase();
+      if (planKeywords.some(kw => lowerText.includes(kw))) {
+        const lang = require('../../services/user-service').getUserLanguage?.(userId) || 'pt-BR';
+        const isPT = lang.startsWith('pt');
+        res.json({
+          id: `msg-${Date.now()}`,
+          text: isPT
+            ? '🏋️ Para criar um plano de treino personalizado, vá à aba **Treino** e toque em **Criar plano**.\n\nO plano será gerado com base no seu perfil e agenda os treinos automaticamente no calendário.'
+            : '🏋️ To create a personalized training plan, go to the **Training** tab and tap **Create Plan**.\n\nThe plan will be generated based on your profile and automatically schedule workouts in your calendar.',
+          domain: 'triathlon',
+          routeMethod: 'plan-shortcut',
+          confidence: 1.0,
+          buttons: null, metadata: null,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
       // ── Cost cap enforcement ─────────────────────────────────────
       // Per-user daily $-cap. Reject before invoking the AI pipeline if
       // the user is over their quota. The per-minute rate limiter (60

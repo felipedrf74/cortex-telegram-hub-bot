@@ -160,6 +160,45 @@ export function getActivePlan(userId: number): TrainingPlan | null {
   `).get(userId) as TrainingPlan | undefined) ?? null;
 }
 
+/**
+ * Get ALL active plans for a user — supports multi-sport planning.
+ * Each plan targets a different sport (gym, running, cycling, swim).
+ * Used by the cross-plan interference check and the plan renewal logic.
+ */
+export function getActivePlans(userId: number): TrainingPlan[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT * FROM fitness_training_plans
+    WHERE user_id = ? AND status = 'active'
+    ORDER BY sport, created_at DESC
+  `).all(userId) as TrainingPlan[];
+}
+
+/**
+ * Get the total weekly training load across ALL active plans.
+ * Used for overtraining prevention when creating a new plan.
+ */
+export function getCrossplanWeeklyLoad(userId: number): {
+  totalSessions: number;
+  bySport: Record<string, number>;
+  totalMinutes: number;
+} {
+  const plans = getActivePlans(userId);
+  const result = { totalSessions: 0, bySport: {} as Record<string, number>, totalMinutes: 0 };
+
+  for (const plan of plans) {
+    const week = getCurrentWeek(plan.id);
+    if (!week) continue;
+    const sessions = getSessionsForWeek(week.id);
+    const sportSessions = sessions.filter(s => s.status !== 'skipped');
+    result.totalSessions += sportSessions.length;
+    result.bySport[plan.sport] = (result.bySport[plan.sport] || 0) + sportSessions.length;
+    result.totalMinutes += sportSessions.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
+  }
+
+  return result;
+}
+
 export function getPlanById(planId: number): TrainingPlan | null {
   const db = getDb();
   return (db.prepare('SELECT * FROM fitness_training_plans WHERE id = ?')

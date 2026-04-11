@@ -199,9 +199,50 @@ export function startScheduler(bot: Bot): void {
 
     const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
 
-    if (dueToday.length === 0 && overdue.length === 0) return;
+    // ── Training section ──────────────────────────────────────
+    let trainingSection = '';
+    try {
+      const tp = require('./training-plans');
+      for (const userId of getActiveUserIds()) {
+        const plans = tp.getActivePlans?.(userId) || [];
+        const plan = plans[0] || tp.getActivePlan(userId);
+        if (!plan) continue;
 
-    let msg = `🌙 <b>End-of-Day Task Summary</b>\n\n`;
+        const week = tp.getCurrentWeek(plan.id);
+        if (!week) continue;
+        const sessions = tp.getSessionsForWeek(week.id);
+        const todaySessions = sessions.filter((s: any) => {
+          const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+          return s.day_of_week?.toLowerCase() === dayNames[new Date().getDay()];
+        });
+
+        if (todaySessions.length > 0) {
+          const completed = todaySessions.filter((s: any) => s.status === 'completed');
+          const pending = todaySessions.filter((s: any) => s.status !== 'completed' && s.status !== 'skipped');
+
+          if (completed.length > 0 || pending.length > 0) {
+            trainingSection += `\n🏋️ <b>Training</b>\n`;
+            for (const s of completed) {
+              trainingSection += `✅ ${s.title} — completed\n`;
+            }
+            for (const s of pending) {
+              trainingSection += `⏳ ${s.title} — not completed\n`;
+            }
+
+            // Tomorrow's session preview
+            const tomorrowDay = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][(new Date().getDay() + 1) % 7];
+            const tomorrowSessions = sessions.filter((s: any) => s.day_of_week?.toLowerCase() === tomorrowDay);
+            if (tomorrowSessions.length > 0) {
+              trainingSection += `\n📅 Tomorrow: ${tomorrowSessions.map((s: any) => s.title).join(', ')}\n`;
+            }
+          }
+        }
+      }
+    } catch { /* training not available — non-fatal */ }
+
+    if (dueToday.length === 0 && overdue.length === 0 && !trainingSection) return;
+
+    let msg = `🌙 <b>End-of-Day Summary</b>\n\n`;
 
     if (dueToday.length > 0) {
       msg += `📅 <b>Due today (${dueToday.length}):</b>\n`;
@@ -217,6 +258,11 @@ export function startScheduler(bot: Bot): void {
         const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
         msg += `• ${escapeHtml(t.title)} — ${daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
       }
+    }
+
+    // Add training section if available
+    if (trainingSection) {
+      msg += trainingSection + '\n';
     }
 
     // Build a short APNs summary separate from the rich Telegram HTML.
@@ -790,6 +836,35 @@ export function startScheduler(bot: Bot): void {
           await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send training adjustment notification');
+        }
+      }
+
+      // ── Plan renewal check ───────────────────────────────────
+      // If this is the LAST week of the plan, notify the user to
+      // create a new cycle. Include adherence summary + readiness
+      // so they can decide whether to increase or maintain.
+      if (!nextWeek && currentWeek.week_number >= (plan.duration_weeks || 4)) {
+        let renewMsg = `🔄 <b>Plan Complete!</b>\n\n`;
+        renewMsg += `<b>${plan.name}</b> — ${plan.duration_weeks} weeks finished.\n`;
+        renewMsg += `• Overall adherence: ${stats.adherenceRate}%\n`;
+        if (readinessScore != null) renewMsg += `• Current readiness: ${readinessScore}/100\n`;
+        renewMsg += `\n💡 Time for a new 4-week cycle! `;
+        renewMsg += readinessScore != null && readinessScore > 70
+          ? `Your readiness is strong — consider increasing intensity.`
+          : `Consider maintaining or slightly reducing intensity.`;
+        renewMsg += `\n\nGo to <b>Training → Create Plan</b> to generate your next cycle.`;
+
+        try {
+          await bot.api.sendMessage(userId, renewMsg, { parse_mode: 'HTML' });
+          // Send APNs notification
+          const { sendPushToUser } = require('./push-service');
+          sendPushToUser?.(userId, {
+            title: 'Plan Complete! 🔄',
+            body: `${plan.name} finished. Create your next training cycle.`,
+            data: { type: 'training_renewal', planId: String(plan.id) },
+          }).catch(() => {});
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send plan renewal notification');
         }
       }
     }
