@@ -29,7 +29,20 @@ function swrRefresh(key: string, fn: () => Promise<void>): void {
     .finally(() => swrInFlight.delete(key));
 }
 
-function getTodo() {
+/**
+ * Get the task provider for the current request's user.
+ * If the user has MS To-Do connected → microsoft-todo module.
+ * If not → native SQLite task adapter (same interface).
+ */
+function getTodo(req?: any) {
+  if (req?.userId) {
+    try {
+      const { getTaskProviderForUser } = require('../../services/task-store/task-router');
+      return getTaskProviderForUser(req.userId);
+    } catch {
+      // task-router not available — fall back to MS To-Do
+    }
+  }
   return require('../../services/microsoft-todo');
 }
 
@@ -55,7 +68,7 @@ export function taskRoutes(): Router {
         sendSuccess(res, swr.value, { cached: true });
         if (!swr.fresh) {
           swrRefresh(cacheKey, async () => {
-            const todo = getTodo();
+            const todo = getTodo(req);
             const result = await todo.getLists();
             const listsArray = result?.data || result || [];
             const lists = Array.isArray(listsArray) ? listsArray : [];
@@ -71,7 +84,7 @@ export function taskRoutes(): Router {
       }
 
       // Cold path: nothing in cache at all — synchronous fetch.
-      const todo = getTodo();
+      const todo = getTodo(req);
       const result = await todo.getLists();
       const listsArray = result?.data || result || [];
       const lists = Array.isArray(listsArray) ? listsArray : [];
@@ -103,7 +116,7 @@ export function taskRoutes(): Router {
 
     // Helper for the actual fetch+filter+cache write.
     const fetchAndCache = async (): Promise<{ tasks: any[]; count: number }> => {
-      const todo = getTodo();
+      const todo = getTodo(req);
       const result = await todo.getAllPendingTasks();
       const allTasks = result?.data || result || [];
       if (!Array.isArray(allTasks)) {
@@ -182,7 +195,7 @@ export function taskRoutes(): Router {
     // Helper that does the actual MS Graph fetch + cache write.
     // Reused for both the cold-path response AND background refresh.
     const fetchAndCache = async (): Promise<any> => {
-      const todo = getTodo();
+      const todo = getTodo(req);
       let listName = req.query.listName as string | undefined;
       if (!listName) {
         try {
@@ -232,7 +245,7 @@ export function taskRoutes(): Router {
   /** POST /api/v1/tasks — create a new task */
   router.post('/', async (req, res: Response) => {
     try {
-      const todo = getTodo();
+      const todo = getTodo(req);
       const { title, listName, dueDateTime, importance, body } = req.body;
 
       if (!title) {
@@ -280,7 +293,7 @@ export function taskRoutes(): Router {
   /** PATCH /api/v1/tasks/:listId/:taskId — update a task */
   router.patch('/:listId/:taskId', async (req, res: Response) => {
     try {
-      const todo = getTodo();
+      const todo = getTodo(req);
       const { listId, taskId } = req.params;
 
       const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
@@ -303,7 +316,7 @@ export function taskRoutes(): Router {
   /** POST /api/v1/tasks/:listId/:taskId/complete */
   router.post('/:listId/:taskId/complete', async (req, res: Response) => {
     try {
-      const todo = getTodo();
+      const todo = getTodo(req);
       const { listId, taskId } = req.params;
 
       const result = await todo.completeTask(listId, taskId);
@@ -320,7 +333,7 @@ export function taskRoutes(): Router {
   /** DELETE /api/v1/tasks/:listId/:taskId */
   router.delete('/:listId/:taskId', async (req, res: Response) => {
     try {
-      const todo = getTodo();
+      const todo = getTodo(req);
       const { listId, taskId } = req.params;
 
       await todo.deleteTask(listId, taskId);
@@ -361,7 +374,7 @@ function invalidateTaskCaches(listId?: string, userId?: number): void {
  */
 export async function warmTaskCache(): Promise<void> {
   try {
-    const todo = getTodo();
+    const todo = getTodo(); // No req — uses owner's MS To-Do for cache warming
 
     // Cache list names (fast, single MS Graph call)
     const result = await todo.getLists();
