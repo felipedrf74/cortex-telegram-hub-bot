@@ -28,6 +28,7 @@ import { contentDashboardRoutes } from './routes/content-dashboard';
 import { contentAdminWriteRoutes } from './routes/content-admin-write';
 import { healthDataRoutes } from './routes/health-data';
 import { billingRoutes } from './routes/billing';
+import { oauthInitiateRoutes } from './routes/oauth-initiate';
 
 /**
  * Creates the iOS API router.
@@ -146,6 +147,9 @@ export function createApiRouter(): Router {
 
   // Billing — subscription status (token-zero), Stripe checkout, Apple verify
   router.use('/billing', billingRoutes());
+
+  // OAuth initiate — generate consent URLs for iOS integration onboarding
+  router.use('/auth/oauth', oauthInitiateRoutes());
 
   // Onboarding (questionnaires + profile)
   router.use('/onboarding', onboardingRoutes());

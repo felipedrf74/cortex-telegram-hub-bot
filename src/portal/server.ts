@@ -1220,35 +1220,56 @@ export function createPortalServer(bot: Bot): http.Server {
     try {
       const { exchangeCode } = require('../services/oauth-flow');
       const { storeTokens } = require('../services/oauth-store');
-      const { getUserLanguage } = require('../services/user-service');
-      const { t } = require('../utils/i18n');
-      const userId = parseInt(state, 10);
+      const { isIOSState, parseIOSState, consumeNonce } = require('../api/routes/oauth-initiate');
+
+      // Detect iOS-origin flow (state = "ios:{userId}:{nonce}")
+      let userId: number;
+      const isIOS = isIOSState(state);
+
+      if (isIOS) {
+        const parsed = parseIOSState(state);
+        if (!parsed) { res.status(400).send('Invalid state'); return; }
+        const nonceData = consumeNonce(parsed.nonce);
+        if (!nonceData || nonceData.userId !== parsed.userId) {
+          res.status(403).send('Invalid or expired nonce');
+          return;
+        }
+        userId = parsed.userId;
+      } else {
+        userId = parseInt(state, 10);
+      }
+
       const tokens = await exchangeCode('google', code, userId);
       storeTokens(userId, 'google', tokens);
 
-      // Invalidate the cached Google clients (calendar/drive/gmail) so the
-      // very next API call rebuilds them with the freshly-stored refresh
-      // token instead of returning the stale singleton. Without this, the
-      // bot would keep using the old (broken) token until next restart.
-      // See google-auth.ts and audit P1 follow-up.
       try {
         const { resetGoogleClients } = require('../services/google-auth');
         resetGoogleClients();
-      } catch { /* google-auth not available — non-critical */ }
+      } catch { /* non-critical */ }
 
-      // Notify user via Telegram
-      try {
-        const lang = getUserLanguage(userId);
-        const botRef = getBotRef();
-        if (botRef) {
-          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Google' }));
-        }
-      } catch { /* notification is best-effort */ }
-
-      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Google account linked. You can close this window and return to Telegram.</p></body></html>');
+      if (isIOS) {
+        // iOS: redirect to custom URL scheme so ASWebAuthenticationSession catches it
+        res.redirect(`me.nexushub.app://oauth/google?status=success`);
+      } else {
+        // Telegram portal: notify user + show HTML
+        try {
+          const { getUserLanguage } = require('../services/user-service');
+          const { t } = require('../utils/i18n');
+          const lang = getUserLanguage(userId);
+          const botRef = getBotRef();
+          if (botRef) {
+            await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Google' }));
+          }
+        } catch { /* notification is best-effort */ }
+        res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Google account linked. You can close this window and return to Telegram.</p></body></html>');
+      }
     } catch (err) {
       logger.error({ err }, 'Google OAuth callback failed');
-      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect google in Telegram.</p></body></html>');
+      if (state.startsWith('ios:')) {
+        res.redirect(`me.nexushub.app://oauth/google?status=error&message=${encodeURIComponent('Connection failed')}`);
+      } else {
+        res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect google in Telegram.</p></body></html>');
+      }
     }
   });
 
@@ -1262,31 +1283,53 @@ export function createPortalServer(bot: Bot): http.Server {
     try {
       const { exchangeCode } = require('../services/oauth-flow');
       const { storeTokens } = require('../services/oauth-store');
-      const { getUserLanguage } = require('../services/user-service');
-      const { t } = require('../utils/i18n');
-      const userId = parseInt(state, 10);
+      const { isIOSState, parseIOSState, consumeNonce } = require('../api/routes/oauth-initiate');
+
+      let userId: number;
+      const isIOS = isIOSState(state);
+
+      if (isIOS) {
+        const parsed = parseIOSState(state);
+        if (!parsed) { res.status(400).send('Invalid state'); return; }
+        const nonceData = consumeNonce(parsed.nonce);
+        if (!nonceData || nonceData.userId !== parsed.userId) {
+          res.status(403).send('Invalid or expired nonce');
+          return;
+        }
+        userId = parsed.userId;
+      } else {
+        userId = parseInt(state, 10);
+      }
+
       const tokens = await exchangeCode('outlook', code, userId);
       storeTokens(userId, 'outlook', tokens);
 
-      // Invalidate the cached MSAL/Graph clients so the next API call uses
-      // the freshly-stored token. See microsoft-auth.ts and audit P1.
       try {
         const { resetMicrosoftClients } = require('../services/microsoft-auth');
         resetMicrosoftClients();
-      } catch { /* microsoft-auth not available — non-critical */ }
+      } catch { /* non-critical */ }
 
-      try {
-        const lang = getUserLanguage(userId);
-        const botRef = getBotRef();
-        if (botRef) {
-          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Outlook' }));
-        }
-      } catch { /* notification is best-effort */ }
-
-      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Outlook account linked. You can close this window and return to Telegram.</p></body></html>');
+      if (isIOS) {
+        res.redirect(`me.nexushub.app://oauth/outlook?status=success`);
+      } else {
+        try {
+          const { getUserLanguage } = require('../services/user-service');
+          const { t } = require('../utils/i18n');
+          const lang = getUserLanguage(userId);
+          const botRef = getBotRef();
+          if (botRef) {
+            await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Outlook' }));
+          }
+        } catch { /* notification is best-effort */ }
+        res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Outlook account linked. You can close this window and return to Telegram.</p></body></html>');
+      }
     } catch (err) {
       logger.error({ err }, 'Outlook OAuth callback failed');
-      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect outlook in Telegram.</p></body></html>');
+      if (state.startsWith('ios:')) {
+        res.redirect(`me.nexushub.app://oauth/outlook?status=error&message=${encodeURIComponent('Connection failed')}`);
+      } else {
+        res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect outlook in Telegram.</p></body></html>');
+      }
     }
   });
 
