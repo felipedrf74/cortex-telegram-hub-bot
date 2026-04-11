@@ -44,7 +44,8 @@ export function calendarRoutes(): Router {
     }
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
-    const cacheKey = `calendar:events:${start}:${end}`;
+    const userId = (req as any).userId;
+    const cacheKey = userId ? `u:${userId}:calendar:events:${start}:${end}` : `calendar:events:${start}:${end}`;
 
     const cached = getCached<any[]>(cacheKey);
     if (cached) {
@@ -165,13 +166,14 @@ export function calendarRoutes(): Router {
    * GET /api/v1/calendar/today
    * Shortcut for today's events in the configured timezone.
    */
-  router.get('/today', asyncHandler(async (_req, res: Response) => {
+  router.get('/today', asyncHandler(async (req, res: Response) => {
     if (!isAnyCalendarConfigured()) {
       sendSuccess(res, { events: [], date: todayDateString() });
       return;
     }
 
-    const cacheKey = `calendar:today:${todayDateString()}`;
+    const userId = (req as any).userId;
+    const cacheKey = userId ? `u:${userId}:calendar:today:${todayDateString()}` : `calendar:today:${todayDateString()}`;
     const cached = getCached<any[]>(cacheKey);
     if (cached) {
       sendSuccess(res, { events: cached, date: todayDateString() }, { cached: true });
