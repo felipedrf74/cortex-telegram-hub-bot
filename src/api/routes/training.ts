@@ -474,27 +474,34 @@ async function getReadiness(userId: number) {
   const cached = getCached<any>(cacheKey);
   if (cached) return cached;
 
+  // Garmin is a singleton — only the owner gets Garmin-backed readiness.
+  // Other users get Apple Health data or null (no readiness without a wearable).
+  const { config: appConfig } = require('../../config');
+  const isGarminUser = appConfig.telegram.allowedUserIds.includes(userId);
+
   let score = 0;
   let factors: any = {};
   let recommendation: string | null = null;
 
-  try {
-    const { calculateReadiness } = require('../../services/readiness-scorer');
-    const readiness = await calculateReadiness(userId);
-    score = readiness?.score || 0;
-    factors = {
-      sleepScore: readiness?.sleepScore || readiness?.factors?.sleepScore || null,
-      hrvStatus: readiness?.hrvStatus || readiness?.factors?.hrvStatus || null,
-      bodyBattery: normalizeBodyBattery(readiness?.bodyBattery || readiness?.factors?.bodyBattery),
-      trainingLoad: readiness?.trainingLoad || readiness?.factors?.trainingLoad || null,
-      restingHeartRate: readiness?.restingHeartRate || readiness?.factors?.restingHeartRate || null,
-      stressLevel: readiness?.stressLevel || readiness?.factors?.stressLevel || null,
-    };
-    const rawRec = readiness?.recommendation || readiness?.action || '';
-    recommendation = humanizeRecommendation(rawRec, score);
-  } catch {}
+  if (isGarminUser) {
+    try {
+      const { calculateReadiness } = require('../../services/readiness-scorer');
+      const readiness = await calculateReadiness(userId);
+      score = readiness?.score || 0;
+      factors = {
+        sleepScore: readiness?.sleepScore || readiness?.factors?.sleepScore || null,
+        hrvStatus: readiness?.hrvStatus || readiness?.factors?.hrvStatus || null,
+        bodyBattery: normalizeBodyBattery(readiness?.bodyBattery || readiness?.factors?.bodyBattery),
+        trainingLoad: readiness?.trainingLoad || readiness?.factors?.trainingLoad || null,
+        restingHeartRate: readiness?.restingHeartRate || readiness?.factors?.restingHeartRate || null,
+        stressLevel: readiness?.stressLevel || readiness?.factors?.stressLevel || null,
+      };
+      const rawRec = readiness?.recommendation || readiness?.action || '';
+      recommendation = humanizeRecommendation(rawRec, score);
+    } catch {}
+  }
 
-  if (!factors.bodyBattery) {
+  if (!factors.bodyBattery && isGarminUser) {
     try {
       const garmin = require('../../services/garmin');
       const todayStr = new Date().toISOString().slice(0, 10);
