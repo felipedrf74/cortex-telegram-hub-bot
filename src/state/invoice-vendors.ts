@@ -73,8 +73,13 @@ export function vendorExists(senderPattern: string): boolean {
 }
 
 /** Get all vendors including disabled ones (for admin listing). */
-export function getAllVendors(): InvoiceVendor[] {
+export function getAllVendors(userId?: number): InvoiceVendor[] {
   const db = getDb();
+  if (userId != null) {
+    return db.prepare(
+      'SELECT * FROM invoice_vendors WHERE user_id IN (0, ?) ORDER BY enabled DESC, name ASC',
+    ).all(userId) as InvoiceVendor[];
+  }
   return db.prepare(
     'SELECT * FROM invoice_vendors ORDER BY enabled DESC, name ASC',
   ).all() as InvoiceVendor[];
