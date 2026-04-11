@@ -221,8 +221,8 @@ export function registerSubscription(params: {
   try {
     const result = d.prepare(`
       INSERT INTO webhook_subscriptions
-        (provider, event_types, endpoint_path, secret, external_id, metadata, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (provider, event_types, endpoint_path, secret, external_id, metadata, expires_at, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       params.provider,
       JSON.stringify(params.event_types || ['*']),
@@ -231,6 +231,7 @@ export function registerSubscription(params: {
       params.external_id || null,
       params.metadata ? JSON.stringify(params.metadata) : null,
       params.expires_at || null,
+      (params as any).user_id ?? 0,
     );
     const id = (result.lastInsertRowid as number) ?? -1;
     logger.info({ provider: params.provider, id }, 'Webhook subscription registered');

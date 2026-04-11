@@ -58,8 +58,8 @@ const BUILTIN_VENDORS: VendorConfig[] = [
 ];
 
 /** Merge hardcoded + user-added vendors from DB. */
-export function getAllVendors(): VendorConfig[] {
-  const dbVendors = getActiveVendors().map((v) => ({
+export function getAllVendors(userId?: number): VendorConfig[] {
+  const dbVendors = getActiveVendors(userId).map((v) => ({
     name: v.name,
     senderPatterns: [v.sender_pattern],
     subjectPatterns: v.subject_patterns?.split(',').map((s) => s.trim()) || ['fatura'],

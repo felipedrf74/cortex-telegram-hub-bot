@@ -97,12 +97,22 @@ export function createApiRouter(): Router {
     if (userId) {
       const { setRequestUserId } = require('../services/microsoft-auth');
       const { setGoogleCalendarUserId } = require('../services/google-calendar');
+      // Set global overrides (legacy — services read these directly)
       setRequestUserId(userId);
       setGoogleCalendarUserId(userId);
-      _res.on('finish', () => {
-        setRequestUserId(null);
-        setGoogleCalendarUserId(null);
+      // Also set AsyncLocalStorage context (race-safe — each request
+      // gets its own context that propagates through async boundaries)
+      const { runInContext } = require('../utils/request-context');
+      const requestId = (req as any).requestId || require('../utils/request-context').generateRequestId();
+      // Wrap the rest of the middleware chain in a context
+      runInContext({ requestId, userId }, () => {
+        _res.on('finish', () => {
+          setRequestUserId(null);
+          setGoogleCalendarUserId(null);
+        });
+        next();
       });
+      return; // next() called inside runInContext
     }
     next();
   });

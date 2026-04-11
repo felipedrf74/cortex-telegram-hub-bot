@@ -50,13 +50,14 @@ export function recordFiling(data: {
  * Check if an invoice has already been filed for a given vendor + invoice number.
  * Only considers successfully filed invoices (status = 'filed').
  */
-export function isDuplicate(vendor: string, invoiceNumber: string | null): boolean {
+export function isDuplicate(vendor: string, invoiceNumber: string | null, userId?: number): boolean {
   if (!invoiceNumber) return false;
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM invoice_filings
     WHERE vendor = ? AND invoice_number = ? AND status = 'filed'
-  `).get(vendor, invoiceNumber) as { count: number };
+      ${userId != null ? 'AND user_id = ?' : ''}
+  `).get(...(userId != null ? [vendor, invoiceNumber, userId] : [vendor, invoiceNumber])) as { count: number };
   return row.count > 0;
 }
 
@@ -64,12 +65,13 @@ export function isDuplicate(vendor: string, invoiceNumber: string | null): boole
  * Check if an email message has already been processed (by source_ref = messageId).
  * This catches duplicates even when invoice_number is missing/null.
  */
-export function isEmailAlreadyFiled(messageId: string): boolean {
+export function isEmailAlreadyFiled(messageId: string, userId?: number): boolean {
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM invoice_filings
     WHERE source = 'email' AND source_ref = ? AND status = 'filed'
-  `).get(messageId) as { count: number };
+      ${userId != null ? 'AND user_id = ?' : ''}
+  `).get(...(userId != null ? [messageId, userId] : [messageId])) as { count: number };
   return row.count > 0;
 }
 
@@ -135,11 +137,16 @@ export function deleteUberFilings(year: number, month: number): number {
 }
 
 /** Get recent filings for the /invoices-log display. */
-export function getRecentFilings(limit: number = 20): InvoiceFiling[] {
+export function getRecentFilings(limit: number = 20, userId?: number): InvoiceFiling[] {
   const db = getDb();
+  if (userId != null) {
+    return db.prepare(`
+      SELECT * FROM invoice_filings WHERE user_id = ?
+      ORDER BY created_at DESC LIMIT ?
+    `).all(userId, limit) as InvoiceFiling[];
+  }
   return db.prepare(`
     SELECT * FROM invoice_filings
-    ORDER BY created_at DESC
-    LIMIT ?
+    ORDER BY created_at DESC LIMIT ?
   `).all(limit) as InvoiceFiling[];
 }

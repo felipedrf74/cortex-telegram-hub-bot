@@ -76,11 +76,11 @@ export function invoicesRoutes(): Router {
 
       // Builtins + currently-enabled custom vendors (what the collector
       // actually uses when it runs).
-      const active = getAllVendorsMerged();
+      const active = getAllVendorsMerged(userId);
 
       // Also pull the raw DB rows so the UI can show disabled vendors
       // (for re-enable) — these include `id` and `enabled` fields.
-      const dbRows = getAllVendorsDb();
+      const dbRows = getAllVendorsDb(userId);
 
       sendSuccess(res, {
         active,                  // what the collector uses right now

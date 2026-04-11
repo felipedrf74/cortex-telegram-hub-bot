@@ -40,16 +40,16 @@ export function saveIdea(
   // Legacy 2-arg signature
   if (typeof titleOrOpts === 'string') {
     const result = db.prepare(
-      'INSERT INTO saved_ideas (title, source_date) VALUES (?, ?)'
-    ).run(titleOrOpts, sourceDateArg!);
+      'INSERT INTO saved_ideas (title, source_date, user_id) VALUES (?, ?, ?)'
+    ).run(titleOrOpts, sourceDateArg!, 0);
     return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
   }
 
   // New options signature
   const opts = titleOrOpts;
   const result = db.prepare(`
-    INSERT INTO saved_ideas (title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO saved_ideas (title, source_date, source, score, workflow_eligible, angle_tag, niche, hook_idea, why_now, user_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     opts.title,
     opts.sourceDate,
@@ -60,6 +60,7 @@ export function saveIdea(
     opts.niche || null,
     opts.hookIdea || null,
     opts.whyNow || null,
+    (opts as any).userId ?? 0,
   );
   return db.prepare('SELECT * FROM saved_ideas WHERE id = ?').get(result.lastInsertRowid) as SavedIdea;
 }

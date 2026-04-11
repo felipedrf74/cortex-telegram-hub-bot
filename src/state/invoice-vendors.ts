@@ -56,8 +56,13 @@ export function removeVendorByName(name: string): boolean {
 }
 
 /** Get all enabled custom vendors (merged with builtins at runtime). */
-export function getActiveVendors(): InvoiceVendor[] {
+export function getActiveVendors(userId?: number): InvoiceVendor[] {
   const db = getDb();
+  if (userId != null) {
+    return db.prepare(
+      'SELECT * FROM invoice_vendors WHERE enabled = 1 AND user_id IN (0, ?) ORDER BY name ASC',
+    ).all(userId) as InvoiceVendor[];
+  }
   return db.prepare(
     'SELECT * FROM invoice_vendors WHERE enabled = 1 ORDER BY name ASC',
   ).all() as InvoiceVendor[];
