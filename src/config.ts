@@ -143,6 +143,7 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     refreshToken: process.env.GOOGLE_REFRESH_TOKEN || '',
+    iosClientId: process.env.GOOGLE_IOS_CLIENT_ID || '',
   },
   outlook: {
     clientId: process.env.OUTLOOK_CLIENT_ID || '',

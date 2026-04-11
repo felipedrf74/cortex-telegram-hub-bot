@@ -284,6 +284,13 @@ export function authRoutes(): Router {
         return;
       }
 
+      // Validate audience — must be our web OR iOS client ID
+      const validAuds = [config.google.clientId, config.google.iosClientId].filter(Boolean);
+      if (validAuds.length > 0 && !validAuds.includes(payload.aud)) {
+        sendError(res, 'INVALID_TOKEN', 'Token not issued for this application', 401);
+        return;
+      }
+
       const googleUserId = payload.sub;
       const email = payload.email;
       const name = payload.name;
