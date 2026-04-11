@@ -42,9 +42,18 @@ function todayKey(): string {
 }
 
 // ── Per-user cap (USD) ───────────────────────────────────────────
-// Default $1.00/user/day. Override with PER_USER_DAILY_USD_CAP env var.
-// At ~$0.04/Sonnet call this is ~25 expensive calls or ~1000 Gemini calls.
-const PER_USER_DAILY_USD_CAP = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '1.00');
+//
+// Margin-safe daily cost caps derived from Gemini 2.5-flash pricing
+// ($0.003–$0.006/call average). Caps are sized so that even if a
+// user consumes the FULL cap every day of the month, we maintain
+// ≥70% margin on Stripe and ≥57% margin on App Store Year 1.
+//
+//   Pro ($25/mo): $0.25/day × 30 = $7.50/mo COGS → 70% Stripe margin
+//   Max ($45/mo): $0.45/day × 30 = $13.50/mo COGS → 70% Stripe margin
+//
+// Typical users consume ~30–40% of cap → realistic margins are 85–93%.
+// No free tier — unsubscribed users are blocked from AI entirely.
+const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '0.00');
 
 /**
  * Check global daily spend against configured limits.
@@ -107,55 +116,84 @@ export function checkGlobalCostGuardrail(): { totalUsd: number; limitUsd: number
  * daily cost cap. The chat handler should call this BEFORE invoking the AI
  * pipeline and return 429 if over.
  *
- * This is the cost-protection layer that the per-minute rate limiter cannot
- * provide: a stuck retry loop costs ~$0.04/call × 60 calls/min = $2.40/min
- * within the existing rate limit. The cost cap stops bleed after the first
- * ~$1.00 of spend.
+ * Enforcement is COST-BASED only (not call-count). This aligns with
+ * best practices from Claude/OpenAI: the user sees a qualitative progress
+ * bar ("Enhanced usage", "Maximum usage"), never raw call counts. The
+ * actual dollar caps are internal — not exposed to the iOS client.
  *
- * Cap is configured via PER_USER_DAILY_USD_CAP env (default $1.00/day).
+ * No free tier: unsubscribed users have $0.00 cap (blocked from AI).
+ * They must subscribe to Pro or Max to use AI features.
+ *
+ * Plan caps (margin-safe, survives daily max consumption × 30 days):
+ *   Pro ($25/mo): $0.25/day → worst-case $7.50/mo → 70% Stripe margin
+ *   Max ($45/mo): $0.45/day → worst-case $13.50/mo → 70% Stripe margin
  */
 export function isUserOverDailyCap(
   userId: number,
-): { over: boolean; spentUsd: number; capUsd: number; plan: string; callsToday: number; callLimit: number } {
+): {
+  over: boolean;
+  spentUsd: number;
+  capUsd: number;
+  plan: string;
+  usageLevel: 'none' | 'enhanced' | 'maximum' | 'owner';
+  usageFraction: number;
+  callsToday: number;
+  boostAvailable: boolean;
+} {
   try {
     const db = getDb();
 
-    // Resolve plan-based cap from subscription status
-    let plan = 'free';
-    let capUsd = PER_USER_DAILY_USD_CAP;
-    let callLimit = 5;
+    // Resolve plan-based cost cap from subscription status.
+    // No free tier — unsubscribed users get $0.00 cap.
+    let plan = 'none';
+    let capUsd = DEFAULT_DAILY_CAP_USD;
+    let usageLevel: 'none' | 'enhanced' | 'maximum' | 'owner' = 'none';
 
-    try {
-      const sub = db.prepare(
-        "SELECT plan, status FROM subscriptions WHERE user_id = ?"
-      ).get(userId) as { plan: string; status: string } | undefined;
+    // Owner bypass — check BEFORE subscription lookup so the owner
+    // is never affected by subscriptions table issues.
+    const ownerIds = config.telegram.allowedUserIds || [];
+    if (ownerIds.includes(userId)) {
+      plan = 'owner'; capUsd = 100; usageLevel = 'owner';
+    }
 
-      if (sub && ['active', 'trialing'].includes(sub.status)) {
-        plan = sub.plan;
-        if (sub.plan === 'max')      { capUsd = 100; callLimit = 999; }
-        else if (sub.plan === 'pro') { capUsd = 2.00; callLimit = 10; }
-      }
+    // Subscription-based cap (only if not already owner)
+    if (plan !== 'owner') {
+      try {
+        const sub = db.prepare(
+          "SELECT plan, status FROM subscriptions WHERE user_id = ?"
+        ).get(userId) as { plan: string; status: string } | undefined;
 
-      // Owner bypass
-      const ownerIds = require('../config').config.telegram.allowedUserIds || [];
-      if (ownerIds.includes(userId)) { plan = 'owner'; capUsd = 100; callLimit = 999; }
-    } catch { /* subscriptions table may not exist */ }
+        if (sub && ['active', 'trialing'].includes(sub.status)) {
+          plan = sub.plan;
+          if (sub.plan === 'max')      { capUsd = 0.45; usageLevel = 'maximum'; }
+          else if (sub.plan === 'pro') { capUsd = 0.25; usageLevel = 'enhanced'; }
+        }
+      } catch { /* subscriptions table may not exist */ }
+    }
 
     const row = db.prepare(`
       SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
       FROM api_usage WHERE user_id = ? AND ts >= date('now')
     `).get(userId) as { total: number; calls: number };
 
+    const fraction = capUsd > 0 ? Math.min(row.total / capUsd, 1.0) : 1.0;
+
     return {
       over: row.total >= capUsd,
       spentUsd: row.total,
       capUsd,
       plan,
+      usageLevel,
+      usageFraction: Math.round(fraction * 100) / 100,
       callsToday: row.calls,
-      callLimit,
+      boostAvailable: row.total >= capUsd && plan !== 'owner',
     };
   } catch {
-    return { over: false, spentUsd: 0, capUsd: PER_USER_DAILY_USD_CAP, plan: 'free', callsToday: 0, callLimit: 5 };
+    return {
+      over: false, spentUsd: 0, capUsd: DEFAULT_DAILY_CAP_USD,
+      plan: 'none', usageLevel: 'none', usageFraction: 0,
+      callsToday: 0, boostAvailable: false,
+    };
   }
 }
 

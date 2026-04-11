@@ -185,55 +185,73 @@ describe('isUserOverDailyCap', () => {
     testDb?.close();
   });
 
-  it('returns over=false when user has no spend today', () => {
+  it('returns over=true for unsubscribed user even with no spend (no free tier)', () => {
     const result = isUserOverDailyCap(12345);
-    expect(result.over).toBe(false);
-    expect(result.spentUsd).toBe(0);
+    // No subscription → $0.00 cap → $0 >= $0 → blocked
+    expect(result.over).toBe(true);
+    expect(result.usageFraction).toBe(1); // 0/0 clamps to 1.0
+    expect(result.usageLevel).toBe('none');
+    expect(result.callsToday).toBe(0);
+    expect(result.boostAvailable).toBe(true);
   });
 
-  it('returns over=true when user exceeds PER_USER_DAILY_USD_CAP (default $1.00)', () => {
-    // Insert $1.50 of spend for user 42 (default cap is $1.00)
+  it('returns over=false for owner with no spend today', () => {
+    // Owner (111111 from mock config) has $100/day bypass
+    const result = isUserOverDailyCap(111111);
+    expect(result.over).toBe(false);
+    expect(result.usageLevel).toBe('owner');
+    expect(result.callsToday).toBe(0);
+  });
+
+  it('returns over=true when unsubscribed user has ANY spend (cap is $0.00)', () => {
+    // Insert $0.01 of spend for user 42 (no subscription = $0.00 cap)
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('domain_content', 'claude-sonnet-4-6', 42, 1000, 500, 1.50, 100)
+      VALUES ('domain_content', 'gemini-2.5-flash', 42, 1000, 500, 0.01, 100)
     `).run();
 
     const result = isUserOverDailyCap(42);
     expect(result.over).toBe(true);
-    expect(result.spentUsd).toBe(1.5);
+    expect(result.usageFraction).toBe(1); // fraction clamps at 1.0
+    expect(result.boostAvailable).toBe(true);
   });
 
   it('isolates users from each other — spend by user 42 does not count against user 99', () => {
-    // User 42 spent $2.00
+    // User 42 spent $0.50
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('domain_content', 'claude-sonnet-4-6', 42, 5000, 2000, 2.00, 200)
+      VALUES ('domain_content', 'gemini-2.5-flash', 42, 5000, 2000, 0.50, 200)
     `).run();
 
-    // User 99 spent $0.10
+    // User 99 spent $0.01
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('domain_secretary', 'claude-haiku-4-5-20251001', 99, 100, 50, 0.10, 50)
+      VALUES ('domain_secretary', 'gemini-2.5-flash-lite', 99, 100, 50, 0.01, 50)
     `).run();
 
-    expect(isUserOverDailyCap(42).over).toBe(true);
-    expect(isUserOverDailyCap(42).spentUsd).toBe(2.0);
-    expect(isUserOverDailyCap(99).over).toBe(false);
-    expect(isUserOverDailyCap(99).spentUsd).toBe(0.1);
+    // Both are unsubscribed ($0 cap) so both are over, but isolated
+    const r42 = isUserOverDailyCap(42);
+    const r99 = isUserOverDailyCap(99);
+    expect(r42.over).toBe(true);
+    expect(r42.callsToday).toBe(1);
+    expect(r99.over).toBe(true);
+    expect(r99.callsToday).toBe(1);
   });
 
   it('ignores rows written without a userId (user_id=0 fallback)', () => {
     // A system call with no attached user (e.g. scheduled coach briefing)
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('coach_analysis', 'claude-sonnet-4-6', 0, 3000, 1000, 0.80, 150)
+      VALUES ('coach_analysis', 'gemini-2.5-flash', 0, 3000, 1000, 0.80, 150)
     `).run();
 
-    // The system row is under user_id=0, not user 42
-    expect(isUserOverDailyCap(42).over).toBe(false);
-    expect(isUserOverDailyCap(42).spentUsd).toBe(0);
-    // Querying for user 0 explicitly DOES include the system row, however
-    expect(isUserOverDailyCap(0).spentUsd).toBe(0.8);
+    // The system row is under user_id=0, not the owner (111111).
+    // Owner has a $100/day bypass so they should not be affected.
+    const ownerResult = isUserOverDailyCap(111111);
+    expect(ownerResult.over).toBe(false);
+    expect(ownerResult.callsToday).toBe(0);
+    // Querying for user 0 explicitly DOES include the system row
+    expect(isUserOverDailyCap(0).callsToday).toBe(1);
   });
 });
 

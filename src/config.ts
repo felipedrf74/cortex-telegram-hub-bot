@@ -329,6 +329,11 @@ export const config = {
     priceProYearlyBrl: process.env.STRIPE_PRICE_PRO_YEARLY_BRL || '',
     priceMaxMonthlyBrl: process.env.STRIPE_PRICE_MAX_MONTHLY_BRL || '',
     priceMaxYearlyBrl: process.env.STRIPE_PRICE_MAX_YEARLY_BRL || '',
+    // EUR prices
+    priceProMonthlyEur: process.env.STRIPE_PRICE_PRO_MONTHLY_EUR || '',
+    priceProYearlyEur: process.env.STRIPE_PRICE_PRO_YEARLY_EUR || '',
+    priceMaxMonthlyEur: process.env.STRIPE_PRICE_MAX_MONTHLY_EUR || '',
+    priceMaxYearlyEur: process.env.STRIPE_PRICE_MAX_YEARLY_EUR || '',
   },
 
   // ── AI Safety ─────────────────────────────────────────────────────

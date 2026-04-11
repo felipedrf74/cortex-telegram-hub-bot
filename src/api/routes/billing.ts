@@ -39,8 +39,15 @@ export function billingRoutes(): Router {
 
   /**
    * GET /api/v1/billing/usage
-   * Token-zero: returns today's AI usage + plan limits.
-   * iOS uses this to show a usage meter and gate features.
+   * Token-zero: returns today's AI usage as a qualitative meter.
+   *
+   * The response deliberately hides raw dollar amounts and call
+   * counts from the client — we expose only a fraction (0.0–1.0)
+   * and a qualitative usage level. This follows Claude's best
+   * practice of showing relative usage, not absolute numbers.
+   *
+   * Raw data (spentUsd, capUsd, callsToday) stays in the DB for
+   * our internal cost analytics dashboard.
    */
   router.get('/usage', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
@@ -48,12 +55,11 @@ export function billingRoutes(): Router {
     const usage = isUserOverDailyCap(userId);
     sendSuccess(res, {
       plan: usage.plan,
-      callsToday: usage.callsToday,
-      callLimit: usage.callLimit,
-      spentUsd: Math.round(usage.spentUsd * 100) / 100,
-      capUsd: usage.capUsd,
+      usageLevel: usage.usageLevel,
+      usageFraction: usage.usageFraction,
       isOverLimit: usage.over,
       resetsAt: new Date(new Date().setUTCHours(24, 0, 0, 0)).toISOString(),
+      boostAvailable: usage.boostAvailable,
     });
   }));
 
@@ -76,7 +82,7 @@ export function billingRoutes(): Router {
       return;
     }
 
-    // Validate that the priceId is one of our known prices (USD + BRL)
+    // Validate that the priceId is one of our known prices (USD + BRL + EUR)
     const validPrices = [
       config.stripe.priceProMonthly,
       config.stripe.priceProYearly,
@@ -86,6 +92,10 @@ export function billingRoutes(): Router {
       config.stripe.priceProYearlyBrl,
       config.stripe.priceMaxMonthlyBrl,
       config.stripe.priceMaxYearlyBrl,
+      config.stripe.priceProMonthlyEur,
+      config.stripe.priceProYearlyEur,
+      config.stripe.priceMaxMonthlyEur,
+      config.stripe.priceMaxYearlyEur,
     ].filter(Boolean);
 
     if (!validPrices.includes(priceId)) {
