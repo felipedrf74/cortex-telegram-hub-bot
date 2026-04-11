@@ -43,9 +43,10 @@ export function taskRoutes(): Router {
    * - 5 min – 35 min: served instantly as stale, background refresh triggered.
    * - >35 min: synchronous fetch (cold path, very rare given 2-min cache warmer).
    */
-  router.get('/lists', async (_req, res: Response) => {
+  router.get('/lists', async (req, res: Response) => {
     try {
-      const cacheKey = 'task-lists';
+      const userId = (req as any).userId;
+      const cacheKey = userId ? `u:${userId}:task-lists` : 'task-lists';
       const swr = getCachedSWR<any>(cacheKey);
 
       if (swr) {
@@ -97,7 +98,8 @@ export function taskRoutes(): Router {
    */
   router.get('/filtered', async (req, res: Response) => {
     const filter = (req.query.filter as string) || 'all';
-    const cacheKey = `tasks-filtered:${filter}`;
+    const userId = (req as any).userId;
+    const cacheKey = userId ? `u:${userId}:tasks-filtered:${filter}` : `tasks-filtered:${filter}`;
 
     // Helper for the actual fetch+filter+cache write.
     const fetchAndCache = async (): Promise<{ tasks: any[]; count: number }> => {
@@ -174,7 +176,8 @@ export function taskRoutes(): Router {
   router.get('/list/:listId', async (req, res: Response) => {
     const { listId } = req.params;
     const status = req.query.status as string | undefined;
-    const cacheKey = `tasks:${listId}:${status || 'all'}`;
+    const userId = (req as any).userId;
+    const cacheKey = userId ? `u:${userId}:tasks:${listId}:${status || 'all'}` : `tasks:${listId}:${status || 'all'}`;
 
     // Helper that does the actual MS Graph fetch + cache write.
     // Reused for both the cold-path response AND background refresh.
@@ -265,7 +268,7 @@ export function taskRoutes(): Router {
       }
 
       // Invalidate task caches (new task changes list contents)
-      invalidateTaskCaches(list.id);
+      invalidateTaskCaches(list.id, (req as any).userId);
 
       sendSuccess(res, { task: result.data }, { status: 201 });
     } catch (err: any) {
@@ -289,7 +292,7 @@ export function taskRoutes(): Router {
       const result = await todo.updateTask(listId, taskId, updates);
       const task = result?.data || result;
 
-      invalidateTaskCaches(listId);
+      invalidateTaskCaches(listId, (req as any).userId);
       sendSuccess(res, { task });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
@@ -306,7 +309,7 @@ export function taskRoutes(): Router {
       const result = await todo.completeTask(listId, taskId);
       const task = result?.data || result;
 
-      invalidateTaskCaches(listId);
+      invalidateTaskCaches(listId, (req as any).userId);
       sendSuccess(res, { task, message: `✅ Completed: ${task?.title || 'task'}` });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks complete failed');
@@ -321,7 +324,7 @@ export function taskRoutes(): Router {
       const { listId, taskId } = req.params;
 
       await todo.deleteTask(listId, taskId);
-      invalidateTaskCaches(listId);
+      invalidateTaskCaches(listId, (req as any).userId);
       sendSuccess(res, { deleted: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks delete failed');
@@ -332,19 +335,21 @@ export function taskRoutes(): Router {
   return router;
 }
 
-/** Invalidate task caches after mutations (create, update, complete, delete) */
-function invalidateTaskCaches(listId?: string): void {
-  clearCache('task-lists');
-  // Cross-list pending cache shared with the chat fast-path interceptor.
-  clearCache('fastpath:pending-tasks');
-  // Filtered task views (used by /api/v1/tasks/filtered).
-  clearCache('tasks-filtered:all');
-  clearCache('tasks-filtered:overdue');
-  clearCache('tasks-filtered:dueToday');
-  if (listId) {
-    clearCache(`tasks:${listId}:all`);
-    clearCache(`tasks:${listId}:notStarted`);
-    clearCache(`tasks:${listId}:completed`);
+/** Invalidate task caches after mutations (create, update, complete, delete).
+ * Clears both user-specific and legacy (owner) keys for backward compat. */
+function invalidateTaskCaches(listId?: string, userId?: number): void {
+  const prefixes = userId ? [`u:${userId}:`, ''] : [''];
+  for (const p of prefixes) {
+    clearCache(`${p}task-lists`);
+    clearCache(`${p}fastpath:pending-tasks`);
+    clearCache(`${p}tasks-filtered:all`);
+    clearCache(`${p}tasks-filtered:overdue`);
+    clearCache(`${p}tasks-filtered:dueToday`);
+    if (listId) {
+      clearCache(`${p}tasks:${listId}:all`);
+      clearCache(`${p}tasks:${listId}:notStarted`);
+      clearCache(`${p}tasks:${listId}:completed`);
+    }
   }
   // Re-warm cache in background after mutation
   setTimeout(() => warmTaskCache().catch(() => {}), 1000);
