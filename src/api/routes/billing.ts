@@ -38,6 +38,26 @@ export function billingRoutes(): Router {
   }));
 
   /**
+   * GET /api/v1/billing/usage
+   * Token-zero: returns today's AI usage + plan limits.
+   * iOS uses this to show a usage meter and gate features.
+   */
+  router.get('/usage', asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as any).userId;
+    const { isUserOverDailyCap } = require('../../services/cost-guardrail');
+    const usage = isUserOverDailyCap(userId);
+    sendSuccess(res, {
+      plan: usage.plan,
+      callsToday: usage.callsToday,
+      callLimit: usage.callLimit,
+      spentUsd: Math.round(usage.spentUsd * 100) / 100,
+      capUsd: usage.capUsd,
+      isOverLimit: usage.over,
+      resetsAt: new Date(new Date().setUTCHours(24, 0, 0, 0)).toISOString(),
+    });
+  }));
+
+  /**
    * POST /api/v1/billing/checkout
    * Creates a Stripe Checkout Session and returns the URL.
    * Body: { priceId: string, successUrl?: string, cancelUrl?: string }

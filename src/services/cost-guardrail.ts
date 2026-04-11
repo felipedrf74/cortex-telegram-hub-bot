@@ -116,20 +116,46 @@ export function checkGlobalCostGuardrail(): { totalUsd: number; limitUsd: number
  */
 export function isUserOverDailyCap(
   userId: number,
-): { over: boolean; spentUsd: number; capUsd: number } {
+): { over: boolean; spentUsd: number; capUsd: number; plan: string; callsToday: number; callLimit: number } {
   try {
     const db = getDb();
+
+    // Resolve plan-based cap from subscription status
+    let plan = 'free';
+    let capUsd = PER_USER_DAILY_USD_CAP;
+    let callLimit = 5;
+
+    try {
+      const sub = db.prepare(
+        "SELECT plan, status FROM subscriptions WHERE user_id = ?"
+      ).get(userId) as { plan: string; status: string } | undefined;
+
+      if (sub && ['active', 'trialing'].includes(sub.status)) {
+        plan = sub.plan;
+        if (sub.plan === 'max')      { capUsd = 100; callLimit = 999; }
+        else if (sub.plan === 'pro') { capUsd = 2.00; callLimit = 10; }
+      }
+
+      // Owner bypass
+      const ownerIds = require('../config').config.telegram.allowedUserIds || [];
+      if (ownerIds.includes(userId)) { plan = 'owner'; capUsd = 100; callLimit = 999; }
+    } catch { /* subscriptions table may not exist */ }
+
     const row = db.prepare(`
-      SELECT COALESCE(SUM(cost_usd), 0) as total
+      SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
       FROM api_usage WHERE user_id = ? AND ts >= date('now')
-    `).get(userId) as { total: number };
+    `).get(userId) as { total: number; calls: number };
+
     return {
-      over: row.total >= PER_USER_DAILY_USD_CAP,
+      over: row.total >= capUsd,
       spentUsd: row.total,
-      capUsd: PER_USER_DAILY_USD_CAP,
+      capUsd,
+      plan,
+      callsToday: row.calls,
+      callLimit,
     };
   } catch {
-    return { over: false, spentUsd: 0, capUsd: PER_USER_DAILY_USD_CAP };
+    return { over: false, spentUsd: 0, capUsd: PER_USER_DAILY_USD_CAP, plan: 'free', callsToday: 0, callLimit: 5 };
   }
 }
 
