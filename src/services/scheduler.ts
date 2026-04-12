@@ -97,6 +97,13 @@ export function startScheduler(bot: Bot): void {
   });
 
   const tz = config.app.timezone;
+
+  // Telegram legacy delivery gate. When TELEGRAM_LEGACY_DELIVERY is not
+  // set to "true", Telegram bot.api.sendMessage calls are skipped for
+  // report flows. The durable report + APNs path is the primary delivery.
+  // Set TELEGRAM_LEGACY_DELIVERY=true to keep Telegram delivery active
+  // (e.g., during beta while some users still use Telegram).
+  const telegramLegacyEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true';
   const dailyCron = (() => {
     const [h, m] = config.todo.digestTime.split(':').map(Number);
     return `${m ?? 0} ${h ?? 8} * * *`;
@@ -294,11 +301,13 @@ export function startScheduler(bot: Bot): void {
         logger.debug({ err, userId }, 'Failed to store evening summary report (non-fatal)');
       }
 
-      // Legacy Telegram delivery
-      try {
-        await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
-      } catch (err) {
-        logger.error({ err, userId }, 'Failed to send end-of-day summary');
+      // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
+      if (telegramLegacyEnabled) {
+        try {
+          await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to send end-of-day summary');
+        }
       }
     }
   }), { timezone: tz });
@@ -767,13 +776,15 @@ export function startScheduler(bot: Bot): void {
           logger.debug({ err, userId }, 'Failed to store coach report (non-fatal)');
         }
 
-        // Legacy Telegram delivery (backward compat)
-        try {
-          for (const chunk of chunks) {
-            await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+        // Legacy Telegram delivery (gated)
+        if (telegramLegacyEnabled) {
+          try {
+            for (const chunk of chunks) {
+              await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+            }
+          } catch (err) {
+            logger.error({ err, userId }, 'Failed to send coach briefing');
           }
-        } catch (err) {
-          logger.error({ err, userId }, 'Failed to send coach briefing');
         }
       }
 
@@ -1286,14 +1297,16 @@ export async function sendDailyBriefing(bot: Bot): Promise<void> {
     }
   }
 
-  // Legacy Telegram delivery (backward compat)
-  for (const userId of getActiveUserIds()) {
-    try {
-      for (const chunk of chunks) {
-        await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+  // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
+  if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true') {
+    for (const userId of getActiveUserIds()) {
+      try {
+        for (const chunk of chunks) {
+          await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+        }
+      } catch (err) {
+        logger.error({ err, userId }, 'Failed to send daily briefing');
       }
-    } catch (err) {
-      logger.error({ err, userId }, 'Failed to send daily briefing');
     }
   }
 }
@@ -1380,8 +1393,8 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
       logger.debug({ err, userId }, 'Failed to store weekly review report (non-fatal)');
     }
 
-    // Legacy Telegram delivery
-    try {
+    // Legacy Telegram delivery (gated)
+    if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true') try {
       await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
     } catch (err) {
       logger.error({ err, userId }, 'Failed to send weekly review');
