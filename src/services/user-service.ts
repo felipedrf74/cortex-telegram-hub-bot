@@ -181,7 +181,18 @@ export function setUserLanguage(telegramId: number, language: Lang): void {
   db.prepare('UPDATE users SET language = ? WHERE telegram_id = ?').run(language, telegramId);
 }
 
-export function listUsers(): User[] {
+/** List users with safe fields only — never exposes password_hash, external IDs, or tokens. */
+export function listUsers(): Partial<User>[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT id, telegram_id, username, first_name, last_name, email,
+           language, status, auth_provider, email_verified, created_at
+    FROM users ORDER BY created_at DESC
+  `).all() as Partial<User>[];
+}
+
+/** List users with ALL fields (super-admin only, never exposed via API). */
+export function listUsersInternal(): User[] {
   const db = getDb();
   return db.prepare('SELECT * FROM users ORDER BY created_at DESC').all() as User[];
 }
@@ -190,6 +201,13 @@ export function setUserStatus(telegramId: number, status: 'active' | 'suspended'
   const db = getDb();
   db.prepare('UPDATE users SET status = ? WHERE telegram_id = ?').run(status, telegramId);
   logger.info({ telegramId, status }, 'User status updated');
+}
+
+/** Set user status by users.id (canonical). */
+export function setUserStatusById(userId: number, status: 'active' | 'suspended' | 'banned'): void {
+  const db = getDb();
+  db.prepare('UPDATE users SET status = ? WHERE id = ?').run(status, userId);
+  logger.info({ userId, status }, 'User status updated (by id)');
 }
 
 export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'owner'): void {

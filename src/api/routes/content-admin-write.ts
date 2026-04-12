@@ -8,7 +8,7 @@
 //
 // Auth: every route is gated by requirePortalToken (same middleware
 // as content-dashboard.ts — checks Authorization: Bearer <PORTAL_TOKEN>
-// against config.health.token). These are admin-only routes, not iOS.
+// against config.portal.token — unified with the main portal auth).
 //
 // Mount: /api/v1/admin/content (sibling to /api/v1/admin/content-dashboard)
 
@@ -21,7 +21,7 @@ import { getDb } from '../../services/database';
 
 function requirePortalToken(req: Request, _res: Response, next: NextFunction): void {
   const auth = req.headers.authorization;
-  const expected = config.health.token;
+  const expected = config.portal.token || config.health.token;
   if (!expected || !auth || auth !== `Bearer ${expected}`) {
     _res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Invalid portal token' } });
     return;

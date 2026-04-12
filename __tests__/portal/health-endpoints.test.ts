@@ -299,7 +299,7 @@ describe('GET /health/detailed', () => {
     const { server, port } = await startServer();
     activeServer = server;
 
-    const res = await fetch(`http://127.0.0.1:${port}/health/detailed?token=wrong`);
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer wrong' } });
     expect(res.status).toBe(401);
   });
 
@@ -307,7 +307,7 @@ describe('GET /health/detailed', () => {
     const { server, port } = await startServer();
     activeServer = server;
 
-    const res = await fetch(`http://127.0.0.1:${port}/health/detailed?token=test-health-secret`);
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer test-health-secret' } });
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -348,7 +348,7 @@ describe('GET /health/detailed', () => {
     const { server, port } = await startServer();
     activeServer = server;
 
-    const res = await fetch(`http://127.0.0.1:${port}/health/detailed?token=test-health-secret`);
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer test-health-secret' } });
     expect(res.status).toBe(503);
 
     const body = await res.json();

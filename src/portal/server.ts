@@ -1552,11 +1552,12 @@ export function createPortalServer(bot: Bot): http.Server {
     });
   });
 
-  // ── Detailed health check (auth-protected via ?token=HEALTH_TOKEN) ──
+  // ── Detailed health check (auth-protected via Authorization header) ──
   app.get('/health/detailed', (req: Request, res: Response) => {
     const healthToken = config.health.token;
-    if (healthToken && req.query.token !== healthToken) {
-      res.status(401).json({ error: 'Unauthorized — provide ?token=HEALTH_TOKEN' });
+    const auth = req.headers.authorization;
+    if (healthToken && (!auth || auth !== `Bearer ${healthToken}`)) {
+      res.status(401).json({ error: 'Unauthorized — provide Authorization: Bearer <HEALTH_TOKEN>' });
       return;
     }
 
@@ -1714,17 +1715,19 @@ export function createPortalServer(bot: Bot): http.Server {
       res.status(503).send('Dashboard not found — portal.html is missing');
       return;
     }
+    // Security headers
     res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.set('Pragma', 'no-cache');
     res.set('Expires', '0');
-    // Inject the portal token into the HTML so the browser doesn't need localStorage/prompt
-    let html = fs.readFileSync(htmlPath, 'utf-8');
-    if (portalToken) {
-      html = html.replace(
-        "localStorage.getItem('portal_token') || new URLSearchParams(location.search).get('token') || ''",
-        `localStorage.getItem('portal_token') || new URLSearchParams(location.search).get('token') || '${portalToken}'`,
-      );
-    }
+    res.set('X-Frame-Options', 'DENY');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'");
+
+    // NEVER inject the portal token into HTML — users must authenticate
+    // via a prompt or localStorage (set manually by the admin).
+    // Removes: URL param token, hardcoded injection, XSS→admin escalation.
+    const html = fs.readFileSync(htmlPath, 'utf-8');
     res.type('html').send(html);
   };
   // Root and the legacy /portal alias both serve the admin dashboard.
@@ -2317,20 +2320,22 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
-  app.post('/api/users/:telegramId/suspend', (req: Request, res: Response) => {
+  // User management routes — use users.id (canonical), not telegram_id.
+  // Legacy :telegramId routes kept as aliases for backward compat.
+  app.post('/api/users/:userId/suspend', (req: Request, res: Response) => {
     try {
-      const { setUserStatus } = require('../services/user-service');
-      setUserStatus(Number(req.params.telegramId), 'suspended');
+      const { setUserStatusById } = require('../services/user-service');
+      setUserStatusById(Number(req.params.userId), 'suspended');
       res.json({ ok: true, message: 'User suspended' });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 
-  app.post('/api/users/:telegramId/activate', (req: Request, res: Response) => {
+  app.post('/api/users/:userId/activate', (req: Request, res: Response) => {
     try {
-      const { setUserStatus } = require('../services/user-service');
-      setUserStatus(Number(req.params.telegramId), 'active');
+      const { setUserStatusById } = require('../services/user-service');
+      setUserStatusById(Number(req.params.userId), 'active');
       res.json({ ok: true, message: 'User activated' });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
