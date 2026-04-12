@@ -313,17 +313,28 @@ export function authRoutes(): Router {
 
       if (code && codeVerifier && redirectURI) {
         // ── PKCE flow: exchange authorization code for tokens ──────
+        // iOS native apps are "public clients" — Google does NOT require
+        // a client_secret for iOS client IDs. Sending the web client_secret
+        // with the iOS client_id causes "invalid_client" errors.
+        // Only include client_secret when using the web client ID.
+        const exchangeClientId = config.google.iosClientId || config.google.clientId;
+        const isIosClient = config.google.iosClientId && exchangeClientId === config.google.iosClientId;
+        const tokenParams: Record<string, string> = {
+          code,
+          client_id: exchangeClientId,
+          redirect_uri: redirectURI,
+          grant_type: 'authorization_code',
+          code_verifier: codeVerifier,
+        };
+        // Web clients need the secret; iOS native clients must NOT send it
+        if (!isIosClient && config.google.clientSecret) {
+          tokenParams.client_secret = config.google.clientSecret;
+        }
+
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            code,
-            client_id: config.google.iosClientId || config.google.clientId,
-            client_secret: config.google.clientSecret,
-            redirect_uri: redirectURI,
-            grant_type: 'authorization_code',
-            code_verifier: codeVerifier,
-          }).toString(),
+          body: new URLSearchParams(tokenParams).toString(),
         });
 
         if (!tokenRes.ok) {
