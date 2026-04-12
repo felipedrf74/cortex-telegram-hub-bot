@@ -294,3 +294,93 @@ function resolveAppleProduct(productId: string): { plan: string; period: string 
   if (productId.includes('yearly'))                                return { plan: 'pro', period: 'yearly' };
   return { plan: 'pro', period: 'monthly' };
 }
+
+// ── Apple App Store Server Notifications V2 ───────────────────────
+// Called by the public webhook POST /api/v1/billing/apple-notifications.
+// Apple sends lifecycle events (renewal, expiry, refund, etc.) as
+// server-to-server JWS payloads. We decode and map notification types
+// to subscription status changes in the same `subscriptions` table.
+//
+// Reference: https://developer.apple.com/documentation/appstoreservernotifications
+
+const APPLE_NOTIFICATION_STATUS_MAP: Record<string, string> = {
+  EXPIRED:                'expired',
+  DID_FAIL_TO_RENEW:     'past_due',
+  REFUND:                'refunded',
+  REVOKE:                'refunded',
+  DID_RENEW:             'active',
+  SUBSCRIBED:            'active',
+  DID_CHANGE_RENEWAL_PREF: 'active',  // plan change, still active
+  OFFER_REDEEMED:        'active',
+  GRACE_PERIOD_EXPIRED:  'expired',
+};
+
+/**
+ * Handle an Apple App Store Server Notification V2.
+ *
+ * @param notificationType - The notification type from Apple's payload
+ * @param signedTransactionInfo - JWS-encoded transaction info (inner JWS)
+ * @returns true if the notification was processed, false if skipped
+ */
+export function handleAppleNotification(
+  notificationType: string,
+  signedTransactionInfo: string,
+): boolean {
+  const newStatus = APPLE_NOTIFICATION_STATUS_MAP[notificationType];
+  if (!newStatus) {
+    logger.info({ notificationType }, 'Apple notification: unhandled type, skipping');
+    return false;
+  }
+
+  // Decode the inner JWS to get transaction details
+  const parts = signedTransactionInfo.split('.');
+  if (parts.length !== 3) {
+    logger.warn({ notificationType }, 'Apple notification: malformed inner JWS');
+    return false;
+  }
+
+  let payload: any;
+  try {
+    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    logger.warn({ notificationType }, 'Apple notification: failed to decode inner JWS payload');
+    return false;
+  }
+
+  const originalTransactionId = payload.originalTransactionId || payload.transactionId;
+  if (!originalTransactionId) {
+    logger.warn({ notificationType }, 'Apple notification: no transactionId in payload');
+    return false;
+  }
+
+  // Extract new expiry date for renewal events
+  const expiresDate = payload.expiresDate
+    ? new Date(payload.expiresDate).toISOString()
+    : null;
+
+  const db = getDb();
+
+  // Update subscription status based on the notification type.
+  // For renewals, also update the expiry date.
+  if (newStatus === 'active' && expiresDate) {
+    db.prepare(`
+      UPDATE subscriptions
+      SET status = 'active', current_period_end = ?, updated_at = datetime('now')
+      WHERE provider_subscription_id = ? AND provider = 'apple'
+    `).run(expiresDate, String(originalTransactionId));
+  } else {
+    db.prepare(`
+      UPDATE subscriptions
+      SET status = ?, updated_at = datetime('now')
+      WHERE provider_subscription_id = ? AND provider = 'apple'
+    `).run(newStatus, String(originalTransactionId));
+  }
+
+  logger.info({
+    notificationType,
+    newStatus,
+    originalTransactionId,
+  }, 'Apple Server Notification processed');
+
+  return true;
+}

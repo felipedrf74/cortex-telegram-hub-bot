@@ -356,6 +356,31 @@ export function taskRoutes(): Router {
     }
   });
 
+  /** PATCH /api/v1/tasks/:listId/:taskId/checklist/:itemId — toggle a checklist item */
+  router.patch('/:listId/:taskId/checklist/:itemId', async (req, res: Response) => {
+    try {
+      const { listId, taskId, itemId } = req.params;
+      const { isChecked } = req.body;
+
+      if (typeof isChecked !== 'boolean') {
+        sendError(res, 'VALIDATION', 'isChecked (boolean) is required', 400);
+        return;
+      }
+
+      // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
+      const { getGraphClient } = require('../../services/microsoft-auth');
+      const client = getGraphClient(req);
+      const result = await client
+        .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
+        .patch({ isChecked });
+
+      sendSuccess(res, { item: result });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS checklist toggle failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to toggle checklist item', 500);
+    }
+  });
+
   /** DELETE /api/v1/tasks/:listId/:taskId */
   router.delete('/:listId/:taskId', async (req, res: Response) => {
     try {

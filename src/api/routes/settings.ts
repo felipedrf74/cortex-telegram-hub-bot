@@ -183,6 +183,9 @@ export function settingsRoutes(): Router {
 
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
+      userData._systemNotes = {
+        sharedSeedData: 'Tables content_ref_channels, book_library, content_knowledge, and content_learned_patterns may contain system-owned rows (user_id=0) that serve as shared reference data (e.g., default books, seed channels). These rows are not user-generated and are excluded from this export.',
+      };
 
       sendSuccess(res, userData);
     } catch (err: any) {

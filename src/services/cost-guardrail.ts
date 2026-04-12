@@ -215,7 +215,10 @@ export function isUserOverDailyCap(
       usageLevel,
       usageFraction: Math.round(fraction * 100) / 100,
       callsToday: row.calls,
-      boostAvailable: row.total >= capUsd && plan !== 'owner',
+      // AI Boost IAP product not yet configured in App Store Connect.
+      // Setting false hides the CTA button in the iOS usage meter.
+      // Re-enable when the product is live: row.total >= capUsd && plan !== 'owner'
+      boostAvailable: false,
     };
   } catch {
     return {

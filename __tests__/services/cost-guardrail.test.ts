@@ -192,7 +192,8 @@ describe('isUserOverDailyCap', () => {
     expect(result.usageFraction).toBe(1); // 0/0 clamps to 1.0
     expect(result.usageLevel).toBe('none');
     expect(result.callsToday).toBe(0);
-    expect(result.boostAvailable).toBe(true);
+    // boostAvailable is always false until the AI Boost IAP product is configured
+    expect(result.boostAvailable).toBe(false);
   });
 
   it('returns over=false for owner with no spend today', () => {
@@ -213,7 +214,8 @@ describe('isUserOverDailyCap', () => {
     const result = isUserOverDailyCap(42);
     expect(result.over).toBe(true);
     expect(result.usageFraction).toBe(1); // fraction clamps at 1.0
-    expect(result.boostAvailable).toBe(true);
+    // boostAvailable is always false until the AI Boost IAP product is configured
+    expect(result.boostAvailable).toBe(false);
   });
 
   it('isolates users from each other — spend by user 42 does not count against user 99', () => {

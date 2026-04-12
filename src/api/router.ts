@@ -1,6 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { authMiddleware } from './auth-middleware';
 import { rateLimitMiddleware } from './rate-limiter';
 import { authRoutes } from './routes/auth';
@@ -81,6 +81,68 @@ export function createApiRouter(): Router {
   // having to register as an iOS device first.
   router.use('/admin/content-dashboard', contentDashboardRoutes());
   router.use('/admin/content', contentAdminWriteRoutes());
+
+  // Apple App Store Server Notifications — public (no JWT).
+  // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.
+  // Must be mounted BEFORE authMiddleware so Apple's POST is accepted.
+  router.post('/billing/apple-notifications', express.json(), (req, res) => {
+    try {
+      const { signedPayload } = req.body || {};
+      if (!signedPayload || typeof signedPayload !== 'string') {
+        // Apple requires 200 — returning non-200 triggers retries
+        res.status(200).json({ handled: false, reason: 'missing signedPayload' });
+        return;
+      }
+
+      // Decode the outer JWS (notification envelope)
+      const outerParts = signedPayload.split('.');
+      if (outerParts.length !== 3) {
+        res.status(200).json({ handled: false, reason: 'malformed outer JWS' });
+        return;
+      }
+
+      let outerPayload: any;
+      try {
+        outerPayload = JSON.parse(Buffer.from(outerParts[1], 'base64url').toString('utf8'));
+      } catch {
+        res.status(200).json({ handled: false, reason: 'invalid outer JWS payload' });
+        return;
+      }
+
+      const { notificationType, data } = outerPayload;
+      const signedTransactionInfo = data?.signedTransactionInfo;
+
+      if (!notificationType || !signedTransactionInfo) {
+        res.status(200).json({ handled: false, reason: 'missing notificationType or signedTransactionInfo' });
+        return;
+      }
+
+      // Validate bundle ID from the inner transaction
+      const innerParts = signedTransactionInfo.split('.');
+      if (innerParts.length === 3) {
+        try {
+          const innerPayload = JSON.parse(Buffer.from(innerParts[1], 'base64url').toString('utf8'));
+          if (innerPayload.bundleId && innerPayload.bundleId !== 'me.nexushub.app') {
+            require('../utils/logger').logger.warn(
+              { bundleId: innerPayload.bundleId, notificationType },
+              'Apple notification: bundle ID mismatch — rejecting',
+            );
+            res.status(200).json({ handled: false, reason: 'bundle mismatch' });
+            return;
+          }
+        } catch { /* best-effort bundle check */ }
+      }
+
+      const { handleAppleNotification } = require('../services/stripe-service');
+      const processed = handleAppleNotification(notificationType, signedTransactionInfo);
+
+      res.status(200).json({ handled: processed });
+    } catch (err: any) {
+      // Never return errors to Apple — always 200
+      require('../utils/logger').logger.error({ err }, 'Apple notification handler error');
+      res.status(200).json({ handled: false, reason: 'internal error' });
+    }
+  });
 
   // Protected routes (require JWT + rate limiting).
   // The middleware order matters: auth runs first to populate req.userId,
