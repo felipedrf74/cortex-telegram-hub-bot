@@ -451,8 +451,11 @@ function nextFireAtIso(expr: string): string | null {
 function requirePortalToken(req: Request, res: Response, next: NextFunction): void {
   const portalToken = config.portal.token;
   if (!portalToken) {
-    // Dev mode — no token configured, allow anonymous access.
-    next();
+    // No token — only allow from localhost (matches main portal + content-admin-write)
+    const ip = req.ip || req.socket.remoteAddress || '';
+    const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.');
+    if (isLocal) { next(); return; }
+    res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'PORTAL_TOKEN not set' } });
     return;
   }
   const auth = req.headers.authorization || '';

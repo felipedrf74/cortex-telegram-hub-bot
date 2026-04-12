@@ -186,7 +186,8 @@ export function listUsers(): Partial<User>[] {
   const db = getDb();
   return db.prepare(`
     SELECT id, telegram_id, username, first_name, last_name, email,
-           language, status, auth_provider, email_verified, created_at
+           language, status, auth_provider, email_verified, created_at,
+           tier, daily_message_limit, last_active_at
     FROM users ORDER BY created_at DESC
   `).all() as Partial<User>[];
 }

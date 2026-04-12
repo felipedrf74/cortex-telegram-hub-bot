@@ -1787,9 +1787,9 @@ table.legacy th {
         <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);">
           <span class="text-muted" style="font-size:12px;font-weight:600">Scope:</span>
           <select id="skills-user-select" onchange="onSkillsUserChange(this)" style="min-width:240px;padding:6px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-md);color:var(--text-primary);font-size:13px">
-            <option value="global">🌐 Global (affects all users)</option>
+            <option value="global">⚠️ GLOBAL — affects ALL users (super-admin only)</option>
           </select>
-          <span class="card-subtitle" id="skills-scope-hint" style="font-size:11px;margin-left:auto">Toggles here affect ALL users. Pick a user to set per-user overrides.</span>
+          <span class="card-subtitle" id="skills-scope-hint" style="font-size:11px;margin-left:auto;color:var(--error)">⚠️ Global mode: changes affect ALL users. Select a specific user for safe per-user overrides.</span>
           <button id="skills-reset-user" class="btn btn-xs" style="display:none" onclick="resetSelectedUserSkills()">Reset to defaults</button>
         </div>
       </div>
@@ -2169,15 +2169,27 @@ table.legacy th {
 'use strict';
 (function() {
   // ════════════════════════════════════════════════════════════
-  // Auth: token from localStorage / URL param / server injection
-  // CRITICAL: the exact string below is replaced by server.ts at
-  // request time to inject the portal token. DO NOT CHANGE.
+  // Auth: per-tab in-memory token ONLY.
+  //
+  // Security hardening (v4.14):
+  //   ✘ NO localStorage persistence (prevents XSS → admin escalation)
+  //   ✘ NO URL ?token= support (prevents referer/log leakage)
+  //   ✘ NO server-side injection into HTML
+  //   ✓ Token lives only in JS memory for the current tab
+  //   ✓ Closing the tab = instant session end
+  //   ✓ 401 → prompt re-auth, no stale tokens
+  //
+  // Future: replace with server-side session + HTTP-only cookie.
   // ════════════════════════════════════════════════════════════
-  let TOKEN = localStorage.getItem('portal_token') || new URLSearchParams(location.search).get('token') || '';
-  if (!localStorage.getItem('portal_token') && TOKEN) {
-    localStorage.setItem('portal_token', TOKEN);
-    history.replaceState(null, '', location.pathname);
+
+  // Clean up any legacy localStorage token from older versions
+  try { localStorage.removeItem('portal_token'); } catch {}
+  // Strip any ?token= from URL to prevent leakage
+  if (new URLSearchParams(location.search).has('token')) {
+    history.replaceState(null, '', location.pathname + location.hash);
   }
+
+  let TOKEN = '';  // In-memory only — dies with the tab
 
   // ────────── Login flow ──────────
   function showLoginForm() {
@@ -2200,8 +2212,8 @@ table.legacy th {
     try {
       const res = await fetch('/api/snapshot', { headers: { Authorization: 'Bearer ' + t } });
       if (res.ok) {
-        localStorage.setItem('portal_token', t);
-        TOKEN = t;
+        TOKEN = t;  // In-memory only — no localStorage
+        input.value = '';  // Clear the input immediately
         hideLoginForm();
         startApp();
       } else {
@@ -2220,7 +2232,6 @@ table.legacy th {
     if (e.key === 'Enter') doLogin();
   });
   document.getElementById('logout-link').addEventListener('click', () => {
-    localStorage.removeItem('portal_token');
     TOKEN = '';
     location.reload();
   });
@@ -2231,7 +2242,6 @@ table.legacy th {
     if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
     const res = await fetch(url, { ...opts, headers });
     if (res.status === 401) {
-      localStorage.removeItem('portal_token');
       TOKEN = '';
       showLoginForm();
       throw new Error('Unauthorized');
@@ -2619,8 +2629,8 @@ table.legacy th {
         allUsers.map(u => {
           const label = [u.first_name || '', u.last_name || ''].filter(Boolean).join(' ').trim()
             || u.username
-            || ('#' + u.telegram_id);
-          return '<option value="' + esc(String(u.telegram_id)) + '">👤 ' + esc(label) + ' (' + esc(String(u.telegram_id)) + ')</option>';
+            || ('#' + u.id);
+          return '<option value="' + esc(String(u.id)) + '">👤 ' + esc(label) + ' (' + esc(String(u.id)) + ')</option>';
         }).join('');
       // Restore the previously-selected value across reloads
       if (currentValue && sel.querySelector('option[value="' + currentValue + '"]')) {
@@ -2655,9 +2665,9 @@ table.legacy th {
     }
   };
 
-  async function loadUserSkills(telegramId) {
+  async function loadUserSkills(userId) {
     try {
-      const r = await apiFetch('/api/users/' + telegramId + '/skills');
+      const r = await apiFetch('/api/users/' + userId + '/skills');
       if (!r.ok) return;
       const d = await r.json();
       renderSkillsGrid(d.skills || []);
@@ -2777,7 +2787,7 @@ table.legacy th {
 
     let users = allUsers.filter(u => {
       const name = (u.first_name || u.username || '').toLowerCase();
-      const id = String(u.telegram_id || '');
+      const id = String(u.id || '');
       const handle = (u.username || '').toLowerCase();
       if (search && !name.includes(search) && !id.includes(search) && !handle.includes(search)) return false;
       if (tierFilter && u.tier !== tierFilter) return false;
@@ -2810,7 +2820,7 @@ table.legacy th {
     }
 
     tbody.innerHTML = users.map(u => {
-      const name = u.first_name || u.username || ('User ' + u.telegram_id);
+      const name = u.first_name || u.username || ('User #' + u.id);
       const initial = (name[0] || '?').toUpperCase();
       const handle = u.username ? '@' + u.username : '';
       const tierClass = 'tier-' + (u.tier || 'free');
@@ -2821,13 +2831,13 @@ table.legacy th {
           : '<span class="badge badge-neutral">' + esc(u.status || '?') + '</span>';
       const limit = u.daily_message_limit === 0 ? '∞' : (u.daily_message_limit || 0) + '/day';
       const lastActive = u.last_active_at ? relativeTime(u.last_active_at) : 'Never';
-      return '<tr class="row-clickable" data-user-id="' + u.telegram_id + '">' +
-        '<td><div class="user-cell"><div class="avatar">' + esc(initial) + '</div><div><div class="user-name">' + esc(name) + '</div><div class="user-handle">' + esc(handle || ('id:' + u.telegram_id)) + '</div></div></div></td>' +
+      return '<tr class="row-clickable" data-user-id="' + u.id + '">' +
+        '<td><div class="user-cell"><div class="avatar">' + esc(initial) + '</div><div><div class="user-name">' + esc(name) + '</div><div class="user-handle">' + esc(handle || (u.email ? u.email : 'id:' + u.id)) + '</div></div></div></td>' +
         '<td><span class="tier-badge ' + tierClass + '">' + esc(u.tier || 'free') + '</span></td>' +
         '<td>' + statusBadge + '</td>' +
         '<td class="text-right num">' + limit + '</td>' +
         '<td class="text-muted">' + lastActive + '</td>' +
-        '<td class="text-right"><button class="btn btn-xs" data-action="open-user" data-user-id="' + u.telegram_id + '">Manage →</button></td>' +
+        '<td class="text-right"><button class="btn btn-xs" data-action="open-user" data-user-id="' + u.id + '">Manage →</button></td>' +
         '</tr>';
     }).join('');
 
@@ -2835,7 +2845,7 @@ table.legacy th {
     tbody.querySelectorAll('tr.row-clickable').forEach(tr => {
       tr.addEventListener('click', e => {
         const id = tr.dataset.userId;
-        const user = allUsers.find(u => String(u.telegram_id) === String(id));
+        const user = allUsers.find(u => String(u.id) === String(id));
         if (user) openUserSlideout(user);
       });
     });
@@ -2864,8 +2874,8 @@ table.legacy th {
 
   async function openUserSlideout(user) {
     currentSlideoutUser = user;
-    document.getElementById('slideout-user-name').textContent = user.first_name || user.username || ('User ' + user.telegram_id);
-    document.getElementById('slideout-user-id').textContent = '@' + (user.username || user.telegram_id);
+    document.getElementById('slideout-user-name').textContent = user.first_name || user.username || ('User #' + user.id);
+    document.getElementById('slideout-user-id').textContent = '@' + (user.username || user.email || '#' + user.id);
 
     // Show suspend or activate
     document.getElementById('slideout-suspend-btn').style.display = user.status === 'active' && user.tier !== 'owner' ? '' : 'none';
@@ -2880,8 +2890,8 @@ table.legacy th {
 
     try {
       const [skillsRes, summaryRes] = await Promise.all([
-        apiFetch('/api/users/' + user.telegram_id + '/skills'),
-        apiFetch('/api/users/' + user.telegram_id + '/data-summary'),
+        apiFetch('/api/users/' + user.id + '/skills'),
+        apiFetch('/api/users/' + user.id + '/data-summary'),
       ]);
       const skillsData = skillsRes.ok ? await skillsRes.json() : { skills: [] };
       const summary = summaryRes.ok ? await summaryRes.json() : {};
@@ -2899,7 +2909,7 @@ table.legacy th {
             : '<span class="badge badge-error">🔗 Not connected</span>')
           : '';
         const subRows = (s.subSkills || []).map(sub => {
-          const onChange = "toggleUserSkill(" + user.telegram_id + ",'" + esc(s.skill) + "','" + esc(sub.id) + "',this.checked)";
+          const onChange = "toggleUserSkill(" + user.id + ",'" + esc(s.skill) + "','" + esc(sub.id) + "',this.checked)";
           return '<div class="sub-skill" style="opacity:' + (s.enabled ? 1 : 0.4) + '">' +
             '<label class="toggle">' +
               '<input type="checkbox" ' + (sub.enabled ? 'checked' : '') + (s.enabled ? '' : ' disabled') + ' onchange="' + onChange + '">' +
@@ -2908,7 +2918,7 @@ table.legacy th {
             '<span class="toggle-label">' + esc(sub.label) + '</span>' +
           '</div>';
         }).join('');
-        const masterChange = "toggleUserSkill(" + user.telegram_id + ",'" + esc(s.skill) + "',null,this.checked)";
+        const masterChange = "toggleUserSkill(" + user.id + ",'" + esc(s.skill) + "',null,this.checked)";
         return '<div class="skill-card">' +
           '<div class="skill-header">' +
             '<span class="skill-icon">' + icon + '</span>' +
@@ -2961,27 +2971,27 @@ table.legacy th {
 
   document.getElementById('slideout-suspend-btn').addEventListener('click', async () => {
     if (!currentSlideoutUser) return;
-    await apiFetch('/api/users/' + currentSlideoutUser.telegram_id + '/suspend', { method: 'POST' });
+    await apiFetch('/api/users/' + currentSlideoutUser.id + '/suspend', { method: 'POST' });
     showToast('User suspended');
     closeUserSlideout();
     loadUsers();
   });
   document.getElementById('slideout-activate-btn').addEventListener('click', async () => {
     if (!currentSlideoutUser) return;
-    await apiFetch('/api/users/' + currentSlideoutUser.telegram_id + '/activate', { method: 'POST' });
+    await apiFetch('/api/users/' + currentSlideoutUser.id + '/activate', { method: 'POST' });
     showToast('User activated');
     closeUserSlideout();
     loadUsers();
   });
   document.getElementById('slideout-reset-btn').addEventListener('click', async () => {
     if (!currentSlideoutUser) return;
-    await apiFetch('/api/users/' + currentSlideoutUser.telegram_id + '/skills/reset', { method: 'POST' });
+    await apiFetch('/api/users/' + currentSlideoutUser.id + '/skills/reset', { method: 'POST' });
     showToast('Skills reset to defaults');
     openUserSlideout(currentSlideoutUser);
   });
 
-  window.toggleUserSkill = async function(telegramId, skill, subSkill, enabled) {
-    await apiFetch('/api/users/' + telegramId + '/skills', {
+  window.toggleUserSkill = async function(userId, skill, subSkill, enabled) {
+    await apiFetch('/api/users/' + userId + '/skills', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ skill, subSkill, enabled }),
@@ -3814,10 +3824,10 @@ table.legacy th {
       });
       const options = ['<option value="">All users</option>'].concat(
         sorted.map(u => {
-          const name = u.first_name || u.username || ('User ' + u.telegram_id);
+          const name = u.first_name || u.username || ('User #' + u.id);
           const handle = u.username ? ' @' + u.username : '';
-          const label = esc(name + handle) + ' · ' + u.telegram_id;
-          return '<option value="' + u.telegram_id + '">' + label + '</option>';
+          const label = esc(name + handle) + ' · ' + u.id;
+          return '<option value="' + u.id + '">' + label + '</option>';
         })
       );
       sel.innerHTML = options.join('');

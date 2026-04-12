@@ -2342,20 +2342,26 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
-  app.put('/api/users/:telegramId/tier', express.json(), (req: Request, res: Response) => {
+  // User management: canonical users.id routes (v4.14+)
+  app.put('/api/users/:userId/tier', express.json(), (req: Request, res: Response) => {
     try {
-      const { setUserTier } = require('../services/user-service');
-      setUserTier(Number(req.params.telegramId), req.body.tier);
+      const db = getDb();
+      const userId = Number(req.params.userId);
+      db.prepare('UPDATE users SET tier = ? WHERE id = ?').run(req.body.tier, userId);
       res.json({ ok: true, message: `Tier set to ${req.body.tier}` });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 
-  app.put('/api/users/:telegramId/limits', express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/limits', express.json(), (req: Request, res: Response) => {
     try {
-      const { setUserLimits } = require('../services/user-service');
-      setUserLimits(Number(req.params.telegramId), req.body);
+      const db = getDb();
+      const userId = Number(req.params.userId);
+      const { daily_message_limit, daily_token_limit, daily_cost_limit_usd } = req.body;
+      if (daily_message_limit !== undefined) db.prepare('UPDATE users SET daily_message_limit = ? WHERE id = ?').run(daily_message_limit, userId);
+      if (daily_token_limit !== undefined) db.prepare('UPDATE users SET daily_token_limit = ? WHERE id = ?').run(daily_token_limit, userId);
+      if (daily_cost_limit_usd !== undefined) db.prepare('UPDATE users SET daily_cost_limit_usd = ? WHERE id = ?').run(daily_cost_limit_usd, userId);
       res.json({ ok: true, message: 'Limits updated' });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
@@ -2556,32 +2562,33 @@ export function createPortalServer(bot: Bot): http.Server {
 
   // ── Per-User Skill Access API ──────────────────────────────────────
 
-  app.get('/api/users/:telegramId/skills', (req: Request, res: Response) => {
+  // Skills routes: now accept canonical users.id (v4.14+)
+  app.get('/api/users/:userId/skills', (req: Request, res: Response) => {
     try {
       const { getUserSkillState } = require('../services/user-skill-access');
-      const telegramId = parseInt(String(req.params.telegramId), 10);
-      res.json({ skills: getUserSkillState(telegramId) });
+      const userId = parseInt(String(req.params.userId), 10);
+      res.json({ skills: getUserSkillState(userId) });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 
-  app.put('/api/users/:telegramId/skills', express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/skills', express.json(), (req: Request, res: Response) => {
     try {
       const { setSkillAccess, getUserSkillState } = require('../services/user-skill-access');
-      const telegramId = parseInt(String(req.params.telegramId), 10);
+      const userId = parseInt(String(req.params.userId), 10);
       const { skill, subSkill, enabled, reason } = req.body;
-      setSkillAccess(telegramId, skill, enabled, { subSkill: subSkill || undefined, reason });
-      res.json({ ok: true, skills: getUserSkillState(telegramId) });
+      setSkillAccess(userId, skill, enabled, { subSkill: subSkill || undefined, reason });
+      res.json({ ok: true, skills: getUserSkillState(userId) });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 
-  app.post('/api/users/:telegramId/skills/reset', (req: Request, res: Response) => {
+  app.post('/api/users/:userId/skills/reset', (req: Request, res: Response) => {
     try {
       const { resetUserSkillOverrides } = require('../services/user-skill-access');
-      resetUserSkillOverrides(parseInt(String(req.params.telegramId), 10));
+      resetUserSkillOverrides(parseInt(String(req.params.userId), 10));
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
@@ -2606,17 +2613,17 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
-  // GET /api/users/:telegramId/data-summary — record counts per table (admin view)
-  app.get('/api/users/:telegramId/data-summary', (req: Request, res: Response) => {
+  // GET /api/users/:userId/data-summary — record counts per table (admin view)
+  app.get('/api/users/:userId/data-summary', (req: Request, res: Response) => {
     try {
-      const telegramId = parseInt(String(req.params.telegramId), 10);
+      const userId = parseInt(String(req.params.userId), 10);
       const { countUserFinanceData } = require('../services/user-data-export');
-      const financeCounts = countUserFinanceData(telegramId);
+      const financeCounts = countUserFinanceData(userId);
       const db = getDb();
 
       const count = (table: string) => {
         try {
-          return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE user_id = ?`).get(telegramId) as any)?.c ?? 0;
+          return (db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE user_id = ?`).get(userId) as any)?.c ?? 0;
         } catch { return 0; }
       };
 

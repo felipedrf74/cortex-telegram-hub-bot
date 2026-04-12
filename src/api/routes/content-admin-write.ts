@@ -20,9 +20,17 @@ import { getDb } from '../../services/database';
 // ─── Auth middleware (identical to content-dashboard.ts) ─────────────
 
 function requirePortalToken(req: Request, _res: Response, next: NextFunction): void {
+  const expected = config.portal.token;  // Unified: ONLY config.portal.token
+  if (!expected) {
+    // No token configured — only allow from localhost (matches main portal auth)
+    const ip = req.ip || req.socket.remoteAddress || '';
+    const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.');
+    if (isLocal) { next(); return; }
+    _res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'PORTAL_TOKEN not set' } });
+    return;
+  }
   const auth = req.headers.authorization;
-  const expected = config.portal.token || config.health.token;
-  if (!expected || !auth || auth !== `Bearer ${expected}`) {
+  if (!auth || auth !== `Bearer ${expected}`) {
     _res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Invalid portal token' } });
     return;
   }
