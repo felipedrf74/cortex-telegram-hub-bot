@@ -278,23 +278,75 @@ export function authRoutes(): Router {
     }
   }));
 
-  // ── Sign in with Google ───────────────────────────────────────────
+  // ── Sign in with Google (PKCE) ────────────────────────────────────
+  //
+  // Supports two flows for backward compatibility:
+  //   1. PKCE (recommended): iOS sends { code, codeVerifier, redirectURI }
+  //      Backend exchanges the code for an id_token with Google server-side
+  //   2. Legacy implicit: iOS sends { idToken }
+  //      Backend verifies the id_token directly (deprecated, kept for compat)
+  //
   router.post('/register/google', asyncHandler(async (req: Request, res: Response) => {
-    const { idToken, deviceId, deviceName } = req.body;
-    if (!idToken || !deviceId) {
-      sendError(res, 'BAD_REQUEST', 'idToken and deviceId are required');
+    const { code, codeVerifier, redirectURI, idToken, deviceId, deviceName } = req.body;
+    if (!deviceId) {
+      sendError(res, 'BAD_REQUEST', 'deviceId is required');
       return;
     }
 
     try {
-      // Verify Google ID token via tokeninfo endpoint
-      const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-      if (!verifyRes.ok) {
-        sendError(res, 'INVALID_TOKEN', 'Google token verification failed', 401);
+      let payload: any;
+
+      if (code && codeVerifier && redirectURI) {
+        // ── PKCE flow: exchange authorization code for tokens ──────
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code,
+            client_id: config.google.iosClientId || config.google.clientId,
+            client_secret: config.google.clientSecret,
+            redirect_uri: redirectURI,
+            grant_type: 'authorization_code',
+            code_verifier: codeVerifier,
+          }).toString(),
+        });
+
+        if (!tokenRes.ok) {
+          const errBody = await tokenRes.text();
+          logger.warn({ status: tokenRes.status, body: errBody }, 'Google PKCE token exchange failed');
+          sendError(res, 'INVALID_TOKEN', 'Google token exchange failed', 401);
+          return;
+        }
+
+        const tokens = await tokenRes.json() as any;
+        const googleIdToken = tokens.id_token;
+
+        if (!googleIdToken) {
+          sendError(res, 'INVALID_TOKEN', 'No id_token in Google response', 401);
+          return;
+        }
+
+        // Verify the id_token
+        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleIdToken)}`);
+        if (!verifyRes.ok) {
+          sendError(res, 'INVALID_TOKEN', 'Google id_token verification failed', 401);
+          return;
+        }
+        payload = await verifyRes.json() as any;
+
+      } else if (idToken) {
+        // ── Legacy implicit flow (backward compat) ────────────────
+        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+        if (!verifyRes.ok) {
+          sendError(res, 'INVALID_TOKEN', 'Google token verification failed', 401);
+          return;
+        }
+        payload = await verifyRes.json() as any;
+
+      } else {
+        sendError(res, 'BAD_REQUEST', 'Either code+codeVerifier+redirectURI (PKCE) or idToken (legacy) is required');
         return;
       }
-
-      const payload = await verifyRes.json() as any;
 
       // Validate issuer
       if (!['accounts.google.com', 'https://accounts.google.com'].includes(payload.iss)) {
