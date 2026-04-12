@@ -69,7 +69,7 @@ export function getSavedIdeas(status = 'saved', userId?: number): SavedIdea[] {
   const db = getDb();
   if (userId != null) {
     return db.prepare(
-      'SELECT * FROM saved_ideas WHERE status = ? AND user_id IN (0, ?) ORDER BY created_at DESC'
+      'SELECT * FROM saved_ideas WHERE status = ? AND user_id = ? ORDER BY created_at DESC'
     ).all(status, userId) as SavedIdea[];
   }
   return db.prepare(

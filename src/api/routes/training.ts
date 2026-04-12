@@ -106,7 +106,7 @@ export function trainingRoutes(): Router {
 
     try {
       const { generateCoachBriefing } = require('../../services/garmin-coach');
-      const briefing = await generateCoachBriefing();
+      const briefing = await generateCoachBriefing(userId);
 
       const payload = {
         briefing: briefing?.message || briefing?.text || briefing?.briefing || 'No coach briefing available.',

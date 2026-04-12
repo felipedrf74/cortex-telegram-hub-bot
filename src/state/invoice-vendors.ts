@@ -61,7 +61,7 @@ export function getActiveVendors(userId?: number): InvoiceVendor[] {
   const db = getDb();
   if (userId != null) {
     return db.prepare(
-      'SELECT * FROM invoice_vendors WHERE enabled = 1 AND user_id IN (0, ?) ORDER BY name ASC',
+      'SELECT * FROM invoice_vendors WHERE enabled = 1 AND user_id = ? ORDER BY name ASC',
     ).all(userId) as InvoiceVendor[];
   }
   return db.prepare(
@@ -83,7 +83,7 @@ export function getAllVendors(userId?: number): InvoiceVendor[] {
   const db = getDb();
   if (userId != null) {
     return db.prepare(
-      'SELECT * FROM invoice_vendors WHERE user_id IN (0, ?) ORDER BY enabled DESC, name ASC',
+      'SELECT * FROM invoice_vendors WHERE user_id = ? ORDER BY enabled DESC, name ASC',
     ).all(userId) as InvoiceVendor[];
   }
   return db.prepare(

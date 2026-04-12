@@ -43,17 +43,25 @@ import { getCached, setCache } from '../../services/cache-store';
 // second command in a session reuses it instead of paying the latency twice.
 // Short TTL keeps the data fresh enough that completed/created tasks show up
 // quickly when the user mutates them via the dashboard or task views.
-const PENDING_TASKS_CACHE_KEY = 'fastpath:pending-tasks';
 const PENDING_TASKS_TTL = 60; // seconds
 
+function getPendingTasksCacheKey(): string {
+  try {
+    const { getCurrentContext } = require('../../utils/request-context');
+    const uid = getCurrentContext()?.userId;
+    return uid ? `u:${uid}:fastpath:pending-tasks` : 'fastpath:pending-tasks';
+  } catch { return 'fastpath:pending-tasks'; }
+}
+
 async function getPendingTasksCached(): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
-  const cached = getCached<msTodo.TodoTask[]>(PENDING_TASKS_CACHE_KEY);
+  const key = getPendingTasksCacheKey();
+  const cached = getCached<msTodo.TodoTask[]>(key);
   if (cached) {
     return { success: true, data: cached };
   }
   const result = await msTodo.getAllPendingTasks();
   if (result.success) {
-    setCache(PENDING_TASKS_CACHE_KEY, result.data, PENDING_TASKS_TTL);
+    setCache(key, result.data, PENDING_TASKS_TTL);
   }
   return result;
 }

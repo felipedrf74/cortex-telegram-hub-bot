@@ -86,7 +86,7 @@ export function buildTasteProfileBlock(userId?: number): string {
     `SELECT topic, niche, sentiment FROM content_topic_feedback
      WHERE sentiment IN ('approved', 'rejected')
        AND created_at > datetime('now', '-60 days')
-       ${userId != null ? 'AND user_id IN (0, ?)' : ''}
+       ${userId != null ? 'AND user_id = ?' : ''}
      ORDER BY created_at DESC
      LIMIT 100`,
   ).all(...(userId != null ? [userId] : [])) as { topic: string; niche: string; sentiment: string }[];

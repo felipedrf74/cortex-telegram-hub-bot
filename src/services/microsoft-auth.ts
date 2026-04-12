@@ -127,26 +127,32 @@ async function getAccessToken(): Promise<string> {
   return result.accessToken;
 }
 
-// ─── Per-request user override ──────────────────────────────────────
-// iOS API routes set this before calling microsoft-todo functions so
-// getGraphClient() returns a per-user client instead of the owner
-// singleton. Reset after each request via middleware.
-let _requestUserId: number | null = null;
+// ─── Per-request user resolution ────────────────────────────────────
+// Reads userId from AsyncLocalStorage context (set by router middleware).
+// NO global mutable variable — each request's context is isolated.
+// Legacy setRequestUserId kept as no-op for backward compat with router.
 
-/** Set the per-request user override. Call with null to clear. */
-export function setRequestUserId(userId: number | null): void {
-  _requestUserId = userId;
+/** @deprecated No-op. userId is now read from AsyncLocalStorage context. */
+export function setRequestUserId(_userId: number | null): void {
+  // Intentionally empty — context is set via runWithContext in router.ts
 }
 
 /**
- * Get a Microsoft Graph client. If a per-request userId is set (via
- * setRequestUserId), returns a per-user client. Otherwise returns the
- * owner singleton for backward compatibility with the Telegram bot.
+ * Get a Microsoft Graph client. Reads userId from the current
+ * AsyncLocalStorage context. If a userId is present (iOS API request),
+ * returns a per-user client. If absent (Telegram bot, cron job),
+ * returns the owner singleton.
  */
 export function getGraphClient(): Client {
-  // Per-user override takes precedence
-  if (_requestUserId !== null) {
-    return getGraphClientForUser(_requestUserId);
+  // Read userId from AsyncLocalStorage (race-safe, per-request)
+  let contextUserId: number | null = null;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    contextUserId = getCurrentContext()?.userId ?? null;
+  } catch { /* outside request context */ }
+
+  if (contextUserId !== null) {
+    return getGraphClientForUser(contextUserId);
   }
 
   // Owner singleton fallback (Telegram bot codepath)

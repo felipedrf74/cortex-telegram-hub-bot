@@ -87,7 +87,7 @@ export async function isDuplicateIdea(
     const { getCurrentContext } = require('../utils/request-context');
     uid = getCurrentContext()?.userId;
   } catch { /* outside request context */ }
-  const userFilter = uid != null ? 'AND user_id IN (0, ?)' : '';
+  const userFilter = uid != null ? 'AND user_id = ?' : '';
   const userArgs = uid != null ? [uid] : [];
 
   // Gather recent ideas from both tables (per-user)
@@ -179,7 +179,7 @@ export function getAngleDistribution(): { tag: string; count: number; pct: numbe
     const { getCurrentContext } = require('../utils/request-context');
     uid = getCurrentContext()?.userId;
   } catch {}
-  const userFilter = uid != null ? 'AND user_id IN (0, ?)' : '';
+  const userFilter = uid != null ? 'AND user_id = ?' : '';
   const userArgs = uid != null ? [uid] : [];
 
   const ANGLE_TAGS = [

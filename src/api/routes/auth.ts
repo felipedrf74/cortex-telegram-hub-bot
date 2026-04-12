@@ -97,14 +97,11 @@ export function authRoutes(): Router {
 
     const ownerCode = config.ios.ownerCode || '';
     const betaCode = config.ios.inviteCode || '';
-    const DEMO_USER_ID = 1000000001;
 
     let userId: number;
 
     if (ownerCode && inviteCode === ownerCode) {
-      // Owner: resolve the database users.id from their Telegram ID.
-      // This ensures the JWT carries users.id (not telegram_id) so
-      // downstream code only needs getUserById, never getUserByTelegramId.
+      // Owner: resolve users.id from their Telegram ID.
       const ownerTelegramId = config.telegram.allowedUserIds[0];
       if (!ownerTelegramId) {
         sendError(res, 'NO_USER', 'No users configured', 500);
@@ -112,10 +109,26 @@ export function authRoutes(): Router {
       }
       const { getUserByTelegramId: findByTgId } = require('../../services/user-service');
       const ownerUser = findByTgId(ownerTelegramId);
-      userId = ownerUser?.id ?? ownerTelegramId; // fallback to telegram_id if user row doesn't exist
+      userId = ownerUser?.id ?? ownerTelegramId;
     } else if (betaCode && inviteCode === betaCode) {
-      // Beta tester / Apple reviewer: sandboxed demo user
-      userId = DEMO_USER_ID;
+      // Beta/reviewer: create a unique sandbox user per device.
+      // Each deviceId gets its own users.id — no shared DEMO_USER_ID.
+      // This ensures strict per-tester isolation.
+      const db = getDb();
+      const existingDevice = db.prepare(
+        'SELECT user_id FROM ios_devices WHERE device_id = ?'
+      ).get(deviceId) as { user_id: number } | undefined;
+
+      if (existingDevice) {
+        userId = existingDevice.user_id;
+      } else {
+        // Create a new sandbox user for this device
+        const result = db.prepare(
+          "INSERT INTO users (first_name, auth_provider, status) VALUES (?, 'invite_code', 'active')"
+        ).run(`Beta-${deviceId.slice(0, 8)}`);
+        userId = result.lastInsertRowid as number;
+        logger.info({ userId, deviceId: deviceId.slice(0, 8) }, 'Created sandbox user for beta tester');
+      }
     } else {
       sendError(res, 'INVALID_INVITE', 'Invalid invite code', 403);
       return;

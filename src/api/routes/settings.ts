@@ -32,32 +32,29 @@ export function settingsRoutes(): Router {
 
   /**
    * GET /api/v1/settings/connections
-   * Legacy global integration check (which providers are configured at server level).
-   * The newer /api/v1/connections endpoint returns per-user OAuth connections.
+   * DEPRECATED — redirects to /api/v1/connections (per-user OAuth).
+   * Previously leaked server-level integration state to all users.
    */
-  router.get('/connections', async (_req, res: Response) => {
+  router.get('/connections', async (req, res: Response) => {
+    // Redirect to the per-user connections endpoint
+    const { userId } = req as any;
+    try {
+      const { isConnected, getConnectedProviders } = require('../../services/oauth-store');
+      const providers = getConnectedProviders?.(userId) || [];
+      const connections = providers.map((p: any) => ({
+        name: p.provider,
+        status: 'connected',
+        lastSync: p.created_at || null,
+      }));
+      sendSuccess(res, { connections });
+    } catch {
+      sendSuccess(res, { connections: [] });
+    }
+    return;
+
+    // Dead code below — kept for reference, never reached
     try {
       const connections: { name: string; status: string; lastSync: string | null }[] = [];
-
-      // Check each integration
-      try {
-        const { isOutlookCalendarConfigured } = require('../../services/outlook-calendar');
-        connections.push({
-          name: 'Outlook Calendar',
-          status: isOutlookCalendarConfigured() ? 'connected' : 'disconnected',
-          lastSync: null,
-        });
-      } catch { connections.push({ name: 'Outlook Calendar', status: 'unavailable', lastSync: null }); }
-
-      try {
-        const { isGoogleCalendarConfigured } = require('../../services/google-calendar');
-        connections.push({
-          name: 'Google Calendar',
-          status: isGoogleCalendarConfigured() ? 'connected' : 'disconnected',
-          lastSync: null,
-        });
-      } catch { connections.push({ name: 'Google Calendar', status: 'unavailable', lastSync: null }); }
-
       try {
         const { isOutlookTodoConfigured } = require('../../services/microsoft-todo');
         connections.push({
@@ -161,13 +158,33 @@ export function settingsRoutes(): Router {
     try {
       const db = require('../../services/database').getDb();
 
-      // Delete all user data
-      const tables = ['ios_devices', 'messages', 'onboarding_sessions', 'reminders', 'notes'];
+      // Delete ALL user data from every user-facing table.
+      // This list must stay in sync with migrations that add user_id columns.
+      const tables = [
+        'ios_devices', 'messages', 'onboarding_sessions', 'user_profiles',
+        'conversations', 'todos', 'notes', 'reminders', 'shared_memory',
+        'saved_ideas', 'content_topic_feedback', 'content_ref_channels',
+        'content_knowledge', 'content_patterns', 'content_research_briefs',
+        'book_library', 'video_transcripts', 'video_studies',
+        'invoice_filings', 'invoice_vendors', 'invoice_queue',
+        'finance_transactions', 'finance_tax_events',
+        'recipes', 'meal_plans', 'shopping_lists',
+        'fitness_training_plans', 'training_completions',
+        'native_tasks', 'native_task_lists',
+        'apple_health_data', 'readiness_scores',
+        'webhook_subscriptions', 'webhook_events',
+        'user_oauth_tokens', 'garmin_user_tokens',
+        'email_verification_codes', 'subscriptions',
+        'api_usage', 'audit_trail', 'client_errors',
+        'user_skill_overrides',
+      ];
       for (const table of tables) {
         try {
           db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).run(userId);
-        } catch { /* table may not exist */ }
+        } catch { /* table may not exist or no user_id column */ }
       }
+      // Also delete the user row itself
+      try { db.prepare('DELETE FROM users WHERE id = ?').run(userId); } catch {}
 
       logger.info({ userId, platform: 'ios' }, 'Account deleted (GDPR Article 17)');
       sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });

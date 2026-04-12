@@ -19,29 +19,27 @@ const GOOGLE_API_TIMEOUT_MS = 15_000;
 
 let calendarClient: calendar_v3.Calendar | null = null;
 
-// Per-request user override for multi-user isolation.
-// Same pattern as microsoft-auth.ts _requestUserId.
-let _calendarRequestUserId: number | null = null;
-
-/** Set the per-request Google Calendar user override. */
-export function setGoogleCalendarUserId(userId: number | null): void {
-  _calendarRequestUserId = userId;
+/** @deprecated No-op. userId is now read from AsyncLocalStorage context. */
+export function setGoogleCalendarUserId(_userId: number | null): void {
+  // Intentionally empty
 }
 
-// The Google client caches MUST be invalidated when /connect google writes
-// a fresh refresh token to oauth-store. The OAuth callback handler in
-// oauth-flow.ts calls resetGoogleClients() which fans out to every
-// registered reset hook (see google-auth.ts).
 registerGoogleClientReset(() => { calendarClient = null; });
 
 function getCalendar(): calendar_v3.Calendar {
-  // Per-user override: return a fresh per-user client (not cached)
-  if (_calendarRequestUserId !== null) {
-    const oauth2Client = buildGoogleOAuth2ClientForUser(_calendarRequestUserId);
+  // Read userId from AsyncLocalStorage (race-safe, per-request)
+  let contextUserId: number | null = null;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    contextUserId = getCurrentContext()?.userId ?? null;
+  } catch {}
+
+  if (contextUserId !== null) {
+    const oauth2Client = buildGoogleOAuth2ClientForUser(contextUserId);
     return google.calendar({ version: 'v3', auth: oauth2Client });
   }
 
-  // Owner singleton fallback
+  // Owner singleton fallback (Telegram bot / cron)
   if (calendarClient) return calendarClient;
   const oauth2Client = buildGoogleOAuth2Client();
   calendarClient = google.calendar({ version: 'v3', auth: oauth2Client });
