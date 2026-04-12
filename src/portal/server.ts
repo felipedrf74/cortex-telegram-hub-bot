@@ -2108,21 +2108,19 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
-  // GET /api/content-knowledge — extracted voice DNA from reference channels
+  // GET /api/content-knowledge — voice DNA (canonical service)
   app.get('/api/content-knowledge', (_req: Request, res: Response) => {
     try {
-      const db = getDb();
-      const knowledge = db.prepare(`
-        SELECT category, synthesized_text, source_channels, updated_at
-        FROM content_knowledge ORDER BY updated_at DESC
-      `).all() as any[];
+      const { getVoiceDna } = require('../services/content-dashboard-service');
+      const voiceDna = getVoiceDna();
       res.json({
         ok: true,
-        knowledge: knowledge.map(k => ({
+        knowledge: voiceDna.map((k: any) => ({
           category: k.category,
-          text: k.synthesized_text,
-          sources: JSON.parse(k.source_channels || '[]'),
-          updatedAt: k.updated_at,
+          label: k.label,
+          text: k.text,
+          sources: k.sources,
+          updatedAt: k.updatedAt,
         })),
       });
     } catch (err) {
@@ -2130,42 +2128,24 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
-  // GET /api/books — book library
+  // GET /api/books — book library (canonical service)
   app.get('/api/books', (_req: Request, res: Response) => {
     try {
-      const db = getDb();
-      const books = db.prepare(`
-        SELECT id, title, author, core_thesis, pillar_mapping, key_frameworks,
-               personal_notes, extraction_status, times_referenced, created_at
-        FROM book_library ORDER BY times_referenced DESC, created_at DESC
-      `).all();
-      res.json({ ok: true, books });
+      const { getBooks } = require('../services/content-dashboard-service');
+      const books = getBooks(50);
+      res.json({ ok: true, ...books });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
   });
 
-  // POST /api/override/sprint — toggle content sprint mode
-  app.post('/api/override/sprint', (req: Request, res: Response) => {
+  // POST /api/override/sprint — toggle content sprint mode (canonical service)
+  app.post('/api/override/sprint', (_req: Request, res: Response) => {
     try {
-      const db = getDb();
-      const existing = db.prepare(
-        "SELECT id FROM agent_signals WHERE signal_type = 'content_sprint_mode' AND status = 'active'"
-      ).get() as any;
-
-      if (existing) {
-        dismissSignal(existing.id);
-        res.json({ ok: true, sprint: false, message: 'Sprint mode disabled' });
-      } else {
-        writeSignal({
-          source_agent: 'portal',
-          signal_type: 'content_sprint_mode',
-          payload: { enabled: true, activated_at: new Date().toISOString() },
-          priority: 'urgent',
-        });
-        res.json({ ok: true, sprint: true, message: 'Sprint mode enabled' });
-      }
+      const { toggleSprintMode } = require('../services/content-dashboard-service');
+      const result = toggleSprintMode();
       cachedSnapshot = null;
+      res.json({ ok: true, ...result });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }

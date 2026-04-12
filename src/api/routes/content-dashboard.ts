@@ -29,6 +29,7 @@ import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { getJobStatuses } from '../../portal/telemetry';
 import { getPipelineStats } from '../../agents/pipeline-agent';
+import { getBooks, getVoiceDna, getPipelineRecent, getKnowledgeStats } from '../../services/content-dashboard-service';
 import {
   getAgentStats,
   getSignalLog,
@@ -531,46 +532,7 @@ export function buildContentDashboard(): ContentDashboardResponse {
     rows: [],
   };
   try {
-    const rows = db.prepare(`
-      SELECT id, title, author, core_thesis, key_frameworks, pillar_mapping,
-             extraction_status, times_referenced, created_at
-        FROM book_library
-       ORDER BY times_referenced DESC, created_at DESC
-       LIMIT 50
-    `).all() as Array<{
-      id: number;
-      title: string;
-      author: string;
-      core_thesis: string | null;
-      key_frameworks: string | null;
-      pillar_mapping: string | null;
-      extraction_status: string;
-      times_referenced: number;
-      created_at: string;
-    }>;
-    const totalsRow = db.prepare(`
-      SELECT
-        COUNT(*) as total,
-        SUM(CASE WHEN extraction_status = 'extracted' THEN 1 ELSE 0 END) as extracted,
-        SUM(CASE WHEN extraction_status IN ('pending', 'extracting') THEN 1 ELSE 0 END) as pending
-      FROM book_library
-    `).get() as { total: number; extracted: number | null; pending: number | null } | undefined;
-    books = {
-      total: totalsRow?.total ?? 0,
-      extracted: totalsRow?.extracted ?? 0,
-      pending: totalsRow?.pending ?? 0,
-      rows: rows.map((r) => ({
-        id: r.id,
-        title: r.title,
-        author: r.author,
-        status: r.extraction_status,
-        thesis: r.core_thesis,
-        frameworks: safeJsonArray(r.key_frameworks),
-        pillars: safeJsonArray(r.pillar_mapping),
-        timesReferenced: r.times_referenced ?? 0,
-        createdAt: r.created_at,
-      })),
-    };
+    books = getBooks(50, db);
   } catch (err) {
     logger.debug({ err }, 'Content dashboard: book_library query failed — returning empty');
   }
@@ -745,25 +707,7 @@ export function buildContentDashboard(): ContentDashboardResponse {
 
   let voiceDna: ContentDashboardResponse['voiceDna'] = [];
   try {
-    const rows = db.prepare(`
-      SELECT category, synthesized_text, source_channels, version, updated_at
-        FROM content_knowledge
-       ORDER BY updated_at DESC
-    `).all() as Array<{
-      category: string;
-      synthesized_text: string;
-      source_channels: string | null;
-      version: number;
-      updated_at: string;
-    }>;
-    voiceDna = rows.map((r) => ({
-      category: r.category,
-      label: CATEGORY_LABELS[r.category] ?? r.category,
-      text: r.synthesized_text,
-      sources: safeJsonArray(r.source_channels),
-      version: r.version,
-      updatedAt: r.updated_at,
-    }));
+    voiceDna = getVoiceDna(db);
   } catch (err) {
     logger.debug({ err }, 'Content dashboard: voice DNA query failed');
   }
@@ -810,37 +754,13 @@ export function buildContentDashboard(): ContentDashboardResponse {
   };
   try {
     const stats = getPipelineStats();
-    const recent = db.prepare(`
-      SELECT id, topic_title, niche, stage, created_at, updated_at,
-             published_url, published_at
-        FROM content_pipeline
-       ORDER BY updated_at DESC
-       LIMIT 30
-    `).all() as Array<{
-      id: number;
-      topic_title: string;
-      niche: string | null;
-      stage: string;
-      created_at: string;
-      updated_at: string;
-      published_url: string | null;
-      published_at: string | null;
-    }>;
+    const recent = getPipelineRecent(30, db);
     pipeline = {
       stages: stats.stages,
       bottleneck: stats.bottleneck,
       publishedThisWeek: stats.publishedThisWeek,
       totalActive: stats.totalActive,
-      recent: recent.map((r) => ({
-        id: r.id,
-        topicTitle: r.topic_title,
-        niche: r.niche,
-        stage: r.stage,
-        createdAt: r.created_at,
-        updatedAt: r.updated_at,
-        publishedUrl: r.published_url,
-        publishedAt: r.published_at,
-      })),
+      recent,
     };
   } catch (err) {
     logger.debug({ err }, 'Content dashboard: pipeline query failed');
@@ -850,19 +770,9 @@ export function buildContentDashboard(): ContentDashboardResponse {
   let knowledgeStats: { category: string; updatedAt: string; sources: number }[] = [];
   let referenceChannels = 0;
   try {
-    const kStats = db.prepare(`
-      SELECT category, updated_at,
-             json_array_length(COALESCE(source_channels, '[]')) as sources
-        FROM content_knowledge
-       ORDER BY updated_at DESC
-    `).all() as Array<{ category: string; updated_at: string; sources: number }>;
-    knowledgeStats = kStats.map((r) => ({
-      category: r.category,
-      updatedAt: r.updated_at,
-      sources: r.sources ?? 0,
-    }));
-    const rc = db.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels').get() as { cnt: number } | undefined;
-    referenceChannels = rc?.cnt ?? 0;
+    const ks = getKnowledgeStats(db);
+    knowledgeStats = ks.categories;
+    referenceChannels = ks.referenceChannels;
   } catch (err) {
     logger.debug({ err }, 'Content dashboard: knowledge-stats query failed');
   }
