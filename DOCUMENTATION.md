@@ -1,9 +1,42 @@
 # Nexus Hub — Technical & Functional Documentation
-<!-- TODO: Rename server directory /home/dominguez/telegram-hub-bot → /home/dominguez/nexus-hub -->
 
-> **Version:** 4.0.0 | **Platform:** Node.js + TypeScript + Python | **AI:** Claude Sonnet/Haiku (Anthropic) | **Database:** SQLite
+> **Version:** 4.14+ | **Platform:** Node.js + TypeScript + Python + Swift/SwiftUI | **AI:** Gemini 2.5 Flash (primary) / Claude Sonnet (fallback) | **Database:** SQLite
 
-A multi-domain AI-powered Telegram personal assistant that unifies task management, calendar coordination, fitness coaching, invoice automation, and a full **Content Agent Mesh** (9 autonomous AI agents + intelligence bus + book knowledge system) into a single bot interface with a real-time Mission Control portal.
+## Product Architecture
+
+Nexus Hub is an **AI personal operating system** for self-employed athletes and creators.
+
+| Surface | Role | Technology |
+|---------|------|------------|
+| **iOS App** | Primary user experience | Swift, SwiftUI, iOS 17+, HealthKit |
+| **Portal Hub** | Operator / admin / inspection | Express, HTML/JS, SSE |
+| **Telegram Bot** | Legacy compatibility layer | Grammy (grammy.dev) |
+| **REST API** | Canonical backend contract | Express `/api/v1/*` |
+
+### iOS-First Principle
+
+All core domain logic returns **structured JSON** consumed by the iOS app and portal hub.
+Telegram is a legacy adapter — it calls the same services but formats output as HTML.
+New features are built API-first (`/api/v1/*`) and rendered natively in SwiftUI.
+
+### Token-Zero Routing
+
+Data lookups (calendar, tasks, training, readiness) call REST endpoints directly — **$0.00 per request**.
+Only free-form questions and content generation invoke the AI pipeline — tokens are justified.
+The iOS app uses on-device NLP (SmartFastpath) to route messages before they reach the server.
+
+---
+
+## Legacy Note
+
+The repository name (`cortex-telegram-hub-bot`) and some internal paths reflect the project's Telegram-bot origins. The product has evolved into a multi-surface iOS-first system. The backend serves:
+- iOS app via `/api/v1/*` (JWT auth, per-user scoping)
+- Portal hub via `/api/*` (portal token auth)
+- Telegram bot via Grammy long-polling (legacy adapter)
+
+---
+
+The system unifies task management, calendar coordination, fitness coaching, invoice automation, and a full **Content Agent Mesh** (9 autonomous AI agents + intelligence bus + book knowledge system) into a coherent product with durable reports, structured notifications, and provider-agnostic health metrics.
 
 ---
 
@@ -33,21 +66,36 @@ A multi-domain AI-powered Telegram personal assistant that unifies task manageme
 ## 1. Architecture Overview
 
 ```
-                          +─────────────────────+
-                          |   Telegram Users     |
-                          +──────────┬──────────+
-                                     │
-                          +──────────▼──────────+
-                          |    Grammy Bot        |
-                          |  (Long Polling)      |
-                          +──────────┬──────────+
-                                     │
-              ┌──────────────────────┼──────────────────────┐
-              │                      │                      │
-     +────────▼────────+   +────────▼────────+   +─────────▼─────────+
-     | AI Router        |   | Command Handler |   | Image Processor   |
-     | (3-tier classify)|   | (50+ commands)  |   | (Claude Vision)   |
-     +────────┬────────+   +────────┬────────+   +─────────┬─────────+
+                    ┌──────────────┐
+                    │   iOS App    │ ← Primary user surface
+                    └──────┬───────┘
+                           │ /api/v1/* (JWT)
+              ┌────────────┼────────────┐
+              │            │            │
+     ┌────────▼────────┐   │   ┌────────▼────────┐
+     │  SmartFastpath   │   │   │  Portal Hub     │ ← Operator surface
+     │  (on-device NLP) │   │   │  /api/* (token) │
+     └────────┬────────┘   │   └────────┬────────┘
+              │            │            │
+              ▼            ▼            ▼
+     ┌─────────────────────────────────────────┐
+     │           Express API Server             │
+     │  ┌──────────┬──────────┬──────────────┐ │
+     │  │ REST API │ Scheduler│ Telegram Bot │ │
+     │  │ /api/v1  │ (cron)   │ (legacy)     │ │
+     │  └────┬─────┴────┬─────┴──────┬───────┘ │
+     │       │          │            │          │
+     │  ┌────▼──────────▼────────────▼────────┐ │
+     │  │     Domain Services Layer            │ │
+     │  │  secretary · triathlon · content     │ │
+     │  │  cooking · finance · wearable        │ │
+     │  └────┬──────────┬────────────┬────────┘ │
+     │       │          │            │          │
+     │  ┌────▼────┐ ┌───▼───┐ ┌─────▼────────┐ │
+     │  │ SQLite  │ │ APNs  │ │Content Engine│ │
+     │  │ (data)  │ │(push) │ │  (Python)    │ │
+     │  └─────────┘ └───────┘ └──────────────┘ │
+     └─────────────────────────────────────────┘
               │                      │                      │
      +────────▼──────────────────────▼──────────────────────▼────────+
      |                     Domain Handlers                           |

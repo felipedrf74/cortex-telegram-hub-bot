@@ -4,6 +4,50 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+
+// ── Generation Mode + Metadata ────────────────────────────────────
+//
+// Auto-selected by endpoint intent, not by client. Consistent metadata
+// object attached to all content-generation responses.
+//
+// Modes:
+//   quick    — cache-first, no deep research, cheapest path (~$0.003)
+//   standard — balanced: research + signals + Claude ($0.01)
+//   deep     — extra research passes, longer timeout (~$0.02)
+//
+// The mode is chosen by the endpoint based on operation type.
+// iOS does NOT send a mode — the backend selects automatically.
+
+type GenerationMode = 'quick' | 'standard' | 'deep';
+
+interface GenerationMetadata {
+  mode: GenerationMode;
+  cacheHit: boolean;
+  provider?: string;
+  durationMs?: number;
+  researchUsed?: boolean;
+}
+
+/**
+ * Build a generation metadata object from timing and mode info.
+ * Attaches as `generation` field in the response — consistent across
+ * all content-generation endpoints.
+ */
+function buildGenerationMeta(opts: {
+  mode: GenerationMode;
+  startMs: number;
+  cacheHit?: boolean;
+  provider?: string;
+  researchUsed?: boolean;
+}): GenerationMetadata {
+  return {
+    mode: opts.mode,
+    cacheHit: opts.cacheHit ?? false,
+    provider: opts.provider,
+    durationMs: Date.now() - opts.startMs,
+    researchUsed: opts.researchUsed ?? (opts.mode !== 'quick'),
+  };
+}
 import {
   addTopic,
   getTopics,
@@ -101,6 +145,7 @@ export function contentRoutes(): Router {
   /** POST /api/v1/content/discover — trigger content discovery */
   router.post('/discover', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
+    const startMs = Date.now();
     try {
       const { runContentDiscovery } = require('../../services/content-discovery');
       const result = await runContentDiscovery(userId);
@@ -108,6 +153,12 @@ export function contentRoutes(): Router {
         discovered: result?.count || 0,
         ideas: result?.ideas || [],
         message: `Discovered ${result?.count || 0} new content ideas.`,
+        generation: buildGenerationMeta({
+          mode: 'standard',
+          startMs,
+          provider: 'gemini-flash',
+          researchUsed: true,
+        }),
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/discover failed');
@@ -135,28 +186,21 @@ export function contentRoutes(): Router {
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { topic, niche, format, maxDurationMinutes, mode } = req.body;
+    const { topic, niche, format, maxDurationMinutes } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
       sendError(res, 'VALIDATION', 'topic is required', 400);
       return;
     }
 
-    // Generation mode determines cost/depth tradeoff:
-    //   quick    → shorter prompt, faster, lower cost (~$0.003)
-    //   standard → full research + signals (default, ~$0.01)
-    //   deep     → extra research passes (~$0.02)
-    // iOS sends mode; backend auto-selects 'standard' when omitted.
-    const generationMode = mode || 'standard';
+    // Script generation is always 'standard' — it's the crown jewel
+    // path: deep research + intelligence bus signals + Claude Sonnet.
+    // The mode is auto-selected, not client-chosen.
+    const genMode: GenerationMode = 'standard';
+    const startMs = Date.now();
 
     try {
       const { getScript } = require('../../services/content-engine');
-      const cacheKey = `script:${topic.toLowerCase().trim()}:${niche || 'general'}:${format || 'YouTube'}`;
-      let cacheHit = false;
-
-      // Check if this was a cache hit (the cache is inside getScript,
-      // but we can detect it from timing — <100ms = cache hit)
-      const startMs = Date.now();
       const result = await getScript(
         topic.trim(),
         niche || 'general',
@@ -164,7 +208,7 @@ export function contentRoutes(): Router {
         format || 'YouTube',
       );
       const elapsedMs = Date.now() - startMs;
-      cacheHit = elapsedMs < 500; // Cache hits are < 50ms; fresh generation is 15-180s
+      const cacheHit = elapsedMs < 500;
 
       sendSuccess(res, {
         topic: result.topic,
@@ -184,10 +228,18 @@ export function contentRoutes(): Router {
         hashtags: result.hashtags ?? [],
         caption: result.caption ?? '',
         cta: result.cta ?? '',
-        // Generation metadata
-        generationMode,
+        // Consistent generation metadata (same shape across all endpoints)
+        generation: buildGenerationMeta({
+          mode: genMode,
+          startMs,
+          cacheHit,
+          provider: 'content-engine',
+          researchUsed: !cacheHit,
+        }),
+        // Backward compat — keep old fields until iOS migrates
+        generationMode: genMode,
         cacheHit,
-        usageImpact: cacheHit ? 'none' : (generationMode === 'deep' ? 'high' : 'standard'),
+        usageImpact: cacheHit ? 'none' : 'standard',
       });
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');
@@ -545,6 +597,7 @@ export function contentRoutes(): Router {
       return;
     }
 
+    const startMs = Date.now();
     const { generateAndStoreTopicCandidates } = require('../../services/content-workflow');
     const result = await generateAndStoreTopicCandidates(userId, format, sourceJob);
 
@@ -561,6 +614,12 @@ export function contentRoutes(): Router {
         whyNow: c.whyNow,
         angleTag: c.angleTag || null,
       })),
+      generation: buildGenerationMeta({
+        mode: 'standard',
+        startMs,
+        provider: 'gemini-flash',
+        researchUsed: false,
+      }),
     });
   }));
 
@@ -636,6 +695,7 @@ export function contentRoutes(): Router {
    */
   router.post('/weekly-package', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
+    const startMs = Date.now();
 
     const { generateWeeklyPackage } = require('../../services/content-workflow');
     const result = await generateWeeklyPackage(userId);
@@ -658,6 +718,12 @@ export function contentRoutes(): Router {
         count: result.reels.length,
         candidates: result.reels.map(mapCandidate),
       },
+      generation: buildGenerationMeta({
+        mode: 'standard',
+        startMs,
+        provider: 'gemini-flash',
+        researchUsed: false,
+      }),
     });
   }));
 
