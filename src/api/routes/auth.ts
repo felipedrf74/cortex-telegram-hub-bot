@@ -56,6 +56,24 @@ function issueTokensAndRegisterDevice(
       last_active_at = datetime('now')
   `).run(userId, deviceId, deviceName, pushToken, refreshToken);
 
+  // Seed a 'pro' subscription for new users who don't have one yet.
+  // This gives TestFlight testers and early adopters full AI access
+  // without requiring an in-app purchase. The subscription can be
+  // overridden by a real Stripe or Apple IAP transaction later.
+  try {
+    const existingSub = db.prepare(
+      'SELECT id FROM subscriptions WHERE user_id = ?'
+    ).get(userId) as any;
+    if (!existingSub) {
+      const trialEnd = new Date(Date.now() + 365 * 86400000).toISOString(); // 1 year
+      db.prepare(`
+        INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_end)
+        VALUES (?, 'pro', 'yearly', 'active', 'seed', ?)
+      `).run(userId, trialEnd);
+      logger.info({ userId }, 'Seeded pro subscription for new user');
+    }
+  } catch { /* subscriptions table may not exist in tests */ }
+
   logAudit({
     userId, actorId: userId, action: 'access', resource: 'auth.register',
     details: { deviceId, deviceName },

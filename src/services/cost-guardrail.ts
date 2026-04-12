@@ -169,14 +169,20 @@ export function isUserOverDailyCap(
     // owner Telegram ID. Path 2 is needed because iOS auth creates
     // users with an auto-increment `id` (e.g. 13) that doesn't
     // match the Telegram ID (e.g. 7807541475).
+    // Owner detection: check both Telegram ID list AND users.tier = 'owner'.
+    // The Telegram list is legacy; multi-auth users (Google, Apple) use tier.
     const ownerTelegramIds = config.telegram.allowedUserIds || [];
     let isOwner = ownerTelegramIds.includes(userId);
     if (!isOwner) {
       try {
         const user = db.prepare(
-          "SELECT telegram_id FROM users WHERE id = ?"
-        ).get(userId) as { telegram_id: number | null } | undefined;
+          "SELECT telegram_id, tier FROM users WHERE id = ?"
+        ).get(userId) as { telegram_id: number | null; tier: string } | undefined;
         if (user?.telegram_id && ownerTelegramIds.includes(user.telegram_id)) {
+          isOwner = true;
+        }
+        // Multi-auth owner (e.g. Google Sign-In with tier='owner')
+        if (user?.tier === 'owner') {
           isOwner = true;
         }
       } catch { /* users table may not exist */ }
