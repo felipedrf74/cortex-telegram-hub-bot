@@ -85,18 +85,28 @@ export function getIdeasBySource(source: string, limit = 20): SavedIdea[] {
   ).all(source, limit) as SavedIdea[];
 }
 
-/** Get workflow-eligible ideas from discovery (last 7 days, not yet promoted) */
-export function getWorkflowEligibleIdeas(): SavedIdea[] {
+/**
+ * Get workflow-eligible ideas from discovery (last 7 days, not yet promoted).
+ *
+ * @param userId — scope to this user's ideas. If omitted, returns ideas
+ *   for all users (backward compat for legacy callers). New callers
+ *   MUST pass userId for proper multi-tenant isolation.
+ */
+export function getWorkflowEligibleIdeas(userId?: number): SavedIdea[] {
   const db = getDb();
+  const userClause = userId != null ? 'AND user_id = ?' : '';
+  const params: any[] = [];
+  if (userId != null) params.push(userId);
   return db.prepare(`
     SELECT * FROM saved_ideas
     WHERE workflow_eligible = 1
       AND source = 'discovery'
       AND status = 'saved'
       AND created_at > datetime('now', '-7 days')
+      ${userClause}
     ORDER BY score DESC
     LIMIT 10
-  `).all() as SavedIdea[];
+  `).all(...params) as SavedIdea[];
 }
 
 /** Mark an idea as promoted to workflow */

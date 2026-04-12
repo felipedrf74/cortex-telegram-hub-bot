@@ -88,6 +88,22 @@ export interface AgentSignal {
   expires_at: string;
   /** Telegram user ID, or null for global signals (content mesh). */
   user_id: number | null;
+  /** Strength/certainty metric (0.0–1.0). Higher = more reliable. (Migration 060) */
+  confidence: number;
+  /** Content format tag: 'reel', 'youtube', 'short', etc. (Migration 060) */
+  format_tag: string | null;
+  /** Content pillar tag: 'tech', 'fitness', 'politics', etc. (Migration 060) */
+  pillar_tag: string | null;
+  /** How many observations/data points back this signal. (Migration 060) */
+  evidence_count: number;
+}
+
+/** A ranked signal with a computed relevance score. */
+export interface RankedSignal extends AgentSignal {
+  /** Combined rank = confidence × freshness × priority_weight. Range 0–1. */
+  relevanceScore: number;
+  /** Age in hours since creation. */
+  ageHours: number;
 }
 
 export interface AgentRunRecord {
@@ -204,6 +220,14 @@ export function writeSignal(signal: {
   expires_at?: string;
   /** Telegram user ID for per-user signals. Omit for global content signals. */
   user_id?: number;
+  /** Strength/certainty metric (0.0–1.0). Default 0.5. */
+  confidence?: number;
+  /** Content format: 'reel', 'youtube', 'short', etc. */
+  format_tag?: string;
+  /** Content pillar: 'tech', 'fitness', 'politics', etc. */
+  pillar_tag?: string;
+  /** Number of observations backing this signal. Default 1. */
+  evidence_count?: number;
 }): number {
   const d = db();
   if (!d) return -1;
@@ -214,8 +238,10 @@ export function writeSignal(signal: {
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
 
     const result = d.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, user_id)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, user_id,
+         confidence, format_tag, pillar_tag, evidence_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       signal.source_agent,
       signal.signal_type,
@@ -223,6 +249,10 @@ export function writeSignal(signal: {
       priority,
       expires_at,
       signal.user_id ?? null,
+      signal.confidence ?? 0.5,
+      signal.format_tag ?? null,
+      signal.pillar_tag ?? null,
+      signal.evidence_count ?? 1,
     );
     return (result as any).lastInsertRowid ?? -1;
   } catch {
@@ -423,5 +453,136 @@ function parseSignalRow(row: any): AgentSignal {
     created_at: row.created_at,
     expires_at: row.expires_at,
     user_id: row.user_id ?? null,
+    confidence: row.confidence ?? 0.5,
+    format_tag: row.format_tag ?? null,
+    pillar_tag: row.pillar_tag ?? null,
+    evidence_count: row.evidence_count ?? 1,
   };
+}
+
+// ─── Ranked Signal Reader ──────────────────────────────────────────
+//
+// Unlike readSignals() which returns flat results ordered by priority
+// then creation time, readRankedSignals() computes a relevance score
+// for each signal: confidence × freshness × priority_weight.
+//
+// This is the primary read path for content-intelligence consumers
+// that need the BEST signals, not just the newest.
+
+const PRIORITY_WEIGHT: Record<string, number> = {
+  urgent: 1.0,
+  normal: 0.7,
+  background: 0.3,
+};
+
+/**
+ * Compute freshness score: exponential decay from 1.0 (just created)
+ * toward 0.0 as the signal approaches its expiry. Signals past 90%
+ * of their TTL score below 0.1.
+ */
+function freshnessScore(createdAt: string, expiresAt: string): number {
+  const created = new Date(createdAt).getTime();
+  const expires = new Date(expiresAt).getTime();
+  const now = Date.now();
+
+  if (expires <= created) return 0; // guard against bad data
+  const totalLife = expires - created;
+  const age = now - created;
+  const pctRemaining = Math.max(0, 1 - age / totalLife);
+
+  // Exponential decay curve: fresh signals keep high score,
+  // stale signals drop sharply
+  return Math.pow(pctRemaining, 0.5);
+}
+
+/**
+ * Read signals ranked by relevance = confidence × freshness × priority.
+ *
+ * Optional filters:
+ *   - pillar: only signals tagged with this pillar (or untagged)
+ *   - format: only signals tagged with this format (or untagged)
+ *   - minConfidence: floor (default 0.1 — filter out noise)
+ *
+ * Returns RankedSignal[] sorted by relevanceScore DESC.
+ */
+export function readRankedSignals(
+  consumer: string,
+  signalTypes: SignalType[],
+  opts: {
+    limit?: number;
+    userId?: number;
+    pillar?: string;
+    format?: string;
+    minConfidence?: number;
+  } = {},
+): RankedSignal[] {
+  const d = db();
+  if (!d) return [];
+
+  const limit = opts.limit ?? 20;
+  const minConfidence = opts.minConfidence ?? 0.1;
+
+  try {
+    const placeholders = signalTypes.map(() => '?').join(',');
+    const clauses: string[] = [
+      "status = 'active'",
+      `signal_type IN (${placeholders})`,
+      `confidence >= ?`,
+    ];
+    const params: any[] = [...signalTypes, minConfidence];
+
+    // User scoping
+    if (opts.userId !== undefined) {
+      clauses.push('(user_id IS NULL OR user_id = ?)');
+      params.push(opts.userId);
+    } else {
+      clauses.push('user_id IS NULL');
+    }
+
+    // Pillar filter (include untagged signals too)
+    if (opts.pillar) {
+      clauses.push('(pillar_tag IS NULL OR pillar_tag = ?)');
+      params.push(opts.pillar);
+    }
+
+    // Format filter (include untagged signals too)
+    if (opts.format) {
+      clauses.push('(format_tag IS NULL OR format_tag = ?)');
+      params.push(opts.format);
+    }
+
+    // Fetch more than needed, then rank and trim
+    params.push(limit * 3);
+
+    const rows = d.prepare(`
+      SELECT * FROM agent_signals
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY confidence DESC, created_at DESC
+      LIMIT ?
+    `).all(...params) as any[];
+
+    const signals = rows
+      .map(parseSignalRow)
+      .filter(s => !s.consumed_by.includes(consumer));
+
+    // Compute relevance scores
+    const ranked: RankedSignal[] = signals.map(s => {
+      const fresh = freshnessScore(s.created_at, s.expires_at);
+      const priorityW = PRIORITY_WEIGHT[s.priority] ?? 0.5;
+      const ageMs = Date.now() - new Date(s.created_at).getTime();
+
+      return {
+        ...s,
+        relevanceScore: Math.round(s.confidence * fresh * priorityW * 1000) / 1000,
+        ageHours: Math.round(ageMs / 3600_000 * 10) / 10,
+      };
+    });
+
+    // Sort by relevance score DESC, then confidence DESC
+    ranked.sort((a, b) => b.relevanceScore - a.relevanceScore || b.confidence - a.confidence);
+
+    return ranked.slice(0, limit);
+  } catch {
+    return [];
+  }
 }

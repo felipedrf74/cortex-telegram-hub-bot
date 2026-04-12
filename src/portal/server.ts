@@ -2008,6 +2008,64 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/pipeline/metrics — operational pipeline metrics
+  //
+  // Conversion rates, stage velocity, stale inventory, format distribution,
+  // weekly throughput. Powers the portal Pipeline Health dashboard card.
+  app.get('/api/pipeline/metrics', (_req: Request, res: Response) => {
+    try {
+      const { getPipelineOperationalMetrics } = require('../agents/pipeline-agent');
+      const metrics = getPipelineOperationalMetrics();
+      res.json({ ok: true, ...metrics });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  // GET /api/signals/ranked — ranked signals for portal signal inspector
+  //
+  // Returns signals ordered by relevanceScore (confidence × freshness × priority).
+  // Query params: ?types=hook_effectiveness,pillar_performance&pillar=tech&limit=20
+  app.get('/api/signals/ranked', (_req: Request, res: Response) => {
+    try {
+      const { readRankedSignals } = require('../services/intelligence-bus');
+      const types = ((_req.query.types as string) || '').split(',').filter(Boolean);
+      if (types.length === 0) {
+        // Default: all content-intelligence signal types
+        types.push(
+          'hook_effectiveness', 'pillar_performance', 'retention_pattern',
+          'voice_pattern', 'content_formula', 'keyword_opportunity',
+        );
+      }
+      const ranked = readRankedSignals('portal-inspector', types, {
+        limit: parseInt(String(_req.query.limit || '20'), 10),
+        pillar: (_req.query.pillar as string) || undefined,
+        format: (_req.query.format as string) || undefined,
+        minConfidence: parseFloat(String(_req.query.minConfidence || '0.1')),
+      });
+      res.json({
+        ok: true,
+        count: ranked.length,
+        signals: ranked.map((s: any) => ({
+          id: s.id,
+          type: s.signal_type,
+          source: s.source_agent,
+          confidence: s.confidence,
+          relevanceScore: s.relevanceScore,
+          ageHours: s.ageHours,
+          priority: s.priority,
+          pillar: s.pillar_tag,
+          format: s.format_tag,
+          evidenceCount: s.evidence_count,
+          payload: s.payload,
+          createdAt: s.created_at,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // POST /api/books — add and extract a book
   app.post('/api/books', async (req: Request, res: Response) => {
     try {
