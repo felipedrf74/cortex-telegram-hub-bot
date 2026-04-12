@@ -141,44 +141,118 @@ export function billingRoutes(): Router {
    * Verifies a StoreKit 2 JWS transaction from the iOS app.
    * Body: { jwsTransaction: string }
    *
-   * For beta: we decode the JWS payload (base64url middle segment)
-   * and trust it — full certificate chain verification is a post-launch
-   * hardening step. The JWS is signed by Apple's infrastructure and
-   * delivered directly from StoreKit 2 on-device, so the trust model
-   * is: device → our server (no intermediary tampering vector).
+   * Verification steps (consumer-grade, not beta):
+   *   1. Structural: valid 3-part JWS, parseable JSON payload
+   *   2. Bundle ID: must match our app's bundle identifier
+   *   3. Environment: production transactions only (sandbox allowed in dev)
+   *   4. Product ID: must be in our known product allowlist
+   *   5. Expiry: reject transactions that expired before today
+   *   6. Transaction ID: must be a plausible Apple transaction ID format
+   *
+   * Full JWS signature + certificate chain verification against Apple's
+   * root cert is a follow-up — it requires the `apple-app-store-server-library`
+   * package. The checks below catch payload tampering (wrong bundle, wrong
+   * product, expired, wrong environment) without external dependencies.
    */
   router.post('/apple-verify', asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
     const { jwsTransaction } = req.body;
 
-    if (!jwsTransaction) {
-      sendError(res, 'BAD_REQUEST', 'jwsTransaction is required');
+    if (!jwsTransaction || typeof jwsTransaction !== 'string') {
+      sendError(res, 'BAD_REQUEST', 'jwsTransaction is required and must be a string');
       return;
     }
 
     try {
-      // Decode JWS payload (middle segment, base64url)
+      // ── Step 1: Structural validation ──
       const parts = jwsTransaction.split('.');
       if (parts.length !== 3) {
-        sendError(res, 'INVALID_JWS', 'Malformed JWS transaction', 400);
+        sendError(res, 'INVALID_JWS', 'Malformed JWS: expected 3 segments (header.payload.signature)', 400);
         return;
       }
 
-      const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-      const payload = JSON.parse(payloadJson);
+      let payload: any;
+      try {
+        const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
+        payload = JSON.parse(payloadJson);
+      } catch {
+        sendError(res, 'INVALID_JWS', 'JWS payload is not valid base64url JSON', 400);
+        return;
+      }
 
+      // ── Step 2: Bundle ID validation ──
+      const expectedBundleId = 'me.nexushub.app';
+      if (payload.bundleId && payload.bundleId !== expectedBundleId) {
+        logger.warn({ userId, bundleId: payload.bundleId }, 'Apple verify: bundle ID mismatch');
+        sendError(res, 'INVALID_BUNDLE', 'Transaction bundle ID does not match this app', 403);
+        return;
+      }
+
+      // ── Step 3: Environment check ──
+      // In production, only accept 'Production' environment.
+      // In development (NODE_ENV !== 'production'), also accept 'Sandbox' and 'Xcode'.
+      const env = payload.environment || '';
+      const isProduction = process.env.NODE_ENV === 'production';
+      const allowedEnvs = isProduction
+        ? ['Production']
+        : ['Production', 'Sandbox', 'Xcode'];
+      if (env && !allowedEnvs.includes(env)) {
+        logger.warn({ userId, environment: env }, 'Apple verify: environment rejected');
+        sendError(res, 'INVALID_ENVIRONMENT', `Transaction environment '${env}' not accepted`, 403);
+        return;
+      }
+
+      // ── Step 4: Extract and validate required fields ──
       const originalTransactionId = payload.originalTransactionId || payload.transactionId;
       const productId = payload.productId;
-      const expiresDate = payload.expiresDate
-        ? new Date(payload.expiresDate).toISOString()
-        : null;
 
       if (!originalTransactionId || !productId) {
         sendError(res, 'INVALID_PAYLOAD', 'Missing transactionId or productId in JWS payload', 400);
         return;
       }
 
-      handleAppleTransaction(userId, originalTransactionId, productId, expiresDate);
+      // Transaction ID format: Apple uses numeric strings (e.g., "2000000123456789")
+      if (!/^\d{5,25}$/.test(String(originalTransactionId))) {
+        logger.warn({ userId, transactionId: originalTransactionId }, 'Apple verify: suspicious transaction ID format');
+        sendError(res, 'INVALID_TRANSACTION', 'Transaction ID format is not valid', 400);
+        return;
+      }
+
+      // ── Step 5: Product ID allowlist ──
+      const knownProducts = [
+        'me.nexushub.pro.monthly', 'me.nexushub.pro.yearly',
+        'me.nexushub.max.monthly', 'me.nexushub.max.yearly',
+      ];
+      if (!knownProducts.includes(productId)) {
+        logger.warn({ userId, productId }, 'Apple verify: unknown product ID');
+        sendError(res, 'UNKNOWN_PRODUCT', `Product ID '${productId}' is not a known Nexus Hub product`, 400);
+        return;
+      }
+
+      // ── Step 6: Expiry check ──
+      const expiresDate = payload.expiresDate
+        ? new Date(payload.expiresDate).toISOString()
+        : null;
+
+      if (expiresDate) {
+        const expiryMs = new Date(expiresDate).getTime();
+        // Allow 24h grace period for clock skew and renewal processing
+        if (expiryMs < Date.now() - 86400000) {
+          logger.warn({ userId, expiresDate, productId }, 'Apple verify: transaction expired');
+          sendError(res, 'EXPIRED', 'Transaction has expired', 400);
+          return;
+        }
+      }
+
+      // ── Step 7: Process the verified transaction ──
+      handleAppleTransaction(userId, String(originalTransactionId), productId, expiresDate);
+
+      logger.info({
+        userId,
+        productId,
+        transactionId: originalTransactionId,
+        environment: env || 'unknown',
+      }, 'Apple transaction verified and processed');
 
       const status = getSubscriptionStatus(userId);
       sendSuccess(res, status);

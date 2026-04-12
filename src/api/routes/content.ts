@@ -274,7 +274,9 @@ export function contentRoutes(): Router {
       }
 
       const nextStage = stageOrder[currentIdx + 1];
-      db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ? AND user_id IN (0, ?)').run(nextStage, id, userId);
+      // Strict ownership: only update rows the user owns. Legacy user_id=0
+      // rows are readable but not mutable — they're system seed data.
+      db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ? AND user_id = ?').run(nextStage, id, userId);
 
       sendSuccess(res, { advanced: true, newStage: nextStage });
     } catch (err: any) {
@@ -864,12 +866,35 @@ export function contentRoutes(): Router {
    *
    * Trace the full artifact chain for a pipeline entry:
    * idea → topic feedback → pipeline → script → performance → patterns
+   *
+   * Ownership-gated: the pipeline must belong to the authenticated user.
    */
   router.get('/artifact-chain/:pipelineId', asyncHandler(async (req, res: Response) => {
-    const { pipelineId } = req.params;
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const pipelineId = parseInt(req.params.pipelineId, 10);
+
+    if (Number.isNaN(pipelineId)) {
+      sendError(res, 'BAD_REQUEST', 'pipelineId must be a number', 400);
+      return;
+    }
+
+    // Ownership check — verify the pipeline belongs to this user
+    const db = require('../../services/database').getDb();
+    const row = db.prepare(
+      'SELECT user_id FROM content_pipeline WHERE id = ?'
+    ).get(pipelineId) as { user_id: number } | undefined;
+
+    if (!row) {
+      sendError(res, 'NOT_FOUND', 'Pipeline entry not found', 404);
+      return;
+    }
+    if (row.user_id !== 0 && row.user_id !== userId) {
+      sendError(res, 'FORBIDDEN', 'Not your pipeline entry', 403);
+      return;
+    }
 
     const { getArtifactChain } = require('../../services/content-learning-store');
-    const chain = getArtifactChain(parseInt(pipelineId, 10));
+    const chain = getArtifactChain(pipelineId);
 
     sendSuccess(res, chain);
   }));

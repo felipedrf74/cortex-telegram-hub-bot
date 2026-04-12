@@ -116,31 +116,70 @@ export function settingsRoutes(): Router {
     }
   });
 
-  /** POST /api/v1/settings/export — GDPR data export */
+  /** POST /api/v1/settings/export — GDPR data export (Article 15: right of access) */
   router.post('/export', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     try {
       const db = require('../../services/database').getDb();
 
-      // Collect all user data
+      // Collect ALL user data — every table that stores user-owned content.
+      // This list must stay in sync with the DELETE /account table list.
       const userData: Record<string, any> = {};
 
-      // Messages
-      try {
-        userData.messages = db.prepare('SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 10000').all(userId);
-      } catch { userData.messages = []; }
+      // Helper: safe query that returns [] if table doesn't exist
+      const safeAll = (sql: string, ...params: any[]) => {
+        try { return db.prepare(sql).all(...params); } catch { return []; }
+      };
 
-      // Profiles
+      // ── Core data ──
+      userData.messages = safeAll('SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC LIMIT 10000', userId);
+      userData.devices = safeAll('SELECT device_id, device_name, created_at, last_active_at FROM ios_devices WHERE user_id = ?', userId);
+
+      // ── Profiles ──
       try {
         const onboarding = require('../../services/onboarding');
         const allQ = onboarding.getAllQuestionnaires?.() || [];
         userData.profiles = allQ.map((q: any) => onboarding.getProfile(userId, q.id)).filter(Boolean);
       } catch { userData.profiles = []; }
 
-      // Devices
-      try {
-        userData.devices = db.prepare('SELECT device_id, device_name, created_at, last_active_at FROM ios_devices WHERE user_id = ?').all(userId);
-      } catch { userData.devices = []; }
+      // ── Content (learning store) ──
+      userData.contentScripts = safeAll('SELECT * FROM content_scripts WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.contentPerformance = safeAll('SELECT * FROM content_performance WHERE user_id = ? ORDER BY logged_at DESC', userId);
+      userData.contentLearnedPatterns = safeAll('SELECT * FROM content_learned_patterns WHERE user_id = ?', userId);
+      userData.contentPipeline = safeAll('SELECT * FROM content_pipeline WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.contentTopicFeedback = safeAll('SELECT * FROM content_topic_feedback WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.contentTopics = safeAll('SELECT * FROM content_topics WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.contentKnowledge = safeAll('SELECT * FROM content_knowledge WHERE user_id = ?', userId);
+      userData.contentRefChannels = safeAll('SELECT * FROM content_ref_channels WHERE user_id = ?', userId);
+      userData.bookLibrary = safeAll('SELECT * FROM book_library WHERE user_id = ?', userId);
+
+      // ── Reports & notifications ──
+      userData.reportDocuments = safeAll('SELECT * FROM report_documents WHERE user_id = ? ORDER BY created_at DESC', userId);
+      userData.pushPreferences = safeAll('SELECT * FROM push_preferences WHERE user_id = ?', userId);
+      userData.contentNotifications = safeAll('SELECT * FROM content_notifications WHERE user_id = ? ORDER BY created_at DESC', userId);
+
+      // ── Tasks & reminders ──
+      userData.nativeTasks = safeAll('SELECT * FROM native_tasks WHERE user_id = ?', userId);
+      userData.nativeTaskLists = safeAll('SELECT * FROM native_task_lists WHERE user_id = ?', userId);
+      userData.reminders = safeAll('SELECT * FROM reminders WHERE user_id = ?', userId);
+
+      // ── Health & training ──
+      userData.appleHealthData = safeAll('SELECT * FROM apple_health_data WHERE user_id = ? ORDER BY date DESC LIMIT 365', userId);
+      userData.readinessScores = safeAll('SELECT * FROM readiness_scores WHERE user_id = ? ORDER BY date DESC LIMIT 365', userId);
+      userData.trainingCompletions = safeAll('SELECT * FROM training_completions WHERE user_id = ?', userId);
+      userData.fitnessTrainingPlans = safeAll('SELECT * FROM fitness_training_plans WHERE user_id = ?', userId);
+
+      // ── Finance ──
+      userData.financeTransactions = safeAll('SELECT * FROM finance_transactions WHERE user_id = ? ORDER BY date DESC', userId);
+      userData.invoiceFilings = safeAll('SELECT * FROM invoice_filings WHERE user_id = ? ORDER BY created_at DESC', userId);
+
+      // ── Subscription ──
+      userData.subscriptions = safeAll('SELECT * FROM subscriptions WHERE user_id = ?', userId);
+
+      // ── OAuth tokens (redacted) ──
+      userData.oauthConnections = safeAll(
+        'SELECT provider, created_at FROM user_oauth_tokens WHERE user_id = ?', userId
+      );
 
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
@@ -160,21 +199,34 @@ export function settingsRoutes(): Router {
 
       // Delete ALL user data from every user-facing table.
       // This list must stay in sync with migrations that add user_id columns.
+      // Last audited: April 2026 (added content learning store + reports tables).
       const tables = [
+        // ── Core ──
         'ios_devices', 'messages', 'onboarding_sessions', 'user_profiles',
         'conversations', 'todos', 'notes', 'reminders', 'shared_memory',
+        // ── Content (learning store + pipeline) ──
         'saved_ideas', 'content_topic_feedback', 'content_ref_channels',
         'content_knowledge', 'content_patterns', 'content_research_briefs',
+        'content_scripts', 'content_performance', 'content_learned_patterns',
+        'content_pipeline', 'content_topics', 'content_notifications',
         'book_library', 'video_transcripts', 'video_studies',
+        // ── Reports & notifications ──
+        'report_documents', 'push_preferences',
+        // ── Finance ──
         'invoice_filings', 'invoice_vendors', 'invoice_queue',
         'finance_transactions', 'finance_tax_events',
+        // ── Cooking ──
         'recipes', 'meal_plans', 'shopping_lists',
+        // ── Training & health ──
         'fitness_training_plans', 'training_completions',
         'native_tasks', 'native_task_lists',
         'apple_health_data', 'readiness_scores',
+        // ── Integrations ──
         'webhook_subscriptions', 'webhook_events',
         'user_oauth_tokens', 'garmin_user_tokens',
+        // ── Auth & billing ──
         'email_verification_codes', 'subscriptions',
+        // ── Telemetry (user-scoped) ──
         'api_usage', 'audit_trail', 'client_errors',
         'user_skill_overrides',
       ];
