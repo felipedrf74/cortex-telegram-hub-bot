@@ -505,7 +505,24 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
   }, 45_000);
 }
 
+// Script cache TTL: 24 hours. Scripts are expensive ($0.01-0.08 per generation).
+// Cache key normalizes topic to lowercase trimmed to avoid near-duplicates.
+const SCRIPT_CACHE_TTL = 24 * 3600; // 24 hours
+
 export async function getScript(topic: string, niche = 'general', maxDuration = 8, format = 'YouTube'): Promise<ScriptResponse> {
+  // ── Cache check ──────────────────────────────────────────────────
+  // Same topic + niche + format within 24h → return cached result.
+  // Saves $0.01-0.08 per duplicate request.
+  const normalizedKey = `script:${topic.toLowerCase().trim()}:${niche}:${format}`;
+  try {
+    const { getCached } = await import('./cache-store');
+    const cached = getCached<ScriptResponse>(normalizedKey);
+    if (cached) {
+      logger.info({ topic, cacheHit: true }, 'Script cache hit — returning cached result');
+      return cached;
+    }
+  } catch { /* cache unavailable — generate fresh */ }
+
   // Query intelligence bus for context signals
   let contextSignals: any[] = [];
   try {
@@ -526,7 +543,7 @@ export async function getScript(topic: string, niche = 'general', maxDuration = 
     // Bus unavailable — generate without signals (backward compatible)
   }
 
-  return engineFetch<ScriptResponse>('/script', {
+  const result = await engineFetch<ScriptResponse>('/script', {
     method: 'POST',
     body: JSON.stringify({
       topic, niche, format,
@@ -534,6 +551,15 @@ export async function getScript(topic: string, niche = 'general', maxDuration = 
       context_signals: contextSignals.length > 0 ? contextSignals : undefined,
     }),
   }, 180_000); // scripts take longer — research + Sonnet generation
+
+  // ── Cache store ──────────────────────────────────────────────────
+  try {
+    const { setCache } = await import('./cache-store');
+    setCache(normalizedKey, result, SCRIPT_CACHE_TTL);
+    logger.info({ topic, cacheHit: false }, 'Script cached for 24h');
+  } catch { /* cache store failed — non-fatal */ }
+
+  return result;
 }
 
 export async function getTitles(topic: string, niche = 'general', count = 10): Promise<TitlesResponse> {

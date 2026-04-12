@@ -1342,6 +1342,27 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
     msg += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
   }
 
+  // Build structured weekly data for durable storage
+  const weeklyData: Record<string, any> = {
+    weekStart: now().startOf('week').toISO(),
+    weekEnd: now().endOf('week').toISO(),
+    meetingsCount: calendarEvents.length,
+  };
+  if (todoData) {
+    const [completedResult, pendingResult] = todoData;
+    weeklyData.completedCount = completedResult.success ? completedResult.data.length : 0;
+    weeklyData.pendingCount = pendingResult.success ? pendingResult.data.length : 0;
+    if (pendingResult.success) {
+      const nowDate = new Date();
+      const overdue = pendingResult.data.filter((t: any) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
+      weeklyData.overdueCount = overdue.length;
+      weeklyData.overdueTasks = overdue.slice(0, 10).map((t: any) => ({
+        title: t.title,
+        dueDateTime: t.dueDateTime,
+      }));
+    }
+  }
+
   for (const userId of getActiveUserIds()) {
     // Store durable report + push
     try {
@@ -1351,12 +1372,7 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
         type: 'weekly_review' as const,
         title: '📊 Week in Review',
         summary: `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd')}`,
-        documentJson: {
-          weekStart: now().startOf('week').toISO(),
-          weekEnd: now().endOf('week').toISO(),
-          // TODO: pass structured data once sendWeeklyReview is refactored
-          renderedText: msg,
-        },
+        documentJson: weeklyData,
         sourceJob: 'weekly_review',
         pushCategory: 'weekly_review',
       });

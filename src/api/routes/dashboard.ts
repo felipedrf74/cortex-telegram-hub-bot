@@ -287,49 +287,18 @@ async function fetchTraining(userId: number) {
   let readinessScore: number | null = null;
   let bodyBattery: number | null = null;
 
-  // Garmin is a singleton service (username/password, not OAuth per-user).
-  // Only the owner (Garmin-connected user) gets Garmin-backed readiness.
-  // Other users get Apple Health data or neutral defaults.
-  const { config: appConfig } = require('../../config');
-  const isGarminUser = appConfig.telegram.allowedUserIds.includes(userId);
-
+  // Provider-agnostic readiness: calculateReadiness() handles Garmin → Apple Health → neutral
+  // fallback internally. No need for the dashboard to branch by provider.
   const cachedReadiness = getCached<{ score: number; bodyBattery: number | null }>(`readiness:${userId}`);
   if (cachedReadiness) {
     readinessScore = cachedReadiness.score;
     bodyBattery = cachedReadiness.bodyBattery;
   } else {
     try {
-      if (isGarminUser) {
-        // Owner: full Garmin-backed readiness
-        const { calculateReadiness } = require('../../services/readiness-scorer');
-        const readiness = await calculateReadiness(userId);
-        readinessScore = readiness?.score || null;
-        bodyBattery = normalizeBodyBattery(readiness?.bodyBattery || readiness?.factors?.bodyBattery);
-
-        if (bodyBattery === null) {
-          try {
-            const garmin = require('../../services/garmin');
-            const todayStr = new Date().toISOString().slice(0, 10);
-            const bb = await garmin.getBodyBattery?.(todayStr);
-            bodyBattery = normalizeBodyBattery(bb);
-          } catch {}
-        }
-      } else {
-        // Non-owner: try Apple Health data, otherwise neutral defaults
-        try {
-          const db = require('../../services/database').getDb();
-          const healthRow = db.prepare(
-            "SELECT data_json FROM apple_health_data WHERE user_id = ? AND date = ? AND data_type = 'daily_snapshot'"
-          ).get(userId, new Date().toISOString().slice(0, 10)) as any;
-          if (healthRow?.data_json) {
-            const health = JSON.parse(healthRow.data_json);
-            readinessScore = health.readinessScore || null;
-            bodyBattery = health.bodyBattery || null;
-          }
-        } catch {}
-        // Fallback: neutral score for users without any wearable data
-        if (readinessScore === null) readinessScore = null;
-      }
+      const { calculateReadiness } = require('../../services/readiness-scorer');
+      const readiness = await calculateReadiness(userId);
+      readinessScore = readiness?.score || null;
+      bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
 
       setCache(`readiness:${userId}`, { score: readinessScore, bodyBattery }, 1800);
     } catch {}
