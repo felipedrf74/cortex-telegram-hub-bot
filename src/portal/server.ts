@@ -2066,6 +2066,31 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/notifications — admin view of all content notifications
+  app.get('/api/notifications', (_req: Request, res: Response) => {
+    try {
+      const { getAllNotifications } = require('../services/content-notification-store');
+      const limit = parseInt(String(_req.query.limit || '100'), 10);
+      const notifications = getAllNotifications(limit);
+      res.json({
+        ok: true,
+        count: notifications.length,
+        notifications: notifications.map((n: any) => ({
+          id: n.id,
+          userId: n.userId,
+          type: n.type,
+          title: n.title,
+          body: n.body,
+          status: n.status,
+          pushSent: n.pushSent,
+          createdAt: n.createdAt,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // POST /api/books — add and extract a book
   app.post('/api/books', async (req: Request, res: Response) => {
     try {

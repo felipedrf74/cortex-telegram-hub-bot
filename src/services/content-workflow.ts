@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { Bot, InlineKeyboard } from 'grammy';
+// grammy removed — Telegram adapters moved to src/adapters/telegram-content-adapter.ts
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
@@ -12,13 +12,8 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getDb } from './database';
 import { buildKnowledgePromptBlock } from '../state/content-references';
-// handleContent was removed — scripts now route through getScript()
-// in content-engine.ts (canonical pipeline). See "Script Generation"
-// section below for the rationale.
 import { saveScriptAsDocx } from './video-study';
 import { storeCallback } from '../utils/callback-store';
-import { escapeHtml } from '../utils/telegram-formatter';
-import { InputFile } from 'grammy';
 import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
 import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
 import { readSignals } from './intelligence-bus';
@@ -496,97 +491,18 @@ export async function generateWeeklyPackage(
   };
 }
 
-// ─── Telegram adapters (thin wrappers for backward compat) ─────────
+// ─── Telegram adapters REMOVED ─────────────────────────────────────
 //
-// These call the transport-agnostic orchestrators above, then format
-// the results for Telegram. They will be removed when Telegram is
-// fully deprecated.
-
-/** @deprecated Use generateAndStoreTopicCandidates + your own transport. */
-export async function sendTopicCandidates(
-  bot: Bot,
-  userId: number,
-  format: 'reel' | 'youtube',
-  sourceJob: string,
-): Promise<void> {
-  const headerEmoji = format === 'reel' ? '🎬' : '🔥';
-  const headerLabel = format === 'reel' ? 'TRENDING REELS' : 'TRENDING YOUTUBE';
-
-  const result = await generateAndStoreTopicCandidates(userId, format, sourceJob);
-
-  if (result.candidates.length === 0) {
-    await bot.api.sendMessage(userId,
-      '❌ Could not generate topic candidates. Try again with /contenttopic.',
-      { parse_mode: 'HTML' },
-    );
-    return;
-  }
-
-  for (let i = 0; i < result.candidates.length; i++) {
-    const c = result.candidates[i];
-    const msg = `${headerEmoji} <b>Topic ${i + 1} of ${result.candidates.length}</b>\n\n` +
-      `📌 <b>${escapeHtml(c.title)}</b>\n` +
-      `🎯 Pillar: ${escapeHtml(c.niche)}\n` +
-      `🎣 Hook: <i>"${escapeHtml(c.hookIdea)}"</i>\n` +
-      `⏰ Why now: ${escapeHtml(c.whyNow)}`;
-
-    const keyboard = new InlineKeyboard()
-      .text('✅ Approve', `cw:approve:${c.feedbackId}`)
-      .text('⏭ Skip', `cw:skip:${c.feedbackId}`)
-      .text('👎 Not my vibe', `cw:reject:${c.feedbackId}`);
-
-    await bot.api.sendMessage(userId, msg, {
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    });
-  }
-
-  await bot.api.sendMessage(userId,
-    `💡 Tap ✅ to generate full scripts. 👎 helps me learn your taste.`,
-    { parse_mode: 'HTML' },
-  );
-}
-
-/** @deprecated Use generateWeeklyPackage + your own transport. */
-export async function sendWeeklyPackage(
-  bot: Bot,
-  userId: number,
-): Promise<void> {
-  await bot.api.sendMessage(userId,
-    `📋 <b>WEEKLY CONTENT PACKAGE — Sexta-feira</b>\n\n⏳ Generating evergreen topics for next week...`,
-    { parse_mode: 'HTML' },
-  );
-
-  const result = await generateWeeklyPackage(userId);
-
-  if (result.youtube.length === 0 && result.reels.length === 0) {
-    await bot.api.sendMessage(userId,
-      '❌ Could not generate weekly topics. Try again with /contentretro.',
-      { parse_mode: 'HTML' },
-    );
-    return;
-  }
-
-  const sendGroup = async (items: typeof result.youtube, label: string, emoji: string) => {
-    if (items.length === 0) return;
-    await bot.api.sendMessage(userId, `${emoji} <b>${label} (${items.length})</b>`, { parse_mode: 'HTML' });
-    for (const c of items) {
-      const msg = `📌 <b>${escapeHtml(c.title)}</b>\n` +
-        `🎯 ${escapeHtml(c.niche)}\n` +
-        `🎣 <i>"${escapeHtml(c.hookIdea)}"</i>`;
-      const keyboard = new InlineKeyboard()
-        .text('✅ Approve', `cw:approve:${c.feedbackId}`)
-        .text('⏭ Skip', `cw:skip:${c.feedbackId}`)
-        .text('👎 Not my vibe', `cw:reject:${c.feedbackId}`);
-      await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML', reply_markup: keyboard });
-    }
-  };
-
-  await sendGroup(result.youtube, 'YOUTUBE EVERGREEN', '🎥');
-  await sendGroup(result.reels, 'REELS EVERGREEN', '🎬');
-
-  await bot.api.sendMessage(userId,
-    `✅ Approve the topics you want scripted. Scripts will be saved to <code>~/Desktop/IDEAS/weekly/</code>`,
-    { parse_mode: 'HTML' },
-  );
-}
+// sendTopicCandidates() and sendWeeklyPackage() (which took a grammy
+// Bot parameter) have been moved to:
+//   src/adapters/telegram-content-adapter.ts
+//
+// New callers should use:
+//   1. generateAndStoreTopicCandidates() / generateWeeklyPackage()
+//      (transport-agnostic orchestrators above)
+//   2. createAndPushNotification() from content-notification-store.ts
+//      (durable inbox + APNs delivery)
+//
+// Re-exports for backward compatibility with existing imports:
+export { sendTopicCandidatesTelegram as sendTopicCandidates } from '../adapters/telegram-content-adapter';
+export { sendWeeklyPackageTelegram as sendWeeklyPackage } from '../adapters/telegram-content-adapter';

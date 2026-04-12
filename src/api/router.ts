@@ -182,6 +182,11 @@ export function createApiRouter(): Router {
   // OAuth initiate — generate consent URLs for iOS integration onboarding
   router.use('/auth/oauth', oauthInitiateRoutes());
 
+  // Content notification inbox — durable notifications for content events.
+  // Powers the iOS notification center (unread badge, read/resolve actions).
+  const { notificationRoutes } = require('./routes/notifications');
+  router.use('/notifications', notificationRoutes());
+
   // Onboarding (questionnaires + profile)
   router.use('/onboarding', onboardingRoutes());
 
