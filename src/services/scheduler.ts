@@ -275,20 +275,31 @@ export function startScheduler(bot: Bot): void {
           : `${overdue.length} overdue task${overdue.length === 1 ? '' : 's'}`;
 
     for (const userId of getActiveUserIds()) {
+      // Store durable evening report
+      try {
+        const { storeAndPushReport } = require('./report-document-store');
+        await storeAndPushReport({
+          userId,
+          type: 'evening_summary' as const,
+          title: 'End-of-day summary',
+          summary: pushBody,
+          documentJson: {
+            dueToday: dueToday.map((t: any) => ({ id: t.id, title: t.title, importance: t.importance })),
+            overdue: overdue.map((t: any) => ({ id: t.id, title: t.title, importance: t.importance })),
+          },
+          sourceJob: 'end_of_day',
+          pushCategory: 'evening_summary',
+        });
+      } catch (err) {
+        logger.debug({ err, userId }, 'Failed to store evening summary report (non-fatal)');
+      }
+
+      // Legacy Telegram delivery
       try {
         await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send end-of-day summary');
       }
-      await sendPushNotification(userId, {
-        title: 'End-of-day summary',
-        body: pushBody,
-        badge: dueToday.length + overdue.length,
-        sound: 'default',
-        threadId: 'end_of_day',
-        category: 'TASK_SUMMARY',
-        data: { type: 'end_of_day', dueToday: dueToday.length, overdue: overdue.length },
-      });
     }
   }), { timezone: tz });
 
@@ -731,6 +742,32 @@ export function startScheduler(bot: Bot): void {
       for (const userId of getOwnerUserIds()) {
         // Set conversation continuity to triathlon so follow-up replies stay in context
         setLastActiveDomain(userId, 'triathlon');
+
+        // ── Store durable report + APNs push (April 2026) ──────────
+        // Coach briefing previously had NO APNs push — only Telegram.
+        // Now stored as a durable report with structured data.
+        try {
+          const { storeAndPushReport } = require('./report-document-store');
+          await storeAndPushReport({
+            userId,
+            type: 'coach_briefing' as const,
+            title: '🏋️ Coach Report',
+            summary: `${result.recommendations.length} recommendations`,
+            documentJson: {
+              message: result.message,
+              recommendations: result.recommendations,
+              errors: result.errors,
+              dataCollectionMs: result.dataCollectionMs,
+              analysisMs: result.analysisMs,
+            },
+            sourceJob: 'garmin_coach',
+            pushCategory: 'coach_briefing',
+          });
+        } catch (err) {
+          logger.debug({ err, userId }, 'Failed to store coach report (non-fatal)');
+        }
+
+        // Legacy Telegram delivery (backward compat)
         try {
           for (const chunk of chunks) {
             await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
@@ -1229,6 +1266,27 @@ export async function sendDailyBriefing(bot: Bot): Promise<void> {
   const msg = formatDailyBriefing(data);
   const chunks = splitMessage(msg);
 
+  // ── Store durable report + push (April 2026) ──────────────────────
+  // Store the structured briefing data as a durable report document
+  // BEFORE the Telegram send. iOS fetches these via GET /api/v1/reports.
+  for (const userId of getActiveUserIds()) {
+    try {
+      const { storeAndPushReport } = require('./report-document-store');
+      await storeAndPushReport({
+        userId,
+        type: 'morning_briefing' as const,
+        title: `☀️ ${data.date}`,
+        summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
+        documentJson: data,
+        sourceJob: 'daily_briefing',
+        pushCategory: 'morning_briefing',
+      });
+    } catch (err) {
+      logger.debug({ err, userId }, 'Failed to store morning briefing report (non-fatal)');
+    }
+  }
+
+  // Legacy Telegram delivery (backward compat)
   for (const userId of getActiveUserIds()) {
     try {
       for (const chunk of chunks) {
@@ -1285,6 +1343,28 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
   }
 
   for (const userId of getActiveUserIds()) {
+    // Store durable report + push
+    try {
+      const { storeAndPushReport } = require('./report-document-store');
+      await storeAndPushReport({
+        userId,
+        type: 'weekly_review' as const,
+        title: '📊 Week in Review',
+        summary: `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd')}`,
+        documentJson: {
+          weekStart: now().startOf('week').toISO(),
+          weekEnd: now().endOf('week').toISO(),
+          // TODO: pass structured data once sendWeeklyReview is refactored
+          renderedText: msg,
+        },
+        sourceJob: 'weekly_review',
+        pushCategory: 'weekly_review',
+      });
+    } catch (err) {
+      logger.debug({ err, userId }, 'Failed to store weekly review report (non-fatal)');
+    }
+
+    // Legacy Telegram delivery
     try {
       await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
     } catch (err) {

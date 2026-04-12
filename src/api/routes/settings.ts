@@ -194,5 +194,48 @@ export function settingsRoutes(): Router {
     }
   });
 
+  // ── Push Preferences (server-enforced) ───────────────────────────
+
+  /**
+   * GET /api/v1/settings/push-preferences
+   *
+   * Get all push notification category preferences for the user.
+   * Returns default-enabled for categories without explicit preference.
+   */
+  router.get('/push-preferences', async (req, res: Response) => {
+    try {
+      const { userId } = req as unknown as AuthenticatedRequest;
+      const { getPushPreferences } = require('../../services/report-document-store');
+      const prefs = getPushPreferences(userId);
+      sendSuccess(res, { preferences: prefs });
+    } catch (err: any) {
+      sendError(res, 'INTERNAL', err?.message || 'Failed to load preferences', 500);
+    }
+  });
+
+  /**
+   * PUT /api/v1/settings/push-preferences
+   *
+   * Toggle a push notification category for the user.
+   * Body: { category: string, enabled: boolean }
+   */
+  router.put('/push-preferences', async (req, res: Response) => {
+    try {
+      const { userId } = req as unknown as AuthenticatedRequest;
+      const { category, enabled } = req.body || {};
+
+      if (!category || typeof enabled !== 'boolean') {
+        sendError(res, 'VALIDATION', 'category (string) and enabled (boolean) are required', 400);
+        return;
+      }
+
+      const { setPushPreference } = require('../../services/report-document-store');
+      setPushPreference(userId, category, enabled);
+      sendSuccess(res, { category, enabled });
+    } catch (err: any) {
+      sendError(res, 'INTERNAL', err?.message || 'Failed to save preference', 500);
+    }
+  });
+
   return router;
 }

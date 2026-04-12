@@ -2091,6 +2091,31 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // GET /api/reports — admin view of all durable report documents
+  app.get('/api/reports', (_req: Request, res: Response) => {
+    try {
+      const { getAllReports } = require('../services/report-document-store');
+      const limit = parseInt(String(_req.query.limit || '50'), 10);
+      const reports = getAllReports(limit);
+      res.json({
+        ok: true,
+        count: reports.length,
+        reports: reports.map((r: any) => ({
+          id: r.id,
+          userId: r.userId,
+          type: r.type,
+          title: r.title,
+          summary: r.summary,
+          status: r.status,
+          sourceJob: r.sourceJob,
+          createdAt: r.createdAt,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // POST /api/books — add and extract a book
   app.post('/api/books', async (req: Request, res: Response) => {
     try {

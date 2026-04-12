@@ -187,6 +187,11 @@ export function createApiRouter(): Router {
   const { notificationRoutes } = require('./routes/notifications');
   router.use('/notifications', notificationRoutes());
 
+  // Durable report documents — morning briefing, evening summary, weekly review,
+  // coach briefing. Structured JSON payloads rendered natively in iOS.
+  const { reportRoutes } = require('./routes/reports');
+  router.use('/reports', reportRoutes());
+
   // Onboarding (questionnaires + profile)
   router.use('/onboarding', onboardingRoutes());
 
