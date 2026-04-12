@@ -186,17 +186,17 @@ export function contentRoutes(): Router {
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { topic, niche, format, maxDurationMinutes } = req.body;
+    const { topic, niche, format, maxDurationMinutes, mode } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
       sendError(res, 'VALIDATION', 'topic is required', 400);
       return;
     }
 
-    // Script generation is always 'standard' — it's the crown jewel
-    // path: deep research + intelligence bus signals + Claude Sonnet.
-    // The mode is auto-selected, not client-chosen.
-    const genMode: GenerationMode = 'standard';
+    // Mode: client can request quick/standard/deep. Default: standard.
+    // Quick = cache-first, no signals, fast. Deep = skip cache, broader signal window.
+    const validModes = ['quick', 'standard', 'deep'];
+    const genMode: GenerationMode = (mode && validModes.includes(mode)) ? mode : 'standard';
     const startMs = Date.now();
 
     try {
@@ -206,6 +206,7 @@ export function contentRoutes(): Router {
         niche || 'general',
         maxDurationMinutes || (format === 'Reel' ? 1 : 8),
         format || 'YouTube',
+        genMode,
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = elapsedMs < 500;
@@ -239,7 +240,7 @@ export function contentRoutes(): Router {
         // Backward compat — keep old fields until iOS migrates
         generationMode: genMode,
         cacheHit,
-        usageImpact: cacheHit ? 'none' : 'standard',
+        usageImpact: cacheHit ? 'none' : genMode === 'deep' ? 'high' : genMode,
       });
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');

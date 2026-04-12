@@ -509,59 +509,80 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
   }, 45_000);
 }
 
-// Script cache TTL: 24 hours. Scripts are expensive ($0.01-0.08 per generation).
-// Cache key normalizes topic to lowercase trimmed to avoid near-duplicates.
-const SCRIPT_CACHE_TTL = 24 * 3600; // 24 hours
+// ── Generation Mode Configuration ──────────────────────────────────
+//
+// Mode controls three levers: cache behavior, signal window, and timeout.
+//
+//   Quick:    cache-first (48h), no signals, 60s timeout  (~$0.003 cached, ~$0.005 fresh)
+//   Standard: cache 24h, 30-day signals, 180s timeout     (~$0.01-0.02)
+//   Deep:     skip cache, 90-day signals, 300s timeout     (~$0.02-0.05)
 
-export async function getScript(topic: string, niche = 'general', maxDuration = 8, format = 'YouTube'): Promise<ScriptResponse> {
-  // ── Cache check ──────────────────────────────────────────────────
-  // Same topic + niche + format within 24h → return cached result.
-  // Saves $0.01-0.08 per duplicate request.
+export type ScriptGenerationMode = 'quick' | 'standard' | 'deep';
+
+const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: number; timeoutMs: number }> = {
+  quick:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 60_000 },
+  standard: { cacheTtl: 24 * 3600, signalDays: 30, timeoutMs: 180_000 },
+  deep:     { cacheTtl: 0,         signalDays: 90, timeoutMs: 300_000 },
+};
+
+export async function getScript(
+  topic: string, niche = 'general', maxDuration = 8, format = 'YouTube',
+  mode: ScriptGenerationMode = 'standard',
+): Promise<ScriptResponse> {
+  const cfg = MODE_CONFIG[mode];
   const normalizedKey = `script:${topic.toLowerCase().trim()}:${niche}:${format}`;
-  try {
-    const { getCached } = await import('./cache-store');
-    const cached = getCached<ScriptResponse>(normalizedKey);
-    if (cached) {
-      logger.info({ topic, cacheHit: true }, 'Script cache hit — returning cached result');
-      return cached;
-    }
-  } catch { /* cache unavailable — generate fresh */ }
 
-  // Query intelligence bus for context signals
+  // ── Cache check (skip for deep mode — always generate fresh) ──
+  if (cfg.cacheTtl > 0) {
+    try {
+      const { getCached } = await import('./cache-store');
+      const cached = getCached<ScriptResponse>(normalizedKey);
+      if (cached) {
+        logger.info({ topic, mode, cacheHit: true }, 'Script cache hit — returning cached result');
+        return cached;
+      }
+    } catch { /* cache unavailable — generate fresh */ }
+  }
+
+  // ── Intelligence bus signals (skip for quick mode) ──────────────
   let contextSignals: any[] = [];
-  try {
-    const { readSignals } = await import('./intelligence-bus');
-    const signalTypes = [
-      'hook_effectiveness', 'voice_pattern', 'voice_phrase_trend',
-      'channel_dna', 'book_knowledge', 'keyword_rank_change',
-      'retention_pattern', 'pillar_performance',
-    ] as const;
-    const raw = readSignals('script-engine', [...signalTypes], 30);
-    contextSignals = raw.map(s => ({
-      type: s.signal_type,
-      source: s.source_agent,
-      payload: s.payload,
-    }));
-    logger.info({ signalCount: contextSignals.length }, 'Injecting bus signals into script generation');
-  } catch {
-    // Bus unavailable — generate without signals (backward compatible)
+  if (cfg.signalDays > 0) {
+    try {
+      const { readSignals } = await import('./intelligence-bus');
+      const signalTypes = [
+        'hook_effectiveness', 'voice_pattern', 'voice_phrase_trend',
+        'channel_dna', 'book_knowledge', 'keyword_rank_change',
+        'retention_pattern', 'pillar_performance',
+      ] as const;
+      const raw = readSignals('script-engine', [...signalTypes], cfg.signalDays);
+      contextSignals = raw.map(s => ({
+        type: s.signal_type,
+        source: s.source_agent,
+        payload: s.payload,
+      }));
+      logger.info({ signalCount: contextSignals.length, mode, signalDays: cfg.signalDays }, 'Injecting bus signals');
+    } catch {
+      // Bus unavailable — generate without signals (backward compatible)
+    }
   }
 
   const result = await engineFetch<ScriptResponse>('/script', {
     method: 'POST',
     body: JSON.stringify({
-      topic, niche, format,
+      topic, niche, format, mode,
       max_duration_minutes: maxDuration,
       context_signals: contextSignals.length > 0 ? contextSignals : undefined,
     }),
-  }, 180_000); // scripts take longer — research + Sonnet generation
+  }, cfg.timeoutMs);
 
-  // ── Cache store ──────────────────────────────────────────────────
-  try {
-    const { setCache } = await import('./cache-store');
-    setCache(normalizedKey, result, SCRIPT_CACHE_TTL);
-    logger.info({ topic, cacheHit: false }, 'Script cached for 24h');
-  } catch { /* cache store failed — non-fatal */ }
+  // ── Cache store (skip for deep mode) ───────────────────────────
+  if (cfg.cacheTtl > 0) {
+    try {
+      const { setCache } = await import('./cache-store');
+      setCache(normalizedKey, result, cfg.cacheTtl);
+      logger.info({ topic, mode, cacheHit: false, cacheTtl: cfg.cacheTtl }, 'Script cached');
+    } catch { /* cache store failed — non-fatal */ }
+  }
 
   return result;
 }

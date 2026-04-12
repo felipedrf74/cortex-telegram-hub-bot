@@ -121,7 +121,7 @@ export function buildTasteProfileBlock(userId?: number): string {
 
 // ─── Topic Generation ───────────────────────────────────────────────
 
-function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean): string {
+function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean, userId?: number): string {
   const formatDesc = format === 'reel'
     ? 'Instagram Reels / YouTube Shorts (30-60 seconds each)'
     : 'YouTube videos (8-15 minutes each)';
@@ -130,15 +130,10 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean)
     ? 'Focus on what is trending RIGHT NOW — viral debates, breaking news, hot takes from the last 24-48h. Every topic must be tied to something CURRENT.'
     : 'Focus on EVERGREEN topics — timeless ideas that will be relevant months from now. Personal growth frameworks, fitness principles, life lessons.';
 
-  // Get userId from AsyncLocalStorage context for per-user filtering
-  let contextUserId: number | undefined;
-  try {
-    const { getCurrentContext } = require('../utils/request-context');
-    contextUserId = getCurrentContext()?.userId;
-  } catch { /* outside request context */ }
-
+  // userId passed explicitly — no more AsyncLocalStorage dependency.
+  // This makes personalization stable across transports (iOS, Telegram, scheduler).
   const knowledgeBlock = buildKnowledgePromptBlock();
-  const tasteBlock = buildTasteProfileBlock(contextUserId);
+  const tasteBlock = buildTasteProfileBlock(userId);
 
   return loadPromptWithConfig('topic-generation', {
     FORMAT_DESC: formatDesc,
@@ -152,8 +147,9 @@ export async function generateTopicCandidates(
   format: 'reel' | 'youtube',
   count: number,
   isTrending = true,
+  userId?: number,
 ): Promise<TopicCandidate[]> {
-  const systemPrompt = buildTopicSystemPrompt(format, isTrending);
+  const systemPrompt = buildTopicSystemPrompt(format, isTrending, userId);
   const today = now();
 
   // Build enrichment blocks
@@ -448,7 +444,7 @@ export async function generateAndStoreTopicCandidates(
     : sourceJob === 'thursday_youtube' ? 'Quinta-feira'
     : 'Sexta-feira';
 
-  const candidates = await generateTopicCandidates(format, count, isTrending);
+  const candidates = await generateTopicCandidates(format, count, isTrending, userId);
   const feedbackIds = candidates.length > 0
     ? storeTopicCandidates(candidates, format, sourceJob, userId)
     : [];
@@ -478,8 +474,8 @@ export async function generateWeeklyPackage(
   userId: number,
 ): Promise<WeeklyPackageResult> {
   const [ytTopics, reelTopics] = await Promise.all([
-    generateTopicCandidates('youtube', 2, false),
-    generateTopicCandidates('reel', 4, false),
+    generateTopicCandidates('youtube', 2, false, userId),
+    generateTopicCandidates('reel', 4, false, userId),
   ]);
 
   const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly', userId) : [];
