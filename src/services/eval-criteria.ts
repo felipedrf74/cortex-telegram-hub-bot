@@ -222,6 +222,141 @@ const targets: EvalTarget[] = [
       },
     ],
   },
+
+  // ── 7. Script Quality ────────────────────────────────────────────
+  //
+  // Evaluates generated scripts across 7 dimensions: voice fit,
+  // hook strength, title usefulness, source grounding, format
+  // compliance, signal usefulness, and overall quality.
+  //
+  // This target tests the canonical script pipeline (getScript via
+  // the content-engine Python backend) and evaluates the structured
+  // output, not presentation formatting.
+  {
+    id: 'script_quality',
+    promptFile: 'content',
+    description: 'Script generation quality — voice, hooks, titles, sources, format compliance',
+    model: 'claude-haiku-4-5-20251001',
+    scorerModel: 'claude-haiku-4-5-20251001',
+    maxTokens: 4096,
+    criteria: [
+      {
+        id: 'voice_fit',
+        question: 'Does the script sound like Felipe\'s actual voice (PT-BR, conversational, "The Operator" energy — not robotic, not formal, not generic motivational)? Does it use Portuguese slang naturally?',
+        weight: 3,
+      },
+      {
+        id: 'hook_strength',
+        question: 'Does the opening hook (first 3 seconds) use a pattern interrupt, bold claim, or curiosity gap that would stop someone scrolling? Is it specific (not generic like "Hoje vamos falar sobre...")?',
+        weight: 2.5,
+      },
+      {
+        id: 'title_usefulness',
+        question: 'Are the title options (3-5) SEO-friendly, curiosity-driven, and specific to the topic? Do they avoid clickbait that doesn\'t deliver?',
+        weight: 1.5,
+      },
+      {
+        id: 'source_grounding',
+        question: 'Are factual claims tagged with [VERIFIED: source] or [NEEDS VERIFICATION]? Is there a FONTES VERIFICADAS section? Are FACTS separated from TAKES?',
+        weight: 2,
+      },
+      {
+        id: 'format_compliance',
+        question: 'Does the script include [SFX:name], [EDIT:technique], [SHOW ON SCREEN: ...], and [PAUSE] markers at appropriate density? Does it follow HOOK / BODY / CTA structure?',
+        weight: 2,
+      },
+      {
+        id: 'signal_usefulness',
+        question: 'If intelligence bus signals were injected (voice patterns, hook effectiveness, pillar performance), does the script reflect them? If no signals, is the content still strong standalone?',
+        weight: 1,
+      },
+      {
+        id: 'overall_quality',
+        question: 'Would this script produce a video that Felipe\'s target audience (male, Brazilian, 18-35, tech + self-improvement) would watch to completion and share? Is it engaging, not just informative?',
+        weight: 2.5,
+      },
+    ],
+    testInputs: [
+      {
+        id: 'sq_tech_build',
+        userMessage: 'Write a script about building an AI bot that manages your entire life',
+        description: 'Tech/build script — should be hands-on, authentic, show real code/demo moments',
+      },
+      {
+        id: 'sq_reaction',
+        userMessage: 'Write a reaction script to a viral clip of a politician saying taxes are good',
+        description: 'Reaction script — should reflect libertarian worldview, have bold take, use SFX markers',
+      },
+      {
+        id: 'sq_reel_training',
+        userMessage: 'Write a 30-second Reel script about waking up at 5am to train',
+        description: 'Short-form training script — should be punchy, personal, high energy in 30s',
+      },
+      {
+        id: 'sq_economics',
+        userMessage: 'Write a YouTube script about why inflation is theft, using Austrian Economics framework',
+        description: 'Economics script — MUST separate facts from takes, cite sources, reflect worldview',
+      },
+      {
+        id: 'sq_evergreen',
+        userMessage: 'Write a script about 5 habits that changed my life as an entrepreneur',
+        description: 'Evergreen listicle — should feel personal (not generic), have The Operator voice',
+      },
+    ],
+  },
+
+  // ── 8. Hook Quality ─────────────────────────────────────────────
+  //
+  // Focused evaluation of hook generation quality. Tests whether
+  // generated hooks are strong enough to stop scrolling in the
+  // first 3 seconds across different content pillars.
+  {
+    id: 'hook_quality',
+    promptFile: 'content',
+    description: 'Hook generation quality — specificity, pattern interrupts, scroll-stopping power',
+    model: 'claude-haiku-4-5-20251001',
+    scorerModel: 'claude-haiku-4-5-20251001',
+    maxTokens: 512,
+    criteria: [
+      {
+        id: 'specificity',
+        question: 'Is the hook specific to this topic (not a generic template like "Você não vai acreditar..." that could apply to anything)?',
+        weight: 3,
+      },
+      {
+        id: 'scroll_stop',
+        question: 'Would this hook make someone stop scrolling on Instagram/YouTube in the first 3 seconds? Does it create urgency, curiosity, or controversy?',
+        weight: 3,
+      },
+      {
+        id: 'pt_br_natural',
+        question: 'Does the hook sound like natural PT-BR speech (not translated English, not formal Portuguese)?',
+        weight: 2,
+      },
+      {
+        id: 'brand_voice',
+        question: 'Does the hook sound like The Operator — direct, confident, a bit provocative — not like a generic content creator?',
+        weight: 2,
+      },
+    ],
+    testInputs: [
+      {
+        id: 'hq_tech',
+        userMessage: 'Generate 5 hooks for a video about building an AI personal assistant',
+        description: 'Tech hooks — should reference building/coding, not just hype',
+      },
+      {
+        id: 'hq_politics',
+        userMessage: 'Generate 5 hooks for a video about why minimum wage hurts the poor',
+        description: 'Politics hooks — should be bold, libertarian framing, not neutral',
+      },
+      {
+        id: 'hq_training',
+        userMessage: 'Generate 5 hooks for a Reel about training at 5am in winter',
+        description: 'Training hooks — should be personal, visceral, not motivational-poster energy',
+      },
+    ],
+  },
 ];
 
 // ─── Exports ─────────────────────────────────────────────────────────
@@ -234,4 +369,9 @@ export function getEvalTarget(id: string): EvalTarget | undefined {
 
 export function getAllTargets(): EvalTarget[] {
   return [...targets];
+}
+
+/** Get all target IDs for the autoresearch rotation. */
+export function getTargetIds(): string[] {
+  return targets.map(t => t.id);
 }

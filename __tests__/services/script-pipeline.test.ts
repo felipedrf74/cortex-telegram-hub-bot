@@ -351,8 +351,20 @@ describe('script-pipeline: prompt is transport-agnostic', () => {
       'utf8',
     );
 
+    // Content.md should not have any Telegram-specific text
     expect(promptSource).not.toContain('Telegram HTML only');
     expect(promptSource).not.toContain('Use ONLY these HTML tags');
-    expect(promptSource).toContain('Do NOT use HTML tags');
+    expect(promptSource).not.toContain('<b>');
+    expect(promptSource).not.toContain('<i>');
+  });
+
+  it('creator-config.md contains transport-agnostic output format', () => {
+    const configSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../prompts/creator-config.md'),
+      'utf8',
+    );
+
+    expect(configSource).toContain('Do NOT use HTML tags');
+    expect(configSource).not.toContain('Telegram');
   });
 });

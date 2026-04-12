@@ -22,7 +22,7 @@ import { InputFile } from 'grammy';
 import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
 import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
 import { readSignals } from './intelligence-bus';
-import { loadPromptWithVars } from '../utils/prompt-loader';
+import { loadPromptWithConfig } from '../utils/prompt-loader';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -145,7 +145,7 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean)
   const knowledgeBlock = buildKnowledgePromptBlock();
   const tasteBlock = buildTasteProfileBlock(contextUserId);
 
-  return loadPromptWithVars('topic-generation', {
+  return loadPromptWithConfig('topic-generation', {
     FORMAT_DESC: formatDesc,
     TRENDING_INSTRUCTION: trendingInstr,
     KNOWLEDGE_BLOCK: knowledgeBlock ? knowledgeBlock + '\n' : '',
