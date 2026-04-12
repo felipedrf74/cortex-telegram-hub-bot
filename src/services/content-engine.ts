@@ -610,6 +610,18 @@ export async function getReport(period = 'week'): Promise<ReportResponse> {
 }
 
 // ── Telegram Formatters ─────────────────────────────────────────────
+//
+// TRANSPORT LAYER — these functions format structured response types
+// into Telegram HTML strings. They belong in the Telegram adapter, not
+// in a core service. Re-exported via content-telegram-formatter.ts.
+//
+// New surfaces (iOS API, portal) should use the raw response types
+// (DeepSearchResponse, ScriptResponse, etc.) directly. These format
+// functions exist only for backward compatibility with the Telegram
+// command handler.
+//
+// @deprecated — will move to content-telegram-formatter.ts and be
+// removed from this file when the Telegram handler is fully isolated.
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

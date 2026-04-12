@@ -458,5 +458,195 @@ export function contentRoutes(): Router {
     sendSuccess(res, { upserted: true });
   }));
 
+  // ════════════════════════════════════════════════════════════════════
+  // Transport-agnostic content orchestrators (iOS-first)
+  //
+  // These return structured JSON (TopicCandidateResult, WeeklyPackageResult)
+  // that the iOS app renders natively. They call the same service-layer
+  // functions the scheduler and Telegram handlers use, but never produce
+  // Telegram HTML or InlineKeyboard markup.
+  //
+  // This is the canonical iOS content workflow:
+  //   1. POST /topics/generate → structured topic candidates with feedbackIds
+  //   2. POST /topics/:feedbackId/feedback → approve/skip/reject
+  //   3. POST /weekly-package → weekly content bundle
+  //   4. GET  /topics/pending → pending topics awaiting feedback
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /api/v1/content/topics/generate
+   *
+   * Generate topic candidates and store them in the DB.
+   * Returns structured data the iOS app renders as native approval cards.
+   *
+   * Body: { format: "reel" | "youtube", sourceJob?: string }
+   */
+  router.post('/topics/generate', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { format = 'reel', sourceJob = 'manual' } = req.body;
+
+    if (!['reel', 'youtube'].includes(format)) {
+      sendError(res, 'VALIDATION', 'format must be "reel" or "youtube"', 400);
+      return;
+    }
+
+    const { generateAndStoreTopicCandidates } = require('../../services/content-workflow');
+    const result = await generateAndStoreTopicCandidates(userId, format, sourceJob);
+
+    sendSuccess(res, {
+      format: result.format,
+      sourceJob: result.sourceJob,
+      dayLabel: result.dayLabel,
+      count: result.candidates.length,
+      candidates: result.candidates.map((c: any) => ({
+        feedbackId: c.feedbackId,
+        title: c.title,
+        niche: c.niche,
+        hookIdea: c.hookIdea,
+        whyNow: c.whyNow,
+        angleTag: c.angleTag || null,
+      })),
+    });
+  }));
+
+  /**
+   * POST /api/v1/content/topics/:feedbackId/feedback
+   *
+   * Record approval/skip/reject for a topic candidate.
+   * Body: { sentiment: "approved" | "skipped" | "rejected" }
+   */
+  router.post('/topics/:feedbackId/feedback', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { feedbackId } = req.params;
+    const { sentiment } = req.body;
+
+    const validSentiments = ['approved', 'skipped', 'rejected'];
+    if (!sentiment || !validSentiments.includes(sentiment)) {
+      sendError(res, 'VALIDATION', `sentiment must be one of: ${validSentiments.join(', ')}`, 400);
+      return;
+    }
+
+    const { updateFeedback, getTopicById } = require('../../services/content-workflow');
+    const id = parseInt(feedbackId, 10);
+
+    // Ownership check
+    const topic = getTopicById(id);
+    if (!topic) {
+      sendError(res, 'NOT_FOUND', 'Topic not found', 404);
+      return;
+    }
+
+    updateFeedback(id, sentiment);
+    sendSuccess(res, { feedbackId: id, sentiment, title: topic.title });
+  }));
+
+  /**
+   * GET /api/v1/content/topics/pending
+   *
+   * List pending topic candidates awaiting user feedback.
+   */
+  router.get('/topics/pending', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const db = require('../../services/database').getDb();
+
+    const rows = db.prepare(`
+      SELECT id, topic, niche, format, hook_idea, why_now, angle_tag, source_job, created_at
+      FROM content_topic_feedback
+      WHERE sentiment = 'pending' AND user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).all(userId) as any[];
+
+    sendSuccess(res, {
+      count: rows.length,
+      topics: rows.map((r: any) => ({
+        feedbackId: r.id,
+        title: r.topic,
+        niche: r.niche,
+        format: r.format,
+        hookIdea: r.hook_idea,
+        whyNow: r.why_now,
+        angleTag: r.angle_tag,
+        sourceJob: r.source_job,
+        createdAt: r.created_at,
+      })),
+    });
+  }));
+
+  /**
+   * POST /api/v1/content/weekly-package
+   *
+   * Generate the full weekly content package (2 YT + 4 reels).
+   * Returns structured data — iOS renders as a grouped approval UI.
+   */
+  router.post('/weekly-package', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+
+    const { generateWeeklyPackage } = require('../../services/content-workflow');
+    const result = await generateWeeklyPackage(userId);
+
+    const mapCandidate = (c: any) => ({
+      feedbackId: c.feedbackId,
+      title: c.title,
+      niche: c.niche,
+      hookIdea: c.hookIdea,
+      whyNow: c.whyNow,
+      angleTag: c.angleTag || null,
+    });
+
+    sendSuccess(res, {
+      youtube: {
+        count: result.youtube.length,
+        candidates: result.youtube.map(mapCandidate),
+      },
+      reels: {
+        count: result.reels.length,
+        candidates: result.reels.map(mapCandidate),
+      },
+    });
+  }));
+
+  /**
+   * GET /api/v1/content/taste-profile
+   *
+   * Returns the user's content taste profile built from feedback history.
+   * The iOS app uses this for the "Your Content DNA" card in the Content tab.
+   */
+  router.get('/taste-profile', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const db = require('../../services/database').getDb();
+
+    const rows = db.prepare(`
+      SELECT topic, niche, sentiment, created_at
+      FROM content_topic_feedback
+      WHERE sentiment IN ('approved', 'rejected')
+        AND created_at > datetime('now', '-60 days')
+        AND user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 100
+    `).all(userId) as { topic: string; niche: string; sentiment: string; created_at: string }[];
+
+    const approved = rows.filter(r => r.sentiment === 'approved');
+    const rejected = rows.filter(r => r.sentiment === 'rejected');
+
+    // Niche breakdown
+    const nicheMap: Record<string, { approved: number; rejected: number }> = {};
+    for (const r of rows) {
+      const n = r.niche || 'general';
+      if (!nicheMap[n]) nicheMap[n] = { approved: 0, rejected: 0 };
+      nicheMap[n][r.sentiment as 'approved' | 'rejected']++;
+    }
+
+    sendSuccess(res, {
+      totalFeedback: rows.length,
+      approved: approved.length,
+      rejected: rejected.length,
+      approvalRate: rows.length > 0 ? Math.round((approved.length / rows.length) * 100) : 0,
+      nicheBreakdown: nicheMap,
+      recentApproved: approved.slice(0, 5).map(r => ({ title: r.topic, niche: r.niche })),
+      recentRejected: rejected.slice(0, 5).map(r => ({ title: r.topic, niche: r.niche })),
+    });
+  }));
+
   return router;
 }

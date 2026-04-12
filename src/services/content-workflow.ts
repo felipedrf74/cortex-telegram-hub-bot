@@ -359,33 +359,105 @@ Rules:
   return result.text;
 }
 
-// ─── Orchestrators (called by scheduler and manual commands) ────────
+// ─── Orchestrators (transport-agnostic) ────────────────────────────
+//
+// These return structured data. Telegram/iOS/portal callers format
+// the result for their own transport. The old sendTopicCandidates /
+// sendWeeklyPackage functions that called bot.api.sendMessage directly
+// are replaced by these pure orchestrators + thin Telegram adapters
+// in the handler layer.
 
+/** Structured result from topic generation — no formatting, no transport. */
+export interface TopicCandidateResult {
+  format: 'reel' | 'youtube';
+  sourceJob: string;
+  /** Day label for display: "Terça-feira", "Quinta-feira", "Sexta-feira" */
+  dayLabel: string;
+  candidates: Array<TopicCandidate & { feedbackId: number }>;
+}
+
+/**
+ * Generate topic candidates AND store them in the DB.
+ * Returns structured data — caller decides how to present it.
+ *
+ * Called by:
+ *   - iOS API (POST /api/v1/content/topics/generate)
+ *   - Telegram handler (via sendTopicCandidatesTelegram adapter)
+ *   - Scheduler (via the same adapter)
+ */
+export async function generateAndStoreTopicCandidates(
+  userId: number,
+  format: 'reel' | 'youtube',
+  sourceJob: string,
+): Promise<TopicCandidateResult> {
+  const count = 5;
+  const isTrending = sourceJob !== 'friday_weekly';
+  const dayLabel = sourceJob === 'tuesday_reels' ? 'Terça-feira'
+    : sourceJob === 'thursday_youtube' ? 'Quinta-feira'
+    : 'Sexta-feira';
+
+  const candidates = await generateTopicCandidates(format, count, isTrending);
+  const feedbackIds = candidates.length > 0
+    ? storeTopicCandidates(candidates, format, sourceJob, userId)
+    : [];
+
+  return {
+    format,
+    sourceJob,
+    dayLabel,
+    candidates: candidates.map((c, i) => ({
+      ...c,
+      feedbackId: feedbackIds[i] ?? 0,
+    })),
+  };
+}
+
+/** Structured result from weekly package generation. */
+export interface WeeklyPackageResult {
+  youtube: Array<TopicCandidate & { feedbackId: number }>;
+  reels: Array<TopicCandidate & { feedbackId: number }>;
+}
+
+/**
+ * Generate the weekly content package (2 YT + 4 reels, evergreen).
+ * Returns structured data — caller decides how to present it.
+ */
+export async function generateWeeklyPackage(
+  userId: number,
+): Promise<WeeklyPackageResult> {
+  const [ytTopics, reelTopics] = await Promise.all([
+    generateTopicCandidates('youtube', 2, false),
+    generateTopicCandidates('reel', 4, false),
+  ]);
+
+  const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly', userId) : [];
+  const reelIds = reelTopics.length > 0 ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly', userId) : [];
+
+  return {
+    youtube: ytTopics.map((c, i) => ({ ...c, feedbackId: ytIds[i] ?? 0 })),
+    reels: reelTopics.map((c, i) => ({ ...c, feedbackId: reelIds[i] ?? 0 })),
+  };
+}
+
+// ─── Telegram adapters (thin wrappers for backward compat) ─────────
+//
+// These call the transport-agnostic orchestrators above, then format
+// the results for Telegram. They will be removed when Telegram is
+// fully deprecated.
+
+/** @deprecated Use generateAndStoreTopicCandidates + your own transport. */
 export async function sendTopicCandidates(
   bot: Bot,
   userId: number,
   format: 'reel' | 'youtube',
   sourceJob: string,
 ): Promise<void> {
-  const count = format === 'reel' ? 5 : 5;
-  const isTrending = sourceJob !== 'friday_weekly';
-
   const headerEmoji = format === 'reel' ? '🎬' : '🔥';
   const headerLabel = format === 'reel' ? 'TRENDING REELS' : 'TRENDING YOUTUBE';
-  const dayLabel = sourceJob === 'tuesday_reels' ? 'Terça-feira'
-    : sourceJob === 'thursday_youtube' ? 'Quinta-feira'
-    : 'Sexta-feira';
 
-  await bot.api.sendMessage(userId,
-    `${headerEmoji} <b>${headerLabel} — ${dayLabel}</b>\n\n⏳ Searching for topics...`,
-    { parse_mode: 'HTML' },
-  );
+  const result = await generateAndStoreTopicCandidates(userId, format, sourceJob);
 
-  const candidates = isTrending
-    ? await generateTopicCandidates(format, count, true)
-    : await generateTopicCandidates(format, count, false);
-
-  if (candidates.length === 0) {
+  if (result.candidates.length === 0) {
     await bot.api.sendMessage(userId,
       '❌ Could not generate topic candidates. Try again with /contenttopic.',
       { parse_mode: 'HTML' },
@@ -393,24 +465,18 @@ export async function sendTopicCandidates(
     return;
   }
 
-  // Store in DB as pending
-  const feedbackIds = storeTopicCandidates(candidates, format, sourceJob);
-
-  // Send one message per topic with inline buttons
-  for (let i = 0; i < candidates.length; i++) {
-    const c = candidates[i];
-    const fbId = feedbackIds[i];
-
-    const msg = `${headerEmoji} <b>Topic ${i + 1} of ${candidates.length}</b>\n\n` +
+  for (let i = 0; i < result.candidates.length; i++) {
+    const c = result.candidates[i];
+    const msg = `${headerEmoji} <b>Topic ${i + 1} of ${result.candidates.length}</b>\n\n` +
       `📌 <b>${escapeHtml(c.title)}</b>\n` +
       `🎯 Pillar: ${escapeHtml(c.niche)}\n` +
       `🎣 Hook: <i>"${escapeHtml(c.hookIdea)}"</i>\n` +
       `⏰ Why now: ${escapeHtml(c.whyNow)}`;
 
     const keyboard = new InlineKeyboard()
-      .text('✅ Approve', `cw:approve:${fbId}`)
-      .text('⏭ Skip', `cw:skip:${fbId}`)
-      .text('👎 Not my vibe', `cw:reject:${fbId}`);
+      .text('✅ Approve', `cw:approve:${c.feedbackId}`)
+      .text('⏭ Skip', `cw:skip:${c.feedbackId}`)
+      .text('👎 Not my vibe', `cw:reject:${c.feedbackId}`);
 
     await bot.api.sendMessage(userId, msg, {
       parse_mode: 'HTML',
@@ -424,6 +490,7 @@ export async function sendTopicCandidates(
   );
 }
 
+/** @deprecated Use generateWeeklyPackage + your own transport. */
 export async function sendWeeklyPackage(
   bot: Bot,
   userId: number,
@@ -433,18 +500,9 @@ export async function sendWeeklyPackage(
     { parse_mode: 'HTML' },
   );
 
-  // Generate 2 evergreen YT + 4 evergreen reel topics
-  const [ytTopics, reelTopics] = await Promise.all([
-    generateTopicCandidates('youtube', 2, false),
-    generateTopicCandidates('reel', 4, false),
-  ]);
+  const result = await generateWeeklyPackage(userId);
 
-  const allTopics = [
-    ...ytTopics.map((t) => ({ ...t, format: 'youtube' as const })),
-    ...reelTopics.map((t) => ({ ...t, format: 'reel' as const })),
-  ];
-
-  if (allTopics.length === 0) {
+  if (result.youtube.length === 0 && result.reels.length === 0) {
     await bot.api.sendMessage(userId,
       '❌ Could not generate weekly topics. Try again with /contentretro.',
       { parse_mode: 'HTML' },
@@ -452,43 +510,23 @@ export async function sendWeeklyPackage(
     return;
   }
 
-  // Store all in DB
-  const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly') : [];
-  const reelIds = reelTopics.length > 0 ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly') : [];
-
-  // Send YT topics
-  if (ytTopics.length > 0) {
-    await bot.api.sendMessage(userId, `🎥 <b>YOUTUBE EVERGREEN (${ytTopics.length})</b>`, { parse_mode: 'HTML' });
-    for (let i = 0; i < ytTopics.length; i++) {
-      const c = ytTopics[i];
-      const fbId = ytIds[i];
+  const sendGroup = async (items: typeof result.youtube, label: string, emoji: string) => {
+    if (items.length === 0) return;
+    await bot.api.sendMessage(userId, `${emoji} <b>${label} (${items.length})</b>`, { parse_mode: 'HTML' });
+    for (const c of items) {
       const msg = `📌 <b>${escapeHtml(c.title)}</b>\n` +
         `🎯 ${escapeHtml(c.niche)}\n` +
         `🎣 <i>"${escapeHtml(c.hookIdea)}"</i>`;
       const keyboard = new InlineKeyboard()
-        .text('✅ Approve', `cw:approve:${fbId}`)
-        .text('⏭ Skip', `cw:skip:${fbId}`)
-        .text('👎 Not my vibe', `cw:reject:${fbId}`);
+        .text('✅ Approve', `cw:approve:${c.feedbackId}`)
+        .text('⏭ Skip', `cw:skip:${c.feedbackId}`)
+        .text('👎 Not my vibe', `cw:reject:${c.feedbackId}`);
       await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML', reply_markup: keyboard });
     }
-  }
+  };
 
-  // Send reel topics
-  if (reelTopics.length > 0) {
-    await bot.api.sendMessage(userId, `🎬 <b>REELS EVERGREEN (${reelTopics.length})</b>`, { parse_mode: 'HTML' });
-    for (let i = 0; i < reelTopics.length; i++) {
-      const c = reelTopics[i];
-      const fbId = reelIds[i];
-      const msg = `📌 <b>${escapeHtml(c.title)}</b>\n` +
-        `🎯 ${escapeHtml(c.niche)}\n` +
-        `🎣 <i>"${escapeHtml(c.hookIdea)}"</i>`;
-      const keyboard = new InlineKeyboard()
-        .text('✅ Approve', `cw:approve:${fbId}`)
-        .text('⏭ Skip', `cw:skip:${fbId}`)
-        .text('👎 Not my vibe', `cw:reject:${fbId}`);
-      await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML', reply_markup: keyboard });
-    }
-  }
+  await sendGroup(result.youtube, 'YOUTUBE EVERGREEN', '🎥');
+  await sendGroup(result.reels, 'REELS EVERGREEN', '🎬');
 
   await bot.api.sendMessage(userId,
     `✅ Approve the topics you want scripted. Scripts will be saved to <code>~/Desktop/IDEAS/weekly/</code>`,
