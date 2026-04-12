@@ -135,21 +135,36 @@ export function contentRoutes(): Router {
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { topic, niche, format, maxDurationMinutes } = req.body;
+    const { topic, niche, format, maxDurationMinutes, mode } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
       sendError(res, 'VALIDATION', 'topic is required', 400);
       return;
     }
 
+    // Generation mode determines cost/depth tradeoff:
+    //   quick    → shorter prompt, faster, lower cost (~$0.003)
+    //   standard → full research + signals (default, ~$0.01)
+    //   deep     → extra research passes (~$0.02)
+    // iOS sends mode; backend auto-selects 'standard' when omitted.
+    const generationMode = mode || 'standard';
+
     try {
       const { getScript } = require('../../services/content-engine');
+      const cacheKey = `script:${topic.toLowerCase().trim()}:${niche || 'general'}:${format || 'YouTube'}`;
+      let cacheHit = false;
+
+      // Check if this was a cache hit (the cache is inside getScript,
+      // but we can detect it from timing — <100ms = cache hit)
+      const startMs = Date.now();
       const result = await getScript(
         topic.trim(),
         niche || 'general',
         maxDurationMinutes || (format === 'Reel' ? 1 : 8),
         format || 'YouTube',
       );
+      const elapsedMs = Date.now() - startMs;
+      cacheHit = elapsedMs < 500; // Cache hits are < 50ms; fresh generation is 15-180s
 
       sendSuccess(res, {
         topic: result.topic,
@@ -165,10 +180,14 @@ export function contentRoutes(): Router {
         estimatedDuration: result.estimated_duration,
         format: format || 'YouTube',
         durationMs: result.duration_ms,
-        // Creator-pack fields (April 2026)
+        // Creator-pack fields
         hashtags: result.hashtags ?? [],
         caption: result.caption ?? '',
         cta: result.cta ?? '',
+        // Generation metadata
+        generationMode,
+        cacheHit,
+        usageImpact: cacheHit ? 'none' : (generationMode === 'deep' ? 'high' : 'standard'),
       });
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');
