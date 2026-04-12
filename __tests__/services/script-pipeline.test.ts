@@ -1,0 +1,358 @@
+/**
+ * Script Pipeline — Canonical Pipeline Tests
+ *
+ * Regression tests for the unified script generation architecture.
+ * Covers:
+ *   1. The fake-userId bug (4096/8192 passed as userId to handleContent)
+ *   2. All script paths routing through the canonical getScript() pipeline
+ *   3. Structured ScriptResponse shape
+ *   4. Format-specific behavior (reel vs youtube)
+ *   5. formatScriptToText() output
+ *   6. iOS API route contract
+ *   7. Workflow-generated scripts
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// ═══════════════════════════════════════════════════════════════════
+// 1. Fake-userId Bug Regression
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: fake-userId regression', () => {
+  it('no executable handleContent calls remain in content-workflow.ts', () => {
+    // The old code called handleContent(prompt, 4096) where 4096 was
+    // silently consumed as the userId parameter. Verify no executable
+    // handleContent calls remain.
+    const workflowSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
+      'utf8',
+    );
+
+    const lines = workflowSource.split('\n');
+    const handleContentCalls = lines.filter((line: string) => {
+      const trimmed = line.trim();
+      // Skip comments (the bug explanation mentions the old pattern)
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) return false;
+      // Skip imports (handleContent is no longer imported anyway)
+      if (trimmed.startsWith('import')) return false;
+      // Look for actual function calls
+      return trimmed.includes('handleContent(');
+    });
+    expect(handleContentCalls).toHaveLength(0);
+  });
+
+  it('handleContent is not imported in content-workflow.ts', () => {
+    const workflowSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
+      'utf8',
+    );
+
+    // The import line should be gone (replaced with a comment)
+    const lines = workflowSource.split('\n');
+    const importLines = lines.filter((line: string) =>
+      line.trim().startsWith('import') && line.includes('handleContent'),
+    );
+    expect(importLines).toHaveLength(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 2. Canonical Pipeline — Single Path
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: canonical path', () => {
+  it('generateScript is exported from content-workflow', async () => {
+    const workflow = await import('../../src/services/content-workflow');
+    expect(workflow.generateScript).toBeDefined();
+    expect(typeof workflow.generateScript).toBe('function');
+  });
+
+  it('generateReelScript is exported (backward compat, deprecated)', async () => {
+    const workflow = await import('../../src/services/content-workflow');
+    expect(workflow.generateReelScript).toBeDefined();
+    expect(typeof workflow.generateReelScript).toBe('function');
+  });
+
+  it('generateYouTubeScript is exported (backward compat, deprecated)', async () => {
+    const workflow = await import('../../src/services/content-workflow');
+    expect(workflow.generateYouTubeScript).toBeDefined();
+    expect(typeof workflow.generateYouTubeScript).toBe('function');
+  });
+
+  it('formatScriptToText is exported', async () => {
+    const workflow = await import('../../src/services/content-workflow');
+    expect(workflow.formatScriptToText).toBeDefined();
+    expect(typeof workflow.formatScriptToText).toBe('function');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 3. Structured ScriptResponse Shape
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: ScriptResponse shape', () => {
+  it('ScriptResponse type has all required fields', async () => {
+    // Verify the type exists with expected shape by checking the source
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+
+    expect(engineSource).toContain('export interface ScriptResponse');
+    expect(engineSource).toContain('topic: string');
+    expect(engineSource).toContain('script: string');
+    expect(engineSource).toContain('hook: string');
+    expect(engineSource).toContain('title_options: string[]');
+    expect(engineSource).toContain('sources_used: SourceReference[]');
+    expect(engineSource).toContain('estimated_duration: string');
+    expect(engineSource).toContain('duration_ms: number');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 4. formatScriptToText — Structured → Plain Text
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: formatScriptToText', () => {
+  // Mock the modules that content-workflow imports
+  vi.mock('../../src/services/database', () => ({
+    getDb: () => ({
+      prepare: () => ({
+        run: vi.fn(),
+        get: vi.fn(),
+        all: vi.fn().mockReturnValue([]),
+      }),
+    }),
+  }));
+
+  vi.mock('../../src/config', () => ({
+    config: {
+      anthropic: { apiKey: 'test' },
+      app: { timezone: 'Europe/Lisbon' },
+      portal: { token: 'test' },
+    },
+  }));
+
+  vi.mock('../../src/utils/logger', () => ({
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
+  }));
+
+  it('renders title options, hook, script, and sources', async () => {
+    const { formatScriptToText } = await import('../../src/services/content-workflow');
+
+    const mockResponse = {
+      topic: 'AI for athletes',
+      script: 'Fala galera, hoje eu vou...',
+      hook: 'Você sabia que 90% dos atletas...',
+      title_options: ['Title A', 'Title B', 'Title C'],
+      sources_used: [
+        { title: 'Study X', url: 'https://example.com/x', source_type: 'academic', relevance_note: 'Key study' },
+      ],
+      estimated_duration: '8:00-10:00',
+      duration_ms: 5000,
+    };
+
+    const text = formatScriptToText(mockResponse);
+
+    // Title options present
+    expect(text).toContain('TITLE OPTIONS:');
+    expect(text).toContain('1. Title A');
+    expect(text).toContain('2. Title B');
+    expect(text).toContain('3. Title C');
+
+    // Hook present
+    expect(text).toContain('HOOK:');
+    expect(text).toContain('Você sabia que 90% dos atletas');
+
+    // Script body present
+    expect(text).toContain('SCRIPT:');
+    expect(text).toContain('Fala galera, hoje eu vou');
+
+    // Sources present
+    expect(text).toContain('FONTES VERIFICADAS:');
+    expect(text).toContain('Study X');
+    expect(text).toContain('https://example.com/x');
+
+    // Duration present
+    expect(text).toContain('Duração estimada: 8:00-10:00');
+  });
+
+  it('handles empty sources gracefully', async () => {
+    const { formatScriptToText } = await import('../../src/services/content-workflow');
+
+    const mockResponse = {
+      topic: 'Test',
+      script: 'Body text',
+      hook: 'Hook text',
+      title_options: [],
+      sources_used: [],
+      estimated_duration: '1:00',
+      duration_ms: 1000,
+    };
+
+    const text = formatScriptToText(mockResponse);
+
+    expect(text).not.toContain('TITLE OPTIONS:');
+    expect(text).not.toContain('FONTES VERIFICADAS:');
+    expect(text).toContain('HOOK:');
+    expect(text).toContain('SCRIPT:');
+  });
+
+  it('output is plain text (no HTML tags)', async () => {
+    const { formatScriptToText } = await import('../../src/services/content-workflow');
+
+    const mockResponse = {
+      topic: 'Test',
+      script: 'Some script',
+      hook: 'Some hook',
+      title_options: ['Title <A>'],
+      sources_used: [{ title: 'Source', url: '', source_type: 'web', relevance_note: '' }],
+      estimated_duration: '5:00',
+      duration_ms: 1000,
+    };
+
+    const text = formatScriptToText(mockResponse);
+
+    // No Telegram HTML tags
+    expect(text).not.toContain('<b>');
+    expect(text).not.toContain('<i>');
+    expect(text).not.toContain('<code>');
+    expect(text).not.toContain('parse_mode');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 5. iOS API Route Contract
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: iOS API route', () => {
+  it('POST /script route uses getScript, not handleContent', () => {
+    const routeSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+      'utf8',
+    );
+
+    // The new route should import getScript
+    expect(routeSource).toContain('getScript');
+
+    // The old pattern: handleContent(prompt, userId) for scripts
+    // should NOT appear in the /script route handler
+    const lines = routeSource.split('\n');
+
+    // Find the /script route section
+    const scriptRouteStart = lines.findIndex((l: string) => l.includes("'/script'") || l.includes('"/script"'));
+    expect(scriptRouteStart).toBeGreaterThan(-1);
+
+    // Check the next 30 lines after the route definition
+    const routeSection = lines.slice(scriptRouteStart, scriptRouteStart + 40).join('\n');
+
+    // Should use getScript
+    expect(routeSection).toContain('getScript');
+
+    // Should NOT reference handleContent in the script section
+    expect(routeSection).not.toContain('handleContent');
+
+    // Should NOT have the old `/script ${ideaId}` command-style prompt
+    expect(routeSection).not.toContain('`/script ${ideaId}`');
+  });
+
+  it('iOS /script route returns structured fields', () => {
+    const routeSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+      'utf8',
+    );
+
+    // The /script route should return these structured fields
+    // (they appear in the sendSuccess call after getScript)
+    expect(routeSource).toContain('topic: result.topic');
+    expect(routeSource).toContain('script: result.script');
+    expect(routeSource).toContain('hook: result.hook');
+    expect(routeSource).toContain('titleOptions:');
+    expect(routeSource).toContain('sourcesUsed:');
+    expect(routeSource).toContain('estimatedDuration:');
+    expect(routeSource).toContain('durationMs:');
+  });
+
+  it('iOS /script route validates topic parameter', () => {
+    const routeSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+      'utf8',
+    );
+
+    // Should validate topic is required
+    expect(routeSource).toContain("'topic is required'");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 6. Workflow Script — Approval-Generated
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: workflow approval scripts', () => {
+  it('Telegram handler still imports generateReelScript/generateYouTubeScript', () => {
+    const handlerSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/handlers/commands/content.ts'),
+      'utf8',
+    );
+
+    // Backward compat: handler still imports the deprecated wrappers
+    expect(handlerSource).toContain('generateReelScript');
+    expect(handlerSource).toContain('generateYouTubeScript');
+  });
+
+  it('deprecated wrappers call generateScript internally', () => {
+    const workflowSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
+      'utf8',
+    );
+
+    // generateReelScript should call generateScript
+    expect(workflowSource).toContain("generateScript(topic, 'reel')");
+
+    // generateYouTubeScript should call generateScript
+    expect(workflowSource).toContain("generateScript(topic, 'youtube')");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 7. Format Metadata
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: format-specific behavior', () => {
+  it('generateScript passes maxDuration=1 for reels', () => {
+    const workflowSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
+      'utf8',
+    );
+
+    // Reel format should use maxDuration = 1 (1 minute max)
+    expect(workflowSource).toContain("format === 'reel' ? 1 : 8");
+  });
+
+  it('generateScript passes format string to getScript', () => {
+    const workflowSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-workflow.ts'),
+      'utf8',
+    );
+
+    // Should map format to engine format string
+    expect(workflowSource).toContain("format === 'reel' ? 'Reel' : 'YouTube'");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 8. Prompt Transport-Agnosticism
+// ═══════════════════════════════════════════════════════════════════
+
+describe('script-pipeline: prompt is transport-agnostic', () => {
+  it('content.md does not contain Telegram HTML formatting instructions', () => {
+    const promptSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../prompts/content.md'),
+      'utf8',
+    );
+
+    expect(promptSource).not.toContain('Telegram HTML only');
+    expect(promptSource).not.toContain('Use ONLY these HTML tags');
+    expect(promptSource).toContain('Do NOT use HTML tags');
+  });
+});

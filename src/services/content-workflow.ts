@@ -12,7 +12,9 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getDb } from './database';
 import { buildKnowledgePromptBlock } from '../state/content-references';
-import { handleContent } from '../domains/content-creator';
+// handleContent was removed — scripts now route through getScript()
+// in content-engine.ts (canonical pipeline). See "Script Generation"
+// section below for the rationale.
 import { saveScriptAsDocx } from './video-study';
 import { storeCallback } from '../utils/callback-store';
 import { escapeHtml } from '../utils/telegram-formatter';
@@ -297,66 +299,93 @@ export async function generateTopicCandidates(
   }
 }
 
-// ─── Script Generation ──────────────────────────────────────────────
+// ─── Script Generation (canonical pipeline) ───────────────────────
+//
+// All script generation now routes through `getScript()` in
+// content-engine.ts, which calls the Python backend. That backend
+// does deep research → Claude Sonnet → structured ScriptResponse.
+//
+// The old `generateReelScript` / `generateYouTubeScript` functions
+// had a critical bug: they called `handleContent(prompt, 4096)`
+// where 4096 was silently consumed as the `userId` parameter —
+// not a token limit. The scripts ran under a phantom user context.
+//
+// Fixed in April 2026: both functions now call `getScript()` and
+// return a structured `ScriptResponse` instead of raw text.
 
-export async function generateReelScript(topic: TopicCandidate): Promise<string> {
-  const prompt = `Write a complete 30-60 second Instagram Reel / YouTube Short script in PT-BR.
+import type { ScriptResponse } from './content-engine';
 
-Topic: "${topic.title}"
-Pillar: ${topic.niche}
-Context: ${topic.whyNow}
-Opening hook idea: "${topic.hookIdea}"
+/**
+ * Generate a script for a topic candidate via the canonical
+ * content-engine pipeline (Python backend with research grounding).
+ *
+ * This is the ONE path for script generation. All surfaces — iOS,
+ * portal, Telegram, and the workflow approval flow — call this.
+ *
+ * @param topic - The topic candidate with title, niche, hookIdea, whyNow
+ * @param format - 'reel' (30-60s short) or 'youtube' (8-15min long)
+ * @returns Structured ScriptResponse with script, hook, title options,
+ *          sources, estimated duration, and format metadata.
+ */
+export async function generateScript(
+  topic: TopicCandidate,
+  format: 'reel' | 'youtube' = 'youtube',
+): Promise<ScriptResponse> {
+  const { getScript } = await import('./content-engine');
+  const maxDuration = format === 'reel' ? 1 : 8;
+  const engineFormat = format === 'reel' ? 'Reel' : 'YouTube';
 
-Structure:
-🎣 HOOK (0-3s): Pattern interrupt, bold claim, or curiosity gap
-📝 BODY (3-50s): Main message — concise, punchy, one key insight
-📢 CTA (last 5-10s): What should the viewer do? Follow, comment, share?
-
-Rules:
-- Write in PT-BR (Brazilian Portuguese) — sound like how Felipe actually talks, not formal
-- Conversational and authentic tone, The Operator energy
-- Short sentences, high energy
-- Include [SFX:name] markers (1 every 12-15s): Vine Boom, FAHHH, Metal Pipe, Bruh, Sad Violin, Emotional Damage, He He He Ha, Among Us, Windows Error, Record Scratch, Goofy Ahh, Womp Womp
-- Include [EDIT:technique] markers: zoom punch, hard cut to black, speed ramp, text popup, deadpan stare, repeat x3, chaos layering
-- Include [SHOW ON SCREEN: ...] markers for any sources, screenshots, or data
-- Include [PAUSE] for dramatic timing`;
-
-  const result = await handleContent(prompt, 4096);
-  return result.text;
+  return getScript(topic.title, topic.niche || 'general', maxDuration, engineFormat);
 }
 
+/**
+ * @deprecated Use `generateScript(topic, 'reel')` instead.
+ * Kept for backward compatibility with Telegram handler imports.
+ * Returns just the script text (old contract).
+ */
+export async function generateReelScript(topic: TopicCandidate): Promise<string> {
+  const result = await generateScript(topic, 'reel');
+  return formatScriptToText(result);
+}
+
+/**
+ * @deprecated Use `generateScript(topic, 'youtube')` instead.
+ * Kept for backward compatibility with Telegram handler imports.
+ * Returns just the script text (old contract).
+ */
 export async function generateYouTubeScript(topic: TopicCandidate): Promise<string> {
-  const prompt = `Write a complete YouTube video script in PT-BR (8-15 min).
+  const result = await generateScript(topic, 'youtube');
+  return formatScriptToText(result);
+}
 
-Topic: "${topic.title}"
-Pillar: ${topic.niche}
-Context: ${topic.whyNow}
-Opening hook idea: "${topic.hookIdea}"
+/**
+ * Convert a structured ScriptResponse to plain text for contexts
+ * that expect a text string (legacy handlers, DOCX export, etc.).
+ */
+export function formatScriptToText(res: ScriptResponse): string {
+  let text = '';
 
-Include ALL of these sections:
-1. CONTEXTO — tema, duração estimada, tom, estrutura
-2. HOOK (0-15s) — pattern interrupt that stops scrolling
-3. PROBLEMA — why the viewer should care
-4. CONCEITO — the core idea/framework
-5. APLICAÇÃO — practical examples (at least 3)
-6. CTA — subscribe, comment prompt, next video tease
+  if (res.title_options.length > 0) {
+    text += 'TITLE OPTIONS:\n';
+    res.title_options.forEach((t, i) => { text += `  ${i + 1}. ${t}\n`; });
+    text += '\n';
+  }
 
-Also provide:
-📌 5 TITLE OPTIONS (PT-BR, SEO-friendly, curiosity-driven)
-🖼️ THUMBNAIL CONCEPT (visual description: text overlay, expression, colors)
-📋 SOURCE BRIEF — what external material is referenced, who said it, links
+  text += `HOOK:\n${res.hook}\n\n`;
+  text += `SCRIPT:\n${res.script}\n`;
 
-Rules:
-- All in PT-BR (Brazilian Portuguese) — sound like how Felipe actually talks, The Operator energy
-- Authentic, conversational tone with meme energy where appropriate
-- Include [SFX:name] markers (2-3 per minute): Vine Boom, FAHHH, Metal Pipe, Bruh, Sad Violin, Emotional Damage, He He He Ha, Among Us, Windows Error, Record Scratch, Goofy Ahh, Womp Womp
-- Include [EDIT:technique] markers: zoom punch, hard cut to black, speed ramp, text popup, deadpan stare, repeat x3, chaos layering
-- Include [SHOW ON SCREEN: ...] markers for sources, screenshots, data points
-- Include [PAUSE] markers for dramatic effect
-- Short paragraphs, easy to read on teleprompter`;
+  if (res.sources_used.length > 0) {
+    text += '\nFONTES VERIFICADAS:\n';
+    res.sources_used.forEach((s) => {
+      text += `• ${s.title}${s.url ? ` — ${s.url}` : ''}\n`;
+    });
+  }
 
-  const result = await handleContent(prompt, 8192);
-  return result.text;
+  if (res.estimated_duration) {
+    text += `\nDuração estimada: ${res.estimated_duration}\n`;
+  }
+
+  return text;
 }
 
 // ─── Orchestrators (transport-agnostic) ────────────────────────────

@@ -116,26 +116,58 @@ export function contentRoutes(): Router {
   });
 
   /**
-   * POST /api/v1/content/script — generate a script for an idea
+   * POST /api/v1/content/script — generate a structured script
    *
-   * NOTE: This is the only AI-using route in this file. Script generation is
-   * a CONTENT GENERATION operation, not a data lookup, so AI involvement is
-   * intentional and explicit. All other content endpoints are token-zero.
+   * Uses the canonical script pipeline: content-engine Python backend
+   * with deep research → Claude Sonnet → structured ScriptResponse.
+   *
+   * Body: {
+   *   topic: string (required),
+   *   niche?: string (default "general"),
+   *   format?: "YouTube" | "Reel" (default "YouTube"),
+   *   maxDurationMinutes?: number (default 8, range 1-30)
+   * }
+   *
+   * Returns structured script data — iOS renders natively.
+   *
+   * NOTE: AI-using endpoint — script generation is a CONTENT GENERATION
+   * operation, not a data lookup, so token cost is justified.
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { ideaId, topic } = req.body;
+    const { topic, niche, format, maxDurationMinutes } = req.body;
+
+    if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
+      sendError(res, 'VALIDATION', 'topic is required', 400);
+      return;
+    }
 
     try {
-      // Route through the content domain handler
-      const { handleContent } = require('../../domains/content-creator');
-      const prompt = ideaId
-        ? `/script ${ideaId}`
-        : `/script ${topic || 'generate a script'}`;
-      const result = await handleContent(prompt, userId);
-      sendSuccess(res, { script: result.text, domain: result.domain });
+      const { getScript } = require('../../services/content-engine');
+      const result = await getScript(
+        topic.trim(),
+        niche || 'general',
+        maxDurationMinutes || (format === 'Reel' ? 1 : 8),
+        format || 'YouTube',
+      );
+
+      sendSuccess(res, {
+        topic: result.topic,
+        script: result.script,
+        hook: result.hook,
+        titleOptions: result.title_options,
+        sourcesUsed: result.sources_used.map((s: any) => ({
+          title: s.title,
+          url: s.url,
+          sourceType: s.source_type,
+          relevanceNote: s.relevance_note,
+        })),
+        estimatedDuration: result.estimated_duration,
+        format: format || 'YouTube',
+        durationMs: result.duration_ms,
+      });
     } catch (err: any) {
-      logger.error({ err }, 'iOS content/script failed');
+      logger.error({ err, topic }, 'iOS content/script failed');
       sendError(res, 'INTERNAL', err?.message || 'Script generation failed', 500);
     }
   });
