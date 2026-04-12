@@ -33,15 +33,18 @@ import {
 import { studyVideo, getTranscript, saveTranscriptAsDocx, saveStudyAsDocx, saveScriptAsDocx } from '../../services/video-study';
 import {
   deepSearch, getSources, getHotNews, isContentEngineConfigured,
-  formatDeepSearch, formatSources, formatHotNews,
   getTrending, getReaction, getHooks, getScript, getTitles,
   getThumbnail, getCaption, getCompetitor, getGaps, getSeo,
   logFeedback, getReport,
+  saveContentAsDocx,
+} from '../../services/content-engine';
+// Telegram-specific formatters — live in the transport adapter, not the engine
+import {
+  formatDeepSearch, formatSources, formatHotNews,
   formatTrending, formatReaction, formatHooks, formatScript, formatTitles,
   formatThumbnail, formatCaption, formatCompetitor, formatGaps, formatSeo,
   formatFeedback, formatReport,
-  saveContentAsDocx,
-} from '../../services/content-engine';
+} from '../../services/content-telegram-formatter';
 import {
   sendTopicCandidates, sendWeeklyPackage,
   updateFeedback, markScriptGenerated, getTopicById,
