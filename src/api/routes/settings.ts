@@ -22,7 +22,7 @@ export function settingsRoutes(): Router {
       sendSuccess(res, {
         version: (() => { try { return require('../../../package.json').version; } catch { return '0.0.0'; } })(),
         uptime: uptimeStr,
-        botStatus: isBotPollingActive() ? 'online' : 'offline',
+        serviceStatus: isBotPollingActive() ? 'online' : 'offline',
         lastMessageAt: getLastMessageAt(),
       });
     } catch (err: any) {

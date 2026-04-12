@@ -85,7 +85,7 @@ export function dashboardRoutes(): Router {
         system: {
           version: getAppVersion(),
           uptime: uptimeStr,
-          botStatus: isBotPollingActive() ? 'online' : 'offline',
+          serviceStatus: isBotPollingActive() ? 'online' : 'offline',
           lastMessageAt: getLastMessageAt(),
         },
       };
@@ -167,7 +167,7 @@ export async function warmDashboardCache(userId: number): Promise<void> {
       tasks: tasksResult.status === 'fulfilled' ? tasksResult.value : { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
       training: trainingResult.status === 'fulfilled' ? trainingResult.value : { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null },
       content: contentResult.status === 'fulfilled' ? contentResult.value : { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
-      system: { version: getAppVersion(), uptime: '0h 0m', botStatus: 'online', lastMessageAt: null },
+      system: { version: getAppVersion(), uptime: '0h 0m', serviceStatus: 'online', lastMessageAt: null },
     };
 
     setCache(cacheKey, response, 180);
