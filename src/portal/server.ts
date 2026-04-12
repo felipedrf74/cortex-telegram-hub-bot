@@ -172,6 +172,7 @@ interface SnapshotResponse {
     byUser: { userId: number; messageCount: number; totalTokens: number; apiCalls: number; costUsd: number }[];
   };
   adapters?: { name: string; status: string; lastMessage?: string; lastMessageAt?: string | null; configured: boolean }[];
+  apiLatency?: { route: string; count: number; p50: number; p95: number; p99: number; errorRate: number }[];
 }
 
 // ─── Snapshot Cache ─────────────────────────────────────────────────
@@ -813,6 +814,12 @@ function buildSnapshot(): SnapshotResponse {
     skillStatus: getAllSkillStatuses(),
     trainingPlans,
     usageMetering,
+    apiLatency: (() => {
+      try {
+        const { getLatencySummary } = require('../api/request-timer');
+        return getLatencySummary();
+      } catch { return []; }
+    })(),
   };
 }
 

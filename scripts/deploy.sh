@@ -28,24 +28,42 @@ echo "🚀 Deploying from: $LOCAL_DIR"
 echo "   To: $SERVER:$REMOTE_DIR"
 echo ""
 
-# Auto-bump patch version on each deploy
+# ── 0. VALIDATE FIRST — before any git operations ────
+# This is the safety gate: typecheck + full test suite must pass
+# before we bump version, commit, push, or touch the server.
+# If this fails, nothing has changed — safe to fix and retry.
 cd "$LOCAL_DIR"
+echo "🔍 Running full validation (typecheck + tests)..."
+npm run verify 2>&1 && echo "" || {
+  echo ""
+  echo "═══════════════════════════════════════════════"
+  echo "  ❌ VALIDATION FAILED — deploy aborted"
+  echo "  Fix type errors or failing tests, then retry."
+  echo "═══════════════════════════════════════════════"
+  exit 1
+}
+echo "═══════════════════════════════════════════════"
+echo "  ✅ VALIDATION PASSED — proceeding with deploy"
+echo "═══════════════════════════════════════════════"
+echo ""
+
+# ── 1. Build TypeScript locally ──────────────────────
+echo "📦 Building TypeScript..."
+npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
+
+# ── 1b. Version bump + commit (only AFTER validation) ─
 OLD_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
 npm version patch --no-git-tag-version > /dev/null 2>&1
 VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "unknown")
 echo "📌 Version: $OLD_VERSION → $VERSION"
 git add package.json package-lock.json 2>/dev/null
-git commit -m "chore: bump version to $VERSION [deploy]" --no-verify 2>/dev/null
-git push origin "$(git branch --show-current)" --no-verify 2>/dev/null || true
+git commit -m "chore: bump version to $VERSION [deploy]" 2>/dev/null
+git push origin "$(git branch --show-current)" 2>/dev/null || {
+  echo "   ⚠️  Git push failed — deploy continues but remote is not updated"
+}
 
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DEPLOY_STATUS="✅ Success"
-
-# ── 1. Build TypeScript locally ──────────────────────
-echo "📦 Building TypeScript..."
-cd "$LOCAL_DIR"
-npx tsc --noEmit 2>/dev/null && echo "   ✅ Type check passed" || { echo "   ❌ Type errors — aborting"; exit 1; }
-npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
 
 # ── 2. Stop services on server ───────────────────────
 # (Moved BEFORE backup so the SQLite WAL is checkpointed and bot.db is in

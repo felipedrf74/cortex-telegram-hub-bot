@@ -8,7 +8,7 @@ Nexus Hub is an **AI personal operating system** for self-employed athletes and 
 
 | Surface | Role | Technology |
 |---------|------|------------|
-| **iOS App** | Primary user experience | Swift, SwiftUI, iOS 17+, HealthKit |
+| **iOS App** | Primary user experience | Swift, SwiftUI, iOS 18+, HealthKit |
 | **Portal Hub** | Operator / admin / inspection | Express, HTML/JS, SSE |
 | **Telegram Bot** | Legacy compatibility layer | Grammy (grammy.dev) |
 | **REST API** | Canonical backend contract | Express `/api/v1/*` |
@@ -60,6 +60,10 @@ The system unifies task management, calendar coordination, fitness coaching, inv
 16. [Workflows & Examples](#16-workflows--examples)
 17. [Architecture Patterns](#17-architecture-patterns)
 18. [Troubleshooting](#18-troubleshooting)
+19. [iOS REST API & Auth](#19-ios-rest-api--auth)
+20. [Apple Billing](#20-apple-billing)
+21. [Push Notifications](#21-push-notifications)
+22. [Health & Observability](#22-health--observability)
 
 ---
 
@@ -1328,6 +1332,123 @@ The SQLite database is at `./data/bot.db`. Migrations are idempotent and run on 
 rm data/bot.db
 npm start  # Will recreate with all migrations
 ```
+
+---
+
+## 19. iOS REST API & Auth
+
+### Authentication Flow (PKCE)
+
+The iOS app uses **Google Sign-In with authorization code + PKCE**:
+
+1. iOS generates `code_verifier` (32 random bytes, base64url) and `code_challenge` (SHA256 of verifier)
+2. Opens Google OAuth with `response_type=code` + `code_challenge` + `code_challenge_method=S256`
+3. User consents, Google redirects with `authorization_code`
+4. iOS sends `POST /api/v1/auth/register` with `{ code, codeVerifier, redirectURI }`
+5. Backend exchanges code for tokens via Google's token endpoint (server-side)
+6. Backend returns JWT + refresh token
+
+The backend supports both PKCE (iOS) and legacy implicit flow (backward compat) in the same endpoint.
+
+### Per-User Scoping
+
+All `/api/v1/*` routes behind `authMiddleware` extract `userId` from the JWT. A request-scoped middleware overrides the Microsoft Graph and Google Calendar clients to use the authenticated user's OAuth tokens (not the owner singleton).
+
+### Token-Zero Endpoints (Free)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /dashboard` | Full dashboard: calendar, tasks, training, content |
+| `GET /tasks/*` | Task lists, individual tasks |
+| `GET /training/*` | Sessions, readiness, progression |
+| `GET /billing/*` | Subscription status, usage |
+| `GET /settings/*` | Status, connections, preferences |
+| `GET /content/pipeline` | Content pipeline stages |
+| `GET /content/topics` | Scheduled topics |
+
+### AI-Using Endpoints (Token Cost)
+
+| Endpoint | Description | Cost |
+|----------|-------------|------|
+| `POST /chat` | Free-form AI chat | ~$0.01-0.05 |
+| `POST /content/script` | Script generation | ~$0.01-0.02 |
+| `POST /content/discover` | Content discovery | ~$0.005 |
+| `POST /content/topics/generate` | Topic generation | ~$0.005 |
+| `GET /training/coach` | AI coach briefing | ~$0.01-0.05 |
+
+---
+
+## 20. Apple Billing
+
+### StoreKit 2 Verification
+
+iOS sends a JWS transaction from StoreKit 2 to `POST /api/v1/billing/apple-verify`. The backend:
+1. Decodes the JWS payload (base64url middle segment)
+2. Validates: bundleId (`me.nexushub.app`), environment, productId allowlist, transaction ID format, expiry
+3. Calls `handleAppleTransaction()` which UPSERTs to `subscriptions` table
+
+**Product IDs:** `me.nexushub.pro.monthly`, `me.nexushub.pro.yearly`, `me.nexushub.max.monthly`, `me.nexushub.max.yearly`
+
+### App Store Server Notifications V2
+
+`POST /api/v1/billing/apple-notifications` (public, no JWT) receives lifecycle events:
+- `EXPIRED` → status = `expired`
+- `DID_FAIL_TO_RENEW` → status = `past_due`
+- `REFUND` / `REVOKE` → status = `refunded`
+- `DID_RENEW` / `SUBSCRIBED` → status = `active`
+
+**Setup:** Enter `https://nexushub.me/api/v1/billing/apple-notifications` in App Store Connect > App Information > App Store Server Notifications URL.
+
+---
+
+## 21. Push Notifications
+
+### Registration
+
+iOS sends device tokens via `POST /api/v1/settings/push-token`. Tokens are stored in `ios_devices` keyed by `(user_id, device_id)`.
+
+### Categories
+
+| Category | Trigger |
+|----------|---------|
+| `morning_briefing` | Daily 6:30 AM scheduler |
+| `evening_summary` | Daily 9:00 PM scheduler |
+| `weekly_review` | Sunday 8:00 PM scheduler |
+| `coach_briefing` | Daily 9:00 PM scheduler |
+| `content_updates` | Topic/script/package ready |
+| `reminders` | Task reminders |
+
+### Push Preferences
+
+- `GET /api/v1/settings/push-preferences` — all categories with enabled status
+- `PUT /api/v1/settings/push-preferences` — toggle `{ category, enabled }`
+
+The scheduler checks `push_preferences` before sending. Disabled categories are silently skipped.
+
+---
+
+## 22. Health & Observability
+
+### Health Endpoints
+
+| Endpoint | Auth | Returns |
+|----------|------|---------|
+| `GET /health` | None | status, uptime, bot polling, DB connectivity, memory |
+| `GET /health/detailed` | Bearer token | All of `/health` + cron statuses, integration health, provider circuit breakers, error counts |
+
+HTTP 200 = healthy, HTTP 503 = degraded.
+
+### Telemetry
+
+In-process telemetry via `src/portal/telemetry.ts`:
+- Activity event ring buffer (200 entries)
+- Job execution registry (last run, duration, result, errors)
+- API usage tracking (cost per category, per model)
+- Error monitoring (trends, distribution)
+
+### Portal Dashboard
+
+`GET /api/snapshot` returns the full dashboard payload: health summary, API usage (today/7d/30d), job statuses, domain routing stats, integration health, and error trends. Cached for 3 seconds.
 
 ### Portal Not Loading
 

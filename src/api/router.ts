@@ -3,6 +3,7 @@
 import express, { Router } from 'express';
 import { authMiddleware } from './auth-middleware';
 import { rateLimitMiddleware } from './rate-limiter';
+import { requestTimerMiddleware } from './request-timer';
 import { authRoutes } from './routes/auth';
 import { chatRoutes } from './routes/chat';
 import { dashboardRoutes } from './routes/dashboard';
@@ -149,6 +150,7 @@ export function createApiRouter(): Router {
   // then rate-limit checks the per-user quota, THEN the route handlers run.
   router.use(authMiddleware);
   router.use(rateLimitMiddleware);
+  router.use(requestTimerMiddleware);
 
   // ── Per-user data isolation for ALL iOS API routes ─────────────────
   // Sets request-scoped user overrides so all downstream service calls
