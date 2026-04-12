@@ -1383,6 +1383,11 @@ table.legacy th {
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
         <span class="nav-label">Invite Codes</span>
       </a>
+      <a class="nav-item" data-nav="founders">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>
+        <span class="nav-label">Founders</span>
+        <span class="nav-badge mono" id="nav-founders-count"></span>
+      </a>
       <a class="nav-item" data-nav="waitlist">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg></span>
         <span class="nav-label">Waitlist <span class="badge badge-accent" id="waitlist-nav-count" style="margin-left:4px;display:none"></span></span>
@@ -2017,6 +2022,58 @@ table.legacy th {
       </div>
     </section>
 
+    <!-- ════════════════════ FOUNDERS ════════════════════ -->
+    <section class="section" data-section="founders">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Founders</h1>
+          <div class="section-subtitle">Emails with permanent Pro or Max access — no paywall, no expiry</div>
+        </div>
+      </div>
+
+      <!-- Add founder form -->
+      <div class="card" style="margin-bottom:var(--space-4)">
+        <div style="display:flex;gap:var(--space-3);align-items:end;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <label style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;display:block">Email</label>
+            <input class="input" type="email" placeholder="user@example.com" id="founder-email-input" style="width:100%">
+          </div>
+          <div style="min-width:100px">
+            <label style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;display:block">Plan</label>
+            <select class="input" id="founder-plan-select" style="width:100%">
+              <option value="pro">Pro</option>
+              <option value="max">Max</option>
+            </select>
+          </div>
+          <div style="flex:0.6;min-width:140px">
+            <label style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;display:block">Note (optional)</label>
+            <input class="input" type="text" placeholder="Beta tester, Investor…" id="founder-note-input" style="width:100%">
+          </div>
+          <button class="btn btn-primary btn-sm" id="founder-add-btn" style="height:36px">+ Add Founder</button>
+        </div>
+      </div>
+
+      <!-- Founders list -->
+      <div class="card">
+        <div style="overflow-x:auto">
+          <table class="data-table" id="founders-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Plan</th>
+                <th>Note</th>
+                <th>Added</th>
+                <th style="width:60px"></th>
+              </tr>
+            </thead>
+            <tbody id="founders-tbody">
+              <tr><td colspan="5"><div class="empty">Loading founders…</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- ════════════════════ WAITLIST ════════════════════ -->
     <section class="section" data-section="waitlist">
       <div class="section-header">
@@ -2325,6 +2382,7 @@ table.legacy th {
     // On-demand section loaders
     if (section === 'users') loadUsers();
     if (section === 'invites') loadInviteCodes();
+    if (section === 'founders') loadFounders();
     if (section === 'waitlist') loadWaitlist();
     if (section === 'audit') loadAuditTrail();
     if (section === 'jobs') loadQuickActions();
@@ -3793,6 +3851,61 @@ table.legacy th {
       if (d.ok) showToast('Created: ' + d.code);
       loadInviteCodes();
     } catch { showToast('Error', false); }
+  });
+
+  // ════════════════════════════════════════════════════════════
+  // Founders
+  // ════════════════════════════════════════════════════════════
+  async function loadFounders() {
+    try {
+      const r = await apiFetch('/api/founders');
+      if (!r.ok) return;
+      const d = await r.json();
+      const tbody = document.getElementById('founders-tbody');
+      const founders = d.founders || [];
+      const badge = document.getElementById('nav-founders-count');
+      if (badge) { badge.textContent = String(founders.length); badge.style.display = founders.length > 0 ? '' : 'none'; }
+      if (founders.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5"><div class="empty">No founders yet. Add an email above to grant permanent access.</div></td></tr>';
+        return;
+      }
+      tbody.innerHTML = founders.map(f => {
+        const planBadge = f.plan === 'max'
+          ? '<span class="badge badge-accent">MAX</span>'
+          : '<span class="badge badge-success">PRO</span>';
+        return '<tr>' +
+          '<td><code class="mono" style="font-size:13px">' + esc(f.email) + '</code></td>' +
+          '<td>' + planBadge + '</td>' +
+          '<td class="text-muted">' + (f.note || '—') + '</td>' +
+          '<td class="text-muted">' + (f.created_at ? shortDateTime(f.created_at) : '—') + '</td>' +
+          '<td class="text-right"><button class="btn btn-xs btn-danger" onclick="removeFounder(\'' + esc(f.email) + '\')">Remove</button></td>' +
+        '</tr>';
+      }).join('');
+    } catch { /* silent */ }
+  }
+  window.removeFounder = async function(email) {
+    if (!confirm('Remove founder access for ' + email + '?')) return;
+    await apiFetch('/api/founders/' + encodeURIComponent(email), { method: 'DELETE' });
+    showToast('Founder removed');
+    loadFounders();
+  };
+  document.getElementById('founder-add-btn').addEventListener('click', async () => {
+    const email = document.getElementById('founder-email-input').value.trim();
+    const plan = document.getElementById('founder-plan-select').value;
+    const note = document.getElementById('founder-note-input').value.trim();
+    if (!email) { showToast('Email is required', false); return; }
+    try {
+      const r = await apiFetch('/api/founders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, plan, note: note || undefined }),
+      });
+      if (!r.ok) { showToast('Failed to add founder', false); return; }
+      showToast('Founder added: ' + email);
+      document.getElementById('founder-email-input').value = '';
+      document.getElementById('founder-note-input').value = '';
+      loadFounders();
+    } catch { showToast('Error adding founder', false); }
   });
 
   // ════════════════════════════════════════════════════════════

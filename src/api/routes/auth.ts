@@ -56,23 +56,20 @@ function issueTokensAndRegisterDevice(
       last_active_at = datetime('now')
   `).run(userId, deviceId, deviceName, pushToken, refreshToken);
 
-  // Seed a 'pro' subscription for new users who don't have one yet.
-  // This gives TestFlight testers and early adopters full AI access
-  // without requiring an in-app purchase. The subscription can be
-  // overridden by a real Stripe or Apple IAP transaction later.
+  // Check founders list: if the user's email is in the founders table,
+  // grant them a permanent subscription with the assigned plan.
+  // Otherwise, no subscription is created — the paywall is active.
   try {
-    const existingSub = db.prepare(
-      'SELECT id FROM subscriptions WHERE user_id = ?'
-    ).get(userId) as any;
-    if (!existingSub) {
-      const trialEnd = new Date(Date.now() + 365 * 86400000).toISOString(); // 1 year
-      db.prepare(`
-        INSERT INTO subscriptions (user_id, plan, period, status, provider, current_period_end)
-        VALUES (?, 'pro', 'yearly', 'active', 'seed', ?)
-      `).run(userId, trialEnd);
-      logger.info({ userId }, 'Seeded pro subscription for new user');
+    const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+    if (userRow?.email) {
+      const { getFounderPlan, syncFounderSubscription } = require('../../services/founders');
+      const founderPlan = getFounderPlan(userRow.email);
+      if (founderPlan) {
+        syncFounderSubscription(userRow.email, founderPlan);
+        logger.info({ userId, email: userRow.email, plan: founderPlan }, 'Founder subscription granted on registration');
+      }
     }
-  } catch { /* subscriptions table may not exist in tests */ }
+  } catch { /* founders table may not exist yet */ }
 
   logAudit({
     userId, actorId: userId, action: 'access', resource: 'auth.register',

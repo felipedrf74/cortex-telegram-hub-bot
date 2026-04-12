@@ -2504,6 +2504,47 @@ export function createPortalServer(bot: Bot): http.Server {
     }
   });
 
+  // ── Founders API (portal-token authed) ─────────────────────────────
+  //
+  // Manage the founders list: emails with permanent Pro/Max access.
+  // When a user registers with a founder email, they automatically get
+  // a subscription with provider='founder' and no expiry.
+
+  app.get('/api/founders', (_req: Request, res: Response) => {
+    try {
+      const { listFounders } = require('../services/founders');
+      res.json({ founders: listFounders() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.post('/api/founders', express.json(), (req: Request, res: Response) => {
+    try {
+      const { email, plan, note } = req.body;
+      if (!email || !plan || !['pro', 'max'].includes(plan)) {
+        res.status(400).json({ ok: false, message: 'email and plan (pro/max) required' });
+        return;
+      }
+      const { addFounder } = require('../services/founders');
+      addFounder(email, plan, note);
+      const { listFounders } = require('../services/founders');
+      res.json({ ok: true, founders: listFounders() });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.delete('/api/founders/:email', (req: Request, res: Response) => {
+    try {
+      const { removeFounder } = require('../services/founders');
+      const removed = removeFounder(decodeURIComponent(String(req.params.email)));
+      res.json({ ok: removed });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Waitlist admin API (portal-token authed) ───────────────────────
   //
   // These are the ADMIN endpoints for the landing page waitlist. The PUBLIC
