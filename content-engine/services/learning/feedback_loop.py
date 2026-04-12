@@ -3,6 +3,18 @@ Feedback loop — logs content performance and analyses it via Claude.
 
 This is how the engine learns. Each /feedback call stores metrics and gets
 back an analysis of what worked, what didn't, and what to learn.
+
+DEPRECATION NOTICE (April 2026):
+  The primary feedback store is now the SQLite-backed content_performance
+  table, accessed via POST /api/v1/content/performance on the TypeScript
+  backend. This Python module still writes to feedback.json for backward
+  compatibility but the JSON file is no longer the source of truth.
+
+  New callers should use the iOS/portal API endpoints instead:
+    POST /api/v1/content/performance  — log feedback
+    GET  /api/v1/content/performance  — read performance summary
+
+  The JSON file will be removed in a future version.
 """
 
 import time
@@ -16,7 +28,8 @@ from services.claude_client import ask_claude_json
 
 logger = logging.getLogger("content-engine.feedback")
 
-# Simple JSON file store — will migrate to SQLite in Phase 9
+# DEPRECATED: JSON file store. Primary store is now SQLite content_performance table.
+# Kept for backward compatibility — reads still check this file as a fallback.
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "feedback.json")
 
 

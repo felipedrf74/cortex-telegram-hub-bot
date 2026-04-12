@@ -94,32 +94,33 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
   try {
     const db = getDb();
 
-    // Collect generated scripts from last 30 days
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const pipelineScripts = db.prepare(`
-      SELECT topic_title, script_path FROM content_pipeline
-      WHERE stage IN ('scripted', 'filming', 'editing', 'published')
-        AND created_at > ?
-      ORDER BY created_at DESC
-      LIMIT 10
-    `).all(thirtyDaysAgo) as any[];
-
-    // Read script files
+    // ── Collect generated scripts (DB-first, file fallback) ──────
+    //
+    // Primary: read raw script text from content_scripts table (April 2026).
+    // This is reliable — the full text is stored durably in SQLite.
+    //
+    // Fallback: if content_scripts is empty (pre-migration scripts),
+    // try the old pipeline → file path approach. This gracefully degrades
+    // for historical data while new scripts use the DB-backed store.
     const scripts: { topic: string; text: string }[] = [];
-    for (const entry of pipelineScripts) {
-      if (entry.script_path && fs.existsSync(entry.script_path)) {
-        try {
-          // For .docx files we can't easily read — just note the path
-          scripts.push({
-            topic: entry.topic_title,
-            text: `[Script file: ${path.basename(entry.script_path)}]`,
-          });
-        } catch { /* skip unreadable */ }
+
+    try {
+      const { getRecentScripts } = await import('../services/content-learning-store');
+      // userId 0 = owner (pre-multi-tenant scripts)
+      const dbScripts = getRecentScripts(0, 30, 10);
+      for (const s of dbScripts) {
+        scripts.push({
+          topic: s.topic,
+          text: s.scriptText.slice(0, 3000),
+        });
       }
+      logger.info({ count: dbScripts.length }, 'Voice agent: loaded scripts from DB');
+    } catch {
+      logger.warn('Voice agent: content_scripts table not available, using file fallback');
     }
 
-    // Also check for .txt or raw script files in IDEAS/SCRIPTS
-    if (fs.existsSync(IDEAS_DIR)) {
+    // File fallback for pre-migration scripts (DOCX is unreadable, try .txt)
+    if (scripts.length === 0 && fs.existsSync(IDEAS_DIR)) {
       const files = fs.readdirSync(IDEAS_DIR)
         .filter(f => f.endsWith('.txt'))
         .sort()
@@ -136,6 +137,7 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     }
 
     // Collect published video transcripts
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const transcripts = db.prepare(`
       SELECT title, full_text FROM video_transcripts
       WHERE created_at > ?
@@ -319,6 +321,62 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
         },
       });
       signalsProduced++;
+    }
+
+    // ── Persist learned patterns durably (April 2026) ──────────────
+    //
+    // Bus signals expire (voice_pattern: 90-day TTL). Store patterns
+    // in content_learned_patterns table so they accumulate over time
+    // and survive signal expiry. The upsert increments frequency on
+    // repeated detection instead of duplicating.
+    try {
+      const { upsertLearnedPattern } = await import('../services/content-learning-store');
+      const userId = 0; // Owner
+
+      for (const a of analysis.additions ?? []) {
+        upsertLearnedPattern({
+          category: 'voice_addition',
+          patternText: a.pattern || String(a),
+          examples: a.examples?.slice(0, 5) ?? [],
+          confidence: a.frequency === 'often' ? 0.9 : a.frequency === 'sometimes' ? 0.7 : 0.5,
+          sourceAgent: 'voice-evolution',
+          userId,
+        });
+      }
+      for (const r of analysis.removals ?? []) {
+        upsertLearnedPattern({
+          category: 'voice_removal',
+          patternText: r.pattern || String(r),
+          examples: r.examples?.slice(0, 5) ?? [],
+          confidence: 0.7,
+          sourceAgent: 'voice-evolution',
+          userId,
+        });
+      }
+      for (const rp of analysis.rephrasing ?? []) {
+        upsertLearnedPattern({
+          category: 'voice_rephrasing',
+          patternText: rp.insight || `${rp.original} → ${rp.felipe_version}`,
+          examples: [rp.original, rp.felipe_version].filter(Boolean),
+          confidence: 0.8,
+          sourceAgent: 'voice-evolution',
+          userId,
+        });
+      }
+      for (const bi of analysis.book_influences ?? []) {
+        upsertLearnedPattern({
+          category: 'book_influence',
+          patternText: bi.book_or_concept || String(bi),
+          examples: [bi.how_it_appears].filter(Boolean),
+          confidence: bi.adoption_level === 'integrated' ? 0.9 : 0.5,
+          sourceAgent: 'voice-evolution',
+          userId,
+        });
+      }
+
+      logger.info('Voice agent: persisted learned patterns to DB');
+    } catch (err) {
+      logger.warn({ err }, 'Voice agent: failed to persist patterns (non-fatal)');
     }
 
     const summary = `Voice Evolution: analyzed ${scripts.length} scripts + ${transcripts.length} transcripts + ${bookSignals.length} book insights. ${signalsProduced} voice patterns detected.`;

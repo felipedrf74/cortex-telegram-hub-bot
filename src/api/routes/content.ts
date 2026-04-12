@@ -680,5 +680,134 @@ export function contentRoutes(): Router {
     });
   }));
 
+  // ════════════════════════════════════════════════════════════════════
+  // Content Learning Store — DB-backed learning data (iOS + portal)
+  //
+  // These endpoints expose the canonical learning model:
+  //   - Performance feedback for published videos
+  //   - Learned voice/content patterns (durable, survive signal expiry)
+  //   - Full artifact chain tracing (idea → script → publish → feedback)
+  // ════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /api/v1/content/performance
+   *
+   * Log performance feedback for a published video.
+   * Replaces the Python content-engine feedback.json file.
+   *
+   * Body: { pipelineId?, videoUrl?, views, retentionPct, likes?,
+   *         comments?, subsGained?, hookUsed?, notes? }
+   */
+  router.post('/performance', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { pipelineId, videoUrl, views, retentionPct, likes, comments, subsGained, hookUsed, notes } = req.body;
+
+    if (views === undefined || retentionPct === undefined) {
+      sendError(res, 'VALIDATION', 'views and retentionPct are required', 400);
+      return;
+    }
+
+    const { logPerformanceFeedback } = require('../../services/content-learning-store');
+    const id = logPerformanceFeedback({
+      pipelineId, videoUrl, views, retentionPct,
+      likes, comments, subsGained, hookUsed, notes,
+      userId,
+    });
+
+    sendSuccess(res, { feedbackId: id });
+  }));
+
+  /**
+   * GET /api/v1/content/performance
+   *
+   * Get performance summary for the authenticated user.
+   * Query: ?days=30 (default 30)
+   */
+  router.get('/performance', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const days = parseInt(String(req.query.days || '30'), 10);
+
+    const { getPerformanceSummary } = require('../../services/content-learning-store');
+    const summary = getPerformanceSummary(userId, days);
+
+    sendSuccess(res, summary);
+  }));
+
+  /**
+   * GET /api/v1/content/learned-patterns
+   *
+   * Get durable learned voice/content patterns.
+   * Query: ?category=voice_addition (optional filter)
+   */
+  router.get('/learned-patterns', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const category = req.query.category as string | undefined;
+
+    const { getLearnedPatterns } = require('../../services/content-learning-store');
+    const patterns = getLearnedPatterns(userId, category);
+
+    sendSuccess(res, {
+      count: patterns.length,
+      patterns: patterns.map((p: any) => ({
+        id: p.id,
+        category: p.category,
+        pattern: p.patternText,
+        examples: p.examples,
+        confidence: p.confidence,
+        frequency: p.frequency,
+        sourceAgent: p.sourceAgent,
+        firstDetected: p.firstDetectedAt,
+        lastSeen: p.lastSeenAt,
+      })),
+    });
+  }));
+
+  /**
+   * GET /api/v1/content/artifact-chain/:pipelineId
+   *
+   * Trace the full artifact chain for a pipeline entry:
+   * idea → topic feedback → pipeline → script → performance → patterns
+   */
+  router.get('/artifact-chain/:pipelineId', asyncHandler(async (req, res: Response) => {
+    const { pipelineId } = req.params;
+
+    const { getArtifactChain } = require('../../services/content-learning-store');
+    const chain = getArtifactChain(parseInt(pipelineId, 10));
+
+    sendSuccess(res, chain);
+  }));
+
+  /**
+   * GET /api/v1/content/scripts/recent
+   *
+   * Get recent generated scripts (raw text).
+   * Used by iOS content review UI and portal script inspector.
+   * Query: ?days=30&limit=10
+   */
+  router.get('/scripts/recent', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const days = parseInt(String(req.query.days || '30'), 10);
+    const limit = parseInt(String(req.query.limit || '10'), 10);
+
+    const { getRecentScripts } = require('../../services/content-learning-store');
+    const scripts = getRecentScripts(userId, days, limit);
+
+    sendSuccess(res, {
+      count: scripts.length,
+      scripts: scripts.map((s: any) => ({
+        id: s.id,
+        topic: s.topic,
+        format: s.format,
+        hook: s.hook,
+        titleOptions: s.titleOptions,
+        estimatedDuration: s.estimatedDuration,
+        niche: s.niche,
+        createdAt: s.createdAt,
+        // Script text truncated for list view — full text via artifact-chain
+        preview: s.scriptText?.slice(0, 300) ?? null,
+      })),
+    });
+  }));
+
   return router;
 }

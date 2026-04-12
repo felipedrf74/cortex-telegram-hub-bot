@@ -328,14 +328,42 @@ import type { ScriptResponse } from './content-engine';
  *          sources, estimated duration, and format metadata.
  */
 export async function generateScript(
-  topic: TopicCandidate,
+  topic: TopicCandidate & { feedbackId?: number },
   format: 'reel' | 'youtube' = 'youtube',
+  userId: number = 0,
 ): Promise<ScriptResponse> {
   const { getScript } = await import('./content-engine');
   const maxDuration = format === 'reel' ? 1 : 8;
   const engineFormat = format === 'reel' ? 'Reel' : 'YouTube';
 
-  return getScript(topic.title, topic.niche || 'general', maxDuration, engineFormat);
+  const result = await getScript(topic.title, topic.niche || 'general', maxDuration, engineFormat);
+
+  // ── Durable script storage (April 2026) ──
+  // Persist raw script text in the DB so voice-evolution-agent can
+  // read it without parsing DOCX files. The DOCX export still happens
+  // downstream for teleprompter use, but the DB is the canonical store.
+  try {
+    const { storeScript } = await import('./content-learning-store');
+    storeScript({
+      topicFeedbackId: topic.feedbackId,
+      topic: topic.title,
+      format,
+      scriptText: result.script,
+      hook: result.hook,
+      titleOptions: result.title_options,
+      sourcesUsed: result.sources_used,
+      estimatedDuration: result.estimated_duration,
+      niche: topic.niche || 'general',
+      generationDurationMs: result.duration_ms,
+      userId,
+    });
+  } catch (err) {
+    // Non-fatal — script generation succeeded, just storage failed.
+    // The script is still returned to the caller and saved as DOCX.
+    logger.warn({ err, topic: topic.title }, 'Failed to store script text in DB (non-fatal)');
+  }
+
+  return result;
 }
 
 /**
