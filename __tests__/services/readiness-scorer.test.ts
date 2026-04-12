@@ -192,13 +192,13 @@ describe('readiness-scorer — calculateReadiness', () => {
     expect(result.recommendation).toBe('full_intensity');
   });
 
-  it('returns neutral (60) when Garmin not configured', async () => {
+  it('returns neutral (60) when no wearable configured', async () => {
     mockGarmin.isGarminConfigured.mockReturnValue(false);
-
+    // With no Apple Health data either (mock DB returns empty), falls to neutral
     const result = await calculateReadiness(1);
     expect(result.score).toBe(60);
     expect(result.recommendation).toBe('full_intensity');
-    expect(result.reasoning).toContain('Garmin not connected');
+    expect(result.reasoning).toContain('No wearable connected');
   });
 
   it('handles missing data gracefully (uses fallback per factor)', async () => {

@@ -10,6 +10,7 @@
 
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
+import { scoreSleep } from '../readiness-scorer';
 import type { WearableAdapter } from './adapter-interface';
 import type {
   WearableProvider,
@@ -113,6 +114,18 @@ export class AppleHealthAdapter implements WearableAdapter {
       if (!row) return null;
       const s = JSON.parse(row.data_json);
 
+      // Derive sleep score from stage proportions (April 2026)
+      let derivedSleepScore: number | null = null;
+      try {
+        const totalMin = (s.totalSleepSeconds ?? 0) / 60;
+        const deepMin = (s.deepSleepSeconds ?? 0) / 60;
+        const remMin = (s.remSleepSeconds ?? 0) / 60;
+        if (totalMin > 0) {
+          const { deriveAppleHealthSleepScore } = require('../readiness-scorer');
+          derivedSleepScore = deriveAppleHealthSleepScore(totalMin, deepMin, remMin);
+        }
+      } catch { /* scoring functions unavailable */ }
+
       return {
         provider: 'apple_health',
         date,
@@ -121,7 +134,7 @@ export class AppleHealthAdapter implements WearableAdapter {
         lightSleepSeconds: s.coreSleepSeconds ?? null,
         remSleepSeconds: s.remSleepSeconds ?? null,
         awakeSleepSeconds: s.awakeSleepSeconds ?? null,
-        sleepScore: null, // Apple Health doesn't compute a score
+        sleepScore: derivedSleepScore,
         bedTimeStart: s.startDate ?? null,
         bedTimeEnd: s.endDate ?? null,
         raw: s,
@@ -152,14 +165,82 @@ export class AppleHealthAdapter implements WearableAdapter {
       const hrv = hrvRow ? JSON.parse(hrvRow.data_json) : null;
       const rhr = rhrRow ? JSON.parse(rhrRow.data_json) : null;
 
+      // ── Derived readiness and body battery (April 2026) ──────────
+      // Apple Health has no native readiness or body battery metrics.
+      // We derive them using the same scoring logic as the Garmin path
+      // so Apple Health users see real values, not nulls.
+      let readinessScore: number | null = null;
+      let bodyBatteryEquiv: number | null = null;
+
+      try {
+        const {
+          scoreHrv, deriveAppleHealthSleepScore, deriveBodyBatteryEquivalent,
+        } = require('../readiness-scorer');
+
+        const hrvMs = hrv?.value ?? null;
+
+        // HRV baseline (7-day average)
+        const hrvHistory = db.prepare(
+          `SELECT data_json FROM apple_health_data
+           WHERE user_id = ? AND data_type = 'hrv' AND date < ? AND date > date(?, '-8 days')
+           ORDER BY date DESC LIMIT 7`
+        ).all(userId, date, date) as Array<{ data_json: string }>;
+        const hrvValues = hrvHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+        const hrvBaseline = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b) / hrvValues.length : (hrvMs ?? 60);
+
+        // Sleep data for today
+        const sleepRow = db.prepare(
+          `SELECT data_json FROM apple_health_data
+           WHERE user_id = ? AND data_type = 'sleep' AND date = ?
+           ORDER BY created_at DESC LIMIT 1`
+        ).get(userId, date) as { data_json: string } | undefined;
+
+        const sleep = sleepRow ? JSON.parse(sleepRow.data_json) : null;
+        const totalSleepMin = sleep ? (sleep.totalSleepSeconds ?? 0) / 60 : 0;
+        const deepSleepMin = sleep ? (sleep.deepSleepSeconds ?? 0) / 60 : 0;
+        const remSleepMin = sleep ? (sleep.remSleepSeconds ?? 0) / 60 : 0;
+
+        const hrvScoreVal = scoreHrv(hrvMs ?? 60, hrvBaseline);
+        const sleepScore = totalSleepMin > 0
+          ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
+          : null;
+
+        // RHR baseline
+        const rhrHistory = db.prepare(
+          `SELECT data_json FROM apple_health_data
+           WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date < ? AND date > date(?, '-8 days')
+           ORDER BY date DESC LIMIT 7`
+        ).all(userId, date, date) as Array<{ data_json: string }>;
+        const rhrValues = rhrHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+        const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b) / rhrValues.length : null;
+
+        if (sleepScore != null) {
+          bodyBatteryEquiv = deriveBodyBatteryEquivalent(sleepScore, hrvScoreVal, rhr?.value ?? null, rhrBaseline);
+        }
+
+        // Derive readiness: same 30/30/20/20 weighting
+        if (hrvMs != null || sleepScore != null) {
+          const { scoreBodyBattery, scoreAcwr } = require('../readiness-scorer');
+          const bbScore = bodyBatteryEquiv != null ? scoreBodyBattery(bodyBatteryEquiv) : 60;
+          readinessScore = Math.round(
+            hrvScoreVal * 0.30 +
+            (sleepScore != null ? scoreSleep(totalSleepMin / 60, sleepScore) : 60) * 0.30 +
+            bbScore * 0.20 +
+            60 * 0.20  // ACWR needs workout data — use neutral for getReadiness
+          );
+        }
+      } catch {
+        // Scoring functions unavailable — leave as null (backward compat)
+      }
+
       return {
         provider: 'apple_health',
         date,
-        readinessScore: null,
+        readinessScore,
         hrvMs: hrv?.value ?? null,
         restingHeartRate: rhr?.value ?? null,
-        bodyBattery: null,
-        recoveryScore: null,
+        bodyBattery: bodyBatteryEquiv,
+        recoveryScore: readinessScore, // use readiness as recovery proxy
         raw: { hrv, rhr },
       };
     } catch (err) {

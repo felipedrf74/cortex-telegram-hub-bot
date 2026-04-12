@@ -214,12 +214,13 @@ export function settingsRoutes(): Router {
   });
 
   /**
-   * PUT /api/v1/settings/push-preferences
+   * PUT|POST /api/v1/settings/push-preferences
    *
    * Toggle a push notification category for the user.
    * Body: { category: string, enabled: boolean }
    */
-  router.put('/push-preferences', async (req, res: Response) => {
+  // Accept both PUT (REST convention) and POST (iOS NexusHTTPClient compat)
+  const pushPrefHandler = async (req: any, res: Response) => {
     try {
       const { userId } = req as unknown as AuthenticatedRequest;
       const { category, enabled } = req.body || {};
@@ -235,7 +236,9 @@ export function settingsRoutes(): Router {
     } catch (err: any) {
       sendError(res, 'INTERNAL', err?.message || 'Failed to save preference', 500);
     }
-  });
+  };
+  router.put('/push-preferences', pushPrefHandler);
+  router.post('/push-preferences', pushPrefHandler);
 
   return router;
 }

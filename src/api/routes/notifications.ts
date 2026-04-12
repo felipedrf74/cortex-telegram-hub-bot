@@ -113,5 +113,72 @@ export function notificationRoutes(): Router {
     sendSuccess(res, { resolved: true });
   }));
 
+  /**
+   * GET /api/v1/notifications/inbox
+   *
+   * Unified inbox feed — merges content notifications + report documents
+   * into a single chronologically-sorted list.
+   *
+   * Each item has:
+   *   kind: 'notification' | 'report'
+   *   id, title, body/summary, type, status, createdAt
+   *
+   * Query: ?limit=30
+   */
+  router.get('/inbox', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const limit = parseInt(String(req.query.limit || '30'), 10);
+
+    const { getNotifications, getUnreadCount } = require('../../services/content-notification-store');
+    const { getRecentReports, getUnreadReportCount } = require('../../services/report-document-store');
+
+    // Fetch both sources
+    const notifications = getNotifications(userId, { limit });
+    const reports = getRecentReports(userId, { limit });
+    const unreadNotifications = getUnreadCount(userId);
+    const unreadReports = getUnreadReportCount(userId);
+
+    // Merge into unified feed
+    type InboxItem = {
+      kind: 'notification' | 'report';
+      id: number;
+      title: string;
+      body: string | null;
+      type: string;
+      status: string;
+      createdAt: string;
+    };
+
+    const items: InboxItem[] = [
+      ...notifications.map((n: any) => ({
+        kind: 'notification' as const,
+        id: n.id,
+        title: n.title,
+        body: n.body,
+        type: n.type,
+        status: n.status,
+        createdAt: n.createdAt,
+      })),
+      ...reports.map((r: any) => ({
+        kind: 'report' as const,
+        id: r.id,
+        title: r.title,
+        body: r.summary,
+        type: r.type,
+        status: r.status,
+        createdAt: r.createdAt,
+      })),
+    ];
+
+    // Sort by createdAt DESC (most recent first)
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    sendSuccess(res, {
+      totalUnread: unreadNotifications + unreadReports,
+      count: Math.min(items.length, limit),
+      items: items.slice(0, limit),
+    });
+  }));
+
   return router;
 }

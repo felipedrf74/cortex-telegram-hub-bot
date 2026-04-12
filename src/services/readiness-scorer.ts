@@ -138,10 +138,200 @@ function buildReasoning(factors: ReadinessFactors, recommendation: ReadinessReco
   return parts.join('; ') + '.';
 }
 
+// ── Apple Health Derived Metrics ─────────────────────────────────────
+//
+// When Garmin is not configured, try Apple Health data from the
+// apple_health_data table. iOS syncs HRV, sleep stages, RHR, steps,
+// and workouts daily. We apply the SAME scoring functions (scoreHrv,
+// scoreSleep, scoreAcwr) to the raw Apple Health data to produce
+// equivalent readiness values.
+//
+// Body Battery doesn't exist in Apple Health — we derive an equivalent
+// from sleep quality + HRV status + RHR trend.
+
+/**
+ * Compute a derived sleep score from Apple Health sleep stages.
+ * Apple Health provides totalSleepSeconds, deepSleepSeconds, remSleepSeconds.
+ * The score weights duration (60%) and deep+REM proportion (40%).
+ */
+export function deriveAppleHealthSleepScore(
+  totalSleepMinutes: number,
+  deepSleepMinutes: number,
+  remSleepMinutes: number,
+): number {
+  // Duration score: 8 hours (480 min) = 100, scales linearly
+  const durationScore = clamp(Math.round((totalSleepMinutes / 480) * 100), 0, 100);
+
+  // Quality score: deep + REM should be ~40-50% of total sleep
+  let qualityScore = 50; // neutral default
+  if (totalSleepMinutes > 0) {
+    const deepRemPct = (deepSleepMinutes + remSleepMinutes) / totalSleepMinutes;
+    // 40% deep+REM = 80 score, 50% = 100, 20% = 40
+    qualityScore = clamp(Math.round(deepRemPct * 200), 0, 100);
+  }
+
+  return clamp(Math.round(durationScore * 0.6 + qualityScore * 0.4), 0, 100);
+}
+
+/**
+ * Derive a "body battery equivalent" (energy reserve) from Apple Health signals.
+ * Garmin's Body Battery is proprietary. We approximate it using:
+ *   - Sleep quality (40%) — good sleep = high morning energy
+ *   - HRV status (30%) — high HRV = good recovery = high energy
+ *   - RHR trend (30%) — low RHR = good cardiovascular fitness = efficient energy
+ */
+export function deriveBodyBatteryEquivalent(
+  sleepScore: number,
+  hrvScore: number,
+  rhrBpm: number | null,
+  rhrBaselineBpm: number | null,
+): number {
+  // RHR component: lower is better. Score 100 = at/below baseline, 0 = 15+ above
+  let rhrScore = 70; // neutral
+  if (rhrBpm != null && rhrBaselineBpm != null && rhrBaselineBpm > 0) {
+    const delta = rhrBpm - rhrBaselineBpm;
+    // At baseline: 80, 5 above: 50, 10 above: 20, 5 below: 95
+    rhrScore = clamp(Math.round(80 - delta * 6), 0, 100);
+  }
+
+  return clamp(Math.round(
+    sleepScore * 0.40 +
+    hrvScore * 0.30 +
+    rhrScore * 0.30
+  ), 0, 100);
+}
+
+/**
+ * Calculate readiness from Apple Health data.
+ * Reads from the apple_health_data table (populated by iOS HealthKit sync).
+ * Returns the same ReadinessResult structure as the Garmin path.
+ */
+async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessResult | null> {
+  const db = getDb();
+  const today = new Date().toISOString().slice(0, 10);
+
+  try {
+    // Read HRV (today)
+    const hrvRow = db.prepare(
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date = ? ORDER BY created_at DESC LIMIT 1",
+    ).get(userId, today) as { data_json: string } | undefined;
+
+    // Read HRV baseline (7-day average)
+    const hrvHistory = db.prepare(
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'hrv' AND date > ? ORDER BY date DESC LIMIT 7",
+    ).all(userId, subtractDays(today, 8)) as Array<{ data_json: string }>;
+
+    // Read sleep (today)
+    const sleepRow = db.prepare(
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'sleep' AND date = ? ORDER BY created_at DESC LIMIT 1",
+    ).get(userId, today) as { data_json: string } | undefined;
+
+    // Read RHR (today)
+    const rhrRow = db.prepare(
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date = ? ORDER BY created_at DESC LIMIT 1",
+    ).get(userId, today) as { data_json: string } | undefined;
+
+    // Read RHR baseline (7-day average)
+    const rhrHistory = db.prepare(
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date > ? ORDER BY date DESC LIMIT 7",
+    ).all(userId, subtractDays(today, 8)) as Array<{ data_json: string }>;
+
+    // Read workouts for ACWR (28 days)
+    const workoutRows = db.prepare(
+      "SELECT data_json FROM apple_health_data WHERE user_id = ? AND data_type = 'workout' AND date > ? ORDER BY date ASC",
+    ).all(userId, subtractDays(today, 29)) as Array<{ data_json: string }>;
+
+    // If no data at all, can't compute
+    if (!hrvRow && !sleepRow && !rhrRow) return null;
+
+    // ── HRV ──
+    const todayHrv = hrvRow ? (JSON.parse(hrvRow.data_json)?.value ?? 0) : 0;
+    const hrvValues = hrvHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+    const weeklyHrv = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b, 0) / hrvValues.length : todayHrv;
+    const hrvTrend: 'up' | 'stable' | 'down' = todayHrv > weeklyHrv * 1.05 ? 'up' : todayHrv < weeklyHrv * 0.95 ? 'down' : 'stable';
+    const hrvScoreVal = scoreHrv(todayHrv || 60, weeklyHrv || 60);
+
+    // ── Sleep ──
+    const sleepData = sleepRow ? JSON.parse(sleepRow.data_json) : null;
+    const totalSleepMin = sleepData ? (sleepData.totalSleepSeconds ?? 0) / 60 : 0;
+    const deepSleepMin = sleepData ? (sleepData.deepSleepSeconds ?? 0) / 60 : 0;
+    const remSleepMin = sleepData ? (sleepData.remSleepSeconds ?? 0) / 60 : 0;
+    const derivedSleepScore = totalSleepMin > 0
+      ? deriveAppleHealthSleepScore(totalSleepMin, deepSleepMin, remSleepMin)
+      : 60;
+    const sleepScoreVal = scoreSleep(totalSleepMin / 60, derivedSleepScore);
+
+    // ── RHR ──
+    const todayRhr = rhrRow ? (JSON.parse(rhrRow.data_json)?.value ?? null) : null;
+    const rhrValues = rhrHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+    const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b, 0) / rhrValues.length : null;
+
+    // ── Derived Body Battery ──
+    const derivedBB = deriveBodyBatteryEquivalent(derivedSleepScore, hrvScoreVal, todayRhr, rhrBaseline);
+    const bbScore = scoreBodyBattery(derivedBB);
+
+    // ── ACWR from workouts ──
+    const activities = workoutRows.map(r => {
+      const w = JSON.parse(r.data_json);
+      return {
+        startTimeLocal: w.startDate ?? w.start,
+        duration: w.duration ?? w.durationMinutes * 60,
+      };
+    });
+    const { acuteLoad, chronicLoad, acwr } = computeAcwr(activities);
+    const loadScore = scoreAcwr(acwr);
+
+    // ── Composite ──
+    const compositeScore = clamp(Math.round(
+      hrvScoreVal * 0.30 +
+      sleepScoreVal * 0.30 +
+      bbScore * 0.20 +
+      loadScore * 0.20
+    ), 0, 100);
+
+    const factors: ReadinessFactors = {
+      hrv: { todayMs: todayHrv, sevenDayAvgMs: weeklyHrv, trend: hrvTrend, score: hrvScoreVal },
+      sleep: { durationHours: totalSleepMin / 60, qualityScore: derivedSleepScore, score: sleepScoreVal },
+      bodyBattery: { current: derivedBB, morningPeak: derivedBB, score: bbScore },
+      trainingLoad: { acuteLoad, chronicLoad, acwr, score: loadScore },
+    };
+
+    const recommendation = getRecommendation(compositeScore);
+    const reasoning = buildReasoning(factors, recommendation);
+
+    // Publish signals (same as Garmin path)
+    try {
+      if (sleepScoreVal < 50 || totalSleepMin / 60 < 6) {
+        publishLowSleep({ userId, score: Math.round(sleepScoreVal), totalHours: totalSleepMin / 60 });
+      }
+      if (hrvTrend === 'down' && hrvScoreVal < 50 && weeklyHrv > 0) {
+        publishLowHrv({ userId, hrv_ms: todayHrv, baseline_ms: weeklyHrv });
+      }
+      if (compositeScore < 40) {
+        publishLowReadiness({ userId, score: compositeScore, reason: reasoning });
+      }
+    } catch (err) {
+      logger.warn({ err, userId }, 'training-signals publish failed after Apple Health readiness');
+    }
+
+    logger.info({ userId, score: compositeScore, provider: 'apple_health' }, 'Apple Health readiness calculated');
+    return { score: compositeScore, factors, recommendation, reasoning };
+  } catch (err) {
+    logger.warn({ err, userId }, 'Apple Health readiness calculation failed');
+    return null;
+  }
+}
+
 // ── Main Calculator ─────────────────────────────────────────────────
 
 export async function calculateReadiness(userId: number): Promise<ReadinessResult> {
+  // ── Provider priority: Garmin (native) → Apple Health (derived) → neutral ──
   if (!isGarminConfigured()) {
+    // Try Apple Health derived readiness
+    const appleResult = await calculateAppleHealthReadiness(userId);
+    if (appleResult) return appleResult;
+
+    // No data from any provider — return neutral
     const neutralFactors: ReadinessFactors = {
       hrv: { todayMs: 0, sevenDayAvgMs: 0, trend: 'stable', score: 60 },
       sleep: { durationHours: 0, qualityScore: 0, score: 60 },
@@ -152,7 +342,7 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
       score: 60,
       factors: neutralFactors,
       recommendation: 'full_intensity',
-      reasoning: 'Garmin not connected — using default readiness. Connect Garmin for personalized adjustments.',
+      reasoning: 'No wearable connected — using default readiness. Connect Garmin or Apple Health for personalized adjustments.',
     };
   }
 
