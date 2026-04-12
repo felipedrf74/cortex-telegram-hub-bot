@@ -757,6 +757,13 @@ export function startScheduler(bot: Bot): void {
         // Now stored as a durable report with structured data.
         try {
           const { storeAndPushReport } = require('./report-document-store');
+          // Fetch readiness for structured metrics in the coach report
+          let readinessData: any = null;
+          try {
+            const { calculateReadiness } = require('./readiness-scorer');
+            readinessData = await calculateReadiness(userId);
+          } catch { /* non-fatal */ }
+
           await storeAndPushReport({
             userId,
             type: 'coach_briefing' as const,
@@ -768,6 +775,18 @@ export function startScheduler(bot: Bot): void {
               errors: result.errors,
               dataCollectionMs: result.dataCollectionMs,
               analysisMs: result.analysisMs,
+              // Structured metrics for native iOS rendering
+              readiness: readinessData ? {
+                score: readinessData.score,
+                recommendation: readinessData.recommendation,
+                reasoning: readinessData.reasoning,
+                factors: {
+                  hrv: readinessData.factors?.hrv,
+                  sleep: readinessData.factors?.sleep,
+                  bodyBattery: readinessData.factors?.bodyBattery,
+                  trainingLoad: readinessData.factors?.trainingLoad,
+                },
+              } : null,
             },
             sourceJob: 'garmin_coach',
             pushCategory: 'coach_briefing',

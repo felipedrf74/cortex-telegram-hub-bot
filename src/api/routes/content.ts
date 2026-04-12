@@ -643,15 +643,23 @@ export function contentRoutes(): Router {
     const { updateFeedback, getTopicById } = require('../../services/content-workflow');
     const id = parseInt(feedbackId, 10);
 
-    // Ownership check
-    const topic = getTopicById(id);
-    if (!topic) {
+    // Ownership check — verify the topic belongs to this user
+    const db = require('../../services/database').getDb();
+    const topicRow = db.prepare(
+      'SELECT id, topic, user_id FROM content_topic_feedback WHERE id = ?'
+    ).get(id) as { id: number; topic: string; user_id: number } | undefined;
+
+    if (!topicRow) {
       sendError(res, 'NOT_FOUND', 'Topic not found', 404);
+      return;
+    }
+    if (topicRow.user_id !== 0 && topicRow.user_id !== userId) {
+      sendError(res, 'FORBIDDEN', 'Not your topic', 403);
       return;
     }
 
     updateFeedback(id, sentiment);
-    sendSuccess(res, { feedbackId: id, sentiment, title: topic.title });
+    sendSuccess(res, { feedbackId: id, sentiment, title: topicRow.topic });
   }));
 
   /**
