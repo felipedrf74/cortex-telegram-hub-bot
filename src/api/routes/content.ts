@@ -165,6 +165,10 @@ export function contentRoutes(): Router {
         estimatedDuration: result.estimated_duration,
         format: format || 'YouTube',
         durationMs: result.duration_ms,
+        // Creator-pack fields (April 2026)
+        hashtags: result.hashtags ?? [],
+        caption: result.caption ?? '',
+        cta: result.cta ?? '',
       });
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');

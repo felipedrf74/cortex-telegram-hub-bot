@@ -299,6 +299,10 @@ export interface ScriptResponse {
   sources_used: SourceReference[];
   estimated_duration: string;
   duration_ms: number;
+  // Creator-pack fields (April 2026)
+  hashtags?: string[];
+  caption?: string;
+  cta?: string;
 }
 
 export interface TitlesResponse {

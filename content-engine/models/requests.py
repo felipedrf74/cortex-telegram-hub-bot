@@ -81,6 +81,10 @@ class ScriptResponse(BaseModel):
     sources_used: list[SourceReference]
     estimated_duration: str
     duration_ms: int
+    # Creator-pack fields (April 2026) — structured for iOS/portal rendering
+    hashtags: list[str] = []                      # e.g., ["#theoperator", "#ai"]
+    caption: str = ""                             # social media caption/post copy
+    cta: str = ""                                 # call to action text
 
 
 class TitlesRequest(BaseModel):

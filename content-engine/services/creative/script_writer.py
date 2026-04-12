@@ -258,6 +258,9 @@ ACCURACY INSTRUCTIONS:
 Also provide:
 1. A killer hook (first line of the script)
 2. Three title options for this video
+3. 5-8 relevant hashtags for Instagram/YouTube
+4. A short social media caption (1-2 sentences, with emoji, for Instagram/YouTube description)
+5. The CTA (call to action) as a standalone line
 
 Write the complete script now. Start with the hook, follow the structure, end with CTA.
 After the script, on separate lines write:
@@ -265,6 +268,9 @@ HOOK: [the hook text]
 TITLE1: [first title option]
 TITLE2: [second title option]
 TITLE3: [third title option]
+HASHTAGS: [#tag1 #tag2 #tag3 ...]
+CAPTION: [social media caption text]
+CTA: [call to action text]
 
 Then include:
 ---
@@ -276,10 +282,13 @@ Then include:
     # Use Sonnet for script quality
     raw = await ask_claude(prompt, system=SYSTEM_PROMPT, model=MODEL, max_tokens=8192)
 
-    # Parse hook and titles from the end of the response
+    # Parse hook, titles, hashtags, caption, CTA from the end of the response
     lines = raw.strip().split("\n")
     hook = ""
     title_options: list[str] = []
+    hashtags: list[str] = []
+    caption = ""
+    cta = ""
     script_lines: list[str] = []
 
     for line in lines:
@@ -288,6 +297,13 @@ Then include:
             hook = stripped[5:].strip()
         elif stripped.startswith("TITLE1:") or stripped.startswith("TITLE2:") or stripped.startswith("TITLE3:"):
             title_options.append(stripped.split(":", 1)[1].strip())
+        elif stripped.startswith("HASHTAGS:"):
+            raw_tags = stripped[9:].strip()
+            hashtags = [t.strip() for t in raw_tags.split() if t.startswith("#")]
+        elif stripped.startswith("CAPTION:"):
+            caption = stripped[8:].strip()
+        elif stripped.startswith("CTA:"):
+            cta = stripped[4:].strip()
         else:
             script_lines.append(line)
 
@@ -308,4 +324,7 @@ Then include:
         sources_used=sources_used[:5],
         estimated_duration=est_duration,
         duration_ms=duration_ms,
+        hashtags=hashtags,
+        caption=caption,
+        cta=cta,
     )
