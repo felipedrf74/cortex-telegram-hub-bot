@@ -392,8 +392,22 @@ export function authRoutes(): Router {
       const name = payload.name;
       const picture = payload.picture;
 
-      // Find or create user
+      // Find or create user — check by Google ID first, then by email.
+      // An existing user (created via setup script, invite code, or Apple)
+      // may have the same email but no google_user_id yet. Link their
+      // Google ID instead of creating a duplicate that violates UNIQUE(email).
       let user = getUserByGoogleId(googleUserId);
+      if (!user && email) {
+        const { getUserByEmail } = require('../../services/user-service');
+        user = getUserByEmail(email);
+        if (user) {
+          // Link Google ID to existing account
+          const db = getDb();
+          db.prepare('UPDATE users SET google_user_id = ?, avatar_url = COALESCE(avatar_url, ?), email_verified = 1 WHERE id = ?')
+            .run(googleUserId, picture || null, user.id);
+          logger.info({ userId: user.id, googleUserId, email }, 'Linked Google ID to existing user');
+        }
+      }
       if (!user) {
         user = createGoogleUser(googleUserId, { email, name, picture });
       }
