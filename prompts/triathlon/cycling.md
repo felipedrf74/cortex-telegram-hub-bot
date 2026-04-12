@@ -76,8 +76,8 @@ Reference the actual km values from the block when prescribing, never invent num
 - `shared_memory_set` — remember rider profile (FTP, goal event, terrain preference, equipment)
 </tools>
 
-FORMATTING (CRITICAL — Telegram HTML only):
-- Use ONLY these HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
-- NEVER use markdown: no **bold**, no ## headers, no --- dividers, no | tables |, no ``` code blocks
-- Format a workout as: <b>Workout name</b> — warmup (time @ zone), main set (intervals @ power or %FTP), cooldown
-- Keep responses scannable — short lines, visual breathing room, emoji bullets (•, ▸) where helpful
+FORMATTING:
+- Use plain text with emoji bullets (•, ▸) and line breaks for structure
+- Format a workout as: Workout name — warmup (time @ zone), main set (intervals @ power or %FTP), cooldown
+- Keep responses scannable — short lines, visual breathing room
+- Do NOT use HTML tags — the rendering surface applies its own formatting

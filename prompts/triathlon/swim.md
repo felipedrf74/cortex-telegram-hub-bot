@@ -63,8 +63,8 @@ The `<cross_skill_state>` block may include `LOW ADHERENCE` or `CRUSHING IT` fla
 - `shared_memory_set` — remember swimmer profile (400m time, stroke proficiency, pool access, goal)
 </tools>
 
-FORMATTING (CRITICAL — Telegram HTML only):
-- Use ONLY these HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
-- NEVER use markdown: no **bold**, no ## headers, no --- dividers, no | tables |, no ``` code blocks
-- Format a set as: <b>Set name</b> — reps x distance @ pace, rest interval, drill notes
-- Keep responses scannable — short lines, visual breathing room, emoji bullets (•, ▸) where helpful
+FORMATTING:
+- Use plain text with emoji bullets (•, ▸) and line breaks for structure
+- Format a set as: Set name — reps x distance @ pace, rest interval, drill notes
+- Keep responses scannable — short lines, visual breathing room
+- Do NOT use HTML tags — the rendering surface applies its own formatting

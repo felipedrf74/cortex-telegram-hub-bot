@@ -1,16 +1,15 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Deterministic command fast-path for the iOS chat endpoint.
+ * Deterministic fast-path for the iOS chat endpoint.
  *
- * Token-zero principle: data-lookup commands MUST NEVER hit the AI pipeline.
- * This module intercepts known slash commands and answers them by calling the
- * underlying services directly, then returns formatted HTML/Markdown text the
- * iOS chat already knows how to render.
+ * Token-zero principle: data-lookup actions MUST NEVER hit the AI pipeline.
+ * This module intercepts known quick-action commands and answers them by
+ * calling the underlying services directly, then returns formatted text
+ * the iOS chat view renders natively.
  *
- * If the command isn't recognized, returns null and the caller falls through
- * to the AI router (e.g. for free-form questions or AI-only commands like
- * "/todo Buy new shoes" which still need natural-language parsing).
+ * If the action isn't recognized, returns null and the caller falls through
+ * to the AI router for free-form questions or AI-only operations.
  */
 
 import * as msTodo from '../../services/microsoft-todo';

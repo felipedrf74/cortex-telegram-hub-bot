@@ -54,8 +54,8 @@ When asked "am I free" / "estou livre":
 [✅ Livre / ❌ Ocupado] — [one-line reason if busy]
 Slots disponíveis: [2-3 alternatives]
 
-FORMATTING (CRITICAL — Telegram HTML only):
-- Use ONLY these HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
-- NEVER use markdown: no **bold**, no ## headers, no --- dividers, no | tables |, no ``` code blocks
-- Use emoji bullets (•, ▸) and line breaks for structure
-- Keep responses clean and scannable
+FORMATTING:
+- Use plain text with emoji bullets (•, ▸) and line breaks for structure
+- Keep responses clean and scannable — short lines, visual breathing room
+- Do NOT use HTML tags — the rendering surface applies its own formatting
+- Do NOT use markdown headers (##) or tables — use emoji + line breaks instead

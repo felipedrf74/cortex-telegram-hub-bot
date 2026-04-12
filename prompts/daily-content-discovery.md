@@ -2,20 +2,20 @@
 
 ## What It Does
 
-Every day at 16:45 (Europe/Lisbon), the bot:
-1. Uses Claude's **built-in web search tool** to find trending topics across Felipe's content niches
+Every day at 16:45 (Europe/Lisbon), the system:
+1. Uses web search to find trending topics across Felipe's content niches
 2. Generates 8-10 fresh content ideas with creative hooks, angles, and formats
-3. Saves the full detailed output (scripts outlines, hooks, talking points) to a dated file in `data/content-ideas/`
-4. Sends Felipe a **short Telegram notification** with just the idea headlines and the file path
+3. Saves the full detailed output to the content_notifications inbox + dated file in `data/content-ideas/`
+4. Sends a push notification (APNs) with the idea headlines
 
-Felipe only sees a clean summary on Telegram. The creative detail lives in the file — ready to use when he sits down to create.
+The iOS app shows ideas in the Content tab. The operator portal shows them in the content dashboard. Detail lives in the DB — ready to use when Felipe sits down to create.
 
 ## Project Context
 
-Nexus Hub is a Telegram bot (`nexus-hub/`). Key architecture:
-- `src/services/anthropic.ts` — Anthropic SDK client, `DOMAIN_SYSTEM_PROMPTS`, `callDomain()`, model constants
-- `src/domains/content-creator.ts` — content domain handler with `handleContent()`, uses `callDomain('content', ...)`
-- `src/services/scheduler.ts` — node-cron jobs, sends Telegram messages via `bot.api.sendMessage()`
+Nexus Hub is an AI personal operating system. Primary surface: iOS app. Operator surface: portal hub. Legacy: Telegram bot. Key architecture:
+- `src/services/content-engine.ts` — content engine client (Python backend)
+- `src/domains/content-creator.ts` — content domain handler with `handleContent()`
+- `src/services/scheduler.ts` — node-cron jobs, writes to content_notifications + APNs push
 - `src/config.ts` — config object, timezone `Europe/Lisbon`, Anthropic API key
 - `src/utils/date-parser.ts` — `now()` returns Luxon DateTime in Europe/Lisbon
 - SDK version: `@anthropic-ai/sdk` v0.78.0, model: `claude-sonnet-4-5-20250929`

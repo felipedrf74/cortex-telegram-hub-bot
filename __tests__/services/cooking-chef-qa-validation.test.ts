@@ -422,12 +422,13 @@ describe('QA: Cooking prompt file', () => {
     expect(content.toLowerCase()).toContain('carnivore');
   });
 
-  it('prompt enforces Telegram HTML formatting', () => {
+  it('prompt has transport-agnostic formatting rules', () => {
     const content = fs.readFileSync(
       path.resolve(__dirname, '../../prompts/cooking.md'), 'utf-8',
     );
-    expect(content.toLowerCase()).toContain('telegram');
-    expect(content).toContain('<b>');
+    // Prompts are now transport-agnostic — no Telegram HTML
+    expect(content).toContain('Do NOT use HTML tags');
+    expect(content).not.toContain('Telegram HTML only');
   });
 });
 

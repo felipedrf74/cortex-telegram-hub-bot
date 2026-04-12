@@ -76,8 +76,8 @@ Reference the actual km values from the block when prescribing ("you're at 38km/
 - `shared_memory_set` — remember runner profile (goal race, current weekly mileage, injury history)
 </tools>
 
-FORMATTING (CRITICAL — Telegram HTML only):
-- Use ONLY these HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
-- NEVER use markdown: no **bold**, no ## headers, no --- dividers, no | tables |, no ``` code blocks
-- Format a workout as: <b>Workout name</b> — warmup, main set (reps x distance @ pace), cooldown
-- Keep responses scannable — short lines, visual breathing room, emoji bullets (•, ▸) where helpful
+FORMATTING:
+- Use plain text with emoji bullets (•, ▸) and line breaks for structure
+- Format a workout as: Workout name — warmup, main set (reps x distance @ pace), cooldown
+- Keep responses scannable — short lines, visual breathing room
+- Do NOT use HTML tags — the rendering surface applies its own formatting

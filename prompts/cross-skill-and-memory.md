@@ -2,7 +2,7 @@
 
 ## Project Context
 
-Nexus Hub is a Telegram bot (`nexus-hub/`) with 5 AI domains: secretary, triathlon, content, qliksense, aws. Each domain has its own system prompt, conversation history, and state context. Messages route via: slash commands → keyword matching → Haiku classifier. Only `secretary` has tool-use (Microsoft To Do, Calendar, Email). Other domains are conversational only.
+Nexus Hub is an AI personal operating system with 5 domains: secretary, triathlon, content, cooking, and finance. The primary user surface is the iOS app; the operator surface is the portal hub; Telegram is a legacy compatibility layer. Each domain has its own system prompt, conversation history, and state context. Messages route via: on-device NLP fastpath → keyword matching → classifier. Secretary has tool-use (Microsoft To Do, Calendar, Email). Other domains are conversational with domain-specific services.
 
 **Key files:**
 - `src/services/anthropic.ts` — `DOMAIN_SYSTEM_PROMPTS`, `callDomain()`, `continueWithToolResults()`, `CLASSIFIER_SYSTEM_PROMPT`

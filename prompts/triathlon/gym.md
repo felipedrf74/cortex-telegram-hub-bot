@@ -78,8 +78,8 @@ Reference the specific numbers when helpful: "your squat is 140 → 152.5kg over
 - `shared_memory_set` — remember lifter profile (1RMs, injury history, split preference)
 </tools>
 
-FORMATTING (CRITICAL — Telegram HTML only):
-- Use ONLY these HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
-- NEVER use markdown: no **bold**, no ## headers, no --- dividers, no | tables |, no ``` code blocks
-- For a session, format exercises as: <b>Exercise</b> — sets x reps @ RPE or %1RM, rest
-- Keep responses scannable — short lines, visual breathing room, emoji bullets (•, ▸) where helpful
+FORMATTING:
+- Use plain text with emoji bullets (•, ▸) and line breaks for structure
+- For a session, format exercises as: Exercise — sets x reps @ RPE or %1RM, rest
+- Keep responses scannable — short lines, visual breathing room
+- Do NOT use HTML tags — the rendering surface applies its own formatting

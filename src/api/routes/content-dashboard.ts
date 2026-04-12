@@ -40,14 +40,14 @@ import { CronExpressionParser } from 'cron-parser';
 // ─── Static registries ──────────────────────────────────────────────
 
 /**
- * Every chat slash command handled by `src/handlers/commands/content.ts`,
- * with a human label and category grouping. The `name` is the literal
- * command string (no leading slash) as it appears in the handler file.
+ * Content operations registry — all content actions available through
+ * the iOS app, portal, or legacy Telegram handler. Each entry maps to
+ * a content-engine endpoint or workflow function.
  *
- * The call counts that sit next to each row in the UI come from the
- * `api_usage` table at request time, matching `category` strings that
- * include the command name. Any command the code hasn't tracked through
- * `trackedCreate` (e.g. pure DB reads like /books) simply reports 0.
+ * The `name` is the operation identifier (matches api_usage category).
+ * The `label` is the display name for the portal dashboard.
+ * Call counts come from the `api_usage` table, matching `category`
+ * strings that include the operation name.
  */
 interface CommandRegistryRow {
   name: string;
@@ -58,55 +58,55 @@ interface CommandRegistryRow {
 
 const CONTENT_COMMANDS: CommandRegistryRow[] = [
   // ── Discovery & research ────────────────────────────────────────────
-  { name: 'discover',     label: '/discover',     group: 'discover', description: 'Autopilot content discovery — web + YouTube trends.' },
-  { name: 'deepsearch',   label: '/deepsearch',   group: 'discover', description: 'Deep research brief for a topic.' },
-  { name: 'sources',      label: '/sources',      group: 'discover', description: 'List sources from the last deep search.' },
-  { name: 'hotnews',      label: '/hotnews',      group: 'discover', description: 'Ranked hot news in your niches.' },
-  { name: 'trending',     label: '/trending',     group: 'discover', description: 'YouTube trending by pillar.' },
-  { name: 'transcribe',   label: '/transcribe',   group: 'research', description: 'Fetch and store a YouTube transcript.' },
-  { name: 'studyvideo',   label: '/studyvideo',   group: 'research', description: 'Deep study a YouTube video (hook, structure, reel cuts).' },
-  { name: 'learnfrom',    label: '/learnfrom',    group: 'research', description: 'Register a YouTube channel as a reference and analyze it.' },
-  { name: 'references',   label: '/references',   group: 'research', description: 'List all registered reference channels.' },
-  { name: 'relearn',      label: '/relearn',      group: 'research', description: 'Re-run channel learner across all references.' },
+  { name: 'discover',     label: 'Discover',      group: 'discover', description: 'Autopilot content discovery — web + YouTube trends.' },
+  { name: 'deepsearch',   label: 'Deep Search',   group: 'discover', description: 'Deep research brief for a topic.' },
+  { name: 'sources',      label: 'Sources',       group: 'discover', description: 'List sources from the last deep search.' },
+  { name: 'hotnews',      label: 'Hot News',      group: 'discover', description: 'Ranked hot news in your niches.' },
+  { name: 'trending',     label: 'Trending',      group: 'discover', description: 'YouTube trending by pillar.' },
+  { name: 'transcribe',   label: 'Transcribe',    group: 'research', description: 'Fetch and store a YouTube transcript.' },
+  { name: 'studyvideo',   label: 'Study Video',   group: 'research', description: 'Deep study a YouTube video (hook, structure, reel cuts).' },
+  { name: 'learnfrom',    label: 'Learn From',    group: 'research', description: 'Register a YouTube channel as a reference and analyze it.' },
+  { name: 'references',   label: 'References',    group: 'research', description: 'List all registered reference channels.' },
+  { name: 'relearn',      label: 'Re-learn',      group: 'research', description: 'Re-run channel learner across all references.' },
   // ── Ideation ────────────────────────────────────────────────────────
-  { name: 'ideas',        label: '/ideas',        group: 'ideate',   description: 'Generate new content ideas for a pillar.' },
-  { name: 'hooks',        label: '/hooks',        group: 'ideate',   description: 'Hook ideas for a given topic.' },
-  { name: 'titles',       label: '/titles',       group: 'ideate',   description: 'Title variants for a topic.' },
-  { name: 'reaction',     label: '/reaction',     group: 'ideate',   description: 'Build a reaction-video brief from a URL.' },
-  { name: 'contenttopic', label: '/contenttopic', group: 'ideate',   description: 'Suggest the next topic using approved taste profile.' },
-  { name: 'contentretro', label: '/contentretro', group: 'ideate',   description: 'Retrospective on last week of topic feedback.' },
+  { name: 'ideas',        label: 'Ideas',         group: 'ideate',   description: 'Generate new content ideas for a pillar.' },
+  { name: 'hooks',        label: 'Hooks',         group: 'ideate',   description: 'Hook ideas for a given topic.' },
+  { name: 'titles',       label: 'Titles',        group: 'ideate',   description: 'Title variants for a topic.' },
+  { name: 'reaction',     label: 'Reaction',      group: 'ideate',   description: 'Build a reaction-video brief from a URL.' },
+  { name: 'contenttopic', label: 'Topic Gen',     group: 'ideate',   description: 'Suggest the next topic using approved taste profile.' },
+  { name: 'contentretro', label: 'Retro',         group: 'ideate',   description: 'Retrospective on last week of topic feedback.' },
   // ── Scripting ───────────────────────────────────────────────────────
-  { name: 'script',       label: '/script',       group: 'script',   description: 'Generate a script from a topic.' },
-  { name: 'genscript',    label: '/genscript',    group: 'script',   description: 'Generate a production-ready long-form script.' },
-  { name: 'buildscript',  label: '/buildscript',  group: 'script',   description: 'Assemble a script from approved sections.' },
-  { name: 'reel',         label: '/reel',         group: 'script',   description: 'Short-form reel script.' },
-  { name: 'repurpose',    label: '/repurpose',    group: 'script',   description: 'Repurpose long-form content into reels.' },
+  { name: 'script',       label: 'Script',        group: 'script',   description: 'Generate a script from a topic.' },
+  { name: 'genscript',    label: 'Full Script',   group: 'script',   description: 'Generate a production-ready long-form script.' },
+  { name: 'buildscript',  label: 'Build Script',  group: 'script',   description: 'Assemble a script from approved sections.' },
+  { name: 'reel',         label: 'Reel Script',   group: 'script',   description: 'Short-form reel script.' },
+  { name: 'repurpose',    label: 'Repurpose',     group: 'script',   description: 'Repurpose long-form content into reels.' },
   // ── Visuals ─────────────────────────────────────────────────────────
-  { name: 'genthumbnail', label: '/genthumbnail', group: 'visuals',  description: 'Generate thumbnail copy + concept.' },
-  { name: 'gencaption',   label: '/gencaption',   group: 'visuals',  description: 'Generate captions and on-screen text.' },
+  { name: 'genthumbnail', label: 'Thumbnail',     group: 'visuals',  description: 'Generate thumbnail copy + concept.' },
+  { name: 'gencaption',   label: 'Caption',       group: 'visuals',  description: 'Generate captions and on-screen text.' },
   // ── Analysis ────────────────────────────────────────────────────────
-  { name: 'competitor',   label: '/competitor',   group: 'analysis', description: 'Competitive intel brief for a channel or niche.' },
-  { name: 'gaps',         label: '/gaps',         group: 'analysis', description: 'Content gap analysis for a pillar.' },
-  { name: 'brandcheck',   label: '/brandcheck',   group: 'analysis', description: 'Check a draft against the brand voice guidelines.' },
-  { name: 'feedback',     label: '/feedback',     group: 'analysis', description: 'Log human feedback on a piece of content.' },
-  { name: 'report',       label: '/report',       group: 'analysis', description: 'Generate a performance report.' },
+  { name: 'competitor',   label: 'Competitor',    group: 'analysis', description: 'Competitive intel brief for a channel or niche.' },
+  { name: 'gaps',         label: 'Gaps',          group: 'analysis', description: 'Content gap analysis for a pillar.' },
+  { name: 'brandcheck',   label: 'Brand Check',   group: 'analysis', description: 'Check a draft against the brand voice guidelines.' },
+  { name: 'feedback',     label: 'Feedback',      group: 'analysis', description: 'Log human feedback on a piece of content.' },
+  { name: 'report',       label: 'Report',        group: 'analysis', description: 'Generate a performance report.' },
   // ── Book knowledge ─────────────────────────────────────────────────
-  { name: 'addbook',      label: '/addbook',      group: 'library',  description: 'Add a book and extract its knowledge.' },
-  { name: 'booknote',     label: '/booknote',     group: 'library',  description: 'Attach a personal note to a book.' },
-  { name: 'books',        label: '/books',        group: 'library',  description: 'List books in the library with extraction status.' },
-  { name: 'bookidea',     label: '/bookidea',     group: 'library',  description: 'Generate a content idea grounded in a book framework.' },
+  { name: 'addbook',      label: 'Add Book',      group: 'library',  description: 'Add a book and extract its knowledge.' },
+  { name: 'booknote',     label: 'Book Note',     group: 'library',  description: 'Attach a personal note to a book.' },
+  { name: 'books',        label: 'Books',         group: 'library',  description: 'List books in the library with extraction status.' },
+  { name: 'bookidea',     label: 'Book Idea',     group: 'library',  description: 'Generate a content idea grounded in a book framework.' },
   // ── SEO ─────────────────────────────────────────────────────────────
-  { name: 'seo',          label: '/seo',          group: 'seo',      description: 'Full SEO brief for a topic.' },
-  { name: 'seokeyword',   label: '/seokeyword',   group: 'seo',      description: 'Register a keyword for rank tracking.' },
-  { name: 'seorank',      label: '/seorank',      group: 'seo',      description: 'Current ranks for tracked keywords.' },
+  { name: 'seo',          label: 'SEO',           group: 'seo',      description: 'Full SEO brief for a topic.' },
+  { name: 'seokeyword',   label: 'SEO Keyword',   group: 'seo',      description: 'Register a keyword for rank tracking.' },
+  { name: 'seorank',      label: 'SEO Rank',      group: 'seo',      description: 'Current ranks for tracked keywords.' },
   // ── Pipeline ────────────────────────────────────────────────────────
-  { name: 'pipeline',     label: '/pipeline',     group: 'pipeline', description: 'Pipeline status summary (all stages).' },
-  { name: 'filmed',       label: '/filmed',       group: 'pipeline', description: 'Mark an approved item as filmed.' },
-  { name: 'editing',      label: '/editing',      group: 'pipeline', description: 'Mark an item as in editing.' },
-  { name: 'published',    label: '/published',    group: 'pipeline', description: 'Mark an item as published and attach URL.' },
-  { name: 'autoresearch', label: '/autoresearch', group: 'pipeline', description: 'Kick off a prompt-optimization experiment.' },
-  { name: 'evalscore',    label: '/evalscore',    group: 'pipeline', description: 'Score a completed autoresearch run.' },
-  { name: 'calendar',     label: '/calendar',     group: 'pipeline', description: 'Publish-ready content calendar.' },
+  { name: 'pipeline',     label: 'Pipeline',      group: 'pipeline', description: 'Pipeline status summary (all stages).' },
+  { name: 'filmed',       label: 'Mark Filmed',   group: 'pipeline', description: 'Mark an approved item as filmed.' },
+  { name: 'editing',      label: 'Mark Editing',  group: 'pipeline', description: 'Mark an item as in editing.' },
+  { name: 'published',    label: 'Mark Published', group: 'pipeline', description: 'Mark an item as published and attach URL.' },
+  { name: 'autoresearch', label: 'Auto-Research', group: 'pipeline', description: 'Kick off a prompt-optimization experiment.' },
+  { name: 'evalscore',    label: 'Eval Score',    group: 'pipeline', description: 'Score a completed autoresearch run.' },
+  { name: 'calendar',     label: 'Calendar',      group: 'pipeline', description: 'Publish-ready content calendar.' },
 ];
 
 /**
