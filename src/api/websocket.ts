@@ -17,6 +17,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { routeMessage } from '../router';
 import type { DomainName } from '../domains/types';
+import { generateRequestId, runWithContext } from '../utils/request-context';
 
 function getDomainHandlers(): Record<string, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
@@ -89,82 +90,87 @@ export function attachWebSocket(server: http.Server): void {
         const userId = (ws as any).userId as number;
         if (msg.type !== 'message' || !msg.text) return;
 
-        const messageId = `msg-${Date.now()}`;
+        await runWithContext(
+          { requestId: generateRequestId(), source: 'http', userId },
+          async () => {
+            const messageId = `msg-${Date.now()}`;
 
-        const route = await routeMessage(msg.text);
+            const route = await routeMessage(msg.text, undefined, userId);
 
         // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
         // Same gate as the REST chat endpoint. We emit an 'error' frame
         // with enough detail for the client to render a tier-upgrade
         // prompt, then close the message flow without invoking the
         // domain handler (so no tokens are spent on blocked users).
-        try {
-          const { getUserByTelegramId } = require('../services/user-service');
-          const { checkTierAccess } = require('../services/skill-tiers');
-          const user = getUserByTelegramId(userId);
-          if (user) {
-            const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
-            if (!tierResult.allowed) {
-              logger.info(
-                { userId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
-                'iOS WebSocket tier gate blocked',
-              );
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'error',
-                  code: 'TIER_REQUIRED',
-                  message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
-                  details: {
-                    domain: route.domain,
-                    userTier: tierResult.userTier,
-                    requiredTier: tierResult.requiredTier,
-                  },
-                }));
+            try {
+              const { getUserByTelegramId } = require('../services/user-service');
+              const { checkTierAccess } = require('../services/skill-tiers');
+              const user = getUserByTelegramId(userId);
+              if (user) {
+                const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
+                if (!tierResult.allowed) {
+                  logger.info(
+                    { userId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
+                    'iOS WebSocket tier gate blocked',
+                  );
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'error',
+                      code: 'TIER_REQUIRED',
+                      message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
+                      details: {
+                        domain: route.domain,
+                        userTier: tierResult.userTier,
+                        requiredTier: tierResult.requiredTier,
+                      },
+                    }));
+                  }
+                  return;
+                }
               }
+            } catch (err) {
+              logger.warn({ err }, 'iOS WebSocket tier gate check failed — falling through (fail-open)');
+            }
+
+            const handlers = getDomainHandlers();
+            const handler = handlers[route.domain];
+
+            if (!handler) {
+              ws.send(JSON.stringify({ type: 'error', message: `No handler for ${route.domain}` }));
               return;
             }
-          }
-        } catch (err) {
-          logger.warn({ err }, 'iOS WebSocket tier gate check failed — falling through (fail-open)');
-        }
 
-        const handlers = getDomainHandlers();
-        const handler = handlers[route.domain];
+            // Execute handler — for streaming, we simulate chunked delivery
+            // since the domain handlers return full text at once
+            const result = await handler(route.strippedMessage, userId);
 
-        if (!handler) {
-          ws.send(JSON.stringify({ type: 'error', message: `No handler for ${route.domain}` }));
-          return;
-        }
+            // Stream the response in chunks
+            const fullText = result.text;
+            const chunkSize = 20; // characters per chunk
+            for (let i = 0; i < fullText.length; i += chunkSize) {
+              const chunk = fullText.slice(i, i + chunkSize);
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'chunk',
+                  text: chunk,
+                  messageId,
+                }));
+              }
+              // Small delay between chunks for visual streaming effect
+              await new Promise(resolve => setTimeout(resolve, 30));
+            }
 
-        // Execute handler — for streaming, we simulate chunked delivery
-        // since the domain handlers return full text at once
-        const result = await handler(route.strippedMessage, userId);
-
-        // Stream the response in chunks
-        const fullText = result.text;
-        const chunkSize = 20; // characters per chunk
-        for (let i = 0; i < fullText.length; i += chunkSize) {
-          const chunk = fullText.slice(i, i + chunkSize);
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'chunk',
-              text: chunk,
-              messageId,
-            }));
-          }
-          // Small delay between chunks for visual streaming effect
-          await new Promise(resolve => setTimeout(resolve, 30));
-        }
-
-        // Send completion
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            type: 'done',
-            messageId,
-            domain: result.domain || route.domain,
-            metadata: null,
-          }));
-        }
+            // Send completion
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: 'done',
+                messageId,
+                domain: result.domain || route.domain,
+                metadata: null,
+              }));
+            }
+          },
+        );
       } catch (err: any) {
         logger.error({ err, platform: 'ios' }, 'WebSocket message handling failed');
         if (ws.readyState === WebSocket.OPEN) {

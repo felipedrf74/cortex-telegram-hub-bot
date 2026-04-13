@@ -496,38 +496,28 @@ Return ONLY valid JSON in this exact shape:
   ]
 }`;
 
-      const { text: rawPlan } = await completeOneShotWithFallback(
-        'You are a structured training plan generator. Return ONLY valid JSON, no markdown.',
-        planPrompt,
-        'training_plan_generation',
-        { maxTokens: 4096, temperature: 0.3, userId },
-      );
-
-      // Parse the JSON — strip markdown fences, extract JSON object/array
+      let usedFallbackTemplate = false;
       let planData: any;
       try {
-        // Try progressively more aggressive extraction:
-        // 1. Strip markdown fences
-        let cleaned = rawPlan.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-        // 2. Extract the first { ... } block if there's prose before/after
-        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-        if (jsonMatch) cleaned = jsonMatch[0];
-        planData = JSON.parse(cleaned);
-      } catch (parseErr) {
-        // 3. Last resort: try to find and parse just the JSON portion
-        try {
-          const braceStart = rawPlan.indexOf('{');
-          const braceEnd = rawPlan.lastIndexOf('}');
-          if (braceStart >= 0 && braceEnd > braceStart) {
-            planData = JSON.parse(rawPlan.slice(braceStart, braceEnd + 1));
-          } else {
-            throw new Error('No JSON object found');
-          }
-        } catch {
-          logger.error({ rawPlan: rawPlan.slice(0, 500) }, 'Failed to parse plan JSON from AI');
-          sendError(res, 'AI_PARSE_ERROR', 'AI generated invalid plan JSON. Try again.', 500);
-          return;
-        }
+        const { text: rawPlan } = await completeOneShotWithFallback(
+          'You are a structured training plan generator. Return ONLY valid JSON, no markdown.',
+          planPrompt,
+          'training_plan_generation',
+          async () => {
+            const { callDomain } = require('../../services/anthropic');
+            const result = await callDomain('triathlon', [], planPrompt, '', 4096, userId);
+            return result.text;
+          },
+          { maxTokens: 4096, temperature: 0.3, userId },
+        );
+        planData = parseTrainingPlanJson(rawPlan);
+      } catch (err: any) {
+        logger.warn(
+          { err, userId, objective },
+          'AI training plan generation unavailable — using deterministic fallback template',
+        );
+        planData = buildDeterministicTrainingPlan(objective, durationWeeks);
+        usedFallbackTemplate = true;
       }
 
       // ── Step 4: Bulk insert plan + weeks + sessions ────────────
@@ -663,12 +653,15 @@ Return ONLY valid JSON in this exact shape:
           focus: w.focus,
           sessionCount: w.sessions?.filter((s: any) => s.sessionType !== 'rest').length || 0,
         })),
-        message: `Plan created! ${totalSessions} sessions scheduled across ${durationWeeks} weeks. ${eventsCreated} calendar events created.`,
+        fallbackTemplateUsed: usedFallbackTemplate,
+        message: usedFallbackTemplate
+          ? `Plan created with a reliable fallback template. ${totalSessions} sessions scheduled across ${durationWeeks} weeks. ${eventsCreated} calendar events created.`
+          : `Plan created! ${totalSessions} sessions scheduled across ${durationWeeks} weeks. ${eventsCreated} calendar events created.`,
       }, { status: 201 });
 
     } catch (err: any) {
       logger.error({ err, userId }, 'Training plan generation failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to generate training plan', 500);
+      sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
     }
   });
 
@@ -738,16 +731,21 @@ async function getWeekPlan(userId: number) {
     const tp = require('../../services/training-plans');
     const plan = tp.getActivePlan(userId);
     if (plan) {
-      weekNumber = plan.currentWeek || 1;
-      const weekSessions = tp.getSessionsForWeek(userId);
+      const currentWeek = tp.getCurrentWeek(plan.id);
+      weekNumber = currentWeek?.week_number || 1;
+      const weekSessions = currentWeek ? tp.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
         sessions = weekSessions.map((s: any) => ({
           day: s.day || s.dayOfWeek, type: s.type || s.name,
           time: s.time || null, status: s.status || 'planned',
         }));
       }
-      const adh = tp.getWeeklyAdherence?.(userId);
-      adherence = typeof adh === 'number' ? adh : adh?.adherenceRate || 0;
+      const adh = currentWeek ? tp.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
+      adherence = typeof adh === 'number'
+        ? adh
+        : typeof adh?.adherenceRate === 'number'
+          ? adh.adherenceRate / 100
+          : 0;
     }
   } catch {}
 
@@ -765,6 +763,299 @@ async function getWeekPlan(userId: number) {
     completedCount: sessions.filter((s: any) => s.status === 'completed').length,
     totalCount: sessions.filter((s: any) => s.status !== 'rest').length,
   };
+}
+
+function parseTrainingPlanJson(rawPlan: string): any {
+  let cleaned = rawPlan.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) cleaned = jsonMatch[0];
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const braceStart = rawPlan.indexOf('{');
+    const braceEnd = rawPlan.lastIndexOf('}');
+    if (braceStart >= 0 && braceEnd > braceStart) {
+      return JSON.parse(rawPlan.slice(braceStart, braceEnd + 1));
+    }
+    throw new Error('No JSON object found');
+  }
+}
+
+function buildDeterministicTrainingPlan(objective: string, durationWeeks: number) {
+  const template = inferTrainingTemplate(objective.toLowerCase());
+  const weeks = Array.from({ length: durationWeeks }, (_, index) => {
+    const weekNumber = index + 1;
+    const isDeload = weekNumber === durationWeeks;
+    const durationScale = isDeload ? 0.8 : 1 + Math.min(index, 2) * 0.05;
+
+    return {
+      weekNumber,
+      focus: isDeload ? 'deload' : template.focuses[Math.min(index, template.focuses.length - 1)],
+      intensityPct: isDeload ? 58 : 66 + Math.min(index, 2) * 6,
+      sessions: template.sessions.map((session: any) => ({
+        ...session,
+        durationMinutes: Math.max(35, Math.round(session.durationMinutes * durationScale)),
+        description: isDeload
+          ? `${session.description} Keep the effort controlled and finish feeling fresh.`
+          : session.description,
+        exercises: Array.isArray(session.exercises)
+          ? session.exercises.map((exercise: any) => ({
+              ...exercise,
+              sets: typeof exercise.sets === 'number'
+                ? Math.max(2, Math.round(exercise.sets * (isDeload ? 0.75 : 1)))
+                : exercise.sets,
+            }))
+          : [],
+      })),
+    };
+  });
+
+  return {
+    planName: `${objective.trim()} — 4 Week Plan`,
+    sport: template.sport,
+    periodization: 'undulating',
+    weeks,
+  };
+}
+
+function inferTrainingTemplate(lowerObjective: string) {
+  if (/(triathlon|triatlo|70\.3|ironman|half ironman)/i.test(lowerObjective)) {
+    return {
+      sport: 'hybrid',
+      focuses: ['base', 'endurance', 'speed'],
+      sessions: [
+        {
+          dayOfWeek: 'monday',
+          sessionType: 'swim',
+          title: 'Swim Technique + Aerobic Base',
+          durationMinutes: 45,
+          description: 'Easy technical swim with drills, relaxed breathing, and smooth aerobic work.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'tuesday',
+          sessionType: 'ride',
+          title: 'Bike Endurance',
+          durationMinutes: 60,
+          description: 'Steady zone 2 ride focused on cadence and sustained aerobic work.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'wednesday',
+          sessionType: 'gym',
+          title: 'Strength + Core',
+          durationMinutes: 50,
+          description: 'Full-body strength session with controlled form and core stability.',
+          exercises: baseStrengthExercises(),
+        },
+        {
+          dayOfWeek: 'thursday',
+          sessionType: 'run',
+          title: 'Run Tempo / Intervals',
+          durationMinutes: 50,
+          description: 'Quality run with warm-up, focused work, and a calm cooldown.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'saturday',
+          sessionType: 'ride',
+          title: 'Long Ride',
+          durationMinutes: 95,
+          description: 'Long aerobic ride with nutrition practice and steady pacing.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'sunday',
+          sessionType: 'run',
+          title: 'Long Run',
+          durationMinutes: 65,
+          description: 'Comfortable long run focused on endurance and consistency.',
+          exercises: [],
+        },
+      ],
+    };
+  }
+
+  if (/(marathon|meia maratona|half marathon|10k|5k|corrida|running|run)/i.test(lowerObjective)) {
+    return {
+      sport: 'running',
+      focuses: ['base', 'endurance', 'speed'],
+      sessions: [
+        {
+          dayOfWeek: 'tuesday',
+          sessionType: 'run',
+          title: 'Intervals / Speed Session',
+          durationMinutes: 50,
+          description: 'Warm-up, structured intervals, and cooldown with relaxed strides.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'thursday',
+          sessionType: 'run',
+          title: 'Tempo Run',
+          durationMinutes: 55,
+          description: 'Controlled threshold work to build pace durability.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'saturday',
+          sessionType: 'run',
+          title: 'Long Run',
+          durationMinutes: 80,
+          description: 'Aerobic long run at conversational effort.',
+          exercises: [],
+        },
+        {
+          dayOfWeek: 'sunday',
+          sessionType: 'gym',
+          title: 'Strength + Mobility',
+          durationMinutes: 40,
+          description: 'Runner-focused strength, calf durability, and hip stability.',
+          exercises: runnerStrengthExercises(),
+        },
+      ],
+    };
+  }
+
+  if (/(hipertrofia|hypertrophy|muscle|strength|gym|massa|bodybuilding)/i.test(lowerObjective)) {
+    return {
+      sport: 'gym',
+      focuses: ['hypertrophy', 'strength', 'strength'],
+      sessions: [
+        {
+          dayOfWeek: 'monday',
+          sessionType: 'gym',
+          title: 'Upper Body A',
+          durationMinutes: 60,
+          description: 'Push and pull hypertrophy with controlled tempo and full range of motion.',
+          exercises: upperBodyExercises(),
+        },
+        {
+          dayOfWeek: 'tuesday',
+          sessionType: 'gym',
+          title: 'Lower Body A',
+          durationMinutes: 65,
+          description: 'Squat-dominant lower-body strength with core work.',
+          exercises: lowerBodyExercises(),
+        },
+        {
+          dayOfWeek: 'thursday',
+          sessionType: 'gym',
+          title: 'Upper Body B',
+          durationMinutes: 60,
+          description: 'Secondary upper-body day with vertical press, rows, and arms.',
+          exercises: upperBodyBExercises(),
+        },
+        {
+          dayOfWeek: 'friday',
+          sessionType: 'gym',
+          title: 'Lower Body B',
+          durationMinutes: 65,
+          description: 'Hinge-dominant lower-body session with posterior-chain emphasis.',
+          exercises: lowerBodyBExercises(),
+        },
+      ],
+    };
+  }
+
+  return {
+    sport: 'hybrid',
+    focuses: ['base', 'strength', 'endurance'],
+    sessions: [
+      {
+        dayOfWeek: 'monday',
+        sessionType: 'gym',
+        title: 'Full Body Strength',
+        durationMinutes: 50,
+        description: 'Balanced full-body strength work with moderate volume and controlled effort.',
+        exercises: baseStrengthExercises(),
+      },
+      {
+        dayOfWeek: 'wednesday',
+        sessionType: 'run',
+        title: 'Zone 2 Cardio',
+        durationMinutes: 45,
+        description: 'Easy aerobic session to build conditioning and recovery capacity.',
+        exercises: [],
+      },
+      {
+        dayOfWeek: 'friday',
+        sessionType: 'gym',
+        title: 'Full Body Strength B',
+        durationMinutes: 50,
+        description: 'Second strength session focused on movement quality and progression.',
+        exercises: lowerBodyBExercises(),
+      },
+      {
+        dayOfWeek: 'saturday',
+        sessionType: 'ride',
+        title: 'Long Conditioning Session',
+        durationMinutes: 60,
+        description: 'Steady conditioning block — bike, brisk walk, or easy jog depending on context.',
+        exercises: [],
+      },
+    ],
+  };
+}
+
+function baseStrengthExercises() {
+  return [
+    { name: 'Goblet Squat', sets: 4, reps: 8, rpe: '7', restSec: 90 },
+    { name: 'Romanian Deadlift', sets: 3, reps: 8, rpe: '7', restSec: 90 },
+    { name: 'Push-Up / DB Press', sets: 3, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'One-Arm Row', sets: 3, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'Front Plank', sets: 3, reps: 45, rpe: '6', restSec: 45 },
+  ];
+}
+
+function runnerStrengthExercises() {
+  return [
+    { name: 'Split Squat', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+    { name: 'Single-Leg RDL', sets: 3, reps: 8, rpe: '7', restSec: 75 },
+    { name: 'Step-Up', sets: 3, reps: 10, rpe: '7', restSec: 60 },
+    { name: 'Calf Raise', sets: 3, reps: 15, rpe: '7', restSec: 45 },
+    { name: 'Dead Bug', sets: 3, reps: 10, rpe: '6', restSec: 45 },
+  ];
+}
+
+function upperBodyExercises() {
+  return [
+    { name: 'Bench Press', sets: 4, reps: 8, rpe: '7-8', restSec: 90 },
+    { name: 'Chest-Supported Row', sets: 4, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'Incline DB Press', sets: 3, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'Lateral Raise', sets: 3, reps: 15, rpe: '8', restSec: 45 },
+    { name: 'Cable / Band Triceps Pressdown', sets: 3, reps: 12, rpe: '8', restSec: 45 },
+  ];
+}
+
+function lowerBodyExercises() {
+  return [
+    { name: 'Back Squat', sets: 4, reps: 6, rpe: '7-8', restSec: 120 },
+    { name: 'Walking Lunge', sets: 3, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'Leg Curl', sets: 3, reps: 12, rpe: '8', restSec: 60 },
+    { name: 'Hanging Knee Raise', sets: 3, reps: 12, rpe: '7', restSec: 45 },
+  ];
+}
+
+function upperBodyBExercises() {
+  return [
+    { name: 'Overhead Press', sets: 4, reps: 6, rpe: '7-8', restSec: 90 },
+    { name: 'Lat Pulldown / Pull-Up', sets: 4, reps: 8, rpe: '7', restSec: 75 },
+    { name: 'Seated Cable Row', sets: 3, reps: 10, rpe: '7', restSec: 75 },
+    { name: 'Incline Curl', sets: 3, reps: 12, rpe: '8', restSec: 45 },
+    { name: 'Face Pull', sets: 3, reps: 15, rpe: '8', restSec: 45 },
+  ];
+}
+
+function lowerBodyBExercises() {
+  return [
+    { name: 'Romanian Deadlift', sets: 4, reps: 6, rpe: '7-8', restSec: 105 },
+    { name: 'Leg Press', sets: 3, reps: 10, rpe: '7', restSec: 90 },
+    { name: 'Bulgarian Split Squat', sets: 3, reps: 8, rpe: '8', restSec: 75 },
+    { name: 'Seated Calf Raise', sets: 3, reps: 15, rpe: '8', restSec: 45 },
+    { name: 'Pallof Press', sets: 3, reps: 12, rpe: '6', restSec: 45 },
+  ];
 }
 
 async function getReadiness(userId: number) {

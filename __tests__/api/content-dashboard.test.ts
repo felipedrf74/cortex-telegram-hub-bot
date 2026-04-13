@@ -294,7 +294,8 @@ async function fetchJson(
 ): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     const server = http.createServer(app);
-    server.listen(0, () => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       if (!address || typeof address === 'string') {
         server.close();

@@ -95,17 +95,25 @@ export async function createEvent(data: {
   start: string;
   end: string;
   description?: string;
+  attendees?: string[];
+  location?: string;
 }): Promise<CalendarEvent> {
   try {
     const calendar = getCalendar();
+    const attendees = (data.attendees || [])
+      .map((email) => email.trim())
+      .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
     const response = await withTimeout(
       calendar.events.insert({
         calendarId: 'primary',
+        ...(attendees.length > 0 ? { sendUpdates: 'all' } : {}),
         requestBody: {
           summary: data.title,
           start: { dateTime: data.start, timeZone: config.app.timezone },
           end: { dateTime: data.end, timeZone: config.app.timezone },
           description: data.description,
+          location: data.location,
+          ...(attendees.length > 0 ? { attendees: attendees.map((email) => ({ email })) } : {}),
         },
       }),
       GOOGLE_API_TIMEOUT_MS,

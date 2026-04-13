@@ -97,6 +97,8 @@ type CopyKey =
   | 'tasksPending'
   | 'tasksOverdue'
   | 'tasksDueToday'
+  | 'trainingHeader'
+  | 'trainingEmpty'
   | 'remindersHeader'
   | 'emailsHeader'
   | 'emailsUnreadSuffix'
@@ -138,6 +140,8 @@ const COPY: Record<Lang, Copy> = {
     tasksPending: 'pendentes',
     tasksOverdue: 'atrasadas',
     tasksDueToday: 'Para hoje:',
+    trainingHeader: 'TREINO:',
+    trainingEmpty: 'Sem treino planeado hoje',
     remindersHeader: 'LEMBRETES:',
     emailsHeader: 'E-MAILS:',
     emailsUnreadSuffix: 'não lidos',
@@ -173,6 +177,8 @@ const COPY: Record<Lang, Copy> = {
     tasksPending: 'pending',
     tasksOverdue: 'overdue',
     tasksDueToday: 'Due today:',
+    trainingHeader: 'TRAINING:',
+    trainingEmpty: 'No training planned today',
     remindersHeader: 'REMINDERS:',
     emailsHeader: 'EMAILS:',
     emailsUnreadSuffix: 'unread',
@@ -235,6 +241,51 @@ function filterOverdue(tasks: TodoTask[]): TodoTask[] {
   });
 }
 
+const TRAINING_KEYWORDS = [
+  'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
+  'treino', 'corrida', 'academia', 'natacao', 'natação', 'musculacao', 'musculação', 'ciclismo',
+  'caminhada', 'walk', 'easy run', 'interval', 'tempo', 'long run', 'cross', 'stretch',
+];
+
+function looksLikeTrainingTitle(title: string | undefined | null): boolean {
+  const normalized = (title || '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  return TRAINING_KEYWORDS.some((keyword) => normalized.includes(keyword));
+}
+
+async function getTodayTrainingSummary(userId: number, events: Array<{ summary?: string; start: string; end: string }>): Promise<string | null> {
+  try {
+    const tp = require('../../services/training-plans');
+    const activePlan = tp.getActivePlan?.(userId);
+    if (activePlan) {
+      const currentWeek = tp.getCurrentWeek?.(activePlan.id);
+      if (currentWeek) {
+        const sessions = tp.getSessionsForWeek?.(currentWeek.id) || [];
+        const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+        const rawSession = sessions.find((session: any) => session.day_of_week === todayName);
+        if (rawSession) {
+          const duration = rawSession.duration_minutes ? ` · ${rawSession.duration_minutes} min` : '';
+          return `${escapeHtml(rawSession.title || rawSession.session_type || 'Workout')}${duration}`;
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug({ err, userId }, 'fastpath: training plan lookup failed');
+  }
+
+  const event = events.find((item) => looksLikeTrainingTitle(item.summary));
+  if (!event) return null;
+
+  const durationMinutes = Math.max(
+    0,
+    Math.round((new Date(event.end).getTime() - new Date(event.start).getTime()) / 60000),
+  );
+  const duration = Number.isFinite(durationMinutes) && durationMinutes > 0 ? ` · ${durationMinutes} min` : '';
+  return `${escapeHtml(event.summary || 'Workout')} · ${formatTime(event.start)}${duration}`;
+}
+
 // ─── Fastpath Metrics (in-memory; portal reads these) ────────────────
 
 interface FastpathMetrics {
@@ -293,7 +344,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // "what's my day", "o que tenho hoje", "/day", "today", "hoje", "mostra meu dia"
   {
     id: 'day_overview',
-    pattern: /^(?:what(?:'s| is) my day|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|qual(?:'s)? minha agenda(?: hoje)?)[\s?!.]*$/i,
+    pattern: /^(?:what(?:'s| is)(?: on)? my (?:day|schedule)(?: today)?|what do i have today|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|o que tenho na agenda hoje|qual(?:'s)? (?:my |a minha )?agenda(?: today| hoje)?)[\s?!.]*$/i,
     handler: async (userId, _match, lang) => {
       const c = COPY[lang];
       const tasksOk = isSubmoduleEnabled('secretary', 'tasks');
@@ -310,6 +361,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
           : Promise.resolve({ success: false as const, data: [], error: 'disabled' }),
         remOk ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
       ]);
+      const todayTraining = await getTodayTrainingSummary(userId, events);
 
       // Date header in the user's locale. PT-BR puts day before
       // month ("terça, 09 abril 2026"); EN puts month before day
@@ -346,6 +398,13 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         } else {
           msg += `\n`;
         }
+      }
+
+      // Training block
+      if (todayTraining) {
+        msg += `\n🏋️ <b>${c.trainingHeader}</b>\n▸ ${todayTraining}\n`;
+      } else {
+        msg += `\n🏋️ <b>${c.trainingHeader}</b> ${c.trainingEmpty}\n`;
       }
 
       // Reminders block

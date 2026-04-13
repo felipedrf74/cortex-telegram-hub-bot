@@ -221,17 +221,18 @@ describe('GET /health', () => {
     expect(body.timestamp).toBeDefined();
   });
 
-  it('returns 503 with degraded status when bot is not polling', async () => {
+  it('returns 200 and keeps server healthy when bot is not polling', async () => {
     mockPolling = false;
 
     const { server, port } = await startServer();
     activeServer = server;
 
     const res = await fetch(`http://127.0.0.1:${port}/health`);
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body.status).toBe('degraded');
+    expect(body.status).toBe('healthy');
+    expect(body.server.status).toBe('online');
     expect(body.bot.polling).toBe(false);
   });
 
@@ -342,17 +343,19 @@ describe('GET /health/detailed', () => {
     expect(body.errors.lastHour).toBe(2); // 2 within last hour
   });
 
-  it('returns 503 when system is degraded even with valid token', async () => {
+  it('returns 200 when only Telegram bot polling is degraded', async () => {
     mockPolling = false;
 
     const { server, port } = await startServer();
     activeServer = server;
 
     const res = await fetch(`http://127.0.0.1:${port}/health/detailed`, { headers: { Authorization: 'Bearer test-health-secret' } });
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body.status).toBe('degraded');
+    expect(body.status).toBe('healthy');
+    expect(body.server.status).toBe('online');
+    expect(body.bot.polling).toBe(false);
     expect(body.crons).toBeDefined();
     expect(body.integrations).toBeDefined();
     expect(body.errors).toBeDefined();

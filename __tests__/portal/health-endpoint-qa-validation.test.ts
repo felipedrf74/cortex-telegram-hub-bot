@@ -201,41 +201,34 @@ describe('QA: Health endpoint — response structure', () => {
     expect(healthBlock).toContain('Math.round(mem.rss / 1024 / 1024)');
   });
 
-  it('database check uses simple SELECT 1 query', async () => {
+  it('database check lives in runtime-status helper via simple SELECT 1 query', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
+      path.resolve(__dirname, '../../src/services/runtime-status.ts'), 'utf-8',
     );
-    const healthBlock = source.slice(
-      source.indexOf("app.get('/health'"),
-      source.indexOf("app.get('/health'") + 1500,
-    );
-    expect(healthBlock).toContain("SELECT 1 as ok");
+    expect(source).toContain("SELECT 1 as ok");
   });
 
-  it('DB failure is caught gracefully (no crash)', async () => {
+  it('DB failure is caught gracefully inside runtime-status helper', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
+      path.resolve(__dirname, '../../src/services/runtime-status.ts'), 'utf-8',
     );
-    const healthBlock = source.slice(
-      source.indexOf("app.get('/health'"),
-      source.indexOf("app.get('/health'") + 1500,
-    );
-    expect(healthBlock).toContain('catch');
-    expect(healthBlock).toContain('db not ready');
+    expect(source).toContain('catch');
   });
 
-  it('status is degraded when bot is not polling', async () => {
+  it('health tracks server availability separately from Telegram polling', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const source = fs.readFileSync(
       path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
     );
-    // Status healthy requires both polling AND db OK
-    expect(source).toContain("isBotPollingActive() && dbOk ? 'healthy' : 'degraded'");
+    expect(source).toContain("const runtime = getRuntimeStatus();");
+    expect(source).toContain("runtime.serviceStatus === 'online' ? 'healthy' : 'degraded'");
+    expect(source).toContain('server: {');
+    expect(source).toContain('bot: {');
   });
 });
 

@@ -77,6 +77,14 @@ function isShoulderHeavySession(title: string, exercisesJson: string | null): bo
   return shoulderPatterns.some((p) => haystack.includes(p));
 }
 
+function normalizeAttendeeEmails(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const cleaned = raw
+    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+    .filter((value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+  return cleaned.length > 0 ? [...new Set(cleaned)] : undefined;
+}
+
 export async function executeToolCall(
   toolName: string,
   input: Record<string, any>,
@@ -236,7 +244,9 @@ export async function executeToolCall(
           end: input.end,
           description: input.description,
           categories: input.categories,
-        }, input.calendar_source);
+          attendees: normalizeAttendeeEmails(input.attendees),
+          location: typeof input.location === 'string' ? input.location.trim() || undefined : undefined,
+        }, input.calendar_source, userId);
 
       case 'update_calendar_event': {
         if (!unifiedCal.isAnyCalendarConfigured()) {

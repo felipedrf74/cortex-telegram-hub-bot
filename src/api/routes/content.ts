@@ -549,7 +549,17 @@ export function contentRoutes(): Router {
     const { userId } = req as unknown as AuthenticatedRequest;
     const db = require('../../services/database').getDb();
     const entries = db.prepare(
-      'SELECT id, category, label, payload FROM content_knowledge WHERE user_id IN (0, ?) ORDER BY category ASC'
+      `SELECT
+         id,
+         category,
+         category as label,
+         synthesized_text as payload,
+         source_channels,
+         version,
+         updated_at
+       FROM content_knowledge
+       WHERE user_id IN (0, ?)
+       ORDER BY user_id DESC, category ASC`
     ).all(userId);
     sendSuccess(res, { entries });
   }));
@@ -560,11 +570,19 @@ export function contentRoutes(): Router {
     const { category, payload } = req.body;
     if (!category || !payload) { sendError(res, 'VALIDATION', 'category and payload required', 400); return; }
     const db = require('../../services/database').getDb();
+    const normalizedPayload = typeof payload === 'string' ? payload.trim() : JSON.stringify(payload);
+    if (!normalizedPayload) {
+      sendError(res, 'VALIDATION', 'payload must be non-empty', 400);
+      return;
+    }
     db.prepare(`
-      INSERT INTO content_knowledge (category, label, payload, source, user_id, version)
-      VALUES (?, ?, ?, 'ios', ?, 1)
-      ON CONFLICT(category, user_id) DO UPDATE SET payload = excluded.payload, updated_at = datetime('now')
-    `).run(category, category, typeof payload === 'string' ? payload : JSON.stringify(payload), userId);
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, version)
+      VALUES (?, ?, '[]', ?, 1)
+      ON CONFLICT(user_id, category) DO UPDATE SET
+        synthesized_text = excluded.synthesized_text,
+        updated_at = datetime('now'),
+        version = content_knowledge.version + 1
+    `).run(category, normalizedPayload, userId);
     sendSuccess(res, { upserted: true });
   }));
 

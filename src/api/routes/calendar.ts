@@ -97,6 +97,8 @@ export function calendarRoutes(): Router {
       start?: string;
       end?: string;
       description?: string;
+      location?: string;
+      attendees?: unknown[];
       source?: string;
     };
 
@@ -143,6 +145,12 @@ export function calendarRoutes(): Router {
           start: start.toISOString(),
           end: end.toISOString(),
           description: body.description?.trim() || undefined,
+          location: body.location?.trim() || undefined,
+          attendees: Array.isArray(body.attendees)
+            ? body.attendees
+                .map((value: unknown) => typeof value === 'string' ? value.trim() : '')
+                .filter((value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+            : undefined,
         },
         source,
         userId,

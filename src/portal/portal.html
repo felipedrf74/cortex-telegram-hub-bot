@@ -2566,16 +2566,18 @@ table.legacy th {
     document.getElementById('topbar-uptime').textContent = snap.uptime?.human || '—';
     document.getElementById('topbar-cost').textContent = fmtCost(snap.healthSummary?.apiCostToday);
 
+    const serverStatus = snap.server?.status || 'offline';
     const botPolling = snap.bot?.polling;
     const botRestarting = snap.bot?.restarting;
+    const botStatus = botPolling ? 'online' : botRestarting ? 'restarting' : 'offline';
     const dot = document.getElementById('bot-status-dot');
     const text = document.getElementById('bot-status-text');
-    dot.className = 'status-dot ' + (botPolling ? 'online' : botRestarting ? 'warning' : 'error');
-    text.textContent = botPolling ? 'Online' : botRestarting ? 'Restarting' : 'Offline';
+    dot.className = 'status-dot ' + (serverStatus === 'online' ? 'online' : 'error');
+    text.textContent = serverStatus === 'online' ? 'Online' : 'Offline';
 
     // Dashboard KPIs (uptime cell — others come from /api/usage/summary)
     document.getElementById('kpi-uptime').textContent = snap.uptime?.human || '—';
-    document.getElementById('kpi-uptime-sub').textContent = 'Bot: ' + (botPolling ? 'online' : botRestarting ? 'restarting' : 'offline');
+    document.getElementById('kpi-uptime-sub').textContent = 'Server: ' + serverStatus + ' · Bot: ' + botStatus;
 
     // AI section KPIs
     const usage = snap.apiUsage || {};

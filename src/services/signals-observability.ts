@@ -231,6 +231,20 @@ function formatSignal(raw: AgentSignal): FormattedSignal {
   };
 }
 
+const PRIORITY_RANK: Record<SignalPriority, number> = {
+  urgent: 0,
+  normal: 1,
+  background: 2,
+};
+
+function preferUserFacingSignal(a: AgentSignal, b: AgentSignal): AgentSignal {
+  const priorityDelta = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+  if (priorityDelta !== 0) {
+    return priorityDelta < 0 ? a : b;
+  }
+  return a.created_at >= b.created_at ? a : b;
+}
+
 // ─── Public entry point ─────────────────────────────────────────────
 
 /**
@@ -294,17 +308,25 @@ export function buildActiveSignalsResponse(userId: number): ActiveSignalsRespons
   // sport coaches or the secretary.
   const rawSignals = readSignals('ios.signals.view', OBSERVABILITY_TYPES, 100, userId);
 
+  // User-facing observability should show the CURRENT active picture,
+  // not every raw write that happened to publish the same condition.
+  // Collapse repeated rows by signal type and keep the highest-priority,
+  // newest instance for each type.
+  const dedupedByType = new Map<SignalType, AgentSignal>();
+  for (const signal of rawSignals) {
+    const existing = dedupedByType.get(signal.signal_type);
+    dedupedByType.set(
+      signal.signal_type,
+      existing ? preferUserFacingSignal(existing, signal) : signal,
+    );
+  }
+
   // Sort: urgent first, then normal, then background. Within each
   // priority, newest first. readSignals returns priority-ordered
   // results but not guaranteed newest-first within a priority bucket,
   // so we re-sort here for a stable API contract.
-  const priorityRank: Record<SignalPriority, number> = {
-    urgent: 0,
-    normal: 1,
-    background: 2,
-  };
-  const sorted = [...rawSignals].sort((a, b) => {
-    const p = priorityRank[a.priority] - priorityRank[b.priority];
+  const sorted = [...dedupedByType.values()].sort((a, b) => {
+    const p = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
     if (p !== 0) return p;
     return b.created_at.localeCompare(a.created_at);
   });

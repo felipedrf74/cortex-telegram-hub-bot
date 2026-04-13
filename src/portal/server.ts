@@ -70,6 +70,7 @@ import {
 } from '../skills/skill-manager';
 import type { DomainName } from '../domains/types';
 import { getErrorTrends } from '../services/error-monitor';
+import { getRuntimeStatus } from '../services/runtime-status';
 import {
   verifySignature, receiveWebhookEvent, getSubscriptions, registerSubscription,
   removeSubscription, getWebhookStats, getRecentEvents as getRecentWebhookEvents,
@@ -83,6 +84,10 @@ interface SnapshotResponse {
   version: string;
   generatedAt: string;
   uptime: { seconds: number; human: string };
+  server: {
+    status: 'online' | 'offline';
+    database: 'connected' | 'disconnected';
+  };
   bot: {
     polling: boolean;
     restarting: boolean;
@@ -788,15 +793,20 @@ function buildSnapshot(): SnapshotResponse {
     const pkg = require('../../package.json');
     pkgVersion = pkg.version;
   } catch { /* fallback */ }
+  const runtime = getRuntimeStatus();
 
   return {
     version: pkgVersion,
     generatedAt: new Date().toISOString(),
     uptime: { seconds: uptimeSec, human: humanUptime(uptimeSec) },
+    server: {
+      status: runtime.serviceStatus,
+      database: runtime.databaseStatus,
+    },
     bot: {
-      polling: isBotPollingActive(),
-      restarting: isRestarting(),
-      lastMessageAt: getLastMessageAt(),
+      polling: runtime.botPolling,
+      restarting: runtime.botRestarting,
+      lastMessageAt: runtime.lastMessageAt,
     },
     integrations,
     jobs,
@@ -1529,26 +1539,24 @@ export function createPortalServer(bot?: any): http.Server {
 
   app.get('/health', (_req: Request, res: Response) => {
     const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
-    let dbOk = false;
-    try {
-      const d = getDb();
-      const row = d.prepare('SELECT 1 as ok').get() as any;
-      dbOk = row?.ok === 1;
-    } catch { /* db not ready */ }
-
+    const runtime = getRuntimeStatus();
     const mem = process.memoryUsage();
-    const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
+    const status = runtime.serviceStatus === 'online' ? 'healthy' : 'degraded';
 
     res.status(status === 'healthy' ? 200 : 503).json({
       status,
       uptime: uptimeSec,
       uptimeHuman: humanUptime(uptimeSec),
-      bot: {
-        polling: isBotPollingActive(),
-        restarting: isRestarting(),
-        lastMessageAt: getLastMessageAt(),
+      server: {
+        status: runtime.serviceStatus,
+        database: runtime.databaseStatus,
       },
-      database: dbOk ? 'connected' : 'disconnected',
+      bot: {
+        polling: runtime.botPolling,
+        restarting: runtime.botRestarting,
+        lastMessageAt: runtime.lastMessageAt,
+      },
+      database: runtime.databaseStatus,
       memory: {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
@@ -1570,13 +1578,7 @@ export function createPortalServer(bot?: any): http.Server {
 
     const uptimeSec = Math.floor((Date.now() - startedAt) / 1000);
 
-    // Database check
-    let dbOk = false;
-    try {
-      const d = getDb();
-      const row = d.prepare('SELECT 1 as ok').get() as any;
-      dbOk = row?.ok === 1;
-    } catch { /* db not ready */ }
+    const runtime = getRuntimeStatus();
 
     // Memory
     const mem = process.memoryUsage();
@@ -1624,18 +1626,22 @@ export function createPortalServer(bot?: any): http.Server {
       }
     } catch { /* provider not initialized yet */ }
 
-    const status = isBotPollingActive() && dbOk ? 'healthy' : 'degraded';
+    const status = runtime.serviceStatus === 'online' ? 'healthy' : 'degraded';
 
     res.status(status === 'healthy' ? 200 : 503).json({
       status,
       uptime: uptimeSec,
       uptimeHuman: humanUptime(uptimeSec),
-      bot: {
-        polling: isBotPollingActive(),
-        restarting: isRestarting(),
-        lastMessageAt: getLastMessageAt(),
+      server: {
+        status: runtime.serviceStatus,
+        database: runtime.databaseStatus,
       },
-      database: dbOk ? 'connected' : 'disconnected',
+      bot: {
+        polling: runtime.botPolling,
+        restarting: runtime.botRestarting,
+        lastMessageAt: runtime.lastMessageAt,
+      },
+      database: runtime.databaseStatus,
       memory: {
         rss: Math.round(mem.rss / 1024 / 1024),
         heapUsed: Math.round(mem.heapUsed / 1024 / 1024),

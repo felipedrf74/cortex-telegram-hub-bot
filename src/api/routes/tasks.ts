@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { getCached, setCache, clearCache, getCachedSWR, setCacheSWR } from '../../services/cache-store';
+import { getCached, setCache, clearCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
 import { sendSuccess, sendError } from '../response-helpers';
 
 // Cache TTLs
@@ -149,6 +149,13 @@ export function taskRoutes(): Router {
         const empty = { tasks: [], count: 0 };
         setCacheSWR(cacheKey, empty, TASKS_CACHE_TTL, TASKS_SWR_STALE);
         return empty;
+      }
+
+      // Reuse the same cross-list snapshot for the chat fast-path cache so
+      // `/overdue`, `/dueToday`, and the task tab share one fresh view of
+      // the user's pending tasks instead of paying duplicate provider reads.
+      if (userId) {
+        setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
       }
 
       // Lisbon timezone for date comparison

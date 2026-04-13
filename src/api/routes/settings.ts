@@ -4,8 +4,8 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { isBotPollingActive, getLastMessageAt } from '../../portal/telemetry';
 import { sendSuccess, sendError } from '../response-helpers';
+import { getRuntimeStatus } from '../../services/runtime-status';
 
 export function settingsRoutes(): Router {
   const router = Router();
@@ -18,12 +18,15 @@ export function settingsRoutes(): Router {
       const uptimeStr = uptimeMs > 86400000
         ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
+      const runtime = getRuntimeStatus();
 
       sendSuccess(res, {
         version: (() => { try { return require('../../../package.json').version; } catch { return '0.0.0'; } })(),
         uptime: uptimeStr,
-        serviceStatus: isBotPollingActive() ? 'online' : 'offline',
-        lastMessageAt: getLastMessageAt(),
+        serviceStatus: runtime.serviceStatus,
+        botStatus: runtime.botStatus,
+        databaseStatus: runtime.databaseStatus,
+        lastMessageAt: runtime.lastMessageAt,
       });
     } catch (err: any) {
       sendError(res, 'INTERNAL', err?.message || 'Status fetch failed', 500);

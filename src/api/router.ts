@@ -158,27 +158,21 @@ export function createApiRouter(): Router {
   router.use(requestTimerMiddleware);
 
   // ── Per-user data isolation for ALL iOS API routes ─────────────────
-  // Sets request-scoped user overrides so all downstream service calls
-  // (Microsoft Graph, Google Calendar) use the authenticated user's
-  // tokens instead of the owner singleton. Cleared on response finish.
+  // Wrap every authenticated request in AsyncLocalStorage context so all
+  // downstream service calls (Microsoft Graph, Google Calendar, caches,
+  // logs, content personalization) resolve the current user safely.
+  //
+  // Historical note: this middleware used to mutate global per-request
+  // overrides for Outlook/Google. Those setters are now no-ops, and the
+  // request context below is the actual isolation boundary.
   router.use((req, _res, next) => {
     const userId = (req as any).userId;
     if (userId) {
-      const { setRequestUserId } = require('../services/microsoft-auth');
-      const { setGoogleCalendarUserId } = require('../services/google-calendar');
-      // Set global overrides (legacy — services read these directly)
-      setRequestUserId(userId);
-      setGoogleCalendarUserId(userId);
-      // Also set AsyncLocalStorage context (race-safe — each request
-      // gets its own context that propagates through async boundaries)
       const { runWithContext, generateRequestId } = require('../utils/request-context');
       const requestId = (req as any).requestId || generateRequestId();
-      // Wrap the rest of the middleware chain in a context
-      runWithContext({ requestId, userId }, () => {
-        _res.on('finish', () => {
-          setRequestUserId(null);
-          setGoogleCalendarUserId(null);
-        });
+      // Wrap the rest of the middleware chain in a context that propagates
+      // through await / Promise.all / timeouts without parameter threading.
+      runWithContext({ requestId, source: 'http', userId }, () => {
         next();
       });
       return; // next() called inside runInContext

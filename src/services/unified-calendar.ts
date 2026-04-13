@@ -73,7 +73,15 @@ export async function getEvents(startDate: string, endDate: string): Promise<Uni
 }
 
 export async function createEvent(
-  data: { title: string; start: string; end: string; description?: string; categories?: string[] },
+  data: {
+    title: string;
+    start: string;
+    end: string;
+    description?: string;
+    categories?: string[];
+    attendees?: string[];
+    location?: string;
+  },
   target?: CalendarSource,
   userId?: number,
 ): Promise<UnifiedCalendarEvent> {

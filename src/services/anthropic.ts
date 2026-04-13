@@ -37,10 +37,12 @@ const client = new Anthropic({
  * @param message Optional user message — used for sub-skill routing.
  */
 export function getDomainSystemPrompt(domain: DomainName, message?: string): string {
+  let basePrompt: string;
   if (domain === 'triathlon' && message) {
     const promptName = getTriathlonPromptNameForMessage(message);
     try {
-      return loadPrompt(promptName);
+      basePrompt = loadPrompt(promptName);
+      return withLanguageInstruction(basePrompt);
     } catch (err) {
       // Persona file missing on disk — fall through to the generic
       // triathlon prompt rather than crashing the request. Log once
@@ -54,7 +56,38 @@ export function getDomainSystemPrompt(domain: DomainName, message?: string): str
       }
     }
   }
-  return loadPrompt(domain);
+  basePrompt = loadPrompt(domain);
+  return withLanguageInstruction(basePrompt);
+}
+
+function withLanguageInstruction(prompt: string): string {
+  const instruction = getReplyLanguageInstruction();
+  return instruction ? `${prompt}\n\n${instruction}` : prompt;
+}
+
+function getReplyLanguageInstruction(): string {
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    const userId = getCurrentContext()?.userId;
+    if (!userId) return '';
+
+    const { getUserLanguage } = require('./user-service');
+    const lang = getUserLanguage(userId);
+    if (lang === 'pt-BR') {
+      return [
+        '[Reply Language]',
+        'Responda em pt-BR, a menos que o utilizador peça explicitamente outra língua.',
+        'Mantenha nomes próprios, títulos de eventos e citações do utilizador na forma original.',
+      ].join('\n');
+    }
+    return [
+      '[Reply Language]',
+      'Reply in English unless the user explicitly asks to switch languages.',
+      'Keep proper nouns, event titles, and quoted user text in their original form.',
+    ].join('\n');
+  } catch {
+    return '';
+  }
 }
 
 // Backwards-compatible alias — kept for any external imports
@@ -111,7 +144,7 @@ export const TOOLS: Anthropic.Tool[] = [
   { name: 'ms_todo_delete_list', description: 'Delete a task list', input_schema: { type: 'object' as const, properties: { list_id: { type: 'string' } }, required: ['list_id'] } },
   // ── Calendar tools ──
   { name: 'get_calendar_events', description: 'Get calendar events for a date range', input_schema: { type: 'object' as const, properties: { start_date: { type: 'string', description: 'ISO 8601' }, end_date: { type: 'string', description: 'ISO 8601' } }, required: ['start_date', 'end_date'] } },
-  { name: 'create_calendar_event', description: 'Create a calendar event', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' }, categories: { type: 'array', items: { type: 'string' }, description: 'Outlook categories e.g. ["Blue Category"]' } }, required: ['title', 'start', 'end'] } },
+  { name: 'create_calendar_event', description: 'Create a calendar event. If attendees are provided, invite them by email.', input_schema: { type: 'object' as const, properties: { title: { type: 'string' }, start: { type: 'string', description: 'ISO 8601' }, end: { type: 'string', description: 'ISO 8601' }, description: { type: 'string' }, categories: { type: 'array', items: { type: 'string' }, description: 'Outlook categories e.g. ["Blue Category"]' }, attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to invite to the meeting' }, location: { type: 'string', description: 'Optional location or meeting room name' } }, required: ['title', 'start', 'end'] } },
   { name: 'update_calendar_event', description: 'Update an EXISTING calendar event (title, time). Use this to modify events — never create duplicates.', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, new_start: { type: 'string', description: 'ISO 8601' }, new_end: { type: 'string', description: 'ISO 8601' }, new_title: { type: 'string' }, calendar_source: { type: 'string', description: '"outlook" or "google"' } }, required: ['event_id'] } },
   { name: 'delete_calendar_event', description: 'Delete an EXISTING calendar event (for cancellations/rest days).', input_schema: { type: 'object' as const, properties: { event_id: { type: 'string' }, calendar_source: { type: 'string', description: '"outlook" or "google"' } }, required: ['event_id'] } },
   // ── Reminder & notes tools ──

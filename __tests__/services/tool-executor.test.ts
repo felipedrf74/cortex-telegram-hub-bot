@@ -435,8 +435,17 @@ describe('executeToolCall — Calendar', () => {
         calendar_source: 'google',
       });
       expect(mockCal.createEvent).toHaveBeenCalledWith(
-        { title: 'Swim session', start: '2026-04-01T06:00:00', end: '2026-04-01T07:00:00', description: '2km open water', categories: ['sport'] },
+        {
+          title: 'Swim session',
+          start: '2026-04-01T06:00:00',
+          end: '2026-04-01T07:00:00',
+          description: '2km open water',
+          categories: ['sport'],
+          attendees: undefined,
+          location: undefined,
+        },
         'google',
+        undefined,
       );
     });
 

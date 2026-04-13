@@ -124,9 +124,14 @@ export async function createEvent(data: {
   end: string;
   description?: string;
   categories?: string[];
+  attendees?: string[];
+  location?: string;
 }): Promise<CalendarEvent> {
   try {
     const client = getGraphClient();
+    const attendees = (data.attendees || [])
+      .map((email) => email.trim())
+      .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
     const postBody: any = {
       subject: data.title,
       start: {
@@ -144,7 +149,19 @@ export async function createEvent(data: {
     if (data.categories && data.categories.length > 0) {
       postBody.categories = data.categories;
     }
-    logger.info({ subject: postBody.subject, categories: postBody.categories }, 'Creating Outlook calendar event');
+    if (data.location) {
+      postBody.location = { displayName: data.location };
+    }
+    if (attendees.length > 0) {
+      postBody.attendees = attendees.map((address) => ({
+        emailAddress: { address },
+        type: 'required',
+      }));
+    }
+    logger.info(
+      { subject: postBody.subject, categories: postBody.categories, attendeeCount: attendees.length },
+      'Creating Outlook calendar event',
+    );
     const response = await client.api('/me/events').post(postBody);
 
     return {

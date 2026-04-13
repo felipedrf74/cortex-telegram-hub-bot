@@ -98,7 +98,7 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
     needs.tasks && tasksEnabled && isOutlookTodoConfigured()
       ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
-    needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(0)) : Promise.resolve([]),
+    needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
     needs.calendar && calendarEnabled && isAnyCalendarConfigured()
       ? getEvents(startOfDay(), endOfDay()).catch(() => [] as any[])
       : Promise.resolve([] as any[]),

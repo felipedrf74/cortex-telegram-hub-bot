@@ -29,6 +29,32 @@ type AthleteProfileType = (typeof ATHLETE_PROFILE_TYPES)[number];
 
 const ATHLETE_PROFILE_SET = new Set<string>(ATHLETE_PROFILE_TYPES);
 
+function normalizeProfileFieldValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((item) => normalizeProfileFieldValue(item))
+      .filter((item): item is string => Boolean(item));
+    return normalized.length > 0 ? normalized.join(', ') : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+}
+
+function normalizeProfileFieldOptions(options: unknown): string[] | null {
+  if (!Array.isArray(options)) return null;
+  const normalized = options
+    .map((option) => normalizeProfileFieldValue(option))
+    .filter((option): option is string => Boolean(option));
+  return normalized.length > 0 ? normalized : null;
+}
+
 /**
  * Build the full detail response for the athlete profile screen.
  * For each profile: title, description, every field with its current
@@ -48,8 +74,8 @@ function buildAthleteProfileDetail(userId: number) {
         key: step.key,
         prompt: step.prompt,
         type: step.type,
-        options: step.options ?? null,
-        value: answered ? data[step.key] : null,
+        options: normalizeProfileFieldOptions(step.options),
+        value: answered ? normalizeProfileFieldValue(data[step.key]) : null,
         answered,
       };
     });

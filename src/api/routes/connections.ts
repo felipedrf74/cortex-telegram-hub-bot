@@ -13,6 +13,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getUserConnections } from '../../services/oauth-store';
+import { getDb } from '../../services/database';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 
 export function connectionRoutes(): Router {
@@ -29,6 +30,28 @@ export function connectionRoutes(): Router {
 
     try {
       const connections = getUserConnections(userId);
+      const db = getDb();
+      const garmin = db.prepare(`
+        SELECT
+          garmin_email,
+          status,
+          COALESCE(last_refresh, last_used, updated_at) AS connected_at
+        FROM garmin_user_tokens
+        WHERE user_id = ?
+      `).get(userId) as {
+        garmin_email?: string | null;
+        status?: string | null;
+        connected_at?: string | null;
+      } | undefined;
+
+      if (garmin?.status === 'active' && !connections.some((c) => c.provider === 'garmin')) {
+        connections.push({
+          provider: 'garmin',
+          connectedAt: garmin.connected_at || new Date().toISOString(),
+          scopes: ['activities', 'sleep', 'readiness'],
+        });
+      }
+
       sendSuccess(res, {
         connections: connections.map((c) => ({
           provider: c.provider,

@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { isBotPollingActive, getLastMessageAt } from '../../portal/telemetry';
+import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCached, setCache } from '../../services/cache-store';
 import { apiSuccess, sendError } from '../response-helpers';
 
@@ -74,6 +74,8 @@ export function dashboardRoutes(): Router {
         ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
+      const runtime = getRuntimeStatus();
+
       const dashboard = {
         greeting: displayName ? `${greeting}, ${displayName}` : greeting,
         date: now.toISOString().slice(0, 10),
@@ -85,8 +87,10 @@ export function dashboardRoutes(): Router {
         system: {
           version: getAppVersion(),
           uptime: uptimeStr,
-          serviceStatus: isBotPollingActive() ? 'online' : 'offline',
-          lastMessageAt: getLastMessageAt(),
+          serviceStatus: runtime.serviceStatus,
+          botStatus: runtime.botStatus,
+          databaseStatus: runtime.databaseStatus,
+          lastMessageAt: runtime.lastMessageAt,
         },
       };
 
