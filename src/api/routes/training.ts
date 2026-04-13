@@ -804,6 +804,36 @@ async function getTodaySession(userId: number) {
 
   if (!session) session = await findTodayTrainingFromCalendar();
 
+  // CHAT-M3: Third fallback — check Garmin for today's recorded activities.
+  // Users who do ad-hoc gym sessions (not in the plan or calendar) will have
+  // the activity on their watch. This surfaces it so "training today" shows
+  // something instead of "rest day" when they've already worked out.
+  if (!session) {
+    try {
+      const { getTodayData, isStrength } = require('../../services/garmin');
+      const garminData = await getTodayData(userId);
+      const activities = garminData?.activities || [];
+      if (activities.length > 0) {
+        // Pick the most recent activity
+        const activity = activities[activities.length - 1];
+        const activityType = activity.activityType?.typeKey || activity.activityName || 'workout';
+        session = {
+          id: activity.activityId ? String(activity.activityId) : null,
+          type: isStrength(activityType)
+            ? `Strength: ${activity.activityName || 'Gym Session'}`
+            : activity.activityName || 'Workout',
+          time: null,
+          duration: activity.duration ? Math.round(activity.duration / 60) : null,
+          status: 'completed',
+          notes: null,
+          exercises: null,
+        };
+      }
+    } catch {
+      // Garmin unavailable — continue with null session (rest day)
+    }
+  }
+
   return {
     session: session ? {
       id: session.id ? String(session.id) : null,

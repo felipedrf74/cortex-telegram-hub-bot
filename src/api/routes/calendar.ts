@@ -54,7 +54,8 @@ export function calendarRoutes(): Router {
     }
 
     try {
-      const events = await getEvents(start, end);
+      // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
+      const events = await getEvents(start, end, userId);
       const formatted = events.map(formatEvent);
       setCache(cacheKey, formatted, RANGE_TTL);
       sendSuccess(res, { events: formatted });
@@ -192,7 +193,8 @@ export function calendarRoutes(): Router {
 
     try {
       const { start, end } = todayRangeISO();
-      const events = await getEvents(start, end);
+      // CHAT-M2: pass userId for per-user Outlook token resolution
+      const events = await getEvents(start, end, userId);
       const formatted = events.map(formatEvent);
       setCache(cacheKey, formatted, TODAY_TTL);
       sendSuccess(res, { events: formatted, date: todayDateString() });

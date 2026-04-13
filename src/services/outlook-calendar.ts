@@ -1,12 +1,27 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
+import { getGraphClient, getGraphClientForUser, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { CalendarEvent } from './google-calendar';
 
-export function isOutlookCalendarConfigured(): boolean {
-  return isMicrosoftConfigured();
+export function isOutlookCalendarConfigured(userId?: number): boolean {
+  // Owner-level check (Telegram bot / global config)
+  if (isMicrosoftConfigured()) return true;
+
+  // CHAT-M2: per-user check — iOS users connect Outlook via OAuth,
+  // storing tokens under their JWT userId (not the Telegram owner ID).
+  // Without this check, the unified calendar skips Outlook entirely
+  // for iOS users who have a valid connection.
+  if (userId && config.outlook.clientId) {
+    try {
+      const { getTokens } = require('./oauth-store');
+      const tokens = getTokens(userId, 'outlook');
+      return !!tokens?.refreshToken;
+    } catch { /* oauth-store unavailable */ }
+  }
+
+  return false;
 }
 
 // ── Master Categories (color ↔ displayName mapping) ─────────────────
@@ -88,9 +103,13 @@ export async function getCategoryNameForColor(color: 'blue' | 'green' | 'red'): 
   return fallbackMap[color];
 }
 
-export async function getEvents(startDate: string, endDate: string): Promise<CalendarEvent[]> {
+export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
   try {
-    const client = getGraphClient();
+    // CHAT-M2: use per-user Graph client when userId is available (iOS path).
+    // Falls back to the owner singleton for Telegram/global codepath.
+    const client = userId
+      ? getGraphClientForUser(userId)
+      : getGraphClient();
     const response = await client
       .api('/me/calendarView')
       .query({

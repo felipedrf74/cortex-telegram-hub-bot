@@ -79,7 +79,10 @@ export const config = {
     model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
     classifierModel: process.env.ANTHROPIC_CLASSIFIER_MODEL || 'claude-haiku-4-5-20251001',
     maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
-    secretaryMaxTokens: 2048,   // needs headroom for parallel tool calls
+    secretaryMaxTokens: 4096,   // CHAT-M4: bumped from 2048 — state context (tasks + calendar
+                                // + reminders + Garmin) consumes 500-1500 tokens of input,
+                                // leaving insufficient budget for the response. 4096 gives
+                                // enough headroom for full day briefings + tool call summaries.
   },
   // ── Alternative AI Providers (optional fallbacks) ──────────────────
   openai: {
@@ -87,7 +90,7 @@ export const config = {
     model: process.env.OPENAI_MODEL || 'gpt-5.4-nano',
     classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-5.4-nano',
     maxTokens: 1024,            // content domain — conversational
-    secretaryMaxTokens: 2048,   // secretary — parallel tool calls need headroom
+    secretaryMaxTokens: 4096,   // CHAT-M4: bumped from 2048 (see anthropic.secretaryMaxTokens)
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
@@ -99,7 +102,7 @@ export const config = {
     model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.5-flash-lite',
     maxTokens: 1024,
-    secretaryMaxTokens: 2048,
+    secretaryMaxTokens: 4096,   // CHAT-M4: bumped from 2048
   },
   // ── Provider Fallback Routing ─────────────────────────────────────
   // Per-task-type primary/fallback. Values: 'anthropic' | 'openai' | 'gemini'

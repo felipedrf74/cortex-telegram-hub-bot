@@ -100,7 +100,8 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
       : Promise.resolve(null),
     needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
     needs.calendar && calendarEnabled && isAnyCalendarConfigured()
-      ? getEvents(startOfDay(), endOfDay()).catch(() => [] as any[])
+      // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
+      ? getEvents(startOfDay(), endOfDay(), userId).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
     needs.email && emailEnabled && isOutlookMailConfigured()
       ? getUnreadCount().catch(() => null)
@@ -347,6 +348,15 @@ export async function handleSecretary(message: string, userId?: number): Promise
   // Guard against empty response (can happen after errors exhaust tool iterations)
   if (!finalText || !finalText.trim()) {
     finalText = '⚠️ I processed your request but encountered some issues. Some actions may have completed partially. Please check your task list and try again if needed.';
+  }
+
+  // CHAT-M4: detect max_tokens truncation — if the AI hit the output
+  // ceiling, append a note so the user knows the response is incomplete.
+  // This catches the common case where a busy day's briefing exceeds
+  // the token budget and gets cut mid-sentence.
+  if (result?.stopReason === 'max_tokens' || result?.stopReason === 'length') {
+    logger.warn({ uid, domain: DOMAIN, stopReason: result.stopReason }, 'Secretary response was truncated by max_tokens');
+    finalText += '\n\n_⚠️ Response was cut short due to length. Try asking about a specific area (e.g. "just show my tasks" or "just calendar")._';
   }
 
   // Store conversation — include tool summary so future turns have context

@@ -114,12 +114,21 @@ export const TOOLS: Anthropic.Tool[] = [
     }, required: ['list_id', 'list_name'] },
   },
   {
-    name: 'ms_todo_create_task', description: 'Create a task in a list',
+    // CHAT-M1: improved schema — only title is truly required.
+    // list_id/list_name are optional; if omitted, the default Inbox list is used
+    // automatically. Previous required: ['list_id', 'list_name', 'title'] caused
+    // the AI to hallucinate list IDs instead of letting the executor auto-resolve.
+    name: 'ms_todo_create_task',
+    description: 'Create a new task. Only title is required — if list_id and list_name are omitted, the task is created in the user\'s default/Inbox list. Use list IDs from [Current State] when available.',
     input_schema: { type: 'object' as const, properties: {
-      list_id: { type: 'string' }, list_name: { type: 'string' }, title: { type: 'string' },
-      body: { type: 'string' }, importance: { type: 'string', enum: ['low', 'normal', 'high'] },
-      due_date_time: { type: 'string', description: 'ISO 8601' }, reminder_date_time: { type: 'string', description: 'ISO 8601' },
-    }, required: ['list_id', 'list_name', 'title'] },
+      list_id: { type: 'string', description: 'List ID from [Current State]. Omit to use default Inbox list.' },
+      list_name: { type: 'string', description: 'List display name. Omit to use default Inbox list.' },
+      title: { type: 'string', description: 'Task title (required)' },
+      body: { type: 'string', description: 'Task description/notes (optional)' },
+      importance: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Priority level (default: normal)' },
+      due_date_time: { type: 'string', description: 'Due date in ISO 8601 format (Europe/Lisbon timezone)' },
+      reminder_date_time: { type: 'string', description: 'Reminder date in ISO 8601 format' },
+    }, required: ['title'] },
   },
   {
     name: 'ms_todo_update_task', description: 'Update a task (title, body, importance, due date, reminder, status)',

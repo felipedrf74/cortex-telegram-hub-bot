@@ -23,7 +23,7 @@ export function getConfiguredSources(): CalendarSource[] {
   return sources;
 }
 
-export async function getEvents(startDate: string, endDate: string): Promise<UnifiedCalendarEvent[]> {
+export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<UnifiedCalendarEvent[]> {
   const events: UnifiedCalendarEvent[] = [];
 
   // Fetch from both in parallel
@@ -43,16 +43,18 @@ export async function getEvents(startDate: string, endDate: string): Promise<Uni
     );
   }
 
-  if (outlookCal.isOutlookCalendarConfigured()) {
+  // CHAT-M2: pass userId to isOutlookCalendarConfigured() so per-user
+  // OAuth tokens (from iOS) are checked, not just the global owner token.
+  if (outlookCal.isOutlookCalendarConfigured(userId)) {
     promises.push(
-      outlookCal.getEvents(startDate, endDate)
+      outlookCal.getEvents(startDate, endDate, userId)
         .then((oEvents) => {
           for (const e of oEvents) {
             events.push({ ...e, source: 'outlook' });
           }
         })
         .catch((err) => {
-          logger.error({ err }, 'Failed to fetch Outlook Calendar events');
+          logger.error({ err, userId }, 'Failed to fetch Outlook Calendar events');
         })
     );
   }

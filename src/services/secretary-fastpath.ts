@@ -276,14 +276,31 @@ async function getTodayTrainingSummary(userId: number, events: Array<{ summary?:
   }
 
   const event = events.find((item) => looksLikeTrainingTitle(item.summary));
-  if (!event) return null;
+  if (event) {
+    const durationMinutes = Math.max(
+      0,
+      Math.round((new Date(event.end).getTime() - new Date(event.start).getTime()) / 60000),
+    );
+    const duration = Number.isFinite(durationMinutes) && durationMinutes > 0 ? ` · ${durationMinutes} min` : '';
+    return `${escapeHtml(event.summary || 'Workout')} · ${formatTime(event.start)}${duration}`;
+  }
 
-  const durationMinutes = Math.max(
-    0,
-    Math.round((new Date(event.end).getTime() - new Date(event.start).getTime()) / 60000),
-  );
-  const duration = Number.isFinite(durationMinutes) && durationMinutes > 0 ? ` · ${durationMinutes} min` : '';
-  return `${escapeHtml(event.summary || 'Workout')} · ${formatTime(event.start)}${duration}`;
+  // CHAT-M3: Third fallback — check Garmin for today's recorded activities.
+  // Catches ad-hoc gym sessions that aren't in the plan or calendar.
+  try {
+    const { getTodayData } = require('./garmin');
+    const garminData = await getTodayData(userId);
+    const activities = garminData?.activities || [];
+    if (activities.length > 0) {
+      const act = activities[activities.length - 1];
+      const dur = act.duration ? ` · ${Math.round(act.duration / 60)} min` : '';
+      return `${escapeHtml(act.activityName || 'Workout')}${dur} ✅`;
+    }
+  } catch {
+    // Garmin unavailable — return null (rest day)
+  }
+
+  return null;
 }
 
 // ─── Fastpath Metrics (in-memory; portal reads these) ────────────────
@@ -354,7 +371,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
 
       const [events, todoResult, reminders] = await Promise.all([
         calOk && isAnyCalendarConfigured()
-          ? getEvents(startOfDay(), endOfDay()).catch(() => [])
+          // CHAT-M2: pass userId for per-user Outlook calendar tokens
+          ? getEvents(startOfDay(), endOfDay(), userId).catch(() => [])
           : Promise.resolve([]),
         tasksOk && isOutlookTodoConfigured()
           ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
@@ -438,7 +456,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     handler: async (_userId, _match, lang) => {
       const c = COPY[lang];
       const events = isAnyCalendarConfigured()
-        ? await getEvents(startOfWeek(), endOfWeek()).catch(() => [])
+        // CHAT-M2: pass userId for per-user Outlook calendar tokens
+        ? await getEvents(startOfWeek(), endOfWeek(), _userId).catch(() => [])
         : [];
 
       let msg = `📅 <b>${c.weekHeader}</b>\n\n`;
