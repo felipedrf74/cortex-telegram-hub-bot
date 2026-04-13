@@ -381,6 +381,51 @@ export function taskRoutes(): Router {
     }
   });
 
+  /** POST /api/v1/tasks/:listId/:taskId/move — move task to a different list */
+  router.post('/:listId/:taskId/move', async (req, res: Response) => {
+    try {
+      const { listId, taskId } = req.params;
+      const { targetListId } = req.body;
+
+      if (!targetListId) {
+        sendError(res, 'VALIDATION', 'targetListId is required', 400);
+        return;
+      }
+
+      // MS Graph doesn't have a native "move task" API. The pattern is:
+      // 1. Read the task from the source list
+      // 2. Create a copy in the target list
+      // 3. Delete the original
+      const { getGraphClient } = require('../../services/microsoft-auth');
+      const client = getGraphClient(req);
+
+      // Read original task
+      const original = await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).get();
+
+      // Create in target list (only copy the user-editable fields)
+      const newTask = await client.api(`/me/todo/lists/${targetListId}/tasks`).post({
+        title: original.title,
+        body: original.body,
+        importance: original.importance,
+        status: original.status,
+        dueDateTime: original.dueDateTime,
+        isReminderOn: original.isReminderOn,
+        reminderDateTime: original.reminderDateTime,
+      });
+
+      // Delete from source list
+      await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
+
+      invalidateTaskCaches(listId, (req as any).userId);
+      invalidateTaskCaches(targetListId, (req as any).userId);
+
+      sendSuccess(res, { task: newTask, movedFrom: listId, movedTo: targetListId });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS task move failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to move task', 500);
+    }
+  });
+
   /** DELETE /api/v1/tasks/:listId/:taskId */
   router.delete('/:listId/:taskId', async (req, res: Response) => {
     try {
