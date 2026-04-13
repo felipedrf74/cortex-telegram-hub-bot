@@ -505,18 +505,58 @@ DO NOT include any explanation, markdown, or code fences. Return only the JSON.`
           : 0.5,
       };
 
+      // ── Dual-model verification ────────────────────────────
+      // Run a second model (OpenAI gpt-4o-mini) on the same image
+      // to cross-check the amount. If the two models disagree on
+      // the amount by >15%, lower confidence and flag the mismatch.
+      // Cost: ~$0.002 extra per receipt — worth it to prevent false positives.
+      let verified = false;
+      let verificationNote: string | null = null;
+      try {
+        const openai = require('../../services/openai-provider');
+        if (openai.isOpenAIConfigured?.()) {
+          const verifyText = await openai.completeVisionOneShot(
+            'Extract ONLY the total amount from this receipt. Return JSON: {"amount": number, "currency": "XXX"}. Nothing else.',
+            'What is the total amount on this receipt?',
+            { base64: imageBase64, mimeType },
+            'receipt-verify',
+            { maxTokens: 128, temperature: 0.0, userId },
+          );
+          const verifyClean = verifyText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+          try {
+            const verifyParsed = JSON.parse(verifyClean);
+            const verifyAmount = typeof verifyParsed.amount === 'number' ? Math.abs(verifyParsed.amount) : null;
+            if (verifyAmount != null && result.amount != null) {
+              const ratio = Math.abs(verifyAmount - result.amount) / Math.max(verifyAmount, result.amount);
+              if (ratio < 0.15) {
+                // Models agree — high confidence
+                verified = true;
+                result.confidence = Math.max(result.confidence, 0.85);
+              } else {
+                // Models disagree — lower confidence, flag for user review
+                result.confidence = Math.min(result.confidence, 0.5);
+                verificationNote = `Gemini: ${result.amount} ${result.currency}, OpenAI: ${verifyAmount} ${verifyParsed.currency || result.currency}. Please verify.`;
+                logger.warn({ userId, geminiAmount: result.amount, openaiAmount: verifyAmount, ratio }, 'Receipt dual-model mismatch');
+              }
+            }
+          } catch { /* OpenAI returned non-JSON — skip verification */ }
+        }
+      } catch (verifyErr) {
+        // Verification failure is non-fatal — serve Gemini result with original confidence
+        logger.debug({ err: verifyErr }, 'Receipt verification with OpenAI failed — using Gemini only');
+      }
+
       logger.info(
-        { userId, merchant: result.merchant, amount: result.amount, confidence: result.confidence },
+        { userId, merchant: result.merchant, amount: result.amount, confidence: result.confidence, verified },
         'iOS receipt parsed',
       );
 
       sendSuccess(res, {
         parsed: result,
-        // tokensUsed is logged internally by logGeminiUsage — surfacing
-        // it here too lets the iOS review sheet show "parsed with N
-        // tokens" for transparency about what spent money.
-        tokensUsed: 0,   // placeholder — backend doesn't return usage yet
-        model: 'gemini-flash',
+        verified,
+        verificationNote,
+        tokensUsed: 0,
+        model: verified ? 'gemini-flash+openai-verify' : 'gemini-flash',
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS parse-receipt: Gemini call failed');
