@@ -26,7 +26,7 @@ const MAX_RETRIES = 5;
 const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release the polling lock
 
 async function main(): Promise<void> {
-  logger.info('Starting Telegram Hub Bot...');
+  logger.info('Starting Nexus Hub...');
 
   // Initialize Sentry FIRST — must be before any other init so it can
   // capture startup errors (DB open failure, missing env vars, etc.).
@@ -80,28 +80,34 @@ async function main(): Promise<void> {
   // already accumulated any boot-phase errors and setErrorDbProvider() above
   // flushed them to error_log.
 
-  // Create bot
-  const bot = createBot();
-
-  // Store bot reference for portal restart action
-  setBotRef(bot);
-
-  // Wire Telegram alerting for critical errors (owner-only — never send internals to regular users)
-  const { getOwnerUserIds } = require('./services/scheduler');
-  const ownerAlert = async (message: string) => {
-    for (const userId of getOwnerUserIds()) {
-      try {
-        await bot.api.sendMessage(userId, message, { parse_mode: 'HTML' });
-      } catch { /* swallow — don't cascade alert failures */ }
+  // ── Telegram is DEPRECATED (April 2026) ─────────────────────────
+  // The iOS app is the primary user experience. Telegram bot startup,
+  // polling, and webhook registration are disabled. All delivery now
+  // goes through durable reports, notifications/inbox, and APNs push.
+  //
+  // To re-enable Telegram temporarily: set TELEGRAM_LEGACY_DELIVERY=true
+  // in .env and restart. The scheduler's safeSend() gates all sends.
+  let bot: any = null;
+  if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && config.telegram.botToken) {
+    try {
+      bot = createBot();
+      setBotRef(bot);
+      logger.info('Telegram bot created (LEGACY mode — TELEGRAM_LEGACY_DELIVERY=true)');
+    } catch (err) {
+      logger.warn({ err }, 'Telegram bot creation failed — continuing without it');
     }
-  };
-  setAlertCallback(ownerAlert);
+  }
 
-  // Wire same Telegram alerting for cost guardrail tier crossings (50/80/100%)
+  // Alert callbacks — log to portal telemetry (no more Telegram alerts by default)
+  setAlertCallback(async (message: string) => {
+    logger.warn({ alert: message.slice(0, 200) }, 'System alert (Telegram delivery disabled)');
+  });
   const { setCostAlertCallback } = require('./services/cost-guardrail');
-  setCostAlertCallback(ownerAlert);
+  setCostAlertCallback(async (message: string) => {
+    logger.warn({ alert: message.slice(0, 200) }, 'Cost alert (Telegram delivery disabled)');
+  });
 
-  // Start scheduler (reminders, daily briefing, weekly review)
+  // Start scheduler — bot parameter is optional (null when Telegram disabled)
   startScheduler(bot);
 
   // Start status portal (Express on :8200)
@@ -114,8 +120,8 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down...');
     try {
-      bot.stop();
-    } catch { /* already stopped */ }
+      if (bot) bot.stop();
+    } catch { /* already stopped or no bot */ }
     if (portalServer) {
       await new Promise<void>((resolve) => portalServer!.close(() => resolve()));
     }
@@ -136,100 +142,29 @@ async function main(): Promise<void> {
   // causing EADDRINUSE on the next deploy. See audit P0-4.
   setShutdownCallback(() => shutdown('error-handler'));
 
-  // Staging install without a bot token: skip bot.start() entirely.
-  // Everything ELSE (the portal, content-engine integration, scheduled
-  // jobs, the iOS API, AI calls) runs normally — only Telegram message
-  // ingestion is disabled. This lets staging test 95% of the system
-  // without the operator having to provision a second @BotFather bot.
-  // Quarter audit item: staging environment.
-  if (!config.telegram.botToken && config.isStaging) {
-    logger.warn(
-      'STAGING mode without TELEGRAM_BOT_TOKEN — skipping Telegram bot.start(). ' +
-      'Portal + content-engine + crons will run normally.',
-    );
-    return; // Returning here keeps the process alive via portalServer
+  // ── Telegram polling/webhook is DISABLED ──────────────────────────
+  // The process stays alive via portalServer (Express on port 8200).
+  // All iOS API routes, scheduled jobs, and portal are served normally.
+  // Telegram long-polling and webhook registration are skipped entirely.
+  if (!bot) {
+    logger.info('✅ Nexus Hub started (Telegram disabled — iOS + Portal + API active)');
+    return; // Process stays alive via portalServer
   }
 
-  // Webhook mode (Month 2 audit item).
-  //
-  // When TELEGRAM_WEBHOOK_URL is set, we register the URL with Telegram
-  // and skip the long-polling loop entirely. The webhook route is already
-  // mounted by createPortalServer → createWebhookRouter(bot) above. From
-  // this point on, Telegram POSTs every update to /webhooks/telegram and
-  // grammy's webhookCallback dispatches it through the same middleware
-  // chain that long-polling would have used.
-  //
-  // Why this is the lowest-risk possible migration:
-  //   - Default state is unchanged: no env var → long-polling (current)
-  //   - Webhook is opt-in via env var only — no code path is silently
-  //     activated
-  //   - Reverting is a one-line .env change + restart — no code rollback
-  //   - The setWebhook call is wrapped in try/catch so a Telegram API
-  //     blip during boot doesn't take the whole bot down
-  //   - We deleteWebhook first so any stale registration from a previous
-  //     attempt is cleaned up before we set the new one
-  //   - drop_pending_updates: false because we DON'T want to lose
-  //     messages that came in during deploy / restart
-  if (config.telegram.webhookUrl) {
-    try {
-      logger.info(
-        { url: config.telegram.webhookUrl, hasSecret: !!config.telegram.webhookSecret },
-        'Registering Telegram webhook...',
-      );
-      // Clean up any stale webhook from a previous run / a different URL.
-      // No-op if none registered.
-      await bot.api.deleteWebhook({ drop_pending_updates: false });
-      // Register the new one. Telegram immediately starts posting updates
-      // to this URL.
-      await bot.api.setWebhook(config.telegram.webhookUrl, {
-        secret_token: config.telegram.webhookSecret || undefined,
-        drop_pending_updates: false,
-        // We don't restrict allowed_updates here — same as long polling,
-        // we accept everything Telegram sends and let grammy filter.
-      });
-      logger.info({ url: config.telegram.webhookUrl }, '✅ Telegram webhook registered — running in WEBHOOK mode');
-      setBotPollingActive(true); // The bot IS now serving updates, just via HTTP not polling
-      return; // Skip the polling loop — process stays alive via portalServer
-    } catch (err) {
-      logger.error({ err }, 'Failed to register Telegram webhook — falling back to long-polling');
-      // Fall through to the polling loop below
-    }
-  }
+  // Legacy: if TELEGRAM_LEGACY_DELIVERY is true AND bot was created,
+  // skip polling anyway — the bot is only used for outbound sends.
+  logger.info('✅ Nexus Hub started (Telegram legacy mode — outbound only, no polling)');
+  return;
 
-  // Start bot with retry logic for 409 Conflict (multiple polling instances).
-  // Uses exponential backoff: 45s → 90s → 180s to give Telegram time to release the lock.
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      logger.info({ attempt }, 'Bot starting with long polling...');
-      // Drop pending updates on retry to clear stale getUpdates lock faster
-      const startOpts: Parameters<typeof bot.start>[0] = {
-        onStart: () => {
-          logger.info('Bot is running!');
-          setBotPollingActive(true);
-          console.log('🤖 Telegram Hub Bot is online!');
-        },
-      };
-      if (attempt > 1) {
-        startOpts.drop_pending_updates = true;
-      }
-      await bot.start(startOpts);
-      return; // bot.start() resolved — should not normally happen unless stopped
-    } catch (err: any) {
-      const is409 = err?.error_code === 409 || err?.message?.includes('409');
-      if (is409 && attempt < MAX_RETRIES) {
-        // Exponential backoff: 45s, 90s, 180s, 360s
-        const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-        logger.warn({ attempt, maxRetries: MAX_RETRIES, delaySec: delay / 1000 },
-          `Telegram 409 conflict — another instance may still be polling. Retrying in ${delay / 1000}s...`);
-        await new Promise((r) => setTimeout(r, delay));
-        continue;
-      }
-      throw err; // non-409 or exhausted retries — let it crash
-    }
-  }
+  // ── DEPRECATED: Telegram webhook + polling removed April 2026 ──
+  // The code below was the Telegram webhook registration and long-polling
+  // loop. It has been removed as part of the Telegram deprecation.
+  // If you need to re-enable Telegram for debugging, set
+  // TELEGRAM_LEGACY_DELIVERY=true and use the bot instance for outbound
+  // sends only (no polling, no webhook).
 }
 
 main().catch((err) => {
-  logger.fatal({ err }, 'Fatal error starting bot');
+  logger.fatal({ err }, 'Fatal error starting Nexus Hub');
   process.exit(1);
 });

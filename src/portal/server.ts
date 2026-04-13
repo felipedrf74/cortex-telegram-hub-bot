@@ -1036,7 +1036,7 @@ async function handleAction(
 
 // ─── Express App Factory ────────────────────────────────────────────
 
-export function createPortalServer(bot: Bot): http.Server {
+export function createPortalServer(bot?: any): http.Server {
   const app = express();
 
   // ── Request logging + tracing middleware (audit QW-15 + Quarter) ───

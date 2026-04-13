@@ -78,28 +78,37 @@ let sharedListSeeded = false; // first run seeds without notifying
 const todayNotifications: string[] = [];
 export function getTodayNotifications(): string[] { return todayNotifications; }
 
-export function startScheduler(bot: Bot): void {
+export function startScheduler(bot?: any): void {
   // Register sub-skill gating so disabled sub-skills skip their cron jobs
   setJobEnabledChecker(isCronJobEnabled);
 
-  // Register failure notifier so wrapJob sends Telegram alerts on job failures
+  // Telegram delivery is deprecated. All safeSend calls below
+  // are gated: they only fire if TELEGRAM_LEGACY_DELIVERY=true AND a bot
+  // instance is provided. The replacement delivery path is:
+  //   - durable reports (report-document-store)
+  //   - durable notifications (content-notification-store)
+  //   - APNs push
+  //   - portal events / telemetry
+  const telegramEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && bot;
+  const safeSend = async (userId: number, message: string, opts?: any) => {
+    if (!telegramEnabled) return;
+    try { await safeSend(userId, message, opts); } catch {}
+  };
+
+  // Register failure notifier — logs to portal telemetry (always) + Telegram (if enabled)
   setJobFailureNotifier(async (jobLabel, errorMessage) => {
     const short = errorMessage.slice(0, 120);
     for (const userId of getOwnerUserIds()) {
-      try {
-        await bot.api.sendMessage(userId,
-          `⚠️ <b>${escapeHtml(jobLabel)} failed</b>\n\n<code>${escapeHtml(short)}</code>\n\n<i>Check logs for details.</i>`,
-          { parse_mode: 'HTML' });
-      } catch {
-        // swallow — avoid cascading failures
-      }
+      await safeSend(userId,
+        `⚠️ <b>${escapeHtml(jobLabel)} failed</b>\n\n<code>${escapeHtml(short)}</code>\n\n<i>Check logs for details.</i>`,
+        { parse_mode: 'HTML' });
     }
   });
 
   const tz = config.app.timezone;
 
   // Telegram legacy delivery gate. When TELEGRAM_LEGACY_DELIVERY is not
-  // set to "true", Telegram bot.api.sendMessage calls are skipped for
+  // set to "true", Telegram safeSend calls are skipped for
   // report flows. The durable report + APNs path is the primary delivery.
   // Set TELEGRAM_LEGACY_DELIVERY=true to keep Telegram delivery active
   // (e.g., during beta while some users still use Telegram).
@@ -168,7 +177,7 @@ export function startScheduler(bot: Bot): void {
       try {
         let msg = `⏰ <b>Reminder:</b> ${escapeHtml(reminder.message)}`;
         if (reminder.recurring) msg += `\n<i>(Recurring: ${reminder.recurring})</i>`;
-        await bot.api.sendMessage(targetUserId, msg, { parse_mode: 'HTML' });
+        await safeSend(targetUserId, msg, { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId: targetUserId }, 'Failed to send reminder');
       }
@@ -304,7 +313,7 @@ export function startScheduler(bot: Bot): void {
       // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
       if (telegramLegacyEnabled) {
         try {
-          await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+          await safeSend(userId, msg.trim(), { parse_mode: 'HTML' });
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send end-of-day summary');
         }
@@ -403,7 +412,7 @@ export function startScheduler(bot: Bot): void {
 
     for (const userId of getActiveUserIds()) {
       try {
-        await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+        await safeSend(userId, msg, { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send shared list notification');
       }
@@ -560,7 +569,7 @@ export function startScheduler(bot: Bot): void {
 
     for (const userId of getOwnerUserIds()) {
       try {
-        await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+        await safeSend(userId, notification, { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send invoice collection notification');
       }
@@ -577,7 +586,7 @@ export function startScheduler(bot: Bot): void {
 
     for (const userId of getOwnerUserIds()) {
       try {
-        await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+        await safeSend(userId, notification, { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send Amazon collection notification');
       }
@@ -594,7 +603,7 @@ export function startScheduler(bot: Bot): void {
 
     for (const userId of getOwnerUserIds()) {
       try {
-        await bot.api.sendMessage(userId, notification, { parse_mode: 'HTML' });
+        await safeSend(userId, notification, { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send Uber collection notification');
       }
@@ -626,7 +635,7 @@ export function startScheduler(bot: Bot): void {
 
       for (const userId of getOwnerUserIds()) {
         try {
-          await bot.api.sendMessage(userId,
+          await safeSend(userId,
             `📧 <b>Email automático enviado</b>\n\n<b>Para:</b> ${fossaTo}\n<b>Assunto:</b> Limpeza Fossa Septica\n\n<i>Próximo envio em 2 semanas.</i>`,
             { parse_mode: 'HTML' });
         } catch (err) {
@@ -672,7 +681,7 @@ export function startScheduler(bot: Bot): void {
 
     for (const userId of getActiveUserIds()) {
       try {
-        await bot.api.sendMessage(userId, msg.trim(), { parse_mode: 'HTML' });
+        await safeSend(userId, msg.trim(), { parse_mode: 'HTML' });
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send conflict alert');
       }
@@ -799,7 +808,7 @@ export function startScheduler(bot: Bot): void {
         if (telegramLegacyEnabled) {
           try {
             for (const chunk of chunks) {
-              await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+              await safeSend(userId, chunk, { parse_mode: 'HTML' });
             }
           } catch (err) {
             logger.error({ err, userId }, 'Failed to send coach briefing');
@@ -900,7 +909,7 @@ export function startScheduler(bot: Bot): void {
         msg += `<i>Reason: ${recommendation.reason}</i>`;
 
         try {
-          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+          await safeSend(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send training adjustment notification');
         }
@@ -922,7 +931,7 @@ export function startScheduler(bot: Bot): void {
         renewMsg += `\n\nGo to <b>Training → Create Plan</b> to generate your next cycle.`;
 
         try {
-          await bot.api.sendMessage(userId, renewMsg, { parse_mode: 'HTML' });
+          await safeSend(userId, renewMsg, { parse_mode: 'HTML' });
           // Send APNs notification
           const { sendPushToUser } = require('./push-service');
           sendPushToUser?.(userId, {
@@ -954,7 +963,7 @@ export function startScheduler(bot: Bot): void {
 
       for (const userId of getOwnerUserIds()) {
         try {
-          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+          await safeSend(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send invoice queue flush notification');
         }
@@ -970,7 +979,7 @@ export function startScheduler(bot: Bot): void {
         `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
       for (const userId of getOwnerUserIds()) {
         try {
-          await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+          await safeSend(userId, msg, { parse_mode: 'HTML' });
         } catch (err) {
           logger.error({ err, userId }, 'Failed to send channel relearn notification');
         }
@@ -1043,7 +1052,7 @@ export function startScheduler(bot: Bot): void {
     await runSEOAgent();
     const msg = '🔍 <b>SEO Agent</b> — weekly keyword rank check complete. Use <code>/seorank</code> to see results.';
     for (const userId of getOwnerUserIds()) {
-      try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+      try { await safeSend(userId, msg, { parse_mode: 'HTML' }); } catch {}
     }
   }), { timezone: tz });
 
@@ -1052,7 +1061,7 @@ export function startScheduler(bot: Bot): void {
     const targetId = getScheduledTarget();
     const onProgress = async (msg: string) => {
       for (const userId of getOwnerUserIds()) {
-        try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+        try { await safeSend(userId, msg, { parse_mode: 'HTML' }); } catch {}
       }
     };
     try {
@@ -1063,7 +1072,7 @@ export function startScheduler(bot: Bot): void {
         `Kept ${kept}/${result.rounds.length} mutations\n` +
         `Duration: ${(result.totalDurationMs / 1000).toFixed(0)}s`;
       for (const userId of getOwnerUserIds()) {
-        try { await bot.api.sendMessage(userId, summary, { parse_mode: 'HTML' }); } catch {}
+        try { await safeSend(userId, summary, { parse_mode: 'HTML' }); } catch {}
       }
     } catch (err) {
       logger.error({ err, targetId }, 'Scheduled autoresearch failed');
@@ -1077,7 +1086,7 @@ export function startScheduler(bot: Bot): void {
       const short = path.basename(backupPath);
       for (const userId of getOwnerUserIds()) {
         try {
-          await bot.api.sendMessage(userId,
+          await safeSend(userId,
             `💾 <b>Database Backup</b>\n\nBackup complete: <code>${escapeHtml(short)}</code>`,
             { parse_mode: 'HTML' });
         } catch {
@@ -1093,7 +1102,7 @@ export function startScheduler(bot: Bot): void {
         logger.error({ details: result.details }, 'Weekly restore test FAILED');
         for (const userId of getOwnerUserIds()) {
           try {
-            await bot.api.sendMessage(userId,
+            await safeSend(userId,
               `🚨 <b>Weekly Restore Test FAILED</b>\n\n<code>${escapeHtml(result.details.slice(0, 200))}</code>`,
               { parse_mode: 'HTML' });
           } catch {}
@@ -1142,7 +1151,7 @@ export function startScheduler(bot: Bot): void {
   try {
     seedBooksIfEmpty(async (msg) => {
       for (const userId of getOwnerUserIds()) {
-        try { await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' }); } catch {}
+        try { await safeSend(userId, msg, { parse_mode: 'HTML' }); } catch {}
       }
     });
   } catch (err) {
@@ -1191,7 +1200,12 @@ export function startScheduler(bot: Bot): void {
 
 // ── Exported for portal quick actions ─────────────────────────────────
 
-export async function sendDailyBriefing(bot: Bot): Promise<void> {
+export async function sendDailyBriefing(bot?: any): Promise<void> {
+  const _telegramEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && bot;
+  const safeSend = async (userId: number, msg: string, opts?: any) => {
+    if (!_telegramEnabled) return;
+    try { await bot.api.sendMessage(userId, msg, opts); } catch {}
+  };
   const today = now();
   const data: DailyBriefingData = {
     date: today.toFormat('cccc, LLLL dd'),
@@ -1321,7 +1335,7 @@ export async function sendDailyBriefing(bot: Bot): Promise<void> {
     for (const userId of getActiveUserIds()) {
       try {
         for (const chunk of chunks) {
-          await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
+          await safeSend(userId, chunk, { parse_mode: 'HTML' });
         }
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send daily briefing');
@@ -1330,7 +1344,12 @@ export async function sendDailyBriefing(bot: Bot): Promise<void> {
   }
 }
 
-async function sendWeeklyReview(bot: Bot): Promise<void> {
+async function sendWeeklyReview(bot?: any): Promise<void> {
+  const _telegramEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && bot;
+  const safeSend = async (userId: number, msg: string, opts?: any) => {
+    if (!_telegramEnabled) return;
+    try { await bot.api.sendMessage(userId, msg, opts); } catch {}
+  };
   let msg = `<b>📊 Week in Review</b>\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
@@ -1414,7 +1433,7 @@ async function sendWeeklyReview(bot: Bot): Promise<void> {
 
     // Legacy Telegram delivery (gated)
     if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true') try {
-      await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
+      await safeSend(userId, msg, { parse_mode: 'HTML' });
     } catch (err) {
       logger.error({ err, userId }, 'Failed to send weekly review');
     }
