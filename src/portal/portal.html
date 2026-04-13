@@ -1722,14 +1722,115 @@ table.legacy th {
         </table>
       </div>
 
+      <!-- ════════════════════ MODEL PRICING COMPARISON ════════════════════ -->
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">💰 Model Pricing Comparison</div>
+          <div class="card-subtitle" style="font-size:11px;color:var(--text-muted)">Input / Output per 1M tokens · Updated weekly</div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table" id="model-pricing-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Model</th>
+                <th class="text-right">Input/1M</th>
+                <th class="text-right">Output/1M</th>
+                <th>Vision</th>
+                <th>Tool Use</th>
+                <th>Used For</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="background:rgba(76,175,80,0.08)">
+                <td><span class="badge badge-success">OpenAI</span></td>
+                <td><code>gpt-5.4-nano</code></td>
+                <td class="text-right mono">$0.20</td>
+                <td class="text-right mono">$1.25</td>
+                <td>✅</td>
+                <td>✅ Native</td>
+                <td><span class="badge badge-accent">Secretary</span></td>
+              </tr>
+              <tr style="background:rgba(33,150,243,0.08)">
+                <td><span class="badge" style="background:var(--info)">Gemini</span></td>
+                <td><code>gemini-2.5-flash-lite</code></td>
+                <td class="text-right mono">$0.15</td>
+                <td class="text-right mono">$0.60</td>
+                <td>✅</td>
+                <td>✅</td>
+                <td><span class="badge badge-neutral">Classify · Other domains</span></td>
+              </tr>
+              <tr style="background:rgba(33,150,243,0.08)">
+                <td><span class="badge" style="background:var(--info)">Gemini</span></td>
+                <td><code>gemini-3-flash</code></td>
+                <td class="text-right mono">$0.25</td>
+                <td class="text-right mono">$1.50</td>
+                <td>✅</td>
+                <td>✅</td>
+                <td><span class="badge badge-neutral">Triathlon · Content · Finance · Cooking</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge" style="background:var(--info)">Gemini</span></td>
+                <td><code>gemini-2.5-flash</code></td>
+                <td class="text-right mono">$0.15</td>
+                <td class="text-right mono">$0.60</td>
+                <td>✅ Best</td>
+                <td>✅</td>
+                <td><span class="badge badge-neutral">Receipt Vision</span></td>
+              </tr>
+              <tr>
+                <td><span class="badge badge-success">OpenAI</span></td>
+                <td><code>gpt-5.4-mini</code></td>
+                <td class="text-right mono">$0.40</td>
+                <td class="text-right mono">$1.60</td>
+                <td>✅</td>
+                <td>✅</td>
+                <td><span class="badge badge-neutral">Receipt Verify (dual-model)</span></td>
+              </tr>
+              <tr style="opacity:0.6">
+                <td><span class="badge" style="background:var(--warning)">Anthropic</span></td>
+                <td><code>claude-sonnet-4-6</code></td>
+                <td class="text-right mono">$3.00</td>
+                <td class="text-right mono">$15.00</td>
+                <td>✅</td>
+                <td>✅ Best</td>
+                <td><span class="badge badge-neutral">Fallback only</span></td>
+              </tr>
+              <tr style="opacity:0.6">
+                <td><span class="badge" style="background:var(--warning)">Anthropic</span></td>
+                <td><code>claude-haiku-4-5</code></td>
+                <td class="text-right mono">$0.80</td>
+                <td class="text-right mono">$4.00</td>
+                <td>✅</td>
+                <td>✅</td>
+                <td><span class="badge badge-neutral">Classifier fallback</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ════════════════════ MODEL INTELLIGENCE ════════════════════ -->
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">🧠 Model Intelligence</div>
+          <div class="card-subtitle" style="font-size:11px;color:var(--text-muted)">Recommendations based on current usage patterns</div>
+        </div>
+        <div id="model-intelligence-content"><div class="empty">Loading insights…</div></div>
+      </div>
+
+      <!-- ════════════════════ QUALITY SCORES ════════════════════ -->
       <div class="card mt-4">
         <div class="card-header">
           <div class="card-title">📊 Agent Quality Scores (30d)</div>
         </div>
         <table class="legacy" id="quality-scores-table">
           <thead><tr><th>Agent</th><th class="text-right">Score</th><th class="text-right">Tasks</th><th class="text-right">Pass %</th></tr></thead>
-          <tbody><tr><td colspan="4"><div class="empty">Loading…</div></td></tr></tbody>
+          <tbody><tr><td colspan="4"><div class="empty">No quality data — run evals to populate</div></td></tr></tbody>
         </table>
+        <div style="padding:8px 16px;font-size:11px;color:var(--text-muted)">
+          Quality scores are populated by the eval/autoresearch system. Run <code>npm run eval</code> to generate scores.
+        </div>
       </div>
 
       <div class="card mt-4">
@@ -3518,6 +3619,35 @@ table.legacy th {
     } catch { /* silent */ }
   }
 
+  async function loadModelIntelligence() {
+    try {
+      const r = await apiFetch('/api/model-intelligence');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok) return;
+      const el = document.getElementById('model-intelligence-content');
+      const insights = d.insights || [];
+      if (insights.length === 0) {
+        el.innerHTML = '<div class="empty">No usage data yet — insights appear after API calls are made</div>';
+        return;
+      }
+      el.innerHTML = insights.map(i => {
+        const icon = i.type === 'cost' ? '💸' : i.type === 'summary' ? '📊' : 'ℹ️';
+        const bg = i.type === 'cost' ? 'rgba(255,107,53,0.08)' : 'transparent';
+        return '<div style="padding:10px 14px;border-bottom:1px solid var(--border);background:' + bg + '">' +
+          '<div style="display:flex;gap:8px;align-items:start">' +
+            '<span style="font-size:16px">' + icon + '</span>' +
+            '<div>' +
+              '<div style="font-weight:600;font-size:13px;color:var(--text-primary)">' + esc(i.title) + '</div>' +
+              '<div style="font-size:12px;color:var(--text-secondary);margin-top:2px">' + esc(i.detail) + '</div>' +
+              (i.impact ? '<div style="font-size:11px;color:var(--accent);margin-top:4px;font-weight:600">' + esc(i.impact) + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    } catch { /* silent */ }
+  }
+
   async function loadErrorDist() {
     try {
       const r = await apiFetch('/api/error-distribution');
@@ -4873,6 +5003,7 @@ table.legacy th {
     loadSecretaryOptimization();
     loadQualityScores();
     loadErrorDist();
+    loadModelIntelligence();
     loadCostByDomain();
     loadSettings();
     // Load waitlist once on boot so the nav badge shows the pending count
@@ -4891,6 +5022,7 @@ table.legacy th {
       loadProviderHealth();
       loadQualityScores();
       loadErrorDist();
+      loadModelIntelligence();
       loadCostByDomain();
       loadSettings();
       // Refresh users in background if user is on the Users tab

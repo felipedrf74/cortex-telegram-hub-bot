@@ -2846,6 +2846,66 @@ export function createPortalServer(bot?: any): http.Server {
     }
   });
 
+  // GET /api/model-intelligence — cost analysis and optimization recommendations
+  app.get('/api/model-intelligence', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      // Analyze spending by provider + model over last 7 days
+      const spending = db.prepare(`
+        SELECT provider, model,
+          COUNT(*) as calls,
+          COALESCE(SUM(cost_usd), 0) as total_cost,
+          COALESCE(AVG(cost_usd), 0) as avg_cost,
+          COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens
+        FROM api_usage
+        WHERE ts >= date('now', '-7 days')
+        GROUP BY provider, model
+        ORDER BY total_cost DESC
+      `).all() as any[];
+
+      // Generate insights
+      const insights: Array<{ type: string; title: string; detail: string; impact?: string }> = [];
+
+      // Check if any Anthropic usage is happening (expensive)
+      const anthropicSpend = spending.filter(s => s.provider === 'anthropic');
+      const anthropicTotal = anthropicSpend.reduce((sum: number, s: any) => sum + s.total_cost, 0);
+      if (anthropicTotal > 0.50) {
+        insights.push({
+          type: 'cost',
+          title: 'Anthropic fallback active',
+          detail: `$${anthropicTotal.toFixed(2)} spent on Anthropic in 7 days (${anthropicSpend.map((s: any) => `${s.model}: ${s.calls} calls`).join(', ')}). Check if fallback is triggering too often.`,
+          impact: `Save ~$${(anthropicTotal * 0.9).toFixed(2)}/week by fixing primary provider stability`,
+        });
+      }
+
+      // Check secretary spend
+      const secretarySpend = db.prepare(`
+        SELECT COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as calls
+        FROM api_usage WHERE category = 'secretary' AND ts >= date('now', '-7 days')
+      `).get() as any;
+      if (secretarySpend?.cost > 0) {
+        insights.push({
+          type: 'info',
+          title: 'Secretary domain cost',
+          detail: `$${secretarySpend.cost.toFixed(2)} / ${secretarySpend.calls} calls this week. Currently on GPT-5.4 nano ($0.20/$1.25 per 1M tokens).`,
+        });
+      }
+
+      // Total weekly spend
+      const totalWeekly = spending.reduce((sum: number, s: any) => sum + s.total_cost, 0);
+      insights.push({
+        type: 'summary',
+        title: 'Weekly AI spend',
+        detail: `$${totalWeekly.toFixed(2)} total across ${spending.reduce((sum: number, s: any) => sum + s.calls, 0)} API calls.`,
+        impact: `Projected monthly: $${(totalWeekly * 4.3).toFixed(2)}`,
+      });
+
+      res.json({ ok: true, spending, insights });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // GET /api/task-metrics — task execution cost and duration data
   app.get('/api/task-metrics', (_req: Request, res: Response) => {
     try {
