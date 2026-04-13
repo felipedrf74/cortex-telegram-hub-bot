@@ -1,70 +1,57 @@
 """
 Felipe's creator profile — injected into all creative AI prompts.
-Single source of truth for voice, values, audience, and brand.
+
+CENTRALIZATION (April 2026):
+  The canonical source is `prompts/creator-config.md` in the repository root.
+  This module reads that file at startup instead of maintaining a duplicate.
+  If the file is not found (e.g. during isolated testing), it falls back to
+  a minimal hardcoded profile.
+
+  DO NOT duplicate creator identity, voice, or config values here.
+  Edit `prompts/creator-config.md` — both TS and Python read from it.
 """
 
-CREATOR_PROFILE = """
-CREATOR: Felipe Dominguez — "The Operator"
+import os
+import logging
+
+logger = logging.getLogger("content-engine.profile")
+
+# ── Locate the canonical config file ────────────────────────────────
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CONFIG_PATH = os.path.join(_REPO_ROOT, "prompts", "creator-config.md")
+
+_FALLBACK_PROFILE = """CREATOR: Felipe Dominguez — "The Operator"
 LANGUAGE: Portuguese (PT-BR), natural and conversational
-AUDIENCE: Portuguese-speaking men 18-40 (PT and BR) into tech, self-improvement, direct opinions, internet culture
+AUDIENCE: Portuguese-speaking men 18-40 into tech, self-improvement, direct opinions.
+Voice: direct, no-BS, Asmongold-style reactions. Austrian economics, anti-state.
+NOTE: This is a fallback profile — prompts/creator-config.md was not found."""
 
-THE OPERATOR IDENTITY:
-The guy who builds AI bots at 2am, trains 20+ hours per week for triathlon, eats only steak, has opinions about everything, and drops gaming references when he feels like it. That's not 4 niches — that's one person genuinely doing all of it. The audience follows the person, not a topic.
+_FALLBACK_SHORT = """Felipe Dominguez — "The Operator". Brazilian creator, conservative Christian libertarian.
+Audience: men 18-40. Voice: direct, no-BS, PT-BR. (Fallback — creator-config.md not found.)"""
 
-BRAND PILLARS (not niches — pillars of ONE identity):
-1. AI / TECH / BUILDS (~35%): Building things with AI (Nexus Hub bot, automation, Claude API), AI news hot takes, DevOps/infrastructure. Showing real AI automation in action, not theoretical talk.
-2. COMMENTARY / REACTIONS (~30%): Asmongold-style delivery — raw, unscripted first reactions with bold no-filter takes. Gen Z meme editing (zoom punches, SFX, hard cuts). React to anything worth reacting to.
-3. TRAINING / DIET / LIFESTYLE (~20%): Not "fitness content" — life content where training happens. Day-in-the-life, suffering montages, carnivore diet humor, training stats as cinematic reveals.
-4. GAMING (~5% seasonal): When big releases drop or gaming news is worth reacting to. Natural references, no forced schedule.
-5. WILD CARDS (~10%): Whatever Felipe is interested in that day. Freedom to cover anything without it feeling "off-brand."
 
-VOICE & TONE:
-- Direct, confident, self-aware, occasionally self-deprecating
-- Think "smart friend who's chronically online and also jacked"
-- Never academic, never preachy
-- Blunt delivery — commit to the take, don't hedge
-- Raw, unscripted energy for reactions
-- Mixes Portuguese slang with intellectual depth
-- Anti-victimhood, pro-personal responsibility
+def _load_config() -> str:
+    """Load the canonical creator config from prompts/creator-config.md."""
+    try:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        logger.info("Loaded creator config from %s (%d chars)", _CONFIG_PATH, len(content))
+        return content
+    except FileNotFoundError:
+        logger.warning("Creator config not found at %s — using fallback", _CONFIG_PATH)
+        return _FALLBACK_PROFILE
+    except Exception as e:
+        logger.error("Failed to load creator config: %s — using fallback", e)
+        return _FALLBACK_PROFILE
 
-WORLDVIEW:
-- The state is the problem, not the solution
-- Free markets create prosperity, regulation destroys it
-- Traditional family structure is the foundation of civilization
-- Christianity provides moral framework
-- Physical training is a metaphor for life discipline
-- Mainstream media lies by omission — always question the narrative
-- Non-aggression principle (NAP) as ethical foundation
-- Conservative, libertarian, Austrian economics (Mises, Hayek, Rothbard)
 
-RECORDING STYLE (Asmongold mode):
-- Raw, unscripted, first-reaction energy
-- Long pauses before the verdict
-- Webcam in corner, content fills screen
-- Don't perform — just watch and respond
-- If something is dumb, say it's dumb
+# Load once at import time
+CREATOR_PROFILE = _load_config()
 
-EDITING STYLE (Gen Z mode):
-- Zoom punches on reaction moments
-- Meme SFX layered in post (Vine Boom, FAHHH, Metal Pipe, Bruh, Sad Violin, etc.)
-- Hard cuts between sections
-- Speed-ramp boring transitions
-- Text pop-ups on key statements (bold, 1-3 words — not full sentences)
-- The raw footage is honest; the edit makes it entertaining
-
-DO NOT:
-- Route ideas into "niches" — The Operator doesn't have niches
-- Sound like a generic motivational speaker or copywriter
-- Use corporate buzzwords or empty platitudes
-- Be politically correct when truth requires directness
-- Promote victimhood or dependency on government
-- Force content into categories — follow genuine interest
-- Write scripts that sound robotic or scripted
-"""
-
-CREATOR_PROFILE_SHORT = """Felipe Dominguez — "The Operator". Brazilian creator, conservative Christian libertarian.
-Audience: men 18-40. Pillars: AI/tech builds (35%), commentary/reactions (30%), training/lifestyle (20%), gaming (5%), wild cards (10%).
-Voice: direct, no-BS, Asmongold-style reactions + Gen Z meme editing. Portuguese (PT-BR). Austrian economics, anti-state."""
+# Short profile: first 3 non-empty lines of the config, or fallback
+_lines = [l.strip() for l in CREATOR_PROFILE.split("\n") if l.strip() and not l.startswith("━")]
+CREATOR_PROFILE_SHORT = "\n".join(_lines[:5]) if len(_lines) >= 5 else _FALLBACK_SHORT
 
 
 def get_profile(short: bool = False) -> str:

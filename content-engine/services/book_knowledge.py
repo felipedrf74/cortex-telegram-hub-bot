@@ -97,7 +97,22 @@ async def extract_book(title: str, author: str) -> BookDNA:
         research_context += f"\n[{i+1}] {r['title']}\n{r['snippet']}\nSource: {r['link']}\n"
 
     if not research_context.strip():
-        research_context = f"No web search results available. Use your knowledge of '{title}' by {author}."
+        # No search results — return a low-confidence partial result instead
+        # of asking the model to hallucinate book content.
+        logger.warning("No web search results for '%s' by %s — returning partial result", title, author)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return BookDNA(
+            title=title,
+            author=author,
+            core_thesis=f"[LOW CONFIDENCE] No web search results found for '{title}' by {author}. "
+                        "Re-run with SerpAPI configured or add personal notes manually.",
+            key_frameworks=[],
+            quotable_ideas=[],
+            pillar_mapping=[],
+            counter_arguments=[],
+            related_thinkers=[],
+            personal_notes=[f"⚠️ Extraction skipped — no research data available ({duration_ms}ms)"],
+        )
 
     # Phase 2: Claude Sonnet synthesis
     profile = get_profile()
@@ -153,6 +168,7 @@ For philosophy/faith books, extract frameworks that challenge mainstream thinkin
         model=MODEL,
         max_tokens=6000,
         temperature=0.5,
+        category="content_engine_book",
     )
 
     duration_ms = int((time.monotonic() - start) * 1000)

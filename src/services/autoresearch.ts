@@ -80,17 +80,26 @@ async function generateOutput(
     ? `[Current State]\n${testInput.stateContext}\n\n${testInput.userMessage}`
     : testInput.userMessage;
 
-  const response = await trackedCreate(client, {
-    model: target.model,
-    max_tokens: target.maxTokens,
-    system: prompt,
-    messages: [{ role: 'user', content: userContent }],
-  }, `autoresearch_gen_${target.id}`);
-
-  return response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
+  // Provider-aware: try Gemini/OpenAI first, fall back to Anthropic
+  const { text } = await completeOneShotWithFallback(
+    prompt,
+    userContent,
+    `autoresearch_gen_${target.id}`,
+    async () => {
+      const response = await trackedCreate(client, {
+        model: target.model,
+        max_tokens: target.maxTokens,
+        system: prompt,
+        messages: [{ role: 'user', content: userContent }],
+      }, `autoresearch_gen_${target.id}`);
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n');
+    },
+    { maxTokens: target.maxTokens },
+  );
+  return text;
 }
 
 // ─── Core: Score a single output against criteria ────────────────────
@@ -294,6 +303,16 @@ Return ONLY valid JSON. No markdown fences.`;
 // ─── Core: Git operations ────────────────────────────────────────────
 
 function gitCommitPrompt(target: EvalTarget, round: number, oldScore: number, newScore: number): string | null {
+  // Gate: auto-commit only if explicitly enabled. Default is OFF to prevent
+  // unreviewed prompt changes from landing on the default branch.
+  if (process.env.AUTORESEARCH_AUTO_COMMIT !== 'true') {
+    logger.info(
+      { target: target.id, round },
+      'Auto-commit skipped (set AUTORESEARCH_AUTO_COMMIT=true to enable)',
+    );
+    return null;
+  }
+
   try {
     const promptPath = getPromptPath(target.promptFile);
     const repoRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf-8' }).trim();

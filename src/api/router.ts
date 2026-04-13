@@ -31,6 +31,7 @@ import { healthDataRoutes } from './routes/health-data';
 import { garminAuthRoutes } from './routes/garmin-auth';
 import { billingRoutes } from './routes/billing';
 import { oauthInitiateRoutes } from './routes/oauth-initiate';
+import { internalRoutes } from './routes/internal';
 
 /**
  * Creates the iOS API router.
@@ -74,6 +75,10 @@ export function createApiRouter(): Router {
 
   // Public routes (no JWT required)
   router.use('/auth', authRoutes());
+
+  // Internal service-to-service routes — Python content-engine reports
+  // usage here. Authenticated by shared secret, not JWT.
+  router.use('/internal', internalRoutes());
 
   // Admin portal content dashboard — gated by its OWN portal-token
   // middleware, NOT by the iOS JWT. Mounted here (before authMiddleware)

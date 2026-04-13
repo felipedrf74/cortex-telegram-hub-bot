@@ -306,24 +306,24 @@ describe('creator-config: consistency with Python', () => {
   const pyProfilePath = path.resolve(__dirname, '../../content-engine/services/creator_profile.py');
   const pyExists = fs.existsSync(pyProfilePath);
 
-  it.skipIf(!pyExists)('Python creator_profile.py references same pillars', () => {
+  it.skipIf(!pyExists)('Python creator_profile.py reads from canonical creator-config.md', () => {
     const py = fs.readFileSync(pyProfilePath, 'utf8');
-    const config = fs.readFileSync(path.join(PROMPTS_DIR, 'creator-config.md'), 'utf8');
 
-    // Both should reference the same pillar percentages
-    expect(py).toContain('35%');
-    expect(py).toContain('30%');
-    expect(py).toContain('20%');
+    // The Python file should reference the canonical config file path,
+    // NOT duplicate the config values inline.
+    expect(py).toContain('creator-config.md');
+    expect(py).toContain('_CONFIG_PATH');
+    expect(py).toContain('_load_config');
+  });
+
+  it.skipIf(!pyExists)('Canonical creator-config.md contains required worldview values', () => {
+    const config = fs.readFileSync(path.join(PROMPTS_DIR, 'creator-config.md'), 'utf8');
+    // The config (which Python now reads) should contain these values
     expect(config).toContain('35%');
     expect(config).toContain('30%');
     expect(config).toContain('20%');
-  });
-
-  it.skipIf(!pyExists)('Python creator_profile.py references same worldview', () => {
-    const py = fs.readFileSync(pyProfilePath, 'utf8');
-    // Should contain Austrian Economics
-    expect(py).toContain('Austrian economics');
-    expect(py).toContain('Mises');
-    expect(py).toContain('Hayek');
+    expect(config).toContain('Austrian Economics');
+    expect(config).toContain('Mises');
+    expect(config).toContain('Hayek');
   });
 });

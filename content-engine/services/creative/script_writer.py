@@ -6,6 +6,7 @@ the research pipeline to gather context, then asks Claude to write a
 complete video script with timing marks, screen cues, and CTA.
 """
 
+import json
 import time
 import logging
 from models.requests import ScriptRequest, ScriptResponse
@@ -152,6 +153,35 @@ CRITICAL CONTENT ACCURACY RULES:
    ---"""
 
 
+def _fallback_parse(raw: str) -> tuple[str, str, list[str], list[str], str, str]:
+    """Legacy line-by-line parser for backward compatibility."""
+    lines = raw.strip().split("\n")
+    hook = ""
+    title_options: list[str] = []
+    hashtags: list[str] = []
+    caption = ""
+    cta = ""
+    script_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("HOOK:"):
+            hook = stripped[5:].strip()
+        elif stripped.startswith("TITLE1:") or stripped.startswith("TITLE2:") or stripped.startswith("TITLE3:"):
+            title_options.append(stripped.split(":", 1)[1].strip())
+        elif stripped.startswith("HASHTAGS:"):
+            raw_tags = stripped[9:].strip()
+            hashtags = [t.strip() for t in raw_tags.split() if t.startswith("#")]
+        elif stripped.startswith("CAPTION:"):
+            caption = stripped[8:].strip()
+        elif stripped.startswith("CTA:"):
+            cta = stripped[4:].strip()
+        else:
+            script_lines.append(line)
+
+    return "\n".join(script_lines).strip(), hook, title_options, hashtags, caption, cta
+
+
 async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     start = time.monotonic()
 
@@ -263,53 +293,58 @@ Also provide:
 5. The CTA (call to action) as a standalone line
 
 Write the complete script now. Start with the hook, follow the structure, end with CTA.
-After the script, on separate lines write:
-HOOK: [the hook text]
-TITLE1: [first title option]
-TITLE2: [second title option]
-TITLE3: [third title option]
-HASHTAGS: [#tag1 #tag2 #tag3 ...]
-CAPTION: [social media caption text]
-CTA: [call to action text]
 
-Then include:
----
-📋 FONTES VERIFICADAS:
-[list each source used with URL]
-⚠️ ALERTAS: [any claims marked NEEDS VERIFICATION]
----"""
+After the script, add a FONTES VERIFICADAS section listing sources.
+
+Then, on a NEW LINE, write exactly `---METADATA---` followed by a JSON object with these fields:
+```json
+{{
+  "hook": "the hook text (first line of the script)",
+  "titles": ["title option 1", "title option 2", "title option 3"],
+  "hashtags": ["#tag1", "#tag2", "#tag3"],
+  "caption": "social media caption text",
+  "cta": "call to action text"
+}}
+```
+The JSON must be valid and on a single block after `---METADATA---`. No other text after the JSON."""
 
     # Use Sonnet for script quality
-    raw = await ask_claude(prompt, system=SYSTEM_PROMPT, model=MODEL, max_tokens=8192)
+    raw = await ask_claude(prompt, system=SYSTEM_PROMPT, model=MODEL, max_tokens=8192, category="content_engine_script")
 
-    # Parse hook, titles, hashtags, caption, CTA from the end of the response
-    lines = raw.strip().split("\n")
+    # Parse metadata from JSON block after ---METADATA--- separator
     hook = ""
     title_options: list[str] = []
     hashtags: list[str] = []
     caption = ""
     cta = ""
-    script_lines: list[str] = []
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("HOOK:"):
-            hook = stripped[5:].strip()
-        elif stripped.startswith("TITLE1:") or stripped.startswith("TITLE2:") or stripped.startswith("TITLE3:"):
-            title_options.append(stripped.split(":", 1)[1].strip())
-        elif stripped.startswith("HASHTAGS:"):
-            raw_tags = stripped[9:].strip()
-            hashtags = [t.strip() for t in raw_tags.split() if t.startswith("#")]
-        elif stripped.startswith("CAPTION:"):
-            caption = stripped[8:].strip()
-        elif stripped.startswith("CTA:"):
-            cta = stripped[4:].strip()
-        else:
-            script_lines.append(line)
+    SEPARATOR = "---METADATA---"
+    if SEPARATOR in raw:
+        parts = raw.split(SEPARATOR, 1)
+        script_text = parts[0].strip()
+        metadata_raw = parts[1].strip()
+        # Strip markdown code fences if Claude wrapped the JSON
+        if metadata_raw.startswith("```"):
+            fence_lines = metadata_raw.split("\n")
+            metadata_raw = "\n".join(
+                fence_lines[1:-1] if fence_lines[-1].strip() == "```" else fence_lines[1:]
+            )
+        try:
+            meta = json.loads(metadata_raw)
+            hook = meta.get("hook", "")
+            title_options = meta.get("titles", [])
+            hashtags = meta.get("hashtags", [])
+            caption = meta.get("caption", "")
+            cta = meta.get("cta", "")
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse script metadata JSON, falling back to line parsing")
+            script_text, hook, title_options, hashtags, caption, cta = _fallback_parse(raw)
+    else:
+        # Fallback: legacy line-by-line parsing for backward compatibility
+        logger.info("No ---METADATA--- separator found, using legacy line parser")
+        script_text, hook, title_options, hashtags, caption, cta = _fallback_parse(raw)
 
-    script_text = "\n".join(script_lines).strip()
-
-    # Fallback if parsing didn't find hook/titles
+    # Final fallbacks if parsing didn't find hook/titles
     if not hook and briefs:
         hook = briefs[0].hook
     if not title_options:

@@ -425,13 +425,17 @@ describe('content-learning-store: structural', () => {
     expect(workflowSource).toContain('content-learning-store');
   });
 
-  it('feedback.json is deprecated in Python backend', () => {
+  it('feedback.json has been fully removed from Python backend', () => {
     const feedbackSource = fs.readFileSync(
       path.resolve(__dirname, '../../content-engine/services/learning/feedback_loop.py'),
       'utf8',
     );
 
-    expect(feedbackSource).toContain('DEPRECATION NOTICE');
+    // feedback.json path has been fully removed (April 2026)
+    // The module now relies on the TS backend's content_performance table
+    expect(feedbackSource).not.toContain('FEEDBACK_FILE');
+    expect(feedbackSource).not.toContain('def _load_history');
+    expect(feedbackSource).not.toContain('def _save_history');
     expect(feedbackSource).toContain('content_performance');
   });
 

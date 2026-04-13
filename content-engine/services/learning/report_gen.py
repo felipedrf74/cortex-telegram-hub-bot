@@ -1,55 +1,54 @@
 """
 Report generator — weekly/monthly content performance digest via Claude.
+
+STORAGE NOTE (April 2026):
+  This module NO LONGER reads from data/feedback.json. Performance data
+  is fetched from the TypeScript backend's SQLite store via the internal
+  API endpoint. The old JSON path has been fully removed.
 """
 
-import time
-import json
 import os
+import time
 import logging
-from datetime import datetime, timezone, timedelta
+
+import httpx
 
 from models.requests import ReportResponse
 from services.claude_client import ask_claude_json
 
 logger = logging.getLogger("content-engine.report")
 
-FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "feedback.json")
+_TS_PORT = os.environ.get("PORT", "8200")
+_INTERNAL_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
+_PERFORMANCE_URL = f"http://localhost:{_TS_PORT}/api/v1/internal/performance-summary"
 
 
-def _load_history() -> list[dict]:
+async def _fetch_performance_history(days: int) -> list[dict]:
+    """Fetch performance history from the TS backend's canonical store."""
+    if not _INTERNAL_SECRET:
+        logger.warning("INTERNAL_API_SECRET not set — cannot fetch performance history")
+        return []
     try:
-        if os.path.exists(FEEDBACK_FILE):
-            with open(FEEDBACK_FILE, "r") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        pass
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(_PERFORMANCE_URL, params={"days": days}, headers={
+                "x-internal-secret": _INTERNAL_SECRET,
+            })
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("entries", [])
+    except Exception as e:
+        logger.warning("Failed to fetch performance history: %s", e)
     return []
 
 
 async def generate(period: str = "week") -> ReportResponse:
     start = time.monotonic()
 
-    history = _load_history()
+    # Fetch from canonical TS store
+    days = 30 if period == "month" else 7
+    period_label = "Last 30 Days" if period == "month" else "Last 7 Days"
 
-    # Filter by period
-    now = datetime.now(timezone.utc)
-    if period == "month":
-        cutoff = now - timedelta(days=30)
-        period_label = "Last 30 Days"
-    else:
-        cutoff = now - timedelta(days=7)
-        period_label = "Last 7 Days"
-
-    recent = []
-    for h in history:
-        try:
-            logged = datetime.fromisoformat(h.get("logged_at", ""))
-            if logged.tzinfo is None:
-                logged = logged.replace(tzinfo=timezone.utc)
-            if logged >= cutoff:
-                recent.append(h)
-        except (ValueError, TypeError):
-            continue
+    recent = await _fetch_performance_history(days)
 
     if not recent:
         duration_ms = int((time.monotonic() - start) * 1000)
@@ -65,8 +64,8 @@ async def generate(period: str = "week") -> ReportResponse:
 
     # Build context for Claude
     videos_summary = "\n".join(
-        f"- Views: {v['views']:,} | Retention: {v['retention_pct']}% | Likes: {v['likes']:,} | "
-        f"Comments: {v['comments']} | Subs: {v['subs_gained']} | Hook: {v.get('hook_used', 'N/A')}"
+        f"- Views: {v.get('views', 0):,} | Retention: {v.get('retentionPct', 0)}% | Likes: {v.get('likes', 0):,} | "
+        f"Comments: {v.get('comments', 0)} | Subs: {v.get('subsGained', 0)} | Hook: {v.get('hookUsed', 'N/A')}"
         for v in recent
     )
 
@@ -88,7 +87,7 @@ Create a report with:
 
 Return JSON. Insights in PT-BR."""
 
-    report = await ask_claude_json(prompt)
+    report = await ask_claude_json(prompt, category="content_engine_report")
     if not isinstance(report, dict):
         report = {"raw": report}
 
