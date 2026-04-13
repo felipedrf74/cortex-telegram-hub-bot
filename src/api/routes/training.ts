@@ -855,7 +855,11 @@ async function findTodayTrainingFromCalendar(): Promise<any | null> {
       ...(googleResult.status === 'fulfilled' && Array.isArray(googleResult.value) ? googleResult.value : []),
     ];
 
-    const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga'];
+    const keywords = [
+      'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
+      'treino', 'corrida', 'academia', 'natação', 'musculação', 'ciclismo', 'caminhada', 'walk',
+      'easy run', 'interval', 'tempo', 'long run', 'cross', 'stretch',
+    ];
     const trainingEvent = calEvents.find((e: any) => {
       const title = (e.subject || e.summary || e.title || '').toLowerCase();
       return keywords.some(kw => title.includes(kw));
@@ -887,7 +891,11 @@ async function buildWeekFromCalendar(): Promise<any[]> {
     ]);
 
     const calEvents = outlookResult.status === 'fulfilled' && Array.isArray(outlookResult.value) ? outlookResult.value : [];
-    const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga'];
+    const keywords = [
+      'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
+      'treino', 'corrida', 'academia', 'natação', 'musculação', 'ciclismo', 'caminhada', 'walk',
+      'easy run', 'interval', 'tempo', 'long run', 'cross', 'stretch',
+    ];
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
     const dayMap = new Map<number, any>();

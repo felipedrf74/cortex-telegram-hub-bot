@@ -408,15 +408,28 @@ export function financeRoutes(): Router {
     // ── Prompt construction ───────────────────────────────────
     // System prompt locks the output to strict JSON so the iOS
     // client can parse it without fuzzy matching.
+    // Detect user's likely currency from timezone/locale
+    let currencyHint = 'EUR';
+    try {
+      const { getUserById } = require('../../services/user-service');
+      const user = getUserById?.(userId);
+      const tz = user?.timezone || 'Europe/Lisbon';
+      if (tz.includes('Sao_Paulo') || tz.includes('Brazil') || tz.includes('Brasilia')) currencyHint = 'BRL';
+      else if (tz.includes('Europe')) currencyHint = 'EUR';
+      else if (tz.includes('America/New_York') || tz.includes('America/Los_Angeles') || tz.includes('America/Chicago')) currencyHint = 'USD';
+      else if (tz.includes('London')) currencyHint = 'GBP';
+    } catch {}
+
     const systemPrompt = `You extract structured fields from receipt images.
 Return ONLY a single JSON object with these keys:
   - merchant: string (the store/business name, title-cased)
   - date: string (YYYY-MM-DD format; null if not visible)
-  - amount: number (the TOTAL amount paid, as a decimal; null if not visible)
-  - currency: string (ISO code, default "BRL" for Brazilian receipts)
+  - amount: number (the TOTAL amount paid — look for "Total", "TOTAL", or the final/largest amount on the receipt; as a decimal; null if not visible)
+  - currency: string (ISO code detected from the receipt — look for €, $, R$, £ symbols. If unclear, default to "${currencyHint}")
   - category: string (best-guess from: food, groceries, transport, utilities, entertainment, health, education, shopping, services, other)
-  - confidence: number (0.0-1.0, your own confidence in the extraction)
+  - confidence: number (0.0-1.0, your confidence. Use 0.5-0.7 for partially readable receipts, 0.8-0.9 for clear ones. Only use 1.0 if every field is perfectly clear.)
 
+IMPORTANT: For the amount, always extract the TOTAL/final amount, not subtotals or individual item prices.
 If a field is not visible or readable, return null for that field.
 DO NOT include any explanation, markdown, or code fences. Return only the JSON.`;
 
@@ -485,7 +498,7 @@ DO NOT include any explanation, markdown, or code fences. Return only the JSON.`
           : null,
         currency: typeof parsed.currency === 'string' && parsed.currency.length === 3
           ? parsed.currency.toUpperCase()
-          : 'BRL',
+          : currencyHint,
         category: typeof parsed.category === 'string' ? parsed.category.toLowerCase() : null,
         confidence: typeof parsed.confidence === 'number'
           ? Math.max(0, Math.min(1, parsed.confidence))
