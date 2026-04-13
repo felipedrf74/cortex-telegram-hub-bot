@@ -26,6 +26,7 @@
  * row already exists.
  */
 
+import { DateTime } from 'luxon';
 import { readSignals } from './intelligence-bus';
 import {
   computeWeeklyAdherence,
@@ -85,8 +86,8 @@ export interface AdherenceSignalResult {
  * means the bus never grows by more than one row per user per day
  * even under aggressive tab-bouncing.
  */
-export function publishAdherenceSignalsForUser(userId: number): AdherenceSignalResult {
-  const adherence = computeWeeklyAdherence(userId);
+export function publishAdherenceSignalsForUser(userId: number, referenceDate?: DateTime): AdherenceSignalResult {
+  const adherence = computeWeeklyAdherence(userId, referenceDate);
 
   if (!adherence.hasActivePlan) {
     return { adherence, action: 'skipped_no_plan' };

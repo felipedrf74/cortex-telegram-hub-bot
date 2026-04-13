@@ -240,11 +240,11 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: [],
       baseId: 20,
     });
-    const result = publishAdherenceSignalsForUser(1002);
+    const result = publishAdherenceSignalsForUser(1002, ref);
     expect(result.action).toBe('skipped_no_sessions');
   });
 
-  it.skip('skipped_neutral when adherence is between 60% and 100%', () => {
+  it('skipped_neutral when adherence is between 60% and 100%', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
       userId: 1003,
@@ -252,12 +252,12 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: ['completed', 'completed', 'completed', 'pending'], // 75%
       baseId: 21,
     });
-    const result = publishAdherenceSignalsForUser(1003);
+    const result = publishAdherenceSignalsForUser(1003, ref);
     expect(result.action).toBe('skipped_neutral');
     expect(result.adherence.ratio).toBe(0.75);
   });
 
-  it.skip('published_low when adherence falls below 60%', () => {
+  it('published_low when adherence falls below 60%', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
       userId: 1004,
@@ -265,7 +265,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: ['completed', 'pending', 'pending', 'pending', 'pending'], // 20%
       baseId: 22,
     });
-    const result = publishAdherenceSignalsForUser(1004);
+    const result = publishAdherenceSignalsForUser(1004, ref);
     expect(result.action).toBe('published_low');
     expect(result.adherence.ratio).toBeLessThan(LOW_ADHERENCE_THRESHOLD);
 
@@ -278,7 +278,7 @@ describe('publishAdherenceSignalsForUser', () => {
     expect(row.priority).toBe('urgent');
   });
 
-  it.skip('published_high when adherence is 100% AND planned >= HIGH_ADHERENCE_MIN_PLANNED', () => {
+  it('published_high when adherence is 100% AND planned >= HIGH_ADHERENCE_MIN_PLANNED', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     const sessions = Array(HIGH_ADHERENCE_MIN_PLANNED).fill('completed');
     seedPlanWithWeek({
@@ -287,7 +287,7 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: sessions,
       baseId: 23,
     });
-    const result = publishAdherenceSignalsForUser(1005);
+    const result = publishAdherenceSignalsForUser(1005, ref);
     expect(result.action).toBe('published_high');
 
     const row = testDb.prepare(
@@ -297,7 +297,7 @@ describe('publishAdherenceSignalsForUser', () => {
     expect(row.priority).toBe('normal');
   });
 
-  it.skip('does NOT publish high_adherence when planned < HIGH_ADHERENCE_MIN_PLANNED', () => {
+  it('does NOT publish high_adherence when planned < HIGH_ADHERENCE_MIN_PLANNED', () => {
     // 100% of 2 sessions completed — below the 3-session gate
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
@@ -306,13 +306,13 @@ describe('publishAdherenceSignalsForUser', () => {
       sessionStatuses: ['completed', 'completed'],
       baseId: 24,
     });
-    const result = publishAdherenceSignalsForUser(1006);
+    const result = publishAdherenceSignalsForUser(1006, ref);
     // 100% adherence but only 2 planned → neither threshold fires
     // (not low, not high with the min-planned gate). Result is neutral.
     expect(result.action).toBe('skipped_neutral');
   });
 
-  it.skip('skipped_existing when a matching signal is already on the bus', () => {
+  it('skipped_existing when a matching signal is already on the bus', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
       userId: 1007,
@@ -321,11 +321,11 @@ describe('publishAdherenceSignalsForUser', () => {
       baseId: 25,
     });
 
-    const first = publishAdherenceSignalsForUser(1007);
+    const first = publishAdherenceSignalsForUser(1007, ref);
     expect(first.action).toBe('published_low');
 
     // Second call should detect the existing signal and skip
-    const second = publishAdherenceSignalsForUser(1007);
+    const second = publishAdherenceSignalsForUser(1007, ref);
     expect(second.action).toBe('skipped_existing');
 
     // Only ONE row on the bus
@@ -335,7 +335,7 @@ describe('publishAdherenceSignalsForUser', () => {
     expect(count.c).toBe(1);
   });
 
-  it.skip('does not cross-poison: user A published does not block user B publishing', () => {
+  it('does not cross-poison: user A published does not block user B publishing', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
       userId: 1008,
@@ -350,8 +350,8 @@ describe('publishAdherenceSignalsForUser', () => {
       baseId: 27,
     });
 
-    const a = publishAdherenceSignalsForUser(1008);
-    const b = publishAdherenceSignalsForUser(1009);
+    const a = publishAdherenceSignalsForUser(1008, ref);
+    const b = publishAdherenceSignalsForUser(1009, ref);
 
     expect(a.action).toBe('published_low');
     expect(b.action).toBe('published_low');
@@ -370,7 +370,7 @@ describe('adherence signals — observability formatting', () => {
   beforeEach(() => freshDb());
   afterEach(() => testDb?.close());
 
-  it.skip('low_adherence surfaces in buildActiveSignalsResponse with a humanized summary', () => {
+  it('low_adherence surfaces in buildActiveSignalsResponse with a humanized summary', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
       userId: 2001,
@@ -378,7 +378,7 @@ describe('adherence signals — observability formatting', () => {
       sessionStatuses: ['completed', 'pending', 'pending', 'pending', 'pending'],
       baseId: 40,
     });
-    publishAdherenceSignalsForUser(2001);
+    publishAdherenceSignalsForUser(2001, ref);
 
     const response = buildActiveSignalsResponse(2001);
     const low = response.signals.find((s) => s.type === 'low_adherence');
@@ -390,7 +390,7 @@ describe('adherence signals — observability formatting', () => {
     expect(response.flags.lowAdherence).toBe(true);
   });
 
-  it.skip('high_adherence surfaces with a "Crushing it" title', () => {
+  it('high_adherence surfaces with a "Crushing it" title', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
       userId: 2002,
@@ -398,7 +398,7 @@ describe('adherence signals — observability formatting', () => {
       sessionStatuses: ['completed', 'completed', 'completed', 'completed'],
       baseId: 41,
     });
-    publishAdherenceSignalsForUser(2002);
+    publishAdherenceSignalsForUser(2002, ref);
 
     const response = buildActiveSignalsResponse(2002);
     const high = response.signals.find((s) => s.type === 'high_adherence');
@@ -645,7 +645,7 @@ describe('publishPlanDriftSignalForUser', () => {
     expect(result.driftPct).toBeGreaterThanOrEqual(PLAN_DRIFT_HYBRID_PCT * 100);
   });
 
-  it.skip('skipped_existing is idempotent on a second call', () => {
+  it('skipped_existing is idempotent on a second call', () => {
     seedPlanAndCompletions({
       userId: 5008,
       planSport: 'strength',
