@@ -78,7 +78,9 @@ export const config = {
     apiKey: process.env.ANTHROPIC_API_KEY || '',
     model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
     classifierModel: process.env.ANTHROPIC_CLASSIFIER_MODEL || 'claude-haiku-4-5-20251001',
-    maxTokens: 1024,             // triathlon/content — conversational, rarely exceeds 800 tokens
+    maxTokens: 2048,             // Cooking/triathlon/content — bumped from 1024; recipes and
+                                // training plans easily exceed 800 tokens and were getting
+                                // truncated mid-instruction (see cooking chat screenshot).
     secretaryMaxTokens: 4096,   // CHAT-M4: bumped from 2048 — state context (tasks + calendar
                                 // + reminders + Garmin) consumes 500-1500 tokens of input,
                                 // leaving insufficient budget for the response. 4096 gives
@@ -89,7 +91,7 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY || '',
     model: process.env.OPENAI_MODEL || 'gpt-5.4-nano',
     classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-5.4-nano',
-    maxTokens: 1024,            // content domain — conversational
+    maxTokens: 2048,            // bumped from 1024 — cooking/content need full recipe length
     secretaryMaxTokens: 4096,   // CHAT-M4: bumped from 2048 (see anthropic.secretaryMaxTokens)
   },
   gemini: {
@@ -101,7 +103,7 @@ export const config = {
     // and falling back to Anthropic. See git blame for full investigation.
     model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     classifierModel: process.env.GEMINI_CLASSIFIER_MODEL || 'gemini-2.5-flash-lite',
-    maxTokens: 1024,
+    maxTokens: 2048,            // bumped from 1024 — same reason as above
     secretaryMaxTokens: 4096,   // CHAT-M4: bumped from 2048
   },
   // ── Provider Fallback Routing ─────────────────────────────────────
