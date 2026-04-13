@@ -528,6 +528,7 @@ const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: 
 export async function getScript(
   topic: string, niche = 'general', maxDuration = 8, format = 'YouTube',
   mode: ScriptGenerationMode = 'standard',
+  brandVoice?: string | null,
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
   const normalizedKey = `script:${topic.toLowerCase().trim()}:${niche}:${format}`;
@@ -556,7 +557,8 @@ export async function getScript(
       ] as const;
       // FIX: signalDays is a time window, not a count limit.
       // readSignals(consumer, types, limit, userId, maxAgeDays)
-      const raw = readSignals('script-engine', [...signalTypes], 100, undefined, cfg.signalDays);
+      // CONT-M1: null-coalesce in case readSignals returns null/undefined
+      const raw = readSignals('script-engine', [...signalTypes], 100, undefined, cfg.signalDays) || [];
       contextSignals = raw.map(s => ({
         type: s.signal_type,
         source: s.source_agent,
@@ -574,6 +576,9 @@ export async function getScript(
       topic, niche, format, mode,
       max_duration_minutes: maxDuration,
       context_signals: contextSignals.length > 0 ? contextSignals : undefined,
+      // CONT-M4: pass user's brand voice to Python script writer so the
+      // generated script reflects the user's tone, vocabulary, and style.
+      brand_voice: brandVoice || undefined,
     }),
   }, cfg.timeoutMs);
 

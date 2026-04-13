@@ -189,7 +189,12 @@ export function taskRoutes(): Router {
         dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
         listId: t.listId || null,
         listName: t.listName || null,
-        checklistItems: null,
+        // TASK-M8: pass through checklist items from $expand response
+        checklistItems: Array.isArray(t.checklistItems)
+          ? t.checklistItems.map((ci: any) => ({
+              id: ci.id, displayName: ci.displayName, isChecked: ci.isChecked ?? false,
+            }))
+          : null,
         createdDateTime: t.createdDateTime || null,
       }));
 
@@ -400,16 +405,24 @@ export function taskRoutes(): Router {
       }
 
       // MS Graph doesn't have a native "move task" API. The pattern is:
-      // 1. Read the task from the source list
+      // 1. Read the task + its checklist items from the source list
       // 2. Create a copy in the target list
-      // 3. Delete the original
+      // 3. Copy checklist items to the new task
+      // 4. Delete the original
+      //
+      // TASK-M7: expanded to copy checklist items (previously lost on move)
+      // and improved error handling so a partial success doesn't confuse the UI.
       const { getGraphClient } = require('../../services/microsoft-auth');
       const client = getGraphClient(req);
 
-      // Read original task
-      const original = await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).get();
+      // Step 1: Read original task + checklist items in parallel
+      const [original, checklistRes] = await Promise.all([
+        client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).get(),
+        client.api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems`).get().catch(() => ({ value: [] })),
+      ]);
+      const checklistItems = checklistRes?.value || [];
 
-      // Create in target list (only copy the user-editable fields)
+      // Step 2: Create in target list (only copy user-editable fields)
       const newTask = await client.api(`/me/todo/lists/${targetListId}/tasks`).post({
         title: original.title,
         body: original.body,
@@ -420,7 +433,19 @@ export function taskRoutes(): Router {
         reminderDateTime: original.reminderDateTime,
       });
 
-      // Delete from source list
+      // Step 3: Copy checklist items to the new task (best-effort, don't block on failure)
+      if (checklistItems.length > 0 && newTask?.id) {
+        await Promise.allSettled(
+          checklistItems.map((ci: any) =>
+            client.api(`/me/todo/lists/${targetListId}/tasks/${newTask.id}/checklistItems`).post({
+              displayName: ci.displayName,
+              isChecked: ci.isChecked ?? false,
+            })
+          )
+        );
+      }
+
+      // Step 4: Delete from source list
       await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
 
       invalidateTaskCaches(listId, (req as any).userId);

@@ -35,6 +35,7 @@ export interface TodoTask {
   isReminderOn: boolean;
   createdDateTime: string;
   completedDateTime?: string;
+  checklistItems?: ChecklistItem[];
 }
 
 export interface ChecklistItem {
@@ -123,6 +124,14 @@ function parseTask(task: any, listId: string, listName: string): TodoTask {
     isReminderOn: task.isReminderOn || false,
     createdDateTime: task.createdDateTime || '',
     completedDateTime: normalizeMsGraphDateTime(task.completedDateTime),
+    // TASK-M8: include checklist items from the $expand=checklistItems response
+    checklistItems: Array.isArray(task.checklistItems)
+      ? task.checklistItems.map((ci: any) => ({
+          id: ci.id || '',
+          displayName: ci.displayName || '',
+          isChecked: ci.isChecked ?? false,
+        }))
+      : undefined,
   };
 }
 
@@ -372,9 +381,13 @@ export async function getTasks(
     // NOTE: Do NOT add $select here — Microsoft Graph's OData parser chokes on
     // "title" in $select (RequestBroker--ParseUri / 400 Invalid request).
     // Omitting $select returns all standard fields anyway; the overhead is negligible.
+    //
+    // TASK-M8: $expand=checklistItems so each task includes its subtask
+    // checklist inline — avoids N+1 fetches from the detail view.
     const query: Record<string, string> = {
       $orderby: 'createdDateTime DESC',
       $top: String(filter?.top || 50),
+      $expand: 'checklistItems',
     };
 
     if (filter?.status) {

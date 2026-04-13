@@ -200,6 +200,20 @@ export function contentRoutes(): Router {
     const startMs = Date.now();
 
     try {
+      // CONT-M4: load user's brand voice from content_knowledge table
+      // and pass it to the script engine so the generated script
+      // reflects the user's tone, style, and vocabulary preferences.
+      let brandVoice: string | null = null;
+      try {
+        const db = require('../../services/database').getDb();
+        const row = db.prepare(
+          `SELECT synthesized_text FROM content_knowledge
+           WHERE category = 'brand_voice' AND user_id IN (0, ?)
+           ORDER BY user_id DESC LIMIT 1`
+        ).get(userId);
+        brandVoice = row?.synthesized_text || null;
+      } catch { /* non-critical — generate without voice if DB fails */ }
+
       const { getScript } = require('../../services/content-engine');
       const result = await getScript(
         topic.trim(),
@@ -207,6 +221,7 @@ export function contentRoutes(): Router {
         maxDurationMinutes || (format === 'Reel' ? 1 : 8),
         format || 'YouTube',
         genMode,
+        brandVoice,
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = elapsedMs < 500;
@@ -216,7 +231,8 @@ export function contentRoutes(): Router {
         script: result.script,
         hook: result.hook,
         titleOptions: result.title_options,
-        sourcesUsed: result.sources_used.map((s: any) => ({
+        // CONT-M1: defensive null check — Python may omit or null sources_used
+        sourcesUsed: (result.sources_used || []).map((s: any) => ({
           title: s.title,
           url: s.url,
           sourceType: s.source_type,
@@ -622,12 +638,14 @@ export function contentRoutes(): Router {
     const { generateAndStoreTopicCandidates } = require('../../services/content-workflow');
     const result = await generateAndStoreTopicCandidates(userId, format, sourceJob);
 
+    // CONT-M2: defensive null checks — result or candidates may be null
+    const candidates = result?.candidates || [];
     sendSuccess(res, {
-      format: result.format,
-      sourceJob: result.sourceJob,
-      dayLabel: result.dayLabel,
-      count: result.candidates.length,
-      candidates: result.candidates.map((c: any) => ({
+      format: result?.format || format,
+      sourceJob: result?.sourceJob || sourceJob,
+      dayLabel: result?.dayLabel || null,
+      count: candidates.length,
+      candidates: candidates.map((c: any) => ({
         feedbackId: c.feedbackId,
         title: c.title,
         niche: c.niche,
