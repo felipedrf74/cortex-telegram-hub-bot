@@ -37,7 +37,11 @@ vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 vi.mock('../../src/config', () => ({
-  config: { garmin: { email: '', password: '' }, financeEncryption: { enabled: false, masterKey: '' } },
+  config: {
+    garmin: { email: '', password: '' },
+    financeEncryption: { enabled: false, masterKey: '' },
+    telegram: { allowedUserIds: [1] }, // userId=1 is treated as Garmin owner in tests
+  },
 }));
 
 // Mock Garmin functions — use vi.hoisted to ensure availability before vi.mock
@@ -137,6 +141,10 @@ describe('readiness-scorer — calculateReadiness', () => {
     applyMigrations(testDb);
     vi.clearAllMocks();
     mockGarmin.isGarminConfigured.mockReturnValue(true);
+    // Insert an owner user so calculateReadiness uses Garmin path for userId=1
+    try {
+      testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (1, 'Test', 'owner', 'test', 'active')").run();
+    } catch { /* table may not exist in minimal test db */ }
   });
   afterEach(() => { testDb.close(); });
 

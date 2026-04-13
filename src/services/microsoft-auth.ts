@@ -32,18 +32,29 @@ const ALL_SCOPES = [
   'https://graph.microsoft.com/User.Read',
 ];
 
-let msalClient: PublicClientApplication | null = null;
+// ConfidentialClientApplication and PublicClientApplication both have
+// acquireTokenByRefreshToken(), so we type the client as `any` to support both.
+let msalClient: any = null;
 let graphClient: Client | null = null;
 
-function getMsalClient(): PublicClientApplication {
+function getMsalClient(): any {
   if (msalClient) return msalClient;
 
-  msalClient = new PublicClientApplication({
-    auth: {
-      clientId: config.outlook.clientId,
-      authority: `https://login.microsoftonline.com/${config.outlook.tenantId}`,
-    },
-  });
+  // Use ConfidentialClientApplication when client_secret is available
+  // (Web platform apps registered in Azure require the secret for token refresh).
+  // Fall back to PublicClientApplication for backward compatibility with
+  // personal-account-only registrations that don't have a secret.
+  const authConfig: any = {
+    clientId: config.outlook.clientId,
+    authority: `https://login.microsoftonline.com/${config.outlook.tenantId || 'common'}`,
+  };
+  if (config.outlook.clientSecret) {
+    authConfig.clientSecret = config.outlook.clientSecret;
+    const { ConfidentialClientApplication } = require('@azure/msal-node');
+    msalClient = new ConfidentialClientApplication({ auth: authConfig });
+  } else {
+    msalClient = new PublicClientApplication({ auth: authConfig });
+  }
 
   return msalClient;
 }

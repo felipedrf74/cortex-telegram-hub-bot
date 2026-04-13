@@ -8,6 +8,7 @@
  */
 
 import { getDb } from './database';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import {
   isGarminConfigured,
@@ -325,8 +326,21 @@ async function calculateAppleHealthReadiness(userId: number): Promise<ReadinessR
 // ── Main Calculator ─────────────────────────────────────────────────
 
 export async function calculateReadiness(userId: number): Promise<ReadinessResult> {
-  // ── Provider priority: Garmin (native) → Apple Health (derived) → neutral ──
-  if (!isGarminConfigured()) {
+  // ── Provider priority: Garmin (owner only) → Apple Health (per-user) → neutral ──
+  // Garmin data is server-level (single Garmin account connected to the backend).
+  // Only the owner should see Garmin data. Other users get Apple Health or neutral.
+  const ownerTelegramIds = config.telegram?.allowedUserIds || [];
+  let isGarminOwner = ownerTelegramIds.includes(userId);
+  if (!isGarminOwner) {
+    try {
+      const db = require('./database').getDb();
+      const user = db.prepare('SELECT telegram_id, tier FROM users WHERE id = ?').get(userId) as any;
+      if (user?.telegram_id && ownerTelegramIds.includes(user.telegram_id)) isGarminOwner = true;
+      if (user?.tier === 'owner') isGarminOwner = true;
+    } catch {}
+  }
+
+  if (!isGarminConfigured() || !isGarminOwner) {
     // Try Apple Health derived readiness
     const appleResult = await calculateAppleHealthReadiness(userId);
     if (appleResult) return appleResult;
