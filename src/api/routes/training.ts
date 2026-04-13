@@ -503,15 +503,31 @@ Return ONLY valid JSON in this exact shape:
         { maxTokens: 4096, temperature: 0.3, userId },
       );
 
-      // Parse the JSON — strip markdown fences if present
-      const cleaned = rawPlan.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      // Parse the JSON — strip markdown fences, extract JSON object/array
       let planData: any;
       try {
+        // Try progressively more aggressive extraction:
+        // 1. Strip markdown fences
+        let cleaned = rawPlan.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+        // 2. Extract the first { ... } block if there's prose before/after
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        if (jsonMatch) cleaned = jsonMatch[0];
         planData = JSON.parse(cleaned);
       } catch (parseErr) {
-        logger.error({ rawPlan: rawPlan.slice(0, 500) }, 'Failed to parse plan JSON from AI');
-        sendError(res, 'AI_PARSE_ERROR', 'AI generated invalid plan JSON. Try again.', 500);
-        return;
+        // 3. Last resort: try to find and parse just the JSON portion
+        try {
+          const braceStart = rawPlan.indexOf('{');
+          const braceEnd = rawPlan.lastIndexOf('}');
+          if (braceStart >= 0 && braceEnd > braceStart) {
+            planData = JSON.parse(rawPlan.slice(braceStart, braceEnd + 1));
+          } else {
+            throw new Error('No JSON object found');
+          }
+        } catch {
+          logger.error({ rawPlan: rawPlan.slice(0, 500) }, 'Failed to parse plan JSON from AI');
+          sendError(res, 'AI_PARSE_ERROR', 'AI generated invalid plan JSON. Try again.', 500);
+          return;
+        }
       }
 
       // ── Step 4: Bulk insert plan + weeks + sessions ────────────
