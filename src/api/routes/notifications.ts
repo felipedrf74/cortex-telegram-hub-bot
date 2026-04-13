@@ -57,6 +57,60 @@ export function notificationRoutes(): Router {
   }));
 
   /**
+   * GET /api/v1/notifications/inbox
+   *
+   * Merged feed of notifications + reports for the iOS inbox view.
+   * Returns items sorted by createdAt DESC with a unified shape.
+   */
+  router.get('/inbox', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const limit = parseInt(String(req.query.limit || '30'), 10);
+
+    const { getNotifications, getUnreadCount } = require('../../services/content-notification-store');
+
+    // Notifications
+    const notifications = getNotifications(userId, { limit });
+    const notifItems = notifications.map((n: any) => ({
+      kind: 'notification',
+      id: n.id,
+      title: n.title,
+      body: n.body || null,
+      type: n.type,
+      status: n.status,
+      createdAt: n.createdAt,
+    }));
+
+    // Reports (durable briefings)
+    let reportItems: any[] = [];
+    try {
+      const { getRecentReports } = require('../../services/report-document-store');
+      const reports = getRecentReports(userId, limit);
+      reportItems = reports.map((r: any) => ({
+        kind: 'report',
+        id: r.id,
+        title: r.title,
+        body: r.summary || null,
+        type: r.type,
+        status: r.read_at ? 'read' : 'unread',
+        createdAt: r.created_at,
+      }));
+    } catch { /* report-document-store may not exist */ }
+
+    // Merge and sort by date DESC
+    const allItems = [...notifItems, ...reportItems]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, limit);
+
+    const totalUnread = getUnreadCount(userId) + reportItems.filter((r: any) => r.status === 'unread').length;
+
+    sendSuccess(res, {
+      totalUnread,
+      count: allItems.length,
+      items: allItems,
+    });
+  }));
+
+  /**
    * GET /api/v1/notifications/unread-count
    *
    * Just the unread count for badge display.

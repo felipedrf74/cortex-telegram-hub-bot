@@ -29,6 +29,18 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     };
     (req as AuthenticatedRequest).userId = payload.userId;
     (req as AuthenticatedRequest).deviceId = payload.deviceId;
+
+    // Update last_active_at for portal user tracking (fire-and-forget, non-blocking)
+    try {
+      const { getDb } = require('../services/database');
+      getDb().prepare(
+        "UPDATE ios_devices SET last_active_at = datetime('now') WHERE user_id = ? AND device_id = ?"
+      ).run(payload.userId, payload.deviceId);
+      getDb().prepare(
+        "UPDATE users SET last_active_at = datetime('now') WHERE id = ?"
+      ).run(payload.userId);
+    } catch { /* non-critical — don't block the request */ }
+
     next();
   } catch (err) {
     logger.debug({ err }, 'iOS JWT verification failed');
