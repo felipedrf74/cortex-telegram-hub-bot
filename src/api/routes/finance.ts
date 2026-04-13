@@ -28,6 +28,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { getDb } from '../../services/database';
+import { config } from '../../config';
 import {
   addTransaction,
   getTransactions,
@@ -37,8 +38,8 @@ import {
   calculateAndStoreTax,
   calculateMonthlyTax,
 } from '../../services/finance-tracker';
-import { completeVisionOneShot, isGeminiProviderConfigured } from '../../services/gemini-provider';
 import { isUserOverDailyCap } from '../../services/cost-guardrail';
+import { analyzeInvoiceImage } from '../../services/invoice-filer';
 
 export function financeRoutes(): Router {
   const router = Router();
@@ -304,17 +305,17 @@ export function financeRoutes(): Router {
   }));
 
   // ────────────────────────────────────────────────────────────────
-  // Receipt parsing via Gemini vision (TASK-14 Phase 4)
+  // Receipt parsing via vision models (TASK-14 Phase 4)
   //
   // The iOS Finance tab's capture-expense flow tries on-device
   // Vision OCR + heuristic parsing first (free, zero tokens) and
-  // only calls this endpoint when heuristics fail OR the user
-  // explicitly taps "Ask AI for help" on the review sheet.
+  // now calls this endpoint automatically after the on-device heuristic
+  // pass. The local OCR result is still sent as a hint, but the server-side
+  // model is now the primary extractor so the output matches the bot flow.
   //
-  // Per the owner's April 9 directive, Gemini is the vision
-  // provider. There's no Claude fallback here because vision is
-  // a pure content-generation task where provider quality is
-  // similar and cost/latency favor Gemini Flash ~10x over Sonnet.
+  // Anthropic Haiku is the primary provider because it has proven more
+  // reliable on invoices/receipts in production. Gemini/OpenAI remain
+  // automatic fallbacks through `analyzeInvoiceImage`.
   //
   // Cost cap: the endpoint reuses the per-user daily USD cap from
   // cost-guardrail.ts (isUserOverDailyCap). A single Gemini Flash
@@ -337,10 +338,11 @@ export function financeRoutes(): Router {
    *     amount: number | null,
    *     currency: string,         // default "BRL"
    *     category: string | null,  // best-guess category
-   *     confidence: number,       // 0-1, Gemini's self-reported confidence
+   *     confidence: number,       // 0-1, model confidence after server validation
    *   },
    *   tokensUsed: number,
    *   model: string,
+   *   verificationNote?: string | null
    * }
    *
    * The iOS review sheet then lets the user edit any of the
@@ -365,9 +367,8 @@ export function financeRoutes(): Router {
       return;
     }
 
-    // Reject oversized bodies early. Gemini's max inline image is 20MB,
-    // but realistically a 5MB receipt is already absurdly high-res.
-    // Base64 is ~33% larger than raw bytes so the 6MB cap = ~4.5MB image.
+    // Reject oversized bodies early. Base64 is ~33% larger than raw bytes,
+    // so the 6MB cap = ~4.5MB original image.
     const approxBytes = (imageBase64.length * 3) / 4;
     if (approxBytes > 6 * 1024 * 1024) {
       sendError(res, 'PAYLOAD_TOO_LARGE', 'Image exceeds 6MB. Compress before uploading.', 413);
@@ -375,11 +376,11 @@ export function financeRoutes(): Router {
     }
 
     // ── Provider availability ─────────────────────────────────
-    if (!isGeminiProviderConfigured()) {
+    if (!config.anthropic.apiKey && !config.gemini.apiKey && !config.openai.apiKey) {
       sendError(
         res,
         'VISION_NOT_CONFIGURED',
-        'Gemini vision is not configured on this server. Fall back to manual entry.',
+        'No receipt vision provider is configured on this server. Fall back to manual entry.',
         503,
       );
       return;
@@ -405,164 +406,117 @@ export function financeRoutes(): Router {
       return;
     }
 
-    // ── Prompt construction ───────────────────────────────────
-    // System prompt locks the output to strict JSON so the iOS
-    // client can parse it without fuzzy matching.
-    // Detect user's likely currency from timezone/locale
-    let currencyHint = 'EUR';
     try {
-      const { getUserById } = require('../../services/user-service');
-      const user = getUserById?.(userId);
-      const tz = user?.timezone || 'Europe/Lisbon';
-      if (tz.includes('Sao_Paulo') || tz.includes('Brazil') || tz.includes('Brasilia')) currencyHint = 'BRL';
-      else if (tz.includes('Europe')) currencyHint = 'EUR';
-      else if (tz.includes('America/New_York') || tz.includes('America/Los_Angeles') || tz.includes('America/Chicago')) currencyHint = 'USD';
-      else if (tz.includes('London')) currencyHint = 'GBP';
-    } catch {}
-
-    const systemPrompt = `You extract structured fields from receipt images.
-Return ONLY a single JSON object with these keys:
-  - merchant: string (the store/business name, title-cased)
-  - date: string (YYYY-MM-DD format; null if not visible)
-  - amount: number (the TOTAL amount paid — look for "Total", "TOTAL", or the final/largest amount on the receipt; as a decimal; null if not visible)
-  - currency: string (ISO code detected from the receipt — look for €, $, R$, £ symbols. If unclear, default to "${currencyHint}")
-  - category: string (best-guess from: food, groceries, transport, utilities, entertainment, health, education, shopping, services, other)
-  - confidence: number (0.0-1.0, your confidence. Use 0.5-0.7 for partially readable receipts, 0.8-0.9 for clear ones. Only use 1.0 if every field is perfectly clear.)
-
-IMPORTANT: For the amount, always extract the TOTAL/final amount, not subtotals or individual item prices.
-If a field is not visible or readable, return null for that field.
-DO NOT include any explanation, markdown, or code fences. Return only the JSON.`;
-
-    const userPrompt = ocrHint
-      ? `Parse this receipt. On-device OCR extracted this text as a hint (may be noisy):\n\n${ocrHint}`
-      : 'Parse this receipt and extract the structured fields.';
-
-    // ── Call Gemini ───────────────────────────────────────────
-    // April 9 2026: pass `userId` so the cost row in api_usage
-    // attributes this call to the real user. Before the A1 fix
-    // that persisted user_id in the INSERT, this was pointless —
-    // the column existed but was never written. Now that it's
-    // wired, we can actually enforce per-user caps on receipt
-    // parsing and attribute the cost to the right person for
-    // the pricing model math.
-    try {
-      const rawText = await completeVisionOneShot(
-        systemPrompt,
-        userPrompt,
-        { base64: imageBase64, mimeType },
-        'parse-receipt',   // usage category for logGeminiUsage
-        { maxTokens: 512, temperature: 0.1, userId },
+      const { analysis, provider } = await analyzeInvoiceImage(
+        imageBase64,
+        normalizeMimeType(mimeType),
+        typeof ocrHint === 'string' ? ocrHint : undefined,
       );
 
-      // Gemini sometimes wraps JSON in ```json fences even when told
-      // not to. Strip any surrounding code fences / whitespace before
-      // parsing. This is a forgiving cleanup, not a spec violation.
-      const cleaned = rawText
-        .trim()
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-
-      let parsed: {
-        merchant: string | null;
-        date: string | null;
-        amount: number | null;
-        currency: string;
-        category: string | null;
-        confidence: number;
-      };
-
-      try {
-        parsed = JSON.parse(cleaned);
-      } catch (err) {
-        logger.error({ rawText, cleaned }, 'iOS parse-receipt: Gemini returned non-JSON');
-        sendError(
-          res,
-          'PARSE_FAILED',
-          'Could not extract structured fields from the receipt. Try manual entry.',
-          422,
-        );
-        return;
-      }
-
-      // ── Sanity-check + normalize ───────────────────────────
-      // Guard against null/undefined fields that would crash the
-      // iOS client's Codable decoder. Fill in safe defaults.
       const result = {
-        merchant: typeof parsed.merchant === 'string' ? parsed.merchant.trim() : null,
-        date: typeof parsed.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)
-          ? parsed.date
+        merchant: typeof analysis.vendor === 'string' ? analysis.vendor.trim() : null,
+        date: typeof analysis.documentDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(analysis.documentDate)
+          ? analysis.documentDate
           : null,
-        amount: typeof parsed.amount === 'number' && Number.isFinite(parsed.amount)
-          ? Math.abs(parsed.amount)   // flip sign if Gemini returned negative
-          : null,
-        currency: typeof parsed.currency === 'string' && parsed.currency.length === 3
-          ? parsed.currency.toUpperCase()
-          : currencyHint,
-        category: typeof parsed.category === 'string' ? parsed.category.toLowerCase() : null,
-        confidence: typeof parsed.confidence === 'number'
-          ? Math.max(0, Math.min(1, parsed.confidence))
-          : 0.5,
+        amount: parseInvoiceAmount(analysis.totalAmount),
+        currency: inferCurrencyCode(analysis.totalAmount) ?? defaultCurrencyForTimezone(userId),
+        category: guessReceiptCategory(analysis.vendor),
+        confidence: clampReceiptConfidence(analysis),
       };
 
-      // ── Dual-model verification ────────────────────────────
-      // Run a second model (OpenAI gpt-4o-mini) on the same image
-      // to cross-check the amount. If the two models disagree on
-      // the amount by >15%, lower confidence and flag the mismatch.
-      // Cost: ~$0.002 extra per receipt — worth it to prevent false positives.
-      let verified = false;
-      let verificationNote: string | null = null;
-      try {
-        const openai = require('../../services/openai-provider');
-        if (openai.isOpenAIConfigured?.()) {
-          const verifyText = await openai.completeVisionOneShot(
-            'Extract ONLY the total amount from this receipt. Return JSON: {"amount": number, "currency": "XXX"}. Nothing else.',
-            'What is the total amount on this receipt?',
-            { base64: imageBase64, mimeType },
-            'receipt-verify',
-            { maxTokens: 128, temperature: 0.0, userId },
-          );
-          const verifyClean = verifyText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-          try {
-            const verifyParsed = JSON.parse(verifyClean);
-            const verifyAmount = typeof verifyParsed.amount === 'number' ? Math.abs(verifyParsed.amount) : null;
-            if (verifyAmount != null && result.amount != null) {
-              const ratio = Math.abs(verifyAmount - result.amount) / Math.max(verifyAmount, result.amount);
-              if (ratio < 0.15) {
-                // Models agree — high confidence
-                verified = true;
-                result.confidence = Math.max(result.confidence, 0.85);
-              } else {
-                // Models disagree — lower confidence, flag for user review
-                result.confidence = Math.min(result.confidence, 0.5);
-                verificationNote = `Gemini: ${result.amount} ${result.currency}, OpenAI: ${verifyAmount} ${verifyParsed.currency || result.currency}. Please verify.`;
-                logger.warn({ userId, geminiAmount: result.amount, openaiAmount: verifyAmount, ratio }, 'Receipt dual-model mismatch');
-              }
-            }
-          } catch { /* OpenAI returned non-JSON — skip verification */ }
-        }
-      } catch (verifyErr) {
-        // Verification failure is non-fatal — serve Gemini result with original confidence
-        logger.debug({ err: verifyErr }, 'Receipt verification with OpenAI failed — using Gemini only');
-      }
+      const verificationNote = typeof analysis.validationNote === 'string' && analysis.validationNote.trim().length > 0
+        ? analysis.validationNote.trim()
+        : null;
 
       logger.info(
-        { userId, merchant: result.merchant, amount: result.amount, confidence: result.confidence, verified },
+        { userId, merchant: result.merchant, amount: result.amount, confidence: result.confidence, provider },
         'iOS receipt parsed',
       );
 
       sendSuccess(res, {
         parsed: result,
-        verified,
         verificationNote,
         tokensUsed: 0,
-        model: verified ? 'gemini-flash+openai-verify' : 'gemini-flash',
+        model: provider,
       });
     } catch (err: any) {
-      logger.error({ err, userId }, 'iOS parse-receipt: Gemini call failed');
+      logger.error({ err, userId }, 'iOS parse-receipt: vision pipeline failed');
       sendError(res, 'INTERNAL', err?.message || 'Receipt parsing failed', 500);
     }
   }));
 
   return router;
+}
+
+function normalizeMimeType(mimeType: string): 'image/jpeg' | 'image/png' | 'image/webp' {
+  const normalized = mimeType.toLowerCase();
+  if (normalized === 'image/png') return 'image/png';
+  if (normalized === 'image/webp') return 'image/webp';
+  return 'image/jpeg';
+}
+
+function parseInvoiceAmount(rawAmount: string | null | undefined): number | null {
+  if (!rawAmount) return null;
+  const digits = rawAmount.replace(/[^0-9,.-]/g, '').trim();
+  if (!digits) return null;
+
+  const hasComma = digits.includes(',');
+  const hasDot = digits.includes('.');
+
+  let normalized = digits;
+  if (hasComma && hasDot) {
+    normalized = digits.lastIndexOf(',') > digits.lastIndexOf('.')
+      ? digits.replace(/\./g, '').replace(',', '.')
+      : digits.replace(/,/g, '');
+  } else if (hasComma) {
+    normalized = digits.replace(',', '.');
+  }
+
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? Math.abs(parsed) : null;
+}
+
+function inferCurrencyCode(rawAmount: string | null | undefined): string | null {
+  if (!rawAmount) return null;
+  if (rawAmount.includes('R$')) return 'BRL';
+  if (rawAmount.includes('€')) return 'EUR';
+  if (rawAmount.includes('£')) return 'GBP';
+  if (rawAmount.includes('$')) return 'USD';
+  return null;
+}
+
+function guessReceiptCategory(vendor: string | null | undefined): string | null {
+  if (!vendor) return null;
+  const lower = vendor.toLowerCase();
+  if (/(mcdonald|burger|pizza|restaurant|kebab|coffee|cafe|restaurante|bar)/i.test(lower)) return 'food';
+  if (/(uber|bolt|taxi|cp|comboios|metro|transport)/i.test(lower)) return 'transport';
+  if (/(farmacia|pharmacy|hospital|clinic|clinica|health)/i.test(lower)) return 'health';
+  if (/(continente|pingo doce|lidl|aldi|supermercado|market|grocery)/i.test(lower)) return 'groceries';
+  if (/(amazon|zara|ikea|shopping|store|loja)/i.test(lower)) return 'shopping';
+  return 'other';
+}
+
+function clampReceiptConfidence(analysis: { confidence: number; vendor: string | null; documentDate: string | null; totalAmount: string | null; validationNote?: string | null }): number {
+  let confidence = typeof analysis.confidence === 'number'
+    ? Math.max(0, Math.min(1, analysis.confidence))
+    : 0.4;
+
+  if (!analysis.vendor) confidence = Math.min(confidence, 0.65);
+  if (!analysis.documentDate) confidence = Math.min(confidence, 0.75);
+  if (!analysis.totalAmount) confidence = Math.min(confidence, 0.5);
+  if (analysis.validationNote) confidence = Math.min(confidence, 0.72);
+
+  return confidence;
+}
+
+function defaultCurrencyForTimezone(userId: number): string {
+  try {
+    const { getUserById } = require('../../services/user-service');
+    const user = getUserById?.(userId);
+    const tz = user?.timezone || 'Europe/Lisbon';
+    if (tz.includes('Sao_Paulo') || tz.includes('Brazil') || tz.includes('Brasilia')) return 'BRL';
+    if (tz.includes('America/New_York') || tz.includes('America/Los_Angeles') || tz.includes('America/Chicago')) return 'USD';
+    if (tz.includes('London')) return 'GBP';
+  } catch {}
+  return 'EUR';
 }

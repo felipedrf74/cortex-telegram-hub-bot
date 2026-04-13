@@ -390,7 +390,15 @@ export function trainingRoutes(): Router {
    */
   router.post('/plan/generate', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const { objective, durationWeeks = 4, preferredTime = '12:00' } = req.body;
+    const {
+      objective,
+      durationWeeks = 4,
+      preferredTime = '12:00',
+      sessionsPerWeek = 5,
+      strengthSessionsPerWeek = 2,
+      longWorkoutDay,
+      notes,
+    } = req.body;
 
     if (!objective || typeof objective !== 'string') {
       sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
@@ -426,8 +434,7 @@ export function trainingRoutes(): Router {
       let busySlots: string[] = [];
       try {
         const events = await getEvents(startStr, endStr);
-        const allEvents = [...(events.today || []), ...(events.upcoming || [])];
-        busySlots = allEvents.map((e: any) => {
+        busySlots = (events || []).map((e: any) => {
           const start = e.start || e.startDateTime || '';
           const title = e.subject || e.summary || e.title || '';
           return `${start}: ${title}`;
@@ -444,6 +451,7 @@ export function trainingRoutes(): Router {
       ].filter(Boolean).join('\n');
 
       const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+      const calendarSummary = summarizeBusyCalendar(busySlots);
 
       const planPrompt = `You are a sports coach creating a ${durationWeeks}-week training plan.
 
@@ -451,9 +459,17 @@ ATHLETE PROFILE:
 ${profileSummary}
 
 OBJECTIVE: ${objective}
+TARGET SESSIONS PER WEEK: ${Math.max(3, Math.min(7, Number(sessionsPerWeek) || 5))}
+TARGET STRENGTH SESSIONS PER WEEK: ${Math.max(0, Math.min(4, Number(strengthSessionsPerWeek) || 0))}
+PREFERRED LONG WORKOUT DAY: ${typeof longWorkoutDay === 'string' && longWorkoutDay.trim() ? longWorkoutDay.trim() : 'weekend'}
+SPECIAL NOTES / CONSTRAINTS:
+${typeof notes === 'string' && notes.trim() ? notes.trim() : 'None provided.'}
 
 BUSY CALENDAR SLOTS (avoid these times):
 ${busySlots.length > 0 ? busySlots.join('\n') : 'No calendar data — schedule freely.'}
+
+CALENDAR SUMMARY:
+${calendarSummary}
 
 PREFERRED TRAINING TIME: ${preferredTime}
 
@@ -462,6 +478,11 @@ START DATE: ${startStr}
 RULES:
 - Plan ${durationWeeks} weeks of training.
 - Week ${durationWeeks} should be a DELOAD week (lower volume/intensity).
+- Use the athlete profile to tailor volume, exercise selection, and progression.
+- Respect busy calendar windows and place training at practical times around them.
+- Keep hard sessions away from obviously overloaded work blocks when possible.
+- Match the requested weekly volume and strength-session count as closely as possible.
+- If the objective implies hybrid or triathlon prep, balance endurance, strength, and skill work instead of repeating generic sessions.
 - Each session needs: day_of_week, session_type (gym/run/ride/swim/rest), title, duration_minutes, exercises as a list.
 - For gym sessions: include exercise name, sets, reps, RPE, rest_sec.
 - For cardio: include type, distance_km or duration, pace/zone, notes.
@@ -530,6 +551,13 @@ Return ONLY valid JSON in this exact shape:
         periodization: planData.periodization || 'undulating',
         start_date: startStr,
         end_date: endStr,
+        preferences_json: JSON.stringify({
+          preferredTime,
+          sessionsPerWeek,
+          strengthSessionsPerWeek,
+          longWorkoutDay: longWorkoutDay || null,
+          notes: notes || null,
+        }),
       });
 
       let totalSessions = 0;
@@ -557,7 +585,7 @@ Return ONLY valid JSON in this exact shape:
           const currentDay = weekStart.getDay(); // 0=Sun
           const targetDay = dayIndex + 1; // 1=Mon
           let daysUntil = targetDay - currentDay;
-          if (daysUntil <= 0) daysUntil += 7;
+          if (daysUntil < 0) daysUntil += 7;
           const sessionDate = new Date(weekStart);
           sessionDate.setDate(sessionDate.getDate() + daysUntil);
 
@@ -665,6 +693,70 @@ Return ONLY valid JSON in this exact shape:
     }
   });
 
+  router.post('/plan/cancel', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const requestedPlanId = Number(req.body?.planId);
+
+    try {
+      const tp = require('../../services/training-plans');
+      const { deleteEvent } = require('../../services/unified-calendar');
+
+      let plan = Number.isFinite(requestedPlanId) && requestedPlanId > 0
+        ? tp.getPlanById(requestedPlanId)
+        : tp.getActivePlan(userId);
+
+      if (plan && plan.user_id !== userId) {
+        sendError(res, 'FORBIDDEN', 'This training plan does not belong to the current user.', 403);
+        return;
+      }
+      if (!plan) {
+        sendSuccess(res, {
+          cancelled: false,
+          removedEvents: 0,
+          message: 'No active training plan to cancel.',
+        });
+        return;
+      }
+
+      const weeks = tp.getWeeksForPlan(plan.id);
+      const sessions = weeks.flatMap((week: any) => tp.getSessionsForWeek(week.id));
+      const deletableSessions = sessions.filter((session: any) => session.calendar_event_id && session.calendar_source);
+
+      const deletionResults = await Promise.allSettled(
+        deletableSessions.map((session: any) =>
+          deleteEvent(session.calendar_event_id, session.calendar_source),
+        ),
+      );
+      const removedEvents = deletionResults.filter(r => r.status === 'fulfilled').length;
+
+      for (const session of sessions) {
+        const nextStatus = session.status === 'completed' ? 'completed' : 'skipped';
+        tp.updateSession(session.id, {
+          status: nextStatus,
+          calendar_event_id: null,
+          calendar_source: null,
+        });
+      }
+
+      tp.updatePlanStatus(plan.id, 'cancelled');
+
+      clearCache(`training-summary:${userId}`);
+      clearCache(`coach-briefing:${userId}`);
+      clearCache(`readiness:${userId}`);
+
+      sendSuccess(res, {
+        cancelled: true,
+        planId: plan.id,
+        removedEvents,
+        totalSessions: sessions.length,
+        message: `Plan cancelled. ${removedEvents} scheduled workout${removedEvents === 1 ? '' : 's'} removed from the calendar.`,
+      });
+    } catch (err: any) {
+      logger.error({ err, userId }, 'Training plan cancellation failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to cancel training plan', 500);
+    }
+  });
+
   return router;
 }
 
@@ -685,6 +777,8 @@ async function getTodaySession(userId: number) {
         phase: activePlan.phase || null,
       };
       if (currentWeek) {
+        const range = currentWeekDateRange(activePlan.start_date, currentWeek.week_number);
+        const calendarLookup = await buildCalendarEventLookup(range.start, range.end);
         // getSessionsForWeek takes a weekId, NOT a userId
         const sessions = tp.getSessionsForWeek(currentWeek.id);
         const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
@@ -694,12 +788,12 @@ async function getTodaySession(userId: number) {
         if (rawSession) {
           session = {
             id: rawSession.id != null ? String(rawSession.id) : null,
-            type: rawSession.title || rawSession.session_type || 'Workout',
-            time: null,
+            type: rawSession.title || humanizeSessionType(rawSession.session_type),
+            time: rawSession.calendar_event_id ? calendarLookup.get(rawSession.calendar_event_id)?.time ?? null : null,
             duration: rawSession.duration_minutes || null,
-            status: rawSession.status || 'planned',
+            status: normalizeTrainingStatus(rawSession.status),
             notes: rawSession.description || null,
-            exercises: null,
+            exercises: parseExercises(rawSession.exercises_json),
           };
         }
       }
@@ -735,9 +829,19 @@ async function getWeekPlan(userId: number) {
       weekNumber = currentWeek?.week_number || 1;
       const weekSessions = currentWeek ? tp.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
+        const range = currentWeekDateRange(plan.start_date, weekNumber);
+        const calendarLookup = await buildCalendarEventLookup(range.start, range.end);
         sessions = weekSessions.map((s: any) => ({
-          day: s.day || s.dayOfWeek, type: s.type || s.name,
-          time: s.time || null, status: s.status || 'planned',
+          id: s.id != null ? String(s.id) : undefined,
+          day: s.day_of_week || 'Monday',
+          type: s.title || humanizeSessionType(s.session_type),
+          title: s.title || humanizeSessionType(s.session_type),
+          sessionType: s.session_type || 'workout',
+          time: s.calendar_event_id ? calendarLookup.get(s.calendar_event_id)?.time ?? null : null,
+          status: normalizeTrainingStatus(s.status),
+          description: s.description || null,
+          duration: s.duration_minutes || null,
+          exercises: parseExercises(s.exercises_json),
         }));
       }
       const adh = currentWeek ? tp.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
@@ -1135,16 +1239,8 @@ async function findTodayTrainingFromCalendar(): Promise<any | null> {
     const today = new Date();
     const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
-
-    const [outlookResult, googleResult] = await Promise.allSettled([
-      (async () => { const { getEvents } = require('../../services/outlook-calendar'); return await getEvents(startOfDay.toISOString(), endOfDay.toISOString()); })(),
-      (async () => { const { getEvents } = require('../../services/google-calendar'); return await getEvents(startOfDay.toISOString(), endOfDay.toISOString()); })(),
-    ]);
-
-    const calEvents = [
-      ...(outlookResult.status === 'fulfilled' && Array.isArray(outlookResult.value) ? outlookResult.value : []),
-      ...(googleResult.status === 'fulfilled' && Array.isArray(googleResult.value) ? googleResult.value : []),
-    ];
+    const calendarLookup = await buildCalendarEventLookup(startOfDay, endOfDay);
+    const calEvents = [...calendarLookup.values()].map(entry => entry.event);
 
     const keywords = [
       'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
@@ -1177,11 +1273,8 @@ async function buildWeekFromCalendar(): Promise<any[]> {
     const monday = new Date(today); monday.setDate(today.getDate() + mondayOffset); monday.setHours(0, 0, 0, 0);
     const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999);
 
-    const [outlookResult] = await Promise.allSettled([
-      (async () => { const { getEvents } = require('../../services/outlook-calendar'); return await getEvents(monday.toISOString(), sunday.toISOString()); })(),
-    ]);
-
-    const calEvents = outlookResult.status === 'fulfilled' && Array.isArray(outlookResult.value) ? outlookResult.value : [];
+    const calendarLookup = await buildCalendarEventLookup(monday, sunday);
+    const calEvents = [...calendarLookup.values()].map(entry => entry.event);
     const keywords = [
       'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
       'treino', 'corrida', 'academia', 'natação', 'musculação', 'ciclismo', 'caminhada', 'walk',
@@ -1199,10 +1292,15 @@ async function buildWeekFromCalendar(): Promise<any[]> {
       if (!dayMap.has(dayIdx)) {
         const timeMatch = String(startRaw).match(/T(\d{2}:\d{2})/);
         dayMap.set(dayIdx, {
-          day: dayNames[dayIdx], type: e.subject || e.summary || e.title || 'Workout',
-          // Mark as 'completed' only if the event's DATE is in the past (not time-of-day)
-          // This avoids false-positives like a 6am event showing "completed" at 6:01am
-          time: timeMatch ? timeMatch[1] : null, status: d.toDateString() < today.toDateString() ? 'completed' : 'planned',
+          day: dayNames[dayIdx],
+          type: e.subject || e.summary || e.title || 'Workout',
+          title: e.subject || e.summary || e.title || 'Workout',
+          sessionType: inferCalendarSessionType(e.subject || e.summary || e.title || ''),
+          time: timeMatch ? timeMatch[1] : null,
+          status: 'planned',
+          description: e.description || null,
+          duration: estimateCalendarDurationMinutes(e.start?.dateTime || e.start, e.end?.dateTime || e.end),
+          exercises: null,
         });
       }
     }
@@ -1210,9 +1308,118 @@ async function buildWeekFromCalendar(): Promise<any[]> {
     const sessions = [];
     for (let i = 1; i <= 7; i++) {
       const dayIdx = i % 7;
-      sessions.push(dayMap.get(dayIdx) || { day: dayNames[dayIdx], type: 'Rest', time: null, status: 'rest' });
+      sessions.push(dayMap.get(dayIdx) || {
+        day: dayNames[dayIdx],
+        type: 'Rest',
+        title: 'Rest',
+        sessionType: 'rest',
+        time: null,
+        status: 'rest',
+        description: null,
+        duration: null,
+        exercises: null,
+      });
     }
     return sessions;
   } catch {}
   return [];
+}
+
+function summarizeBusyCalendar(busySlots: string[]): string {
+  if (busySlots.length === 0) return 'No calendar conflicts detected.';
+  return busySlots
+    .slice(0, 12)
+    .map((slot, index) => `${index + 1}. ${slot}`)
+    .join('\n');
+}
+
+function currentWeekDateRange(planStartIso: string, weekNumber: number) {
+  const planStart = new Date(planStartIso);
+  const mondayOffset = planStart.getDay() === 0 ? -6 : 1 - planStart.getDay();
+
+  const monday = new Date(planStart);
+  monday.setDate(planStart.getDate() + mondayOffset + ((weekNumber - 1) * 7));
+  monday.setHours(0, 0, 0, 0);
+
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+
+  return { start: monday, end: sunday };
+}
+
+async function buildCalendarEventLookup(
+  start: Date,
+  end: Date,
+): Promise<Map<string, { time: string | null; event: any }>> {
+  const { getEvents } = require('../../services/unified-calendar');
+  const lookup = new Map<string, { time: string | null; event: any }>();
+  const events = await getEvents(start.toISOString(), end.toISOString());
+
+  for (const event of events || []) {
+    if (!event?.id) continue;
+    const timeMatch = String(event.start || event.startDateTime || '').match(/T(\d{2}:\d{2})/);
+    lookup.set(event.id, {
+      time: timeMatch ? timeMatch[1] : null,
+      event,
+    });
+  }
+
+  return lookup;
+}
+
+function normalizeTrainingStatus(status?: string | null): string {
+  switch ((status || '').toLowerCase()) {
+    case 'completed':
+      return 'completed';
+    case 'skipped':
+      return 'skipped';
+    case 'rest':
+      return 'rest';
+    default:
+      return 'planned';
+  }
+}
+
+function parseExercises(exercisesJson?: string | null): any[] | null {
+  if (!exercisesJson) return null;
+  try {
+    const parsed = JSON.parse(exercisesJson);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function humanizeSessionType(sessionType?: string | null): string {
+  switch ((sessionType || '').toLowerCase()) {
+    case 'gym': return 'Gym';
+    case 'run': return 'Run';
+    case 'ride': return 'Ride';
+    case 'swim': return 'Swim';
+    case 'rest': return 'Rest';
+    default: return 'Workout';
+  }
+}
+
+function inferCalendarSessionType(title: string): string {
+  const lower = title.toLowerCase();
+  if (lower.includes('run') || lower.includes('corrida')) return 'run';
+  if (lower.includes('swim') || lower.includes('nata')) return 'swim';
+  if (lower.includes('bike') || lower.includes('ride') || lower.includes('cicl')) return 'ride';
+  if (lower.includes('gym') || lower.includes('strength') || lower.includes('upper body') || lower.includes('lower body')) return 'gym';
+  if (lower.includes('rest')) return 'rest';
+  return 'workout';
+}
+
+function estimateCalendarDurationMinutes(startRaw?: string | null, endRaw?: string | null): number | null {
+  if (!startRaw || !endRaw) return null;
+  try {
+    const start = new Date(startRaw);
+    const end = new Date(endRaw);
+    const minutes = Math.round((end.getTime() - start.getTime()) / 60000);
+    return Number.isFinite(minutes) && minutes > 0 ? minutes : null;
+  } catch {
+    return null;
+  }
 }

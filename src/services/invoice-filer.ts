@@ -39,6 +39,11 @@ export interface InvoiceAnalysis {
   validationNote?: string | null;    // Discrepancy explanation if any
 }
 
+export interface InvoiceAnalysisResult {
+  analysis: InvoiceAnalysis;
+  provider: string;
+}
+
 export interface FilingResult {
   success: boolean;
   filePath?: string;       // Remote path on Mac
@@ -122,37 +127,65 @@ export async function analyzeInvoiceImage(
   imageBase64: string,
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp',
   caption?: string
-): Promise<InvoiceAnalysis> {
+): Promise<InvoiceAnalysisResult> {
   const captionCtx = caption ? `\nCaption from user: "${caption}"` : '';
   const userPrompt = `Analyze this image.${captionCtx}`;
 
-  const { text: rawText, provider: usedProvider } = await completeVisionOneShotWithFallback(
-    INVOICE_SYSTEM_PROMPT,
-    userPrompt,
-    { base64: imageBase64, mimeType: mediaType },
-    'invoice_filing',
-    async () => {
-      // Anthropic fallback — preserves original behavior in case Gemini
-      // is down or returns malformed JSON
-      const response = await trackedCreate(client, {
-        model: config.anthropic.classifierModel,
-        max_tokens: 400,
-        system: INVOICE_SYSTEM_PROMPT,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
-            { type: 'text', text: userPrompt },
-          ],
-        }],
-      }, 'invoice_filing');
-      return response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-    },
-    { maxTokens: 400, temperature: 0 },
-  );
+  let rawText: string;
+  let usedProvider = 'anthropic-haiku';
+
+  try {
+    if (!config.anthropic.apiKey) {
+      throw new Error('Anthropic not configured');
+    }
+    const response = await trackedCreate(client, {
+      model: config.anthropic.classifierModel,
+      max_tokens: 400,
+      system: INVOICE_SYSTEM_PROMPT,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+          { type: 'text', text: userPrompt },
+        ],
+      }],
+    }, 'invoice_filing');
+    rawText = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+  } catch (err) {
+    logger.warn({ err }, 'Anthropic Haiku invoice analysis failed — falling back to alternate vision providers');
+    const fallback = await completeVisionOneShotWithFallback(
+      INVOICE_SYSTEM_PROMPT,
+      userPrompt,
+      { base64: imageBase64, mimeType: mediaType },
+      'invoice_filing',
+      async () => {
+        // Final Anthropic retry in case fallback providers are down but the
+        // first call failed due to a transient network or usage issue.
+        const response = await trackedCreate(client, {
+          model: config.anthropic.classifierModel,
+          max_tokens: 400,
+          system: INVOICE_SYSTEM_PROMPT,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+              { type: 'text', text: userPrompt },
+            ],
+          }],
+        }, 'invoice_filing');
+        return response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('');
+      },
+      { maxTokens: 400, temperature: 0 },
+    );
+    rawText = fallback.text;
+    usedProvider = fallback.provider;
+  }
   logger.debug({ usedProvider, category: 'invoice_filing' }, 'Invoice analysis provider');
 
   let text = rawText;
@@ -200,13 +233,16 @@ export async function analyzeInvoiceImage(
       { isInvoice: parsed.isInvoice, confidence: parsed.confidence, vendor: parsed.vendor },
       'Invoice analysis complete'
     );
-    return parsed;
+    return { analysis: parsed, provider: usedProvider };
   } catch (err) {
     logger.warn({ text, err }, 'Failed to parse invoice analysis JSON');
     return {
-      isInvoice: false, confidence: 0,
-      documentDate: null, documentDateRaw: null,
-      vendor: null, totalAmount: null, invoiceNumber: null,
+      analysis: {
+        isInvoice: false, confidence: 0,
+        documentDate: null, documentDateRaw: null,
+        vendor: null, totalAmount: null, invoiceNumber: null,
+      },
+      provider: usedProvider,
     };
   }
 }

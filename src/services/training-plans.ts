@@ -133,6 +133,21 @@ export interface LogCompletionInput {
   notes?: string;
 }
 
+const DAY_NAME_MAP: Record<string, string> = {
+  monday: 'Monday',
+  tuesday: 'Tuesday',
+  wednesday: 'Wednesday',
+  thursday: 'Thursday',
+  friday: 'Friday',
+  saturday: 'Saturday',
+  sunday: 'Sunday',
+};
+
+function canonicalDayOfWeek(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  return DAY_NAME_MAP[normalized] ?? value.trim();
+}
+
 // ── Plan CRUD ──────────────────────────────────────────────────────
 
 export function createPlan(input: CreatePlanInput): TrainingPlan {
@@ -252,7 +267,11 @@ export function getCurrentWeek(planId: number): TrainingWeek | null {
   const startDate = new Date(plan.start_date);
   const now = new Date();
   const diffMs = now.getTime() - startDate.getTime();
-  const weekNumber = Math.max(1, Math.ceil(diffMs / (7 * 24 * 60 * 60 * 1000)));
+  const rawWeekNumber = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1;
+  const weekNumber = Math.min(
+    Math.max(1, rawWeekNumber),
+    Math.max(1, plan.duration_weeks || 1),
+  );
 
   return (db.prepare(`
     SELECT * FROM training_weeks WHERE plan_id = ? AND week_number = ?
@@ -273,13 +292,14 @@ export function updateWeekAdjustment(weekId: number, intensityPct: number, reaso
 
 export function createSession(input: CreateSessionInput): TrainingSession {
   const db = getDb();
+  const normalizedDay = canonicalDayOfWeek(input.day_of_week);
   const result = db.prepare(`
     INSERT INTO training_sessions
       (week_id, plan_id, day_of_week, session_type, title, description,
        exercises_json, duration_minutes, intensity_text, calendar_event_id, calendar_source)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.week_id, input.plan_id, input.day_of_week, input.session_type,
+    input.week_id, input.plan_id, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.exercises_json ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
     input.calendar_event_id ?? null, input.calendar_source ?? null,
