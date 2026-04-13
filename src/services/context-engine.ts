@@ -192,9 +192,10 @@ export async function buildDailyContext(userId: number): Promise<string> {
   try {
     // saved_ideas.status enum: 'saved' | 'promoted' | 'used'
     // 'saved' means in the pipeline and not yet acted on
+    // SECURITY FIX: filter by user_id to prevent cross-user count leakage
     const pipeline = db.prepare(
-      `SELECT COUNT(*) AS cnt FROM saved_ideas WHERE status = 'saved'`,
-    ).get() as { cnt: number };
+      `SELECT COUNT(*) AS cnt FROM saved_ideas WHERE user_id IN (0, ?) AND status = 'saved'`,
+    ).get(userId) as { cnt: number };
     if (pipeline.cnt > 0) {
       parts.push(`CONTENT: ${pipeline.cnt} ideas saved in pipeline`);
     }

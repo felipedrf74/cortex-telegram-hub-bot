@@ -21,11 +21,12 @@ import type { AIToolResultMessage } from '../services/ai-provider';
 const DOMAIN: DomainName = 'secretary';
 
 // Short-lived cache for state context — avoids redundant API calls on rapid messages.
-// Layer 2: cache is now keyed by the message-driven "context shape" (which sources
-// were actually fetched) so that switching from "show tasks" to "what's my week"
-// invalidates the cache instead of returning stale partial data.
-let _stateContextCache: { value: string; expiresAt: number; shape: string } | null = null;
+// SECURITY FIX (April 2026): cache is now keyed by userId + context shape to prevent
+// cross-user context leakage. Previously, the cache was keyed only by shape, which
+// meant user B could receive user A's cached context within the 30s TTL window.
+const _stateContextCache: Map<string, { value: string; expiresAt: number }> = new Map();
 const STATE_CONTEXT_TTL = 30_000; // 30 seconds
+const MAX_CACHE_ENTRIES = 50; // Prevent unbounded growth
 
 /**
  * Test-only: clear the in-process state context cache so each test starts
@@ -33,7 +34,7 @@ const STATE_CONTEXT_TTL = 30_000; // 30 seconds
  * naturally expires after STATE_CONTEXT_TTL or when the shape changes.
  */
 export function _resetStateContextCacheForTesting(): void {
-  _stateContextCache = null;
+  _stateContextCache.clear();
 }
 
 /**
@@ -54,7 +55,7 @@ export function _resetStateContextCacheForTesting(): void {
  * a "show tasks" cache hit on a follow-up "what's my week" would miss
  * (calendar wasn't loaded the first time) and re-run with calendar.
  */
-async function buildStateContext(message: string = ''): Promise<string> {
+async function buildStateContext(message: string = '', userId: number = 0): Promise<string> {
   // Check which sub-skills are enabled to skip unnecessary API calls
   const tasksEnabled = isSubmoduleEnabled('secretary', 'tasks');
   const calendarEnabled = isSubmoduleEnabled('secretary', 'calendar');
@@ -75,11 +76,13 @@ async function buildStateContext(message: string = ''): Promise<string> {
     garmin: intent.ambiguous || intent.garmin,
   };
 
-  // Cache shape key — invalidates when the set of fetched sources changes
+  // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}`;
+  const cacheKey = `${userId}:${shape}`;
 
-  if (_stateContextCache && _stateContextCache.shape === shape && Date.now() < _stateContextCache.expiresAt) {
-    return _stateContextCache.value;
+  const cached = _stateContextCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value;
   }
 
   const parts: string[] = [];
@@ -218,12 +221,18 @@ async function buildStateContext(message: string = ''): Promise<string> {
     }
   }
 
-  // Cross-domain shared context
-  const sharedCtx = getSharedMemorySummary(0); // TODO: pass userId when buildStateContext receives it
+  // Cross-domain shared context — SECURITY FIX: now uses actual userId
+  const sharedCtx = getSharedMemorySummary(userId);
   if (sharedCtx) parts.push(sharedCtx);
 
   const result = parts.join('\n');
-  _stateContextCache = { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL, shape };
+
+  // Evict oldest entries if cache grows too large
+  if (_stateContextCache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = _stateContextCache.keys().next().value;
+    if (oldest) _stateContextCache.delete(oldest);
+  }
+  _stateContextCache.set(cacheKey, { value: result, expiresAt: Date.now() + STATE_CONTEXT_TTL });
   return result;
 }
 
@@ -254,7 +263,7 @@ export async function handleSecretary(message: string, userId?: number): Promise
   // Layer 2: pass the message so buildStateContext can fetch only what
   // the message actually needs (saves ~1,000-2,000 input tokens on
   // intent-typed queries; ambiguous queries fall back to fetching all).
-  const stateContext = await buildStateContext(message);
+  const stateContext = await buildStateContext(message, uid);
 
   // ── Provider routing — TASK-17 Option B fix ────────────────────
   //

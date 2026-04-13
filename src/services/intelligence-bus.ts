@@ -277,6 +277,7 @@ export function readSignals(
   signalTypes: SignalType[],
   limit = 50,
   userId?: number,
+  maxAgeDays?: number,
 ): AgentSignal[] {
   const d = db();
   if (!d) return [];
@@ -286,6 +287,10 @@ export function readSignals(
       userId !== undefined
         ? 'AND (user_id IS NULL OR user_id = ?)'
         : 'AND user_id IS NULL';
+    // Time-window filter: only return signals created within maxAgeDays
+    const ageClause = maxAgeDays != null && maxAgeDays > 0
+      ? `AND created_at > datetime('now', '-${Math.floor(maxAgeDays)} days')`
+      : '';
     const params: any[] = [...signalTypes];
     if (userId !== undefined) params.push(userId);
     params.push(limit);
@@ -295,6 +300,7 @@ export function readSignals(
       WHERE status = 'active'
         AND signal_type IN (${placeholders})
         ${userScopeClause}
+        ${ageClause}
       ORDER BY
         CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
         created_at DESC

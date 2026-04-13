@@ -50,7 +50,7 @@ function todayISO(): string {
  * Record an AI API call for a user. Uses UPSERT to atomically increment
  * the daily aggregate row.
  *
- * @param userId      Telegram user ID (0 for system/cron calls)
+ * @param userId      Canonical users.id (0 for system/cron calls)
  * @param inputTokens Tokens sent to the model
  * @param outputTokens Tokens received from the model
  * @param costUsd     Computed cost in USD
@@ -214,11 +214,15 @@ export function setQuota(
 export function checkQuota(userId: number): QuotaStatus {
   const usage = getDailyUsage(userId);
 
-  // Try to get limits from users table first (TASK-02)
+  // Get limits from users table using canonical users.id (not Telegram ID).
+  // SECURITY FIX (April 2026): replaced getUserByTelegramId with direct
+  // users.id lookup so multi-auth users (Google, Apple) get correct limits.
   let limits: { messages: number; tokens: number; cost: number } | null = null;
   try {
-    const { getUserByTelegramId } = require('./user-service');
-    const user = getUserByTelegramId(userId);
+    const db = require('./database').getDb();
+    const user = db.prepare(
+      'SELECT daily_message_limit, daily_token_limit, daily_cost_limit_usd FROM users WHERE id = ?'
+    ).get(userId) as any;
     if (user) {
       limits = {
         messages: user.daily_message_limit,
@@ -226,7 +230,7 @@ export function checkQuota(userId: number): QuotaStatus {
         cost: user.daily_cost_limit_usd,
       };
     }
-  } catch { /* user-service not available — fall through */ }
+  } catch { /* users table may not exist in tests */ }
 
   // Fall back to legacy usage_quotas table
   if (!limits) {

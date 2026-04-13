@@ -554,7 +554,9 @@ export async function getScript(
         'channel_dna', 'book_knowledge', 'keyword_rank_change',
         'retention_pattern', 'pillar_performance',
       ] as const;
-      const raw = readSignals('script-engine', [...signalTypes], cfg.signalDays);
+      // FIX: signalDays is a time window, not a count limit.
+      // readSignals(consumer, types, limit, userId, maxAgeDays)
+      const raw = readSignals('script-engine', [...signalTypes], 100, undefined, cfg.signalDays);
       contextSignals = raw.map(s => ({
         type: s.signal_type,
         source: s.source_agent,

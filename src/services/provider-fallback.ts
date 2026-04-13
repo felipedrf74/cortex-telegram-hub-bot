@@ -13,6 +13,28 @@
 import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions } from './ai-provider';
 import { DomainName, DomainMessage, ClassificationResult } from '../domains/types';
 import { logger } from '../utils/logger';
+
+// ─── Error Classification ─────────────────────────────────────────
+// Only retryable errors should trigger circuit-breaker failures and fallback.
+// Non-retryable errors (auth failures, bad requests) should throw immediately
+// without polluting the circuit breaker state.
+
+function isRetryableError(err: any): boolean {
+  const status = err?.status ?? err?.statusCode ?? err?.error_code;
+  // 429 = rate limited (retryable after backoff)
+  if (status === 429) return true;
+  // 5xx = server error (retryable)
+  if (typeof status === 'number' && status >= 500) return true;
+  // Network errors (retryable)
+  if (err?.code === 'ECONNREFUSED' || err?.code === 'ETIMEDOUT' || err?.code === 'ENOTFOUND') return true;
+  if (err?.code === 'UND_ERR_CONNECT_TIMEOUT' || err?.code === 'UND_ERR_SOCKET') return true;
+  // Anthropic overloaded (retryable)
+  if (err?.error?.type === 'overloaded_error') return true;
+  // 4xx (except 429) = client error, not retryable
+  if (typeof status === 'number' && status >= 400 && status < 500) return false;
+  // Default: assume retryable (preserve existing behavior for unknown errors)
+  return true;
+}
 import { planSecretaryOptimization, type SecretaryOptimization } from './secretary-tools';
 import { TOOLS } from './anthropic';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -251,11 +273,24 @@ export class TaskRoutingProvider implements AIProvider {
         pm.lastSuccessAt = new Date().toISOString();
         return result;
       } catch (err) {
-        primaryBreaker.recordFailure();
+        const retryable = isRetryableError(err);
+        if (retryable) {
+          primaryBreaker.recordFailure();
+        }
+        // Always track metrics regardless of retryability
         const pm = this.getMetrics(pair.primary.name);
         pm.usageCount++;
         pm.failureCount++;
         pm.lastFailureAt = new Date().toISOString();
+
+        // Non-retryable errors (auth, bad request) should not trigger fallback
+        if (!retryable) {
+          logger.warn(
+            { taskType, provider: pair.primary.name, status: (err as any)?.status, retryable: false },
+            'Non-retryable error — not falling back (would fail too)',
+          );
+          throw err;
+        }
 
         if (pair.fallback) {
           const fm = this.getMetrics(pair.fallback.name);
