@@ -11,10 +11,10 @@ describe('Domain Provider Router', () => {
   describe('getProviderForDomain', () => {
     // April 2026 revision — no Claude models as primary ANYWHERE.
     // Every domain (including secretary, which previously used Sonnet for
-    // tool-use quality) now defaults to Gemini 3 Flash. Anthropic stays
-    // wired in as the fallback so provider-fallback.ts has a safety net.
-    it('every domain routes to gemini by default', () => {
-      expect(getProviderForDomain('secretary')).toBe('gemini');
+    // Secretary routes to OpenAI (GPT-5.4 nano — best tool-calling at lowest cost).
+    // Other domains route to Gemini Flash. Anthropic stays as last-resort fallback.
+    it('secretary routes to openai, others to gemini', () => {
+      expect(getProviderForDomain('secretary')).toBe('openai');
       expect(getProviderForDomain('triathlon')).toBe('gemini');
       expect(getProviderForDomain('content')).toBe('gemini');
       expect(getProviderForDomain('finance')).toBe('gemini');
@@ -23,12 +23,10 @@ describe('Domain Provider Router', () => {
   });
 
   describe('getFallbackForDomain', () => {
-    // Every domain falls back to Anthropic (Haiku 4.5) when the primary
-    // Gemini provider errors or circuit-breaks. Secretary previously fell
-    // back to OpenAI but now shares the Anthropic fallback with the other
-    // domains — one fewer provider wired into the production config.
-    it('every domain falls back to anthropic', () => {
-      expect(getFallbackForDomain('secretary')).toBe('anthropic');
+    // Secretary falls back to Gemini (cheaper than Anthropic) since its
+    // primary is now OpenAI. Other domains fall back to Anthropic.
+    it('secretary falls back to gemini, others to anthropic', () => {
+      expect(getFallbackForDomain('secretary')).toBe('gemini');
       expect(getFallbackForDomain('triathlon')).toBe('anthropic');
       expect(getFallbackForDomain('content')).toBe('anthropic');
       expect(getFallbackForDomain('finance')).toBe('anthropic');

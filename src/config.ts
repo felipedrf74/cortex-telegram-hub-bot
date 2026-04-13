@@ -84,8 +84,8 @@ export const config = {
   // ── Alternative AI Providers (optional fallbacks) ──────────────────
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
-    model: process.env.OPENAI_MODEL || 'gpt-5-mini',
-    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-5-nano',
+    model: process.env.OPENAI_MODEL || 'gpt-5.4-nano',
+    classifierModel: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-5.4-nano',
     maxTokens: 1024,            // content domain — conversational
     secretaryMaxTokens: 2048,   // secretary — parallel tool calls need headroom
   },

@@ -33,7 +33,7 @@ import { logger } from '../utils/logger';
 // ─── Domain → Provider Mapping ──────────────────────────────────────
 
 const DOMAIN_PROVIDER_MAP: Record<string, ProviderName> = {
-  secretary:  'gemini',
+  secretary:  'openai',    // GPT-5.4 nano — best tool-calling at lowest cost ($0.20/$1.25 per 1M)
   triathlon:  'gemini',
   content:    'gemini',
   finance:    'gemini',
@@ -45,7 +45,7 @@ const DOMAIN_PROVIDER_MAP: Record<string, ProviderName> = {
 // tool-use — a good last line of defense for EVERY domain (including
 // secretary, which previously used OpenAI as a backup).
 const DOMAIN_FALLBACK_MAP: Record<string, ProviderName> = {
-  secretary:  'anthropic',   // Haiku 4.5 as Gemini fallback
+  secretary:  'gemini',      // Gemini Flash as OpenAI fallback (cheaper than Anthropic)
   triathlon:  'anthropic',
   content:    'anthropic',
   finance:    'anthropic',
@@ -176,11 +176,12 @@ export function getProviderForDomain(domain: DomainName): ProviderName {
   // hatch (e.g. GEMINI_API_KEY expired, Gemini quota exhausted).
   if (!_geminiRoutingEnabled) return 'anthropic';
 
-  // Secretary has its OWN kill-switch. It's true by default (every domain
-  // including secretary routes to Gemini) but lets the operator force
-  // secretary back to Anthropic without disabling Gemini for other domains.
+  // Secretary routes to OpenAI (GPT-5.4 nano) by default.
+  // The _geminiIncludeSecretary toggle is repurposed: when false, secretary
+  // falls back to Anthropic (emergency escape). When true (default), it
+  // uses the DOMAIN_PROVIDER_MAP value (openai).
   if (domain === 'secretary') {
-    return _geminiIncludeSecretary ? 'gemini' : 'anthropic';
+    return _geminiIncludeSecretary ? DOMAIN_PROVIDER_MAP.secretary : 'anthropic';
   }
 
   // Per-domain allow-list — populated from DEFAULT_GEMINI_DOMAINS on init

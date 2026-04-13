@@ -45,8 +45,12 @@ export function isOpenAIConfigured(): boolean {
 // ─── Cost per million tokens (update when OpenAI changes rates) ─────
 
 const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
-  'gpt-4o':      { in: 2.50, out: 10.00 },
-  'gpt-4o-mini': { in: 0.15, out: 0.60 },
+  'gpt-5.4-nano': { in: 0.20, out: 1.25 },
+  'gpt-5.4-mini': { in: 0.40, out: 1.60 },
+  'gpt-5-nano':   { in: 0.20, out: 1.25 },
+  'gpt-5-mini':   { in: 0.40, out: 1.60 },
+  'gpt-4o':       { in: 2.50, out: 10.00 },
+  'gpt-4o-mini':  { in: 0.15, out: 0.60 },
 };
 
 // ─── Token tracking ─────────────────────────────────────────────────
