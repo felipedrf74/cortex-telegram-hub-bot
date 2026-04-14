@@ -317,10 +317,10 @@ describe('Integration: Claude classifier → domain handler', () => {
     );
   });
 
-  it('active context: keyword matching runs first (token-zero optimization)', async () => {
-    // Token-zero: keyword matching now ALWAYS runs before classifier.
-    // "calendar" matches secretary keyword. This is the expected behavior —
-    // it saves a Claude classifier call (~$0.00025) per message.
+  it('active context: short follow-up phrasing prefers context over broad keyword shortcuts', async () => {
+    // "put it on the calendar for Thursday" is an anaphoric follow-up,
+    // not a fresh secretary request. We now preserve the active context
+    // and let the classifier decide with conversation history attached.
     mockClassifyMessage.mockResolvedValue({
       domain: 'triathlon',
       confidence: 0.88,
@@ -332,9 +332,8 @@ describe('Integration: Claude classifier → domain handler', () => {
     };
 
     const route = await routeMessage('put it on the calendar for Thursday', activeContext);
-    // Keyword "calendar" matches secretary — classifier is NOT called
-    expect(route.method).toBe('keyword');
-    expect(route.domain).toBe('secretary');
+    expect(route.method).toBe('classifier');
+    expect(route.domain).toBe('triathlon');
   });
 });
 
@@ -829,7 +828,7 @@ describe('Integration: Classification tier priority', () => {
     expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 
-  it('active context: keywords match first to save tokens (token-zero)', async () => {
+  it('active context: recovery follow-ups prefer triathlon context over secretary keyword shortcuts', async () => {
     mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.9 });
 
     const activeContext = {
@@ -837,11 +836,16 @@ describe('Integration: Classification tier priority', () => {
       lastAssistantMessage: 'Your recovery day is set.',
     };
 
-    // Token-zero: "tasks" keyword-matches to secretary. Classifier NOT called.
+    // "recovery ... for tomorrow" is still about the active training discussion,
+    // even though the word "tasks" appears in the message.
     const route = await routeMessage('what about my recovery tasks for tomorrow?', activeContext);
-    expect(route.method).toBe('keyword');
-    // Keyword matcher handles it — Claude classifier was NOT called
-    expect(mockClassifyMessage).not.toHaveBeenCalled();
+    expect(route.method).toBe('classifier');
+    expect(route.domain).toBe('triathlon');
+    expect(mockClassifyMessage).toHaveBeenCalledWith(
+      'what about my recovery tasks for tomorrow?',
+      activeContext,
+      undefined,
+    );
   });
 
   it('Claude classifier is the last resort for non-matching messages', async () => {

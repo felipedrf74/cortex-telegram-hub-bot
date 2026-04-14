@@ -7,7 +7,7 @@ import { getSharedMemorySummary } from '../state/shared-memory';
 import { now, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getActivePlanSummary } from '../services/training-plans';
-import { getActiveProvider } from '../services/provider-registry';
+import { ensureActiveProvider, getActiveProvider } from '../services/provider-registry';
 import { getDailyContext } from '../services/context-engine';
 import {
   formatAthleteProfileBlock,
@@ -26,6 +26,7 @@ import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
 import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
+import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach-state';
 
 // ─── Phase 3 Slice A — Chat-triggered onboarding ────────────────────
 //
@@ -119,14 +120,37 @@ const COACH_STATE_TTL = 12 * 60 * 60 * 1000; // 12 hours
 
 /** Store the latest coach briefing so the triathlon domain can reference it */
 export function setLastCoachState(userId: number, recs: CoachRecommendation[], summary: string): void {
-  lastCoachStates.set(userId, { recommendations: recs, briefingSummary: summary, timestamp: Date.now() });
+  const timestamp = Date.now();
+  lastCoachStates.set(userId, { recommendations: recs, briefingSummary: summary, timestamp });
+  saveCoachState(userId, recs, summary, timestamp, COACH_STATE_TTL);
 }
 
 /** Get the last coach state if it's still fresh (within TTL). */
 export function getLastCoachState(userId: number): LastCoachState | null {
   const state = lastCoachStates.get(userId);
-  if (!state || Date.now() - state.timestamp > COACH_STATE_TTL) return null;
-  return state;
+  if (state) {
+    if (Date.now() - state.timestamp > COACH_STATE_TTL) {
+      lastCoachStates.delete(userId);
+      deleteCoachState(userId);
+      return null;
+    }
+    return state;
+  }
+
+  const persisted = loadCoachState(userId);
+  if (!persisted) return null;
+
+  const restored = {
+    recommendations: persisted.recommendations,
+    briefingSummary: persisted.briefingSummary,
+    timestamp: persisted.timestamp,
+  };
+  lastCoachStates.set(userId, restored);
+  return restored;
+}
+
+export function __resetLastCoachStateCacheForTests(): void {
+  lastCoachStates.clear();
 }
 
 /**
@@ -321,19 +345,20 @@ export async function handleSimpleDomain(
   userId?: number,
   maxTokensOverride?: number,
 ): Promise<DomainResponse> {
-  const history = getConversationHistory(userId ?? 0, domain);
+  const uid = userId ?? 0;
+  const history = getConversationHistory(uid, domain);
   // Phase 3 Slice A: pass the incoming message so the triathlon
   // branch of buildSimpleStateContext can run the sport classifier
   // and inject the onboarding-pending block when appropriate.
-  const stateContext = await buildSimpleStateContext(domain, userId, message);
+  const stateContext = await buildSimpleStateContext(domain, uid, message);
 
   try {
     // Get the active routing provider (handles fallback + circuit breaker)
-    const provider = getActiveProvider();
+    const provider = getActiveProvider() || ensureActiveProvider();
     if (!provider) {
       // Fallback to direct Anthropic if routing provider not initialized
       const { callDomain, continueWithToolResults } = require('../services/anthropic');
-      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, userId, maxTokensOverride, callDomain, continueWithToolResults);
+      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, uid, maxTokensOverride, callDomain, continueWithToolResults);
     }
 
     // Route through the provider-agnostic interface
@@ -380,11 +405,11 @@ export async function handleSimpleDomain(
     }
 
     // Store conversation
-    addToConversation(userId ?? 0, domain, 'user', message);
+    addToConversation(uid, domain, 'user', message);
     const storedText = toolsUsed.length > 0
       ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
       : finalText;
-    addToConversation(userId ?? 0, domain, 'assistant', storedText);
+    addToConversation(uid, domain, 'assistant', storedText);
 
     return { text: finalText, domain };
   } catch (err: unknown) {
@@ -402,7 +427,7 @@ export async function handleSimpleDomain(
  */
 async function handleWithDirectCalls(
   domain: DomainName, history: any[], message: string, stateContext: string,
-  maxIterations: number, userId: number | undefined, maxTokensOverride: number | undefined,
+  maxIterations: number, userId: number, maxTokensOverride: number | undefined,
   callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
 ): Promise<DomainResponse> {
   let result = await callDomainFn(domain, history, message, stateContext, maxTokensOverride, userId);

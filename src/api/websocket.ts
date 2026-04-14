@@ -18,6 +18,7 @@ import { logger } from '../utils/logger';
 import { routeMessage } from '../router';
 import type { DomainName } from '../domains/types';
 import { generateRequestId, runWithContext } from '../utils/request-context';
+import { pushEvent } from '../portal/telemetry';
 
 function getDomainHandlers(): Record<string, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
@@ -68,6 +69,13 @@ export function attachWebSocket(server: http.Server): void {
         // First message must be auth: { type: "auth", token: "jwt" }
         if (!(ws as any).authenticated) {
           if (msg.type !== 'auth' || !msg.token) {
+            pushEvent({
+              ts: new Date().toISOString(),
+              type: 'auth',
+              summary: 'iOS WS auth failed',
+              detail: 'First message was not a valid auth frame',
+              domain: 'secretary',
+            });
             ws.send(JSON.stringify({ type: 'error', message: 'First message must be { type: "auth", token: "jwt" }' }));
             ws.close(4001, 'Auth required');
             return;
@@ -81,6 +89,13 @@ export function attachWebSocket(server: http.Server): void {
             logger.info({ userId: payload.userId, platform: 'ios' }, 'WebSocket authenticated');
             return;
           } catch {
+            pushEvent({
+              ts: new Date().toISOString(),
+              type: 'auth',
+              summary: 'iOS WS auth rejected',
+              detail: 'JWT verification failed for WebSocket auth',
+              domain: 'secretary',
+            });
             ws.send(JSON.stringify({ type: 'error', message: 'Invalid token' }));
             ws.close(4001, 'Invalid token');
             return;
@@ -172,6 +187,13 @@ export function attachWebSocket(server: http.Server): void {
           },
         );
       } catch (err: any) {
+        pushEvent({
+          ts: new Date().toISOString(),
+          type: 'error',
+          summary: 'iOS WS message failed',
+          detail: err?.message || 'unknown websocket failure',
+          domain: 'secretary',
+        });
         logger.error({ err, platform: 'ios' }, 'WebSocket message handling failed');
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'error', message: err.message }));

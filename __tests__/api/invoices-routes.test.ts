@@ -1,0 +1,215 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Request } from 'express';
+
+const mockGetAllVendorsMerged = vi.fn();
+const mockCollectMonthlyInvoices = vi.fn();
+const mockAddVendor = vi.fn();
+const mockRemoveVendor = vi.fn();
+const mockGetAllVendorsDb = vi.fn();
+const mockGetFiscalCollectionSummary = vi.fn();
+const mockSendFiscalBundleNow = vi.fn();
+const mockUpdateFiscalCollectionProfile = vi.fn();
+
+vi.mock('../../src/services/invoice-collector', () => ({
+  getAllVendors: (...args: unknown[]) => mockGetAllVendorsMerged(...args),
+  collectMonthlyInvoices: (...args: unknown[]) => mockCollectMonthlyInvoices(...args),
+}));
+
+vi.mock('../../src/state/invoice-vendors', () => ({
+  addVendor: (...args: unknown[]) => mockAddVendor(...args),
+  removeVendor: (...args: unknown[]) => mockRemoveVendor(...args),
+  getAllVendors: (...args: unknown[]) => mockGetAllVendorsDb(...args),
+}));
+
+vi.mock('../../src/services/fiscal-bundle', () => ({
+  getFiscalCollectionSummary: (...args: unknown[]) => mockGetFiscalCollectionSummary(...args),
+  sendFiscalBundleNow: (...args: unknown[]) => mockSendFiscalBundleNow(...args),
+}));
+
+vi.mock('../../src/state/fiscal-collection-profiles', () => ({
+  updateFiscalCollectionProfile: (...args: unknown[]) => mockUpdateFiscalCollectionProfile(...args),
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
+import { invoicesRoutes } from '../../src/api/routes/invoices';
+
+interface MockRes {
+  statusCode: number;
+  body: any;
+  headers: Record<string, string>;
+  status(code: number): MockRes;
+  json(body: any): MockRes;
+  setHeader(name: string, value: string): MockRes;
+  end(): MockRes;
+}
+
+function mockRes(): MockRes {
+  const r: MockRes = {
+    statusCode: 200,
+    body: null,
+    headers: {},
+    status(code: number) { r.statusCode = code; return r; },
+    json(body: any) { r.body = body; return r; },
+    setHeader(name: string, value: string) { r.headers[name] = value; return r; },
+    end() { return r; },
+  };
+  return r;
+}
+
+function mockReq(
+  method: string,
+  path: string,
+  body?: any,
+): Request {
+  return {
+    method,
+    url: path,
+    originalUrl: path,
+    baseUrl: '',
+    path,
+    query: {},
+    params: {},
+    headers: {},
+    body,
+    userId: 12,
+  } as any;
+}
+
+async function dispatch(
+  method: string,
+  path: string,
+  body?: any,
+): Promise<MockRes> {
+  const router = invoicesRoutes();
+  const req = mockReq(method, path, body);
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+describe('Invoices API routes', () => {
+  beforeEach(() => {
+    mockGetAllVendorsMerged.mockReset();
+    mockCollectMonthlyInvoices.mockReset();
+    mockAddVendor.mockReset();
+    mockRemoveVendor.mockReset();
+    mockGetAllVendorsDb.mockReset();
+    mockGetFiscalCollectionSummary.mockReset();
+    mockSendFiscalBundleNow.mockReset();
+    mockUpdateFiscalCollectionProfile.mockReset();
+
+    mockGetFiscalCollectionSummary.mockReturnValue({
+      profile: {
+        user_id: 12,
+        destination_email: 'felipe@nexushub.me',
+        cadence: 'monthly',
+        primary_day: 28,
+        secondary_day: null,
+        enabled: 1,
+      },
+      destinationEmail: 'felipe@nexushub.me',
+      nextRunAt: '2026-04-28T08:00:00.000Z',
+      providers: [{ provider: 'gmail', connected: true }],
+      ruleCount: 4,
+      customRuleCount: 2,
+      deliveryAvailable: true,
+      warnings: [],
+    });
+  });
+
+  it('returns the fiscal collection summary for the authenticated user', async () => {
+    const res = await dispatch('GET', '/profile');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.destinationEmail).toBe('felipe@nexushub.me');
+    expect(mockGetFiscalCollectionSummary).toHaveBeenCalledWith(12);
+  });
+
+  it('validates profile updates before touching the state layer', async () => {
+    const res = await dispatch('PUT', '/profile', {
+      cadence: 'weekly',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(mockUpdateFiscalCollectionProfile).not.toHaveBeenCalled();
+  });
+
+  it('updates the fiscal collection profile and returns the refreshed summary', async () => {
+    const res = await dispatch('PUT', '/profile', {
+      destinationEmail: 'docs@nexushub.me',
+      cadence: 'twice_monthly',
+      primaryDay: 10,
+      secondaryDay: 24,
+      enabled: true,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockUpdateFiscalCollectionProfile).toHaveBeenCalledWith(12, {
+      destination_email: 'docs@nexushub.me',
+      cadence: 'twice_monthly',
+      primary_day: 10,
+      secondary_day: 24,
+      enabled: true,
+    });
+    expect(mockGetFiscalCollectionSummary).toHaveBeenLastCalledWith(12);
+  });
+
+  it('sends the fiscal bundle immediately for the authenticated user', async () => {
+    mockSendFiscalBundleNow.mockResolvedValue({
+      destinationEmail: 'docs@nexushub.me',
+      totalDocuments: 3,
+      sent: true,
+    });
+
+    const res = await dispatch('POST', '/bundle-now', {
+      startAt: '2026-04-01T00:00:00Z',
+      endAt: '2026-04-14T23:59:59Z',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.result.sent).toBe(true);
+    expect(mockSendFiscalBundleNow).toHaveBeenCalledWith(12, {
+      startAt: '2026-04-01T00:00:00Z',
+      endAt: '2026-04-14T23:59:59Z',
+    });
+  });
+
+  it('passes the authenticated user to the legacy scan-now route', async () => {
+    mockCollectMonthlyInvoices.mockResolvedValue({
+      totalEmailsScanned: 7,
+      totalFiled: 2,
+    });
+
+    const res = await dispatch('POST', '/scan-now', {
+      year: 2026,
+      month: 4,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(12, 2026, 4);
+  });
+});

@@ -61,7 +61,7 @@ export function registerFinanceCommands(bot: Bot): void {
       await ctx.reply(`\u{1F4CA} A recolher faturas de <b>${monthLabel}</b>...`, { parse_mode: 'HTML' });
 
       try {
-        const result = await collectMonthlyInvoices(year, month);
+        const result = await collectMonthlyInvoices(undefined, year, month);
         const notification = formatCollectionNotification(result);
 
         for (const chunk of splitMessage(notification)) {

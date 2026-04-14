@@ -59,6 +59,7 @@ export interface ShoppingItem {
   quantity: string;
   unit: string;
   checked: boolean;
+  aisle: string;
 }
 
 // ── Recipe CRUD ────────────────────────────────────────────────────
@@ -261,6 +262,10 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
 
   // Aggregate ingredients from linked recipes
   const itemMap = new Map<string, ShoppingItem>();
+  const existing = getShoppingList(userId, weekStart);
+  const checkedByKey = new Map(
+    (existing?.items ?? []).map((item) => [item.name.toLowerCase(), item.checked]),
+  );
 
   for (const meal of meals) {
     if (meal.recipe_id) {
@@ -274,14 +279,24 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
             // Simple quantity aggregation — just append
             existing.quantity = `${existing.quantity} + ${ing.quantity}`;
           } else {
-            itemMap.set(key, { name: ing.name, quantity: ing.quantity, unit: ing.unit, checked: false });
+            itemMap.set(key, {
+              name: ing.name,
+              quantity: ing.quantity,
+              unit: ing.unit,
+              checked: checkedByKey.get(key) ?? false,
+              aisle: classifyIngredientAisle(ing.name),
+            });
           }
         }
       }
     }
   }
 
-  const items = [...itemMap.values()];
+  const items = [...itemMap.values()].sort((a, b) => {
+    const aisleOrder = shoppingAisleSortKey(a.aisle) - shoppingAisleSortKey(b.aisle);
+    if (aisleOrder !== 0) return aisleOrder;
+    return a.name.localeCompare(b.name);
+  });
 
   // Upsert shopping list
   db.prepare(`
@@ -308,6 +323,36 @@ export function getShoppingList(userId: number, weekStart: string): ShoppingList
   return row ? parseShoppingList(row) : null;
 }
 
+export function updateShoppingListItemChecked(
+  userId: number,
+  weekStart: string,
+  itemIndex: number,
+  checked: boolean,
+): ShoppingList | null {
+  const db = getDb();
+  const existing = getShoppingList(userId, weekStart);
+  if (!existing) {
+    return null;
+  }
+  if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= existing.items.length) {
+    throw new Error('Shopping list item index is out of range');
+  }
+
+  const items = existing.items.map((item, index) => (
+    index === itemIndex ? { ...item, checked } : item
+  ));
+
+  db.prepare(`
+    UPDATE shopping_lists
+    SET items = ?, updated_at = datetime('now')
+    WHERE user_id = ? AND week_start = ?
+  `).run(JSON.stringify(items), userId, weekStart);
+
+  const updated = getShoppingList(userId, weekStart);
+  logger.info({ userId, weekStart, itemIndex, checked }, 'Shopping list item updated');
+  return updated;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 function parseRecipe(row: any): Recipe {
@@ -318,8 +363,61 @@ function parseRecipe(row: any): Recipe {
 }
 
 function parseShoppingList(row: any): ShoppingList {
+  const parsedItems = typeof row.items === 'string' ? JSON.parse(row.items) : row.items;
   return {
     ...row,
-    items: typeof row.items === 'string' ? JSON.parse(row.items) : row.items,
+    items: Array.isArray(parsedItems)
+      ? parsedItems.map((item) => ({
+          ...item,
+          aisle: typeof item?.aisle === 'string' && item.aisle.trim()
+            ? item.aisle
+            : classifyIngredientAisle(String(item?.name ?? '')),
+        }))
+      : [],
   };
+}
+
+function classifyIngredientAisle(name: string): string {
+  const lower = name.trim().toLowerCase();
+  if (!lower) return 'other';
+
+  if (/(chicken|frango|beef|carne|turkey|peru|pork|porco|steak|bife|salmon|salm[aã]o|tuna|atum|cod|bacalhau|shrimp|camar[aã]o|egg|ovo|tofu|tempeh|yogurt|iogurte|skyr|cottage cheese|greek yogurt|protein|prote[ií]na)/i.test(lower)) {
+    return 'protein';
+  }
+  if (/(milk|leite|cheese|queijo|butter|manteiga|cream|natas|kefir|mozzarella|parmesan|parmes[aã]o)/i.test(lower)) {
+    return 'dairy';
+  }
+  if (/(spinach|espinafre|lettuce|alface|broccoli|br[oó]colos?|carrot|cenoura|onion|cebola|garlic|alho|pepper|pimento|tomato|tomate|cucumber|pepino|courgette|zucchini|curgete|avocado|abacate|mushroom|cogumelo|apple|ma[cç][aã]|banana|berries|frutos vermelhos|lemon|lim[aã]o|lime|lima|orange|laranja|potato|batata|sweet potato|batata doce|vegetable|vegetais|legumes|beans|feij[aã]o|lentil|lentilha|chickpea|gr[aã]o-de-bico)/i.test(lower)) {
+    return 'produce';
+  }
+  if (/(bread|p[aã]o|wrap|tortilla|bagel|bun|pita|flour|farinha|oats|aveia|granola|pasta|massa|noodle|cereal|cracker|rice cake)/i.test(lower)) {
+    return 'bakery';
+  }
+  if (/(olive oil|azeite|oil|[óo]leo|vinegar|vinagre|salt|sal|peppercorn|pimenta|paprika|oregano|or[eé]g[aã]os|basil|manjeric[aã]o|cinnamon|canela|spice|tempero|stock|caldo|broth|soy sauce|molho de soja|mustard|mostarda|ketchup|tomato sauce|molho de tomate|coconut milk|leite de coco|peanut butter|manteiga de amendoim|honey|mel|jam|compota|nuts|frutos secos|seeds|sementes|rice|arroz)/i.test(lower)) {
+    return 'pantry';
+  }
+  if (/(frozen|ice cream|frozen berries|frozen vegetables)/i.test(lower)) {
+    return 'frozen';
+  }
+  if (/(water|juice|sparkling|coffee|tea|kombucha|soda|drink)/i.test(lower)) {
+    return 'beverages';
+  }
+  if (/(foil|paper|bag|container|soap|detergent|napkin)/i.test(lower)) {
+    return 'household';
+  }
+  return 'other';
+}
+
+function shoppingAisleSortKey(aisle: string): number {
+  switch (aisle) {
+    case 'produce': return 0;
+    case 'protein': return 1;
+    case 'dairy': return 2;
+    case 'bakery': return 3;
+    case 'pantry': return 4;
+    case 'frozen': return 5;
+    case 'beverages': return 6;
+    case 'household': return 7;
+    default: return 8;
+  }
 }

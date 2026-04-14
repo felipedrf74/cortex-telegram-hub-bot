@@ -10,6 +10,8 @@
  */
 
 import { Resend } from 'resend';
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
@@ -26,6 +28,97 @@ function getResend(): Resend {
 
 export function isEmailConfigured(): boolean {
   return !!process.env.RESEND_API_KEY;
+}
+
+export function isFiscalBundleDeliveryConfigured(): boolean {
+  return !!process.env.RESEND_API_KEY || config.isStaging;
+}
+
+export interface EmailAttachmentInput {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+}
+
+function writeFiscalBundlePreview(data: {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  attachments: EmailAttachmentInput[];
+}): boolean {
+  try {
+    const dir = path.resolve(process.cwd(), process.env.FISCAL_BUNDLE_PREVIEW_DIR || './data/email-previews');
+    fs.mkdirSync(dir, { recursive: true });
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = path.join(dir, `fiscal-bundle-${stamp}.json`);
+
+    fs.writeFileSync(filePath, JSON.stringify({
+      createdAt: new Date().toISOString(),
+      mode: 'staging-preview',
+      to: data.to,
+      subject: data.subject,
+      text: data.text,
+      html: data.html,
+      attachments: data.attachments.map((attachment) => ({
+        filename: attachment.filename,
+        contentType: attachment.contentType || 'application/octet-stream',
+        sizeBytes: Buffer.isBuffer(attachment.content)
+          ? attachment.content.length
+          : Buffer.byteLength(String(attachment.content)),
+      })),
+    }, null, 2));
+
+    logger.info({
+      to: data.to,
+      previewPath: filePath,
+      attachmentCount: data.attachments.length,
+    }, 'Fiscal bundle email preview written');
+    return true;
+  } catch (err) {
+    logger.error({ err, to: data.to }, 'Failed to write fiscal bundle email preview');
+    return false;
+  }
+}
+
+export async function sendFiscalBundleEmail(data: {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  attachments: EmailAttachmentInput[];
+}): Promise<boolean> {
+  try {
+    if (!process.env.RESEND_API_KEY && config.isStaging) {
+      return writeFiscalBundlePreview(data);
+    }
+
+    const resend = getResend();
+    const from = process.env.RESEND_FROM || 'Nexus Hub <noreply@nexushub.me>';
+
+    await resend.emails.send({
+      from,
+      to: data.to,
+      subject: data.subject,
+      html: data.html,
+      text: data.text,
+      attachments: data.attachments.map((attachment) => ({
+        filename: attachment.filename,
+        content: attachment.content,
+        contentType: attachment.contentType,
+      })),
+    });
+
+    logger.info({
+      to: data.to,
+      attachmentCount: data.attachments.length,
+    }, 'Fiscal bundle email sent');
+    return true;
+  } catch (err) {
+    logger.error({ err, to: data.to }, 'Failed to send fiscal bundle email');
+    return false;
+  }
 }
 
 /**

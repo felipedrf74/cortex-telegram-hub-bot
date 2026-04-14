@@ -27,6 +27,27 @@ type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
 const providers = new Map<string, AIProvider>();
 
+function isAnthropicRuntimeEnabled(): boolean {
+  return process.env.ANTHROPIC_ENABLED === 'true';
+}
+
+function getUsableProvider(name: string): AIProvider | null {
+  if (name === 'anthropic' && !isAnthropicRuntimeEnabled()) {
+    logger.debug('Anthropic provider requested while ANTHROPIC_ENABLED is false — skipping');
+    return null;
+  }
+  return getProvider(name);
+}
+
+function resolveAvailableProvider(candidates: string[]): AIProvider | null {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const provider = getUsableProvider(candidate);
+    if (provider) return provider;
+  }
+  return null;
+}
+
 /** Get or create a provider instance by name. Returns null if not configured. */
 export function getProvider(name: string): AIProvider | null {
   if (providers.has(name)) return providers.get(name)!;
@@ -67,19 +88,38 @@ export function getProvider(name: string): AIProvider | null {
  * If the fallback isn't available, runs without fallback.
  */
 function buildPair(primaryName: string, fallbackName: string): TaskProviderPair {
-  let primary = getProvider(primaryName);
+  let primary = resolveAvailableProvider([
+    primaryName,
+    fallbackName,
+    'gemini',
+    'openai',
+    'anthropic',
+  ]);
   if (!primary) {
-    logger.warn(
-      { requested: primaryName },
-      'Configured primary provider unavailable — defaulting to anthropic',
+    throw new Error(
+      `No AI providers available for primary='${primaryName}' fallback='${fallbackName}'. ` +
+      'Set GEMINI_API_KEY or OPENAI_API_KEY, or explicitly re-enable Anthropic.',
     );
-    primary = getProvider('anthropic')!;
+  }
+
+  if (primary.name !== primaryName) {
+    logger.warn(
+      { requested: primaryName, selected: primary.name },
+      'Configured primary provider unavailable — using first available provider instead',
+    );
   }
 
   let fallback: AIProvider | undefined;
-  if (fallbackName && fallbackName !== primaryName) {
-    fallback = getProvider(fallbackName) || undefined;
-    if (!fallback) {
+  const fallbackCandidates = [
+    fallbackName,
+    primaryName,
+    'gemini',
+    'openai',
+    'anthropic',
+  ].filter((name) => !!name && name !== primary.name);
+  if (fallbackCandidates.length > 0) {
+    fallback = resolveAvailableProvider(fallbackCandidates) || undefined;
+    if (!fallback && fallbackName) {
       logger.info(
         { requested: fallbackName },
         'Configured fallback provider unavailable — running without fallback',
@@ -97,6 +137,18 @@ let _activeProvider: TaskRoutingProvider | null = null;
 /** Get the active routing provider instance (set by createRoutingProvider). */
 export function getActiveProvider(): TaskRoutingProvider | null {
   return _activeProvider;
+}
+
+export function ensureActiveProvider(
+  onFallback?: (event: FallbackEvent) => void,
+): TaskRoutingProvider | null {
+  if (_activeProvider) return _activeProvider;
+  try {
+    return createRoutingProvider(onFallback);
+  } catch (err) {
+    logger.error({ err }, 'Failed to lazily initialize AI provider routing');
+    return null;
+  }
 }
 
 // ─── Factory ───────────────────────────────────────────────────────

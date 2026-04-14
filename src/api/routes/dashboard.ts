@@ -8,6 +8,18 @@ import { config } from '../../config';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCached, setCache } from '../../services/cache-store';
 import { apiSuccess, sendError } from '../response-helpers';
+import { normalizeLangHeader } from '../../services/secretary-fastpath';
+import { getUserLanguage } from '../../services/user-service';
+import { getDailyQuotaStatus } from '../../services/cost-guardrail';
+import type { Lang } from '../../utils/i18n';
+
+type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
+
+interface DashboardSectionHealth {
+  status: DashboardSectionStatus;
+  warningCodes: string[];
+  warnings: string[];
+}
 
 export function dashboardRoutes(): Router {
   const router = Router();
@@ -20,10 +32,11 @@ export function dashboardRoutes(): Router {
    */
   router.get('/', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    const language = resolveDashboardLanguage(req, userId);
 
     try {
       // Check SQLite cache first (survives restarts, instant response)
-      const dashboardCacheKey = `dashboard:${userId}`;
+      const dashboardCacheKey = dashboardCacheKeyFor(userId, language);
       const cachedDashboard = getCached<any>(dashboardCacheKey);
       if (cachedDashboard) {
         // The ETag is computed over the wrapped envelope, so iOS clients
@@ -43,29 +56,58 @@ export function dashboardRoutes(): Router {
 
       // Cache miss — fetch all data in parallel
       const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-        fetchCalendar(),
-        fetchTasks(),
+        fetchCalendar(userId),
+        fetchTasks(userId),
         fetchTraining(userId),
         fetchContent(userId),
       ]);
 
-      const calendar = calendarResult.status === 'fulfilled' ? calendarResult.value : { today: [], upcoming: [] };
-      const tasks = tasksResult.status === 'fulfilled' ? tasksResult.value : { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] };
-      const training = trainingResult.status === 'fulfilled' ? trainingResult.value : { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null };
-      const content = contentResult.status === 'fulfilled' ? contentResult.value : { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null };
+      const calendar = calendarResult.status === 'fulfilled'
+        ? calendarResult.value
+        : buildUnavailableSection(
+          { today: [], upcoming: [] },
+          ['CALENDAR_UNAVAILABLE'],
+          ['Calendar data is unavailable right now.'],
+        );
+      const tasks = tasksResult.status === 'fulfilled'
+        ? tasksResult.value
+        : buildUnavailableSection(
+          { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
+          ['TASKS_UNAVAILABLE'],
+          ['Task data is unavailable right now.'],
+        );
+      const training = trainingResult.status === 'fulfilled'
+        ? trainingResult.value
+        : {
+          todaySession: null,
+          weeklyAdherence: null,
+          readinessScore: null,
+          bodyBattery: null,
+          status: 'unavailable' as const,
+          readinessStatus: 'unavailable' as const,
+          bodyBatteryStatus: 'unavailable' as const,
+          warningCodes: ['READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE'],
+          warnings: ['Training recovery data is unavailable right now.'],
+        };
+      const content = contentResult.status === 'fulfilled'
+        ? contentResult.value
+        : buildUnavailableSection(
+          { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+          ['CONTENT_UNAVAILABLE'],
+          ['Content pipeline is unavailable right now.'],
+        );
 
       // Time-aware greeting with per-user display name
       const now = new Date();
       const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
-      const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+      const greeting = localizeGreeting(hour, language);
 
       // Look up the user's first name — falls back to empty string
       // so the greeting is "Good afternoon" instead of "Good afternoon, undefined"
       let displayName = '';
       try {
-        const { getUserById } = require('../../services/user-service');
-        const user = getUserById(userId);
-        displayName = user?.first_name || user?.username || '';
+        const { getPreferredDisplayName } = require('../../services/user-service');
+        displayName = getPreferredDisplayName(userId);
       } catch { /* user-service not available */ }
 
       const startTime = (global as any).__startTime;
@@ -75,15 +117,23 @@ export function dashboardRoutes(): Router {
         : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
 
       const runtime = getRuntimeStatus();
+      const quota = getDailyQuotaStatus(userId);
 
       const dashboard = {
         greeting: displayName ? `${greeting}, ${displayName}` : greeting,
         date: now.toISOString().slice(0, 10),
-        dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
+        dayOfWeek: localizedWeekday(now, language),
         calendar,
         tasks,
         training,
         content,
+        quota: {
+          used_usd: quota.usedUsd,
+          limit_usd: quota.limitUsd,
+          remaining_usd: quota.remainingUsd,
+          plan: quota.plan,
+          resetAt: quota.resetAt,
+        },
         system: {
           version: getAppVersion(),
           uptime: uptimeStr,
@@ -144,33 +194,73 @@ function extractTitle(e: any): string {
  * Called on startup and periodically.
  */
 export async function warmDashboardCache(userId: number): Promise<void> {
-  const cacheKey = `dashboard:${userId}`;
+  const language = getUserLanguage(userId);
+  const cacheKey = dashboardCacheKeyFor(userId, language);
   if (getCached(cacheKey)) return; // Already cached
 
   try {
     const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-      fetchCalendar(), fetchTasks(), fetchTraining(userId), fetchContent(userId),
+      fetchCalendar(userId), fetchTasks(userId), fetchTraining(userId), fetchContent(userId),
     ]);
 
     const now = new Date();
     const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
-    const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    const greeting = localizeGreeting(hour, language);
 
     let warmDisplayName = '';
     try {
-      const { getUserById } = require('../../services/user-service');
-      const user = getUserById(userId);
-      warmDisplayName = user?.first_name || user?.username || '';
+      const { getPreferredDisplayName } = require('../../services/user-service');
+      warmDisplayName = getPreferredDisplayName(userId);
     } catch { /* */ }
 
     const response = {
       greeting: warmDisplayName ? `${greeting}, ${warmDisplayName}` : greeting,
       date: now.toISOString().slice(0, 10),
-      dayOfWeek: now.toLocaleDateString('en-US', { weekday: 'long', timeZone: config.app.timezone }),
-      calendar: calendarResult.status === 'fulfilled' ? calendarResult.value : { today: [], upcoming: [] },
-      tasks: tasksResult.status === 'fulfilled' ? tasksResult.value : { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
-      training: trainingResult.status === 'fulfilled' ? trainingResult.value : { todaySession: null, weeklyAdherence: null, readinessScore: null, bodyBattery: null },
-      content: contentResult.status === 'fulfilled' ? contentResult.value : { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+      dayOfWeek: localizedWeekday(now, language),
+      calendar: calendarResult.status === 'fulfilled'
+        ? calendarResult.value
+        : buildUnavailableSection(
+          { today: [], upcoming: [] },
+          ['CALENDAR_UNAVAILABLE'],
+          ['Calendar data is unavailable right now.'],
+        ),
+      tasks: tasksResult.status === 'fulfilled'
+        ? tasksResult.value
+        : buildUnavailableSection(
+          { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
+          ['TASKS_UNAVAILABLE'],
+          ['Task data is unavailable right now.'],
+        ),
+      training: trainingResult.status === 'fulfilled'
+        ? trainingResult.value
+        : {
+          todaySession: null,
+          weeklyAdherence: null,
+          readinessScore: null,
+          bodyBattery: null,
+          status: 'unavailable' as const,
+          readinessStatus: 'unavailable' as const,
+          bodyBatteryStatus: 'unavailable' as const,
+          warningCodes: ['READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE'],
+          warnings: ['Training recovery data is unavailable right now.'],
+        },
+      content: contentResult.status === 'fulfilled'
+        ? contentResult.value
+        : buildUnavailableSection(
+          { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+          ['CONTENT_UNAVAILABLE'],
+          ['Content pipeline is unavailable right now.'],
+        ),
+      quota: (() => {
+        const quota = getDailyQuotaStatus(userId);
+        return {
+          used_usd: quota.usedUsd,
+          limit_usd: quota.limitUsd,
+          remaining_usd: quota.remainingUsd,
+          plan: quota.plan,
+          resetAt: quota.resetAt,
+        };
+      })(),
       system: { version: getAppVersion(), uptime: '0h 0m', serviceStatus: 'online', lastMessageAt: null },
     };
 
@@ -179,6 +269,37 @@ export async function warmDashboardCache(userId: number): Promise<void> {
   } catch (err) {
     logger.debug({ err }, 'Dashboard cache warming failed (non-critical)');
   }
+}
+
+function dashboardCacheKeyFor(userId: number, language: Lang): string {
+  return `dashboard:${userId}:${language}`;
+}
+
+function resolveDashboardLanguage(req: Request, userId: number): Lang {
+  const headerLanguage = normalizeLangHeader(req.header?.('x-language'));
+  if (headerLanguage) return headerLanguage;
+  return getUserLanguage(userId);
+}
+
+function localizeGreeting(hour: number, language: Lang): string {
+  const isPortuguese = language.startsWith('pt');
+  if (isPortuguese) {
+    if (hour < 12) return 'Bom dia';
+    if (hour < 18) return 'Boa tarde';
+    return 'Boa noite';
+  }
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function localizedWeekday(date: Date, language: Lang): string {
+  const locale = language.startsWith('pt') ? 'pt-PT' : 'en-US';
+  const weekday = date.toLocaleDateString(locale, {
+    weekday: 'long',
+    timeZone: config.app.timezone,
+  });
+  return weekday.charAt(0).toUpperCase() + weekday.slice(1);
 }
 
 /** Read version from package.json (works with PM2, not just npm start) */
@@ -218,39 +339,103 @@ function mapCalendarEvent(e: any, source: string) {
 
 // ── Data Fetchers (all independently failable) ──────────────────────
 
-async function fetchCalendar() {
+async function fetchCalendar(userId?: number) {
+  return fetchCalendarForUser(userId);
+}
+
+async function fetchCalendarForUser(userId?: number) {
   const today = new Date();
   const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
   const start = startOfDay.toISOString();
   const end = endOfDay.toISOString();
 
-  // PARALLEL fetch of Outlook + Google Calendar (never sequential)
-  const [outlookResult, googleResult] = await Promise.allSettled([
-    (async () => {
-      const { getEvents } = require('../../services/outlook-calendar');
-      const events = await getEvents(start, end);
-      return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'outlook')) : [];
-    })(),
-    (async () => {
-      const { getEvents } = require('../../services/google-calendar');
-      const events = await getEvents(start, end);
-      return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'google')) : [];
-    })(),
-  ]);
+  const fetchers: Array<{
+    provider: 'outlook' | 'google';
+    run: () => Promise<any[]>;
+  }> = [];
+  const warningCodes: string[] = [];
+  const warnings: string[] = [];
 
-  const outlookEvents = outlookResult.status === 'fulfilled' ? outlookResult.value : [];
-  const googleEvents = googleResult.status === 'fulfilled' ? googleResult.value : [];
+  const googleCalendar = require('../../services/google-calendar');
+  if (googleCalendar.isGoogleCalendarConfigured()) {
+    fetchers.push({
+      provider: 'google',
+      run: async () => {
+        const events = await googleCalendar.getEvents(start, end);
+        return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'google')) : [];
+      },
+    });
+  } else {
+    warningCodes.push('GOOGLE_CALENDAR_UNAVAILABLE');
+    warnings.push('Google Calendar is unavailable right now.');
+  }
 
-  const allEvents = [...outlookEvents, ...googleEvents].sort((a, b) => a.start.localeCompare(b.start));
-  return { today: allEvents, upcoming: [] };
+  const outlookCalendar = require('../../services/outlook-calendar');
+  if (outlookCalendar.isOutlookCalendarConfigured(userId)) {
+    fetchers.push({
+      provider: 'outlook',
+      run: async () => {
+        const events = await outlookCalendar.getEvents(start, end, userId);
+        return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'outlook')) : [];
+      },
+    });
+  } else {
+    warningCodes.push('OUTLOOK_CALENDAR_UNAVAILABLE');
+    warnings.push('Outlook Calendar is unavailable right now.');
+  }
+
+  const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
+
+  const allProviderEvents: any[] = [];
+  let fulfilledProviders = 0;
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      fulfilledProviders += 1;
+      allProviderEvents.push(...result.value);
+      return;
+    }
+
+    const provider = fetchers[index]?.provider;
+    if (provider === 'google') {
+      warningCodes.push('GOOGLE_CALENDAR_UNAVAILABLE');
+      warnings.push('Google Calendar is unavailable right now.');
+    } else if (provider === 'outlook') {
+      warningCodes.push('OUTLOOK_CALENDAR_UNAVAILABLE');
+      warnings.push('Outlook Calendar is unavailable right now.');
+    } else {
+      warningCodes.push('CALENDAR_UNAVAILABLE');
+      warnings.push('Calendar data is unavailable right now.');
+    }
+  });
+
+  const allEvents = allProviderEvents.sort((a, b) => a.start.localeCompare(b.start));
+  return {
+    today: allEvents,
+    upcoming: [],
+    ...buildSectionHealth(
+      fulfilledProviders,
+      fetchers.length,
+      warningCodes,
+      warnings,
+      'CALENDAR_UNAVAILABLE',
+      'Calendar data is unavailable right now.',
+    ),
+  };
 }
 
-async function fetchTasks() {
-  const todo = require('../../services/microsoft-todo');
+async function fetchTasks(userId: number) {
+  const { getTaskProviderForUser } = require('../../services/task-store/task-router');
+  const todo = getTaskProviderForUser(userId);
   const allTasksResult = await todo.getAllPendingTasks();
   const tasks = allTasksResult?.data || allTasksResult || [];
-  if (!Array.isArray(tasks)) return { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] };
+  if (!allTasksResult?.success || !Array.isArray(tasks)) {
+    return buildUnavailableSection(
+      { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
+      ['TASKS_UNAVAILABLE'],
+      ['Task data is unavailable right now.'],
+    );
+  }
 
   const now = new Date();
   // MS Graph stores due dates as T23:00:00 UTC for the "previous" day in European TZ.
@@ -284,28 +469,93 @@ async function fetchTasks() {
     checklistItems: null, createdDateTime: t.createdDateTime || null,
   }));
 
-  return { overdue, dueToday, totalPending: tasks.length, topTasks };
+  return {
+    overdue,
+    dueToday,
+    totalPending: tasks.length,
+    topTasks,
+    status: 'ready' as const,
+    warningCodes: [],
+    warnings: [],
+  };
 }
 
 async function fetchTraining(userId: number) {
   let readinessScore: number | null = null;
   let bodyBattery: number | null = null;
+  let readinessStatus: DashboardSectionStatus = 'ready';
+  let bodyBatteryStatus: DashboardSectionStatus = 'ready';
+  const warningCodes: string[] = [];
+  const warnings: string[] = [];
 
   // Provider-agnostic readiness: calculateReadiness() handles Garmin → Apple Health → neutral
   // fallback internally. No need for the dashboard to branch by provider.
   const cachedReadiness = getCached<{ score: number; bodyBattery: number | null }>(`readiness:${userId}`);
   if (cachedReadiness) {
-    readinessScore = cachedReadiness.score;
-    bodyBattery = cachedReadiness.bodyBattery;
+    if (isSyntheticNeutralCachedReadiness(cachedReadiness)) {
+      readinessScore = null;
+      bodyBattery = null;
+      readinessStatus = 'unavailable';
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
+      warnings.push(
+        'Readiness data is unavailable right now.',
+        'Body Battery is unavailable right now.',
+      );
+    } else {
+      readinessScore = cachedReadiness.score;
+      bodyBattery = cachedReadiness.bodyBattery;
+    }
+    if (readinessScore == null) {
+      readinessStatus = 'unavailable';
+      warningCodes.push('READINESS_UNAVAILABLE');
+      warnings.push('Readiness data is unavailable right now.');
+    }
+    if (bodyBattery == null) {
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('BODY_BATTERY_UNAVAILABLE');
+      warnings.push('Body Battery is unavailable right now.');
+    }
   } else {
     try {
       const { calculateReadiness } = require('../../services/readiness-scorer');
       const readiness = await calculateReadiness(userId);
-      readinessScore = readiness?.score || null;
-      bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
+      if (isSyntheticNeutralReadiness(readiness)) {
+        readinessScore = null;
+        bodyBattery = null;
+        readinessStatus = 'unavailable';
+        bodyBatteryStatus = 'unavailable';
+        warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
+        warnings.push(
+          'Readiness data is unavailable right now.',
+          'Body Battery is unavailable right now.',
+        );
+      } else {
+        readinessScore = readiness?.score || null;
+        bodyBattery = normalizeBodyBattery(readiness?.factors?.bodyBattery?.current);
+
+        if (readinessScore == null) {
+          readinessStatus = 'unavailable';
+          warningCodes.push('READINESS_UNAVAILABLE');
+          warnings.push('Readiness data is unavailable right now.');
+        }
+        if (bodyBattery == null) {
+          bodyBatteryStatus = 'unavailable';
+          warningCodes.push('BODY_BATTERY_UNAVAILABLE');
+          warnings.push('Body Battery is unavailable right now.');
+        }
+      }
 
       setCache(`readiness:${userId}`, { score: readinessScore, bodyBattery }, 1800);
-    } catch {}
+    } catch {
+      readinessStatus = 'unavailable';
+      bodyBatteryStatus = 'unavailable';
+      warningCodes.push('READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE');
+      warnings.push(
+        'Readiness data is unavailable right now.',
+        'Body Battery is unavailable right now.',
+      );
+    }
   }
 
   // Get today's training — first try training plans, then calendar fallback
@@ -323,8 +573,8 @@ async function fetchTraining(userId: number) {
       const today = new Date();
       const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
-      const { getEvents } = require('../../services/outlook-calendar');
-      const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString());
+      const { getEvents } = require('../../services/unified-calendar');
+      const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString(), userId);
       const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
       const trainingEvent = (events || []).find((e: any) => {
         const title = (e.subject || e.summary || e.title || '').toLowerCase();
@@ -339,6 +589,8 @@ async function fetchTraining(userId: number) {
     } catch {}
   }
 
+  const status = mergeSectionStatuses([readinessStatus, bodyBatteryStatus]);
+
   return {
     todaySession: todaySession ? {
       type: todaySession.type || todaySession.name,
@@ -347,6 +599,11 @@ async function fetchTraining(userId: number) {
     weeklyAdherence: null,
     readinessScore,
     bodyBattery,
+    status,
+    readinessStatus,
+    bodyBatteryStatus,
+    warningCodes: dedupeStrings(warningCodes),
+    warnings: dedupeStrings(warnings),
   };
 }
 
@@ -362,8 +619,80 @@ async function fetchContent(userId?: number) {
       const key = row.stage as keyof typeof pipelineCount;
       if (key in pipelineCount) pipelineCount[key] = row.count;
     }
-    return { pipelineCount, nextDeadline: null };
+    return {
+      pipelineCount,
+      nextDeadline: null,
+      status: 'ready' as const,
+      warningCodes: [],
+      warnings: [],
+    };
   } catch {
-    return { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null };
+    return buildUnavailableSection(
+      { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+      ['CONTENT_UNAVAILABLE'],
+      ['Content pipeline is unavailable right now.'],
+    );
   }
+}
+
+function buildSectionHealth(
+  fulfilledSources: number,
+  totalSources: number,
+  warningCodes: string[],
+  warnings: string[],
+  fallbackCode: string,
+  fallbackWarning: string,
+): DashboardSectionHealth {
+  const uniqueCodes = dedupeStrings(warningCodes);
+  const uniqueWarnings = dedupeStrings(warnings);
+
+  if (fulfilledSources === 0 && totalSources === 0) {
+    return {
+      status: 'unavailable',
+      warningCodes: uniqueCodes.length > 0 ? uniqueCodes : [fallbackCode],
+      warnings: uniqueWarnings.length > 0 ? uniqueWarnings : [fallbackWarning],
+    };
+  }
+
+  if (uniqueCodes.length === 0) {
+    return { status: 'ready', warningCodes: [], warnings: [] };
+  }
+
+  return {
+    status: fulfilledSources > 0 ? 'degraded' : 'unavailable',
+    warningCodes: uniqueCodes,
+    warnings: uniqueWarnings,
+  };
+}
+
+function buildUnavailableSection<T extends object>(
+  data: T,
+  warningCodes: string[],
+  warnings: string[],
+): T & DashboardSectionHealth {
+  return {
+    ...data,
+    status: 'unavailable',
+    warningCodes: dedupeStrings(warningCodes),
+    warnings: dedupeStrings(warnings),
+  };
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function mergeSectionStatuses(statuses: DashboardSectionStatus[]): DashboardSectionStatus {
+  if (statuses.every((status) => status === 'ready')) return 'ready';
+  if (statuses.some((status) => status === 'ready' || status === 'degraded')) return 'degraded';
+  return 'unavailable';
+}
+
+function isSyntheticNeutralReadiness(readiness: any): boolean {
+  const reasoning = String(readiness?.reasoning || '').toLowerCase();
+  return reasoning.includes('no wearable connected');
+}
+
+function isSyntheticNeutralCachedReadiness(readiness: { score: number; bodyBattery: number | null } | null): boolean {
+  return readiness?.score === 60 && readiness?.bodyBattery === 0;
 }

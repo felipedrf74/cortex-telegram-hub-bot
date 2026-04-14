@@ -6,6 +6,16 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { sendSuccess, sendError } from '../response-helpers';
 import { getRuntimeStatus } from '../../services/runtime-status';
+import { normalizeLangHeader } from '../../services/secretary-fastpath';
+import { setUserLanguage } from '../../services/user-service';
+
+function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
+  if (typeof language !== 'string') return null;
+  const normalized = language.trim().toLowerCase();
+  if (!normalized) return null;
+  if (!normalized.startsWith('pt') && !normalized.startsWith('en')) return null;
+  return normalizeLangHeader(language);
+}
 
 export function settingsRoutes(): Router {
   const router = Router();
@@ -86,16 +96,16 @@ export function settingsRoutes(): Router {
   router.post('/language', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     const { language } = req.body;
+    const normalizedLanguage = normalizeLanguageInput(language);
 
-    if (!language || !['pt-BR', 'en-US'].includes(language)) {
-      sendError(res, 'BAD_REQUEST', 'language must be pt-BR or en-US');
+    if (!normalizedLanguage) {
+      sendError(res, 'BAD_REQUEST', 'language must be pt-BR, pt-PT, pt, or en/en-US');
       return;
     }
 
     try {
-      const { setUserLanguage } = require('../../services/user-service');
-      setUserLanguage(userId, language);
-      sendSuccess(res, { language });
+      setUserLanguage(userId, normalizedLanguage);
+      sendSuccess(res, { language: normalizedLanguage });
     } catch (err: any) {
       logger.error({ err }, 'iOS set language failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to set language', 500);

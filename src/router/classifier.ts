@@ -50,15 +50,26 @@ export function patternMatch(message: string): DomainName | null {
 
 const NL_KEYWORD_ROUTES: { domain: DomainName; pattern: RegExp }[] = [
   // Domain-specific unique keywords — EN + PT-BR (checked first for specificity)
-  { domain: 'triathlon', pattern: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|sets?\s*[x×]\s*\d|protein|carnivore|training(?:\s+plan)?|macros|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery\s+day|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|periodization|mesocycle|microcycle|training\s+week|log\s+(?:workout|session)|workout\s+plan|auto.?adjust|session\s+complete|my\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|prote[ií]na|dieta\s+carn[ií]vora|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|s[eé]ries?\s*[x×]\s*\d|academia|plano\s+de\s+treino)\b/i },
-  { domain: 'content', pattern: /\b(youtube|instagram|reels?|thumbnail|video\s+(?:idea|script)|content\s+(?:strategy|calendar|idea)|caption|hashtag|subscribers?|audience|viral|hook|CTA|engagement|v[ií]deo|roteiro|legenda|inscritos|miniatura|conte[uú]do|id[eé]ia\s+de\s+(?:v[ií]deo|conte[uú]do)|calend[aá]rio\s+(?:de\s+)?conte[uú]do|engajamento)\b/i },
-  { domain: 'finance', pattern: /\b(despesas?|gastos?|or[çc]amento|imposto|carn[eê]-le[aã]o|DARF|receita\s+federal|nota\s+fiscal|budget|expenses?|tax(?:es)?|income\s+tax|financial|freelancer?\s+tax|dedu[çc][aã]o|faturamento|NF(?:-?e)?)\b/i },
+  { domain: 'triathlon', pattern: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|sets?\s*[x×]\s*\d|protein|carnivore|training(?:\s+plan)?|macros|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery(?:\s+day)?|readiness|body\s+battery|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|periodization|mesocycle|microcycle|training\s+week|log\s+(?:workout|session)|workout\s+plan|auto.?adjust|session\s+complete|my\s+plan|adherence|treino|corrida|pedal(?:ada)?|muscula[çc][aã]o|prote[ií]na|dieta\s+carn[ií]vora|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|prontid[aã]o|bateria\s+corporal|s[eé]ries?\s*[x×]\s*\d|academia|plano\s+de\s+treino)\b/i },
+  { domain: 'content', pattern: /\b(youtube|instagram|reels?|thumbnail|video\s+(?:idea|script)|content\s+(?:strategy|calendar|idea)|caption|hashtag|subscribers?|audience|viral|hook|CTA|engagement|script|title\s+ideas?|v[ií]deo|roteiro|legenda|inscritos|miniatura|conte[uú]do|id[eé]ia\s+de\s+(?:v[ií]deo|conte[uú]do)|calend[aá]rio\s+(?:de\s+)?conte[uú]do|engajamento|t[ií]tulos?)\b/i },
+  { domain: 'finance', pattern: /\b(despesas?|gastos?|or[çc]amento|imposto|carn[eê]-le[aã]o|DARF|receita\s+federal|nota\s+fiscal|budget|expenses?|tax(?:es)?|income\s+tax|financial|freelancer?\s+tax|dedu[çc][aã]o|faturamento|receipt|receipts|invoice|invoices|merchant|bill|bills|NF(?:-?e)?)\b/i },
   { domain: 'cooking', pattern: /\b(recipe|recipes|meal\s+plan|meal\s+prep|shopping\s+list|cook(?:ing)?|ingredient|groceries|what\s+(?:to|should\s+I)\s+(?:cook|eat|make)|dinner\s+ideas?|breakfast\s+ideas?|lunch\s+ideas?|receita|cardápio|lista\s+de\s+compras|cozinhar|refeição|jantar|almoço|café\s+da\s+manhã)\b/i },
   // Secretary catch-all — EN + PT-BR (common task/scheduling language)
   { domain: 'secretary', pattern: /\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\s+)?calendar|schedule|meetings?|appointments?|(?:my\s+)?emails?|inbox|overdue|due\s+(?:today|tomorrow|this\s+week)|planning|digest|unread|mark\s+(?:as\s+)?(?:done|complete)|pending|priority|deadline|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\s+de\s+entrada|atrasad[ao]s?|pra\s+hoje|pendentes?|prioridade|prazo)\b/i },
 ];
 
+const CONTENT_INTENT_PATTERNS: RegExp[] = [
+  /\b(write|create|generate|make|draft|outline|rewrite|improve)\b[\s\S]{0,80}\b(script|caption|hook|hooks|title|titles|thumbnail|thumbnails|reel|reels|video|videos|post|posts|content)\b/i,
+  /\b(escrev(?:e|a)|cria|crie|gera|gerar|faz|faça|rascunha|reescreve|melhora)\b[\s\S]{0,80}\b(roteiro|legenda|gancho|ganchos|t[íi]tulo|t[íi]tulos|miniatura|miniaturas|reel|reels|v[ií]deo|v[ií]deos|post|posts|conte[uú]do)\b/i,
+];
+
 export function keywordMatch(message: string): DomainName | null {
+  // Explicit "make content" asks should beat subject-matter vocabulary
+  // from other domains, e.g. "Write a script about recovery intervals".
+  if (CONTENT_INTENT_PATTERNS.some((pattern) => pattern.test(message))) {
+    return 'content';
+  }
+
   // Check domain-specific keywords first (non-secretary for specificity)
   for (const { domain, pattern } of NL_KEYWORD_ROUTES) {
     if (domain !== 'secretary' && pattern.test(message)) {
@@ -104,6 +115,13 @@ export async function classifyWithClaude(
   userId?: number,
 ): Promise<ClassificationResult> {
   const result = await classifyMessage(message, activeContext ?? undefined, userId);
+  if (activeContext && result.confidence < 0.6) {
+    logger.warn(
+      { requested: result.domain, confidence: result.confidence, fallbackDomain: activeContext.domain },
+      'Low-confidence classifier result — preserving active conversation domain',
+    );
+    return { domain: activeContext.domain, confidence: Math.max(result.confidence, 0.51) };
+  }
   logger.debug({ result }, 'Claude classification result');
   return result;
 }

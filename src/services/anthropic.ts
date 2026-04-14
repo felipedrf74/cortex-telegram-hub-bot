@@ -7,7 +7,7 @@ import { DomainMessage, DomainName } from '../domains/types';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback, completeVisionOneShotWithFallback } from './gemini-provider';
 import { buildKnowledgePromptBlock } from '../state/content-references';
-import { loadPrompt } from '../utils/prompt-loader';
+import { loadPrompt, loadPromptWithConfig } from '../utils/prompt-loader';
 import { readTrainingContextAll, formatTrainingContextForPrompt } from './training-signals';
 import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
 
@@ -56,7 +56,9 @@ export function getDomainSystemPrompt(domain: DomainName, message?: string): str
       }
     }
   }
-  basePrompt = loadPrompt(domain);
+  basePrompt = domain === 'content'
+    ? loadPromptWithConfig(domain)
+    : loadPrompt(domain);
   return withLanguageInstruction(basePrompt);
 }
 
@@ -73,16 +75,18 @@ function getReplyLanguageInstruction(): string {
 
     const { getUserLanguage } = require('./user-service');
     const lang = getUserLanguage(userId);
-    if (lang === 'pt-BR') {
+    if (lang.startsWith('pt')) {
       return [
         '[Reply Language]',
-        'Responda em pt-BR, a menos que o utilizador peça explicitamente outra língua.',
+        `Responda em ${lang === 'pt-PT' ? 'português europeu' : 'pt-BR'}, a menos que o utilizador peça explicitamente outra língua.`,
+        `Nunca mude para ${lang === 'pt-PT' ? 'pt-BR' : 'português europeu'} ou inglês por iniciativa própria.`,
         'Mantenha nomes próprios, títulos de eventos e citações do utilizador na forma original.',
       ].join('\n');
     }
     return [
       '[Reply Language]',
       'Reply in English unless the user explicitly asks to switch languages.',
+      'Do not answer in Portuguese unless the user explicitly asks for Portuguese.',
       'Keep proper nouns, event titles, and quoted user text in their original form.',
     ].join('\n');
   } catch {

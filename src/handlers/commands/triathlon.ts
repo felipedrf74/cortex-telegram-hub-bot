@@ -13,8 +13,11 @@ import { storeCallback, getCallback } from '../../utils/callback-store';
 import { splitMessage, escapeHtml } from '../../utils/telegram-formatter';
 import { addToConversation } from '../../state/conversation';
 import { isGarminConfigured, isMfaPending, submitMfaCode } from '../../services/garmin';
-import { generateCoachBriefing, CoachRecommendation } from '../../services/garmin-coach';
-import { updateEvent as updateCalendarEvent } from '../../services/unified-calendar';
+import {
+  generateCoachBriefing,
+  CoachRecommendation,
+  applyCoachRecommendation,
+} from '../../services/garmin-coach';
 import { setLastCoachState } from '../../domains/domain-handler';
 import { enqueue, lastActiveDomain, isHtmlParseError } from '../shared-state';
 import {
@@ -24,41 +27,7 @@ import {
 import { calculateReadiness, persistReadinessScore } from '../../services/readiness-scorer';
 import { comparePlannedVsActual, formatComparison } from '../../services/training-comparison';
 
-type Lang = 'pt-BR' | 'en-US';
-
-/**
- * Apply a single coach recommendation to the calendar.
- * - MODIFY / SWAP -> updateEvent with new title/times
- * - REST -> updateEvent with cancelled title (keeps the slot visible but marked)
- * - KEEP -> no-op (shouldn't be called for KEEP)
- */
-async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void> {
-  if (rec.action === 'KEEP') return; // No change needed
-
-  if (rec.action === 'REST') {
-    // Mark the event as cancelled (don't delete — athlete sees it on calendar)
-    await updateCalendarEvent(
-      {
-        event_id: rec.eventId,
-        new_title: rec.newTitle || `\u274C CANCELLED \u2014 ${rec.originalTitle}`,
-      },
-      rec.source,
-    );
-    return;
-  }
-
-  // MODIFY or SWAP — update title and optionally times
-  const updateData: { event_id: string; new_title?: string; new_start?: string; new_end?: string } = {
-    event_id: rec.eventId,
-  };
-  if (rec.newTitle && rec.newTitle !== rec.originalTitle) {
-    updateData.new_title = rec.newTitle;
-  }
-  if (rec.newStart) updateData.new_start = rec.newStart;
-  if (rec.newEnd) updateData.new_end = rec.newEnd;
-
-  await updateCalendarEvent(updateData, rec.source);
-}
+type Lang = 'pt-BR' | 'pt-PT' | 'en-US';
 
 export function registerTriathlonCommands(bot: Bot): void {
   // ── Garmin MFA Code Submission ──
@@ -351,7 +320,7 @@ async function handleTrainingPlan(ctx: Context, userId: number, lang: Lang): Pro
   if (!currentWeek) { await ctx.reply(t('training_no_week', lang)); return; }
 
   const sessions = getSessionsForWeek(currentWeek.id);
-  const dayLabels = lang === 'pt-BR' ? DAY_LABELS_PT : DAY_LABELS_EN;
+  const dayLabels = lang.startsWith('pt') ? DAY_LABELS_PT : DAY_LABELS_EN;
 
   let msg = `📋 <b>${escapeHtml(plan.name)}</b> — ${t('week', lang)} ${currentWeek.week_number}\n`;
   msg += `<i>${escapeHtml(currentWeek.focus || plan.goal || '')}</i>`;

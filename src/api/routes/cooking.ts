@@ -41,12 +41,234 @@ import {
   deleteMealPlan,
   generateShoppingList,
   getShoppingList,
+  updateShoppingListItemChecked,
   type Ingredient,
+  type MealPlan,
   type Recipe,
 } from '../../services/cooking-chef';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
+import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
+import { readTrainingContextAll } from '../../services/training-signals';
+import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
 import { config } from '../../config';
+
+type MealAdaptationKind = 'protein_up' | 'recovery' | 'carbs_up' | 'carbs_down';
+
+interface MealAdaptation {
+  kind: MealAdaptationKind;
+  reasonCodes: string[];
+  readinessScore: number | null;
+}
+
+type MealPlanRouteRow = MealPlan & {
+  adaptation: MealAdaptation | null;
+};
+
+interface CookingTrainingSnapshot {
+  hasTrainingContext: boolean;
+  todayIso: string;
+  tomorrowIso: string;
+  readinessScore: number | null;
+  lowReadiness: boolean;
+  lowSleep: boolean;
+  lowHrv: boolean;
+  highLegLoad: boolean;
+  todayHasTraining: boolean;
+  todayHasHardSession: boolean;
+  tomorrowHasTraining: boolean;
+  tomorrowHasHardSession: boolean;
+}
+
+function isHardTrainingSession(session: TrainingSession): boolean {
+  const haystack = [
+    session.session_type,
+    session.title,
+    session.intensity_text ?? '',
+    session.description ?? '',
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  return [
+    'hard',
+    'interval',
+    'tempo',
+    'threshold',
+    'vo2',
+    'brick',
+    'long run',
+    'long ride',
+    'race pace',
+    'heavy',
+    'strength',
+    'leg day',
+  ].some((token) => haystack.includes(token));
+}
+
+async function buildCookingTrainingSnapshot(userId: number): Promise<CookingTrainingSnapshot> {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const now = DateTime.now().setZone(zone);
+  const tomorrow = now.plus({ days: 1 });
+  const todayIso = now.toISODate() ?? DateTime.now().toISODate() ?? '';
+  const tomorrowIso = tomorrow.toISODate() ?? todayIso;
+  const todayName = now.toFormat('EEEE');
+  const tomorrowName = tomorrow.toFormat('EEEE');
+
+  const activePlans = getActivePlans(userId);
+  const sessionsForDay = (target: DateTime, dayName: string) => activePlans.flatMap((plan) => {
+    const week = getCurrentWeek(plan.id);
+    if (!week) return [];
+
+    const targetWeek = target.hasSame(now, 'week')
+      ? week
+      : getWeeksForPlan(plan.id).find((candidate) => candidate.week_number === week.week_number + 1) ?? week;
+
+    return getSessionsForWeek(targetWeek.id);
+  }).filter((session) => session.status !== 'skipped' && session.day_of_week === dayName);
+
+  const todaySessions = sessionsForDay(now, todayName);
+  const tomorrowSessions = sessionsForDay(tomorrow, tomorrowName);
+  const trainingContext = readTrainingContextAll({ userId });
+
+  let readinessScore: number | null = null;
+  try {
+    readinessScore = (await getWearableReadiness(userId, todayIso))?.readinessScore ?? null;
+  } catch (err) {
+    logger.debug({ err, userId }, 'Cooking meal-plan readiness lookup failed');
+  }
+
+  return {
+    hasTrainingContext: activePlans.length > 0 || trainingContext.signals.length > 0 || readinessScore != null,
+    todayIso,
+    tomorrowIso,
+    readinessScore,
+    lowReadiness: trainingContext.flags.lowReadiness || (readinessScore != null && readinessScore < 45),
+    lowSleep: trainingContext.flags.lowSleep,
+    lowHrv: trainingContext.flags.lowHrv,
+    highLegLoad: trainingContext.flags.highLegLoad,
+    todayHasTraining: todaySessions.length > 0,
+    todayHasHardSession: todaySessions.some(isHardTrainingSession),
+    tomorrowHasTraining: tomorrowSessions.length > 0,
+    tomorrowHasHardSession: tomorrowSessions.some(isHardTrainingSession),
+  };
+}
+
+function buildMealAdaptation(meal: MealPlan, snapshot: CookingTrainingSnapshot): MealAdaptation | null {
+  if (!snapshot.hasTrainingContext) return null;
+
+  const mealType = String((meal as any).meal_type ?? '').toLowerCase();
+  const mealDate = String((meal as any).date ?? '');
+  const isTodayMeal = mealDate === snapshot.todayIso;
+  const isTomorrowMeal = mealDate === snapshot.tomorrowIso;
+  const recoveryReasonCodes = [
+    snapshot.lowReadiness ? 'LOW_READINESS' : null,
+    snapshot.lowSleep ? 'LOW_SLEEP' : null,
+    snapshot.lowHrv ? 'LOW_HRV' : null,
+  ].filter(Boolean) as string[];
+
+  if (!isTodayMeal && !isTomorrowMeal) return null;
+
+  if (isTodayMeal && (mealType === 'breakfast' || mealType === 'lunch') && snapshot.todayHasHardSession) {
+    return {
+      kind: 'carbs_up',
+      reasonCodes: ['HARD_SESSION_TODAY'],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTodayMeal && mealType === 'dinner' && snapshot.todayHasTraining) {
+    if (snapshot.highLegLoad) {
+      return {
+        kind: 'protein_up',
+        reasonCodes: ['HIGH_LEG_LOAD', ...recoveryReasonCodes],
+        readinessScore: snapshot.readinessScore,
+      };
+    }
+
+    if (recoveryReasonCodes.length > 0) {
+      return {
+        kind: 'recovery',
+        reasonCodes: recoveryReasonCodes,
+        readinessScore: snapshot.readinessScore,
+      };
+    }
+
+    return {
+      kind: 'protein_up',
+      reasonCodes: snapshot.todayHasHardSession ? ['HARD_SESSION_TODAY'] : ['TRAINING_TODAY'],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTodayMeal && mealType === 'dinner' && snapshot.highLegLoad) {
+    return {
+      kind: 'protein_up',
+      reasonCodes: ['HIGH_LEG_LOAD', ...recoveryReasonCodes],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTodayMeal && recoveryReasonCodes.length > 0) {
+    return {
+      kind: 'recovery',
+      reasonCodes: recoveryReasonCodes,
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTodayMeal && mealType === 'dinner' && snapshot.tomorrowHasHardSession) {
+    return {
+      kind: 'carbs_up',
+      reasonCodes: ['HARD_SESSION_TOMORROW'],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTodayMeal && mealType === 'dinner' && !snapshot.tomorrowHasTraining) {
+    return {
+      kind: 'carbs_down',
+      reasonCodes: ['REST_DAY_TOMORROW'],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTomorrowMeal && mealType === 'dinner' && snapshot.tomorrowHasTraining) {
+    return {
+      kind: 'protein_up',
+      reasonCodes: snapshot.tomorrowHasHardSession ? ['HARD_SESSION_TOMORROW'] : ['TRAINING_TOMORROW'],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  if (isTomorrowMeal && (mealType === 'breakfast' || mealType === 'lunch')) {
+    if (snapshot.tomorrowHasHardSession) {
+      return {
+        kind: 'carbs_up',
+        reasonCodes: ['HARD_SESSION_TOMORROW'],
+        readinessScore: snapshot.readinessScore,
+      };
+    }
+
+    if (snapshot.tomorrowHasTraining) {
+      return {
+        kind: 'carbs_up',
+        reasonCodes: ['TRAINING_TOMORROW'],
+        readinessScore: snapshot.readinessScore,
+      };
+    }
+  }
+
+  if (isTomorrowMeal && mealType === 'dinner' && !snapshot.tomorrowHasTraining) {
+    return {
+      kind: 'carbs_down',
+      reasonCodes: ['REST_DAY'],
+      readinessScore: snapshot.readinessScore,
+    };
+  }
+
+  return null;
+}
 
 export function cookingRoutes(): Router {
   const router = Router();
@@ -237,7 +459,12 @@ export function cookingRoutes(): Router {
 
     try {
       const plans = getMealPlan(userId, from, to);
-      sendSuccess(res, { meals: plans, count: plans.length, from, to });
+      const trainingSnapshot = await buildCookingTrainingSnapshot(userId);
+      const meals: MealPlanRouteRow[] = plans.map((plan) => ({
+        ...plan,
+        adaptation: buildMealAdaptation(plan, trainingSnapshot),
+      }));
+      sendSuccess(res, { meals, count: meals.length, from, to });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS cooking meal-plan list failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to fetch meal plan', 500);
@@ -335,6 +562,47 @@ export function cookingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId, week }, 'iOS cooking shopping-list generate failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to generate shopping list', 500);
+    }
+  }));
+
+  /**
+   * PATCH /api/v1/cooking/shopping-list/items/:index
+   * Body: { week: YYYY-MM-DD, checked: boolean }
+   * Persists the checked state for one item in the week's list.
+   */
+  router.patch('/shopping-list/items/:index', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const index = parseInt(req.params.index, 10);
+    const { week, checked } = req.body;
+
+    if (Number.isNaN(index) || index < 0) {
+      sendError(res, 'BAD_REQUEST', 'index must be a non-negative integer');
+      return;
+    }
+    if (!week || typeof week !== 'string') {
+      sendError(res, 'BAD_REQUEST', 'week is required in the body (YYYY-MM-DD)');
+      return;
+    }
+    if (typeof checked !== 'boolean') {
+      sendError(res, 'BAD_REQUEST', 'checked must be a boolean');
+      return;
+    }
+
+    try {
+      const list = updateShoppingListItemChecked(userId, week, index, checked);
+      if (!list) {
+        sendError(res, 'NOT_FOUND', 'Shopping list not found for that week', 404);
+        return;
+      }
+      sendSuccess(res, { list });
+    } catch (err: any) {
+      logger.error({ err, userId, week, index }, 'iOS cooking shopping-list item update failed');
+      const message = err?.message || 'Failed to update shopping list item';
+      if (message.includes('out of range')) {
+        sendError(res, 'BAD_REQUEST', message, 400);
+        return;
+      }
+      sendError(res, 'INTERNAL', message, 500);
     }
   }));
 

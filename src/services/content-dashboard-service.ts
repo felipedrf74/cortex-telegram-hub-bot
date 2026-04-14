@@ -122,13 +122,28 @@ export interface VoiceDnaEntry {
  * Reads from content_knowledge table (same data as getAllKnowledge()
  * in content-references.ts) with added label mapping for the dashboard.
  */
-export function getVoiceDna(dbOverride?: any): VoiceDnaEntry[] {
+export function getVoiceDna(dbOverride?: any, userId?: number): VoiceDnaEntry[] {
   const d = dbOverride || db();
   try {
-    const rows = d.prepare(
-      'SELECT category, synthesized_text, source_channels, version, updated_at FROM content_knowledge ORDER BY updated_at DESC',
-    ).all() as any[];
-    return rows.map((k: any) => ({
+    const rows = userId != null
+      ? d.prepare(
+          `SELECT category, synthesized_text, source_channels, version, updated_at, user_id
+             FROM content_knowledge
+            WHERE user_id IN (0, ?)
+            ORDER BY category ASC, user_id DESC, updated_at DESC`,
+        ).all(userId) as any[]
+      : d.prepare(
+          'SELECT category, synthesized_text, source_channels, version, updated_at, user_id FROM content_knowledge ORDER BY updated_at DESC',
+        ).all() as any[];
+
+    const deduped = new Map<string, any>();
+    for (const row of rows) {
+      if (!deduped.has(row.category)) {
+        deduped.set(row.category, row);
+      }
+    }
+
+    return Array.from(deduped.values()).map((k: any) => ({
       category: k.category,
       label: CATEGORY_LABELS[k.category] ?? k.category,
       text: k.synthesized_text,
@@ -155,22 +170,24 @@ export interface KnowledgeStats {
  * Get knowledge category stats and reference channel count.
  * Used by the dashboard's bottom-bar knowledge overview.
  */
-export function getKnowledgeStats(dbOverride?: any): KnowledgeStats {
+export function getKnowledgeStats(dbOverride?: any, userId?: number): KnowledgeStats {
   const d = dbOverride || db();
   try {
-    const kStats = d.prepare(`
-      SELECT category, updated_at,
-             json_array_length(COALESCE(source_channels, '[]')) as sources
-      FROM content_knowledge
-      ORDER BY updated_at DESC
-    `).all() as any[];
+    const voiceEntries = getVoiceDna(d, userId);
+    const kStats = voiceEntries.map((entry) => ({
+      category: entry.category,
+      updatedAt: entry.updatedAt,
+      sources: entry.sources.length,
+    }));
 
-    const rc = d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels').get() as any;
+    const rc = userId != null
+      ? d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels WHERE user_id IN (0, ?)').get(userId) as any
+      : d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels').get() as any;
 
     return {
       categories: kStats.map(r => ({
         category: r.category,
-        updatedAt: r.updated_at,
+        updatedAt: r.updatedAt,
         sources: r.sources ?? 0,
       })),
       referenceChannels: rc?.cnt ?? 0,

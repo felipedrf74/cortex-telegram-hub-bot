@@ -1,6 +1,7 @@
 import asyncio
 import time
 import logging
+import re
 from models.research import SearchResult, TrendingTopic, ContentBrief
 from models.requests import (
     DeepSearchResponse, SourcesResponse, HotNewsResponse,
@@ -39,6 +40,109 @@ HOT_NEWS_QUERIES = [
     "desenvolvimento pessoal disciplina produtividade",
     "YouTube viral tendência debate reação",
 ]
+
+EVERGREEN_HINTS = [
+    "recovery", "recover", "interval", "intervals", "training", "workout", "sleep", "hydration",
+    "protein", "carb", "nutrition", "readiness", "zone 2", "garmin", "triathlon", "running",
+    "cycling", "swimming", "cooldown", "cool down", "hill repeat", "hill repeats",
+    "treino", "recuperação", "recuperar", "intervalos", "repetição", "repetições", "sono", "hidratação",
+    "proteína", "carboidrato", "nutrição", "prontidão", "corrida", "ciclismo", "natação",
+    "desaquecimento", "eletrólitos", "subida", "sessão", "sessões",
+]
+
+TIMELY_HINTS = [
+    "today", "hoje", "agora", "latest", "breaking", "viral", "trend", "trending", "election",
+    "president", "governo", "governo", "política", "economia", "war", "guerra", "news", "notícia",
+]
+
+EVERGREEN_RESEARCH_SIGNALS = [
+    "guide", "evidence", "study", "review", "protocol", "best practice", "mistake",
+    "guia", "evidência", "estudo", "revisão", "protocolo", "melhores práticas", "erros comuns",
+]
+
+EVERGREEN_NOISE_SIGNALS = [
+    "viral", "trending", "trend", "tendência", "polêmica", "debate", "reaction", "react", "breaking", "drama",
+]
+
+
+def _detect_query_language(query: str) -> str:
+    lower = query.lower()
+    pt_markers = [
+        " recuperação ", " recuperar ", " intervalos ", " repetições ", " treino ",
+        " português ", " português europeu ", " depois ", " sobre ", " duro ", " subida ", " triatlo ",
+    ]
+    en_markers = [
+        " recovery ", " recover ", " intervals ", " hill repeat ", " hill repeats ",
+        " training ", " english ", " after ", " about ", " hard ", " triathlon ",
+    ]
+    padded = f" {lower} "
+    if any(marker in padded for marker in pt_markers):
+        return "pt"
+    if any(marker in padded for marker in en_markers):
+        return "en"
+    return "pt"
+
+
+def _is_evergreen_query(query: str) -> bool:
+    lower = query.lower()
+    has_evergreen = any(hint in lower for hint in EVERGREEN_HINTS)
+    has_timely = any(hint in lower for hint in TIMELY_HINTS)
+    return has_evergreen and not has_timely
+
+
+def _build_search_variations(query: str, verification_queries: list[str]) -> list[str]:
+    language = _detect_query_language(query)
+    evergreen = _is_evergreen_query(query)
+
+    if evergreen and language == "en":
+        base_variations = [
+            query,
+            f"{query} evidence based guide",
+            f"{query} study review protocol",
+            f"{query} coaching science best practices",
+            f"{query} common mistakes practical takeaway",
+        ]
+    elif evergreen:
+        base_variations = [
+            query,
+            f"{query} guia prático baseado em evidência",
+            f"{query} estudo revisão protocolo",
+            f"{query} ciência treino melhores práticas",
+            f"{query} erros comuns aplicação prática",
+        ]
+    elif language == "en":
+        base_variations = [
+            query,
+            f"{query} data statistics numbers",
+            f"{query} opinion critical analysis",
+            f"{query} controversy debate consequences",
+            f"{query} YouTube viral trend reaction",
+        ]
+    else:
+        base_variations = [
+            query,
+            f"{query} dados estatísticas números Brasil",
+            f"{query} opinião análise crítica",
+            f"{query} polêmica debate consequências",
+            f"{query} YouTube vídeo viral tendência",
+        ]
+
+    combined = base_variations + verification_queries
+    return list(dict.fromkeys(combined))
+
+
+def _query_specific_rank(item: ScoredResult, evergreen: bool) -> float:
+    score = item.score.composite
+    if not evergreen:
+        return score
+
+    text = f"{item.result.title} {item.result.snippet}".lower()
+    score += sum(0.08 for signal in EVERGREEN_RESEARCH_SIGNALS if signal in text)
+    score -= sum(0.18 for signal in EVERGREEN_NOISE_SIGNALS if signal in text)
+
+    if item.result.source in {"reddit", "news"}:
+        score += 0.05
+    return score
 
 
 class ResearchOrchestrator:
@@ -85,20 +189,15 @@ class ResearchOrchestrator:
         from services.claude_client import ask_claude_json, MODEL
 
         start = time.monotonic()
+        warnings: list[str] = []
 
         # Phase 0: Add verification queries for high-risk topics
         from services.source_registry import get_verification_queries
         verification_queries = get_verification_queries(query)
+        evergreen_query = _is_evergreen_query(query)
 
         # Phase 1: Wide search — query + variations for depth + verification
-        search_variations = [
-            query,
-            f"{query} dados estatísticas números Brasil",
-            f"{query} opinião análise crítica",
-            f"{query} polêmica debate consequências",
-            f"{query} YouTube vídeo viral tendência",
-            *verification_queries,  # Add targeted verification queries
-        ]
+        search_variations = _build_search_variations(query, verification_queries)
 
         var_tasks = [self._fan_out(q, max_per_searcher=5) for q in search_variations]
         var_results = await asyncio.gather(*var_tasks, return_exceptions=True)
@@ -121,9 +220,15 @@ class ResearchOrchestrator:
                 seen_urls.add(item.result.url)
                 unique_scored.append(item)
 
+        selected_scored = sorted(
+            unique_scored,
+            key=lambda item: _query_specific_rank(item, evergreen_query),
+            reverse=True,
+        )
+
         # Build raw source data for Claude
         raw_sources = []
-        for item in unique_scored[:25]:
+        for item in selected_scored[:25]:
             raw_sources.append({
                 "title": item.result.title.replace("[Mock] ", ""),
                 "url": item.result.url,
@@ -135,9 +240,17 @@ class ResearchOrchestrator:
 
         if not raw_sources:
             # Fallback to old brief builder if no results
-            briefs = build_briefs(scored, max_briefs=max_results)
+            briefs = build_briefs(selected_scored, max_briefs=max_results)
             duration_ms = int((time.monotonic() - start) * 1000)
-            return DeepSearchResponse(query=query, briefs=briefs, search_count=search_count, duration_ms=duration_ms)
+            warnings.append("No strong research sources were found; returning conservative fallback briefs.")
+            return DeepSearchResponse(
+                query=query,
+                briefs=briefs,
+                search_count=search_count,
+                duration_ms=duration_ms,
+                degraded=True,
+                warnings=warnings,
+            )
 
         # Phase 2: AI synthesis — Claude analyzes all sources and builds real briefs
         synthesis_prompt = f"""You are Felipe's deep research analyst. He is a Brazilian conservative, Christian, libertarian content creator.
@@ -150,7 +263,7 @@ I found {len(raw_sources)} sources. Here they are:
 
 {json.dumps(raw_sources, ensure_ascii=False, indent=1)}
 
-YOUR TASK — produce a DEEP RESEARCH BRIEF in JSON with this structure:
+YOUR TASK — produce a {"DEEP RESEARCH BRIEF" if not evergreen_query else "PRACTICAL EVERGREEN RESEARCH BRIEF"} in JSON with this structure:
 {{
   "summary": "3-5 sentence executive summary of what's happening with this topic right now",
   "key_facts": ["fact 1 with specific data/numbers", "fact 2", "fact 3", "fact 4", "fact 5"],
@@ -179,20 +292,33 @@ RULES:
 - hooks must be in natural PT-BR, conversational
 - best_sources: pick the 5-8 most useful, explain WHY each is useful
 - Everything in Portuguese except field names
+- {"For evergreen training/health/performance topics, do NOT manufacture virality. Treat `why_now` as practical relevance and usually keep `time_sensitive` false unless the sources clearly prove timeliness." if evergreen_query else "For timely commentary topics, explain the urgency clearly and use `time_sensitive` when the window is actually short."}
 
 Return ONLY the JSON object."""
 
         try:
             synthesis = await ask_claude_json(
-                synthesis_prompt, model=MODEL, max_tokens=6144, temperature=0.6
+                synthesis_prompt,
+                model=MODEL,
+                max_tokens=6144,
+                temperature=0.6,
+                category="content_engine_deepsearch",
             )
             if isinstance(synthesis, dict) and "raw" in synthesis and len(synthesis) == 1:
                 raise ValueError("JSON parse failed")
         except Exception as e:
             logger.warning("AI synthesis failed, falling back to basic briefs: %s", e)
-            briefs = build_briefs(scored, max_briefs=max_results)
+            briefs = build_briefs(selected_scored, max_briefs=max_results)
             duration_ms = int((time.monotonic() - start) * 1000)
-            return DeepSearchResponse(query=query, briefs=briefs, search_count=search_count, duration_ms=duration_ms)
+            warnings.append("AI synthesis was unavailable; returning search-based fallback briefs.")
+            return DeepSearchResponse(
+                query=query,
+                briefs=briefs,
+                search_count=search_count,
+                duration_ms=duration_ms,
+                degraded=True,
+                warnings=warnings,
+            )
 
         # Phase 3: Convert AI synthesis into ContentBrief objects
         from models.research import SourceReference
@@ -251,6 +377,8 @@ Return ONLY the JSON object."""
             briefs=briefs,
             search_count=search_count,
             duration_ms=duration_ms,
+            degraded=False,
+            warnings=warnings,
         )
 
     async def get_sources(self, query: str) -> SourcesResponse:

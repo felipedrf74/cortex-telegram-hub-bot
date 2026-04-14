@@ -15,6 +15,8 @@ class DeepSearchResponse(BaseModel):
     briefs: list[ContentBrief]
     search_count: int                         # how many searcher calls were made
     duration_ms: int                          # total wall-clock time
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SourcesResponse(BaseModel):
@@ -60,6 +62,8 @@ class HooksResponse(BaseModel):
     niche: str
     hooks: list[dict]                             # {text, trigger_type, score, why}
     duration_ms: int
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ScriptRequest(BaseModel):
@@ -68,8 +72,10 @@ class ScriptRequest(BaseModel):
     niche: str = Field(default="general")
     format: str = Field(default="YouTube")
     language: str = Field(default="pt-BR")
+    render_mode: str = Field(default="structured")
     max_duration_minutes: int = Field(default=8, ge=1, le=30)
     context_signals: list[dict] | None = Field(default=None)  # Intelligence bus signals
+    brand_voice: str | None = Field(default=None)
 
 
 class ScriptResponse(BaseModel):
@@ -85,6 +91,8 @@ class ScriptResponse(BaseModel):
     hashtags: list[str] = []                      # e.g., ["#theoperator", "#ai"]
     caption: str = ""                             # social media caption/post copy
     cta: str = ""                                 # call to action text
+    degraded: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TitlesRequest(BaseModel):

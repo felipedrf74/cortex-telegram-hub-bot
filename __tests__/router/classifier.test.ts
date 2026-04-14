@@ -179,6 +179,9 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'coach report please',
       'I need a carnivore meal plan',
       'endurance is improving',
+      'how is my recovery today?',
+      'what does my readiness look like?',
+      'check my body battery',
     ];
 
     it.each(triathlonMessages)('"%s" → triathlon', (msg) => {
@@ -224,6 +227,8 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'strong CTA at the end',
       'boost engagement rate',
       'hashtag research for my post',
+      'write a script about tariffs',
+      'I need title ideas for this video',
     ];
 
     it.each(contentMessages)('"%s" → content', (msg) => {
@@ -272,6 +277,18 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
     });
   });
 
+  describe('Finance keywords (EN)', () => {
+    const financeMessages = [
+      'save this receipt',
+      'archive this invoice',
+      'what merchant was this?',
+    ];
+
+    it.each(financeMessages)('"%s" → finance', (msg) => {
+      expect(keywordMatch(msg)).toBe('finance');
+    });
+  });
+
   describe('Secretary keywords (PT-BR)', () => {
     const secretaryPtBr = [
       'quais são minhas tarefas?',
@@ -304,6 +321,11 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
     it('content-related messages go to content, not secretary', () => {
       expect(keywordMatch('plan my youtube content')).toBe('content');
       expect(keywordMatch('schedule a reel')).toBe('content');
+    });
+
+    it('explicit script-writing intents beat training-topic keywords', () => {
+      expect(keywordMatch('Write a short script about recovery after hard intervals')).toBe('content');
+      expect(keywordMatch('Escreve um roteiro curto sobre recuperação após intervalos fortes')).toBe('content');
     });
   });
 
@@ -388,6 +410,17 @@ describe('classifyWithClaude — Tier 3 AI Classification', () => {
     const result = await classifyWithClaude('something ambiguous');
     expect(result.domain).toBe('secretary');
     expect(result.confidence).toBe(0.3);
+  });
+
+  it('preserves active context on low-confidence classifier replies', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.22 });
+
+    const result = await classifyWithClaude(
+      'make it shorter',
+      { domain: 'content', lastAssistantMessage: 'Here are 10 video ideas.' },
+    );
+
+    expect(result).toEqual({ domain: 'content', confidence: 0.51 });
   });
 });
 
@@ -499,6 +532,36 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       expect(result.method).toBe('keyword');
       expect(result.domain).toBe('secretary');
     });
+
+    it('short follow-up phrasing prefers active context over keyword shortcuts', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.72 });
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here is your draft script.' };
+
+      const result = await routeMessage('make it shorter', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('portuguese content rewrite follow-up stays in content without asking secretary-style clarifications', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.95 });
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Aqui está o teu roteiro.' };
+
+      const result = await routeMessage('Escreve uma versao mais curta disto em portugues europeu', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('english translation/refinement follow-up also stays in active content context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Here is your script.' };
+
+      const result = await routeMessage('rewrite this in Portuguese and make it shorter', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
   });
 
   describe('Tier 2 keyword matching (no active context)', () => {
@@ -512,6 +575,12 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
 
     it('youtube routes to content via keyword', async () => {
       const result = await routeMessage('I need a youtube video idea');
+      expect(result.domain).toBe('content');
+      expect(result.method).toBe('keyword');
+    });
+
+    it('explicit script requests stay in content even with triathlon vocabulary', async () => {
+      const result = await routeMessage('Write a short script about recovery after hard intervals');
       expect(result.domain).toBe('content');
       expect(result.method).toBe('keyword');
     });

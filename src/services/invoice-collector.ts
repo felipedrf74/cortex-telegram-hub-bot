@@ -23,6 +23,31 @@ export interface VendorConfig {
   builtin: boolean;              // true = hardcoded, false = user-added from DB
 }
 
+export function normalizeSenderAddress(rawSender: string): string {
+  const trimmed = rawSender.trim().toLowerCase();
+  const match = trimmed.match(/<([^>]+)>/);
+  return (match?.[1] || trimmed).trim();
+}
+
+export function senderMatchesPatterns(rawSender: string, senderPatterns: string[]): boolean {
+  const emailFrom = normalizeSenderAddress(rawSender);
+  const atIdx = emailFrom.indexOf('@');
+  if (atIdx === -1) return false;
+  const emailDomain = emailFrom.slice(atIdx + 1);
+
+  return senderPatterns.some((pattern) => {
+    const p = pattern.toLowerCase().trim();
+    if (p.includes('@')) return emailFrom === p;
+    return emailDomain === p || emailDomain.endsWith(`.${p}`);
+  });
+}
+
+export function subjectMatchesPatterns(subject: string, subjectPatterns: string[]): boolean {
+  const subjectLower = subject.toLowerCase();
+  if (subjectPatterns.length === 0) return true;
+  return subjectPatterns.some((pattern) => subjectLower.includes(pattern.toLowerCase().trim()));
+}
+
 /** Hardcoded vendors — always present, cannot be removed. */
 const BUILTIN_VENDORS: VendorConfig[] = [
   {
@@ -100,7 +125,7 @@ export interface MonthlyCollectionResult {
  * Try to extract an invoice number from an email subject.
  * Common Portuguese patterns: "Fatura n.º 12345", "FT2026/001", "N.º 12345-A"
  */
-function extractInvoiceNumber(subject: string): string | null {
+export function extractInvoiceNumber(subject: string): string | null {
   const patterns = [
     /(?:fatura|nf|nfs-?e|recibo)\s*(?:n\.?[ºo°]?\s*|#\s*)([A-Z0-9\-/]+)/i,
     /\b(FT\d{4}\/\d+)\b/,                   // FT2026/001
@@ -119,7 +144,7 @@ function extractInvoiceNumber(subject: string): string | null {
  * Try to extract a document date from an email subject.
  * Patterns: "Fatura Fevereiro 2026", "02/2026", "2026-02"
  */
-function extractDateFromSubject(subject: string, fallbackYear: number, fallbackMonth: number): string | null {
+export function extractDateFromSubject(subject: string, fallbackYear: number, fallbackMonth: number): string | null {
   // Portuguese month names → month number
   const ptMonths: Record<string, number> = {
     janeiro: 1, fevereiro: 2, março: 3, marco: 3, abril: 4,
@@ -166,20 +191,7 @@ function extractDateFromSubject(subject: string, fallbackYear: number, fallbackM
  * but NOT "santander.pt" (which would be a different registrable domain).
  */
 function senderMatchesVendor(email: OutlookEmail, vendor: VendorConfig): boolean {
-  const emailFrom = email.from.toLowerCase();
-  // Extract the domain part after @
-  const atIdx = emailFrom.indexOf('@');
-  if (atIdx === -1) return false;
-  const emailDomain = emailFrom.slice(atIdx + 1); // e.g. "docs.aegon-santander.pt"
-
-  return vendor.senderPatterns.some((pattern) => {
-    const p = pattern.toLowerCase();
-    // Exact address match (pattern contains @)
-    if (p.includes('@')) return emailFrom === p;
-    // Domain match: the sender's domain must be exactly the pattern OR a subdomain of it
-    // e.g. "docs.viaverde.pt" matches "viaverde.pt", but "aegon-santander.pt" does NOT match "santander.pt"
-    return emailDomain === p || emailDomain.endsWith(`.${p}`);
-  });
+  return senderMatchesPatterns(email.from, vendor.senderPatterns);
 }
 
 // ─── Core Collection Logic ──────────────────────────────────────────
@@ -196,6 +208,7 @@ async function collectForVendor(
   allEmails: OutlookEmail[],
   targetYear: number,
   targetMonth: number,
+  userId?: number,
 ): Promise<VendorCollectionResult> {
   const result: VendorCollectionResult = {
     vendor: vendor.name,
@@ -215,17 +228,14 @@ async function collectForVendor(
 
   for (const email of vendorEmails) {
     // Check if we've already processed this email
-    if (isEmailAlreadyFiled(email.id)) {
+    if (isEmailAlreadyFiled(email.id, userId)) {
       result.duplicates++;
       result.details.push(`⏭ Duplicado: ${email.subject}`);
       continue;
     }
 
     // Check subject matches vendor patterns (email may be from same sender but not an invoice)
-    const subjectLower = email.subject.toLowerCase();
-    const hasSubjectMatch = vendor.subjectPatterns.some((p) =>
-      subjectLower.includes(p.toLowerCase()),
-    );
+    const hasSubjectMatch = subjectMatchesPatterns(email.subject, vendor.subjectPatterns);
     if (!hasSubjectMatch) {
       logger.debug(
         { subject: email.subject, vendor: vendor.name },
@@ -257,7 +267,7 @@ async function collectForVendor(
       const documentDate = extractDateFromSubject(email.subject, targetYear, targetMonth);
 
       // Check for duplicate by invoice number
-      if (isDuplicate(vendor.name, invoiceNumber)) {
+      if (isDuplicate(vendor.name, invoiceNumber, userId)) {
         result.duplicates++;
         result.details.push(`⏭ Duplicado: ${att.name} (${invoiceNumber})`);
         recordFiling({
@@ -266,6 +276,7 @@ async function collectForVendor(
           source: 'email',
           source_ref: email.id,
           status: 'duplicate',
+          user_id: userId,
         });
         continue;
       }
@@ -296,6 +307,7 @@ async function collectForVendor(
             filename: filingResult.filename,
             file_size_bytes: download.buffer.length,
             status: 'filed',
+            user_id: userId,
           });
         } else {
           result.errors++;
@@ -308,6 +320,7 @@ async function collectForVendor(
             source_ref: email.id,
             status: 'failed',
             error_message: filingResult.error,
+            user_id: userId,
           });
         }
       } catch (err) {
@@ -332,6 +345,7 @@ async function collectForVendor(
  *   - Manual `/invoices [YYYY-MM]` command
  */
 export async function collectMonthlyInvoices(
+  userId: number | undefined,
   year: number,
   month: number,
 ): Promise<MonthlyCollectionResult> {
@@ -377,12 +391,12 @@ export async function collectMonthlyInvoices(
     };
   }
 
-  const vendors = getAllVendors();
+  const vendors = getAllVendors(userId);
   const vendorResults: VendorCollectionResult[] = [];
 
   for (const vendor of vendors) {
     try {
-      const vResult = await collectForVendor(vendor, allEmails, year, month);
+      const vResult = await collectForVendor(vendor, allEmails, year, month, userId);
       vendorResults.push(vResult);
       logger.info(
         { vendor: vendor.name, filed: vResult.filed, duplicates: vResult.duplicates, errors: vResult.errors },

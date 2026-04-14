@@ -109,6 +109,22 @@ describe('script-pipeline: ScriptResponse shape', () => {
   });
 });
 
+describe('script-pipeline: cache key hardening', () => {
+  it('script cache key includes language, mode, duration, brand voice hash, and render mode inputs', () => {
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+
+    expect(engineSource).toContain('export function buildScriptCacheKey');
+    expect(engineSource).toContain('`duration:${maxDuration}`');
+    expect(engineSource).toContain('`mode:${mode}`');
+    expect(engineSource).toContain('`lang:${normalizeScriptLanguage(language)}`');
+    expect(engineSource).toContain('`voice:${hashBrandVoice(brandVoice)}`');
+    expect(engineSource).toContain('`render:${normalizeScriptRenderMode(renderMode)}`');
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // 4. formatScriptToText — Structured → Plain Text
 // ═══════════════════════════════════════════════════════════════════
@@ -243,8 +259,8 @@ describe('script-pipeline: iOS API route', () => {
     const scriptRouteStart = lines.findIndex((l: string) => l.includes("'/script'") || l.includes('"/script"'));
     expect(scriptRouteStart).toBeGreaterThan(-1);
 
-    // Check the next 30 lines after the route definition
-    const routeSection = lines.slice(scriptRouteStart, scriptRouteStart + 40).join('\n');
+    // Check the next 80 lines after the route definition
+    const routeSection = lines.slice(scriptRouteStart, scriptRouteStart + 80).join('\n');
 
     // Should use getScript
     expect(routeSection).toContain('getScript');
@@ -270,7 +286,10 @@ describe('script-pipeline: iOS API route', () => {
     expect(routeSource).toContain('titleOptions:');
     expect(routeSource).toContain('sourcesUsed:');
     expect(routeSource).toContain('estimatedDuration:');
+    expect(routeSource).toContain('renderMode: targetRenderMode');
     expect(routeSource).toContain('durationMs:');
+    expect(routeSource).toContain('degraded: result.degraded ?? false');
+    expect(routeSource).toContain('warnings: result.warnings ?? []');
   });
 
   it('iOS /script route validates topic parameter', () => {

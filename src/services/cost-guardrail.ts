@@ -17,6 +17,12 @@
 import { getDb } from './database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import {
+  getEffectiveDailyCostLimitUsd,
+  getUsageLevelForPlan,
+  type BillingPlan,
+  type UsageLevel,
+} from './plan-quotas';
 
 // ── Telegram Alert Callback ──────────────────────────────────────
 
@@ -43,15 +49,17 @@ function todayKey(): string {
 
 // ── Per-user cap (USD) ───────────────────────────────────────────
 //
-// Margin-safe daily cost caps derived from Gemini 2.5-flash pricing
-// ($0.003–$0.006/call average). Caps are sized so that even if a
-// user consumes the FULL cap every day of the month, we maintain
-// ≥70% margin on Stripe and ≥57% margin on App Store Year 1.
+// Margin-safe daily cost caps derived from the current Gemini-heavy
+// production mix. Local usage traces put routine assistant calls around
+// ~$0.0007–$0.0023 and heavy content/deep-search calls around
+// ~$0.0026–$0.0076. Caps are sized so that a fully-utilized month still
+// leaves room for platform fees, support, retries, and provider mix drift.
 //
-//   Pro ($25/mo): $0.25/day × 30 = $7.50/mo COGS → 70% Stripe margin
-//   Max ($45/mo): $0.45/day × 30 = $13.50/mo COGS → 70% Stripe margin
+//   Pro ($25/mo): $0.20/day × 30 = $6.00/mo AI COGS
+//   Max ($45/mo): $0.60/day × 30 = $18.00/mo AI COGS
 //
-// Typical users consume ~30–40% of cap → realistic margins are 85–93%.
+// Typical users should land materially below cap, especially because
+// token-zero routes avoid AI spend entirely for deterministic lookups.
 // No free tier — unsubscribed users are blocked from AI entirely.
 const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '0.00');
 
@@ -59,6 +67,137 @@ const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '
 // When PAYWALL_ENABLED=false, ALL users get owner-level access ($100/day).
 // Toggle via env var or the portal. Set to 'true' when subscriptions go live.
 const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
+
+export interface DailyQuotaStatus {
+  over: boolean;
+  spentUsd: number;
+  capUsd: number;
+  plan: BillingPlan | string;
+  usageLevel: UsageLevel;
+  usageFraction: number;
+  callsToday: number;
+  boostAvailable: boolean;
+  limitUsd: number;
+  usedUsd: number;
+  remainingUsd: number;
+  resetAt: string;
+}
+
+function getQuotaResetAt(now = new Date()): string {
+  return new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+    0,
+    0,
+    0,
+    0,
+  )).toISOString();
+}
+
+function resolvePlanFromSubscriptionState(userId: number): BillingPlan {
+  const db = getDb();
+
+  if (!PAYWALL_ENABLED) {
+    return 'beta';
+  }
+
+  const ownerTelegramIds = config.telegram.allowedUserIds || [];
+  let isOwner = ownerTelegramIds.includes(userId);
+  let userTier: string | null = null;
+
+  if (!isOwner) {
+    try {
+      const user = db.prepare(
+        'SELECT telegram_id, tier FROM users WHERE id = ?'
+      ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
+      userTier = user?.tier ?? null;
+      if (user?.telegram_id && ownerTelegramIds.includes(user.telegram_id)) {
+        isOwner = true;
+      }
+      if (user?.tier === 'owner') {
+        isOwner = true;
+      }
+    } catch {
+      userTier = null;
+    }
+  }
+
+  if (isOwner) {
+    return 'owner';
+  }
+
+  try {
+    const sub = db.prepare(
+      'SELECT plan, status FROM subscriptions WHERE user_id = ?'
+    ).get(userId) as { plan: string; status: string } | undefined;
+
+    if (sub && ['active', 'trialing'].includes(sub.status) && (sub.plan === 'pro' || sub.plan === 'max')) {
+      return sub.plan;
+    }
+  } catch {
+    // Fall back to the users table below.
+  }
+
+  if (userTier === 'max') return 'max';
+  if (userTier === 'pro') return 'pro';
+
+  return 'free';
+}
+
+export function getDailyQuotaStatus(userId: number): DailyQuotaStatus {
+  try {
+    const db = getDb();
+    const plan = resolvePlanFromSubscriptionState(userId);
+    const capUsd = getEffectiveDailyCostLimitUsd(plan as BillingPlan);
+    const usageLevel = getUsageLevelForPlan(plan as BillingPlan);
+
+    const row = db.prepare(`
+      SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
+      FROM api_usage WHERE user_id = ? AND ts >= date('now')
+    `).get(userId) as { total: number; calls: number };
+
+    const fraction = capUsd > 0 ? Math.min(row.total / capUsd, 1.0) : 1.0;
+    const over = capUsd <= 0 ? true : row.total >= capUsd;
+    const remainingUsd = capUsd > 0 ? Math.max(capUsd - row.total, 0) : 0;
+
+    return {
+      over,
+      spentUsd: row.total,
+      capUsd,
+      plan,
+      usageLevel,
+      usageFraction: Math.round(fraction * 100) / 100,
+      callsToday: row.calls,
+      limitUsd: capUsd,
+      usedUsd: row.total,
+      remainingUsd,
+      resetAt: getQuotaResetAt(),
+      // AI Boost IAP product not yet configured in App Store Connect.
+      // Setting false hides the CTA button in the iOS usage meter.
+      // Re-enable when the product is live: row.total >= capUsd && plan !== 'owner'
+      boostAvailable: false,
+    };
+  } catch {
+    return {
+      over: false, spentUsd: 0, capUsd: DEFAULT_DAILY_CAP_USD,
+      plan: 'none', usageLevel: 'none', usageFraction: 0,
+      callsToday: 0, boostAvailable: false,
+      limitUsd: DEFAULT_DAILY_CAP_USD,
+      usedUsd: 0,
+      remainingUsd: DEFAULT_DAILY_CAP_USD,
+      resetAt: getQuotaResetAt(),
+    };
+  }
+}
+
+export function buildQuotaExceededMessage(quota: Pick<DailyQuotaStatus, 'plan' | 'limitUsd' | 'resetAt'>): string {
+  if (quota.plan === 'free' || quota.limitUsd <= 0) {
+    return 'AI access is not available on the free plan. Upgrade to Pro or Max to continue.';
+  }
+
+  return `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`;
+}
 
 /**
  * Check global daily spend against configured limits.
@@ -116,123 +255,8 @@ export function checkGlobalCostGuardrail(): { totalUsd: number; limitUsd: number
   }
 }
 
-/**
- * Per-user enforcement: returns over=true if the user has exceeded their
- * daily cost cap. The chat handler should call this BEFORE invoking the AI
- * pipeline and return 429 if over.
- *
- * Enforcement is COST-BASED only (not call-count). This aligns with
- * best practices from Claude/OpenAI: the user sees a qualitative progress
- * bar ("Enhanced usage", "Maximum usage"), never raw call counts. The
- * actual dollar caps are internal — not exposed to the iOS client.
- *
- * No free tier: unsubscribed users have $0.00 cap (blocked from AI).
- * They must subscribe to Pro or Max to use AI features.
- *
- * Plan caps (margin-safe, survives daily max consumption × 30 days):
- *   Pro ($25/mo): $0.25/day → worst-case $7.50/mo → 70% Stripe margin
- *   Max ($45/mo): $0.45/day → worst-case $13.50/mo → 70% Stripe margin
- */
-export function isUserOverDailyCap(
-  userId: number,
-): {
-  over: boolean;
-  spentUsd: number;
-  capUsd: number;
-  plan: string;
-  usageLevel: 'none' | 'enhanced' | 'maximum' | 'owner';
-  usageFraction: number;
-  callsToday: number;
-  boostAvailable: boolean;
-} {
-  try {
-    const db = getDb();
-
-    // Resolve plan-based cost cap from subscription status.
-    // No free tier — unsubscribed users get $0.00 cap.
-    let plan = 'none';
-    let capUsd = DEFAULT_DAILY_CAP_USD;
-    let usageLevel: 'none' | 'enhanced' | 'maximum' | 'owner' = 'none';
-
-    // Beta bypass: when paywall is disabled, every user gets owner-level
-    // access. This lets closed beta testers use all AI features without
-    // needing a subscription. Set PAYWALL_ENABLED=false in .env.
-    if (!PAYWALL_ENABLED) {
-      plan = 'beta'; capUsd = 100; usageLevel = 'owner';
-    }
-
-    // Owner bypass — check BEFORE subscription lookup so the owner
-    // is never affected by subscriptions table issues.
-    //
-    // Two paths: (1) direct Telegram ID match (bot codepath), or
-    // (2) iOS user whose `telegram_id` in the users table is an
-    // owner Telegram ID. Path 2 is needed because iOS auth creates
-    // users with an auto-increment `id` (e.g. 13) that doesn't
-    // match the Telegram ID (e.g. 7807541475).
-    // Owner detection: check both Telegram ID list AND users.tier = 'owner'.
-    // The Telegram list is legacy; multi-auth users (Google, Apple) use tier.
-    const ownerTelegramIds = config.telegram.allowedUserIds || [];
-    let isOwner = ownerTelegramIds.includes(userId);
-    if (!isOwner) {
-      try {
-        const user = db.prepare(
-          "SELECT telegram_id, tier FROM users WHERE id = ?"
-        ).get(userId) as { telegram_id: number | null; tier: string } | undefined;
-        if (user?.telegram_id && ownerTelegramIds.includes(user.telegram_id)) {
-          isOwner = true;
-        }
-        // Multi-auth owner (e.g. Google Sign-In with tier='owner')
-        if (user?.tier === 'owner') {
-          isOwner = true;
-        }
-      } catch { /* users table may not exist */ }
-    }
-    if (isOwner) {
-      plan = 'owner'; capUsd = 100; usageLevel = 'owner';
-    }
-
-    // Subscription-based cap (only if not already owner)
-    if (plan !== 'owner') {
-      try {
-        const sub = db.prepare(
-          "SELECT plan, status FROM subscriptions WHERE user_id = ?"
-        ).get(userId) as { plan: string; status: string } | undefined;
-
-        if (sub && ['active', 'trialing'].includes(sub.status)) {
-          plan = sub.plan;
-          if (sub.plan === 'max')      { capUsd = 0.45; usageLevel = 'maximum'; }
-          else if (sub.plan === 'pro') { capUsd = 0.25; usageLevel = 'enhanced'; }
-        }
-      } catch { /* subscriptions table may not exist */ }
-    }
-
-    const row = db.prepare(`
-      SELECT COALESCE(SUM(cost_usd), 0) as total, COUNT(*) as calls
-      FROM api_usage WHERE user_id = ? AND ts >= date('now')
-    `).get(userId) as { total: number; calls: number };
-
-    const fraction = capUsd > 0 ? Math.min(row.total / capUsd, 1.0) : 1.0;
-
-    return {
-      over: row.total >= capUsd,
-      spentUsd: row.total,
-      capUsd,
-      plan,
-      usageLevel,
-      usageFraction: Math.round(fraction * 100) / 100,
-      callsToday: row.calls,
-      // AI Boost IAP product not yet configured in App Store Connect.
-      // Setting false hides the CTA button in the iOS usage meter.
-      // Re-enable when the product is live: row.total >= capUsd && plan !== 'owner'
-      boostAvailable: false,
-    };
-  } catch {
-    return {
-      over: false, spentUsd: 0, capUsd: DEFAULT_DAILY_CAP_USD,
-      plan: 'none', usageLevel: 'none', usageFraction: 0,
-      callsToday: 0, boostAvailable: false,
-    };
-  }
+export function isUserOverDailyCap(userId: number): DailyQuotaStatus {
+  return getDailyQuotaStatus(userId);
 }
 
 /**

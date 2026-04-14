@@ -328,7 +328,7 @@ export function getSessionById(sessionId: number): TrainingSession | null {
 
 export function updateSession(
   sessionId: number,
-  updates: Partial<Pick<TrainingSession, 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source'>>,
+  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source'>>,
 ): boolean {
   const db = getDb();
   const setClauses: string[] = [];
@@ -361,6 +361,58 @@ export function markSessionSkipped(sessionId: number): boolean {
 
 export function linkSessionToCalendar(sessionId: number, eventId: string, source: string): boolean {
   return updateSession(sessionId, { calendar_event_id: eventId, calendar_source: source });
+}
+
+export function getSessionByCalendarEvent(eventId: string, source?: string | null): TrainingSession | null {
+  const db = getDb();
+  const row = source
+    ? db.prepare(`
+      SELECT * FROM training_sessions
+      WHERE calendar_event_id = ? AND calendar_source = ?
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `).get(eventId, source)
+    : db.prepare(`
+      SELECT * FROM training_sessions
+      WHERE calendar_event_id = ?
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `).get(eventId);
+
+  return (row as TrainingSession | undefined) ?? null;
+}
+
+export function syncSessionWithCoachRecommendation(rec: {
+  eventId: string;
+  source?: string | null;
+  action: 'KEEP' | 'MODIFY' | 'SWAP' | 'REST';
+  newTitle?: string | null;
+  newStart?: string | null;
+}): boolean {
+  const session = getSessionByCalendarEvent(rec.eventId, rec.source);
+  if (!session) return false;
+
+  const updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'status'>> = {};
+
+  if (rec.newTitle && rec.newTitle.trim() && rec.newTitle !== session.title) {
+    updates.title = rec.newTitle.trim();
+  }
+
+  if (rec.newStart) {
+    const movedAt = new Date(rec.newStart);
+    if (!Number.isNaN(movedAt.getTime())) {
+      updates.day_of_week = movedAt.toLocaleDateString('en-US', {
+        weekday: 'long',
+        timeZone: 'Europe/Lisbon',
+      });
+    }
+  }
+
+  if (rec.action === 'REST') {
+    updates.status = 'skipped';
+  }
+
+  return updateSession(session.id, updates);
 }
 
 // ── Completion Logging ─────────────────────────────────────────────

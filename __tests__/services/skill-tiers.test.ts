@@ -52,7 +52,7 @@ import {
 } from '../../src/services/skill-tiers';
 import type { User } from '../../src/services/user-service';
 
-function makeUser(id: number, tier: 'free' | 'pro' | 'owner'): Pick<User, 'id' | 'tier'> {
+function makeUser(id: number, tier: 'free' | 'pro' | 'max' | 'owner'): Pick<User, 'id' | 'tier'> {
   return { id, tier };
 }
 
@@ -110,7 +110,7 @@ describe('migration 045: skill_tiers schema and seeds', () => {
     `).run(9999);
     // Reapply the bulk-upgrade idempotently to simulate Phase 1 deploy
     testDb.prepare(`
-      UPDATE users SET tier = 'pro', daily_message_limit = 200, daily_token_limit = 500000, daily_cost_limit_usd = 5.0
+      UPDATE users SET tier = 'pro', daily_message_limit = 200, daily_token_limit = 500000, daily_cost_limit_usd = 0.2
       WHERE tier = 'free'
     `).run();
     const row = testDb.prepare('SELECT tier, daily_message_limit FROM users WHERE telegram_id = ?').get(9999) as any;
@@ -163,6 +163,16 @@ describe('checkTierAccess — gate cascade', () => {
     for (const skill of ['secretary.tasks', 'triathlon.gym', 'content.script-generator', 'finance.tax']) {
       expect(checkTierAccess(user, skill).allowed, `owner should access ${skill}`).toBe(true);
     }
+  });
+
+  it('max user CAN access pro-tier skills but NOT owner-tier skills', () => {
+    const user = makeUser(4, 'max');
+    expect(checkTierAccess(user, 'content.script-generator').allowed).toBe(true);
+
+    setSkillTier('admin.impersonate', 'owner', 'Admin impersonation tool');
+    const ownerOnly = checkTierAccess(user, 'admin.impersonate');
+    expect(ownerOnly.allowed).toBe(false);
+    expect(ownerOnly.requiredTier).toBe('owner');
   });
 
   it('pro user CANNOT access owner-tier skills', () => {

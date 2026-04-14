@@ -255,6 +255,51 @@ describe('isUserOverDailyCap', () => {
     // Querying for user 0 explicitly DOES include the system row
     expect(isUserOverDailyCap(0).callsToday).toBe(1);
   });
+
+  it('uses the active pro subscription cap of $0.20/day', () => {
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES (5001, 5001, 'Pro', 'pro', 'active', 'telegram', 200, 500000, 0.2)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
+      VALUES (5001, 'pro', 'monthly', 'active', 'stripe', datetime('now'))
+    `).run();
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5001, 5000, 2000, 0.20, 200)
+    `).run();
+
+    const result = isUserOverDailyCap(5001);
+    expect(result.plan).toBe('pro');
+    expect(result.limitUsd).toBe(0.2);
+    expect(result.usedUsd).toBe(0.2);
+    expect(result.remainingUsd).toBe(0);
+    expect(result.over).toBe(true);
+    expect(result.resetAt).toMatch(/T00:00:00.000Z$/);
+  });
+
+  it('uses the active max subscription cap of $0.60/day', () => {
+    testDb.prepare(`
+      INSERT INTO users (id, telegram_id, first_name, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES (5002, 5002, 'Max', 'max', 'active', 'telegram', 200, 500000, 0.6)
+    `).run();
+    testDb.prepare(`
+      INSERT INTO subscriptions (user_id, plan, period, status, provider, updated_at)
+      VALUES (5002, 'max', 'monthly', 'trialing', 'stripe', datetime('now'))
+    `).run();
+    testDb.prepare(`
+      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
+      VALUES ('domain_content', 'gemini-2.5-flash', 5002, 5000, 2000, 0.25, 200)
+    `).run();
+
+    const result = isUserOverDailyCap(5002);
+    expect(result.plan).toBe('max');
+    expect(result.limitUsd).toBe(0.6);
+    expect(result.usedUsd).toBe(0.25);
+    expect(result.remainingUsd).toBe(0.35);
+    expect(result.over).toBe(false);
+  });
 });
 
 describe('getUserDailySpend', () => {
@@ -287,5 +332,48 @@ describe('getUserDailySpend', () => {
     const result = getUserDailySpend(7);
     expect(result.totalUsd).toBeCloseTo(0.4, 2);
     expect(result.messageCount).toBe(3);
+  });
+});
+
+describe('069_plan_quota_rebalance.sql', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+  });
+
+  it('realigns stored daily_cost_limit_usd values to the current plan caps', () => {
+    testDb.prepare(`
+      INSERT INTO users (telegram_id, tier, status, auth_provider, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+      VALUES
+        (91001, 'free', 'active', 'telegram', 40, 100000, 1.0),
+        (91002, 'pro', 'active', 'telegram', 200, 500000, 0.5),
+        (91003, 'max', 'active', 'telegram', 200, 500000, 5.0),
+        (91004, 'owner', 'active', 'telegram', 0, 0, 100.0)
+    `).run();
+
+    const migrationSql = fs.readFileSync(
+      path.join(MIGRATIONS_DIR, '069_plan_quota_rebalance.sql'),
+      'utf8',
+    );
+    testDb.exec(migrationSql);
+
+    const rows = testDb.prepare(`
+      SELECT tier, daily_cost_limit_usd
+      FROM users
+      WHERE telegram_id BETWEEN 91001 AND 91004
+      ORDER BY telegram_id
+    `).all() as Array<{ tier: string; daily_cost_limit_usd: number }>;
+
+    expect(rows).toEqual([
+      { tier: 'free', daily_cost_limit_usd: 0 },
+      { tier: 'pro', daily_cost_limit_usd: 0.2 },
+      { tier: 'max', daily_cost_limit_usd: 0.6 },
+      { tier: 'owner', daily_cost_limit_usd: 0 },
+    ]);
   });
 });

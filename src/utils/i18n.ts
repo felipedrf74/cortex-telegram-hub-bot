@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * i18n — Bilingual message system (PT-BR + EN).
+ * i18n — Message system with Portuguese variants (pt-BR / pt-PT) + EN.
  *
  * Simple key-based translations for bot messages. Not a full i18n framework —
  * just enough for user-facing strings in two languages.
@@ -11,15 +11,23 @@
  *   t('rate_limited', 'en-US', { limit: '40' }) → 'You've reached your daily limit of 40 messages.'
  */
 
-export type Lang = 'pt-BR' | 'en-US';
+export type Lang = 'pt-BR' | 'pt-PT' | 'en-US';
 
-const MESSAGES: Record<string, Record<Lang, string>> = {
+type MessageEntry = {
+  'pt-BR': string;
+  'pt-PT'?: string;
+  'en-US': string;
+};
+
+const MESSAGES: Record<string, MessageEntry> = {
   'welcome': {
     'pt-BR': '🎉 Bem-vindo ao Nexus Hub!\n\nSou seu assistente pessoal com IA. Use /help para ver os comandos disponíveis.',
+    'pt-PT': '🎉 Bem-vindo ao Nexus Hub!\n\nSou o teu assistente pessoal com IA. Usa /help para veres os comandos disponíveis.',
     'en-US': '🎉 Welcome to Nexus Hub!\n\nI\'m your AI-powered personal assistant. Use /help to see available commands.',
   },
   'welcome_back': {
     'pt-BR': '👋 Olá de novo! Seu assistente está online. Use /help para comandos.',
+    'pt-PT': '👋 Olá outra vez! O teu assistente está online. Usa /help para veres os comandos.',
     'en-US': '👋 Welcome back! Your assistant is online. Use /help for commands.',
   },
   'need_invite': {
@@ -28,62 +36,77 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'invalid_invite': {
     'pt-BR': '❌ Código de convite inválido ou expirado.',
+    'pt-PT': '❌ Código de convite inválido ou expirado.',
     'en-US': '❌ Invalid or expired invite code.',
   },
   'rate_limited': {
     'pt-BR': '⚠️ Você atingiu seu limite diário de {limit} mensagens.\n\nSeu limite reseta à meia-noite ({timezone}).',
+    'pt-PT': '⚠️ Atingiste o teu limite diário de {limit} mensagens.\n\nO limite é reposto à meia-noite ({timezone}).',
     'en-US': '⚠️ You\'ve reached your daily limit of {limit} messages.\n\nYour limit resets at midnight ({timezone}).',
   },
   'suspended': {
     'pt-BR': '⚠️ Sua conta está suspensa. Entre em contato com o suporte.',
+    'pt-PT': '⚠️ A tua conta está suspensa. Contacta o suporte.',
     'en-US': '⚠️ Your account is suspended. Contact support.',
   },
   'choose_language': {
     'pt-BR': '🌐 Escolha seu idioma / Choose your language:',
+    'pt-PT': '🌐 Escolhe o teu idioma / Choose your language:',
     'en-US': '🌐 Choose your language / Escolha seu idioma:',
   },
   'language_set': {
     'pt-BR': '✅ Idioma definido para Português. Bem-vindo ao Nexus Hub! 🇧🇷\n\nUse /help para ver os comandos.',
+    'pt-PT': '✅ Idioma definido para Português. Bem-vindo ao Nexus Hub! 🇵🇹\n\nUsa /help para veres os comandos.',
     'en-US': '✅ Language set to English. Welcome to Nexus Hub! 🇬🇧\n\nUse /help to see commands.',
   },
   'skill_disabled': {
     'pt-BR': '🔒 Esta funcionalidade não está habilitada para sua conta.',
+    'pt-PT': '🔒 Esta funcionalidade não está ativa para a tua conta.',
     'en-US': '🔒 This feature is not enabled for your account.',
   },
   'skill_tier_required': {
     'pt-BR': '🔒 Esta funcionalidade requer o plano <b>{tier}</b>. Seu plano atual: <b>{current}</b>. Peça ao administrador para atualizar seu acesso.',
+    'pt-PT': '🔒 Esta funcionalidade requer o plano <b>{tier}</b>. O teu plano atual: <b>{current}</b>. Pede ao administrador para atualizar o teu acesso.',
     'en-US': '🔒 This feature requires the <b>{tier}</b> tier. Your current tier: <b>{current}</b>. Ask the admin to upgrade your access.',
   },
   'registration_closed': {
     'pt-BR': '🔐 O registro está fechado no momento. Peça um código de convite ao administrador.',
+    'pt-PT': '🔐 O registo está fechado neste momento. Pede um código de convite ao administrador.',
     'en-US': '🔐 Registration is currently closed. Ask an admin for an invite code.',
   },
   'connect_help': {
     'pt-BR': '🔗 <b>Conectar suas contas:</b>\n\n<b>📅 Calendário e email</b>\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do\n\n<b>✅ Tarefas</b>\n/connect todoist — Todoist (sincronização em tempo real)\n/connect notion — Notion (banco de dados como lista de tarefas)\n\n<b>⌚ Wearables</b>\n/connect strava — Strava\n/connect whoop — Whoop\n/connect fitbit — Fitbit',
+    'pt-PT': '🔗 <b>Ligar as tuas contas:</b>\n\n<b>📅 Calendário e email</b>\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do\n\n<b>✅ Tarefas</b>\n/connect todoist — Todoist (sincronização em tempo real)\n/connect notion — Notion (base de dados como lista de tarefas)\n\n<b>⌚ Wearables</b>\n/connect strava — Strava\n/connect whoop — Whoop\n/connect fitbit — Fitbit',
     'en-US': '🔗 <b>Connect your accounts:</b>\n\n<b>📅 Calendar &amp; email</b>\n/connect google — Google Calendar, Drive, Gmail\n/connect outlook — Outlook Calendar, Email, To Do\n\n<b>✅ Tasks</b>\n/connect todoist — Todoist (real-time webhook sync)\n/connect notion — Notion (database as task list)\n\n<b>⌚ Wearables</b>\n/connect strava — Strava\n/connect whoop — Whoop\n/connect fitbit — Fitbit',
   },
   'connect_prompt': {
     'pt-BR': '🔗 Clique no botão abaixo para autorizar o acesso ao {provider}:',
+    'pt-PT': '🔗 Clica no botão abaixo para autorizares o acesso ao {provider}:',
     'en-US': '🔗 Click the button below to authorize {provider} access:',
   },
   'oauth_connected': {
     'pt-BR': '✅ {provider} conectado com sucesso! Suas integrações estão prontas.',
+    'pt-PT': '✅ {provider} ligado com sucesso! As tuas integrações estão prontas.',
     'en-US': '✅ {provider} connected successfully! Your integrations are ready.',
   },
   'oauth_failed': {
     'pt-BR': '❌ Falha ao conectar {provider}. Tente novamente com /connect {provider}.',
+    'pt-PT': '❌ Falha ao ligar {provider}. Tenta novamente com /connect {provider}.',
     'en-US': '❌ Failed to connect {provider}. Try again with /connect {provider}.',
   },
   'connections_none': {
     'pt-BR': '📡 Nenhuma conta conectada.\n\nUse /connect para ver as opções disponíveis.',
+    'pt-PT': '📡 Nenhuma conta ligada.\n\nUsa /connect para veres as opções disponíveis.',
     'en-US': '📡 No accounts connected.\n\nUse /connect to see available options.',
   },
   'connections_header': {
     'pt-BR': '📡 <b>Contas conectadas:</b>\n',
+    'pt-PT': '📡 <b>Contas ligadas:</b>\n',
     'en-US': '📡 <b>Connected accounts:</b>\n',
   },
   'provider_not_connected': {
     'pt-BR': '⚠️ {provider} não está conectado. Use /connect {provider} para configurar.',
+    'pt-PT': '⚠️ {provider} não está ligado. Usa /connect {provider} para configurar.',
     'en-US': '⚠️ {provider} is not connected. Use /connect {provider} to set up.',
   },
   'subskill_disabled': {
@@ -100,10 +123,12 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'export_failed': {
     'pt-BR': '❌ Falha ao exportar dados. Tente novamente mais tarde.',
+    'pt-PT': '❌ Falha ao exportar dados. Tenta novamente mais tarde.',
     'en-US': '❌ Failed to export data. Please try again later.',
   },
   'delete_usage': {
     'pt-BR': '⚠️ Para deletar todos os seus dados, envie:\n<code>/delete meus-dados</code>\n\nIsso é irreversível.',
+    'pt-PT': '⚠️ Para eliminares todos os teus dados, envia:\n<code>/delete meus-dados</code>\n\nIsto é irreversível.',
     'en-US': '⚠️ To delete all your data, send:\n<code>/delete my-data</code>\n\nThis is irreversible.',
   },
   'delete_confirm': {
@@ -119,6 +144,7 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'delete_complete': {
     'pt-BR': '✅ Dados deletados. {records} registros removidos. Sua conta foi encerrada.\n\nVocê pode criar uma nova conta a qualquer momento com /start.',
+    'pt-PT': '✅ Dados eliminados. {records} registos removidos. A tua conta foi encerrada.\n\nPodes criar uma nova conta a qualquer momento com /start.',
     'en-US': '✅ Data deleted. {records} records removed. Your account has been closed.\n\nYou can create a new account anytime with /start.',
   },
   'delete_cancelled': {
@@ -211,6 +237,7 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   // ── Cost Guardrail ──
   'cost_limit_reached': {
     'pt-BR': '⚠️ O sistema atingiu o limite diário de custos. Tente novamente amanhã ou contate o administrador.',
+    'pt-PT': '⚠️ O sistema atingiu o limite diário de custos. Tenta novamente amanhã ou contacta o administrador.',
     'en-US': '⚠️ The system has reached its daily cost limit. Try again tomorrow or contact the administrator.',
   },
   'ms_todo_not_connected': {
@@ -219,6 +246,7 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'generic_error': {
     'pt-BR': '⚠️ Algo deu errado. Tente novamente em alguns instantes.',
+    'pt-PT': '⚠️ Algo correu mal. Tenta novamente dentro de instantes.',
     'en-US': '⚠️ Something went wrong. Please try again in a moment.',
   },
   'garmin_not_connected': {
@@ -231,6 +259,7 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'welcome_back_with_onboarding': {
     'pt-BR': '👋 Olá de novo! Parece que você tem perfis para configurar.',
+    'pt-PT': '👋 Olá outra vez! Parece que tens perfis para configurar.',
     'en-US': '👋 Welcome back! Looks like you have profiles to set up.',
   },
   'setup_profile': {
@@ -239,6 +268,7 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
   },
   'registration_error': {
     'pt-BR': '❌ Erro ao criar sua conta. Tente novamente em alguns instantes.',
+    'pt-PT': '❌ Erro ao criar a tua conta. Tenta novamente dentro de instantes.',
     'en-US': '❌ Error creating your account. Please try again in a moment.',
   },
   'apply': { 'pt-BR': 'Aplicar', 'en-US': 'Apply' },
@@ -255,7 +285,11 @@ const MESSAGES: Record<string, Record<Lang, string>> = {
  * Supports {variable} substitution.
  */
 export function t(key: string, lang: Lang, vars?: Record<string, string>): string {
-  let msg = MESSAGES[key]?.[lang] ?? MESSAGES[key]?.['en-US'] ?? key;
+  let msg =
+    MESSAGES[key]?.[lang]
+    ?? (lang === 'pt-PT' ? MESSAGES[key]?.['pt-BR'] : undefined)
+    ?? MESSAGES[key]?.['en-US']
+    ?? key;
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
       msg = msg.replace(`{${k}}`, v);
@@ -270,7 +304,9 @@ export function t(key: string, lang: Lang, vars?: Record<string, string>): strin
  */
 export function detectLanguageFromTelegram(langCode?: string): Lang {
   if (!langCode) return 'pt-BR';
-  if (langCode.startsWith('pt')) return 'pt-BR';
+  const normalized = langCode.toLowerCase();
+  if (normalized.startsWith('pt-pt') || normalized.startsWith('pt_pt')) return 'pt-PT';
+  if (normalized.startsWith('pt')) return 'pt-BR';
   if (langCode.startsWith('en')) return 'en-US';
   if (langCode.startsWith('es')) return 'pt-BR'; // Spanish speakers → PT-BR closer
   return 'en-US'; // Default to English for other languages

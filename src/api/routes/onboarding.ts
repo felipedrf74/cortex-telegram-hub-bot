@@ -5,11 +5,14 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError } from '../response-helpers';
 import {
-  QUESTIONNAIRES,
+  answerStep,
+  getAllQuestionnaires,
+  getPendingOnboardings,
   getProfile,
   getQuestionnaire,
   upsertProfileField,
   getMissingProfileFields,
+  startOrResume,
 } from '../../services/onboarding';
 
 // ─── Phase 3 Slice C — Profile detail helpers ────────────────────
@@ -115,12 +118,11 @@ export function onboardingRoutes(): Router {
   router.get('/pending', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     try {
-      const onboarding = require('../../services/onboarding');
       // getPendingOnboardings returns questionnaire IDs (strings),
       // not full objects. Resolve each to its definition.
-      const pendingIds: string[] = onboarding.getPendingOnboardings(userId) || [];
+      const pendingIds: string[] = getPendingOnboardings(userId) || [];
       const questionnaires = pendingIds.map((qId: string) => {
-        const def = onboarding.getQuestionnaire(qId);
+        const def = getQuestionnaire(qId);
         if (!def) return null;
         return {
           id: qId,
@@ -145,14 +147,17 @@ export function onboardingRoutes(): Router {
     const { questionnaireId } = req.params;
 
     try {
-      const onboarding = require('../../services/onboarding');
-      const questionnaire = onboarding.getQuestionnaire(questionnaireId);
-      const session = onboarding.getActiveSession?.(userId, questionnaireId) || null;
+      const questionnaire = getQuestionnaire(questionnaireId);
 
       if (!questionnaire) {
         sendError(res, 'NOT_FOUND', 'Questionnaire not found', 404);
         return;
       }
+
+      // Current iOS flow fetches the questionnaire first and only then
+      // starts sending answers. Starting/resuming here keeps that flow
+      // responsive without requiring a client-side `/start` call first.
+      const session = startOrResume(userId, questionnaireId);
 
       sendSuccess(res, {
         id: questionnaireId,
@@ -174,6 +179,56 @@ export function onboardingRoutes(): Router {
     }
   });
 
+  /** POST /api/v1/onboarding/:questionnaireId/start */
+  router.post('/:questionnaireId/start', async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { questionnaireId } = req.params;
+
+    try {
+      const questionnaire = getQuestionnaire(questionnaireId);
+      if (!questionnaire) {
+        sendError(res, 'NOT_FOUND', 'Questionnaire not found', 404);
+        return;
+      }
+
+      logger.info(
+        { userId, questionnaireId, requestBody: req.body ?? null },
+        'iOS onboarding start requested',
+      );
+
+      const session = startOrResume(userId, questionnaireId);
+      const payload = {
+        id: questionnaireId,
+        title: questionnaire.title,
+        steps: questionnaire.steps.map((s: any, i: number) => ({
+          index: i,
+          field: s.key,
+          question: s.prompt,
+          type: s.type,
+          options: s.options || null,
+          min: s.min ?? null,
+          max: s.max ?? null,
+        })),
+        currentStep: session.current_step,
+      };
+
+      logger.info(
+        {
+          userId,
+          questionnaireId,
+          currentStep: payload.currentStep,
+          stepCount: payload.steps.length,
+        },
+        'iOS onboarding start response ready',
+      );
+
+      sendSuccess(res, payload);
+    } catch (err: any) {
+      logger.error({ err, userId, questionnaireId }, 'iOS onboarding start failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to start questionnaire', 500);
+    }
+  });
+
   /** POST /api/v1/onboarding/:questionnaireId/answer */
   router.post('/:questionnaireId/answer', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
@@ -186,21 +241,20 @@ export function onboardingRoutes(): Router {
     }
 
     try {
-      const onboarding = require('../../services/onboarding');
-      const result = onboarding.answerStep(userId, questionnaireId, answer);
+      const result = answerStep(userId, questionnaireId, answer);
 
-      const questionnaire = onboarding.getQuestionnaire(questionnaireId);
+      const questionnaire = getQuestionnaire(questionnaireId);
       const totalSteps = questionnaire?.steps?.length || 1;
 
       sendSuccess(res, {
         nextStep: result.nextStep ? {
-          index: result.nextStep.index ?? (stepIndex + 1),
+          index: stepIndex + 1,
           field: result.nextStep.key,       // questionnaire uses 'key' not 'field'
           question: result.nextStep.prompt,  // questionnaire uses 'prompt' not 'question'
           type: result.nextStep.type,
           options: result.nextStep.options || null,
-          min: result.nextStep.min ?? null,
-          max: result.nextStep.max ?? null,
+          min: null,
+          max: null,
         } : null,
         isComplete: !result.nextStep,
         progress: (stepIndex + 1) / totalSteps,
@@ -215,15 +269,14 @@ export function onboardingRoutes(): Router {
   router.get('/profile', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     try {
-      const onboarding = require('../../services/onboarding');
-      const allQuestionnaires = onboarding.getAllQuestionnaires?.() || [];
+      const allQuestionnaires = getAllQuestionnaires() || [];
       const profiles = allQuestionnaires
         .map((q: any) => {
-          const profile = onboarding.getProfile(userId, q.id);
+          const profile = getProfile(userId, q.id);
           if (!profile) return null;
           return {
             type: q.id, data: profile.data || {},
-            completedAt: profile.completed_at || null,
+            completedAt: profile.updated_at || null,
           };
         })
         .filter(Boolean);

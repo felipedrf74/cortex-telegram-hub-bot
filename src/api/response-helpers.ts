@@ -47,6 +47,7 @@ export interface ApiError {
   error: {
     code: string;
     message: string;
+    details?: Record<string, unknown>;
   };
   timestamp: string;
 }
@@ -77,10 +78,10 @@ export function apiSuccess<T>(data: T, options?: { cached?: boolean }): ApiSucce
  * @param code    Uppercase machine-readable error code (e.g. "BAD_REQUEST").
  * @param message Human-readable description (safe to show to end users).
  */
-export function apiError(code: string, message: string): ApiError {
+export function apiError(code: string, message: string, details?: Record<string, unknown>): ApiError {
   return {
     ok: false,
-    error: { code, message },
+    error: details ? { code, message, details } : { code, message },
     timestamp: new Date().toISOString(),
   };
 }
@@ -148,8 +149,9 @@ export function sendError(
   code: string,
   message: string,
   status = 400,
+  details?: Record<string, unknown>,
 ): void {
-  res.status(status).json(apiError(code, message));
+  res.status(status).json(apiError(code, message, details));
 }
 
 /**

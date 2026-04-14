@@ -15,10 +15,10 @@ import type { DomainName, DefaultDomainName } from '../domains/types';
 // ── Types ────────────────────────────────────────────────────────
 
 /** Minimum user tier required to access a skill or sub-skill. */
-export type SkillTier = 'free' | 'pro' | 'owner';
+export type SkillTier = 'free' | 'pro' | 'max' | 'owner';
 
 /** Ordinal rank: higher = more privileged. Used for tier gate comparison. */
-export const TIER_RANK: Record<SkillTier, number> = { free: 0, pro: 1, owner: 2 };
+export const TIER_RANK: Record<SkillTier, number> = { free: 0, pro: 1, max: 2, owner: 3 };
 
 /** Coaching personas — each sport gets its own prompt file. */
 export type CoachPersona =

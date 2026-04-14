@@ -4,6 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 
 // ── Generation Mode + Metadata ────────────────────────────────────
 //
@@ -50,6 +51,7 @@ function buildGenerationMeta(opts: {
 }
 import {
   addTopic,
+  getFilmingRecommendation,
   getTopics,
   getUpcomingTopicCount,
   updateTopic,
@@ -57,6 +59,11 @@ import {
   CONTENT_TOPIC_STATUSES,
   type ContentTopicStatus,
 } from '../../services/content-scheduler';
+import { getJobStatuses } from '../../portal/telemetry';
+import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
+import { readSignals, type AgentSignal } from '../../services/intelligence-bus';
+import { getUserLanguage } from '../../services/user-service';
+import type { Lang } from '../../utils/i18n';
 
 export function contentRoutes(): Router {
   const router = Router();
@@ -162,9 +169,164 @@ export function contentRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS content/discover failed');
-      sendSuccess(res, { discovered: 0, ideas: [], message: 'Content discovery not available.' });
+      sendError(res, 'DISCOVERY_UNAVAILABLE', err?.message || 'Content discovery not available.', 503);
     }
   });
+
+  /** GET /api/v1/content/intelligence — backstage agent summary for iOS */
+  router.get('/intelligence', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const language = getUserLanguage(userId);
+    const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
+    const reactionJob = jobs.get('reaction_radar');
+    const performanceJob = jobs.get('performance_agent');
+    const autoresearchJob = jobs.get('autoresearch');
+
+    const discoverySignals = readSignals(
+      'ios-content-intelligence',
+      ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
+      25,
+      userId,
+      7
+    );
+    const optimizationSignals = readSignals(
+      'ios-content-intelligence',
+      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+      25,
+      userId,
+      14
+    );
+
+    const voiceEntries = getVoiceDna(undefined, userId);
+    const knowledgeStats = getKnowledgeStats(undefined, userId);
+    const latestVoiceUpdate = voiceEntries
+      .map((entry) => entry.updatedAt)
+      .sort((a, b) => b.localeCompare(a))[0] ?? null;
+    const sourceCount = new Set(
+      voiceEntries.flatMap((entry) => entry.sources).filter((source) => source && source.trim().length > 0)
+    ).size;
+
+    sendSuccess(res, {
+      discovery: {
+        status: summarizeContentJobStatus(reactionJob?.lastResult, discoverySignals.length),
+        cadenceHours: 4,
+        activeCount: discoverySignals.length,
+        lastRunAt: reactionJob?.lastRunAt ?? null,
+        lastStatus: reactionJob?.lastResult ?? 'never',
+      },
+      script: {
+        status: voiceEntries.length > 0 ? 'ready' : knowledgeStats.referenceChannels > 0 ? 'warming_up' : 'needs_setup',
+        voicePatternCount: voiceEntries.length,
+        referenceChannelCount: knowledgeStats.referenceChannels,
+        sourceCount,
+        hasBrandVoice: voiceEntries.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary'),
+        lastUpdatedAt: latestVoiceUpdate,
+      },
+      optimization: {
+        status: summarizeOptimizationStatus(performanceJob?.lastResult, autoresearchJob?.lastResult, optimizationSignals.length),
+        cadence: 'weekly',
+        activeInsightCount: optimizationSignals.length,
+        performanceLastRunAt: performanceJob?.lastRunAt ?? null,
+        performanceLastStatus: performanceJob?.lastResult ?? 'never',
+        autoresearchLastRunAt: autoresearchJob?.lastRunAt ?? null,
+        autoresearchLastStatus: autoresearchJob?.lastResult ?? 'never',
+      },
+      schedule: {
+        status: 'ready',
+      },
+      localized: language.startsWith('pt')
+        ? {
+            discoveryLabel: 'Discovery',
+            scriptLabel: 'Script',
+            scheduleLabel: 'Schedule',
+            optimizationLabel: 'Optimization',
+          }
+        : null,
+    });
+  }));
+
+  /** GET /api/v1/content/intelligence/detail — deeper backstage view for iOS */
+  router.get('/intelligence/detail', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const language = getUserLanguage(userId);
+    const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
+    const reactionJob = jobs.get('reaction_radar');
+    const performanceJob = jobs.get('performance_agent');
+    const autoresearchJob = jobs.get('autoresearch');
+
+    const discoverySignals = readSignals(
+      'ios-content-intelligence-detail',
+      ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
+      6,
+      userId,
+      7
+    );
+    const optimizationSignals = readSignals(
+      'ios-content-intelligence-detail',
+      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+      6,
+      userId,
+      14
+    );
+
+    const voiceEntries = getVoiceDna(undefined, userId);
+    const knowledgeStats = getKnowledgeStats(undefined, userId);
+    const latestVoiceUpdate = voiceEntries
+      .map((entry) => entry.updatedAt)
+      .sort((a, b) => b.localeCompare(a))[0] ?? null;
+    const sourceCount = new Set(
+      voiceEntries.flatMap((entry) => entry.sources).filter((source) => source && source.trim().length > 0)
+    ).size;
+    const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+
+    sendSuccess(res, {
+      discovery: {
+        status: summarizeContentJobStatus(reactionJob?.lastResult, discoverySignals.length),
+        cadenceHours: 4,
+        activeCount: discoverySignals.length,
+        lastRunAt: reactionJob?.lastRunAt ?? null,
+        lastStatus: reactionJob?.lastResult ?? 'never',
+        recentSignals: discoverySignals.map((signal) => formatSignalDigest(signal, language)),
+      },
+      script: {
+        status: voiceEntries.length > 0 ? 'ready' : knowledgeStats.referenceChannels > 0 ? 'warming_up' : 'needs_setup',
+        voicePatternCount: voiceEntries.length,
+        referenceChannelCount: knowledgeStats.referenceChannels,
+        sourceCount,
+        hasBrandVoice: voiceEntries.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary'),
+        lastUpdatedAt: latestVoiceUpdate,
+        entries: voiceEntries.slice(0, 6).map((entry) => ({
+          category: entry.category,
+          label: localizeVoiceEntryLabel(entry.label, language),
+          excerpt: truncateText(entry.text, 200),
+          sourceCount: entry.sources.length,
+          sources: entry.sources,
+          version: entry.version,
+          updatedAt: entry.updatedAt,
+        })),
+        knowledgeCategories: knowledgeStats.categories.map((entry) => ({
+          category: entry.category,
+          label: localizeKnowledgeCategoryLabel(entry.category, voiceEntries, language),
+          sourceCount: entry.sources,
+          updatedAt: entry.updatedAt,
+        })),
+      },
+      schedule: {
+        status: filmingRecommendation ? 'ready' : 'warming_up',
+        filmingRecommendation,
+      },
+      optimization: {
+        status: summarizeOptimizationStatus(performanceJob?.lastResult, autoresearchJob?.lastResult, optimizationSignals.length),
+        cadence: 'weekly',
+        activeInsightCount: optimizationSignals.length,
+        performanceLastRunAt: performanceJob?.lastRunAt ?? null,
+        performanceLastStatus: performanceJob?.lastResult ?? 'never',
+        autoresearchLastRunAt: autoresearchJob?.lastRunAt ?? null,
+        autoresearchLastStatus: autoresearchJob?.lastResult ?? 'never',
+        recentSignals: optimizationSignals.map((signal) => formatSignalDigest(signal, language)),
+      },
+    });
+  }));
 
   /**
    * POST /api/v1/content/script — generate a structured script
@@ -186,7 +348,7 @@ export function contentRoutes(): Router {
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { topic, niche, format, maxDurationMinutes, mode } = req.body;
+    const { topic, niche, format, maxDurationMinutes, mode, language, renderMode } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
       sendError(res, 'VALIDATION', 'topic is required', 400);
@@ -197,7 +359,23 @@ export function contentRoutes(): Router {
     // Quick = cache-first, no signals, fast. Deep = skip cache, broader signal window.
     const validModes = ['quick', 'standard', 'deep'];
     const genMode: GenerationMode = (mode && validModes.includes(mode)) ? mode : 'standard';
+    const validRenderModes = ['structured', 'chat'];
+    const targetRenderMode = (typeof renderMode === 'string' && validRenderModes.includes(renderMode.trim().toLowerCase()))
+      ? renderMode.trim().toLowerCase()
+      : 'structured';
     const startMs = Date.now();
+
+    const quota = isUserOverDailyCap(userId);
+    if (quota.over) {
+      sendError(
+        res,
+        'QUOTA_EXCEEDED',
+        buildQuotaExceededMessage(quota),
+        402,
+        { plan: quota.plan, resetAt: quota.resetAt },
+      );
+      return;
+    }
 
     try {
       // CONT-M4: load user's brand voice from content_knowledge table
@@ -214,6 +392,18 @@ export function contentRoutes(): Router {
         brandVoice = row?.synthesized_text || null;
       } catch { /* non-critical — generate without voice if DB fails */ }
 
+      let targetLanguage = 'pt-BR';
+      try {
+        const { getUserLanguage } = require('../../services/user-service');
+        targetLanguage = typeof language === 'string' && language.trim().length > 0
+          ? language.trim()
+          : (getUserLanguage?.(userId) || 'pt-BR');
+      } catch {
+        if (typeof language === 'string' && language.trim().length > 0) {
+          targetLanguage = language.trim();
+        }
+      }
+
       const { getScript } = require('../../services/content-engine');
       const result = await getScript(
         topic.trim(),
@@ -222,6 +412,8 @@ export function contentRoutes(): Router {
         format || 'YouTube',
         genMode,
         brandVoice,
+        targetLanguage,
+        targetRenderMode,
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = elapsedMs < 500;
@@ -240,11 +432,14 @@ export function contentRoutes(): Router {
         })),
         estimatedDuration: result.estimated_duration,
         format: format || 'YouTube',
+        renderMode: targetRenderMode,
         durationMs: result.duration_ms,
         // Creator-pack fields
         hashtags: result.hashtags ?? [],
         caption: result.caption ?? '',
         cta: result.cta ?? '',
+        degraded: result.degraded ?? false,
+        warnings: result.warnings ?? [],
         // Consistent generation metadata (same shape across all endpoints)
         generation: buildGenerationMeta({
           mode: genMode,
@@ -351,12 +546,17 @@ export function contentRoutes(): Router {
 
       // Precompute the upcoming count so the iOS landing page card
       // can render a "N this week" subtitle without a second request.
-      const upcomingCount = getUpcomingTopicCount(userId, 14);
+      const [upcomingCount, filmingRecommendation] = await Promise.all([
+        Promise.resolve(getUpcomingTopicCount(userId, 14)),
+        getFilmingRecommendation(userId, topics),
+      ]);
+      const language = getUserLanguage(userId);
 
       sendSuccess(res, {
         topics,
         count: topics.length,
         upcomingCount,
+        filmingRecommendation: localizeFilmingRecommendation(filmingRecommendation, language),
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topics list failed');
@@ -969,4 +1169,295 @@ export function contentRoutes(): Router {
   }));
 
   return router;
+}
+
+function summarizeContentJobStatus(
+  lastResult: 'success' | 'failed' | 'running' | 'never' | undefined,
+  signalCount: number,
+): 'ready' | 'degraded' | 'syncing' | 'warming_up' {
+  if (lastResult === 'failed') return 'degraded';
+  if (lastResult === 'running') return 'syncing';
+  if (signalCount > 0 || lastResult === 'success') return 'ready';
+  return 'warming_up';
+}
+
+function summarizeOptimizationStatus(
+  performanceResult: 'success' | 'failed' | 'running' | 'never' | undefined,
+  autoresearchResult: 'success' | 'failed' | 'running' | 'never' | undefined,
+  insightCount: number,
+): 'ready' | 'degraded' | 'syncing' | 'warming_up' {
+  if (performanceResult === 'failed' || autoresearchResult === 'failed') return 'degraded';
+  if (performanceResult === 'running' || autoresearchResult === 'running') return 'syncing';
+  if (insightCount > 0 || performanceResult === 'success' || autoresearchResult === 'success') return 'ready';
+  return 'warming_up';
+}
+
+function formatSignalDigest(signal: AgentSignal, language: Lang): {
+  id: number;
+  type: string;
+  title: string;
+  summary: string;
+  priority: string;
+  createdAt: string;
+} {
+  return {
+    id: signal.id,
+    type: signal.signal_type,
+    title: buildSignalTitle(signal, language),
+    summary: buildSignalSummary(signal, language),
+    priority: signal.priority,
+    createdAt: signal.created_at,
+  };
+}
+
+function buildSignalTitle(signal: AgentSignal, language: Lang): string {
+  const titleLike = firstText(
+    signal.payload.title,
+    signal.payload.topic,
+    signal.payload.keyword,
+    signal.payload.channel,
+    signal.payload.pillar,
+    signal.payload.summary,
+  );
+  if (titleLike) {
+    return language.startsWith('pt') ? localizeSignalTitle(titleLike, signal.signal_type, language) : titleLike;
+  }
+
+  const fallbackTitles: Record<string, { en: string; pt: string }> = {
+    reaction_opportunity: { en: 'Reaction opportunity', pt: 'Janela de reação' },
+    trending_spike: { en: 'Trending spike', pt: 'Subida de tendência' },
+    competitor_upload: { en: 'Competitor move', pt: 'Movimento da concorrência' },
+    hook_effectiveness: { en: 'Hook performance', pt: 'Performance dos hooks' },
+    pillar_performance: { en: 'Pillar performance', pt: 'Performance do pilar' },
+    learning_digest: { en: 'Weekly learning', pt: 'Aprendizagem semanal' },
+    content_formula: { en: 'Winning format', pt: 'Formato vencedor' },
+  };
+  const fallback = fallbackTitles[signal.signal_type];
+  return fallback ? (language.startsWith('pt') ? fallback.pt : fallback.en) : humanizeSignalType(signal.signal_type);
+}
+
+function buildSignalSummary(signal: AgentSignal, language: Lang): string {
+  const summary = firstText(
+    signal.payload.summary,
+    signal.payload.reason,
+    signal.payload.description,
+    signal.payload.observation,
+    signal.payload.note,
+  );
+  if (summary) {
+    return language.startsWith('pt') ? localizeSignalSummary(summary, signal.signal_type, signal.payload, language) : summary;
+  }
+
+  switch (signal.signal_type) {
+    case 'reaction_opportunity':
+      return language.startsWith('pt')
+        ? 'Há uma janela curta para reagir com velocidade e contexto.'
+        : 'There is a short reaction window worth moving on quickly.';
+    case 'trending_spike':
+      return language.startsWith('pt')
+        ? 'O tema está a ganhar velocidade e merece atenção.'
+        : 'This topic is accelerating and deserves attention.';
+    case 'competitor_upload':
+      return language.startsWith('pt')
+        ? 'Um canal comparável publicou agora, o que pode abrir espaço para resposta.'
+        : 'A comparable channel just published, which may open a response angle.';
+    case 'hook_effectiveness':
+      return language.startsWith('pt')
+        ? 'Há um padrão recente sobre o que está a segurar melhor a audiência.'
+        : 'There is a recent pattern in what is holding attention better.';
+    case 'pillar_performance':
+      return language.startsWith('pt')
+        ? 'Um dos teus pilares está a ganhar mais tração do que os restantes.'
+        : 'One of your pillars is outperforming the rest right now.';
+    case 'learning_digest':
+      return language.startsWith('pt')
+        ? 'Há uma síntese recente do que está a funcionar e do que precisa de ajuste.'
+        : 'There is a recent summary of what is working and what needs adjustment.';
+    case 'content_formula':
+      return language.startsWith('pt')
+        ? 'Um formato repetível está a emergir nos teus resultados recentes.'
+        : 'A repeatable format is emerging from recent results.';
+    default:
+      return language.startsWith('pt')
+        ? 'Sinal recente do teu sistema de conteúdo.'
+        : 'Recent signal from your content system.';
+  }
+}
+
+function localizeSignalTitle(title: string, signalType: string, language: Lang): string {
+  if (!language.startsWith('pt')) return title;
+  const trimmed = title.trim();
+  switch (signalType) {
+    case 'pillar_performance':
+      return /^training$/i.test(trimmed) ? 'Treino' : trimmed;
+    default:
+      return trimmed;
+  }
+}
+
+function localizeSignalSummary(summary: string, signalType: string, payload: Record<string, any>, language: Lang): string {
+  if (!language.startsWith('pt')) return summary;
+  const trimmed = summary.trim();
+  if (trimmed.length === 0) return trimmed;
+
+  switch (signalType) {
+    case 'reaction_opportunity':
+      return `Janela de reação ativa: ${trimmed}`;
+    case 'trending_spike':
+      return `Sinal de tendência: ${trimmed}`;
+    case 'competitor_upload':
+      return `Movimento recente da concorrência: ${trimmed}`;
+    case 'hook_effectiveness':
+      return `Lição de hook: ${trimmed}`;
+    case 'pillar_performance': {
+      const pillar = firstText(payload.pillar) ?? 'este pilar';
+      const localizedPillar = /^training$/i.test(pillar) ? 'Treino' : pillar;
+      return `Performance de ${localizedPillar}: ${trimmed}`;
+    }
+    case 'learning_digest':
+      return `Aprendizagem recente: ${trimmed}`;
+    case 'content_formula':
+      return `Formato a repetir: ${trimmed}`;
+    default:
+      return trimmed;
+  }
+}
+
+function localizeVoiceEntryLabel(label: string, language: Lang): string {
+  if (!language.startsWith('pt')) return label;
+
+  const labels: Record<string, string> = {
+    'Hook Styles': 'Estilos de hook',
+    'Title Patterns': 'Padrões de título',
+    'Content Structure': 'Estrutura de conteúdo',
+    'Editing Style': 'Estilo de edição',
+    'Storytelling': 'Storytelling',
+    'CTA Patterns': 'Padrões de CTA',
+    'Audience Engagement': 'Envolvimento da audiência',
+    'Visual Branding': 'Marca visual',
+    'Brand Voice': 'Voz da marca',
+    'Additions (Voice Evolution)': 'Adições (Evolução de voz)',
+    'Removals (Voice Evolution)': 'Remoções (Evolução de voz)',
+    'Rephrasings (Voice Evolution)': 'Reformulações (Evolução de voz)',
+    'Book Influence': 'Influência de livros',
+    'Voice Summary': 'Resumo da voz',
+  };
+  return labels[label] ?? label;
+}
+
+function localizeKnowledgeCategoryLabel(
+  category: string,
+  voiceEntries: Array<{ category: string; label: string }>,
+  language: Lang,
+): string {
+  const matchingEntry = voiceEntries.find((entry) => entry.category === category);
+  if (matchingEntry) {
+    return localizeVoiceEntryLabel(matchingEntry.label, language);
+  }
+  return localizeVoiceEntryLabel(humanizeSignalType(category), language);
+}
+
+function humanizeSignalType(value: string): string {
+  return value
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function firstText(...candidates: unknown[]): string | null {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+  return null;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function localizeFilmingRecommendation<T extends {
+  reason: string;
+  reasons: string[];
+  calendarReservationMessage?: string | null;
+} | null>(
+  recommendation: T,
+  language: Lang,
+): T {
+  if (!recommendation || !language.startsWith('pt')) {
+    return recommendation;
+  }
+
+  const localizedReasons = recommendation.reasons.map(localizeFilmingRecommendationText);
+  return {
+    ...recommendation,
+    reason: localizeFilmingRecommendationText(recommendation.reason),
+    reasons: localizedReasons,
+    calendarReservationMessage: recommendation.calendarReservationMessage
+      ? localizeFilmingRecommendationText(recommendation.calendarReservationMessage)
+      : recommendation.calendarReservationMessage,
+  };
+}
+
+function localizeFilmingRecommendationText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return trimmed;
+
+  const numericPattern = /(\d+)\/100/g;
+
+  switch (trimmed) {
+    case 'No hard training is scheduled today.':
+      return 'Hoje não há treino duro planeado.';
+    case 'No hard training is planned for this day.':
+      return 'Não há treino duro planeado para este dia.';
+    case 'There is a hard training session planned, so filming would compete with your best energy.':
+      return 'Há um treino duro planeado, por isso filmar iria competir com a tua melhor energia.';
+    case 'Training is planned, but it looks manageable around a filming block.':
+      return 'Há treino planeado, mas parece compatível com um bloco de filmagem.';
+    case 'Only light training is planned, so it should be easier to film well.':
+      return 'Só há treino leve planeado, por isso deve ser mais fácil filmar bem.';
+    case 'Your calendar is clear, so you have room to film without collisions.':
+      return 'O teu calendário está livre, por isso tens espaço para filmar sem conflitos.';
+    case 'Your calendar is busy that day, so filming would likely fragment or run late.':
+      return 'O teu calendário está carregado nesse dia, por isso filmar iria fragmentar-se ou atrasar-se.';
+    case 'You have a few calendar commitments, but there is still some room to film.':
+      return 'Tens alguns compromissos no calendário, mas ainda há margem para filmar.';
+    case 'The calendar looks light, which is good for a focused filming block.':
+      return 'O calendário parece leve, o que é bom para um bloco de filmagem focado.';
+    case 'You already have a content deadline on this date.':
+      return 'Já tens um prazo de conteúdo nesta data.';
+    case 'Giving yourself one more recovery day should improve filming quality.':
+      return 'Dar a ti próprio mais um dia de recuperação deve melhorar a qualidade da filmagem.';
+    case 'Recent recovery signals suggest protecting today rather than stacking filming on top.':
+      return 'Os sinais recentes de recuperação sugerem proteger o dia de hoje em vez de acumular filmagem por cima.';
+    case 'This gives your current recovery dip a little more room to settle.':
+      return 'Isto dá mais espaço para a tua quebra atual de recuperação estabilizar.';
+    case 'Connect Google Calendar or Outlook in Settings to reserve this filming block.':
+      return 'Liga o Google Calendar ou o Outlook nas Definições para reservar este bloco de filmagem.';
+    case 'This day has the cleanest mix of energy and calendar space for filming.':
+      return 'Este dia tem a melhor combinação de energia e espaço no calendário para filmar.';
+    default:
+      break;
+  }
+
+  if (trimmed.startsWith("Today's readiness is only ")) {
+    return trimmed.replace(
+      /^Today's readiness is only (\d+)\/100, so filming tomorrow or later is safer\.$/,
+      'A prontidão de hoje é só $1/100, por isso é mais seguro filmar amanhã ou mais tarde.',
+    );
+  }
+
+  if (trimmed.startsWith('Readiness looks solid at ')) {
+    return trimmed.replace(
+      /^Readiness looks solid at (\d+)\/100, which supports a focused filming block\.$/,
+      'A prontidão está sólida em $1/100, o que ajuda um bloco de filmagem focado.',
+    );
+  }
+
+  return trimmed.replace(numericPattern, '$1/100');
 }

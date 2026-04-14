@@ -16,6 +16,20 @@ export function isAnyCalendarConfigured(): boolean {
   return googleCal.isGoogleCalendarConfigured() || outlookCal.isOutlookCalendarConfigured();
 }
 
+export function hasWritableCalendarForUser(userId?: number): boolean {
+  if (userId) {
+    try {
+      const { isConnected } = require('./oauth-store');
+      if (isConnected(userId, 'outlook') || isConnected(userId, 'google')) {
+        return true;
+      }
+    } catch {
+      // Fall back to the global owner-configured providers below.
+    }
+  }
+  return isAnyCalendarConfigured();
+}
+
 export function getConfiguredSources(): CalendarSource[] {
   const sources: CalendarSource[] = [];
   if (googleCal.isGoogleCalendarConfigured()) sources.push('google');
@@ -103,6 +117,10 @@ export async function createEvent(
     if (!source) {
       source = outlookCal.isOutlookCalendarConfigured() ? 'outlook' : 'google';
     }
+  }
+
+  if (!source || !hasWritableCalendarForUser(userId)) {
+    throw new Error('No calendar provider is connected');
   }
 
   if (source === 'outlook') {

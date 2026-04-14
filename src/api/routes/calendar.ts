@@ -21,10 +21,12 @@ import {
   getEvents,
   createEvent,
   isAnyCalendarConfigured,
+  hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { getFocusBlockRecommendation } from '../../services/focus-planner';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
@@ -88,7 +90,8 @@ export function calendarRoutes(): Router {
    * target) and let range caches expire naturally via TTL.
    */
   router.post('/events', asyncHandler(async (req, res: Response) => {
-    if (!isAnyCalendarConfigured()) {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!hasWritableCalendarForUser(userId)) {
       sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
       return;
     }
@@ -139,7 +142,6 @@ export function calendarRoutes(): Router {
       : undefined;
 
     try {
-      const userId = (req as AuthenticatedRequest).userId;
       const event = await createEvent(
         {
           title: body.title.trim(),
@@ -204,6 +206,34 @@ export function calendarRoutes(): Router {
     }
   }));
 
+  /**
+   * GET /api/v1/calendar/focus-recommendation?durationMinutes=90&horizonDays=4
+   *
+   * Cross-skill token-zero focus-block suggestion. Uses:
+   *   - current calendar availability,
+   *   - today's readiness/recovery,
+   *   - planned training load for the next few days.
+   *
+   * This is the Secretary surface for "find my best hours and protect them"
+   * without sending a chat prompt through the AI pipeline.
+   */
+  router.get('/focus-recommendation', asyncHandler(async (req, res: Response) => {
+    const durationMinutes = clampInt(req.query.durationMinutes as string | undefined, 90, 30, 180);
+    const horizonDays = clampInt(req.query.horizonDays as string | undefined, 4, 1, 7);
+
+    try {
+      const userId = (req as AuthenticatedRequest).userId;
+      const focusRecommendation = await getFocusBlockRecommendation(userId, {
+        durationMinutes,
+        horizonDays,
+      });
+      sendSuccess(res, { focusRecommendation, durationMinutes, horizonDays });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS calendar/focus-recommendation failed');
+      sendError(res, 'FOCUS_RECOMMENDATION_FAILED', err?.message || 'Failed to build focus recommendation', 500);
+    }
+  }));
+
   return router;
 }
 
@@ -241,4 +271,15 @@ function todayRangeISO(): { start: string; end: string } {
 
 function todayDateString(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: config.app.timezone });
+}
+
+function clampInt(
+  rawValue: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(parsed)));
 }

@@ -120,6 +120,86 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
   it('passes category to ask_claude', () => {
     expect(src).toContain('category="content_engine_script"');
   });
+
+  it('returns a degraded fallback script when AI generation fails', () => {
+    expect(src).toContain('def _build_degraded_script_response');
+    expect(src).toContain('AI generation was unavailable; returned a templated degraded script grounded in the available research.');
+    expect(src).toContain('except Exception as exc');
+    expect(src).toContain('return _build_degraded_script_response(');
+  });
+
+  it('supports chat render mode cleanup for concise chat delivery', () => {
+    expect(src).toContain('def _normalize_render_mode');
+    expect(src).toContain('def _render_mode_guidance');
+    expect(src).toContain('def _clean_chat_script');
+    expect(src).toContain('def _is_usable_key_point');
+    expect(src).toContain('if render_mode == "chat"');
+    expect(src).toContain('RENDER MODE RULES:');
+    expect(src).toContain('Do NOT use production tags such as [SFX:]');
+    expect(src).toContain('SHOW ON SCREEN');
+    expect(src).toContain('re.sub(r"\\[(?:SFX|EDIT|CUT TO|PLAY CLIP):[^\\]]+\\]"');
+  });
+});
+
+describe('Python requests.py — script render mode contract', () => {
+  const src = readPy(path.join('..', 'models', 'requests.py'));
+
+  it('ScriptRequest exposes render_mode with a structured default', () => {
+    expect(src).toContain('render_mode: str = Field(default="structured")');
+  });
+});
+
+describe('Python orchestrator.py — evergreen query handling', () => {
+  const src = readPy('orchestrator.py');
+
+  it('has a separate evergreen query strategy instead of always using viral expansions', () => {
+    expect(src).toContain('def _is_evergreen_query');
+    expect(src).toContain('def _build_search_variations');
+    expect(src).toContain('evidence based guide');
+    expect(src).toContain('guia prático baseado em evidência');
+    expect(src).toContain('recuperar');
+    expect(src).toContain('repetições');
+  });
+
+  it('re-ranks sources to penalize evergreen trend-bait noise', () => {
+    expect(src).toContain('def _query_specific_rank');
+    expect(src).toContain('EVERGREEN_NOISE_SIGNALS');
+    expect(src).toContain('EVERGREEN_RESEARCH_SIGNALS');
+  });
+});
+
+describe('Python mock searchers — evergreen-friendly local results', () => {
+  const webSrc = readPy(path.join('..', 'searchers', 'web.py'));
+  const youtubeSrc = readPy(path.join('..', 'searchers', 'youtube.py'));
+  const newsSrc = readPy(path.join('..', 'searchers', 'news.py'));
+
+  it('web mock avoids hardcoded viral framing for evergreen topics', () => {
+    expect(webSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(webSrc).toContain('evidence overview');
+    expect(webSrc).toContain('Practical guide to');
+    expect(webSrc).toContain('recuperar');
+  });
+
+  it('youtube mock uses coaching-style evergreen titles when appropriate', () => {
+    expect(youtubeSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(youtubeSrc).toContain('Coach breakdown');
+    expect(youtubeSrc).toContain('practical walkthrough');
+  });
+
+  it('news mock uses evidence/protocol framing for evergreen topics', () => {
+    expect(newsSrc).toContain('EVERGREEN_MOCK_HINTS');
+    expect(newsSrc).toContain('practical protocol');
+    expect(newsSrc).toContain('evidence review');
+  });
+});
+
+describe('Python brief_builder.py — degraded briefs stay safe', () => {
+  const src = readPy('brief_builder.py');
+
+  it('does not inject raw Source context lines into fallback briefs', () => {
+    expect(src).not.toContain('Source context:');
+    expect(src).toContain('key_points=[]');
+  });
 });
 
 describe('Python book_knowledge.py — no hallucination on empty search', () => {

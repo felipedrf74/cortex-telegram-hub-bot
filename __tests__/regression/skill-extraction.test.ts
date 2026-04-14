@@ -397,14 +397,13 @@ describe('REGRESSION: Three-tier cascade functions correctly', () => {
       expect(result.domain).toBe('triathlon');
     });
 
-    it('with active content context, "deadline" keyword-matches to secretary', async () => {
+    it('with active content context, "deadline" follow-ups preserve content context', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.9 });
       const context = { domain: 'content' as const, lastAssistantMessage: 'Video script draft ready.' };
 
       const result = await routeMessage('when is the deadline for this?', context);
-      // "deadline" matches secretary keyword — classifier NOT called
-      expect(result.method).toBe('keyword');
-      expect(result.domain).toBe('secretary');
+      expect(result.method).toBe('classifier');
+      expect(result.domain).toBe('content');
     });
 
     it('explicit command still wins even with active context', async () => {

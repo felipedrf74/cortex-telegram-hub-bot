@@ -8,7 +8,9 @@ import { config } from '../../config';
 import { getDb } from '../../services/database';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { authMiddleware as verifyJwt } from '../auth-middleware';
 import { logAudit } from '../../services/audit-trail';
+import { getStoredDailyCostLimitUsdForTier } from '../../services/plan-quotas';
 import {
   getUserByAppleId, getUserByGoogleId, getUserByEmail, getUserById,
   createAppleUser, createGoogleUser, createEmailUser,
@@ -83,6 +85,50 @@ function issueTokensAndRegisterDevice(
   }, { status: 201 });
 }
 
+function grantBetaSandboxAccess(userId: number): void {
+  const db = getDb();
+  const periodStart = new Date().toISOString();
+  const periodEnd = new Date(Date.now() + (365 * 24 * 60 * 60 * 1000)).toISOString();
+
+  db.prepare(`
+    UPDATE users
+    SET tier = 'max',
+        status = 'active',
+        auth_provider = 'invite_code',
+        daily_cost_limit_usd = CASE
+          WHEN daily_cost_limit_usd < ? THEN ?
+          ELSE daily_cost_limit_usd
+        END
+    WHERE id = ?
+  `).run(
+    getStoredDailyCostLimitUsdForTier('max'),
+    getStoredDailyCostLimitUsdForTier('max'),
+    userId,
+  );
+
+  db.prepare(`
+    INSERT INTO subscriptions (
+      user_id,
+      plan,
+      period,
+      status,
+      provider,
+      current_period_start,
+      current_period_end,
+      updated_at
+    )
+    VALUES (?, 'max', 'yearly', 'trialing', 'none', ?, ?, datetime('now'))
+    ON CONFLICT(user_id) DO UPDATE SET
+      plan = excluded.plan,
+      period = excluded.period,
+      status = excluded.status,
+      provider = excluded.provider,
+      current_period_start = excluded.current_period_start,
+      current_period_end = excluded.current_period_end,
+      updated_at = datetime('now')
+  `).run(userId, periodStart, periodEnd);
+}
+
 export function authRoutes(): Router {
   const router = Router();
 
@@ -98,6 +144,8 @@ export function authRoutes(): Router {
       return;
     }
 
+    const normalizedInviteCode = String(inviteCode).trim().toLowerCase();
+
     // ── Invite code → user mapping ──────────────────────────────────
     //
     // Two-tier system:
@@ -110,12 +158,12 @@ export function authRoutes(): Router {
     // The demo user ID is a synthetic constant (1000000001) that has
     // no OAuth tokens, no Telegram account, and no personal data.
 
-    const ownerCode = config.ios.ownerCode || '';
-    const betaCode = config.ios.inviteCode || '';
+    const ownerCode = (config.ios.ownerCode || '').trim().toLowerCase();
+    const betaCode = (config.ios.inviteCode || '').trim().toLowerCase();
 
     let userId: number;
 
-    if (ownerCode && inviteCode === ownerCode) {
+    if (ownerCode && normalizedInviteCode == ownerCode) {
       // Owner: resolve users.id from their Telegram ID.
       const ownerTelegramId = config.telegram.allowedUserIds[0];
       if (!ownerTelegramId) {
@@ -125,7 +173,7 @@ export function authRoutes(): Router {
       const { getUserByTelegramId: findByTgId } = require('../../services/user-service');
       const ownerUser = findByTgId(ownerTelegramId);
       userId = ownerUser?.id ?? ownerTelegramId;
-    } else if (betaCode && inviteCode === betaCode) {
+    } else if (betaCode && normalizedInviteCode == betaCode) {
       // Beta/reviewer: create a unique sandbox user per device.
       // Each deviceId gets its own users.id — no shared DEMO_USER_ID.
       // This ensures strict per-tester isolation.
@@ -144,6 +192,11 @@ export function authRoutes(): Router {
         userId = result.lastInsertRowid as number;
         logger.info({ userId, deviceId: deviceId.slice(0, 8) }, 'Created sandbox user for beta tester');
       }
+
+      // Beta/reviewer users must be able to exercise the full AI surface.
+      // Provision them with a local Max-tier subscription so app review and
+      // closed-beta QA do not hit the paywall immediately after sign-in.
+      grantBetaSandboxAccess(userId);
     } else {
       sendError(res, 'INVALID_INVITE', 'Invalid invite code', 403);
       return;
@@ -502,8 +555,6 @@ export function authRoutes(): Router {
   // ── Send Verification Code ─────────────────────────────────────────
   // These verification routes need JWT auth but live in the public auth
   // router. We inline the auth check via the authMiddleware import.
-  const { authMiddleware: verifyJwt } = require('../auth-middleware');
-
   router.post('/send-verification', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
     const userId = (req as any).userId;
 

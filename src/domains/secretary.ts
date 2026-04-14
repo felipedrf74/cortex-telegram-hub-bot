@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DomainName, DomainResponse } from './types';
-import { getActiveProvider } from '../services/provider-registry';
+import { ensureActiveProvider, getActiveProvider } from '../services/provider-registry';
 import { callDomain as directCallDomain, continueWithToolResults as directContinueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
 import { getActiveReminders, getRemindersForToday } from '../state/reminders';
@@ -284,14 +284,14 @@ export async function handleSecretary(message: string, userId?: number): Promise
   //     and passed to whichever provider runs)
   //   - Circuit breaker fallback (if Gemini fails, falls back to
   //     Anthropic Haiku — same fallback the chat domains get)
-  const provider = getActiveProvider();
+  const provider = getActiveProvider() || ensureActiveProvider();
   if (!provider) {
     // Fallback to direct Anthropic — same call signatures the legacy
     // path used. The Anthropic SDK client is lazy-initialized inside
     // anthropic.ts so this static import is cheap; the test suites
     // can mock the imports normally without dynamic-require gotchas.
     return await handleSecretaryWithDirectAnthropic(
-      uid, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId,
+      uid, message, history, stateContext, directCallDomain, directContinueWithToolResults, uid,
     );
   }
 
@@ -387,7 +387,7 @@ async function handleSecretaryWithDirectAnthropic(
   stateContext: string,
   callDomain: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
   continueWithToolResults: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
-  userId: number | undefined,
+  userId: number,
 ): Promise<DomainResponse> {
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;

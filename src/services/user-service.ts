@@ -12,6 +12,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import crypto from 'crypto';
 import type { Lang } from '../utils/i18n';
+import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -76,13 +77,14 @@ export function getOrCreateUser(telegramId: number, profile: {
       telegram_id, username, first_name, last_name, invite_code,
       tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd
     )
-    VALUES (?, ?, ?, ?, ?, 'pro', 200, 500000, 5.0)
+    VALUES (?, ?, ?, ?, ?, 'pro', 200, 500000, ?)
   `).run(
     telegramId,
     profile.username || null,
     profile.firstName || null,
     profile.lastName || null,
     profile.inviteCode || null,
+    getStoredDailyCostLimitUsdForTier('pro'),
   );
 
   logger.info(
@@ -97,6 +99,53 @@ export function getOrCreateUser(telegramId: number, profile: {
 export function getUserById(id: number): User | null {
   const db = getDb();
   return (db.prepare('SELECT * FROM users WHERE id = ?').get(id) as User) ?? null;
+}
+
+function getUserByAnyIdentifier(userRef: number): User | null {
+  // Telegram traffic still uses telegram_id, while iOS API requests carry
+  // the canonical users.id in JWTs. Resolve both so shared helpers like
+  // getUserLanguage() behave consistently across platforms.
+  return getUserByTelegramId(userRef) ?? getUserById(userRef);
+}
+
+export function sanitizeDisplayName(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) return '';
+  if (trimmed.includes('@')) return '';
+
+  const normalized = trimmed.replace(/_/g, '-');
+  const lower = normalized.toLowerCase();
+  const letters = Array.from(trimmed).filter((char) => /\p{L}/u.test(char)).length;
+  if (letters === 0) return '';
+
+  if (['beta-', 'user-', 'guest-', 'device-', 'test-'].some((prefix) => lower.startsWith(prefix))) {
+    return '';
+  }
+
+  const parts = normalized.split('-');
+  if (parts.length === 2) {
+    const suffix = parts[1] ?? '';
+    if (suffix.length >= 6 && /^[0-9a-f]+$/i.test(suffix)) {
+      return '';
+    }
+  }
+
+  const digitCount = Array.from(normalized).filter((char) => /\d/.test(char)).length;
+  if (normalized.length >= 16 && digitCount >= 6 && normalized.includes('-')) {
+    return '';
+  }
+
+  return trimmed;
+}
+
+export function getPreferredDisplayName(userRef: number): string {
+  const user = getUserByAnyIdentifier(userRef);
+  if (!user) return '';
+  return (
+    sanitizeDisplayName(user.first_name)
+    || sanitizeDisplayName(user.username)
+    || ''
+  );
 }
 
 export function getUserByAppleId(appleUserId: string): User | null {
@@ -121,8 +170,14 @@ export function createAppleUser(appleUserId: string, profile: {
   db.prepare(`
     INSERT INTO users (apple_user_id, email, first_name, last_name, email_verified,
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-    VALUES (?, ?, ?, ?, 1, 'apple', 'pro', 200, 500000, 5.0)
-  `).run(appleUserId, profile.email?.toLowerCase() || null, profile.firstName || null, profile.lastName || null);
+    VALUES (?, ?, ?, ?, 1, 'apple', 'pro', 200, 500000, ?)
+  `).run(
+    appleUserId,
+    profile.email?.toLowerCase() || null,
+    profile.firstName || null,
+    profile.lastName || null,
+    getStoredDailyCostLimitUsdForTier('pro'),
+  );
   logger.info({ appleUserId, email: profile.email }, 'New Apple user registered');
   return getUserByAppleId(appleUserId)!;
 }
@@ -135,8 +190,15 @@ export function createGoogleUser(googleUserId: string, profile: {
   db.prepare(`
     INSERT INTO users (google_user_id, email, first_name, last_name, avatar_url, email_verified,
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-    VALUES (?, ?, ?, ?, ?, 1, 'google', 'pro', 200, 500000, 5.0)
-  `).run(googleUserId, profile.email.toLowerCase(), firstName || null, rest.join(' ') || null, profile.picture || null);
+    VALUES (?, ?, ?, ?, ?, 1, 'google', 'pro', 200, 500000, ?)
+  `).run(
+    googleUserId,
+    profile.email.toLowerCase(),
+    firstName || null,
+    rest.join(' ') || null,
+    profile.picture || null,
+    getStoredDailyCostLimitUsdForTier('pro'),
+  );
   logger.info({ googleUserId, email: profile.email }, 'New Google user registered');
   return getUserByGoogleId(googleUserId)!;
 }
@@ -148,8 +210,8 @@ export function createEmailUser(email: string, passwordHash: string, profile: {
   db.prepare(`
     INSERT INTO users (email, password_hash, first_name, email_verified,
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-    VALUES (?, ?, ?, 0, 'email', 'pro', 200, 500000, 5.0)
-  `).run(email.toLowerCase(), passwordHash, profile.firstName);
+    VALUES (?, ?, ?, 0, 'email', 'pro', 200, 500000, ?)
+  `).run(email.toLowerCase(), passwordHash, profile.firstName, getStoredDailyCostLimitUsdForTier('pro'));
   logger.info({ email }, 'New email user registered');
   return getUserByEmail(email)!;
 }
@@ -171,14 +233,14 @@ export function touchUser(telegramId: number): void {
   } catch { /* non-critical */ }
 }
 
-export function getUserLanguage(telegramId: number): Lang {
-  const user = getUserByTelegramId(telegramId);
+export function getUserLanguage(userRef: number): Lang {
+  const user = getUserByAnyIdentifier(userRef);
   return (user?.language as Lang) || 'pt-BR';
 }
 
-export function setUserLanguage(telegramId: number, language: Lang): void {
+export function setUserLanguage(userRef: number, language: Lang): void {
   const db = getDb();
-  db.prepare('UPDATE users SET language = ? WHERE telegram_id = ?').run(language, telegramId);
+  db.prepare('UPDATE users SET language = ? WHERE telegram_id = ? OR id = ?').run(language, userRef, userRef);
 }
 
 /** List users with safe fields only — never exposes password_hash, external IDs, or tokens. */
@@ -211,13 +273,15 @@ export function setUserStatusById(userId: number, status: 'active' | 'suspended'
   logger.info({ userId, status }, 'User status updated (by id)');
 }
 
-export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'owner'): void {
+export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'max' | 'owner'): void {
   const db = getDb();
   const limits = tier === 'owner'
     ? { messages: 0, tokens: 0, cost: 0 }
+    : tier === 'max'
+    ? { messages: 200, tokens: 500000, cost: getStoredDailyCostLimitUsdForTier('max') }
     : tier === 'pro'
-    ? { messages: 200, tokens: 500000, cost: 5.0 }
-    : { messages: 40, tokens: 100000, cost: 0 };
+    ? { messages: 200, tokens: 500000, cost: getStoredDailyCostLimitUsdForTier('pro') }
+    : { messages: 40, tokens: 100000, cost: getStoredDailyCostLimitUsdForTier('free') };
 
   db.prepare(`
     UPDATE users SET tier = ?, daily_message_limit = ?, daily_token_limit = ?, daily_cost_limit_usd = ?

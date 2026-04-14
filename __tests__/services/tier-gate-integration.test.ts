@@ -95,6 +95,14 @@ describe('Tier gate — parent domain names from RouteResult', () => {
       expect(result.allowed, `owner should access ${domain}`).toBe(true);
     }
   });
+
+  it('max user can reach every non-owner parent domain', () => {
+    const max = { id: 4, tier: 'max' as const };
+    for (const domain of parents) {
+      const result = checkTierAccess(max, domain);
+      expect(result.allowed, `max should access ${domain}`).toBe(true);
+    }
+  });
 });
 
 // ─── New-user default tier integration ─────────────────────────────

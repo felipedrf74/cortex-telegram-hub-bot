@@ -18,6 +18,16 @@ vi.mock('../../src/services/anthropic', () => ({
   continueWithToolResults: vi.fn(),
 }));
 
+const mockProviderCall = vi.fn();
+const mockProviderContinue = vi.fn();
+const mockGetActiveProvider = vi.fn(() => null);
+const mockEnsureActiveProvider = vi.fn(() => null);
+
+vi.mock('../../src/services/provider-registry', () => ({
+  getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
+  ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
+}));
+
 vi.mock('../../src/state/conversation', () => ({
   getConversationHistory: vi.fn().mockReturnValue([]),
   addToConversation: vi.fn(),
@@ -101,6 +111,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   fakeTime += 60_000; // 60s jump — well past the 30s cache TTL
   vi.spyOn(Date, 'now').mockReturnValue(fakeTime);
+  mockGetActiveProvider.mockReturnValue(null);
+  mockEnsureActiveProvider.mockReturnValue(null);
   vi.mocked(now).mockReturnValue({
     toFormat: vi.fn().mockReturnValue('Monday, March 30 2026, 10:00'),
     minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-03-27') }),
@@ -120,6 +132,46 @@ describe('handleSecretary', () => {
     const result = await handleSecretary('What do I have today?');
     expect(result).toEqual({ text: 'You have 3 tasks today.', domain: 'secretary' });
     expect(mockCallDomain).toHaveBeenCalledOnce();
+  });
+
+  it('lazily initializes the routing provider before using direct anthropic fallback', async () => {
+    mockEnsureActiveProvider.mockReturnValue({
+      name: 'lazy-provider',
+      callDomain: (...args: unknown[]) => mockProviderCall(...args),
+      continueWithToolResults: (...args: unknown[]) => mockProviderContinue(...args),
+      classify: vi.fn(),
+    });
+    mockProviderCall.mockResolvedValue({
+      text: 'Hello there.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSecretary('Hello', 42);
+
+    expect(result).toEqual({ text: 'Hello there.', domain: 'secretary' });
+    expect(mockEnsureActiveProvider).toHaveBeenCalledOnce();
+    expect(mockProviderCall).toHaveBeenCalledOnce();
+    expect(mockCallDomain).not.toHaveBeenCalled();
+  });
+
+  it('passes the resolved uid into the direct anthropic fallback when routing stays unavailable', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Fallback hello.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    await handleSecretary('Hello', 77);
+
+    expect(mockCallDomain).toHaveBeenCalledWith(
+      'secretary',
+      expect.any(Array),
+      'Hello',
+      expect.any(String),
+      undefined,
+      77,
+    );
   });
 
   it('stores user and assistant messages in conversation', async () => {
@@ -154,7 +206,7 @@ describe('handleSecretary', () => {
 
     const result = await handleSecretary('Show my lists');
     expect(result.text).toBe('You have no task lists.');
-    expect(mockExecuteTool).toHaveBeenCalledWith('ms_todo_get_lists', {}, undefined);
+    expect(mockExecuteTool).toHaveBeenCalledWith('ms_todo_get_lists', {}, 0);
   });
 
   it('truncates tool results larger than 2000 characters', async () => {

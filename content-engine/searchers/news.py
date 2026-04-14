@@ -17,6 +17,13 @@ logger = logging.getLogger("content-engine.news")
 
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
 
+EVERGREEN_MOCK_HINTS = (
+    "recovery", "recover", "interval", "training", "workout", "sleep", "hydration",
+    "protein", "nutrition", "guide", "evidence", "study", "protocol", "hill repeat",
+    "recuperação", "recuperar", "intervalos", "repetições", "treino", "sono", "hidratação", "proteína",
+    "nutrição", "guia", "evidência", "estudo", "protocolo", "desaquecimento", "subida",
+)
+
 
 class NewsSearcher:
     name = "news"
@@ -71,6 +78,26 @@ class NewsSearcher:
     @staticmethod
     def _mock(query: str, max_results: int) -> list[SearchResult]:
         now = datetime.now(timezone.utc)
+        lower = query.lower()
+        if any(hint in lower for hint in EVERGREEN_MOCK_HINTS):
+            return [
+                SearchResult(
+                    title=f"[Mock] Experts on {query}: practical protocol",
+                    url=f"https://example.com/news/{query.replace(' ', '-')}",
+                    snippet=f"Mock evidence-style news result for '{query}'. Set NEWSAPI_API_KEY for real results.",
+                    source="news",
+                    published_at=now - timedelta(hours=1),
+                    metadata={"publisher": "Mock Health Desk", "category": "analysis"},
+                ),
+                SearchResult(
+                    title=f"[Mock] {query}: evidence review",
+                    url=f"https://example.com/news/experts-{query.replace(' ', '-')}",
+                    snippet=f"Mock expert review for {query} with practical takeaways.",
+                    source="news",
+                    published_at=now - timedelta(hours=3),
+                    metadata={"publisher": "Mock Science Brief", "category": "analysis"},
+                ),
+            ][:max_results]
         return [
             SearchResult(
                 title=f"[Mock] Breaking: {query} shakes Brazil",

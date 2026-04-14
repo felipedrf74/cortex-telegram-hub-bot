@@ -16,6 +16,7 @@ import { collectMonthlyInvoices, formatCollectionNotification } from './invoice-
 import { isInvoiceFilingConfigured } from './invoice-filer';
 import { collectAmazonInvoices, formatAmazonNotification, isAmazonConfigured } from './amazon-collector';
 import { collectUberInvoices, formatUberNotification, isUberConfigured } from './uber-collector';
+import { getFiscalCollectionSummary, isFiscalBundleDue, sendFiscalBundleNow } from './fiscal-bundle';
 import { generateCoachBriefing } from './garmin-coach';
 import { isGarminConfigured, keepAlive as garminKeepAlive, ensureAuthenticated as garminEnsureAuth } from './garmin';
 import { registerJob, wrapJob, recordGarminRefresh, setJobFailureNotifier, setJobEnabledChecker, getJobMap, seedJobLastRunFromHistory } from '../portal/telemetry';
@@ -38,6 +39,8 @@ import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
+import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
+import { runWithContext } from '../utils/request-context';
 
 /**
  * Get all active user Telegram IDs from the database.
@@ -135,6 +138,7 @@ export function startScheduler(bot?: any): void {
   registerJob('midnight_cleanup',   'Midnight Cleanup',      '0 0 * * *',       'system');
   // content_discovery removed — replaced by content-workflow (tue/thu/fri topic candidates)
   registerJob('invoice_collection', 'Invoice Collection',    '0 9 1 * *',       'invoices');
+  registerJob('fiscal_bundle',      'Fiscal Bundle Delivery','10 8 * * *',      'invoices');
   registerJob('amazon_collection',  'Amazon Collection',     '15 9 1 * *',      'invoices');
   registerJob('uber_collection',    'Uber Collection',       '30 9 1 * *',      'invoices');
   registerJob('fossa_email',        'Fossa Email',           '30 7 * * 1',      'secretary');
@@ -564,7 +568,7 @@ export function startScheduler(bot?: any): void {
     if (!config.invoices.monthlyCollectionEnabled || !isInvoiceFilingConfigured()) return;
 
     const prev = now().minus({ months: 1 });
-    const result = await collectMonthlyInvoices(prev.year, prev.month);
+    const result = await collectMonthlyInvoices(undefined, prev.year, prev.month);
     const notification = formatCollectionNotification(result);
 
     for (const userId of getOwnerUserIds()) {
@@ -573,6 +577,57 @@ export function startScheduler(bot?: any): void {
       } catch (err) {
         logger.error({ err, userId }, 'Failed to send invoice collection notification');
       }
+    }
+  }), { timezone: tz });
+
+  // ── Fiscal bundle delivery (daily 08:10, per-user due-day check) ──
+  cron.schedule('10 8 * * *', wrapJob('fiscal_bundle', async () => {
+    const profiles = listActiveFiscalCollectionProfiles();
+    if (profiles.length === 0) return 'skipped';
+
+    let dueCount = 0;
+    const failures: Array<{ userId: number; message: string }> = [];
+
+    for (const profile of profiles) {
+      if (!isFiscalBundleDue(profile)) continue;
+      dueCount += 1;
+
+      const summary = getFiscalCollectionSummary(profile.user_id);
+      const blockingWarnings = new Set([
+        'DESTINATION_EMAIL_MISSING',
+        'NO_MAIL_PROVIDER_CONNECTED',
+        'BUNDLE_DELIVERY_NOT_CONFIGURED',
+      ]);
+      if (summary.warnings.some((warning) => blockingWarnings.has(warning))) {
+        logger.info(
+          { userId: profile.user_id, warnings: summary.warnings },
+          'Skipping fiscal bundle cron — profile is not deliverable yet',
+        );
+        continue;
+      }
+
+      try {
+        const result = await runWithContext(
+          { source: 'cron:fiscal_bundle', userId: profile.user_id },
+          () => sendFiscalBundleNow(profile.user_id),
+        );
+        logger.info({
+          userId: profile.user_id,
+          destinationEmail: result.destinationEmail,
+          totalDocuments: result.totalDocuments,
+          totalMatchedEmails: result.totalMatchedEmails,
+        }, 'Fiscal bundle sent from scheduled cron');
+      } catch (err: any) {
+        const message = err?.message || 'unknown error';
+        failures.push({ userId: profile.user_id, message });
+        logger.error({ err, userId: profile.user_id }, 'Fiscal bundle cron failed');
+      }
+    }
+
+    if (dueCount === 0) return 'skipped';
+    if (failures.length > 0) {
+      const detail = failures.map((failure) => `${failure.userId}:${failure.message}`).join('; ');
+      throw new Error(`Fiscal bundle delivery failed for ${failures.length} user(s): ${detail}`);
     }
   }), { timezone: tz });
 
@@ -1194,7 +1249,7 @@ export function startScheduler(bot?: any): void {
   });
 
   logger.info(
-    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
+    `Scheduler started: reminders, daily briefing (${config.todo.digestTime}), end-of-day (21:00), weekly (Fri 17:00), shared list (*/5), content (16:43), invoices (1st 09:00/09:15/09:30), fiscal-bundle (daily 08:10 due-check), conflict (19:30), fossa (bi-weekly Mon 07:30), garmin-keepalive (*/30), coach (${config.garmin.coachTime}), invoice-queue (*/15), channel-relearn (Sun 03:00), tue-reels (Tue 09:00), thu-youtube (Thu 09:00), fri-weekly (Fri 18:30), pipeline-agent (20:00), expire-signals (hourly), db-backup (${config.backup.time}), dst-watchdog (*/15)`
   );
 }
 

@@ -58,7 +58,7 @@ export function billingRoutes(): Router {
       usageLevel: usage.usageLevel,
       usageFraction: usage.usageFraction,
       isOverLimit: usage.over,
-      resetsAt: new Date(new Date().setUTCHours(24, 0, 0, 0)).toISOString(),
+      resetsAt: usage.resetAt,
       boostAvailable: usage.boostAvailable,
     });
   }));

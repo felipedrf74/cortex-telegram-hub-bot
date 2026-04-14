@@ -8,20 +8,24 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+let testDb: Database.Database;
 
 // ─── Mock all dependencies ──────────────────────────────────────────
 
 // Mock provider-registry: the routing provider that domain-handler now uses
 const mockCallDomainFn = vi.fn();
 const mockContinueFn = vi.fn();
+const mockGetActiveProvider = vi.fn();
+const mockEnsureActiveProvider = vi.fn();
 
 vi.mock('../../src/services/provider-registry', () => ({
-  getActiveProvider: vi.fn().mockReturnValue({
-    name: 'mock-provider',
-    callDomain: (...args: any[]) => mockCallDomainFn(...args),
-    continueWithToolResults: (...args: any[]) => mockContinueFn(...args),
-    classify: vi.fn(),
-  }),
+  getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
+  ensureActiveProvider: (...args: unknown[]) => mockEnsureActiveProvider(...args),
 }));
 
 // Keep backward-compat mock for the fallback path
@@ -61,6 +65,10 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+}));
+
 // ─── Imports ─────────────────────────────────────────────────────────
 
 import {
@@ -68,6 +76,7 @@ import {
   getLastCoachState,
   buildSimpleStateContext,
   handleSimpleDomain,
+  __resetLastCoachStateCacheForTests,
 } from '../../src/domains/domain-handler';
 
 import { getConversationHistory, addToConversation } from '../../src/state/conversation';
@@ -81,13 +90,62 @@ const mockCallDomain = mockCallDomainFn;
 const mockContinue = mockContinueFn;
 const mockExecuteTool = vi.mocked(executeToolCall);
 
+function applyMigrations(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
+      try {
+        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
+      } catch {
+        // Some migrations depend on runtime-only services; these tests only
+        // need the coach/callback schema that applies cleanly in isolation.
+      }
+    }
+  }
+}
+
+function ensureUser(userId: number): void {
+  testDb.prepare(`
+    INSERT OR IGNORE INTO users (
+      id,
+      telegram_id,
+      first_name,
+      language,
+      timezone,
+      tier,
+      status,
+      auth_provider,
+      created_at,
+      last_active_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+  `).run(userId, userId, `Test ${userId}`, 'en-US', 'Europe/Lisbon', 'pro', 'active', 'telegram');
+}
+
 // ─── Shared setup: reset now() mock for every test ──────────────────
 
 beforeEach(() => {
+  testDb = new Database(':memory:');
+  applyMigrations(testDb);
+  __resetLastCoachStateCacheForTests();
+  mockGetActiveProvider.mockReturnValue({
+    name: 'mock-provider',
+    callDomain: (...args: any[]) => mockCallDomainFn(...args),
+    continueWithToolResults: (...args: any[]) => mockContinueFn(...args),
+    classify: vi.fn(),
+  });
+  mockEnsureActiveProvider.mockReturnValue(null);
   vi.mocked(now).mockReturnValue({
     toFormat: vi.fn().mockReturnValue('Monday, March 30 2026, 10:00'),
     minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-03-27') }),
   } as any);
+});
+
+afterEach(() => {
+  __resetLastCoachStateCacheForTests();
+  testDb?.close();
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -118,6 +176,19 @@ describe('Coach state management', () => {
     Date.now = () => realNow() + 13 * 60 * 60 * 1000;
     expect(getLastCoachState(100)).toBeNull();
     Date.now = realNow;
+  });
+
+  it('reloads persisted coach state after the in-memory cache is cleared', () => {
+    ensureUser(321);
+    const recs = [{ action: 'SWAP', eventId: 'evt-cache', source: 'outlook', originalTitle: 'Intervals', summary: 'Swap for easy spin', newTitle: 'Easy spin', newStart: null, newEnd: null }];
+    setLastCoachState(321, recs as any, 'Swap intervals for recovery spin');
+
+    __resetLastCoachStateCacheForTests();
+
+    const state = getLastCoachState(321);
+    expect(state).not.toBeNull();
+    expect(state!.recommendations).toEqual(recs);
+    expect(state!.briefingSummary).toBe('Swap intervals for recovery spin');
   });
 });
 
@@ -213,6 +284,26 @@ describe('handleSimpleDomain', () => {
     await handleSimpleDomain('content', 'Write a hook');
     expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'content', 'user', 'Write a hook');
     expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'content', 'assistant', 'Here is your plan.');
+  });
+
+  it('lazily initializes the routing provider when the active singleton is cold', async () => {
+    mockGetActiveProvider.mockReturnValueOnce(null);
+    mockEnsureActiveProvider.mockReturnValue({
+      name: 'lazy-provider',
+      callDomain: (...args: any[]) => mockCallDomainFn(...args),
+      continueWithToolResults: (...args: any[]) => mockContinueFn(...args),
+      classify: vi.fn(),
+    });
+    mockCallDomain.mockResolvedValue({
+      text: 'Recovered.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    const result = await handleSimpleDomain('triathlon', 'hello', 5, 15);
+
+    expect(result).toEqual({ text: 'Recovered.', domain: 'triathlon' });
+    expect(mockEnsureActiveProvider).toHaveBeenCalledOnce();
   });
 
   it('executes tool calls and returns final text', async () => {

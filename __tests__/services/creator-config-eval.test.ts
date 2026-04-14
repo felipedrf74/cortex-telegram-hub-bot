@@ -214,6 +214,15 @@ describe('creator-config: prompt loader', () => {
     expect(topicGen).toContain('The Operator');
     expect(topicGen).toContain('test format');
   });
+
+  it('anthropic content prompt path uses loadPromptWithConfig for content domain', () => {
+    const anthropicSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/services/anthropic.ts'),
+      'utf8',
+    );
+    expect(anthropicSource).toContain("basePrompt = domain === 'content'");
+    expect(anthropicSource).toContain("? loadPromptWithConfig(domain)");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════

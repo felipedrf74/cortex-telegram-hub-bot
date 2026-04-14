@@ -53,6 +53,7 @@ VIRAL TRIGGER TYPES:
 
 async def generate(req: HooksRequest) -> HooksResponse:
     start = time.monotonic()
+    warnings: list[str] = []
 
     prompt = f"""Generate {req.count} unique hooks for the following:
 - Topic: {req.topic}
@@ -72,9 +73,26 @@ For each hook, provide:
 Return as a JSON array of objects. Example:
 [{{"text": "...", "trigger_type": "bold_claim", "sfx": "vine-boom", "edit_cue": "zoom-punch", "score": 8, "why": "..."}}]"""
 
-    result = await ask_claude_json(prompt, system=SYSTEM_PROMPT)
+    result = await ask_claude_json(
+        prompt,
+        system=SYSTEM_PROMPT,
+        category="content_engine_hooks",
+    )
 
-    hooks = result if isinstance(result, list) else result.get("hooks", [result])
+    degraded = False
+    if isinstance(result, dict) and "raw" in result:
+        degraded = True
+        warnings.append("Hook generator returned non-JSON output; using conservative fallback hooks.")
+        hooks = [{
+            "text": f"Tem uma coisa sobre {req.topic} que ninguém está a ver.",
+            "trigger_type": "curiosity_gap",
+            "sfx": "record-scratch",
+            "edit_cue": "text-popup",
+            "score": 5,
+            "why": "Fallback hook kept intentionally simple because the AI output was malformed.",
+        }]
+    else:
+        hooks = result if isinstance(result, list) else result.get("hooks", [result])
 
     duration_ms = int((time.monotonic() - start) * 1000)
     return HooksResponse(
@@ -82,4 +100,6 @@ Return as a JSON array of objects. Example:
         niche=req.niche,
         hooks=hooks[:req.count],
         duration_ms=duration_ms,
+        degraded=degraded,
+        warnings=warnings,
     )

@@ -290,6 +290,7 @@ export const config = {
   // ── iOS API ─────────────────────────────────────────────────────────
   ios: {
     enabled: (process.env.IOS_API_ENABLED || 'false') === 'true',
+    websocketEnabled: (process.env.IOS_WS_ENABLED || 'false') === 'true',
     jwtSecret: process.env.IOS_API_JWT_SECRET || '',
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
     rateLimit: parseInt(process.env.IOS_API_RATE_LIMIT || '60', 10),

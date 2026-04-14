@@ -1,223 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
+import crypto from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
-import { uploadToDrive } from './google-drive';
+import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 
-// ── File Saver for large outputs ────────────────────────────────────
-
-const IDEAS_DIR = process.env.IDEAS_DIR || path.join(os.homedir(), 'Desktop', 'IDEAS');
-
-/** Threshold in chars — if formatted message exceeds this, save to file */
-const FILE_THRESHOLD = 3500;
-
-/** Command → subfolder mapping */
-const COMMAND_FOLDERS: Record<string, string> = {
-  // RESEARCH — raw input & trending data
-  deepsearch: 'RESEARCH',
-  sources: 'RESEARCH',
-  hotnews: 'RESEARCH',
-  trending: 'RESEARCH',
-  discover: 'RESEARCH',
-  transcribe: 'RESEARCH',
-  // IDEAS — ideation, hooks, titles, reactions, studies
-  ideas: 'IDEAS',
-  reaction: 'IDEAS',
-  hooks: 'IDEAS',
-  titles: 'IDEAS',
-  video: 'IDEAS',
-  reel: 'IDEAS',
-  calendar: 'IDEAS',
-  contenttopic: 'IDEAS',
-  studyvideo: 'IDEAS',
-  // SCRIPTS — production-ready scripts & repurpose
-  genscript: 'SCRIPTS',
-  script: 'SCRIPTS',
-  buildscript: 'SCRIPTS',
-  repurpose: 'SCRIPTS',
-  // VISUALS — thumbnails & captions
-  genthumbnail: 'VISUALS',
-  gencaption: 'VISUALS',
-  // REPORTS — analysis, competitive intel, feedback
-  competitor: 'REPORTS',
-  gaps: 'REPORTS',
-  seo: 'REPORTS',
-  brandcheck: 'REPORTS',
-  feedback: 'REPORTS',
-  report: 'REPORTS',
-};
-
-/**
- * Converts HTML-formatted content into a DOCX document with proper formatting.
- */
-function htmlToDocxChildren(content: string): Paragraph[] {
-  const plain = content
-    .replace(/<a href="([^"]*)">[^<]*<\/a>/g, '$1')
-    .replace(/<code>[^<]*<\/code>/g, (m) => m.replace(/<\/?code>/g, ''));
-
-  const lines = plain.split('\n');
-  const children: Paragraph[] = [];
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      children.push(new Paragraph({ text: '' }));
-      continue;
-    }
-
-    // Parse inline bold/italic from HTML tags
-    const runs: TextRun[] = [];
-    const regex = /(<b>(.+?)<\/b>|<i>(.+?)<\/i>|([^<]+|<[^>]*>))/g;
-    let match;
-    let hasRuns = false;
-    const stripped = line.replace(/<[^>]*>/g, '').trim();
-
-    // Check if line looks like a heading (starts with emoji + all caps or bold)
-    const isHeading = /^[🔥🎯📌🎣⏰📊🔍💡📝🎬🖼️📢✂️📁🏆⚡🧠💰🎯🔎📈💪🏃‍♂️🚴‍♂️⛪🇧🇷🌍]/.test(stripped) && stripped.length < 100;
-
-    if (isHeading && stripped === stripped) {
-      // Bold heading-like line
-      children.push(new Paragraph({
-        children: [new TextRun({ text: stripped, bold: true, size: 24, font: 'Calibri' })],
-        spacing: { before: 120, after: 60 },
-      }));
-      continue;
-    }
-
-    // Parse runs with bold/italic
-    while ((match = regex.exec(line)) !== null) {
-      if (match[2]) {
-        runs.push(new TextRun({ text: match[2], bold: true, font: 'Calibri', size: 22 }));
-        hasRuns = true;
-      } else if (match[3]) {
-        runs.push(new TextRun({ text: match[3], italics: true, font: 'Calibri', size: 22 }));
-        hasRuns = true;
-      } else if (match[4] && !match[4].startsWith('<')) {
-        runs.push(new TextRun({ text: match[4], font: 'Calibri', size: 22 }));
-        hasRuns = true;
-      }
-    }
-
-    if (!hasRuns) {
-      // Fallback — strip all HTML and add as plain text
-      runs.push(new TextRun({ text: stripped, font: 'Calibri', size: 22 }));
-    }
-
-    children.push(new Paragraph({ children: runs, spacing: { before: 40, after: 40 } }));
-  }
-
-  return children;
-}
-
-export interface DocxResult {
-  filePath: string;
-  driveUrl?: string;
-}
-
-/**
- * Saves content as DOCX to IDEAS/<subfolder>/<slug>_<command>_<date>.docx
- * Returns the file path + Drive URL, or null if content was short enough for inline display.
- */
-export async function saveContentAsDocx(
-  content: string,
-  command: string,
-  topic: string,
-  forceFile = false,
-): Promise<DocxResult | null> {
-  if (!forceFile && content.length < FILE_THRESHOLD) return null;
-
-  const today = new Date().toISOString().slice(0, 10);
-  const slug = topic
-    .toLowerCase()
-    .replace(/[^a-z0-9àáâãéêíóôõúç]+/gi, '_')
-    .replace(/^_|_$/g, '')
-    .slice(0, 60);
-
-  const subfolder = COMMAND_FOLDERS[command] || 'OTHER';
-  const dir = path.join(IDEAS_DIR, subfolder);
-  const filename = `${slug}_${command}_${today}.docx`;
-  const filePath = path.join(dir, filename);
-
-  try {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    const titleText = `${command.toUpperCase()} — ${topic}`;
-    const docChildren = [
-      new Paragraph({
-        children: [new TextRun({ text: titleText, bold: true, size: 32, font: 'Calibri', color: '1A1A2E' })],
-        heading: HeadingLevel.HEADING_1,
-        spacing: { after: 100 },
-      }),
-      new Paragraph({
-        children: [new TextRun({ text: `Generated: ${today}`, italics: true, size: 18, font: 'Calibri', color: '6B7280' })],
-        spacing: { after: 200 },
-      }),
-      ...htmlToDocxChildren(content),
-    ];
-
-    const doc = new Document({
-      sections: [{ children: docChildren }],
-    });
-
-    const buffer = await Packer.toBuffer(doc);
-    fs.writeFileSync(filePath, buffer);
-    logger.info({ filePath, chars: content.length }, `Saved ${command} output as DOCX`);
-
-    // Upload to Google Drive — wait briefly for URL to include in Telegram caption
-    let driveUrl: string | undefined;
-    try {
-      driveUrl = await uploadToDrive(filePath, filename, subfolder) || undefined;
-    } catch {
-      // Drive upload failure is non-critical
-    }
-
-    return { filePath, driveUrl };
-  } catch (err) {
-    logger.error({ err }, 'Failed to save content DOCX');
-    return null;
-  }
-}
-
-/**
- * Legacy sync wrapper — saves as plain text. Kept for backward compat.
- */
-export function maybeSaveToFile(
-  content: string,
-  command: string,
-  topic: string,
-  forceFile = false,
-): string | null {
-  if (!forceFile && content.length < FILE_THRESHOLD) return null;
-
-  const today = new Date().toISOString().slice(0, 10);
-  const slug = topic
-    .toLowerCase()
-    .replace(/[^a-z0-9àáâãéêíóôõúç]+/gi, '_')
-    .replace(/^_|_$/g, '')
-    .slice(0, 60);
-  const filename = `${slug}_${command}_${today}.txt`;
-  const filePath = path.join(IDEAS_DIR, filename);
-
-  const plain = content
-    .replace(/<b>/g, '**').replace(/<\/b>/g, '**')
-    .replace(/<i>/g, '_').replace(/<\/i>/g, '_')
-    .replace(/<a href="([^"]*)">[^<]*<\/a>/g, '$1')
-    .replace(/<[^>]*>/g, '');
-
-  try {
-    if (!fs.existsSync(IDEAS_DIR)) fs.mkdirSync(IDEAS_DIR, { recursive: true });
-    fs.writeFileSync(filePath, plain, 'utf-8');
-    logger.info({ filePath, chars: content.length }, `Saved ${command} output to file`);
-    return filePath;
-  } catch (err) {
-    logger.error({ err }, 'Failed to save content file');
-    return null;
-  }
-}
+export { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 
 // ── Types mirroring Python Pydantic models ──────────────────────────
 
@@ -289,6 +78,8 @@ export interface HooksResponse {
   niche: string;
   hooks: Array<{ text: string; trigger_type: string; score: number; why: string }>;
   duration_ms: number;
+  degraded?: boolean;
+  warnings?: string[];
 }
 
 export interface ScriptResponse {
@@ -303,6 +94,8 @@ export interface ScriptResponse {
   hashtags?: string[];
   caption?: string;
   cta?: string;
+  degraded?: boolean;
+  warnings?: string[];
 }
 
 export interface TitlesResponse {
@@ -518,6 +311,7 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
 //   Deep:     skip cache, 90-day signals, 300s timeout     (~$0.02-0.05)
 
 export type ScriptGenerationMode = 'quick' | 'standard' | 'deep';
+export type ScriptRenderMode = 'structured' | 'chat';
 
 const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: number; timeoutMs: number }> = {
   quick:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 60_000 },
@@ -525,13 +319,68 @@ const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: 
   deep:     { cacheTtl: 0,         signalDays: 90, timeoutMs: 300_000 },
 };
 
+function normalizeScriptLanguage(language?: string | null): string {
+  const normalized = String(language || 'pt-BR').trim().toLowerCase();
+  if (normalized.startsWith('en')) return 'en-US';
+  if (normalized === 'pt-pt' || normalized.includes('european')) return 'pt-PT';
+  return 'pt-BR';
+}
+
+function normalizeScriptRenderMode(renderMode?: string | null): ScriptRenderMode {
+  return String(renderMode || 'structured').trim().toLowerCase() === 'chat'
+    ? 'chat'
+    : 'structured';
+}
+
+function hashBrandVoice(brandVoice?: string | null): string {
+  const normalized = (brandVoice || '').trim();
+  if (!normalized) return 'default';
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+}
+
+export function buildScriptCacheKey(
+  topic: string,
+  niche = 'general',
+  maxDuration = 8,
+  format = 'YouTube',
+  mode: ScriptGenerationMode = 'standard',
+  brandVoice?: string | null,
+  language?: string | null,
+  renderMode: ScriptRenderMode = 'structured',
+): string {
+  return [
+    'script-v3',
+    topic.toLowerCase().trim(),
+    niche,
+    format,
+    `duration:${maxDuration}`,
+    `mode:${mode}`,
+    `lang:${normalizeScriptLanguage(language)}`,
+    `voice:${hashBrandVoice(brandVoice)}`,
+    `render:${normalizeScriptRenderMode(renderMode)}`,
+  ].join(':');
+}
+
 export async function getScript(
   topic: string, niche = 'general', maxDuration = 8, format = 'YouTube',
   mode: ScriptGenerationMode = 'standard',
   brandVoice?: string | null,
+  language = 'pt-BR',
+  renderMode: ScriptRenderMode = 'structured',
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
-  const normalizedKey = `script:${topic.toLowerCase().trim()}:${niche}:${format}`;
+  const normalizedLanguage = normalizeScriptLanguage(language);
+  const normalizedRenderMode = normalizeScriptRenderMode(renderMode);
+  const normalizedKey = buildScriptCacheKey(
+    topic,
+    niche,
+    maxDuration,
+    format,
+    mode,
+    brandVoice,
+    normalizedLanguage,
+    normalizedRenderMode,
+  );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
   if (cfg.cacheTtl > 0) {
@@ -574,6 +423,8 @@ export async function getScript(
     method: 'POST',
     body: JSON.stringify({
       topic, niche, format, mode,
+      language: normalizedLanguage,
+      render_mode: normalizedRenderMode,
       max_duration_minutes: maxDuration,
       context_signals: contextSignals.length > 0 ? contextSignals : undefined,
       // CONT-M4: pass user's brand voice to Python script writer so the
@@ -693,4 +544,3 @@ export {
 // NOTE: The lines below were the old inline implementations. They have
 // been deleted. If you need them, check content-telegram-formatter.ts.
 // (end of content-engine.ts — format functions live in content-telegram-formatter.ts)
-

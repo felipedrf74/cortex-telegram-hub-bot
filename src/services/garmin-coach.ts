@@ -13,10 +13,17 @@ import { logger } from '../utils/logger';
 import { now, startOfDay, endOfDay } from '../utils/date-parser';
 import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActivityDetails } from './garmin';
-import { getEvents, isAnyCalendarConfigured, CalendarSource } from './unified-calendar';
+import {
+  getEvents,
+  isAnyCalendarConfigured,
+  CalendarSource,
+  updateEvent as updateCalendarEvent,
+} from './unified-calendar';
+import { syncSessionWithCoachRecommendation } from './training-plans';
 import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
+import { getLastCoachState } from '../domains/domain-handler';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -139,6 +146,95 @@ export interface CoachBriefingResult {
   errors: string[];
   dataCollectionMs: number;
   analysisMs: number;
+}
+
+export interface CoachApplyResult {
+  count: number;
+  appliedRecommendations: CoachRecommendation[];
+}
+
+/**
+ * Apply a single coach recommendation to the calendar.
+ * REST recommendations intentionally keep the slot visible on the calendar
+ * instead of deleting it outright so the athlete still sees the cancelled plan.
+ */
+export async function applyCoachRecommendation(rec: CoachRecommendation): Promise<void> {
+  if (rec.action === 'KEEP') return;
+
+  if (rec.action === 'REST') {
+    await updateCalendarEvent(
+      {
+        event_id: rec.eventId,
+        new_title: rec.newTitle || `❌ CANCELLED — ${rec.originalTitle}`,
+      },
+      rec.source,
+    );
+    try {
+      syncSessionWithCoachRecommendation(rec);
+    } catch (err) {
+      logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
+    }
+    return;
+  }
+
+  const updateData: { event_id: string; new_title?: string; new_start?: string; new_end?: string } = {
+    event_id: rec.eventId,
+  };
+
+  if (rec.newTitle && rec.newTitle !== rec.originalTitle) {
+    updateData.new_title = rec.newTitle;
+  }
+  if (rec.newStart) updateData.new_start = rec.newStart;
+  if (rec.newEnd) updateData.new_end = rec.newEnd;
+
+  await updateCalendarEvent(updateData, rec.source);
+
+  try {
+    syncSessionWithCoachRecommendation(rec);
+  } catch (err) {
+    logger.warn({ err, eventId: rec.eventId }, 'Coach apply updated the calendar but failed to sync the training session state');
+  }
+}
+
+/**
+ * Apply coach recommendations from the latest stored briefing state.
+ * The iOS route passes recommendation event ids, which we resolve against the
+ * last fresh coach briefing for that user.
+ */
+export async function applyCoachRecommendations(
+  userId: number | undefined,
+  recommendationIds?: string[] | null,
+): Promise<CoachApplyResult> {
+  if (!userId) {
+    throw new Error('Missing user id for coach recommendation apply');
+  }
+
+  const coachState = getLastCoachState(userId);
+  if (!coachState || coachState.recommendations.length === 0) {
+    throw new Error('No active coach recommendations found. Run /coach again first.');
+  }
+
+  const actionable = coachState.recommendations.filter((rec) => rec.action !== 'KEEP');
+  if (actionable.length === 0) {
+    return { count: 0, appliedRecommendations: [] };
+  }
+
+  const selected = recommendationIds?.length
+    ? actionable.filter((rec) => recommendationIds.includes(rec.eventId))
+    : actionable;
+
+  if (selected.length === 0) {
+    throw new Error('The selected coach recommendations expired or no longer match the latest briefing.');
+  }
+
+  for (const rec of selected) {
+    await applyCoachRecommendation(rec);
+  }
+
+  return {
+    count: selected.length,
+    appliedRecommendations: selected,
+  };
 }
 
 // ─── Apple Health fallback for coach briefing ────────────────────────

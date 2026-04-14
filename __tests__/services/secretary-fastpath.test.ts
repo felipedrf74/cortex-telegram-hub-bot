@@ -688,6 +688,8 @@ describe('secretary-fastpath / normalizeLangHeader', () => {
   it.each([
     ['pt-BR', 'pt-BR'],
     ['pt-br', 'pt-BR'],
+    ['pt-PT', 'pt-PT'],
+    ['pt_pt', 'pt-PT'],
     ['pt', 'pt-BR'],
     ['pt_BR', 'pt-BR'],
     ['en', 'en-US'],

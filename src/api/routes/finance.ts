@@ -35,10 +35,12 @@ import {
   deleteTransaction,
   getMonthlySummary,
   getTaxEvents,
+  getAnnualTaxSummary,
   calculateAndStoreTax,
   calculateMonthlyTax,
+  markTaxPaid,
 } from '../../services/finance-tracker';
-import { isUserOverDailyCap } from '../../services/cost-guardrail';
+import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 
 export function financeRoutes(): Router {
@@ -276,6 +278,31 @@ export function financeRoutes(): Router {
   }));
 
   /**
+   * GET /api/v1/finance/tax/annual-summary?year=
+   * Aggregated annual tax view for IRPF declaration and payment tracking.
+   */
+  router.get('/tax/annual-summary', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const currentYear = new Date().getFullYear();
+    const year = req.query.year
+      ? parseInt(String(req.query.year), 10)
+      : currentYear;
+
+    if (!Number.isInteger(year) || year < 2000 || year > currentYear + 1) {
+      sendError(res, 'BAD_REQUEST', 'year must be a valid YYYY value');
+      return;
+    }
+
+    try {
+      const summary = getAnnualTaxSummary(userId, year);
+      sendSuccess(res, { summary });
+    } catch (err: any) {
+      logger.error({ err, userId, year }, 'iOS finance annual tax summary failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch annual tax summary', 500);
+    }
+  }));
+
+  /**
    * POST /api/v1/finance/tax/calculate
    * Body: { month?: YYYY-MM }
    * Runs calculateAndStoreTax for the given month (defaults to current).
@@ -301,6 +328,42 @@ export function financeRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax calculate failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to calculate tax', 500);
+    }
+  }));
+
+  /**
+   * POST /api/v1/finance/tax/events/:month/pay
+   * Marks a persisted monthly tax event as paid.
+   */
+  router.post('/tax/events/:month/pay', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const { month } = req.params;
+
+    if (!/^\d{4}-\d{2}$/.test(String(month))) {
+      sendError(res, 'BAD_REQUEST', 'month must be YYYY-MM');
+      return;
+    }
+
+    try {
+      const updated = markTaxPaid(userId, month);
+      if (!updated) {
+        sendError(res, 'NOT_FOUND', 'Tax event not found for the requested month', 404);
+        return;
+      }
+
+      const event = getTaxEvents(userId, { year: parseInt(String(month).slice(0, 4), 10), limit: 24 })
+        .find((candidate) => candidate.month === month);
+
+      if (!event) {
+        sendError(res, 'INTERNAL', 'Tax event updated but could not be reloaded', 500);
+        return;
+      }
+
+      logger.info({ userId, month }, 'iOS tax event marked paid');
+      sendSuccess(res, { updated: true, event });
+    } catch (err: any) {
+      logger.error({ err, userId, month }, 'iOS finance tax pay failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to mark tax event as paid', 500);
     }
   }));
 
@@ -399,9 +462,10 @@ export function financeRoutes(): Router {
       );
       sendError(
         res,
-        'COST_CAP_EXCEEDED',
-        `Daily AI cost cap of $${cap.capUsd.toFixed(2)} reached. Resets at midnight UTC. Try manual entry.`,
-        429,
+        'QUOTA_EXCEEDED',
+        `${buildQuotaExceededMessage(cap)} Try manual entry.`,
+        402,
+        { plan: cap.plan, resetAt: cap.resetAt },
       );
       return;
     }

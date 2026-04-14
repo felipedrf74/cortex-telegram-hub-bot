@@ -6,6 +6,8 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getCached, setCache, clearCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
 import { sendSuccess, sendError } from '../response-helpers';
+import * as microsoftTodo from '../../services/microsoft-todo';
+import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -37,13 +39,12 @@ function swrRefresh(key: string, fn: () => Promise<void>): void {
 function getTodo(req?: any) {
   if (req?.userId) {
     try {
-      const { getTaskProviderForUser } = require('../../services/task-store/task-router');
       return getTaskProviderForUser(req.userId);
     } catch {
       // task-router not available — fall back to MS To-Do
     }
   }
-  return require('../../services/microsoft-todo');
+  return microsoftTodo;
 }
 
 export function taskRoutes(): Router {
@@ -139,6 +140,7 @@ export function taskRoutes(): Router {
     const filter = (req.query.filter as string) || 'all';
     const userId = (req as any).userId;
     const cacheKey = userId ? `u:${userId}:tasks-filtered:${filter}` : `tasks-filtered:${filter}`;
+    const syncProvider = resolveTaskProvider(userId);
 
     // Helper for the actual fetch+filter+cache write.
     const fetchAndCache = async (): Promise<{ tasks: any[]; count: number }> => {
@@ -181,22 +183,7 @@ export function taskRoutes(): Router {
         });
       }
 
-      const tasks = filtered.map((t: any) => ({
-        id: t.id, title: t.title,
-        body: t.body?.content || t.body || null,
-        importance: t.importance || 'normal',
-        status: t.status || 'notStarted',
-        dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
-        listId: t.listId || null,
-        listName: t.listName || null,
-        // TASK-M8: pass through checklist items from $expand response
-        checklistItems: Array.isArray(t.checklistItems)
-          ? t.checklistItems.map((ci: any) => ({
-              id: ci.id, displayName: ci.displayName, isChecked: ci.isChecked ?? false,
-            }))
-          : null,
-        createdDateTime: t.createdDateTime || null,
-      }));
+      const tasks = filtered.map((t: any) => normalizeTaskDto(t, syncProvider));
 
       const payload = { tasks, count: tasks.length };
       setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
@@ -229,6 +216,7 @@ export function taskRoutes(): Router {
     const status = req.query.status as string | undefined;
     const userId = (req as any).userId;
     const cacheKey = userId ? `u:${userId}:tasks:${listId}:${status || 'all'}` : `tasks:${listId}:${status || 'all'}`;
+    const syncProvider = resolveTaskProvider(userId);
 
     // Helper that does the actual MS Graph fetch + cache write.
     // Reused for both the cold-path response AND background refresh.
@@ -247,18 +235,9 @@ export function taskRoutes(): Router {
       const tasksResult = await todo.getTasks(listId, listName, status ? { status } : undefined);
       const tasks = tasksResult?.data || [];
 
-      const formatted = (Array.isArray(tasks) ? tasks : []).map((t: any) => ({
-        id: t.id, title: t.title,
-        body: t.body?.content || t.body || null,
-        importance: t.importance || 'normal',
-        status: t.status || 'notStarted',
-        dueDateTime: t.dueDateTime?.dateTime || t.dueDateTime || null,
-        listId, listName,
-        checklistItems: t.checklistItems?.map((ci: any) => ({
-          id: ci.id, displayName: ci.displayName, isChecked: ci.isChecked ?? false,
-        })) || null,
-        createdDateTime: t.createdDateTime || null,
-      }));
+      const formatted = (Array.isArray(tasks) ? tasks : []).map((t: any) =>
+        normalizeTaskDto(t, syncProvider, { listId, listName })
+      );
 
       const payload = { listName, tasks: formatted };
       setCacheSWR(cacheKey, payload, TASKS_CACHE_TTL, TASKS_SWR_STALE);
@@ -283,6 +262,8 @@ export function taskRoutes(): Router {
   /** POST /api/v1/tasks — create a new task */
   router.post('/', async (req, res: Response) => {
     try {
+      const userId = (req as any).userId;
+      const syncProvider = resolveTaskProvider(userId);
       const todo = getTodo(req);
       const { title, listName, dueDateTime, importance, body } = req.body;
 
@@ -319,9 +300,13 @@ export function taskRoutes(): Router {
       }
 
       // Invalidate task caches (new task changes list contents)
-      invalidateTaskCaches(list.id, (req as any).userId);
+      invalidateTaskCaches(list.id, userId);
 
-      sendSuccess(res, { task: result.data }, { status: 201 });
+      sendSuccess(
+        res,
+        { task: normalizeTaskDto(result.data, syncProvider, { listId: list.id, listName: list.displayName }) },
+        { status: 201 }
+      );
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks create failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to create task', 500);
@@ -474,6 +459,32 @@ export function taskRoutes(): Router {
   });
 
   return router;
+}
+
+function normalizeTaskDto(
+  task: any,
+  syncProvider: string,
+  defaults?: { listId?: string; listName?: string }
+) {
+  return {
+    id: task.id,
+    title: task.title,
+    body: task.body?.content || task.body || null,
+    importance: task.importance || 'normal',
+    status: task.status || 'notStarted',
+    dueDateTime: task.dueDateTime?.dateTime || task.dueDateTime || null,
+    listId: task.listId || defaults?.listId || null,
+    listName: task.listName || defaults?.listName || null,
+    checklistItems: Array.isArray(task.checklistItems)
+      ? task.checklistItems.map((ci: any) => ({
+          id: ci.id,
+          displayName: ci.displayName,
+          isChecked: ci.isChecked ?? false,
+        }))
+      : null,
+    createdDateTime: task.createdDateTime || null,
+    syncProvider,
+  };
 }
 
 /** Invalidate task caches after mutations (create, update, complete, delete).

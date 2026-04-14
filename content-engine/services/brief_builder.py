@@ -1,3 +1,5 @@
+import re
+
 from models.research import ContentBrief, SourceReference
 from models.scoring import ScoredResult
 from .scorer import NICHE_KEYWORDS
@@ -30,6 +32,14 @@ def _clean(text: str) -> str:
     return text.replace("[Mock] ", "")
 
 
+def _clean_snippet(text: str) -> str:
+    cleaned = _clean(text or "")
+    cleaned = re.sub(r"Mock [^.]+\.?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"Set [A-Z_]+ to get real results\.?", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .")
+    return cleaned
+
+
 def build_briefs(scored: list[ScoredResult], max_briefs: int = 10) -> list[ContentBrief]:
     """Transform top-scored results into actionable content briefs."""
     briefs: list[ContentBrief] = []
@@ -40,22 +50,19 @@ def build_briefs(scored: list[ScoredResult], max_briefs: int = 10) -> list[Conte
         fmt = _pick_format(niche, r.source)
         title = _clean(r.title)
         short_title = title.split("—")[0].strip()
+        cleaned_snippet = _clean_snippet(r.snippet)
 
         brief = ContentBrief(
             title=title,
-            hook=f"Você não vai acreditar no que está acontecendo com {short_title}...",
-            angle="Felipe's unique perspective: real-life experience + world observations → growth mindset",
+            hook=f"O que esta fonte sugere sobre {short_title} merece um olhar crítico.",
+            angle="Fallback brief based on limited source context — validate the strongest claims before recording.",
             format=fmt,
             niche=niche,
-            key_points=[
-                f"Context: {r.snippet[:100]}",
-                "Connect to personal experience",
-                "Actionable takeaway for the audience",
-            ],
+            key_points=[],
             title_options=[
                 title,
-                f"A VERDADE sobre {short_title}",
-                f"Ninguém está falando disso: {short_title}",
+                f"O que esta fonte mostra sobre {short_title}",
+                f"Vale a pena falar sobre {short_title} agora?",
             ],
             sources=[
                 SourceReference(
@@ -67,7 +74,7 @@ def build_briefs(scored: list[ScoredResult], max_briefs: int = 10) -> list[Conte
             ],
             score=item.score.composite,
             time_sensitive=item.score.recency >= 0.8,
-            why_now=r.snippet[:200] if r.snippet else "Trending now",
+            why_now=cleaned_snippet[:200] if cleaned_snippet else "Fallback brief generated from limited available source context.",
         )
         briefs.append(brief)
 

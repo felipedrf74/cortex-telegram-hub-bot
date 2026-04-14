@@ -207,7 +207,48 @@ const COPY: Record<Lang, Copy> = {
     taskEmptyTitle: '❌ Task title cannot be empty.',
     dayNames: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
   },
+  'pt-PT': {
+    agendaHeader: 'AGENDA:',
+    agendaEmpty: 'Sem eventos hoje',
+    tasksHeader: 'TAREFAS:',
+    tasksPending: 'pendentes',
+    tasksOverdue: 'atrasadas',
+    tasksDueToday: 'Para hoje:',
+    trainingHeader: 'TREINO:',
+    trainingEmpty: 'Sem treino planeado para hoje',
+    remindersHeader: 'LEMBRETES:',
+    emailsHeader: 'E-MAILS:',
+    emailsUnreadSuffix: 'por ler',
+    weekHeader: 'SEMANA',
+    weekFree: 'livre',
+    pendingTasksHeader: 'Tarefas Pendentes',
+    pendingTasksEmpty: '✅ Sem tarefas pendentes!',
+    moreTasksSuffix: 'mais',
+    tasksErrorFetch: '⚠️ Erro ao procurar tarefas. Tenta novamente daqui a instantes.',
+    overdueHeader: 'Tarefa Atrasada',
+    overdueHeaderPlural: 'Tarefas Atrasadas',
+    overdueEmpty: '✅ Nenhuma tarefa atrasada!',
+    overdueDueLabel: 'prazo:',
+    emailConfigMissing: '⚠️ Email não configurado. Usa /connect outlook para ligar.',
+    inboxClean: '📧 Caixa de entrada limpa! ✨',
+    emailUnreadLine: '📧 Tens <b>%COUNT%</b> e-mail%S% por ler.',
+    reminderInvalidTime: '❌ Hora inválida:',
+    reminderSavedError: '⚠️ Erro ao guardar lembrete.',
+    reminderSetPrefix: '⏰ Lembrete definido para',
+    reminderDayToday: 'hoje',
+    reminderDayTomorrow: 'amanhã',
+    taskCreated: '✅ Tarefa criada em',
+    taskCreateError: '⚠️ Erro ao criar tarefa. Tenta novamente.',
+    taskCreateErrorDetail: '⚠️ Erro ao criar tarefa:',
+    taskCreateNoList: '⚠️ Lista padrão do Microsoft To Do não encontrada. Configura em /settings.',
+    taskEmptyTitle: '❌ O título da tarefa não pode estar vazio.',
+    dayNames: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'],
+  },
 };
+
+function copyForLang(lang: Lang): Copy {
+  return COPY[lang];
+}
 
 /**
  * Returns the date-fns-style locale code for a given app Lang.
@@ -215,7 +256,9 @@ const COPY: Record<Lang, Copy> = {
  * drive the numeric date formatting ("04/09/2026" vs "09/04/2026").
  */
 function localeForLang(lang: Lang): string {
-  return lang === 'pt-BR' ? 'pt-BR' : 'en-US';
+  if (lang === 'pt-PT') return 'pt-PT';
+  if (lang === 'pt-BR') return 'pt-BR';
+  return 'en-US';
 }
 
 /**
@@ -363,7 +406,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     id: 'day_overview',
     pattern: /^(?:what(?:'s| is)(?: on)? my (?:day|schedule)(?: today)?|what do i have today|(?:o que|como)(?: está| é)?(?: o)? meu dia|(?:show|mostra) (?:my |meu |o )?(?:day|dia)|\/day|today|hoje|o que tenho hoje|o que tenho na agenda hoje|qual(?:'s)? (?:my |a minha )?agenda(?: today| hoje)?)[\s?!.]*$/i,
     handler: async (userId, _match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       const tasksOk = isSubmoduleEnabled('secretary', 'tasks');
       const calOk = isSubmoduleEnabled('secretary', 'calendar');
       const emailOk = isSubmoduleEnabled('secretary', 'email');
@@ -387,7 +430,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       // the LOCALE of the formatter is set via .setLocale().
       const todayStr = now()
         .setLocale(localeForLang(lang))
-        .toFormat(lang === 'pt-BR' ? 'cccc, dd LLLL yyyy' : 'cccc, LLLL dd yyyy');
+        .toFormat(lang.startsWith('pt') ? 'cccc, dd LLLL yyyy' : 'cccc, LLLL dd yyyy');
       let msg = `📅 <b>${todayStr}</b>\n\n`;
 
       // Calendar events block
@@ -454,7 +497,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     pattern: /^(?:what(?:'s| is) my week|(?:show|mostra) (?:my |a |minha )?(?:week|semana)|(?:como|o que)(?: está)? (?:a |minha )?semana|\/week|this week|esta semana)[\s?!.]*$/i,
     requires: 'calendar',
     handler: async (_userId, _match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       const events = isAnyCalendarConfigured()
         // CHAT-M2: pass userId for per-user Outlook calendar tokens
         ? await getEvents(startOfWeek(), endOfWeek(), _userId).catch(() => [])
@@ -500,7 +543,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     pattern: /^(?:show|list|mostra|lista) (?:my |minhas? )?(?:tasks?|todos?|tarefas?)[\s?!.]*$|^\/(?:tasks?|todos?)[\s?!.]*$/i,
     requires: 'tasks',
     handler: async (_userId, _match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       const result = await getAllPendingTasks().catch(() => ({
         success: false as const,
         data: [],
@@ -545,7 +588,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     pattern: /^(?:(?:how many )?unread(?: emails?)?|(?:quantos? )?(?:e-?mails? )?não lidos?|check (?:my )?(?:e-?)?mails?|inbox|\/(?:unread|mail|inbox))[\s?!.]*$/i,
     requires: 'email',
     handler: async (_userId, _match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       if (!isOutlookMailConfigured()) {
         return { text: c.emailConfigMissing, domain: SECRETARY };
       }
@@ -571,7 +614,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     pattern: /^(?:overdue|show overdue|atrasad[ao]s?|tarefas? atrasad[ao]s?|\/overdue)[\s?!.]*$/i,
     requires: 'tasks',
     handler: async (_userId, _match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       const result = await getAllPendingTasks().catch(() => ({
         success: false as const,
         data: [],
@@ -608,7 +651,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     pattern: /^(?:remind(?:er)?(?:\s+me)?|lembra?(?:\s+me)?|avisa?(?:\s+me)?)(?:\s+(?:at|às|as))?\s+(\d{1,2}[:.]\d{2})\s*[:-]?\s*(.+)$/i,
     requires: 'reminders',
     handler: async (userId, match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       const timeStr = match[1].replace('.', ':');
       const message = match[2].trim();
       const [h, m] = timeStr.split(':').map(Number);
@@ -649,7 +692,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     pattern: /^(?:add task|nova tarefa|adicionar? tarefa)[:\s]+(.+)$/i,
     requires: 'tasks',
     handler: async (_userId, match, lang) => {
-      const c = COPY[lang];
+      const c = copyForLang(lang);
       const title = match[1].trim();
       if (!title) {
         return { text: c.taskEmptyTitle, domain: SECRETARY };
@@ -784,8 +827,8 @@ export function getFastpathPatterns(): string[] {
 
 /**
  * Normalize an inbound `X-Language` HTTP header value into the
- * internal `Lang` type. The iOS `LanguageRouter` sends "pt-BR" or
- * "en"; we also accept common aliases defensively. Unknown values
+ * internal `Lang` type. The iOS `LanguageRouter` sends "pt-BR",
+ * "pt-PT", or "en"; we also accept common aliases defensively. Unknown values
  * fall back to 'pt-BR' (the legacy app default).
  *
  * Exported so the iOS chat route can call it at the request
@@ -797,6 +840,7 @@ export function normalizeLangHeader(
   const raw = Array.isArray(header) ? header[0] : header;
   if (!raw) return 'pt-BR';
   const lower = raw.toLowerCase();
+  if (lower.startsWith('pt-pt') || lower.startsWith('pt_pt')) return 'pt-PT';
   if (lower.startsWith('pt')) return 'pt-BR';
   if (lower.startsWith('en')) return 'en-US';
   return 'pt-BR';

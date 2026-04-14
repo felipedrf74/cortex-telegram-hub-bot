@@ -1,8 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Invoices routes — manage the vendor-scan configuration used by the
- * monthly email collector.
+ * Invoices routes — finance email collection + accountant bundle workflow.
  *
  * Thin HTTP layer over:
  *   - `src/services/invoice-collector.ts`  — getAllVendors, collectMonthlyInvoices
@@ -31,18 +30,87 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
-import {
-  getAllVendors as getAllVendorsMerged,
-  collectMonthlyInvoices,
-} from '../../services/invoice-collector';
+import { getAllVendors as getAllVendorsMerged, collectMonthlyInvoices } from '../../services/invoice-collector';
 import {
   addVendor,
   removeVendor,
   getAllVendors as getAllVendorsDb,
 } from '../../state/invoice-vendors';
+import {
+  getFiscalCollectionSummary,
+  sendFiscalBundleNow,
+} from '../../services/fiscal-bundle';
+import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-profiles';
 
 export function invoicesRoutes(): Router {
   const router = Router();
+
+  router.get('/profile', asyncHandler(async (req, res: Response) => {
+    try {
+      const { userId } = req as AuthenticatedRequest;
+      const summary = getFiscalCollectionSummary(userId);
+      sendSuccess(res, summary);
+    } catch (err: any) {
+      logger.error({ err }, 'iOS fiscal collection profile failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to load fiscal collection profile', 500);
+    }
+  }));
+
+  router.put('/profile', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const { destinationEmail, cadence, primaryDay, secondaryDay, enabled } = req.body ?? {};
+
+    if (destinationEmail !== undefined && destinationEmail !== null && typeof destinationEmail !== 'string') {
+      sendError(res, 'BAD_REQUEST', 'destinationEmail must be a string or null');
+      return;
+    }
+    if (cadence !== undefined && cadence !== 'monthly' && cadence !== 'twice_monthly') {
+      sendError(res, 'BAD_REQUEST', "cadence must be 'monthly' or 'twice_monthly'");
+      return;
+    }
+    if (primaryDay !== undefined && (!Number.isFinite(primaryDay) || primaryDay < 1 || primaryDay > 28)) {
+      sendError(res, 'BAD_REQUEST', 'primaryDay must be between 1 and 28');
+      return;
+    }
+    if (secondaryDay !== undefined && secondaryDay !== null && (!Number.isFinite(secondaryDay) || secondaryDay < 1 || secondaryDay > 28)) {
+      sendError(res, 'BAD_REQUEST', 'secondaryDay must be between 1 and 28 or null');
+      return;
+    }
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      sendError(res, 'BAD_REQUEST', 'enabled must be a boolean');
+      return;
+    }
+
+    try {
+      updateFiscalCollectionProfile(userId, {
+        destination_email: destinationEmail,
+        cadence,
+        primary_day: primaryDay,
+        secondary_day: secondaryDay,
+        enabled,
+      });
+      sendSuccess(res, getFiscalCollectionSummary(userId));
+    } catch (err: any) {
+      logger.error({ err, userId }, 'iOS fiscal collection profile update failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to update fiscal collection profile', 500);
+    }
+  }));
+
+  router.post('/bundle-now', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+
+    try {
+      logger.info({ userId }, 'iOS fiscal bundle send started');
+      const result = await sendFiscalBundleNow(userId, {
+        startAt: req.body?.startAt,
+        endAt: req.body?.endAt,
+      });
+      sendSuccess(res, { result });
+    } catch (err: any) {
+      logger.error({ err, userId }, 'iOS fiscal bundle send failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to send fiscal bundle', 500);
+    }
+  }));
 
   // ── Vendors ────────────────────────────────────────────────────────
 
@@ -61,18 +129,6 @@ export function invoicesRoutes(): Router {
   router.get('/vendors', asyncHandler(async (req, res: Response) => {
     try {
       const userId = (req as any).userId;
-
-      // Invoice scanning requires an Outlook connection (email access).
-      // Users without Outlook connected get an empty vendor list.
-      try {
-        const { isConnected } = require('../../services/oauth-store');
-        if (!isConnected(userId, 'outlook')) {
-          sendSuccess(res, { active: [], dbRows: [], builtinCount: 0, customCount: 0 });
-          return;
-        }
-      } catch {
-        // oauth-store not available — fall through to show vendors
-      }
 
       // Builtins + currently-enabled custom vendors (what the collector
       // actually uses when it runs).
@@ -116,7 +172,8 @@ export function invoicesRoutes(): Router {
     }
 
     try {
-      const vendor = addVendor(name.trim(), senderPattern.trim(), subjectPatterns);
+      const { userId } = req as AuthenticatedRequest;
+      const vendor = addVendor(name.trim(), senderPattern.trim(), subjectPatterns, userId);
       logger.info({ vendorId: vendor.id, name }, 'iOS invoice vendor added');
       sendSuccess(res, { vendor }, { status: 201 });
     } catch (err: any) {
@@ -179,7 +236,7 @@ export function invoicesRoutes(): Router {
 
     try {
       logger.info({ userId, year, month }, 'iOS on-demand invoice scan started');
-      const result = await collectMonthlyInvoices(year, month);
+      const result = await collectMonthlyInvoices(userId, year, month);
       logger.info(
         { userId, year, month, filed: result.totalFiled, errors: result.totalErrors },
         'iOS on-demand invoice scan complete'

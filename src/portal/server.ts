@@ -3448,8 +3448,10 @@ export function createPortalServer(bot?: any): http.Server {
     }
   });
 
-  // Attach WebSocket server for iOS streaming
-  if (config.ios?.enabled) {
+  // Attach WebSocket server for iOS streaming only when explicitly enabled.
+  // Release builds use REST-only chat until the stream transport is promoted
+  // from experimental to production-grade.
+  if (config.ios?.enabled && config.ios?.websocketEnabled) {
     try {
       const { attachWebSocket } = require('../api/websocket');
       attachWebSocket(server);

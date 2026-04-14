@@ -4,9 +4,9 @@
  * Garmin Connect API client — wraps `garmin-connect` for auth,
  * extends with direct API calls for health/wellness endpoints.
  *
- * Uses token persistence (OAuth1 + OAuth2 files in data/garmin-tokens/)
- * so we only need to login with credentials once. Subsequent runs load
- * saved tokens and refresh as needed.
+ * Uses DB-backed token persistence (OAuth1 + OAuth2 stored per user)
+ * so passive reads can refresh-or-fail without depending on token files
+ * or silently kicking off a full MFA login.
  *
  * MFA support: When Garmin requires a verification code, we detect the
  * MFA challenge HTML, ask the user via Telegram for the code, submit it
@@ -19,6 +19,16 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { now } from '../utils/date-parser';
 import * as fs from 'fs';
+import {
+  clearGarminSession,
+  getGarminSession,
+  markGarminConnectionActive,
+  markGarminNeedsReauth,
+  migrateLegacyGarminTokensToSession,
+  resolveGarminUserId,
+  touchGarminConnection,
+  upsertGarminSession,
+} from './garmin-session-store';
 
 // ─── Suppress garmin-connect SDK 404 noise ───────────────────────────
 // The garmin-connect SDK (HttpClient.js:236-237) calls `console.error(msg)`
@@ -615,6 +625,7 @@ export function isGarminConfigured(): boolean {
  */
 async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<typeof GarminConnect>> {
   const silent = opts?.silent ?? _silentMode;
+  const sessionUserId = resolveGarminUserId();
 
   // Fast path — already authenticated
   if (_client && _authenticated) return _client;
@@ -634,48 +645,62 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
 
     const tokenDir = config.garmin.tokenPath;
 
-    // Try loading from DB first (per-user tokens), then filesystem (owner legacy)
-    try {
-      const { getDb } = require('./database');
-      const db = getDb();
-      // Check for per-user DB tokens (from garmin_user_tokens table)
-      // For now, load the owner's tokens (userId from the request context
-      // or the config's allowed user). Future: per-user Garmin clients.
-      const dbTokens = db.prepare(
-        "SELECT tokens_json FROM garmin_user_tokens WHERE status = 'active' ORDER BY last_used DESC LIMIT 1"
-      ).get() as { tokens_json: string } | undefined;
-
-      if (dbTokens?.tokens_json && dbTokens.tokens_json !== '{}') {
+    if (sessionUserId) {
+      const dbSession = getGarminSession(sessionUserId);
+      if (dbSession?.oauth1TokenJson && dbSession?.oauth2TokenJson) {
         try {
-          const tokenData = JSON.parse(dbTokens.tokens_json);
-          // Write to temp files for garth library compatibility
-          if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
-          if (tokenData.oauth1) fs.writeFileSync(`${tokenDir}/oauth1_token.json`, JSON.stringify(tokenData.oauth1));
-          if (tokenData.oauth2) fs.writeFileSync(`${tokenDir}/oauth2_token.json`, JSON.stringify(tokenData.oauth2));
-          client.loadTokenByFile(tokenDir);
+          client.loadToken(
+            JSON.parse(dbSession.oauth1TokenJson),
+            JSON.parse(dbSession.oauth2TokenJson),
+          );
           await client.getUserSettings();
           _client = client;
           _authenticated = true;
-          logger.info('Garmin: loaded tokens from DB');
+          touchGarminConnection(sessionUserId);
+          logger.info({ userId: sessionUserId }, 'Garmin: loaded tokens from garmin_sessions');
           return client;
         } catch (dbErr) {
-          logger.warn({ dbErr }, 'Garmin: DB tokens expired or invalid');
+          logger.warn({ dbErr, userId: sessionUserId }, 'Garmin: garmin_sessions tokens expired or invalid');
         }
       }
-    } catch { /* garmin_user_tokens table may not exist */ }
 
-    // Fallback: try filesystem tokens (legacy owner path)
+      if (migrateLegacyGarminTokensToSession(sessionUserId)) {
+        const migrated = getGarminSession(sessionUserId);
+        if (migrated?.oauth1TokenJson && migrated?.oauth2TokenJson) {
+          try {
+            client.loadToken(
+              JSON.parse(migrated.oauth1TokenJson),
+              JSON.parse(migrated.oauth2TokenJson),
+            );
+            await client.getUserSettings();
+            _client = client;
+            _authenticated = true;
+            touchGarminConnection(sessionUserId);
+            logger.info({ userId: sessionUserId }, 'Garmin: migrated legacy DB token blob into garmin_sessions');
+            return client;
+          } catch (legacyErr) {
+            logger.warn({ legacyErr, userId: sessionUserId }, 'Garmin: migrated legacy DB tokens were invalid');
+          }
+        }
+      }
+    }
+
+    // One-time legacy import path for old owner token files.
     try {
       if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
         client.loadTokenByFile(tokenDir);
         await client.getUserSettings();
         _client = client;
         _authenticated = true;
-        logger.info('Garmin: loaded saved tokens from filesystem');
+        if (sessionUserId) {
+          persistTokens(sessionUserId);
+          markGarminConnectionActive(sessionUserId, config.garmin.email);
+        }
+        logger.info({ userId: sessionUserId }, 'Garmin: imported legacy filesystem tokens into garmin_sessions');
         return client;
       }
     } catch (err) {
-      logger.warn({ err }, 'Garmin: saved tokens expired or invalid, re-authenticating');
+      logger.warn({ err, userId: sessionUserId }, 'Garmin: legacy filesystem tokens expired or invalid');
     }
 
     // ── Silent mode gate (April 10 2026) ────────────────────
@@ -689,6 +714,9 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
     if (silent) {
       logger.warn('Garmin: tokens expired and silent mode is ON — skipping MFA login. ' +
         'Send /readiness or /training in Telegram to re-authenticate with MFA.');
+      if (sessionUserId) {
+        await markGarminNeedsReauth(sessionUserId, 'silent_token_load_failed');
+      }
       throw new Error('Garmin session expired — re-authenticate via Telegram bot');
     }
 
@@ -697,25 +725,13 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
     if (isRateLimited()) throw new Error('Garmin SSO rate-limited — skipping login');
     try {
       await loginWithMfa(client);
-      if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
-      client.exportTokenToFile(tokenDir);
-      // Also persist to DB for per-user retrieval
-      try {
-        const { getDb } = require('./database');
-        const ownerIds = config.telegram.allowedUserIds || [];
-        const ownerId = ownerIds[0] || 0;
-        const tokensJson = JSON.stringify(client.exportToken());
-        getDb().prepare(`
-          INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
-          VALUES (?, ?, ?, 'active')
-          ON CONFLICT(user_id) DO UPDATE SET
-            tokens_json = excluded.tokens_json, status = 'active',
-            last_refresh = datetime('now'), updated_at = datetime('now')
-        `).run(ownerId, config.garmin.email, tokensJson);
-      } catch { /* DB persist non-fatal */ }
       _client = client;
       _authenticated = true;
-      logger.info('Garmin: login successful (MFA-aware flow), tokens saved to file + DB');
+      if (sessionUserId) {
+        persistTokens(sessionUserId);
+        markGarminConnectionActive(sessionUserId, config.garmin.email);
+      }
+      logger.info({ userId: sessionUserId }, 'Garmin: login successful (manual MFA flow), tokens saved to DB');
       return client;
     } catch (err) {
       _authenticated = false;
@@ -735,16 +751,19 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
 }
 
 /**
- * Save current tokens to disk (call after successful API calls to persist
- * any tokens that the garmin-connect interceptor may have refreshed).
+ * Save current tokens to the DB session store (call after successful API
+ * calls to persist any tokens that the garmin-connect interceptor refreshed).
  */
-function persistTokens(): void {
+function persistTokens(explicitUserId?: number): void {
   try {
-    if (_client) {
-      const tokenDir = config.garmin.tokenPath;
-      if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
-      _client.exportTokenToFile(tokenDir);
-    }
+    if (!_client) return;
+    const userId = resolveGarminUserId(explicitUserId);
+    if (!userId) return;
+    upsertGarminSession(userId, {
+      oauth1: (_client.client as any).oauth1Token ?? null,
+      oauth2: (_client.client as any).oauth2Token ?? null,
+    });
+    touchGarminConnection(userId);
   } catch (err) {
     logger.warn({ err }, 'Garmin: failed to persist refreshed tokens');
   }
@@ -788,11 +807,9 @@ async function attemptReLogin(): Promise<boolean> {
 
     // Go directly to our MFA-aware flow (avoids the library's unprotected SSO request)
     await loginWithMfa(_client);
-    const tokenDir = config.garmin.tokenPath;
-    if (!fs.existsSync(tokenDir)) fs.mkdirSync(tokenDir, { recursive: true });
-    _client.exportTokenToFile(tokenDir);
+    persistTokens();
     _authenticated = true;
-    logger.info('Garmin: re-login successful (MFA-aware flow), tokens saved');
+    logger.info('Garmin: re-login successful (manual MFA flow), tokens saved');
     return true;
   } catch (err) {
     logger.error({ err }, 'Garmin: re-login failed (MFA timeout or credentials invalid)');
@@ -844,10 +861,13 @@ export async function keepAlive(): Promise<boolean> {
   }
 
   // OAuth2 refresh failed. DO NOT trigger loginWithMfa here — that would
-  // send a Garmin MFA email every 30 minutes. Instead, mark the keepalive
-  // as failed and let the next user-initiated call run recovery with a
-  // real MFA notification path.
-  logger.warn('Garmin: OAuth2 refresh failed — keepalive skipping re-login to avoid MFA email flood. Will recover lazily on next user call.');
+  // send a Garmin MFA email every 30 minutes. Mark the session as needing
+  // re-authentication and let the explicit reauth flow recover it.
+  const userId = resolveGarminUserId();
+  if (userId) {
+    await markGarminNeedsReauth(userId, 'keepalive_refresh_failed');
+  }
+  logger.warn('Garmin: OAuth2 refresh failed — keepalive marked the connection as needs_reauth');
   return false;
 }
 
@@ -857,15 +877,10 @@ export async function keepAlive(): Promise<boolean> {
  * 10+ parallel 403s all triggering separate MFA flows.
  *
  * Pass `{ silent: true }` from CRON contexts where no interactive
- * user is present to respond to an MFA code. In silent mode the
- * recovery path is restricted to Step 1 (OAuth2 refresh) and
- * Step 2 (token reload from disk) — it explicitly SKIPS Step 3
- * (full re-login via loginWithMfa), which is what has been
- * sending the daily Garmin passcode emails. The cron paths
- * include: `garmin_coach` (daily 21:00 briefing), any future
- * scheduled data pulls. Interactive paths (Telegram commands,
- * iOS in-app refresh button) should use the default (non-silent)
- * so the user gets a legitimate MFA challenge they can answer.
+ * user is present to respond to an MFA code. In both silent and
+ * non-silent passive flows, recovery is now refresh-or-fail: it can
+ * refresh tokens or reload them from the DB session store, but it must
+ * never silently trigger a new MFA login.
  */
 export async function ensureAuthenticated(
   opts: { silent?: boolean } = {},
@@ -890,7 +905,7 @@ export async function ensureAuthenticated(
  * Silent auth recovery — the cron-safe sibling of serializedAuthRecovery.
  *
  * Only attempts Step 1 (OAuth2 refresh) and Step 2 (token reload from
- * disk). Explicitly DOES NOT call attemptReLogin / loginWithMfa so a
+ * the DB session store). Explicitly DOES NOT call attemptReLogin / loginWithMfa so a
  * failing cron never triggers a Garmin passcode email. If both silent
  * steps fail, returns false and the caller should degrade gracefully
  * (coach briefing with data gaps, skipped job, etc.).
@@ -918,17 +933,21 @@ async function silentAuthRecovery(): Promise<boolean> {
         logger.warn('Garmin: silent recovery — OAuth2 refresh failed, trying token reload');
       }
 
-      // Step 2: Reload tokens from disk
-      const tokenDir = config.garmin.tokenPath;
-      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+      // Step 2: Reload tokens from the DB session store
+      const userId = resolveGarminUserId();
+      const session = userId ? getGarminSession(userId) : null;
+      if (session?.oauth1TokenJson && session?.oauth2TokenJson) {
         try {
-          const client = await getClient();
-          client.loadTokenByFile(tokenDir);
+          const client = await getClient({ silent: false });
+          client.loadToken(
+            JSON.parse(session.oauth1TokenJson),
+            JSON.parse(session.oauth2TokenJson),
+          );
           await client.getUserSettings();
-          logger.info('Garmin: silent recovery — token reload succeeded');
+          logger.info({ userId }, 'Garmin: silent recovery — DB token reload succeeded');
           return true;
         } catch {
-          logger.warn('Garmin: silent recovery — token reload failed');
+          logger.warn({ userId }, 'Garmin: silent recovery — DB token reload failed');
         }
       }
 
@@ -936,7 +955,10 @@ async function silentAuthRecovery(): Promise<boolean> {
       // send a passcode email to the user with no interactive context
       // to answer it. Cron callers accept the graceful-degradation
       // path instead.
-      logger.warn('Garmin: silent recovery exhausted (OAuth2 + reload both failed). Next user-initiated call will trigger interactive recovery.');
+      if (userId) {
+        await markGarminNeedsReauth(userId, 'silent_recovery_exhausted');
+      }
+      logger.warn('Garmin: silent recovery exhausted (OAuth2 + DB reload both failed). Marked needs_reauth.');
       return false;
     } finally {
       _authRecoveryPromise = null;
@@ -964,40 +986,13 @@ function extractErrorStatus(err: unknown): number | null {
 let _authRecoveryPromise: Promise<boolean> | null = null;
 
 /**
- * Cooldown for full-login recovery attempts. Set whenever Step 3
- * (attemptReLogin) runs so we don't re-trigger a full MFA flow on every
- * single 403 for the next RECOVERY_COOLDOWN_MS. This is the second layer
- * of defense against MFA email floods from iOS dashboard fanouts.
- *
- * If a user really needs Garmin to recover during this window, they can
- * explicitly run /garmin-reauth (or the in-app re-connect flow) which
- * bypasses this cooldown. Passive API calls just fail gracefully and
- * return null data until the cooldown expires or the OAuth2 token
- * refreshes cleanly.
- */
-const RECOVERY_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes
-let _lastFullLoginAttempt = 0;
-
-function isFullLoginOnCooldown(): boolean {
-  return Date.now() - _lastFullLoginAttempt < RECOVERY_COOLDOWN_MS;
-}
-
-/**
  * Ensures only ONE auth recovery runs at a time.
  * All concurrent 403 callers await the same promise.
  *
  * Steps in order of invasiveness:
  *   1. OAuth2 refresh (silent, no email)
- *   2. Token reload from disk (silent, no email)
- *   3. Full re-login via loginWithMfa (SENDS MFA EMAIL — rate-limited
- *      to once per 15 min via _lastFullLoginAttempt cooldown)
- *
- * The cooldown exists because iOS dashboard opens trigger 4 parallel
- * Garmin calls — and even though this promise is serialized within a
- * single fanout, a user reopening the app a minute later would trigger
- * a fresh fanout that bypasses the serialization and could send another
- * MFA email. The cooldown bounds the blast radius to ~4 emails/hour
- * worst case instead of ~40 emails/hour.
+ *   2. Token reload from the DB session store (silent, no email)
+ *   3. Mark the connection as needs_reauth and stop.
  */
 async function serializedAuthRecovery(): Promise<boolean> {
   if (_authRecoveryPromise) {
@@ -1019,31 +1014,29 @@ async function serializedAuthRecovery(): Promise<boolean> {
         logger.warn('Garmin: OAuth2 refresh failed in recovery, trying token reload');
       }
 
-      // Step 2: Reload tokens from disk
-      const tokenDir = config.garmin.tokenPath;
-      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+      // Step 2: Reload tokens from the DB session store
+      const userId = resolveGarminUserId();
+      const session = userId ? getGarminSession(userId) : null;
+      if (session?.oauth1TokenJson && session?.oauth2TokenJson) {
         try {
-          const client = await getClient();
-          client.loadTokenByFile(tokenDir);
+          const client = await getClient({ silent: false });
+          client.loadToken(
+            JSON.parse(session.oauth1TokenJson),
+            JSON.parse(session.oauth2TokenJson),
+          );
           await client.getUserSettings();
-          logger.info('Garmin: auth recovered via token reload');
+          logger.info({ userId }, 'Garmin: auth recovered via DB token reload');
           return true;
         } catch {
-          logger.warn('Garmin: token reload failed in recovery, trying re-login');
+          logger.warn({ userId }, 'Garmin: DB token reload failed in recovery');
         }
       }
 
-      // Step 3: Full re-login (may trigger MFA — only once per cooldown window)
-      if (isFullLoginOnCooldown()) {
-        const secondsLeft = Math.ceil((RECOVERY_COOLDOWN_MS - (Date.now() - _lastFullLoginAttempt)) / 1000);
-        logger.warn(
-          { secondsLeft },
-          'Garmin: full re-login on cooldown (MFA email throttling), failing recovery without new login',
-        );
-        return false;
+      if (userId) {
+        await markGarminNeedsReauth(userId, 'serialized_recovery_exhausted');
       }
-      _lastFullLoginAttempt = Date.now();
-      return attemptReLogin();
+      logger.warn('Garmin: passive recovery exhausted — marked needs_reauth instead of triggering MFA login');
+      return false;
     } finally {
       _authRecoveryPromise = null;
     }
@@ -1071,6 +1064,10 @@ async function safeGet<T = unknown>(url: string): Promise<T> {
   try {
     const result = await client.get(url) as T;
     persistTokens();
+    const userId = resolveGarminUserId();
+    if (userId) {
+      touchGarminConnection(userId);
+    }
     return result;
   } catch (err: unknown) {
     const status = extractErrorStatus(err);
@@ -1097,6 +1094,10 @@ async function safeGet<T = unknown>(url: string): Promise<T> {
           const freshClient = await getClient();
           const result = await freshClient.get(url) as T;
           persistTokens();
+          const userId = resolveGarminUserId();
+          if (userId) {
+            touchGarminConnection(userId);
+          }
           logger.info({ url: url.split('?')[0] }, 'Garmin: recovered, retried successfully');
           return result;
         } catch (retryErr) {

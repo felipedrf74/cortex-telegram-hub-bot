@@ -37,6 +37,14 @@ import {
 import { config } from '../../config';
 import { logger } from '../../utils/logger';
 import { getCached, setCache } from '../../services/cache-store';
+import { getUserLanguage } from '../../services/user-service';
+import type { InlineButton } from '../../adapters/message-adapter';
+import {
+  buildListSelectionButtons,
+  buildSecretaryQuickActionButtons,
+  buildTaskActionButtons,
+  labelsForLanguage,
+} from './chat-inline-buttons';
 
 // MS Graph getAllPendingTasks() takes ~10-12s. Cache the raw result so the
 // second command in a session reuses it instead of paying the latency twice.
@@ -68,6 +76,16 @@ async function getPendingTasksCached(): Promise<msTodo.ServiceResult<msTodo.Todo
 export interface FastPathResult {
   text: string;
   domain: 'secretary';
+  buttons?: InlineButton[][];
+}
+
+function getFastPathLabels(userId?: number): ReturnType<typeof labelsForLanguage> {
+  try {
+    return labelsForLanguage(getUserLanguage(userId ?? 0));
+  } catch (err) {
+    logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English labels');
+    return labelsForLanguage('en-US');
+  }
 }
 
 /**
@@ -81,9 +99,11 @@ export interface FastPathResult {
  */
 export async function tryDeterministicChatCommand(
   text: string,
+  userId?: number,
 ): Promise<FastPathResult | null> {
   const trimmed = text.trim();
   if (!trimmed.startsWith('/')) return null;
+  const labels = getFastPathLabels(userId);
 
   // Split into command + remainder
   const spaceIdx = trimmed.indexOf(' ');
@@ -98,39 +118,39 @@ export async function tryDeterministicChatCommand(
       case '/tasks':
         // If user passes args, the AI handler should parse it (create task etc.)
         if (args) return null;
-        return await handleTodos();
+        return await handleTodos(labels);
 
       case '/lists':
-        return await handleLists();
+        return await handleLists(labels);
 
       case '/duetoday':
       case '/due_today':
-        return await handleDueToday();
+        return await handleDueToday(labels);
 
       case '/overdue':
-        return await handleOverdue();
+        return await handleOverdue(labels);
 
       case '/dueweek':
       case '/due_week':
-        return await handleDueWeek();
+        return await handleDueWeek(labels);
 
       case '/alltasks':
       case '/all_tasks':
-        return await handleAllTasks();
+        return await handleAllTasks(labels);
 
       case '/todosummary':
       case '/todo_summary':
-        return await handleTodoSummary();
+        return await handleTodoSummary(labels);
 
       case '/day':
       case '/today':
-        return await handleDayOverview();
+        return await handleDayOverview(labels);
 
       case '/week':
-        return await handleWeekOverview();
+        return await handleWeekOverview(labels);
 
       case '/status':
-        return await handleStatus();
+        return await handleStatus(labels);
 
       default:
         return null;
@@ -143,7 +163,7 @@ export async function tryDeterministicChatCommand(
 
 // ── Handlers (mirror the Telegram bot's deterministic command handlers) ──
 
-async function handleTodos(): Promise<FastPathResult | null> {
+async function handleTodos(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   const defaultList = await msTodo.getDefaultList();
@@ -156,10 +176,14 @@ async function handleTodos(): Promise<FastPathResult | null> {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
 
-  return { text: formatMsTodoTasks(result.data, defaultList.displayName), domain: 'secretary' };
+  return {
+    text: formatMsTodoTasks(result.data, defaultList.displayName),
+    domain: 'secretary',
+    buttons: buildTaskActionButtons(result.data, labels),
+  };
 }
 
-async function handleLists(): Promise<FastPathResult | null> {
+async function handleLists(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   const result = await msTodo.getLists();
@@ -167,10 +191,14 @@ async function handleLists(): Promise<FastPathResult | null> {
     return { text: `⚠️ Failed to fetch lists: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
 
-  return { text: formatMsTodoLists(result.data), domain: 'secretary' };
+  return {
+    text: formatMsTodoLists(result.data),
+    domain: 'secretary',
+    buttons: buildListSelectionButtons(result.data, labels),
+  };
 }
 
-async function handleDueToday(): Promise<FastPathResult | null> {
+async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   // Use date-portion comparison in the configured timezone to avoid MS Graph
@@ -196,10 +224,14 @@ async function handleDueToday(): Promise<FastPathResult | null> {
     msg += `⬜${imp} ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
   }
 
-  return { text: msg.trim(), domain: 'secretary' };
+  return {
+    text: msg.trim(),
+    domain: 'secretary',
+    buttons: buildTaskActionButtons(dueToday, labels),
+  };
 }
 
-async function handleOverdue(): Promise<FastPathResult | null> {
+async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   const tasksResult = await getPendingTasksCached();
@@ -222,10 +254,14 @@ async function handleOverdue(): Promise<FastPathResult | null> {
     msg += `⚠️ ${escapeHtml(t.title)} — was due ${formatDate(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
   }
 
-  return { text: msg.trim(), domain: 'secretary' };
+  return {
+    text: msg.trim(),
+    domain: 'secretary',
+    buttons: buildTaskActionButtons(overdue, labels),
+  };
 }
 
-async function handleDueWeek(): Promise<FastPathResult | null> {
+async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   const result = await msTodo.getTasksDueInRange(startOfWeek(), endOfWeek());
@@ -243,10 +279,14 @@ async function handleDueWeek(): Promise<FastPathResult | null> {
     msg += `⬜${imp} ${escapeHtml(t.title)} — due ${formatDateTime(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
   }
 
-  return { text: msg.trim(), domain: 'secretary' };
+  return {
+    text: msg.trim(),
+    domain: 'secretary',
+    buttons: buildTaskActionButtons(result.data, labels),
+  };
 }
 
-async function handleAllTasks(): Promise<FastPathResult | null> {
+async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   const result = await getPendingTasksCached();
@@ -254,10 +294,14 @@ async function handleAllTasks(): Promise<FastPathResult | null> {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
 
-  return { text: formatAllTasks(result.data), domain: 'secretary' };
+  return {
+    text: formatAllTasks(result.data),
+    domain: 'secretary',
+    buttons: buildTaskActionButtons(result.data, labels),
+  };
 }
 
-async function handleTodoSummary(): Promise<FastPathResult | null> {
+async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
   if (!msTodo.isOutlookTodoConfigured()) return null;
 
   const pendingResult = await getPendingTasksCached();
@@ -285,10 +329,11 @@ async function handleTodoSummary(): Promise<FastPathResult | null> {
       dueTodayTasks: dueToday,
     }),
     domain: 'secretary',
+    buttons: buildSecretaryQuickActionButtons(labels),
   };
 }
 
-async function handleDayOverview(): Promise<FastPathResult> {
+async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult> {
   let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
 
   // Calendar events today
@@ -328,10 +373,14 @@ async function handleDayOverview(): Promise<FastPathResult> {
     }
   }
 
-  return { text: msg.trim(), domain: 'secretary' };
+  return {
+    text: msg.trim(),
+    domain: 'secretary',
+    buttons: buildSecretaryQuickActionButtons(labels),
+  };
 }
 
-async function handleWeekOverview(): Promise<FastPathResult> {
+async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult> {
   let msg = `<b>📅 Week Overview</b>\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
@@ -369,10 +418,14 @@ async function handleWeekOverview(): Promise<FastPathResult> {
     }
   }
 
-  return { text: msg.trim(), domain: 'secretary' };
+  return {
+    text: msg.trim(),
+    domain: 'secretary',
+    buttons: buildSecretaryQuickActionButtons(labels),
+  };
 }
 
-async function handleStatus(): Promise<FastPathResult> {
+async function handleStatus(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult> {
   let msg = '<b>📊 Status Overview</b>\n\n';
 
   // Microsoft To Do
@@ -419,7 +472,11 @@ async function handleStatus(): Promise<FastPathResult> {
     }
   }
 
-  return { text: msg.trim(), domain: 'secretary' };
+  return {
+    text: msg.trim(),
+    domain: 'secretary',
+    buttons: buildSecretaryQuickActionButtons(labels),
+  };
 }
 
 // ── Timezone helpers ────────────────────────────────────────────────

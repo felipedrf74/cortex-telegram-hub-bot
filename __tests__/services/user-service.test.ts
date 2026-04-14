@@ -45,6 +45,8 @@ import {
   getOrCreateUser, getUserByTelegramId, isUserAuthorized, isOwner,
   touchUser, getUserLanguage, setUserLanguage, listUsers, setUserStatus,
   setUserTier, seedOwnerUser,
+  createEmailUser,
+  sanitizeDisplayName, getPreferredDisplayName,
   createInviteCode, validateAndConsumeInviteCode, listInviteCodes, deleteInviteCode,
 } from '../../src/services/user-service';
 
@@ -73,7 +75,7 @@ describe('user-service', () => {
       expect(user.status).toBe('active');
       expect(user.daily_message_limit).toBe(200);
       expect(user.daily_token_limit).toBe(500000);
-      expect(user.daily_cost_limit_usd).toBe(5.0);
+      expect(user.daily_cost_limit_usd).toBe(0.2);
     });
 
     it('returns existing on second call', () => {
@@ -155,6 +157,29 @@ describe('user-service', () => {
       setUserLanguage(123, 'en-US');
       expect(getUserLanguage(123)).toBe('en-US');
     });
+
+    it('resolves language by canonical user id for iOS users', () => {
+      const user = createEmailUser('ios-language@example.com', 'hash', { firstName: 'iOS' });
+      expect(getUserLanguage(user.id)).toBe('pt-BR');
+
+      setUserLanguage(user.id, 'en-US');
+      expect(getUserLanguage(user.id)).toBe('en-US');
+    });
+  });
+
+  describe('display name sanitization', () => {
+    it('filters technical fallback identifiers', () => {
+      expect(sanitizeDisplayName('Beta-D36C3E05')).toBe('');
+      expect(sanitizeDisplayName('felipe@example.com')).toBe('');
+      expect(sanitizeDisplayName('Felipe')).toBe('Felipe');
+    });
+
+    it('prefers the first human-friendly profile field', () => {
+      const user = createEmailUser('display@example.com', 'hash', { firstName: 'Beta-D36C3E05' });
+      testDb.prepare('UPDATE users SET username = ? WHERE id = ?').run('felipedf', user.id);
+
+      expect(getPreferredDisplayName(user.id)).toBe('felipedf');
+    });
   });
 
   describe('touchUser', () => {
@@ -173,6 +198,7 @@ describe('user-service', () => {
       const user = getUserByTelegramId(123)!;
       expect(user.tier).toBe('pro');
       expect(user.daily_message_limit).toBe(200);
+      expect(user.daily_cost_limit_usd).toBe(0.2);
     });
 
     it('owner tier gets unlimited (0)', () => {
@@ -250,6 +276,11 @@ describe('i18n', () => {
     expect(t('welcome', 'pt-BR')).toContain('Bem-vindo');
   });
 
+  it('returns PT-PT variant when available', () => {
+    expect(t('welcome', 'pt-PT')).toContain('o teu assistente');
+    expect(t('rate_limited', 'pt-PT', { limit: '40', timezone: 'Europe/Lisbon' })).toContain('Atingiste');
+  });
+
   it('returns EN for EN lang', () => {
     expect(t('welcome', 'en-US')).toContain('Welcome');
   });
@@ -270,10 +301,15 @@ describe('i18n', () => {
     expect(t('nonexistent_key', 'en-US')).toBe('nonexistent_key');
   });
 
+  it('falls back from pt-PT to pt-BR when no dedicated variant exists', () => {
+    expect(t('coach_good_training', 'pt-PT')).toBe('💪 Bom treino amanhã!');
+  });
+
   describe('detectLanguageFromTelegram', () => {
     it('detects PT', () => {
       expect(detectLanguageFromTelegram('pt')).toBe('pt-BR');
       expect(detectLanguageFromTelegram('pt-BR')).toBe('pt-BR');
+      expect(detectLanguageFromTelegram('pt-PT')).toBe('pt-PT');
     });
 
     it('detects EN', () => {

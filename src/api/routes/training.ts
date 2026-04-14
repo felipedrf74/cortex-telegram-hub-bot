@@ -4,12 +4,51 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { getLatestByType } from '../../services/report-document-store';
 import { sendSuccess, sendError } from '../response-helpers';
+import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 
 // Cache TTLs (seconds)
 const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
 const READINESS_TTL = 30 * 60; // 30 minutes
 const SUMMARY_TTL = 5 * 60;    // 5 minutes
+
+function restoreCoachBriefingFromLatestReport(userId: number) {
+  try {
+    const report = getLatestByType(userId, 'coach_briefing');
+    if (!report?.documentJson) return null;
+
+    const createdAtMs = Date.parse(report.createdAt || '');
+    if (Number.isNaN(createdAtMs)) return null;
+
+    // Avoid surfacing stale coaching advice from days ago as if it
+    // were today's automatic briefing.
+    if (Date.now() - createdAtMs > COACH_TTL * 1000) return null;
+
+    const documentJson = report.documentJson as Record<string, any>;
+    const readiness = documentJson.readiness as Record<string, any> | null | undefined;
+    const bodyBattery = readiness?.factors?.bodyBattery?.score;
+
+    return {
+      briefing: documentJson.message || report.summary || 'Coach briefing available.',
+      recommendations: Array.isArray(documentJson.recommendations) ? documentJson.recommendations : [],
+      garminData: readiness
+        ? {
+            sleepScore: readiness.factors?.sleep?.score ?? null,
+            bodyBattery: typeof bodyBattery === 'number' ? bodyBattery : null,
+            steps: null,
+            activeMinutes: null,
+          }
+        : null,
+      degraded: Array.isArray(documentJson.errors) && documentJson.errors.length > 0,
+      warnings: Array.isArray(documentJson.errors) ? documentJson.errors : [],
+      cachedAt: report.createdAt,
+      restoredFromReport: true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function trainingRoutes(): Router {
   const router = Router();
@@ -92,6 +131,7 @@ export function trainingRoutes(): Router {
   router.get('/coach', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     const forceRefresh = req.query.refresh === 'true';
+    const cacheOnly = req.query.cacheOnly === 'true';
     const cacheKey = `coach-briefing:${userId}`;
 
     // Return SQLite-cached briefing (survives restarts, no AI call)
@@ -102,6 +142,24 @@ export function trainingRoutes(): Router {
         sendSuccess(res, cached, { cached: true });
         return;
       }
+
+      const restored = restoreCoachBriefingFromLatestReport(userId);
+      if (restored) {
+        setCache(cacheKey, restored, COACH_TTL);
+        logger.debug({ userId }, 'Restored coach briefing from latest report document');
+        sendSuccess(res, restored, { cached: true });
+        return;
+      }
+    }
+
+    if (cacheOnly) {
+      sendSuccess(res, {
+        briefing: '',
+        recommendations: [],
+        garminData: null,
+        cachedOnlyMiss: true,
+      });
+      return;
     }
 
     try {
@@ -119,8 +177,13 @@ export function trainingRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
-      // Soft-fail so the screen still renders even when Garmin is offline.
-      sendSuccess(res, { briefing: 'Coach briefing unavailable.', recommendations: [], garminData: null });
+      sendSuccess(res, {
+        briefing: 'Coach briefing unavailable.',
+        recommendations: [],
+        garminData: null,
+        degraded: true,
+        warnings: [err?.message || 'Coach briefing unavailable.'],
+      });
     }
   });
 
@@ -162,40 +225,43 @@ export function trainingRoutes(): Router {
         }
       }
 
+      if (rowId === null) {
+        sendError(res, 'NO_ACTIVE_SESSION', 'No active training session could be completed.', 409);
+        return;
+      }
+
       // 2. Mark completed (and log completion if we have RPE/notes)
       let adherenceRate: number | null = null;
-      if (rowId !== null) {
-        if (notes || rpe != null) {
-          const session = tp.getSessionById(rowId);
-          if (session) {
-            tp.logCompletion({
-              session_id: rowId,
-              plan_id: session.plan_id,
-              rpe_overall: rpe ?? null,
-              notes: notes ?? null,
-            });
-          } else {
-            tp.markSessionCompleted(rowId);
-          }
+      if (notes || rpe != null) {
+        const session = tp.getSessionById(rowId);
+        if (session) {
+          tp.logCompletion({
+            session_id: rowId,
+            plan_id: session.plan_id,
+            rpe_overall: rpe ?? null,
+            notes: notes ?? null,
+          });
         } else {
           tp.markSessionCompleted(rowId);
         }
+      } else {
+        tp.markSessionCompleted(rowId);
+      }
 
-        // Adherence calculation — need planId + weekId
-        try {
-          const plan = tp.getActivePlan(userId);
-          if (plan) {
-            const week = tp.getCurrentWeek(plan.id);
-            if (week) {
-              const adh = tp.getWeeklyAdherence(plan.id, week.id);
-              adherenceRate = typeof adh?.adherenceRate === 'number'
-                ? adh.adherenceRate / 100  // backend returns 0-100, iOS expects 0-1
-                : null;
-            }
+      // Adherence calculation — need planId + weekId
+      try {
+        const plan = tp.getActivePlan(userId);
+        if (plan) {
+          const week = tp.getCurrentWeek(plan.id);
+          if (week) {
+            const adh = tp.getWeeklyAdherence(plan.id, week.id);
+            adherenceRate = typeof adh?.adherenceRate === 'number'
+              ? adh.adherenceRate / 100  // backend returns 0-100, iOS expects 0-1
+              : null;
           }
-        } catch (e) {
-          logger.debug({ err: e }, 'Adherence calc failed (non-critical)');
         }
+      } catch (e) {
+        logger.debug({ err: e }, 'Adherence calc failed (non-critical)');
       }
 
       // Invalidate caches since training status changed
@@ -217,9 +283,14 @@ export function trainingRoutes(): Router {
     try {
       const { applyCoachRecommendations } = require('../../services/garmin-coach');
       const applied = await applyCoachRecommendations(userId, recommendationIds);
-      sendSuccess(res, { applied: applied?.count || 0, message: `Calendar updated with ${applied?.count || 0} recommendation(s).` });
-    } catch {
-      sendSuccess(res, { applied: 0, message: 'Coach recommendations noted.' });
+      sendSuccess(res, {
+        applied: applied?.count || 0,
+        message: `Calendar updated with ${applied?.count || 0} recommendation(s).`,
+        appliedRecommendations: applied?.appliedRecommendations || [],
+      });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS training/coach/apply failed');
+      sendError(res, 'COACH_APPLY_FAILED', err?.message || 'Failed to apply coach recommendations', 503);
     }
   });
 
@@ -402,6 +473,18 @@ export function trainingRoutes(): Router {
 
     if (!objective || typeof objective !== 'string') {
       sendError(res, 'VALIDATION', 'objective is required (e.g., "Lisbon Marathon October 2026")', 400);
+      return;
+    }
+
+    const quota = isUserOverDailyCap(userId);
+    if (quota.over) {
+      sendError(
+        res,
+        'QUOTA_EXCEEDED',
+        buildQuotaExceededMessage(quota),
+        402,
+        { plan: quota.plan, resetAt: quota.resetAt },
+      );
       return;
     }
 

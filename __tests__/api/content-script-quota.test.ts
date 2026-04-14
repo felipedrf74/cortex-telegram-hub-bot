@@ -1,0 +1,107 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Request } from 'express';
+
+const mockIsUserOverDailyCap = vi.fn(() => ({
+  over: false,
+  spentUsd: 0,
+  capUsd: 0.2,
+  plan: 'pro',
+  resetAt: '2026-04-15T00:00:00.000Z',
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
+vi.mock('../../src/services/cost-guardrail', () => ({
+  isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
+  buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: () => 'pt-BR',
+}));
+
+interface MockRes {
+  statusCode: number;
+  body: any;
+  status(code: number): MockRes;
+  json(body: any): MockRes;
+}
+
+function mockRes(): MockRes {
+  const response: MockRes = {
+    statusCode: 200,
+    body: null,
+    status(code: number) { response.statusCode = code; return response; },
+    json(body: any) { response.body = body; return response; },
+  };
+  return response;
+}
+
+function mockReq(body: any): Request {
+  return {
+    method: 'POST',
+    url: '/script',
+    originalUrl: '/script',
+    baseUrl: '',
+    path: '/script',
+    query: {},
+    params: {},
+    headers: {},
+    body,
+    userId: 12,
+  } as any;
+}
+
+async function dispatch(body: any): Promise<MockRes> {
+  const { contentRoutes } = await import('../../src/api/routes/content');
+  const router = contentRoutes();
+  const req = mockReq(body);
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+describe('Content API — script quota enforcement', () => {
+  beforeEach(() => {
+    mockIsUserOverDailyCap.mockReset();
+    mockIsUserOverDailyCap.mockReturnValue({
+      over: true,
+      spentUsd: 0.2,
+      capUsd: 0.2,
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+    });
+  });
+
+  it('returns 402 before invoking script generation when quota is exhausted', async () => {
+    const response = await dispatch({
+      topic: 'How to recover after hard intervals',
+      format: 'Reel',
+    });
+
+    expect(response.statusCode).toBe(402);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('QUOTA_EXCEEDED');
+    expect(response.body.error.details).toEqual({
+      plan: 'pro',
+      resetAt: '2026-04-15T00:00:00.000Z',
+    });
+  });
+});

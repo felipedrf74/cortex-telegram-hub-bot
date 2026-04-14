@@ -1,11 +1,12 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { google, gmail_v1 } from 'googleapis';
-import { config } from '../config';
 import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
 import {
   buildGoogleOAuth2Client,
+  buildGoogleOAuth2ClientForUser,
+  getGoogleRefreshTokenForUser,
   isGoogleConfigured,
   registerGoogleClientReset,
 } from './google-auth';
@@ -20,9 +21,18 @@ let gmailClient: gmail_v1.Gmail | null = null;
 registerGoogleClientReset(() => { gmailClient = null; });
 
 function getGmail(): gmail_v1.Gmail {
+  let contextUserId: number | null = null;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    contextUserId = getCurrentContext()?.userId ?? null;
+  } catch { /* outside request context */ }
+
+  if (contextUserId !== null) {
+    const oauth2Client = buildGoogleOAuth2ClientForUser(contextUserId);
+    return google.gmail({ version: 'v1', auth: oauth2Client });
+  }
+
   if (gmailClient) return gmailClient;
-  // Token resolution goes through oauth-store first (encrypted + audited),
-  // env-var fallback for backward compat. See google-auth.ts.
   const oauth2Client = buildGoogleOAuth2Client();
   gmailClient = google.gmail({ version: 'v1', auth: oauth2Client });
   return gmailClient;
@@ -30,6 +40,10 @@ function getGmail(): gmail_v1.Gmail {
 
 export function isGmailConfigured(): boolean {
   return isGoogleConfigured();
+}
+
+export function isGmailConfiguredForUser(userId: number): boolean {
+  return !!getGoogleRefreshTokenForUser(userId);
 }
 
 export interface EmailMessage {
@@ -41,6 +55,55 @@ export interface EmailMessage {
   snippet: string;
   date: string;
   body?: string;
+}
+
+export interface GmailAttachment {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  attachmentId?: string;
+  inlineData?: string;
+}
+
+export interface AttachmentDownload {
+  buffer: Buffer;
+  name: string;
+  contentType: string;
+}
+
+function decodeBase64Url(value: string): Buffer {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  return Buffer.from(normalized, 'base64');
+}
+
+function collectAttachmentParts(
+  part: gmail_v1.Schema$MessagePart | undefined,
+  acc: GmailAttachment[],
+): void {
+  if (!part) return;
+
+  const filename = part.filename || '';
+  const body = part.body;
+  const hasAttachment = !!filename || !!body?.attachmentId;
+  if (hasAttachment && body) {
+    acc.push({
+      id: body.attachmentId || part.partId || filename || `attachment-${acc.length + 1}`,
+      filename: filename || 'attachment',
+      contentType: part.mimeType || 'application/octet-stream',
+      size: body.size || 0,
+      attachmentId: body.attachmentId || undefined,
+      inlineData: body.data || undefined,
+    });
+  }
+
+  for (const child of part.parts || []) {
+    collectAttachmentParts(child, acc);
+  }
+}
+
+function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string {
+  return headers?.find((h) => h.name === name)?.value || '';
 }
 
 export async function searchEmails(query: string, maxResults = 10): Promise<EmailMessage[]> {
@@ -69,17 +132,14 @@ export async function searchEmails(query: string, maxResults = 10): Promise<Emai
         GMAIL_API_TIMEOUT_MS,
       );
 
-      const headers = detail.data.payload?.headers || [];
-      const getHeader = (name: string) => headers.find((h) => h.name === name)?.value || '';
-
       emails.push({
         id: msg.id!,
         threadId: msg.threadId || '',
-        from: getHeader('From'),
-        to: getHeader('To'),
-        subject: getHeader('Subject'),
+        from: getHeader(detail.data.payload?.headers, 'From'),
+        to: getHeader(detail.data.payload?.headers, 'To'),
+        subject: getHeader(detail.data.payload?.headers, 'Subject'),
         snippet: detail.data.snippet || '',
-        date: getHeader('Date'),
+        date: getHeader(detail.data.payload?.headers, 'Date'),
       });
     }
 
@@ -102,32 +162,102 @@ export async function readEmail(messageId: string): Promise<EmailMessage & { bod
       GMAIL_API_TIMEOUT_MS,
     );
 
-    const headers = detail.data.payload?.headers || [];
-    const getHeader = (name: string) => headers.find((h) => h.name === name)?.value || '';
-
     let body = '';
     const payload = detail.data.payload;
     if (payload?.body?.data) {
-      body = Buffer.from(payload.body.data, 'base64').toString('utf-8');
+      body = decodeBase64Url(payload.body.data).toString('utf-8');
     } else if (payload?.parts) {
       const textPart = payload.parts.find((p) => p.mimeType === 'text/plain');
       if (textPart?.body?.data) {
-        body = Buffer.from(textPart.body.data, 'base64').toString('utf-8');
+        body = decodeBase64Url(textPart.body.data).toString('utf-8');
       }
     }
 
     return {
       id: messageId,
       threadId: detail.data.threadId || '',
-      from: getHeader('From'),
-      to: getHeader('To'),
-      subject: getHeader('Subject'),
+      from: getHeader(detail.data.payload?.headers, 'From'),
+      to: getHeader(detail.data.payload?.headers, 'To'),
+      subject: getHeader(detail.data.payload?.headers, 'Subject'),
       snippet: detail.data.snippet || '',
-      date: getHeader('Date'),
+      date: getHeader(detail.data.payload?.headers, 'Date'),
       body,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to read email');
+    throw err;
+  }
+}
+
+export async function getAttachments(
+  messageId: string,
+  contentTypeFilter?: string,
+): Promise<GmailAttachment[]> {
+  try {
+    const gmail = getGmail();
+    const detail = await withTimeout(
+      gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'full',
+      }),
+      GMAIL_API_TIMEOUT_MS,
+    );
+
+    const attachments: GmailAttachment[] = [];
+    collectAttachmentParts(detail.data.payload, attachments);
+
+    if (!contentTypeFilter) return attachments;
+    const filterLower = contentTypeFilter.toLowerCase();
+    const ext = filterLower === 'application/pdf' ? '.pdf' : null;
+    return attachments.filter((attachment) =>
+      attachment.contentType.toLowerCase().includes(filterLower) ||
+      (ext && attachment.filename.toLowerCase().endsWith(ext)),
+    );
+  } catch (err) {
+    logger.error({ err, messageId }, 'Failed to list Gmail attachments');
+    throw err;
+  }
+}
+
+export async function downloadAttachment(
+  messageId: string,
+  attachment: GmailAttachment,
+): Promise<AttachmentDownload> {
+  try {
+    if (attachment.inlineData) {
+      return {
+        buffer: decodeBase64Url(attachment.inlineData),
+        name: attachment.filename || 'attachment',
+        contentType: attachment.contentType || 'application/octet-stream',
+      };
+    }
+
+    if (!attachment.attachmentId) {
+      throw new Error(`Attachment ${attachment.id} has no Gmail attachmentId or inline data`);
+    }
+
+    const gmail = getGmail();
+    const response = await withTimeout(
+      gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachment.attachmentId,
+      }),
+      GMAIL_API_TIMEOUT_MS,
+    );
+
+    if (!response.data.data) {
+      throw new Error(`Attachment ${attachment.id} has no payload data`);
+    }
+
+    return {
+      buffer: decodeBase64Url(response.data.data),
+      name: attachment.filename || 'attachment',
+      contentType: attachment.contentType || 'application/octet-stream',
+    };
+  } catch (err) {
+    logger.error({ err, messageId, attachmentId: attachment.id }, 'Failed to download Gmail attachment');
     throw err;
   }
 }
