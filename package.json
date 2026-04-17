@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.48",
+  "version": "4.14.49",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -13,6 +13,7 @@
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
     "typecheck": "tsc --noEmit",
+    "preflight:owner-bootstrap": "node dist/tools/owner-bootstrap-preflight.js --strict",
     "lint": "npm run typecheck",
     "verify": "npm run typecheck && npm run test",
     "precommit": "npm run verify",
