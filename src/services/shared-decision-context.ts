@@ -552,14 +552,23 @@ function buildTrainingContractForSecretary(training: TrainingMeshContext | null)
   const session = extractSessionPrescription(training);
   const immovability = extractSessionImmovability(training);
   const hardDays = extractHardDayCount(training);
+  // Surface the Content-deprioritization implication to Secretary
+  // explicitly. When recovery is strained or critical, filming /
+  // capture work is the natural first-candidate for deferral. Without
+  // this, Secretary sees "recovery is strained" but no hint that
+  // content blocks could reclaim time; the weekly planner therefore
+  // keeps filming slots as immutable when they shouldn't be.
+  const recoveryCompromised = recovery?.state === 'strained' || recovery?.state === 'critical';
   return createContract({
     nonNegotiables: compact([
       immovability?.level === 'high' && session
         ? `Keep ${session.title} on ${session.date} protected before moving lower-value work.`
         : null,
-      recovery?.state === 'strained'
-        ? 'Reduce avoidable day friction while recovery is strained.'
-        : null,
+      recovery?.state === 'critical'
+        ? 'Reduce non-essential commitments — recovery is critical this week.'
+        : recovery?.state === 'strained'
+          ? 'Reduce avoidable day friction while recovery is strained.'
+          : null,
     ]),
     preferredWindows: compact([
       session ? `Sequence the day around ${session.title} on ${session.date}.` : null,
@@ -568,8 +577,14 @@ function buildTrainingContractForSecretary(training: TrainingMeshContext | null)
       hardDays != null && hardDays > 0
         ? `If the calendar compresses, protect the ${hardDays} hard training day(s) first and downgrade optional work.`
         : null,
+      recoveryCompromised
+        ? 'Filming and content-capture blocks are the first-candidate for deferral while recovery stabilizes.'
+        : null,
     ]),
-    notes: compact([recovery ? `Recovery state: ${recovery.state}.` : null]),
+    notes: compact([
+      recovery ? `Recovery state: ${recovery.state}.` : null,
+      extractCoachPhaseNote(training),
+    ]),
   });
 }
 
@@ -579,10 +594,24 @@ function buildCookingContractForSecretary(cooking: CookingMeshContext | null): P
   const readiness = extractMealExecutionReadiness(cooking);
   const support = extractFuelingSupportStatus(cooking);
   const spend = extractGroceryForecast(cooking);
+  // When fueling is at risk for specific hard-session dates, tell
+  // Secretary explicitly to protect day-before prep time. The loop
+  // between Training (requests fueling) and Cooking (confirms support)
+  // is already bidirectional, but without Secretary intervening on the
+  // day-before prep slot, at-risk fueling just stays at-risk. This
+  // gives Secretary a concrete time-shaping action rather than an
+  // abstract advisory.
+  const prepDateHints = support?.hardDatesMissingMeals
+    .map(computePrepDayBeforeSession)
+    .filter((value): value is string => typeof value === 'string')
+    .slice(0, 5) ?? [];
   return createContract({
     nonNegotiables: compact([
       support?.hardDatesMissingMeals.length
         ? `Hard training day meal coverage is still missing on ${support.hardDatesMissingMeals.join(', ')}.`
+        : null,
+      prepDateHints.length > 0
+        ? `Reserve 60\u201390 min of prep/cook time on ${prepDateHints.join(', ')} to cover the upcoming hard session(s).`
         : null,
     ]),
     preferredWindows: compact([
@@ -597,6 +626,17 @@ function buildCookingContractForSecretary(cooking: CookingMeshContext | null): P
     ]),
     notes: compact([spend ? `Shopping forecast: ${formatCurrencyAmount(spend.currency, spend.amount)}.` : null]),
   });
+}
+
+/** Compute the YYYY-MM-DD one day before a given session date, used to
+ *  reserve evening-before meal prep time when fueling is at risk. */
+function computePrepDayBeforeSession(sessionDate: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(sessionDate);
+  if (!match) return null;
+  const utcSession = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (!Number.isFinite(utcSession)) return null;
+  const dayBefore = new Date(utcSession - 24 * 60 * 60 * 1000);
+  return dayBefore.toISOString().slice(0, 10);
 }
 
 function buildFinanceContractForSecretary(finance: FinanceMeshContext | null): PeerDecisionContract | null {
@@ -624,10 +664,24 @@ function buildContentContractForSecretary(content: ContentMeshContext | null): P
   if (!content) return null;
   const commitment = extractPublishingCommitment(content);
   const filming = extractFilmingRecommendation(content);
+  // Surface the pre-publish filming window as an immovable block to
+  // Secretary. The publishing_commitment signal carries nextDate but
+  // on its own nothing translates it into a blocked filming window,
+  // so the weekly planner treats filming as flexible even when
+  // publishing is only 3 days out. Rule: filming should land 3–5
+  // calendar days before publish to leave edit + render time. When a
+  // nextDate exists, surface that window as a non-negotiable so
+  // Secretary's calendar stops booking meetings into it.
+  const filmingWindow = commitment?.nextDate
+    ? computePreferredFilmingWindow(commitment.nextDate)
+    : null;
   return createContract({
     nonNegotiables: compact([
       commitment?.nextDate
         ? `Publishing commitment lands on ${commitment.nextDate}${commitment.nextTopicTitle ? ` for "${commitment.nextTopicTitle}"` : ''}.`
+        : null,
+      filmingWindow
+        ? `Protect ${filmingWindow.start}\u2013${filmingWindow.end} as the filming/edit window for that publish date.`
         : null,
     ]),
     preferredWindows: compact([
@@ -641,6 +695,27 @@ function buildContentContractForSecretary(content: ContentMeshContext | null): P
     publishDeadline: commitment?.nextDate ?? null,
     notes: compact([commitment ? `${commitment.upcomingTopicCount} topic(s) remain queued.` : null]),
   });
+}
+
+/**
+ * Compute the 3-to-5-day-before-publish filming window from a publish
+ * date in YYYY-MM-DD form. Returns ISO dates for the start and end of
+ * the window, or null if the publish date can't be parsed.
+ *
+ * Rationale: 3 days minimum gives edit + render + thumbnail time; 5
+ * days max keeps filming tight enough that context and hook relevance
+ * stay fresh. Beyond 5 days, filming slot is no longer "required" for
+ * this publish cycle.
+ */
+function computePreferredFilmingWindow(publishDate: string): { start: string; end: string } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(publishDate);
+  if (!match) return null;
+  const utcPublish = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (!Number.isFinite(utcPublish)) return null;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const start = new Date(utcPublish - 5 * dayMs).toISOString().slice(0, 10);
+  const end = new Date(utcPublish - 3 * dayMs).toISOString().slice(0, 10);
+  return { start, end };
 }
 
 function buildSecretaryContractForTraining(secretary: SecretaryMeshContext | null): PeerDecisionContract | null {
@@ -693,20 +768,37 @@ function buildFinanceContractForTraining(finance: FinanceMeshContext | null): Pe
   if (!finance) return null;
   const budget = extractBudget(finance);
   const taxDeadline = extractTaxDeadline(finance);
+  // Surface supplement-mode explicitly and give the training coach a
+  // concrete "defer equipment / supplement asks" action when budget
+  // is tight. The `trainingSpendMode` and `supplementMode` fields
+  // both exist on the budget_remaining signal payload; historically
+  // only `trainingSpendMode` flowed into the prompt.
+  const veryTight = budget?.remainingRatio != null && budget.remainingRatio <= 0.1;
   return createContract({
     nonNegotiables: compact([
       taxDeadline ? `Tax/admin deadline hits ${taxDeadline.reminderDate}.` : null,
+      veryTight
+        ? 'Budget headroom is at or below 10% — defer supplement, gear, and equipment asks this cycle.'
+        : null,
     ]),
     preferredWindows: compact([
       budget?.trainingSpendMode ? `Training spend mode is ${budget.trainingSpendMode}.` : null,
+      budget?.supplementMode ? `Supplement spend mode is ${budget.supplementMode}.` : null,
     ]),
     fallbackIfDeferred: compact([
       budget?.budgetMode === 'tight'
         ? 'Favor lower-friction or lower-cost training execution if the week is already tight.'
         : null,
+      budget?.supplementMode === 'pause' || veryTight
+        ? 'Prefer time-based progressions over paid equipment upgrades while supplement/gear spend is paused.'
+        : null,
     ]),
     budgetMode: budget?.budgetMode ?? null,
-    notes: [],
+    notes: compact([
+      budget?.remainingRatio != null
+        ? `Budget remaining: ${Math.round(budget.remainingRatio * 100)}%.`
+        : null,
+    ]),
   });
 }
 
@@ -752,12 +844,18 @@ function buildSecretaryContractForCooking(secretary: SecretaryMeshContext | null
   const focus = extractSecretaryFocus(secretary);
   const busy = extractSecretaryBusy(secretary);
   const travel = extractSecretaryTravel(secretary);
+  // Secretary's protected focus windows are binding on Cooking. Listed
+  // only as a `preferredWindow` ("prep is easiest on X") the cooking
+  // agent can freely ignore it and let prep land on the focus day. When
+  // a focus block exists, the non-negotiable below makes it explicit
+  // that prep work should NOT land on that date unless everywhere else
+  // is fully blocked.
   return createContract({
     nonNegotiables: compact([
       travel?.dates.length ? `Travel lands on ${travel.dates.join(', ')}.` : null,
+      focus ? `Do not place prep or shopping on ${focus.date} — Secretary is protecting it as a focus block.` : null,
     ]),
     preferredWindows: compact([
-      focus ? `Prep or shopping is easiest to place on ${focus.date}.` : null,
       busy?.dates.length ? `Avoid fragmented dates like ${busy.dates.join(', ')} for heavier prep.` : null,
     ]),
     fallbackIfDeferred: compact([
@@ -770,16 +868,34 @@ function buildSecretaryContractForCooking(secretary: SecretaryMeshContext | null
 function buildFinanceContractForCooking(finance: FinanceMeshContext | null): PeerDecisionContract | null {
   if (!finance) return null;
   const budget = extractBudget(finance);
+  // Derive an adaptive grocery-mode hint from budget headroom so
+  // Cooking gets concrete spend-tier guidance instead of just the
+  // binary "tight / flexible" budgetMode. The groceryMode field on
+  // budget_remaining is authored by Finance; this just echoes it with
+  // an actionable gate when headroom is very low.
+  const veryTight = budget?.remainingRatio != null && budget.remainingRatio <= 0.1;
+  const moderate = budget?.remainingRatio != null && budget.remainingRatio > 0.1 && budget.remainingRatio <= 0.5;
   return createContract({
-    nonNegotiables: [],
+    nonNegotiables: compact([
+      veryTight
+        ? 'Budget headroom is at or below 10% — anchor meal suggestions on cheap staples (rice, beans, eggs, seasonal veg).'
+        : null,
+    ]),
     preferredWindows: compact([
       budget?.groceryMode ? `Grocery mode is ${budget.groceryMode}.` : null,
+      moderate
+        ? 'Budget is moderate (10\u201350% remaining) — balance staples with one or two targeted premium items per week.'
+        : null,
     ]),
     fallbackIfDeferred: compact([
       budget?.budgetMode === 'tight' ? 'Favor repeatable lower-cost staples before novelty recipes.' : null,
     ]),
     budgetMode: budget?.budgetMode ?? null,
-    notes: [],
+    notes: compact([
+      budget?.remainingRatio != null
+        ? `Budget remaining: ${Math.round(budget.remainingRatio * 100)}%.`
+        : null,
+    ]),
   });
 }
 
@@ -803,16 +919,34 @@ function buildTrainingContractForContent(training: TrainingMeshContext | null): 
   if (!training) return null;
   const recovery = extractRecoveryState(training);
   const session = extractSessionPrescription(training);
+  // Explicit deprioritization guidance when recovery degrades. With
+  // only the `strained` fall-through, `critical` had no special handling
+  // and both states produced a single "avoid demanding production" line.
+  // The branches below emit concrete actions the content agent can
+  // apply without re-inferring from the state string.
+  const recoveryCritical = recovery?.state === 'critical';
+  const recoveryStrained = recovery?.state === 'strained';
   return createContract({
     nonNegotiables: compact([
-      recovery?.state === 'strained' ? 'Avoid demanding production around strained recovery windows.' : null,
+      recoveryCritical
+        ? 'Defer filming and new capture asks — recovery is critical, protect it explicitly this week.'
+        : recoveryStrained
+          ? 'Avoid demanding production around strained recovery windows.'
+          : null,
       session ? `Protect ${session.title} on ${session.date} before placing filming.` : null,
     ]),
     preferredWindows: [],
     fallbackIfDeferred: compact([
+      recoveryCritical
+        ? 'Move filming to a future recovered-state week; surface this to Secretary so the calendar slot re-opens.'
+        : null,
       session ? 'Move content around training first; do not ask training to absorb creator load by default.' : null,
     ]),
-    notes: [],
+    notes: compact([
+      recoveryCritical || recoveryStrained
+        ? 'Content-capture priority is currently deprioritized while recovery stabilizes.'
+        : null,
+    ]),
   });
 }
 
@@ -821,13 +955,18 @@ function buildSecretaryContractForContent(secretary: SecretaryMeshContext | null
   const busy = extractSecretaryBusy(secretary);
   const focus = extractSecretaryFocus(secretary);
   const inbox = extractSecretaryInboxPressure(secretary);
+  // Secretary's focus window is binding on Content too. Filming or
+  // capture blocks landing on a protected focus day is a common
+  // failure mode where the weekly planner shows a conflict in the
+  // review step and the user has to arbitrate manually. Making the
+  // focus block a Content non-negotiable pushes the avoidance earlier
+  // in the agent loop.
   return createContract({
     nonNegotiables: compact([
       busy?.dates.length ? `Calendar pressure is already high on ${busy.dates.join(', ')}.` : null,
+      focus ? `Do not place filming or capture blocks on ${focus.date} — Secretary is protecting it as a focus block.` : null,
     ]),
-    preferredWindows: compact([
-      focus ? `Protected focus is strongest on ${focus.date}.` : null,
-    ]),
+    preferredWindows: [],
     fallbackIfDeferred: compact([
       inbox && inbox.overdueCount > 0 ? 'If content slips, clear overdue admin before expanding production commitments.' : null,
     ]),
@@ -915,6 +1054,22 @@ function extractRecoveryState(training: TrainingMeshContext): { state: string } 
   const signal = training.derivedSignals.find((entry) => entry.signalType === 'recovery_state');
   const state = signal?.payload.state;
   return typeof state === 'string' ? { state } : null;
+}
+
+/** Format the persisted coach phase memory as a short note line for
+ *  peer-domain prompts (Secretary, Content, Cooking). Returns null when
+ *  no phase memory has been written yet. */
+function extractCoachPhaseNote(training: TrainingMeshContext): string | null {
+  const memory = training.coachPhaseMemory;
+  if (!memory) return null;
+  const prefix = memory.weekInPhase && memory.phaseTotalWeeks
+    ? `Training phase: ${memory.phase} (week ${memory.weekInPhase}/${memory.phaseTotalWeeks})`
+    : `Training phase: ${memory.phase}`;
+  const extras: string[] = [];
+  if (memory.adherenceTrend) extras.push(`adherence ${memory.adherenceTrend}`);
+  if (memory.activeConcern) extras.push(`concern: ${memory.activeConcern}`);
+  if (memory.nextExpectedShift) extras.push(`next shift: ${memory.nextExpectedShift}`);
+  return extras.length > 0 ? `${prefix} — ${extras.join('; ')}.` : `${prefix}.`;
 }
 
 function extractSessionPrescription(training: TrainingMeshContext): { title: string; date: string } | null {

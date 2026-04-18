@@ -299,17 +299,35 @@ export async function runPerformanceAgent(): Promise<void> {
     }
 
     // Analysis 3b: Detect content formulas from top performers
+    //
+    // Include lineage metadata (sample video IDs, avg views) so
+    // downstream consumers (pipeline scheduler, script engine) can
+    // trace a validated formula back to the specific performing videos
+    // that produced it. This lets the script engine say "applying the
+    // formula from videos V1, V2 that averaged X views" instead of a
+    // bare "apply pillar Y" instruction.
     if (top3.length >= 2 && pillarRankings.length > 0) {
       const topPillar = pillarRankings[0];
       if (topPillar && topPillar.avg_views > 0) {
         const topPillarVideos = top3.filter(v => v.pillar === topPillar.pillar);
         if (topPillarVideos.length >= 2) {
+          const sampleVideoIds = topPillarVideos
+            .map((v) => (v as any).videoId ?? (v as any).id ?? null)
+            .filter((id): id is string => typeof id === 'string')
+            .slice(0, 5);
+          const avgViewsForPillar = Math.round(
+            topPillarVideos.reduce((acc, v) => acc + (v.viewCount || 0), 0) / topPillarVideos.length,
+          );
           writeContentFormula(
             'performance-agent',
             `${topPillar.pillar} content with high engagement pattern`,
             topPillar.pillar,
             Math.min(0.9, topPillarVideos.length / 3),
             `${topPillarVideos.length} of top 3 videos are ${topPillar.pillar}`,
+            {
+              sampleVideoIds,
+              avgViews: avgViewsForPillar,
+            },
           );
           signalsProduced++;
         }

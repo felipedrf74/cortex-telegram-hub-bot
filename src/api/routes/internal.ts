@@ -14,6 +14,7 @@
 import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
+import { sendError } from '../response-helpers';
 
 export function internalRoutes(): Router {
   const router = Router();
@@ -24,7 +25,10 @@ export function internalRoutes(): Router {
   router.use((req: Request, res: Response, next) => {
     const provided = req.headers['x-internal-secret'] as string | undefined;
     if (!secret || provided !== secret) {
-      res.status(403).json({ error: 'forbidden' });
+      // Canonical error envelope. Python content-engine only checks
+      // status code and logs raw response text, so the body shape here
+      // only needs to match the iOS contract used everywhere else.
+      sendError(res, 'FORBIDDEN', 'Missing or invalid internal API secret', 403);
       return;
     }
     next();
@@ -56,7 +60,7 @@ export function internalRoutes(): Router {
       } = req.body;
 
       if (!category || !model || inputTokens == null || outputTokens == null) {
-        res.status(400).json({ error: 'missing required fields' });
+        sendError(res, 'BAD_REQUEST', 'missing required fields', 400);
         return;
       }
 
@@ -109,7 +113,7 @@ export function internalRoutes(): Router {
       res.json({ ok: true, costUsd: cost });
     } catch (err: any) {
       logger.error({ err }, 'Internal report-usage failed');
-      res.status(500).json({ error: err?.message || 'internal error' });
+      sendError(res, 'INTERNAL', err?.message || 'internal error', 500);
     }
   });
 
@@ -140,7 +144,7 @@ export function internalRoutes(): Router {
       } = req.body;
 
       if (!prompt || !category) {
-        res.status(400).json({ error: 'missing required fields: prompt, category' });
+        sendError(res, 'BAD_REQUEST', 'missing required fields: prompt, category', 400);
         return;
       }
 
@@ -178,7 +182,7 @@ export function internalRoutes(): Router {
       res.json({ text, provider });
     } catch (err: any) {
       logger.error({ err }, 'Internal ai-complete failed');
-      res.status(500).json({ error: err?.message || 'AI completion failed' });
+      sendError(res, 'AI_COMPLETE_FAILED', err?.message || 'AI completion failed', 500);
     }
   });
 
@@ -218,7 +222,7 @@ export function internalRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'Internal performance-summary failed');
-      res.status(500).json({ error: err?.message || 'internal error' });
+      sendError(res, 'INTERNAL', err?.message || 'internal error', 500);
     }
   });
 

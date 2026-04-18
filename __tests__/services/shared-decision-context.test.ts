@@ -201,4 +201,184 @@ describe('shared-decision-context', () => {
     expect(contracts.content?.publishDeadline).toBe('2026-04-18');
     expect(contracts.cooking?.notes).toContain('Shopping forecast: EUR 16.65.');
   });
+
+  // ── Cross-skill contract enrichments ──────────────────────────────
+
+  it('critical recovery forces Content to defer filming explicitly', async () => {
+    mockReadTrainingMeshContext.mockResolvedValueOnce({
+      derivedSignals: [
+        { signalType: 'recovery_state', payload: { state: 'critical' } },
+        { signalType: 'session_prescription', payload: { title: 'Long Ride', date: '2026-04-20' } },
+      ],
+    });
+
+    const contracts = await buildSharedDecisionContracts('content', 42);
+    expect(contracts.training?.nonNegotiables).toContain(
+      'Defer filming and new capture asks — recovery is critical, protect it explicitly this week.',
+    );
+    expect(contracts.training?.fallbackIfDeferred).toContain(
+      'Move filming to a future recovered-state week; surface this to Secretary so the calendar slot re-opens.',
+    );
+    expect(contracts.training?.notes).toContain(
+      'Content-capture priority is currently deprioritized while recovery stabilizes.',
+    );
+  });
+
+  it('Secretary sees filming as first-candidate for deferral when recovery is strained', async () => {
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    // Default mock has recovery_state=strained → the filming-deferrable note should fire
+    expect(contracts.training?.fallbackIfDeferred).toContain(
+      'Filming and content-capture blocks are the first-candidate for deferral while recovery stabilizes.',
+    );
+  });
+
+  it('very-tight budget defers supplements + equipment in Training contract', async () => {
+    // Persistent override — buildSharedDecisionContracts may read finance
+    // context more than once internally, so mockResolvedValueOnce gets
+    // consumed before our call completes. mockResolvedValue stays until
+    // the next reset.
+    mockReadFinanceMeshContext.mockResolvedValue({
+      monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 950, totalDeductions: 0 },
+      derivedSignals: [
+        {
+          signalType: 'budget_remaining',
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.05,
+            budgetMode: 'tight',
+            trainingSpendMode: 'minimum_effective_dose',
+            supplementMode: 'pause',
+          },
+        },
+      ],
+    });
+
+    const contracts = await buildSharedDecisionContracts('triathlon', 42);
+    expect(contracts.finance?.nonNegotiables).toContain(
+      'Budget headroom is at or below 10% — defer supplement, gear, and equipment asks this cycle.',
+    );
+    expect(contracts.finance?.preferredWindows).toContain('Supplement spend mode is pause.');
+    expect(contracts.finance?.notes).toContain('Budget remaining: 5%.');
+  });
+
+  it('very-tight budget anchors Cooking on cheap staples', async () => {
+    mockReadFinanceMeshContext.mockResolvedValueOnce({
+      monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 950, totalDeductions: 0 },
+      derivedSignals: [
+        {
+          signalType: 'budget_remaining',
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.08,
+            budgetMode: 'tight',
+            groceryMode: 'lean',
+          },
+        },
+      ],
+    });
+
+    const contracts = await buildSharedDecisionContracts('cooking', 42);
+    expect(contracts.finance?.nonNegotiables).toContain(
+      'Budget headroom is at or below 10% — anchor meal suggestions on cheap staples (rice, beans, eggs, seasonal veg).',
+    );
+    expect(contracts.finance?.preferredWindows).toContain('Grocery mode is lean.');
+  });
+
+  it('moderate budget gets the balanced guidance line on Cooking', async () => {
+    mockReadFinanceMeshContext.mockResolvedValueOnce({
+      monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 700, totalDeductions: 0 },
+      derivedSignals: [
+        {
+          signalType: 'budget_remaining',
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.3,
+            budgetMode: 'controlled',
+            groceryMode: 'cost_aware',
+          },
+        },
+      ],
+    });
+
+    const contracts = await buildSharedDecisionContracts('cooking', 42);
+    expect(contracts.finance?.preferredWindows.some((line) => line.includes('10\u201350% remaining'))).toBe(true);
+  });
+
+  it('publish deadline derives a filming/edit window 3–5 days before publish', async () => {
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    // Default mock has nextDate='2026-04-18' → window is 2026-04-13 to 2026-04-15
+    expect(contracts.content?.nonNegotiables).toContain(
+      'Protect 2026-04-13\u20132026-04-15 as the filming/edit window for that publish date.',
+    );
+  });
+
+  it('malformed publish date does not crash the contract builder', async () => {
+    mockReadContentMeshContext.mockResolvedValueOnce({
+      derivedSignals: [
+        { signalType: 'publishing_commitment', payload: { upcomingTopicCount: 1, nextDate: 'not-a-date' } },
+      ],
+      filmingRecommendation: null,
+    });
+
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    // Should still return a contract, just without the filming-window line
+    expect(contracts.content).not.toBeNull();
+    expect(contracts.content?.nonNegotiables.some((line) => line.includes('filming/edit window'))).toBe(false);
+  });
+
+  it('at-risk fueling surfaces day-before prep reservation to Secretary', async () => {
+    // Default mock has fueling_support_status.hardDatesMissingMeals=['2026-04-18']
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    expect(contracts.cooking?.nonNegotiables).toContain(
+      'Reserve 60\u201390 min of prep/cook time on 2026-04-17 to cover the upcoming hard session(s).',
+    );
+  });
+
+  it('Secretary focus block is binding on Content and Cooking as a non-negotiable', async () => {
+    const [contentContracts, cookingContracts] = await Promise.all([
+      buildSharedDecisionContracts('content', 42),
+      buildSharedDecisionContracts('cooking', 42),
+    ]);
+
+    expect(contentContracts.secretary?.nonNegotiables).toContain(
+      'Do not place filming or capture blocks on 2026-04-17 — Secretary is protecting it as a focus block.',
+    );
+    expect(cookingContracts.secretary?.nonNegotiables).toContain(
+      'Do not place prep or shopping on 2026-04-17 — Secretary is protecting it as a focus block.',
+    );
+  });
+
+  it('coach phase memory surfaces as a Secretary-facing training note', async () => {
+    mockReadTrainingMeshContext.mockResolvedValueOnce({
+      derivedSignals: [
+        { signalType: 'recovery_state', payload: { state: 'stable' } },
+        { signalType: 'session_prescription', payload: { title: 'Easy Run', date: '2026-04-17' } },
+      ],
+      coachPhaseMemory: {
+        phase: 'build',
+        weekInPhase: 3,
+        phaseTotalWeeks: 6,
+        narrative: 'Progressing from aerobic base to specific intensity.',
+        adherenceTrend: 'improving',
+        recentDeloadDates: ['2026-03-25'],
+        activeConcern: null,
+        nextExpectedShift: 'Deload end of week 4 if adherence holds.',
+        writtenAt: '2026-04-10T09:00:00Z',
+      },
+    });
+
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    const note = contracts.training?.notes.join(' ') ?? '';
+    expect(note).toContain('Training phase: build (week 3/6)');
+    expect(note).toContain('adherence improving');
+    expect(note).toContain('next shift: Deload end of week 4 if adherence holds');
+  });
+
+  it('missing coach phase memory leaves the training note clean (falls back to recovery only)', async () => {
+    // Default mock returns no coachPhaseMemory — should not inject any phase line
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    const note = contracts.training?.notes.join(' ') ?? '';
+    expect(note).toContain('Recovery state: strained');
+    expect(note).not.toContain('Training phase:');
+  });
 });

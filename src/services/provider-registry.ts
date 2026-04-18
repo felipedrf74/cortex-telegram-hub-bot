@@ -20,6 +20,7 @@ import { GeminiProvider, isGeminiProviderConfigured } from './gemini-provider';
 import { TaskRoutingProvider, TaskRoutingConfig, TaskProviderPair, FallbackEvent } from './provider-fallback';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { captureError } from './error-monitor';
 
 // ─── Provider Registry ─────────────────────────────────────────────
 
@@ -199,6 +200,33 @@ function defaultFallbackHandler(event: FallbackEvent): void {
     },
     'AI provider fallback triggered',
   );
+
+  // Emit a Sentry-visible warning so provider degradation (primary down,
+  // circuit opened, sustained fallback traffic) surfaces as an alert
+  // instead of burying itself in log noise. Level is `warning` so the
+  // Telegram alerter stays quiet — fallback is working-as-designed
+  // degradation, not an outage. Sentry tagging by taskType + from/to
+  // makes it easy to see "Gemini is down, we've been on OpenAI for 1h".
+  try {
+    captureError(
+      {
+        level: 'warning',
+        source: 'job',
+        message: `AI provider fallback: ${event.primaryProvider} → ${event.fallbackProvider} for ${event.taskType}`,
+        stack: event.error.stack,
+        context: {
+          taskType: event.taskType,
+          primaryProvider: event.primaryProvider,
+          fallbackProvider: event.fallbackProvider,
+          circuitOpen: event.circuitOpen,
+          errorMessage: event.error.message,
+        },
+      },
+      false, // never alert — fallback is noisy, Sentry already aggregates
+    );
+  } catch {
+    // Never let observability wiring break the hot AI path.
+  }
 }
 
 /** Clear cached provider instances (for testing). */

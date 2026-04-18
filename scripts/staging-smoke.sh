@@ -137,6 +137,65 @@ echo ""
 echo "🔌 4/6 — Provider stats"
 test_endpoint "provider-stats.providers"     "http://localhost:8201/api/provider-stats" "providers" || true
 
+# ── iOS-surface smoke (audit W2-10) ─────────────────
+# Hit the canonical /api/v1/* routes the iOS app actually depends on.
+# We don't have a staging user token, but an UNAUTHENTICATED request
+# should return 401 with the canonical error envelope. That tells us:
+#   a) the route is mounted (not a 404)
+#   b) auth middleware is active (not 200 leaking data)
+#   c) error shape is on-contract ({ ok:false, error:{ code, message } })
+# If any of these fail, the iOS app is guaranteed to have a bad time.
+echo ""
+echo "📱 iOS-surface contract smoke"
+test_ios_401() {
+  local name="$1"
+  local url="$2"
+  # No Authorization header — we EXPECT a 401
+  local http_code
+  http_code=$(ssh "$SERVER" "curl -s -o /tmp/_smoke_body -w '%{http_code}' '$url' 2>/dev/null" || echo "000")
+  local body
+  body=$(ssh "$SERVER" "cat /tmp/_smoke_body 2>/dev/null" || echo "")
+
+  if [ "$http_code" != "401" ]; then
+    echo "  ❌ $name — expected 401, got $http_code"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (http $http_code)")
+    [ "$VERBOSE" = true ] && echo "     Body: $(echo "$body" | head -c 200)"
+    return 1
+  fi
+
+  # Verify canonical error envelope: { ok:false, error:{ code, message } }
+  local shape
+  shape=$(echo "$body" | node -e "
+    let b='';
+    process.stdin.on('data',c=>b+=c);
+    process.stdin.on('end',()=>{
+      try {
+        const j=JSON.parse(b);
+        if (j.ok===false && j.error && typeof j.error.code==='string' && typeof j.error.message==='string') {
+          console.log('OK');
+        } else {
+          console.log('BAD_SHAPE:'+JSON.stringify(j).slice(0,80));
+        }
+      } catch(e){ console.log('NOT_JSON:'+e.message); }
+    });
+  " 2>&1)
+
+  if [ "$shape" = "OK" ]; then
+    echo "  ✅ $name — 401 with canonical error envelope"
+    PASS=$((PASS + 1))
+  else
+    echo "  ❌ $name — $shape"
+    FAIL=$((FAIL + 1))
+    FAILED_TESTS+=("$name (shape)")
+  fi
+}
+
+test_ios_401 "iOS /api/v1/dashboard"     "http://localhost:8201/api/v1/dashboard"
+test_ios_401 "iOS /api/v1/tasks/lists"   "http://localhost:8201/api/v1/tasks/lists"
+test_ios_401 "iOS /api/v1/training/today" "http://localhost:8201/api/v1/training/today"
+test_ios_401 "iOS /api/v1/plan/today"    "http://localhost:8201/api/v1/plan/today"
+
 echo ""
 echo "🏃 5/6 — Process state via PM2"
 PM2_STATUS=$(ssh "$SERVER" "/home/dominguez/.npm-global/bin/pm2 jlist 2>/dev/null | /usr/bin/node -e \"

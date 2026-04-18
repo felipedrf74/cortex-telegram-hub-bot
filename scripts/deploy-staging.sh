@@ -72,6 +72,50 @@ echo ""
 echo "📁 Ensuring staging directory exists..."
 ssh "$SERVER" "mkdir -p $STAGING_DIR/data/garmin-tokens $STAGING_DIR/logs $STAGING_DIR/content-engine/data"
 
+# ── 2a. Validate staging .env has all required keys (audit W2-10) ────
+# Fails fast if an operator removed/typo'd a required key. Without this
+# check, a broken .env ships silently: PM2 starts, the bot fails to
+# initialize, and the only signal is the process crash looping in the
+# logs — which was only noticed after a promote attempt. We check the
+# five keys that the bot refuses to boot without.
+echo ""
+echo "🔑 Validating staging .env..."
+ENV_CHECK=$(ssh "$SERVER" "
+  set -e
+  if [ ! -f $STAGING_DIR/.env ]; then
+    echo 'MISSING_FILE'
+    exit 0
+  fi
+  MISSING=''
+  for KEY in DATABASE_PATH PORTAL_PORT CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY; do
+    if ! grep -qE \"^\${KEY}=.+\" $STAGING_DIR/.env; then
+      MISSING=\"\$MISSING \$KEY\"
+    fi
+  done
+  if [ -n \"\$MISSING\" ]; then
+    echo \"MISSING_KEYS:\$MISSING\"
+  else
+    echo OK
+  fi
+")
+case "$ENV_CHECK" in
+  MISSING_FILE)
+    echo "   ❌ No staging .env file at $STAGING_DIR/.env — see first-time setup in header"
+    exit 1
+    ;;
+  MISSING_KEYS:*)
+    echo "   ❌ Staging .env is missing required keys:${ENV_CHECK#MISSING_KEYS:}"
+    echo "      Edit $STAGING_DIR/.env and ensure each key has a non-empty value."
+    exit 1
+    ;;
+  OK)
+    echo "   ✅ All required keys present"
+    ;;
+  *)
+    echo "   ⚠️  Unexpected .env validator output: $ENV_CHECK — proceeding cautiously"
+    ;;
+esac
+
 # ── 3. Stop staging services (if running) ────────────
 # Use `|| true` because the apps may not be registered with PM2 yet on
 # first deploy. We never touch prod (nexus-hub / content-engine).

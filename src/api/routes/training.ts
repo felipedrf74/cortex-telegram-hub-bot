@@ -18,6 +18,7 @@ import { applyTrainingPlanCoordination, buildTrainingPlanCoordination } from '..
 import { sendSuccess, sendError } from '../response-helpers';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import type { CoachRecommendation } from '../../services/garmin-coach';
+import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 // Cache TTLs (seconds)
@@ -237,13 +238,18 @@ export function trainingRoutes(): Router {
     }
 
     try {
-      const { generateCoachBriefing } = require('../../services/garmin-coach');
       const briefing = await generateCoachBriefing(userId);
 
+      // `briefing.message` is the only briefing text field on CoachBriefingResult;
+      // garminData is hydrated later via syncCoachStateForUser and the cache-restore
+      // path, not by generateCoachBriefing itself. Previous fallbacks to
+      // briefing?.text / briefing?.briefing / briefing?.garminData were dead code
+      // (those keys never exist on the return type) and the inline `require()`
+      // hid the type mismatch.
       const payload = {
-        briefing: briefing?.message || briefing?.text || briefing?.briefing || 'No coach briefing available.',
+        briefing: briefing?.message || 'No coach briefing available.',
         recommendations: briefing?.recommendations || [],
-        garminData: briefing?.garminData || null,
+        garminData: null as unknown,
         cachedAt: new Date().toISOString(),
       };
 
@@ -360,8 +366,16 @@ export function trainingRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     const { recommendationIds } = req.body;
     try {
-      const { applyCoachRecommendations } = require('../../services/garmin-coach');
       const applied = await applyCoachRecommendations(userId, recommendationIds);
+      // Applying a coach recommendation changes the coach briefing and
+      // training summary the client just read — clear those caches too,
+      // otherwise the next read serves the pre-apply brief and the user
+      // sees the same recommendation they just accepted. Mirrors the
+      // cache-clear set used by /training/complete above.
+      clearCache(`coach-briefing:${userId}`);
+      clearCache(`training-summary:${userId}`);
+      clearCache(`readiness:${userId}`);
+      clearCache(`dashboard-readiness:${userId}`);
       invalidatePlanningCaches(userId);
       sendSuccess(res, {
         applied: applied?.count || 0,

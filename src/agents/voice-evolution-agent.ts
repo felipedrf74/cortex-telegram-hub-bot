@@ -334,54 +334,71 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
     // in content_learned_patterns table so they accumulate over time
     // and survive signal expiry. The upsert increments frequency on
     // repeated detection instead of duplicating.
-    try {
-      const { upsertLearnedPattern } = await import('../services/content-learning-store');
-      const userId = 0; // Owner
+    // Voice evolution is an owner-scoped monthly agent learning the
+    // owner's voice from their own scripts and transcripts. The pattern
+    // rows MUST be written under the owner's real tenant id; a silent
+    // fallback to userId=0 would leak system-scoped rows across tenants
+    // on any future per-user visibility query. When the owner bootstrap
+    // resolver returns null (pre-bootstrap install, misconfigured env)
+    // the safe behavior is to skip this run's persistence entirely. A
+    // missed monthly persist is recoverable; a corrupted tenant scope
+    // is not.
+    const ownerTarget = getOwnerBootstrapTarget();
+    if (!ownerTarget) {
+      logger.warn(
+        { agent: 'voice-evolution', signalsProduced },
+        'voice-evolution: owner bootstrap target unresolved; skipping pattern persist for this run',
+      );
+    } else {
+      try {
+        const { upsertLearnedPattern } = await import('../services/content-learning-store');
+        const userId = ownerTarget.tenantId;
 
-      for (const a of analysis.additions ?? []) {
-        upsertLearnedPattern({
-          category: 'voice_addition',
-          patternText: a.pattern || String(a),
-          examples: a.examples?.slice(0, 5) ?? [],
-          confidence: a.frequency === 'often' ? 0.9 : a.frequency === 'sometimes' ? 0.7 : 0.5,
-          sourceAgent: 'voice-evolution',
-          userId,
-        });
-      }
-      for (const r of analysis.removals ?? []) {
-        upsertLearnedPattern({
-          category: 'voice_removal',
-          patternText: r.pattern || String(r),
-          examples: r.examples?.slice(0, 5) ?? [],
-          confidence: 0.7,
-          sourceAgent: 'voice-evolution',
-          userId,
-        });
-      }
-      for (const rp of analysis.rephrasing ?? []) {
-        upsertLearnedPattern({
-          category: 'voice_rephrasing',
-          patternText: rp.insight || `${rp.original} → ${rp.felipe_version}`,
-          examples: [rp.original, rp.felipe_version].filter(Boolean),
-          confidence: 0.8,
-          sourceAgent: 'voice-evolution',
-          userId,
-        });
-      }
-      for (const bi of analysis.book_influences ?? []) {
-        upsertLearnedPattern({
-          category: 'book_influence',
-          patternText: bi.book_or_concept || String(bi),
-          examples: [bi.how_it_appears].filter(Boolean),
-          confidence: bi.adoption_level === 'integrated' ? 0.9 : 0.5,
-          sourceAgent: 'voice-evolution',
-          userId,
-        });
-      }
+        for (const a of analysis.additions ?? []) {
+          upsertLearnedPattern({
+            category: 'voice_addition',
+            patternText: a.pattern || String(a),
+            examples: a.examples?.slice(0, 5) ?? [],
+            confidence: a.frequency === 'often' ? 0.9 : a.frequency === 'sometimes' ? 0.7 : 0.5,
+            sourceAgent: 'voice-evolution',
+            userId,
+          });
+        }
+        for (const r of analysis.removals ?? []) {
+          upsertLearnedPattern({
+            category: 'voice_removal',
+            patternText: r.pattern || String(r),
+            examples: r.examples?.slice(0, 5) ?? [],
+            confidence: 0.7,
+            sourceAgent: 'voice-evolution',
+            userId,
+          });
+        }
+        for (const rp of analysis.rephrasing ?? []) {
+          upsertLearnedPattern({
+            category: 'voice_rephrasing',
+            patternText: rp.insight || `${rp.original} → ${rp.felipe_version}`,
+            examples: [rp.original, rp.felipe_version].filter(Boolean),
+            confidence: 0.8,
+            sourceAgent: 'voice-evolution',
+            userId,
+          });
+        }
+        for (const bi of analysis.book_influences ?? []) {
+          upsertLearnedPattern({
+            category: 'book_influence',
+            patternText: bi.book_or_concept || String(bi),
+            examples: [bi.how_it_appears].filter(Boolean),
+            confidence: bi.adoption_level === 'integrated' ? 0.9 : 0.5,
+            sourceAgent: 'voice-evolution',
+            userId,
+          });
+        }
 
-      logger.info('Voice agent: persisted learned patterns to DB');
-    } catch (err) {
-      logger.warn({ err }, 'Voice agent: failed to persist patterns (non-fatal)');
+        logger.info('Voice agent: persisted learned patterns to DB');
+      } catch (err) {
+        logger.warn({ err }, 'Voice agent: failed to persist patterns (non-fatal)');
+      }
     }
 
     const summary = `Voice Evolution: analyzed ${scripts.length} scripts + ${transcripts.length} transcripts + ${bookSignals.length} book insights. ${signalsProduced} voice patterns detected.`;

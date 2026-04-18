@@ -49,7 +49,7 @@ import {
   storeTokens, getTokens, isConnected, disconnectProvider,
   getUserConnections, migrateOwnerTokens, ProviderNotConnectedError,
   assertOAuthEncryptionConfigured, encryptPlaintextOAuthTokens,
-  _resetDecryptCacheForTests,
+  updateAccessToken, _resetDecryptCacheForTests,
 } from '../../src/services/oauth-store';
 
 describe('oauth-store', () => {
@@ -455,6 +455,37 @@ describe('oauth-store', () => {
         expiresAt: null, scopes: [],
       });
       expect(getTokens(999, 'google')!.refreshToken).toBe('rt');
+    });
+
+    // Regression test — wearable (Strava/Whoop/Fitbit) token refresh
+    // paths call updateAccessToken() after exchanging a refresh_token
+    // at the provider. Without cache invalidation, the new access
+    // token is persisted to the DB but the 10-minute decrypt cache
+    // keeps serving the OLD token until the TTL expires, causing 401s
+    // on every downstream API call in that window. The invariant:
+    // any mutation to access_token must invalidate the cache so any
+    // current or future caller stays consistent.
+    it('updateAccessToken invalidates the cache so refreshed tokens are immediately visible', () => {
+      storeTokens(600, 'strava', {
+        accessToken: 'at_old',
+        refreshToken: 'rt_stable',
+        tokenType: 'Bearer',
+        expiresAt: '2026-01-01T00:00:00Z',
+        scopes: ['activity:read'],
+      });
+      // Warm the cache with the old access token
+      expect(getTokens(600, 'strava')!.accessToken).toBe('at_old');
+
+      // Simulate a wearable refresh writing a new access token
+      updateAccessToken(600, 'strava', 'at_new', '2026-06-01T00:00:00Z');
+
+      // Next read must return the refreshed access token, not the cached
+      // old one. Refresh token stays stable because updateAccessToken
+      // only touches access_token + expires_at.
+      const refreshed = getTokens(600, 'strava');
+      expect(refreshed!.accessToken).toBe('at_new');
+      expect(refreshed!.refreshToken).toBe('rt_stable');
+      expect(refreshed!.expiresAt).toBe('2026-06-01T00:00:00Z');
     });
   });
 });

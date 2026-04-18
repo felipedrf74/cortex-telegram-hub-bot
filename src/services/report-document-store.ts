@@ -29,7 +29,8 @@ export type ReportType =
   | 'morning_briefing'
   | 'evening_summary'
   | 'weekly_review'
-  | 'coach_briefing';
+  | 'coach_briefing'
+  | 'coach_phase'; // persistent training coach narrative state across weeks
 
 export interface ReportDocument {
   id: number;
@@ -223,10 +224,14 @@ export function getLatestByType(userId: number, type: ReportType): ReportDocumen
   }
 
   const db = getDb();
+  // Tie-breaker on id: created_at uses `datetime('now')` which rounds
+  // to whole seconds, so two reports written inside the same second
+  // would otherwise return in undefined order. Higher id = more recent
+  // insert, which matches the caller's expectation of "latest".
   const row = db.prepare(`
     SELECT * FROM report_documents
     WHERE user_id = ? AND type = ?
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT 1
   `).get(userId, type) as any;
   return row ? mapReport(row) : null;

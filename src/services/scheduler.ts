@@ -52,6 +52,25 @@ interface ActiveUserTarget {
 }
 
 /**
+ * Distinguish the expected "users table not created yet on first boot"
+ * case from real DB errors (permission denied, corruption, readonly fs).
+ * Previously the tenant-id helpers below swallowed every SQLite error
+ * with a silent catch, which masked genuine problems (the schema looked
+ * the same whether the DB was corrupt or just fresh). Now we silently
+ * ignore only the boot-time migration gap and log anything else at warn
+ * level so operators see the signal during boot.
+ */
+function isPreBootstrapTableMissing(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return typeof message === 'string' && /no such table/i.test(message);
+}
+
+function logUnexpectedTenantQueryError(fn: string, err: unknown): void {
+  if (isPreBootstrapTableMissing(err)) return;
+  logger.warn({ fn, err }, 'Tenant query failed with unexpected SQLite error');
+}
+
+/**
  * Get all active canonical tenant ids from the database.
  * Falls back only to the explicit owner bootstrap target when the users table
  * is unavailable, instead of fanning out across every legacy allowed Telegram id.
@@ -63,7 +82,9 @@ function getActiveUserIds(): number[] {
       "SELECT id FROM users WHERE status = 'active'"
     ).all() as { id: number }[];
     if (rows.length > 0) return rows.map((row) => row.id);
-  } catch { /* users table might not exist yet */ }
+  } catch (err) {
+    logUnexpectedTenantQueryError('getActiveUserIds', err);
+  }
 
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.tenantId] : [];
@@ -83,7 +104,9 @@ function getOwnerUserIds(): number[] {
         .map((row) => row.telegram_id)
         .filter((telegramId): telegramId is number => telegramId != null);
     }
-  } catch { /* users table might not exist yet */ }
+  } catch (err) {
+    logUnexpectedTenantQueryError('getOwnerUserIds', err);
+  }
 
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.telegramId] : [];
@@ -98,7 +121,9 @@ function getOwnerTenantIds(): number[] {
       "SELECT id FROM users WHERE tier = 'owner' AND status = 'active'"
     ).all() as { id: number }[];
     if (rows.length > 0) return rows.map((row) => row.id);
-  } catch { /* users table might not exist yet */ }
+  } catch (err) {
+    logUnexpectedTenantQueryError('getOwnerTenantIds', err);
+  }
 
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget.tenantId] : [];
@@ -116,7 +141,9 @@ function getActiveUserTargets(): ActiveUserTarget[] {
         telegramId: row.telegram_id ?? null,
       }));
     }
-  } catch { /* users table might not exist yet */ }
+  } catch (err) {
+    logUnexpectedTenantQueryError('getActiveUserTargets', err);
+  }
 
   const ownerTarget = getOwnerBootstrapTarget();
   return ownerTarget ? [ownerTarget] : [];

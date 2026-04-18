@@ -7,6 +7,7 @@ const mockSetCache = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGenerateCoachBriefing = vi.fn();
+const mockApplyCoachRecommendations = vi.fn();
 const mockGetLatestByType = vi.fn();
 const mockGetEvents = vi.fn();
 const mockCreateEvent = vi.fn();
@@ -47,6 +48,7 @@ vi.mock('../../src/services/cache-store', () => ({
 
 vi.mock('../../src/services/garmin-coach', () => ({
   generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
+  applyCoachRecommendations: (...args: unknown[]) => mockApplyCoachRecommendations(...args),
 }));
 
 vi.mock('../../src/services/report-document-store', () => ({
@@ -186,6 +188,7 @@ describe('Training API routes', () => {
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
     mockGenerateCoachBriefing.mockReset();
+    mockApplyCoachRecommendations.mockReset();
     mockGetLatestByType.mockReset();
     mockGetEvents.mockReset();
     mockCreateEvent.mockReset();
@@ -245,6 +248,10 @@ describe('Training API routes', () => {
       message: 'Coach ready.',
       recommendations: [],
       garminData: null,
+    });
+    mockApplyCoachRecommendations.mockResolvedValue({
+      count: 1,
+      appliedRecommendations: [{ id: 'rec-1', applied: true }],
     });
   });
 
@@ -343,6 +350,35 @@ describe('Training API routes', () => {
           userId: 0,
           details: { reportType: 'coach_briefing' },
         }),
+      ]),
+    );
+  });
+
+  // Regression test — /coach/apply must clear the same coach briefing
+  // and readiness caches that /complete already clears. Without this,
+  // applying a recommendation only invalidates planning caches, so
+  // the next GET /coach read serves the pre-apply briefing and users
+  // see the same recommendation they just accepted.
+  it('clears coach + training + readiness caches after applying recommendations', async () => {
+    const res = await dispatch(
+      'POST',
+      '/coach/apply',
+      {},
+      { recommendationIds: ['rec-1'] },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.applied).toBe(1);
+    expect(mockApplyCoachRecommendations).toHaveBeenCalledWith(12, ['rec-1']);
+
+    const clearedKeys = mockClearCache.mock.calls.map((call) => call[0]);
+    expect(clearedKeys).toEqual(
+      expect.arrayContaining([
+        'coach-briefing:12',
+        'training-summary:12',
+        'readiness:12',
+        'dashboard-readiness:12',
       ]),
     );
   });

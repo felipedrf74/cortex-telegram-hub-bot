@@ -49,6 +49,7 @@ import {
   type TaxEvent,
 } from './finance-tracker';
 import { getLatestByType, type ReportDocument } from './report-document-store';
+import { getCurrentCoachPhase } from './coach-phase-memory';
 import { getSubscriptionStatus, type SubscriptionStatus } from './stripe-service';
 import {
   getOverdueTasks,
@@ -150,7 +151,27 @@ export interface TrainingMeshContext {
   trainingContext: TrainingContext;
   coachBriefing: ReportDocument | null;
   adherence: WeeklyAdherenceStats | null;
+  /** Persistent coach narrative state (macro phase, adherence trend,
+   *  recent deloads, active concern). Null for users who haven't had
+   *  a coach phase memory written yet; consumers fall back to
+   *  stateless interpretation in that case. */
+  coachPhaseMemory: CoachPhaseMemoryForContext | null;
   derivedSignals: MeshSignalDraft[];
+}
+
+/** Narrow view of CoachPhaseMemory for cross-agent-learning consumers.
+ *  Kept local so cross-agent-learning can import it without pulling the
+ *  full service (which would create a cycle through report-document-store). */
+export interface CoachPhaseMemoryForContext {
+  phase: string;
+  weekInPhase?: number;
+  phaseTotalWeeks?: number;
+  narrative: string;
+  adherenceTrend?: string;
+  recentDeloadDates?: string[];
+  activeConcern?: string | null;
+  nextExpectedShift?: string | null;
+  writtenAt: string;
 }
 
 export interface CookingMeshContext {
@@ -249,6 +270,7 @@ function emptyTrainingMeshContext(opts: { userId: number; weekStart?: string }):
     },
     coachBriefing: null,
     adherence: null,
+    coachPhaseMemory: null,
     derivedSignals: [],
   };
 }
@@ -522,6 +544,15 @@ export function produceLearningDigest(): number {
 
 /**
  * Produce a content_formula signal when a successful pattern is detected.
+ *
+ * Accepts optional lineage fields (hookType, angleTag, sampleVideoIds,
+ * avgViews, avgRetentionPct) so downstream consumers (pipeline
+ * scheduler, script generator) can trace a validated formula back to
+ * the actual performing content that produced it. Without lineage the
+ * signal is pillar-only, which tells the script generator "X pillar
+ * works" but not "X pillar with hook type Y and angle Z works at 85%
+ * retention". The new fields are optional for backward compatibility —
+ * callers that only know the pillar can still pass five positional args.
  */
 export function writeContentFormula(
   sourceAgent: string,
@@ -529,12 +560,31 @@ export function writeContentFormula(
   pillar: string,
   confidence: number,
   evidence: string,
+  lineage?: {
+    hookType?: string;
+    angleTag?: string;
+    sampleVideoIds?: string[];
+    avgViews?: number;
+    avgRetentionPct?: number;
+  },
 ): number {
   return writeSignal({
     source_agent: sourceAgent,
     signal_type: 'content_formula',
-    payload: { formula, pillar, confidence, evidence, detected_at: new Date().toISOString() },
+    payload: {
+      formula,
+      pillar,
+      confidence,
+      evidence,
+      detected_at: new Date().toISOString(),
+      ...(lineage?.hookType ? { hookType: lineage.hookType } : {}),
+      ...(lineage?.angleTag ? { angleTag: lineage.angleTag } : {}),
+      ...(lineage?.sampleVideoIds?.length ? { sampleVideoIds: lineage.sampleVideoIds } : {}),
+      ...(typeof lineage?.avgViews === 'number' ? { avgViews: lineage.avgViews } : {}),
+      ...(typeof lineage?.avgRetentionPct === 'number' ? { avgRetentionPct: lineage.avgRetentionPct } : {}),
+    },
     priority: confidence >= 0.8 ? 'normal' : 'background',
+    pillar_tag: pillar || undefined,
   });
 }
 
@@ -810,6 +860,25 @@ export async function readTrainingMeshContext(opts: {
     });
   }
 
+  // Load any persisted coach phase narrative (base / build / peak /
+  // taper / recovery + adherence trend + recent deloads) so consumers
+  // can interpret this week's signals in the context of the athlete's
+  // arc rather than each week as an isolated snapshot.
+  const coachPhase = safely(() => getCurrentCoachPhase(opts.userId), null);
+  const coachPhaseMemory = coachPhase
+    ? {
+        phase: coachPhase.phase,
+        weekInPhase: coachPhase.weekInPhase,
+        phaseTotalWeeks: coachPhase.phaseTotalWeeks,
+        narrative: coachPhase.narrative,
+        adherenceTrend: coachPhase.adherenceTrend,
+        recentDeloadDates: coachPhase.recentDeloadDates,
+        activeConcern: coachPhase.activeConcern,
+        nextExpectedShift: coachPhase.nextExpectedShift,
+        writtenAt: coachPhase.writtenAt,
+      }
+    : null;
+
   return {
     userId: opts.userId,
     weekStart: window.weekStart,
@@ -820,6 +889,7 @@ export async function readTrainingMeshContext(opts: {
     trainingContext,
     coachBriefing,
     adherence,
+    coachPhaseMemory,
     derivedSignals,
   };
 }

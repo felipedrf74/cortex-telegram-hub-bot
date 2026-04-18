@@ -380,6 +380,14 @@ export function getUserConnections(userId: number): Array<{
 
 /**
  * Update the access token (after refresh). Keeps refresh token unchanged.
+ *
+ * Invalidates the decrypted-token cache so the next `getTokens()` picks up
+ * the new access token immediately instead of serving the stale cached copy
+ * for up to 10 minutes. This is the same invariant enforced by `storeTokens()`
+ * and `disconnectProvider()`: any mutation of the underlying row must also
+ * invalidate the cache, otherwise callers that only re-read via `getTokens()`
+ * (e.g. wearable adapters, Gmail/Calendar clients) would keep hitting the
+ * expired token and fail with 401s until the TTL expired.
  */
 export function updateAccessToken(userId: number, provider: OAuthProvider, accessToken: string, expiresAt: string | null): void {
   const db = getDb();
@@ -388,6 +396,7 @@ export function updateAccessToken(userId: number, provider: OAuthProvider, acces
     SET access_token = ?, expires_at = ?, updated_at = datetime('now')
     WHERE user_id = ? AND provider = ?
   `).run(encrypt(accessToken, userId), expiresAt, userId, provider);
+  invalidateTokenCache(userId, provider);
 }
 
 // ─── Owner Token Migration ──────────────────────────────────────────
