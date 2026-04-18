@@ -682,6 +682,52 @@ describe('Chat API routes', () => {
     expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7003, 'secretary', 'Cancelled.');
   });
 
+  it('localizes callback confirmations for Portuguese users', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-BR');
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'classifier',
+      confidence: 0.81,
+      strippedMessage: 'cancel this',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7003, {
+      text: 'cancel this',
+    });
+    const assistantMessageId = messageRes.body.id;
+
+    const callbackRes = await dispatch('POST', '/callback', 7003, {
+      callbackData: 'td:dn:abc123',
+      messageId: assistantMessageId,
+    });
+
+    expect(callbackRes.statusCode, JSON.stringify(callbackRes.body)).toBe(200);
+    expect(callbackRes.body).toMatchObject({
+      text: 'Cancelado.',
+      editOriginal: true,
+    });
+
+    const historyRes = await dispatch('GET', '/history?limit=10', 7003);
+    expect(historyRes.body.messages[1]).toMatchObject({
+      id: assistantMessageId,
+      role: 'assistant',
+      text: 'Cancelado.',
+    });
+    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7003, 'secretary', 'Cancelado.');
+  });
+
+  it('localizes callback validation errors for Portuguese users', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-BR');
+
+    const callbackRes = await dispatch('POST', '/callback', 7003, {});
+
+    expect(callbackRes.statusCode).toBe(400);
+    expect(callbackRes.body.error).toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'callbackData é obrigatório',
+    });
+  });
+
   it('returns inline buttons for deterministic fast-path responses and persists them', async () => {
     mockTryDeterministicChatCommand.mockResolvedValue({
       text: '<b>Tasks</b>',

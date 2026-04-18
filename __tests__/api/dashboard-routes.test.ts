@@ -303,6 +303,33 @@ describe('Dashboard API route', () => {
     ]).toContain(res.body.data.dayOfWeek);
   });
 
+  it('uses the Brazilian Portuguese locale when the request language is pt-BR', async () => {
+    const original = Date.prototype.toLocaleDateString;
+    const localeSpy = vi.spyOn(Date.prototype, 'toLocaleDateString')
+      .mockImplementation(function (
+        this: Date,
+        locale?: string | string[],
+        options?: Intl.DateTimeFormatOptions,
+      ) {
+        if (options?.weekday === 'long') {
+          return 'sexta-feira';
+        }
+        return original.call(this, locale as any, options as any);
+      });
+
+    try {
+      const res = await dispatch(4, { 'x-language': 'pt-BR' });
+
+      expect(res.statusCode).toBe(200);
+      expect(localeSpy).toHaveBeenCalledWith('pt-BR', expect.objectContaining({
+        weekday: 'long',
+        timeZone: 'Europe/Lisbon',
+      }));
+    } finally {
+      localeSpy.mockRestore();
+    }
+  });
+
   it('marks content as unavailable instead of returning fake zero pipeline counts on database failure', async () => {
     mockDashboardDbAll.mockImplementation((sql: string) => {
       if (sql.includes('FROM content_ideas')) {

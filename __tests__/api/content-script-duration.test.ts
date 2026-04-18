@@ -79,25 +79,36 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(body: any): Request {
+function mockReq(
+  body: any,
+  path = '/script',
+  headers: Record<string, string> = {},
+): Request {
   return {
     method: 'POST',
-    url: '/script',
-    originalUrl: '/script',
+    url: path,
+    originalUrl: path,
     baseUrl: '',
-    path: '/script',
+    path,
     query: {},
     params: {},
-    headers: {},
+    headers,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name];
+    },
     body,
     userId: 12,
   } as any;
 }
 
-async function dispatch(body: any): Promise<MockRes> {
+async function dispatch(
+  body: any,
+  path = '/script',
+  headers: Record<string, string> = {},
+): Promise<MockRes> {
   const { contentRoutes } = await import('../../src/api/routes/content');
   const router = contentRoutes();
-  const req = mockReq(body);
+  const req = mockReq(body, path, headers);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -130,6 +141,23 @@ describe('Content API — script duration presets', () => {
     expect(mockGetScript).not.toHaveBeenCalled();
   });
 
+  it('localizes invalid script format validation for Portuguese requests', async () => {
+    const response = await dispatch(
+      {
+        topic: 'Produto solo com vibe coding',
+        format: 'podcast',
+      },
+      '/script',
+      { 'x-language': 'pt-BR' },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(response.body.error.message).toBe('o formato deve ser YouTube ou Reel');
+    expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
   it('rejects unsupported YouTube duration presets', async () => {
     const response = await dispatch({
       topic: 'Build a SaaS product solo',
@@ -142,6 +170,19 @@ describe('Content API — script duration presets', () => {
     expect(response.body.error.code).toBe('VALIDATION');
     expect(response.body.error.message).toContain('8, 10, or 15');
     expect(mockGetScript).not.toHaveBeenCalled();
+  });
+
+  it('localizes topic-generation format validation for Portuguese requests', async () => {
+    const response = await dispatch(
+      { format: 'podcast' },
+      '/topics/generate',
+      { 'x-language': 'pt-BR' },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('VALIDATION');
+    expect(response.body.error.message).toBe('o formato deve ser "reel" ou "youtube"');
   });
 
   it('content route resolves and forwards first-party topic context into canonical script generation', async () => {

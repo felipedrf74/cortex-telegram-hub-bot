@@ -171,6 +171,23 @@ describe('Auth invite registration', () => {
     expect(res.body.data.user.id).toBeTypeOf('number');
   });
 
+  it('localizes invite-registration validation errors for Portuguese requests', async () => {
+    const res = await dispatchAuth(
+      '/register',
+      {},
+      {
+        headers: {
+          'x-language': 'pt-BR',
+        },
+      },
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toBe('deviceId e inviteCode são obrigatórios');
+  });
+
   it('resolves the owner invite code through the seeded owner bootstrap user instead of inline route mapping', async () => {
     const res = await dispatchRegisterInvite({
       deviceId: 'owner-device-1234',
@@ -279,5 +296,26 @@ describe('Auth invite registration', () => {
       lastName: 'Dominguez',
       language: 'pt-BR',
     });
+  });
+
+  it('localizes email-login auth failures for Portuguese requests', async () => {
+    const res = await dispatchAuth(
+      '/login/email',
+      {
+        email: 'nobody@example.com',
+        password: 'wrong-password',
+        deviceId: 'ios-device-auth',
+      },
+      {
+        headers: {
+          'x-language': 'pt-BR',
+        },
+      },
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('AUTH_FAILED');
+    expect(res.body.error.message).toBe('E-mail ou senha inválidos');
   });
 });

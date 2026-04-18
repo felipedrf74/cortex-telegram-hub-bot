@@ -113,6 +113,18 @@ function resolveScriptDurationPreset(
   return { maxDurationMinutes: 8, targetDurationSeconds: 8 * 60 };
 }
 
+function invalidScriptFormatMessage(language: Lang): string {
+  if (language === 'pt-BR') return 'o formato deve ser YouTube ou Reel';
+  if (language.startsWith('pt')) return 'o formato tem de ser YouTube ou Reel';
+  return 'format must be YouTube or Reel';
+}
+
+function invalidTopicGeneratorFormatMessage(language: Lang): string {
+  if (language === 'pt-BR') return 'o formato deve ser "reel" ou "youtube"';
+  if (language.startsWith('pt')) return 'o formato tem de ser "reel" ou "youtube"';
+  return 'format must be "reel" or "youtube"';
+}
+
 function parseOptionalPositiveId(value: unknown): number | null {
   const parsed = parseOptionalPositiveInt(value);
   return parsed != null && parsed > 0 ? parsed : null;
@@ -601,6 +613,7 @@ export function contentRoutes(): Router {
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
+    const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
     const { topic, niche, format, maxDurationMinutes, targetDurationSeconds, mode, language, renderMode } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
@@ -610,7 +623,7 @@ export function contentRoutes(): Router {
 
     const normalizedFormat = normalizeScriptFormat(format);
     if (!normalizedFormat) {
-      sendError(res, 'VALIDATION', 'format must be YouTube or Reel', 400);
+      sendError(res, 'VALIDATION', invalidScriptFormatMessage(requestLanguage), 400);
       return;
     }
 
@@ -1103,10 +1116,11 @@ export function contentRoutes(): Router {
    */
   router.post('/topics/generate', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
+    const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
     const { format = 'reel', sourceJob = 'manual' } = req.body;
 
     if (!['reel', 'youtube'].includes(format)) {
-      sendError(res, 'VALIDATION', 'format must be "reel" or "youtube"', 400);
+      sendError(res, 'VALIDATION', invalidTopicGeneratorFormatMessage(requestLanguage), 400);
       return;
     }
 

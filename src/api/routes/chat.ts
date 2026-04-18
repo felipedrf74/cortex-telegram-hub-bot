@@ -2102,21 +2102,40 @@ export function chatRoutes(): Router {
     }
 
     if (!callbackData) {
+      const language = getUserLanguage(userId);
       res.status(400).json({
-        error: { code: 'BAD_REQUEST', message: 'callbackData is required' },
+        error: {
+          code: 'BAD_REQUEST',
+          message: language.toLowerCase().startsWith('pt')
+            ? 'callbackData é obrigatório'
+            : 'callbackData is required',
+        },
       });
       return;
     }
 
     try {
-      const labels = labelsForLanguage(getUserLanguage(userId));
+      const language = getUserLanguage(userId);
+      const isPT = language.toLowerCase().startsWith('pt');
+      const labels = labelsForLanguage(language);
+      const callbackCopy = (pt: string, en: string) => (isPT ? pt : en);
+      const callbackItemName = (value: unknown, ptFallback: string, enFallback: string) =>
+        typeof value === 'string' && value.trim().length > 0
+          ? value
+          : callbackCopy(ptFallback, enFallback);
 
       if (callbackData.startsWith('cmd:')) {
         const command = callbackData.slice(4);
         const fastPath = await tryDeterministicChatCommand(command, userId);
         if (!fastPath) {
           res.status(400).json({
-            error: { code: 'UNSUPPORTED_CALLBACK', message: `Command callback "${command}" is not available.` },
+            error: {
+              code: 'UNSUPPORTED_CALLBACK',
+              message: callbackCopy(
+                `O atalho "${command}" ainda não está disponível.`,
+                `Command callback "${command}" is not available.`,
+              ),
+            },
           });
           return;
         }
@@ -2230,12 +2249,18 @@ export function chatRoutes(): Router {
       const prefix = callbackData.split(':').slice(0, 2).join(':');
       if (!cbData && prefix !== 'td:dn') {
         res.status(410).json({
-          error: { code: 'CALLBACK_EXPIRED', message: 'This action expired. Please run the command again.' },
+          error: {
+            code: 'CALLBACK_EXPIRED',
+            message: callbackCopy(
+              'Esta ação expirou. Volta a executar o comando.',
+              'This action expired. Please run the command again.',
+            ),
+          },
         });
         return;
       }
 
-      let responseText = 'Action processed';
+      let responseText = callbackCopy('Ação processada.', 'Action processed');
       let editOriginal = false;
       let newButtons: { text: string; callbackData: string }[][] | null = null;
 
@@ -2245,7 +2270,7 @@ export function chatRoutes(): Router {
             const todo = require('../../services/microsoft-todo');
             const result = await todo.getTasks(cbData.listId, cbData.listName, { status: 'notStarted' });
             if (!result.success) {
-              responseText = `⚠️ Failed to fetch tasks: ${result.error || 'unknown error'}`;
+              responseText = `⚠️ ${callbackCopy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${result.error || callbackCopy('erro desconhecido', 'unknown error')}`;
               editOriginal = true;
               break;
             }
@@ -2260,7 +2285,7 @@ export function chatRoutes(): Router {
           if (cbData?.listId && cbData?.taskId) {
             const todo = require('../../services/microsoft-todo');
             await todo.completeTask(cbData.listId, cbData.taskId);
-            responseText = `✅ Completed: ${cbData.title || 'task'}`;
+            responseText = `✅ ${callbackCopy('Concluída', 'Completed')}: ${callbackItemName(cbData.title, 'tarefa', 'task')}`;
             editOriginal = true;
           }
           break;
@@ -2270,12 +2295,12 @@ export function chatRoutes(): Router {
           if (cbData?.listId && cbData?.taskId) {
             const todo = require('../../services/microsoft-todo');
             await todo.deleteTask(cbData.listId, cbData.taskId);
-            responseText = `🗑️ Deleted: ${cbData.title || 'task'}`;
+            responseText = `🗑️ ${callbackCopy('Apagada', 'Deleted')}: ${callbackItemName(cbData.title, 'tarefa', 'task')}`;
             editOriginal = true;
           } else if (cbData?.listId && cbData?.type === 'list') {
             const todo = require('../../services/microsoft-todo');
             await todo.deleteList(cbData.listId);
-            responseText = `🗑️ Deleted list: ${cbData.listName || 'list'}`;
+            responseText = `🗑️ ${callbackCopy('Lista apagada', 'Deleted list')}: ${callbackItemName(cbData.listName, 'lista', 'list')}`;
             editOriginal = true;
           }
           break;
@@ -2284,21 +2309,27 @@ export function chatRoutes(): Router {
           if (cbData?.listId && (cbData?.taskId || cbData?.type === 'list')) {
             const confirmRef = callbackData.split(':')[2];
             responseText = cbData.type === 'list'
-              ? `🗑 Delete "<b>${escapeHtml(cbData.listName || 'list')}</b>"?`
-              : `🗑 Delete "<b>${escapeHtml(cbData.title || 'task')}</b>"?`;
+              ? `🗑 ${callbackCopy('Apagar', 'Delete')} "<b>${escapeHtml(callbackItemName(cbData.listName, 'lista', 'list'))}</b>"?`
+              : `🗑 ${callbackCopy('Apagar', 'Delete')} "<b>${escapeHtml(callbackItemName(cbData.title, 'tarefa', 'task'))}</b>"?`;
             newButtons = buildDeleteConfirmationButtons(confirmRef, labels);
             editOriginal = true;
           }
           break;
         }
         case 'td:dn': {
-          responseText = 'Cancelled.';
+          responseText = callbackCopy('Cancelado.', 'Cancelled.');
           editOriginal = true;
           break;
         }
         default: {
           res.status(400).json({
-            error: { code: 'UNSUPPORTED_CALLBACK', message: `Callback "${prefix}" is not supported in iOS chat yet.` },
+            error: {
+              code: 'UNSUPPORTED_CALLBACK',
+              message: callbackCopy(
+                `O callback "${prefix}" ainda não é suportado no chat iOS.`,
+                `Callback "${prefix}" is not supported in iOS chat yet.`,
+              ),
+            },
           });
           return;
         }
@@ -2345,8 +2376,13 @@ export function chatRoutes(): Router {
       res.json(payload);
     } catch (err: any) {
       logger.error({ err, callbackData, platform: 'ios' }, 'iOS callback failed');
+      const language = getUserLanguage(userId);
+      const isPT = language.toLowerCase().startsWith('pt');
       res.status(500).json({
-        error: { code: 'INTERNAL', message: err.message || 'Failed to process callback' },
+        error: {
+          code: 'INTERNAL',
+          message: err.message || (isPT ? 'Falha ao processar a ação.' : 'Failed to process callback'),
+        },
       });
     }
   });

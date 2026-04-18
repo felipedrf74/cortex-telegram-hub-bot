@@ -191,7 +191,11 @@ function localizeGreeting(hour: number, language: Lang): string {
 }
 
 function localizedWeekday(date: Date, language: Lang): string {
-  const locale = language.startsWith('pt') ? 'pt-PT' : 'en-US';
+  const locale = language === 'pt-BR'
+    ? 'pt-BR'
+    : language.startsWith('pt')
+      ? 'pt-PT'
+      : 'en-US';
   const weekday = date.toLocaleDateString(locale, {
     weekday: 'long',
     timeZone: config.app.timezone,

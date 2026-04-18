@@ -144,6 +144,7 @@ function mockReq(
   query: Record<string, any> = {},
   body?: any,
   userId = 12,
+  headers: Record<string, string> = {},
 ): Request {
   return {
     method,
@@ -153,7 +154,10 @@ function mockReq(
     path,
     query,
     params: {},
-    headers: {},
+    headers,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name];
+    },
     body,
     userId,
   } as any;
@@ -165,9 +169,10 @@ async function dispatch(
   query: Record<string, any> = {},
   body?: any,
   userId = 12,
+  headers: Record<string, string> = {},
 ): Promise<MockRes> {
   const router = trainingRoutes();
-  const req = mockReq(method, path, query, body, userId);
+  const req = mockReq(method, path, query, body, userId, headers);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -263,6 +268,22 @@ describe('Training API routes', () => {
     expect(res.body.data.cachedOnlyMiss).toBe(true);
     expect(res.body.data.briefing).toBe('');
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('localizes the cardio progression validation error for Portuguese requests', async () => {
+    const res = await dispatch(
+      'GET',
+      '/progression/cardio',
+      { sport: 'swimming' },
+      undefined,
+      12,
+      { 'x-language': 'pt-BR' },
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+    expect(res.body.error.message).toBe('o parâmetro sport deve ser "running" ou "cycling"');
   });
 
   it('restores the cached coach briefing from the latest coach report document', async () => {

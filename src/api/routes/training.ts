@@ -3,6 +3,9 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
+import { normalizeLangHeader } from '../../services/secretary-fastpath';
+import { getUserLanguage } from '../../services/user-service';
+import type { Lang } from '../../utils/i18n';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { getLatestByType } from '../../services/report-document-store';
@@ -25,6 +28,18 @@ import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/te
 const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
 const SUMMARY_TTL = 5 * 60;    // 5 minutes
+
+function resolveTrainingLanguage(req: Pick<AuthenticatedRequest, 'header'>, userId: number): Lang {
+  const headerLanguage = normalizeLangHeader(req.header?.('x-language'));
+  if (headerLanguage) return headerLanguage;
+  return getUserLanguage(userId);
+}
+
+function invalidCardioSportMessage(language: Lang): string {
+  if (language === 'pt-BR') return 'o parâmetro sport deve ser "running" ou "cycling"';
+  if (language.startsWith('pt')) return 'o parâmetro sport tem de ser "running" ou "cycling"';
+  return 'sport query param must be "running" or "cycling"';
+}
 
 function normalizeCoachRecommendation(rec: Record<string, any>) {
   return {
@@ -416,9 +431,10 @@ export function trainingRoutes(): Router {
    */
   router.get('/progression/cardio', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
     const sportRaw = typeof req.query.sport === 'string' ? req.query.sport : '';
     if (sportRaw !== 'running' && sportRaw !== 'cycling') {
-      sendError(res, 'BAD_REQUEST', 'sport query param must be "running" or "cycling"', 400);
+      sendError(res, 'BAD_REQUEST', invalidCardioSportMessage(language), 400);
       return;
     }
     const sport = sportRaw as 'running' | 'cycling';
