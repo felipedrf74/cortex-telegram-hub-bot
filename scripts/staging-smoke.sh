@@ -139,18 +139,13 @@ test_endpoint "provider-stats.providers"     "http://localhost:8201/api/provider
 
 # ── iOS-surface smoke ───────────────────────────────
 # Hit the canonical /api/v1/* routes the iOS app actually depends on.
-# Without an auth token, each route MUST return 401 with a shape that
-# the iOS client can decode. That tells us:
+# Without an auth token, each route MUST return 401 with the canonical
+# envelope ({ ok: false, error: { code, message }, timestamp }). That
+# tells us:
 #   a) the route is mounted (not a 404)
 #   b) auth middleware is active (not 200 leaking data)
-#   c) error body contains a `code` + `message` iOS can surface
-#
-# iOS NexusHTTPClient.decodeError() accepts two shapes:
-#   - new envelope: { ok: false, error: { code, message }, timestamp }
-#   - legacy (auth-middleware): { error: { code, message } }
-# Both are on-contract per spec 02; we accept either so the smoke
-# reflects what the client actually tolerates rather than enforcing
-# a stricter invariant than the product supports.
+#   c) error body is on-contract with the single envelope the rest of
+#      /api/v1 uses, so a future drift on any route shows up here.
 echo ""
 echo "📱 iOS-surface contract smoke"
 test_ios_401() {
@@ -177,10 +172,9 @@ test_ios_401() {
     process.stdin.on('end',()=>{
       try {
         const j=JSON.parse(b);
-        // Either envelope is accepted; both give iOS what it needs.
+        // Canonical envelope: ok=false + error.code + error.message + timestamp
         const hasError = j.error && typeof j.error.code==='string' && typeof j.error.message==='string';
-        const okFlagValid = j.ok === undefined || j.ok === false;
-        if (hasError && okFlagValid) {
+        if (j.ok === false && hasError && typeof j.timestamp === 'string') {
           console.log('OK');
         } else {
           console.log('BAD_SHAPE:'+JSON.stringify(j).slice(0,80));
@@ -190,7 +184,7 @@ test_ios_401() {
   " 2>&1)
 
   if [ "$shape" = "OK" ]; then
-    echo "  ✅ $name — 401 with iOS-decodable error shape"
+    echo "  ✅ $name — 401 with canonical error envelope"
     PASS=$((PASS + 1))
   else
     echo "  ❌ $name — $shape"

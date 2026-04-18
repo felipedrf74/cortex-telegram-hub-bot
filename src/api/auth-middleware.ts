@@ -4,6 +4,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { sendError } from './response-helpers';
 
 export interface AuthenticatedRequest extends Request {
   userId: number;
@@ -13,11 +14,19 @@ export interface AuthenticatedRequest extends Request {
 /**
  * JWT authentication middleware for iOS API routes.
  * Validates the Bearer token and attaches userId/deviceId to the request.
+ *
+ * Emits the canonical error envelope ({ ok: false, error: { code,
+ * message }, timestamp }) so every 401 on the /api/v1 surface decodes
+ * with the same Swift enum the rest of the contract uses. The legacy
+ * bare-shape ({ error: { code, message } }) emitted previously still
+ * decoded on the client via a fallback path, but the unified shape
+ * lets the staging smoke tighten its 401 assertion and removes the
+ * "which shape is it?" ambiguity for future contract changes.
  */
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Missing token' } });
+    sendError(res, 'UNAUTHORIZED', 'Missing token', 401);
     return;
   }
 
@@ -44,6 +53,6 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     next();
   } catch (err) {
     logger.debug({ err }, 'iOS JWT verification failed');
-    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } });
+    sendError(res, 'UNAUTHORIZED', 'Invalid or expired token', 401);
   }
 }
