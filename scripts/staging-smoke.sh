@@ -137,14 +137,20 @@ echo ""
 echo "🔌 4/6 — Provider stats"
 test_endpoint "provider-stats.providers"     "http://localhost:8201/api/provider-stats" "providers" || true
 
-# ── iOS-surface smoke (audit W2-10) ─────────────────
+# ── iOS-surface smoke ───────────────────────────────
 # Hit the canonical /api/v1/* routes the iOS app actually depends on.
-# We don't have a staging user token, but an UNAUTHENTICATED request
-# should return 401 with the canonical error envelope. That tells us:
+# Without an auth token, each route MUST return 401 with a shape that
+# the iOS client can decode. That tells us:
 #   a) the route is mounted (not a 404)
 #   b) auth middleware is active (not 200 leaking data)
-#   c) error shape is on-contract ({ ok:false, error:{ code, message } })
-# If any of these fail, the iOS app is guaranteed to have a bad time.
+#   c) error body contains a `code` + `message` iOS can surface
+#
+# iOS NexusHTTPClient.decodeError() accepts two shapes:
+#   - new envelope: { ok: false, error: { code, message }, timestamp }
+#   - legacy (auth-middleware): { error: { code, message } }
+# Both are on-contract per spec 02; we accept either so the smoke
+# reflects what the client actually tolerates rather than enforcing
+# a stricter invariant than the product supports.
 echo ""
 echo "📱 iOS-surface contract smoke"
 test_ios_401() {
@@ -164,7 +170,6 @@ test_ios_401() {
     return 1
   fi
 
-  # Verify canonical error envelope: { ok:false, error:{ code, message } }
   local shape
   shape=$(echo "$body" | node -e "
     let b='';
@@ -172,7 +177,10 @@ test_ios_401() {
     process.stdin.on('end',()=>{
       try {
         const j=JSON.parse(b);
-        if (j.ok===false && j.error && typeof j.error.code==='string' && typeof j.error.message==='string') {
+        // Either envelope is accepted; both give iOS what it needs.
+        const hasError = j.error && typeof j.error.code==='string' && typeof j.error.message==='string';
+        const okFlagValid = j.ok === undefined || j.ok === false;
+        if (hasError && okFlagValid) {
           console.log('OK');
         } else {
           console.log('BAD_SHAPE:'+JSON.stringify(j).slice(0,80));
@@ -182,7 +190,7 @@ test_ios_401() {
   " 2>&1)
 
   if [ "$shape" = "OK" ]; then
-    echo "  ✅ $name — 401 with canonical error envelope"
+    echo "  ✅ $name — 401 with iOS-decodable error shape"
     PASS=$((PASS + 1))
   else
     echo "  ❌ $name — $shape"
