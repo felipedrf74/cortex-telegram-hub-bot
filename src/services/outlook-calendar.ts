@@ -145,9 +145,11 @@ export async function createEvent(data: {
   categories?: string[];
   attendees?: string[];
   location?: string;
-}): Promise<CalendarEvent> {
+}, userId?: number): Promise<CalendarEvent> {
   try {
-    const client = getGraphClient();
+    const client = userId
+      ? getGraphClientForUser(userId)
+      : getGraphClient();
     const attendees = (data.attendees || [])
       .map((email) => email.trim())
       .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
@@ -202,9 +204,11 @@ export async function updateEvent(data: {
   new_start?: string;
   new_end?: string;
   new_title?: string;
-}): Promise<CalendarEvent> {
+}, userId?: number): Promise<CalendarEvent> {
   try {
-    const client = getGraphClient();
+    const client = userId
+      ? getGraphClientForUser(userId)
+      : getGraphClient();
     const patch: any = {};
 
     if (data.new_title) patch.subject = data.new_title;
@@ -226,9 +230,11 @@ export async function updateEvent(data: {
   }
 }
 
-export async function deleteEvent(eventId: string): Promise<void> {
+export async function deleteEvent(eventId: string, userId?: number): Promise<void> {
   try {
-    const client = getGraphClient();
+    const client = userId
+      ? getGraphClientForUser(userId)
+      : getGraphClient();
     await client.api(`/me/events/${eventId}`).delete();
   } catch (err) {
     logger.error({ err }, 'Failed to delete Outlook calendar event');

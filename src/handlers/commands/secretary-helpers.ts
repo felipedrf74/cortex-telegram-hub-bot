@@ -12,8 +12,14 @@ import { storeCallback } from '../../utils/callback-store';
 import { logger } from '../../utils/logger';
 import * as msTodo from '../../services/microsoft-todo';
 import { getActiveReminders } from '../../state/reminders';
-import { getEvents, isAnyCalendarConfigured } from '../../services/unified-calendar';
-import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from '../../services/outlook-mail';
+import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from '../../services/unified-calendar';
+import {
+  isOutlookMailConfigured,
+  isOutlookMailConfiguredForUser,
+  getUnreadCount as getOutlookUnread,
+  getUnreadCountForUser,
+} from '../../services/outlook-mail';
+import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import {
   formatMsTodoSummary, splitMessage, escapeHtml,
 } from '../../utils/telegram-formatter';
@@ -22,6 +28,56 @@ import {
   now, formatTime, formatDateTime, parseNaturalDate,
 } from '../../utils/date-parser';
 import { pendingEdits, type PendingEdit } from '../shared-state';
+import { resolveCanonicalUserId } from '../../services/user-service';
+
+export type TodoProvider = Pick<typeof msTodo,
+  | 'getLists'
+  | 'getTasks'
+  | 'createTask'
+  | 'updateTask'
+  | 'completeTask'
+  | 'uncompleteTask'
+  | 'deleteTask'
+  | 'createList'
+  | 'deleteList'
+  | 'getDefaultList'
+  | 'findListByName'
+  | 'getAllPendingTasks'
+  | 'getTasksDueInRange'
+  | 'searchTasks'
+  | 'moveTask'
+  | 'getCompletedTasksInRange'
+  | 'getChecklistItems'
+  | 'addChecklistItem'
+>;
+
+export function resolveTelegramTenantId(ctx: Context): number | null {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return null;
+  return resolveCanonicalUserId(telegramId);
+}
+
+export function getTelegramTaskScope(ctx: Context): {
+  userId: number;
+  provider: TodoProvider;
+  providerType: ReturnType<typeof resolveTaskProvider>;
+} | null {
+  const userId = resolveTelegramTenantId(ctx);
+  if (userId == null) return null;
+  return {
+    userId,
+    provider: getTaskProviderForUser(userId),
+    providerType: resolveTaskProvider(userId),
+  };
+}
+
+export async function replyTaskProviderUnavailable(ctx: Context): Promise<void> {
+  await ctx.reply('⚠️ Task provider unavailable for this user.');
+}
+
+function getTaskStatusLabel(providerType: ReturnType<typeof resolveTaskProvider>): string {
+  return providerType === 'ms_todo' ? 'Microsoft To Do' : 'Tasks';
+}
 
 // ── Task List Keyboard ────────────────────────────────────────────
 
@@ -46,7 +102,13 @@ export function buildTaskListKeyboard(tasks: msTodo.TodoTask[], listId: string):
 // ── Task Action Handlers ──────────────────────────────────────────
 
 export async function handleUndone(ctx: Context, query: string): Promise<void> {
-  const searchResult = await msTodo.searchTasks(query);
+  const taskScope = getTelegramTaskScope(ctx);
+  if (!taskScope) {
+    await replyTaskProviderUnavailable(ctx);
+    return;
+  }
+
+  const searchResult = await taskScope.provider.searchTasks(query);
   if (!searchResult.success || searchResult.data.length === 0) {
     await ctx.reply(`❌ No task matching "${escapeHtml(query)}" found.`, { parse_mode: 'HTML' });
     return;
@@ -59,7 +121,7 @@ export async function handleUndone(ctx: Context, query: string): Promise<void> {
   }
 
   const task = completed[0];
-  const result = await msTodo.uncompleteTask(task.listId, task.id);
+  const result = await taskScope.provider.uncompleteTask(task.listId, task.id);
   if (result.success) {
     await ctx.reply(`⬜ Reopened: "<b>${escapeHtml(task.title)}</b>" [${escapeHtml(task.listName)}]`, { parse_mode: 'HTML' });
   } else {
@@ -68,7 +130,13 @@ export async function handleUndone(ctx: Context, query: string): Promise<void> {
 }
 
 export async function handleDeleteTask(ctx: Context, query: string): Promise<void> {
-  const searchResult = await msTodo.searchTasks(query);
+  const taskScope = getTelegramTaskScope(ctx);
+  if (!taskScope) {
+    await replyTaskProviderUnavailable(ctx);
+    return;
+  }
+
+  const searchResult = await taskScope.provider.searchTasks(query);
   if (!searchResult.success || searchResult.data.length === 0) {
     await ctx.reply(`❌ No task matching "${escapeHtml(query)}" found.`, { parse_mode: 'HTML' });
     return;
@@ -89,11 +157,16 @@ export async function handleDeleteTask(ctx: Context, query: string): Promise<voi
 export async function handlePendingEdit(ctx: Context, pending: PendingEdit, value: string): Promise<void> {
   try {
     await ctx.replyWithChatAction('typing');
+    const taskScope = getTelegramTaskScope(ctx);
+    if (!taskScope) {
+      await replyTaskProviderUnavailable(ctx);
+      return;
+    }
     const { listId, taskId, title, listName, field } = pending;
 
     switch (field) {
       case 'title': {
-        const result = await msTodo.updateTask(listId, taskId, { title: value });
+        const result = await taskScope.provider.updateTask(listId, taskId, { title: value });
         if (result.success) {
           await ctx.reply(`📝 Renamed: "${escapeHtml(title)}" → "<b>${escapeHtml(value)}</b>" [${escapeHtml(listName)}]`, { parse_mode: 'HTML' });
         } else {
@@ -107,7 +180,7 @@ export async function handlePendingEdit(ctx: Context, pending: PendingEdit, valu
           await ctx.reply(`⚠️ Couldn't parse date: "${escapeHtml(value)}". Try "tomorrow 5pm" or "2026-03-15".`);
           return;
         }
-        const result = await msTodo.updateTask(listId, taskId, { dueDateTime: parsed });
+        const result = await taskScope.provider.updateTask(listId, taskId, { dueDateTime: parsed });
         if (result.success) {
           await ctx.reply(`📅 Due date set for "<b>${escapeHtml(title)}</b>": ${formatDateTime(parsed)}`, { parse_mode: 'HTML' });
         } else {
@@ -121,7 +194,7 @@ export async function handlePendingEdit(ctx: Context, pending: PendingEdit, valu
           await ctx.reply(`⚠️ Couldn't parse time: "${escapeHtml(value)}". Try "today 2pm" or "2026-03-15T14:00".`);
           return;
         }
-        const result = await msTodo.updateTask(listId, taskId, { reminderDateTime: parsed });
+        const result = await taskScope.provider.updateTask(listId, taskId, { reminderDateTime: parsed });
         if (result.success) {
           await ctx.reply(`⏰ Reminder set for "<b>${escapeHtml(title)}</b>": ${formatDateTime(parsed)}`, { parse_mode: 'HTML' });
         } else {
@@ -135,7 +208,7 @@ export async function handlePendingEdit(ctx: Context, pending: PendingEdit, valu
           await ctx.reply('⚠️ Priority must be: low, normal, or high');
           return;
         }
-        const result = await msTodo.updateTask(listId, taskId, { importance: level as 'low' | 'normal' | 'high' });
+        const result = await taskScope.provider.updateTask(listId, taskId, { importance: level as 'low' | 'normal' | 'high' });
         if (result.success) {
           await ctx.reply(`⚡ Priority set to <b>${level}</b> for "${escapeHtml(title)}"`, { parse_mode: 'HTML' });
         } else {
@@ -155,7 +228,13 @@ export async function handlePendingEdit(ctx: Context, pending: PendingEdit, valu
 // ── Summary / Overview Handlers ───────────────────────────────────
 
 export async function handleTodoSummary(ctx: Context): Promise<void> {
-  const pendingResult = await msTodo.getAllPendingTasks();
+  const taskScope = getTelegramTaskScope(ctx);
+  if (!taskScope) {
+    await replyTaskProviderUnavailable(ctx);
+    return;
+  }
+
+  const pendingResult = await taskScope.provider.getAllPendingTasks();
   if (!pendingResult.success) {
     await ctx.reply(`⚠️ Failed to fetch tasks: ${pendingResult.error}`);
     return;
@@ -189,32 +268,34 @@ export async function handleTodoSummary(ctx: Context): Promise<void> {
 
 export async function handleStatus(ctx: Context): Promise<void> {
   let msg = '<b>📊 Status Overview</b>\n\n';
+  const taskScope = getTelegramTaskScope(ctx);
+  const tenantUserId = taskScope?.userId ?? null;
 
   // Microsoft To Do
-  if (msTodo.isOutlookTodoConfigured()) {
+  if (taskScope) {
     try {
-      const pendingResult = await msTodo.getAllPendingTasks();
+      const pendingResult = await taskScope.provider.getAllPendingTasks();
       if (pendingResult.success) {
         const highPriority = pendingResult.data.filter((t) => t.importance === 'high');
-        msg += `📋 Microsoft To Do: ${pendingResult.data.length} pending tasks\n`;
+        msg += `📋 ${getTaskStatusLabel(taskScope.providerType)}: ${pendingResult.data.length} pending tasks\n`;
         if (highPriority.length > 0) {
           msg += `🔴 High priority: ${highPriority.length}\n`;
         }
       }
     } catch (err) {
       logger.warn({ err }, 'Status: failed to fetch MS Todo tasks');
-      msg += '📋 Microsoft To Do: unavailable\n';
+      msg += `📋 ${getTaskStatusLabel(taskScope.providerType)}: unavailable\n`;
     }
   } else {
-    msg += '📋 Microsoft To Do: not configured\n';
+    msg += '📋 Tasks: unavailable\n';
   }
 
-  const reminders = getActiveReminders(ctx.from?.id ?? 0);
+  const reminders = tenantUserId != null ? getActiveReminders(tenantUserId) : [];
   msg += `⏰ Active reminders: ${reminders.length}\n`;
 
-  if (isAnyCalendarConfigured()) {
+  if (tenantUserId != null ? hasConnectedCalendarForUser(tenantUserId) : isAnyCalendarConfigured()) {
     try {
-      const events = await getEvents(startOfDay(), endOfDay());
+      const events = await getEvents(startOfDay(), endOfDay(), tenantUserId ?? undefined);
       msg += `📅 Events today: ${events.length}\n`;
     } catch (err) {
       logger.warn({ err }, 'Status: failed to fetch calendar events');
@@ -224,10 +305,12 @@ export async function handleStatus(ctx: Context): Promise<void> {
     msg += '📅 Calendar: not configured\n';
   }
 
-  if (isOutlookMailConfigured()) {
+  if (tenantUserId != null ? isOutlookMailConfiguredForUser(tenantUserId) : isOutlookMailConfigured()) {
     try {
-      const unread = await getOutlookUnread();
-      msg += `📧 Outlook unread: ${unread}\n`;
+      const unread = tenantUserId != null
+        ? await getUnreadCountForUser(tenantUserId)
+        : await getOutlookUnread();
+      msg += unread >= 0 ? `📧 Outlook unread: ${unread}\n` : '📧 Outlook: unavailable\n';
     } catch (err) {
       logger.warn({ err }, 'Status: failed to fetch Outlook unread');
       msg += '📧 Outlook: unavailable\n';
@@ -242,10 +325,12 @@ export async function handleStatus(ctx: Context): Promise<void> {
 
 export async function handleDayOverview(ctx: Context): Promise<void> {
   let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
+  const taskScope = getTelegramTaskScope(ctx);
+  const tenantUserId = taskScope?.userId ?? null;
 
-  if (isAnyCalendarConfigured()) {
+  if (tenantUserId != null ? hasConnectedCalendarForUser(tenantUserId) : isAnyCalendarConfigured()) {
     try {
-      const events = await getEvents(startOfDay(), endOfDay());
+      const events = await getEvents(startOfDay(), endOfDay(), tenantUserId ?? undefined);
       if (events.length === 0) {
         msg += 'No events scheduled today.\n';
       } else {
@@ -263,9 +348,9 @@ export async function handleDayOverview(ctx: Context): Promise<void> {
   }
 
   // Microsoft To Do — due today
-  if (msTodo.isOutlookTodoConfigured()) {
+  if (taskScope) {
     try {
-      const dueTodayResult = await msTodo.getTasksDueInRange(startOfDay(), endOfDay());
+      const dueTodayResult = await taskScope.provider.getTasksDueInRange(startOfDay(), endOfDay());
       if (dueTodayResult.success && dueTodayResult.data.length > 0) {
         msg += `\n📋 Due today (${dueTodayResult.data.length}):\n`;
         for (const t of dueTodayResult.data) {
@@ -286,10 +371,12 @@ export async function handleDayOverview(ctx: Context): Promise<void> {
 export async function handleWeekOverview(ctx: Context): Promise<void> {
   let msg = `<b>📅 Week Overview</b>\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
+  const taskScope = getTelegramTaskScope(ctx);
+  const tenantUserId = taskScope?.userId ?? null;
 
-  if (isAnyCalendarConfigured()) {
+  if (tenantUserId != null ? hasConnectedCalendarForUser(tenantUserId) : isAnyCalendarConfigured()) {
     try {
-      const events = await getEvents(startOfWeek(), endOfWeek());
+      const events = await getEvents(startOfWeek(), endOfWeek(), tenantUserId ?? undefined);
       if (events.length === 0) {
         msg += 'No events this week.\n';
       } else {
@@ -313,9 +400,9 @@ export async function handleWeekOverview(ctx: Context): Promise<void> {
   }
 
   // Microsoft To Do — pending tasks count
-  if (msTodo.isOutlookTodoConfigured()) {
+  if (taskScope) {
     try {
-      const pendingResult = await msTodo.getAllPendingTasks();
+      const pendingResult = await taskScope.provider.getAllPendingTasks();
       if (pendingResult.success && pendingResult.data.length > 0) {
         msg += `\n📋 Pending tasks: ${pendingResult.data.length}\n`;
       }

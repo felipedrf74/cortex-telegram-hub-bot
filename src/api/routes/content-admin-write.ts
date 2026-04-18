@@ -111,8 +111,8 @@ export function contentAdminWriteRoutes(): Router {
   /** POST /channels/relearn — trigger full processAllChannels (on-demand) */
   router.post('/channels/relearn', async (_req: Request, res: Response) => {
     try {
-      const { processAllChannels } = await import('../../services/channel-learner');
-      const result = await processAllChannels(true); // force=true skips stale threshold
+      const { processAllChannelScopes } = await import('../../services/channel-learner');
+      const result = await processAllChannelScopes(true); // force=true skips stale threshold
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: channel relearn failed');

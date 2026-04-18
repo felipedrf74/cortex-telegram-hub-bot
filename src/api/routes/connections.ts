@@ -14,10 +14,106 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getUserConnections } from '../../services/oauth-store';
 import { getDb } from '../../services/database';
+import { config } from '../../config';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+
+type ConnectionAvailability = {
+  provider: string;
+  available: boolean;
+  capabilities: string[];
+  reasonCode?: 'NOT_CONFIGURED' | 'COMING_SOON';
+  detail?: string;
+};
+
+function capabilitiesForProvider(provider: string, scopes: string[] = []): string[] {
+  const normalizedScopes = scopes.map((scope) => scope.toLowerCase());
+  const hasScope = (matcher: (scope: string) => boolean) => normalizedScopes.some(matcher);
+
+  switch (provider) {
+    case 'google': {
+      const capabilities = [
+        hasScope((scope) => scope.includes('calendar')) && 'calendar',
+        hasScope((scope) => scope.includes('gmail')) && 'gmail',
+      ].filter(Boolean) as string[];
+      return capabilities.length > 0 ? capabilities : ['calendar', 'gmail'];
+    }
+    case 'outlook': {
+      const capabilities = [
+        hasScope((scope) => scope.includes('calendar')) && 'calendar',
+        hasScope((scope) => scope.includes('mail.')) && 'email',
+        hasScope((scope) => scope.includes('tasks.')) && 'tasks',
+      ].filter(Boolean) as string[];
+      return capabilities.length > 0 ? capabilities : ['calendar', 'email', 'tasks'];
+    }
+    case 'garmin':
+      return ['training', 'sleep', 'readiness'];
+    case 'strava':
+      return ['runs', 'rides', 'load'];
+    case 'whoop':
+      return ['recovery', 'strain', 'sleep'];
+    default:
+      return [];
+  }
+}
+
+function oauthConfigured(provider: string): boolean {
+  switch (provider) {
+    case 'google':
+      return Boolean(config.google.clientId && config.google.clientSecret);
+    case 'outlook':
+      return Boolean(config.outlook.clientId && config.outlook.clientSecret);
+    case 'garmin':
+      return true;
+    case 'strava':
+      return Boolean(process.env.STRAVA_CLIENT_ID && process.env.STRAVA_CLIENT_SECRET);
+    case 'whoop':
+      return Boolean(process.env.WHOOP_CLIENT_ID && process.env.WHOOP_CLIENT_SECRET);
+    default:
+      return false;
+  }
+}
+
+function buildAvailability(provider: string): ConnectionAvailability {
+  if (provider === 'whoop') {
+    return {
+      provider,
+      available: false,
+      capabilities: capabilitiesForProvider(provider),
+      reasonCode: 'COMING_SOON',
+      detail: 'WHOOP support is coming soon in this iOS release.',
+    };
+  }
+
+  const available = oauthConfigured(provider);
+  if (available) {
+    return {
+      provider,
+      available: true,
+      capabilities: capabilitiesForProvider(provider),
+    };
+  }
+
+  return {
+    provider,
+    available: false,
+    capabilities: capabilitiesForProvider(provider),
+    reasonCode: 'NOT_CONFIGURED',
+    detail: `OAuth is not configured for ${provider} in this environment.`,
+  };
+}
 
 export function connectionRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'connections_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/connections
@@ -57,8 +153,16 @@ export function connectionRoutes(): Router {
           provider: c.provider,
           connectedAt: c.connectedAt,
           scopes: c.scopes,
+          capabilities: capabilitiesForProvider(c.provider, c.scopes),
         })),
         count: connections.length,
+        availability: [
+          buildAvailability('google'),
+          buildAvailability('outlook'),
+          buildAvailability('garmin'),
+          buildAvailability('strava'),
+          buildAvailability('whoop'),
+        ],
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS connections list failed');

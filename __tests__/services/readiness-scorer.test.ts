@@ -40,7 +40,7 @@ vi.mock('../../src/config', () => ({
   config: {
     garmin: { email: '', password: '' },
     financeEncryption: { enabled: false, masterKey: '' },
-    telegram: { allowedUserIds: [1] }, // userId=1 is treated as Garmin owner in tests
+    telegram: { allowedUserIds: [1] },
   },
 }));
 
@@ -51,10 +51,16 @@ const mockGarmin = vi.hoisted(() => ({
   getSleepData: vi.fn(),
   getBodyBatteryEvents: vi.fn(),
   getTrainingReadiness: vi.fn(),
+  getDailySummary: vi.fn(),
   getActivitiesByDate: vi.fn(),
 }));
 
+const mockWearableService = vi.hoisted(() => ({
+  getReadiness: vi.fn(),
+}));
+
 vi.mock('../../src/services/garmin', () => mockGarmin);
+vi.mock('../../src/services/wearable/wearable-service', () => mockWearableService);
 
 import {
   scoreHrv, scoreSleep, scoreBodyBattery, scoreAcwr,
@@ -141,9 +147,14 @@ describe('readiness-scorer — calculateReadiness', () => {
     applyMigrations(testDb);
     vi.clearAllMocks();
     mockGarmin.isGarminConfigured.mockReturnValue(true);
-    // Insert an owner user so calculateReadiness uses Garmin path for userId=1
+    mockWearableService.getReadiness.mockResolvedValue(null);
     try {
       testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (1, 'Test', 'owner', 'test', 'active')").run();
+      testDb.prepare("INSERT OR IGNORE INTO users (id, first_name, tier, auth_provider, status) VALUES (2, 'Connected', 'pro', 'test', 'active')").run();
+      testDb.prepare(`
+        INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
+        VALUES (?, ?, '{}', 'active', datetime('now'))
+      `).run(1, 'owner@example.com');
     } catch { /* table may not exist in minimal test db */ }
   });
   afterEach(() => { testDb.close(); });
@@ -220,6 +231,78 @@ describe('readiness-scorer — calculateReadiness', () => {
     const result = await calculateReadiness(1);
     expect(result.score).toBeGreaterThanOrEqual(0);
     expect(result.score).toBeLessThanOrEqual(100);
+  });
+
+  it('uses Garmin readiness for a non-owner user with an active Garmin connection', async () => {
+    testDb.prepare(`
+      INSERT OR REPLACE INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status, updated_at)
+      VALUES (?, ?, '{}', 'active', datetime('now'))
+    `).run(2, 'connected@example.com');
+
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 68, weeklyAvg: 60 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 84 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 82 }]);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({ score: 74 });
+    mockGarmin.getActivitiesByDate.mockResolvedValue([]);
+
+    const result = await calculateReadiness(2);
+    expect(result.score).toBeGreaterThan(0);
+    expect(result.factors.bodyBattery.current).toBe(82);
+  });
+
+  it('falls back to neutral when Garmin is configured globally but this user is not connected', async () => {
+    const result = await calculateReadiness(2);
+    expect(result.score).toBe(60);
+    expect(result.reasoning).toContain('No wearable connected');
+  });
+
+  it('does not publish low_sleep when Garmin sleep data is missing', async () => {
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 68, weeklyAvg: 60 } });
+    mockGarmin.getSleepData.mockResolvedValue(null);
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 82 }]);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({ score: 74 });
+    mockGarmin.getActivitiesByDate.mockResolvedValue([]);
+
+    await calculateReadiness(1);
+
+    const row = testDb.prepare(
+      "SELECT signal_type, payload FROM agent_signals WHERE user_id = ? AND signal_type = 'low_sleep'"
+    ).get(1) as { signal_type: string; payload: string } | undefined;
+
+    expect(row).toBeUndefined();
+  });
+
+  it('uses WHOOP readiness when Garmin is unavailable but WHOOP is connected', async () => {
+    mockGarmin.isGarminConfigured.mockReturnValue(false);
+    mockWearableService.getReadiness.mockResolvedValue({
+      provider: 'whoop',
+      date: '2026-04-16',
+      readinessScore: 81,
+      hrvMs: 64,
+      restingHeartRate: 49,
+      bodyBattery: null,
+      recoveryScore: 81,
+      raw: {},
+    });
+
+    const result = await calculateReadiness(1);
+    expect(result.score).toBe(81);
+    expect(result.recommendation).toBe('full_intensity');
+    expect(result.reasoning).toContain('WHOOP');
+    expect(result.factors.bodyBattery.current).toBe(81);
+  });
+
+  it('does not synthesize a fake 50 body battery when Garmin events are missing', async () => {
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 55, weeklyAvg: 50 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 80 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([]);
+    mockGarmin.getDailySummary.mockResolvedValue(null);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue([]);
+
+    const result = await calculateReadiness(1);
+    expect(result.factors.bodyBattery.current).toBe(0);
+    expect(result.factors.bodyBattery.score).toBe(60);
   });
 });
 

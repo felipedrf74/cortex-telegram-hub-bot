@@ -1,8 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const mockGetCached = vi.fn();
 const mockSetCache = vi.fn();
+const mockGetCachedSWR = vi.fn();
+const mockSetCacheSWR = vi.fn();
+const mockCalculateReadiness = vi.fn();
+const mockGoogleCalendarConfigured = vi.fn();
+const mockGoogleCalendarEvents = vi.fn();
+const mockOutlookCalendarConfigured = vi.fn();
+const mockOutlookCalendarEvents = vi.fn();
 const mockGetUserById = vi.fn((userId: number) => ({ id: userId, first_name: 'Felipe' }));
 const mockRuntimeStatus = vi.fn(() => ({
   serviceStatus: 'online',
@@ -28,6 +39,8 @@ const mockGetDailyQuotaStatus = vi.fn(() => ({
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
   setCache: (...args: unknown[]) => mockSetCache(...args),
+  getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
+  setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -39,14 +52,28 @@ vi.mock('../../src/services/runtime-status', () => ({
   getRuntimeStatus: (...args: unknown[]) => mockRuntimeStatus(...args),
 }));
 
+vi.mock('../../src/services/readiness-scorer', () => ({
+  calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
+}));
+
+vi.mock('../../src/services/google-calendar', () => ({
+  isGoogleCalendarConfigured: (...args: unknown[]) => mockGoogleCalendarConfigured(...args),
+  getEvents: (...args: unknown[]) => mockGoogleCalendarEvents(...args),
+}));
+
+vi.mock('../../src/services/outlook-calendar', () => ({
+  isOutlookCalendarConfigured: (...args: unknown[]) => mockOutlookCalendarConfigured(...args),
+  getEvents: (...args: unknown[]) => mockOutlookCalendarEvents(...args),
+}));
+
 vi.mock('../../src/services/cost-guardrail', () => ({
   getDailyQuotaStatus: (...args: unknown[]) => mockGetDailyQuotaStatus(...args),
 }));
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
-    prepare: () => ({
-      all: (...args: unknown[]) => mockDashboardDbAll(...args),
+    prepare: (sql: string) => ({
+      all: (...args: unknown[]) => mockDashboardDbAll(sql, ...args),
       get: () => ({ ok: 1 }),
     }),
   }),
@@ -63,7 +90,7 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
-import { dashboardRoutes } from '../../src/api/routes/dashboard';
+import { dashboardRoutes, queryContentPipelineCounts } from '../../src/api/routes/dashboard';
 
 interface MockRes {
   statusCode: number;
@@ -123,13 +150,27 @@ async function dispatch(userId = 4, headers: Record<string, string> = {}): Promi
 
 describe('Dashboard API route', () => {
   beforeEach(() => {
+    clearTenantScopeAnomaliesForTests();
     mockGetCached.mockReset();
     mockSetCache.mockReset();
+    mockGetCachedSWR.mockReset();
+    mockSetCacheSWR.mockReset();
+    mockCalculateReadiness.mockReset();
+    mockGoogleCalendarConfigured.mockReset();
+    mockGoogleCalendarEvents.mockReset();
+    mockOutlookCalendarConfigured.mockReset();
+    mockOutlookCalendarEvents.mockReset();
     mockGetUserById.mockReset();
     mockRuntimeStatus.mockReset();
     mockDashboardDbAll.mockReset();
 
     mockGetCached.mockReturnValue(null);
+    mockGetCachedSWR.mockReturnValue(null);
+    mockCalculateReadiness.mockRejectedValue(new Error('readiness unavailable'));
+    mockGoogleCalendarConfigured.mockReturnValue(false);
+    mockGoogleCalendarEvents.mockResolvedValue([]);
+    mockOutlookCalendarConfigured.mockReturnValue(false);
+    mockOutlookCalendarEvents.mockResolvedValue([]);
     mockGetUserById.mockImplementation((userId: number) => ({ id: userId, first_name: 'Felipe' }));
     mockRuntimeStatus.mockReturnValue({
       serviceStatus: 'online',
@@ -142,7 +183,6 @@ describe('Dashboard API route', () => {
 
   it('returns explicit unavailable states instead of silent dashboard zeroes', async () => {
     const res = await dispatch(4);
-
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.calendar.status).toBe('unavailable');
@@ -162,6 +202,91 @@ describe('Dashboard API route', () => {
     });
   });
 
+  it('fails closed on invalid tenant scope before building dashboard state', async () => {
+    const res = await dispatch(0);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockGetCachedSWR).not.toHaveBeenCalled();
+    expect(mockGetDailyQuotaStatus).not.toHaveBeenCalledWith(0);
+
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'dashboard_route_root',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
+  });
+
+  it('serves stale dashboard cache immediately and refreshes in the background', async () => {
+    const cachedDashboard = {
+      greeting: 'Bom dia, Felipe',
+      date: '2026-04-16',
+      dayOfWeek: 'Quinta-feira',
+      calendar: { today: [], upcoming: [], status: 'ready', warningCodes: [], warnings: [] },
+      tasks: { overdue: 1, dueToday: 2, totalPending: 3, topTasks: [], status: 'ready', warningCodes: [], warnings: [] },
+      training: {
+        todaySession: null,
+        weeklyAdherence: null,
+        readinessScore: 71,
+        bodyBattery: 50,
+        status: 'ready',
+        readinessStatus: 'ready',
+        bodyBatteryStatus: 'ready',
+        warningCodes: [],
+        warnings: [],
+      },
+      content: {
+        pipelineCount: { ideas: 1, scripted: 0, filmed: 0, editing: 0, published: 0 },
+        nextDeadline: null,
+        status: 'ready',
+        warningCodes: [],
+        warnings: [],
+      },
+      quota: {
+        used_usd: 0.12,
+        limit_usd: 0.2,
+        remaining_usd: 0.08,
+        plan: 'pro',
+        resetAt: '2026-04-15T00:00:00.000Z',
+      },
+      system: {
+        version: '4.14.38',
+        uptime: '1h 0m',
+        serviceStatus: 'online',
+        botStatus: 'offline',
+        databaseStatus: 'connected',
+        lastMessageAt: null,
+      },
+    };
+    mockGetCachedSWR.mockReturnValue({ value: cachedDashboard, fresh: false });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.greeting).toBe('Bom dia, Felipe');
+    expect(res.body.data.tasks.totalPending).toBe(3);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockSetCacheSWR).toHaveBeenCalled();
+  });
+
+  it('does not flag Google Calendar as unavailable when the current user has Google connected', async () => {
+    mockGoogleCalendarConfigured.mockImplementation((userId?: number) => userId === 4);
+    mockGoogleCalendarEvents.mockResolvedValue([]);
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.calendar.status).toBe('ready');
+    expect(res.body.data.calendar.warningCodes).not.toContain('GOOGLE_CALENDAR_UNAVAILABLE');
+    expect(mockGoogleCalendarConfigured).toHaveBeenCalledWith(4);
+    expect(mockGoogleCalendarEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 4);
+  });
+
   it('localizes greeting and weekday when x-language is Portuguese', async () => {
     const res = await dispatch(4, { 'x-language': 'pt-BR' });
 
@@ -179,8 +304,11 @@ describe('Dashboard API route', () => {
   });
 
   it('marks content as unavailable instead of returning fake zero pipeline counts on database failure', async () => {
-    mockDashboardDbAll.mockImplementation(() => {
-      throw new Error('database unavailable');
+    mockDashboardDbAll.mockImplementation((sql: string) => {
+      if (sql.includes('FROM content_ideas')) {
+        throw new Error('database unavailable');
+      }
+      return [];
     });
 
     const res = await dispatch(4);
@@ -195,5 +323,71 @@ describe('Dashboard API route', () => {
       editing: 0,
       published: 0,
     });
+  });
+
+  it('uses a dedicated dashboard readiness cache key for body battery snapshots', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'dashboard-readiness:4') {
+        return { score: 71, bodyBattery: 57 };
+      }
+      return null;
+    });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGetCached).toHaveBeenCalledWith('dashboard-readiness:4');
+    expect(res.body.data.training.bodyBattery).toBe(57);
+  });
+
+  it('falls back to stage-only content counts when the legacy status column is missing', () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          all: () => {
+            if (sql.includes("status != 'archived'")) {
+              throw new Error('no such column: status');
+            }
+            return [
+              { stage: 'ideas', count: 2 },
+              { stage: 'published', count: 1 },
+            ];
+          },
+        };
+      },
+    };
+
+    expect(queryContentPipelineCounts(db, 4)).toEqual([
+      { stage: 'ideas', count: 2 },
+      { stage: 'published', count: 1 },
+    ]);
+  });
+
+  it('rethrows non-schema content query failures', () => {
+    const db = {
+      prepare() {
+        return {
+          all: () => {
+            throw new Error('database unavailable');
+          },
+        };
+      },
+    };
+
+    expect(() => queryContentPipelineCounts(db, 4)).toThrow('database unavailable');
+  });
+
+  it('treats a missing content_ideas table as an empty pipeline instead of an outage', () => {
+    const db = {
+      prepare() {
+        return {
+          all: () => {
+            throw new Error('no such table: content_ideas');
+          },
+        };
+      },
+    };
+
+    expect(queryContentPipelineCounts(db, 4)).toEqual([]);
   });
 });

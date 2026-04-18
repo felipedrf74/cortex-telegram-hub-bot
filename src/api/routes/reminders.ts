@@ -16,9 +16,19 @@ import {
   cancelReminder,
 } from '../../state/reminders';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function reminderRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'reminders_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/reminders

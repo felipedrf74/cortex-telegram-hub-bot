@@ -297,6 +297,9 @@ export const config = {
     inviteCode: process.env.IOS_INVITE_CODE || '',
     ownerCode: process.env.IOS_OWNER_CODE || '',
   },
+  mesh: {
+    enabled: process.env.NEXUS_MULTISKILL_MESH === 'on',
+  },
   // ── Apple Push Notification Service (APNs) ────────────────────────
   // Token-based auth only (modern .p8 approach). All four env vars must
   // be present for the sender to actually dispatch — when any are missing,
@@ -350,7 +353,8 @@ export const config = {
   },
 } as const;
 
-// Fail-fast: empty allowedUserIds would silently reject all messages.
+// Fail-fast: empty allowedUserIds would silently reject all Telegram ingress.
+// This list is no longer used as owner bootstrap state.
 // Skipped in staging because Telegram is optional there — see requiredInProd
 // above. In staging the bot may not even start, so an empty allowlist isn't
 // a security risk, just a "no fallback users registered" warning.

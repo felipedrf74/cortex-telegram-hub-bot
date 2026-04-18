@@ -26,6 +26,14 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
 }));
 
+const { mockGetActivities } = vi.hoisted(() => ({
+  mockGetActivities: vi.fn(async () => []),
+}));
+
+vi.mock('../../src/services/wearable/wearable-service', () => ({
+  getActivities: mockGetActivities,
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
 }));
@@ -45,6 +53,7 @@ function applyMigrations(db: Database.Database): void {
 
 import {
   getWeeklyActivitySummary,
+  getUnifiedWeeklyActivitySummary,
   computeStreaks,
   type SportKey,
 } from '../../src/services/session-analytics';
@@ -172,6 +181,8 @@ describe('getWeeklyActivitySummary', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    mockGetActivities.mockReset();
+    mockGetActivities.mockResolvedValue([]);
   });
   afterEach(() => testDb?.close());
 
@@ -356,5 +367,70 @@ describe('getWeeklyActivitySummary', () => {
     const summary = getWeeklyActivitySummary(900, ref);
     expect(summary.totalCompletions).toBe(0);
     expect(summary.streak.longestDays).toBe(1); // the 10-days-ago session
+  });
+
+  it('merges wearable-only activities into the weekly summary', async () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: tz });
+    mockGetActivities.mockResolvedValue([
+      {
+        id: 'garmin-1',
+        provider: 'garmin',
+        type: 'run',
+        name: 'Evening Run',
+        startTime: isoAt(ref.startOf('week').plus({ days: 1 }), 18),
+        endTime: isoAt(ref.startOf('week').plus({ days: 1 }), 19),
+        durationSeconds: 3600,
+        distanceMeters: 10000,
+        calories: 700,
+        avgHeartRate: 145,
+        maxHeartRate: 172,
+        avgCadence: null,
+        avgSpeedMps: null,
+        elevationGainMeters: null,
+      },
+    ]);
+
+    const summary = await getUnifiedWeeklyActivitySummary(950, ref);
+    expect(summary.totalCompletions).toBe(1);
+    expect(summary.bySport.running.completions).toBe(1);
+    expect(summary.totalDurationMin).toBe(60);
+  });
+
+  it('does not double-count a wearable activity when a matching logged session exists', async () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: tz });
+    const monday = ref.startOf('week');
+    seedCompletion({
+      userId: 951,
+      sport: 'running',
+      completedAt: isoAt(monday, 7),
+      rpe: 7,
+      durationMin: 55,
+      baseId: 951,
+    });
+
+    mockGetActivities.mockResolvedValue([
+      {
+        id: 'garmin-2',
+        provider: 'garmin',
+        type: 'run',
+        name: 'Morning Run',
+        startTime: isoAt(monday, 7),
+        endTime: isoAt(monday, 8),
+        durationSeconds: 3600,
+        distanceMeters: 9000,
+        calories: 640,
+        avgHeartRate: 148,
+        maxHeartRate: 171,
+        avgCadence: null,
+        avgSpeedMps: null,
+        elevationGainMeters: null,
+      },
+    ]);
+
+    const summary = await getUnifiedWeeklyActivitySummary(951, ref);
+    expect(summary.totalCompletions).toBe(1);
+    expect(summary.bySport.running.completions).toBe(1);
+    expect(summary.totalDurationMin).toBe(60);
+    expect(summary.avgRpe).toBe(7);
   });
 });

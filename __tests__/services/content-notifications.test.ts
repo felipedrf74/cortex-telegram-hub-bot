@@ -58,6 +58,7 @@ import {
   resolveNotification,
   getAllNotifications,
 } from '../../src/services/content-notification-store';
+import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Notification Creation
@@ -68,6 +69,7 @@ describe('content-notifications: creation', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
 
@@ -101,6 +103,31 @@ describe('content-notifications: creation', () => {
     expect(notifications[0].status).toBe('unread');
     expect(notifications[0].pushSent).toBe(false);
   });
+
+  it('fails closed on invalid tenant scope and records the anomaly', () => {
+    const id = createNotification({
+      userId: 0,
+      type: 'script_ready',
+      title: 'Invalid',
+      body: 'Should not persist',
+    });
+
+    expect(id).toBe(-1);
+    expect(getUnreadNotifications(0)).toEqual([]);
+    const row = testDb.prepare('SELECT COUNT(*) as count FROM content_notifications').get() as { count: number };
+    expect(row.count).toBe(0);
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'create_content_notification',
+          reason: 'invalid_user_scope',
+          userId: 0,
+          details: { notificationType: 'script_ready' },
+        }),
+      ]),
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -112,6 +139,7 @@ describe('content-notifications: state transitions', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
 
@@ -166,6 +194,26 @@ describe('content-notifications: state transitions', () => {
     expect(notifications).toHaveLength(1);
     expect(notifications[0].resolvedAt).not.toBeNull();
   });
+
+  it('state transitions fail closed on invalid tenant scope', () => {
+    const id = createNotification({
+      userId: 1,
+      type: 'content_action_required',
+      title: 'Action',
+      body: 'Review topics',
+    });
+
+    expect(markRead(id, 0)).toBe(false);
+    expect(markAllRead(0)).toBe(0);
+    expect(resolveNotification(id, 0)).toBe(false);
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ layer: 'delivery', operation: 'mark_content_notification_read', userId: 0 }),
+        expect.objectContaining({ layer: 'delivery', operation: 'mark_all_content_notifications_read', userId: 0 }),
+        expect.objectContaining({ layer: 'delivery', operation: 'resolve_content_notification', userId: 0 }),
+      ]),
+    );
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -177,6 +225,7 @@ describe('content-notifications: user scoping', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
 
@@ -200,6 +249,21 @@ describe('content-notifications: user scoping', () => {
 
     expect(getUnreadCount(1)).toBe(2);
     expect(getUnreadCount(2)).toBe(1);
+  });
+
+  it('read surfaces fail closed on invalid tenant scope', () => {
+    createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'User 1', body: 'a' });
+
+    expect(getUnreadNotifications(0)).toEqual([]);
+    expect(getNotifications(0)).toEqual([]);
+    expect(getUnreadCount(0)).toBe(0);
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ layer: 'delivery', operation: 'get_unread_content_notifications', userId: 0 }),
+        expect.objectContaining({ layer: 'delivery', operation: 'get_content_notifications', userId: 0 }),
+        expect.objectContaining({ layer: 'delivery', operation: 'get_unread_content_notification_count', userId: 0 }),
+      ]),
+    );
   });
 });
 

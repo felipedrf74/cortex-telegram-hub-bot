@@ -78,14 +78,20 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
     }
   }
 
-  // Optional: submodules
-  if (m.submodules !== undefined) {
-    if (!Array.isArray(m.submodules)) {
-      errors.push({ field: 'submodules', message: 'submodules must be an array' });
+  const declaredSubmodules = m.submodules ?? m.subSkills;
+
+  if (m.manifestVersion !== undefined && typeof m.manifestVersion !== 'number') {
+    errors.push({ field: 'manifestVersion', message: 'manifestVersion must be a number' });
+  }
+
+  // Optional: submodules / subSkills
+  if (declaredSubmodules !== undefined) {
+    if (!Array.isArray(declaredSubmodules)) {
+      errors.push({ field: 'submodules', message: 'submodules/subSkills must be an array' });
     } else {
       const names = new Set<string>();
-      for (let i = 0; i < m.submodules.length; i++) {
-        const sub = m.submodules[i];
+      for (let i = 0; i < declaredSubmodules.length; i++) {
+        const sub = declaredSubmodules[i];
         if (!sub || typeof sub !== 'object') {
           errors.push({ field: `submodules[${i}]`, message: 'each submodule must be an object' });
           continue;
@@ -107,9 +113,9 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
       }
 
       // Second pass: validate submodule dependency references
-      if (Array.isArray(m.submodules)) {
-        for (let i = 0; i < m.submodules.length; i++) {
-          const sub = m.submodules[i];
+      if (Array.isArray(declaredSubmodules)) {
+        for (let i = 0; i < declaredSubmodules.length; i++) {
+          const sub = declaredSubmodules[i];
           if (sub && Array.isArray(sub.dependencies)) {
             for (const dep of sub.dependencies) {
               if (!names.has(dep)) {
@@ -227,5 +233,9 @@ export function loadManifest(skillDir: string): SkillManifest {
   }
 
   logger.info({ skill: (parsed as SkillManifest).name }, 'Manifest loaded');
-  return parsed as SkillManifest;
+  const manifest = parsed as SkillManifest;
+  if (!manifest.submodules && manifest.subSkills) {
+    manifest.submodules = manifest.subSkills;
+  }
+  return manifest;
 }

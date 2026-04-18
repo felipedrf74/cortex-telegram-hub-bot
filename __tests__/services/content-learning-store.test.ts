@@ -78,6 +78,9 @@ describe('content-learning-store: script storage', () => {
       hook: 'Você sabia que 90% dos atletas...',
       titleOptions: ['Title A', 'Title B'],
       sourcesUsed: [{ title: 'Study X', url: 'https://example.com' }],
+      hashtags: ['#ai', '#athletes'],
+      caption: 'Save this before your next training block.',
+      cta: 'Send this to your training partner.',
       estimatedDuration: '8:00-10:00',
       niche: 'tech',
       generationDurationMs: 5000,
@@ -102,6 +105,23 @@ describe('content-learning-store: script storage', () => {
     expect(scripts[0].format).toBe('reel');
     expect(scripts[0].scriptText).toBe('Full script body here with all the content...');
     expect(scripts[0].hook).toBe('Opening hook');
+  });
+
+  it('stores packaging lineage alongside the generated script', () => {
+    storeScript({
+      topic: 'Solo SaaS',
+      format: 'youtube',
+      scriptText: 'Script text',
+      hashtags: ['#buildinpublic', '#saas'],
+      caption: 'A sharper caption',
+      cta: 'Save this for your next sprint.',
+      userId: 1,
+    });
+
+    const scripts = getRecentScripts(1, 30, 10);
+    expect(scripts[0].hashtags).toEqual(['#buildinpublic', '#saas']);
+    expect(scripts[0].caption).toBe('A sharper caption');
+    expect(scripts[0].cta).toBe('Save this for your next sprint.');
   });
 
   it('script text survives independently of file system', () => {
@@ -148,6 +168,11 @@ describe('content-learning-store: performance feedback', () => {
       comments: 50,
       subsGained: 20,
       hookUsed: 'Curiosity gap opener',
+      selectedTitle: 'How I would build it solo',
+      finalCaption: 'A caption that shipped',
+      finalCta: 'Follow for the next build log.',
+      finalScriptVariant: 'variant-b',
+      publishedHashtags: ['#saas', '#buildinpublic'],
       notes: 'Good engagement in first 30s',
       userId: 1,
     });
@@ -164,6 +189,27 @@ describe('content-learning-store: performance feedback', () => {
     expect(summary.avgViews).toBe(2000);
     expect(summary.avgRetention).toBe(50);
     expect(summary.totalLikes).toBe(300);
+  });
+
+  it('stores packaging decisions in performance lineage', () => {
+    logPerformanceFeedback({
+      views: 2400,
+      retentionPct: 58,
+      hookUsed: 'Curiosity',
+      selectedTitle: 'What nobody tells you about solo SaaS',
+      finalCaption: 'Final shipping caption',
+      finalCta: 'Share this with another solo builder.',
+      finalScriptVariant: 'variant-a',
+      publishedHashtags: ['#product', '#startup'],
+      userId: 1,
+    });
+
+    const summary = getPerformanceSummary(1, 30);
+    expect(summary.entries[0].selectedTitle).toBe('What nobody tells you about solo SaaS');
+    expect(summary.entries[0].finalCaption).toBe('Final shipping caption');
+    expect(summary.entries[0].finalCta).toBe('Share this with another solo builder.');
+    expect(summary.entries[0].finalScriptVariant).toBe('variant-a');
+    expect(summary.entries[0].publishedHashtags).toEqual(['#product', '#startup']);
   });
 
   it('feedback is user-scoped', () => {
@@ -256,6 +302,17 @@ describe('content-learning-store: learned patterns', () => {
     expect(getLearnedPatterns(0)).toHaveLength(3);
   });
 
+  it('prefers user learned patterns over system rows with the same content key', () => {
+    upsertLearnedPattern({ category: 'voice_addition', patternText: 'shared pattern', userId: 0 });
+    upsertLearnedPattern({ category: 'voice_addition', patternText: 'shared pattern', userId: 42 });
+
+    const patterns = getLearnedPatterns(42, 'voice_addition');
+
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].userId).toBe(42);
+    expect(patterns[0].patternText).toBe('shared pattern');
+  });
+
   it('patterns never expire (unlike bus signals)', () => {
     // Bus signals have TTL (90 days). Patterns in the DB don't expire.
     // We can't fast-forward time in SQLite, but we verify there's no
@@ -311,6 +368,9 @@ describe('content-learning-store: artifact chain', () => {
       scriptText: 'Full script text here...',
       hook: 'Opening hook about AI',
       titleOptions: ['Title 1', 'Title 2'],
+      hashtags: ['#ai', '#fitness'],
+      caption: 'Pipeline caption',
+      cta: 'Pipeline CTA',
       userId: 0,
     });
 
@@ -337,6 +397,9 @@ describe('content-learning-store: artifact chain', () => {
     expect(chain.script!.scriptText).toBe('Full script text here...');
     expect(chain.script!.hook).toBe('Opening hook about AI');
     expect(chain.script!.titleOptions).toEqual(['Title 1', 'Title 2']);
+    expect(chain.script!.hashtags).toEqual(['#ai', '#fitness']);
+    expect(chain.script!.caption).toBe('Pipeline caption');
+    expect(chain.script!.cta).toBe('Pipeline CTA');
 
     expect(chain.performance).toHaveLength(1);
     expect(chain.performance[0].views).toBe(10000);
@@ -403,6 +466,8 @@ describe('content-learning-store: structural', () => {
     // Should import getRecentScripts
     expect(agentSource).toContain('getRecentScripts');
     expect(agentSource).toContain('content-learning-store');
+    expect(agentSource).toContain('getOwnerBootstrapTarget');
+    expect(agentSource).not.toContain('getRecentScripts(0');
   });
 
   it('voice-evolution-agent persists patterns durably', () => {

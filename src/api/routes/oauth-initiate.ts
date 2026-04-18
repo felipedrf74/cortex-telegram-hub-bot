@@ -4,7 +4,7 @@
  * OAuth Initiate — generates consent URLs for iOS integration onboarding.
  *
  * POST /api/v1/auth/oauth/initiate
- * Body: { provider: 'google' | 'outlook' }
+ * Body: { provider: 'google' | 'outlook' | 'strava' | 'whoop' }
  * Returns: { url: "https://accounts.google.com/..." }
  *
  * The state parameter carries "ios:{userId}:{nonce}" so the callback
@@ -19,30 +19,13 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
-import { getOAuthUrl } from '../../services/oauth-flow';
 import { config } from '../../config';
 import type { OAuthProvider } from '../../services/oauth-store';
-
-// In-memory nonce store for CSRF protection.
-// Nonces expire after 10 minutes. Bounded to 1000 entries.
-const nonceStore = new Map<string, { userId: number; provider: string; createdAt: number }>();
-const NONCE_TTL = 10 * 60 * 1000; // 10 minutes
-const MAX_NONCES = 1000;
-
-function cleanExpiredNonces(): void {
-  const now = Date.now();
-  for (const [key, val] of nonceStore) {
-    if (now - val.createdAt > NONCE_TTL) nonceStore.delete(key);
-  }
-}
+import { createOAuthNonceSession, consumeOAuthNonceSession } from '../../services/oauth-state-store';
 
 /** Validate and consume a nonce. Returns the userId if valid, null if not. */
 export function consumeNonce(nonce: string): { userId: number; provider: string } | null {
-  cleanExpiredNonces();
-  const entry = nonceStore.get(nonce);
-  if (!entry) return null;
-  nonceStore.delete(nonce); // One-time use
-  return entry;
+  return consumeOAuthNonceSession(nonce);
 }
 
 /** Check if a state string is an iOS-origin OAuth flow. */
@@ -72,26 +55,18 @@ export function oauthInitiateRoutes(): Router {
     const userId = (req as any).userId;
     const { provider } = req.body;
 
-    const validProviders: OAuthProvider[] = ['google', 'outlook', 'strava', 'todoist', 'notion'];
+    const validProviders: OAuthProvider[] = ['google', 'outlook', 'strava', 'whoop', 'todoist', 'notion'];
     if (!provider || !validProviders.includes(provider)) {
       sendError(res, 'BAD_REQUEST', `Invalid provider. Valid: ${validProviders.join(', ')}`);
       return;
     }
 
-    // Generate CSRF nonce
-    cleanExpiredNonces();
-    if (nonceStore.size >= MAX_NONCES) {
-      // Evict oldest 10%
-      const toEvict = Math.floor(MAX_NONCES * 0.1);
-      let i = 0;
-      for (const key of nonceStore.keys()) {
-        if (i++ >= toEvict) break;
-        nonceStore.delete(key);
-      }
+    if (provider === 'whoop') {
+      sendError(res, 'COMING_SOON', 'WHOOP is coming soon in this iOS release.', 503);
+      return;
     }
 
-    const nonce = crypto.randomBytes(16).toString('hex');
-    nonceStore.set(nonce, { userId, provider, createdAt: Date.now() });
+    const nonce = createOAuthNonceSession(userId, provider, crypto.randomBytes(16).toString('hex'));
 
     // Generate the consent URL with iOS-origin state
     // The existing getOAuthUrl uses state=String(userId), but we need
@@ -120,6 +95,7 @@ function getOAuthUrlWithState(provider: string, state: string): string | null {
   const REDIRECT_BASE = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
 
   if (provider === 'google') {
+    if (!config.google.clientId) return null;
     const params = new URLSearchParams({
       client_id: config.google.clientId,
       redirect_uri: `${REDIRECT_BASE}/oauth/google/callback`,
@@ -137,6 +113,7 @@ function getOAuthUrlWithState(provider: string, state: string): string | null {
   }
 
   if (provider === 'outlook') {
+    if (!config.outlook.clientId) return null;
     const tenantId = config.outlook.tenantId || 'common';
     const params = new URLSearchParams({
       client_id: config.outlook.clientId,
@@ -153,6 +130,33 @@ function getOAuthUrlWithState(provider: string, state: string): string | null {
       state,
     });
     return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params.toString()}`;
+  }
+
+  if (provider === 'strava') {
+    const clientId = process.env.STRAVA_CLIENT_ID;
+    if (!clientId) return null;
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: `${REDIRECT_BASE}/oauth/strava/callback`,
+      response_type: 'code',
+      scope: 'read,activity:read_all',
+      approval_prompt: 'force',
+      state,
+    });
+    return `https://www.strava.com/oauth/mobile/authorize?${params.toString()}`;
+  }
+
+  if (provider === 'whoop') {
+    const clientId = process.env.WHOOP_CLIENT_ID;
+    if (!clientId) return null;
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: `${REDIRECT_BASE}/oauth/whoop/callback`,
+      response_type: 'code',
+      scope: 'read:recovery read:sleep read:workout read:cycles read:profile offline',
+      state,
+    });
+    return `https://api.prod.whoop.com/oauth/oauth2/auth?${params.toString()}`;
   }
 
   return null;

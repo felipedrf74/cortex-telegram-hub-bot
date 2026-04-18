@@ -36,6 +36,7 @@ function applyMigrations(db: Database.Database): void {
 }
 
 let testDb: Database.Database;
+let testUserId: number;
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -66,6 +67,11 @@ import { executeToolCall } from '../../src/services/tool-executor';
 beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
+  const result = testDb.prepare(`
+    INSERT INTO users (telegram_id, first_name, tier, status, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+    VALUES (123456, 'Tester', 'pro', 'active', 200, 500000, 1)
+  `).run();
+  testUserId = Number(result.lastInsertRowid);
 });
 
 describe('Training Plan Tool Handlers', () => {
@@ -73,7 +79,7 @@ describe('Training Plan Tool Handlers', () => {
     const result = await executeToolCall('create_training_plan', {
       name: 'Test Plan', sport: 'strength', duration_weeks: 8,
       start_date: '2026-04-01', end_date: '2026-05-27', goal: 'Build base',
-    });
+    }, testUserId);
     expect(result.success).toBe(true);
     expect(result.plan_id).toBe(1);
     expect(result.name).toBe('Test Plan');
@@ -83,7 +89,7 @@ describe('Training Plan Tool Handlers', () => {
     await executeToolCall('create_training_plan', {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
-    });
+    }, testUserId);
     const result = await executeToolCall('add_training_week', {
       plan_id: 1, week_number: 1, focus: 'hypertrophy', intensity_pct: 100, volume_sessions: 5,
     });
@@ -95,7 +101,7 @@ describe('Training Plan Tool Handlers', () => {
     await executeToolCall('create_training_plan', {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
-    });
+    }, testUserId);
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
     const result = await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -116,21 +122,21 @@ describe('Training Plan Tool Handlers', () => {
     await executeToolCall('create_training_plan', {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: today, end_date: endDate.toISOString().slice(0, 10),
-    });
+    }, testUserId);
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1, focus: 'hypertrophy' });
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
       session_type: 'strength', title: 'Push Day',
     });
 
-    const result = await executeToolCall('get_training_plan', { plan_id: 1 });
+    const result = await executeToolCall('get_training_plan', { plan_id: 1 }, testUserId);
     expect(result.plan.name).toBe('Plan');
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0].title).toBe('Push Day');
   });
 
   it('get_training_plan returns error when not found', async () => {
-    const result = await executeToolCall('get_training_plan', { plan_id: 999 });
+    const result = await executeToolCall('get_training_plan', { plan_id: 999 }, testUserId);
     expect(result.error).toBeTruthy();
   });
 
@@ -138,7 +144,7 @@ describe('Training Plan Tool Handlers', () => {
     await executeToolCall('create_training_plan', {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
-    });
+    }, testUserId);
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -162,7 +168,7 @@ describe('Training Plan Tool Handlers', () => {
     await executeToolCall('create_training_plan', {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
-    });
+    }, testUserId);
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',
@@ -179,7 +185,7 @@ describe('Training Plan Tool Handlers', () => {
     await executeToolCall('create_training_plan', {
       name: 'Plan', sport: 'strength', duration_weeks: 4,
       start_date: '2026-04-01', end_date: '2026-04-29',
-    });
+    }, testUserId);
     await executeToolCall('add_training_week', { plan_id: 1, week_number: 1 });
     await executeToolCall('add_training_session', {
       week_id: 1, plan_id: 1, day_of_week: 'Monday',

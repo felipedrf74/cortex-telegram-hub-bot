@@ -33,6 +33,8 @@ import { getDb } from './database';
 import { now, startOfWeek, endOfWeek } from '../utils/date-parser';
 import { DateTime } from 'luxon';
 import { logger } from '../utils/logger';
+import { getActivities } from './wearable/wearable-service';
+import type { ActivityType, NormalizedActivity } from './wearable/types';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -146,6 +148,13 @@ interface DayCountRow {
   session_count: number;
 }
 
+interface CompletionAggregate {
+  sport: SportKey;
+  day: string;
+  completions: number;
+  totalDurationMin: number;
+}
+
 // ─── Streak computation ─────────────────────────────────────────────
 
 /**
@@ -233,17 +242,72 @@ export function getWeeklyActivitySummary(
   const ref = referenceDate ?? now();
   const weekStart = startOfWeek(ref);
   const weekEnd = endOfWeek(ref);
+  const rows = readWeeklyCompletionRows(userId, weekStart, weekEnd);
+  return buildWeeklySummaryFromRows(userId, ref, weekStart, weekEnd, rows);
+}
 
+export async function getUnifiedWeeklyActivitySummary(
+  userId: number,
+  referenceDate?: DateTime,
+): Promise<WeeklyActivitySummary> {
+  const ref = referenceDate ?? now();
+  const weekStart = startOfWeek(ref);
+  const weekEnd = endOfWeek(ref);
+  const rows = readWeeklyCompletionRows(userId, weekStart, weekEnd);
+  const baseSummary = buildWeeklySummaryFromRows(userId, ref, weekStart, weekEnd, rows);
+
+  try {
+    const wearableActivities = await getActivities(
+      userId,
+      DateTime.fromISO(weekStart).toISODate() ?? ref.toISODate() ?? '',
+      DateTime.fromISO(weekEnd).toISODate() ?? ref.toISODate() ?? '',
+    );
+
+    if (wearableActivities.length === 0) {
+      return baseSummary;
+    }
+
+    const mergedBySport = mergeWeeklySportBuckets(rows, wearableActivities);
+    for (const sport of Object.keys(mergedBySport) as SportKey[]) {
+      mergedBySport[sport].avgRpe = baseSummary.bySport[sport].avgRpe;
+    }
+    const completionDayRows = readStreakDayRows(userId, ref);
+    const wearableDays = new Set(
+      wearableActivities
+        .map((activity) => DateTime.fromISO(activity.startTime).toFormat('yyyy-LL-dd'))
+        .filter(Boolean),
+    );
+
+    const mergedDayStrings = Array.from(new Set([
+      ...completionDayRows.map((row) => row.day),
+      ...wearableDays,
+    ])).sort();
+
+    const totalCompletions = Object.values(mergedBySport).reduce((sum, row) => sum + row.completions, 0);
+    const totalDurationMin = Object.values(mergedBySport).reduce((sum, row) => sum + row.totalDurationMin, 0);
+
+    return {
+      ...baseSummary,
+      totalCompletions,
+      totalDurationMin,
+      bySport: mergedBySport,
+      streak: computeStreaks(mergedDayStrings, ref),
+    };
+  } catch (err) {
+    logger.debug({ err, userId }, 'wearable weekly activity merge failed — falling back to completion-only summary');
+    return baseSummary;
+  }
+}
+
+function readWeeklyCompletionRows(
+  userId: number,
+  weekStart: string,
+  weekEnd: string,
+): CompletionRow[] {
   const db = getDb();
 
-  // ── Sport aggregation for the week ────────────────────────────
-  // Join through plans for user isolation. session_type lives on
-  // the session row, not the completion, because a session can be
-  // completed multiple times in theory (re-logged) and session_type
-  // is immutable once the plan is created.
-  let rows: CompletionRow[] = [];
   try {
-    rows = db.prepare(`
+    return db.prepare(`
       SELECT
         ts.session_type AS session_type,
         tc.completed_at AS completed_at,
@@ -257,13 +321,19 @@ export function getWeeklyActivitySummary(
         AND tc.completed_at <= ?
     `).all(userId, weekStart, weekEnd) as CompletionRow[];
   } catch (err) {
-    // Training plan tables may not exist on fresh dev DBs. Return an
-    // empty summary rather than crashing the endpoint.
     logger.debug({ err, userId }, 'training_completions query failed — returning empty summary');
+    return [];
   }
+}
 
+function buildWeeklySummaryFromRows(
+  userId: number,
+  ref: DateTime,
+  weekStart: string,
+  weekEnd: string,
+  rows: CompletionRow[],
+): WeeklyActivitySummary {
   const bySport = emptyBySport();
-  // Accumulate RPE sums separately so we can compute averages at the end.
   const rpeSums: Record<SportKey, { sum: number; count: number }> = {
     gym: { sum: 0, count: 0 },
     running: { sum: 0, count: 0 },
@@ -292,7 +362,6 @@ export function getWeeklyActivitySummary(
     totalCompletions++;
   }
 
-  // Finalize averages per sport
   for (const sport of Object.keys(bySport) as SportKey[]) {
     const { sum, count } = rpeSums[sport];
     bySport[sport].avgRpe = count > 0 ? Number((sum / count).toFixed(1)) : null;
@@ -302,23 +371,7 @@ export function getWeeklyActivitySummary(
     ? Number((overallRpeSum / overallRpeCount).toFixed(1))
     : null;
 
-  // ── Streak lookback (90 days) ─────────────────────────────────
-  const streakWindowStart = ref.minus({ days: 90 }).startOf('day').toISO();
-  let dayRows: DayCountRow[] = [];
-  try {
-    dayRows = db.prepare(`
-      SELECT DATE(tc.completed_at) AS day,
-             COUNT(*) AS session_count
-      FROM training_completions tc
-      JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
-      WHERE ftp.user_id = ?
-        AND tc.completed_at >= ?
-      GROUP BY day
-      ORDER BY day
-    `).all(userId, streakWindowStart) as DayCountRow[];
-  } catch (err) {
-    logger.debug({ err, userId }, 'streak day-count query failed — returning empty streaks');
-  }
+  const dayRows = readStreakDayRows(userId, ref);
   const dayStrings = dayRows.map((r) => r.day);
   const streak = computeStreaks(dayStrings, ref);
 
@@ -332,6 +385,96 @@ export function getWeeklyActivitySummary(
     bySport,
     streak,
   };
+}
+
+function readStreakDayRows(userId: number, ref: DateTime): DayCountRow[] {
+  const db = getDb();
+  const streakWindowStart = ref.minus({ days: 90 }).startOf('day').toISO();
+
+  try {
+    return db.prepare(`
+      SELECT DATE(tc.completed_at) AS day,
+             COUNT(*) AS session_count
+      FROM training_completions tc
+      JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
+      WHERE ftp.user_id = ?
+        AND tc.completed_at >= ?
+      GROUP BY day
+      ORDER BY day
+    `).all(userId, streakWindowStart) as DayCountRow[];
+  } catch (err) {
+    logger.debug({ err, userId }, 'streak day-count query failed — returning empty streaks');
+    return [];
+  }
+}
+
+function normalizeWearableActivityType(type: ActivityType): SportKey {
+  switch (type) {
+  case 'strength':
+    return 'gym';
+  case 'run':
+    return 'running';
+  case 'ride':
+    return 'cycling';
+  case 'swim':
+    return 'swim';
+  default:
+    return 'other';
+  }
+}
+
+function mergeWeeklySportBuckets(
+  completionRows: CompletionRow[],
+  wearableActivities: NormalizedActivity[],
+): Record<SportKey, SportActivity> {
+  const bySport = emptyBySport();
+  const completionBuckets = new Map<string, CompletionAggregate>();
+  const wearableBuckets = new Map<string, CompletionAggregate>();
+
+  for (const row of completionRows) {
+    const sport = normalizeSessionType(row.session_type);
+    const day = DateTime.fromISO(row.completed_at).toFormat('yyyy-LL-dd');
+    const key = `${day}:${sport}`;
+    const existing = completionBuckets.get(key) ?? {
+      sport,
+      day,
+      completions: 0,
+      totalDurationMin: 0,
+    };
+    existing.completions += 1;
+    existing.totalDurationMin += row.duration_minutes ?? 0;
+    completionBuckets.set(key, existing);
+  }
+
+  for (const activity of wearableActivities) {
+    const sport = normalizeWearableActivityType(activity.type);
+    const day = DateTime.fromISO(activity.startTime).toFormat('yyyy-LL-dd');
+    const key = `${day}:${sport}`;
+    const existing = wearableBuckets.get(key) ?? {
+      sport,
+      day,
+      completions: 0,
+      totalDurationMin: 0,
+    };
+    existing.completions += 1;
+    existing.totalDurationMin += Math.max(0, Math.round((activity.durationSeconds ?? 0) / 60));
+    wearableBuckets.set(key, existing);
+  }
+
+  const keys = new Set([
+    ...completionBuckets.keys(),
+    ...wearableBuckets.keys(),
+  ]);
+
+  for (const key of keys) {
+    const completion = completionBuckets.get(key);
+    const wearable = wearableBuckets.get(key);
+    const sport = completion?.sport ?? wearable?.sport ?? 'other';
+    bySport[sport].completions += Math.max(completion?.completions ?? 0, wearable?.completions ?? 0);
+    bySport[sport].totalDurationMin += Math.max(completion?.totalDurationMin ?? 0, wearable?.totalDurationMin ?? 0);
+  }
+
+  return bySport;
 }
 
 // ─── Phase 4 Slice C — Weekly adherence against active plan ─────

@@ -27,6 +27,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
 // ═══════════════════════════════════════════════════════════════════
 // Types
@@ -56,6 +57,20 @@ export interface ContentNotification {
   createdAt: string;
 }
 
+function reportInvalidNotificationScope(
+  operation: string,
+  userId: number | undefined,
+  details?: Record<string, unknown>,
+): void {
+  recordTenantScopeAnomaly({
+    layer: 'delivery',
+    operation,
+    reason: userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+    userId: userId ?? null,
+    details,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Create
 // ═══════════════════════════════════════════════════════════════════
@@ -73,6 +88,13 @@ export function createNotification(opts: {
   body: string;
   data?: Record<string, any>;
 }): number {
+  if (!isValidTenantUserId(opts.userId)) {
+    reportInvalidNotificationScope('create_content_notification', opts.userId, {
+      notificationType: opts.type,
+    });
+    return -1;
+  }
+
   const db = getDb();
   const result = db.prepare(`
     INSERT INTO content_notifications (user_id, type, title, body, data)
@@ -101,6 +123,9 @@ export async function createAndPushNotification(opts: {
   data?: Record<string, any>;
 }): Promise<number> {
   const id = createNotification(opts);
+  if (id <= 0) {
+    return -1;
+  }
 
   // Try APNs push (non-blocking, non-fatal)
   try {
@@ -134,6 +159,11 @@ export function getUnreadNotifications(
   userId: number,
   limit = 20,
 ): ContentNotification[] {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('get_unread_content_notifications', userId, { limit });
+    return [];
+  }
+
   const db = getDb();
   const rows = db.prepare(`
     SELECT * FROM content_notifications
@@ -151,6 +181,15 @@ export function getNotifications(
   userId: number,
   opts: { status?: NotificationStatus; type?: NotificationType; limit?: number } = {},
 ): ContentNotification[] {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('get_content_notifications', userId, {
+      status: opts.status ?? null,
+      notificationType: opts.type ?? null,
+      limit: opts.limit ?? null,
+    });
+    return [];
+  }
+
   const db = getDb();
   const clauses = ['user_id = ?'];
   const params: any[] = [userId];
@@ -179,6 +218,11 @@ export function getNotifications(
  * Get unread count for badge display.
  */
 export function getUnreadCount(userId: number): number {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('get_unread_content_notification_count', userId);
+    return 0;
+  }
+
   const db = getDb();
   const row = db.prepare(
     "SELECT COUNT(*) as cnt FROM content_notifications WHERE user_id = ? AND status = 'unread'",
@@ -194,6 +238,13 @@ export function getUnreadCount(userId: number): number {
  * Mark a notification as read.
  */
 export function markRead(notificationId: number, userId: number): boolean {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('mark_content_notification_read', userId, {
+      notificationId,
+    });
+    return false;
+  }
+
   const db = getDb();
   const result = db.prepare(
     "UPDATE content_notifications SET status = 'read' WHERE id = ? AND user_id = ?",
@@ -205,6 +256,11 @@ export function markRead(notificationId: number, userId: number): boolean {
  * Mark all unread notifications as read for a user.
  */
 export function markAllRead(userId: number): number {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('mark_all_content_notifications_read', userId);
+    return 0;
+  }
+
   const db = getDb();
   const result = db.prepare(
     "UPDATE content_notifications SET status = 'read' WHERE user_id = ? AND status = 'unread'",
@@ -216,6 +272,13 @@ export function markAllRead(userId: number): number {
  * Resolve a notification (action completed).
  */
 export function resolveNotification(notificationId: number, userId: number): boolean {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('resolve_content_notification', userId, {
+      notificationId,
+    });
+    return false;
+  }
+
   const db = getDb();
   const result = db.prepare(
     "UPDATE content_notifications SET status = 'resolved', resolved_at = datetime('now') WHERE id = ? AND user_id = ?",

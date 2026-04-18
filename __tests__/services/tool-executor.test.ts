@@ -9,6 +9,9 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const mockGetTaskProviderForUser = vi.fn();
+const mockResolveCanonicalUserId = vi.fn();
+
 // ─── Mock all external services ──────────────────────────────────────
 
 vi.mock('../../src/services/microsoft-todo', () => ({
@@ -60,6 +63,27 @@ vi.mock('../../src/state/shared-memory', () => ({
   removeSharedMemory: vi.fn(),
 }));
 
+vi.mock('../../src/services/finance-tracker', () => ({
+  addTransaction: vi.fn(),
+  getTransactions: vi.fn(),
+  deleteTransaction: vi.fn(),
+  getMonthlySummary: vi.fn(),
+  calculateAndStoreTax: vi.fn(),
+  calculateMonthlyTax: vi.fn(),
+  getTaxEvents: vi.fn(),
+  markTaxPaid: vi.fn(),
+  getAnnualTaxSummary: vi.fn(),
+  getBudgetStatus: vi.fn(),
+}));
+
+vi.mock('../../src/services/task-store/task-router', () => ({
+  getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  resolveCanonicalUserId: (...args: unknown[]) => mockResolveCanonicalUserId(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
@@ -76,79 +100,71 @@ import * as outlookMail from '../../src/services/outlook-mail';
 import { setReminder } from '../../src/state/reminders';
 import { saveNote, searchNotes } from '../../src/state/notes';
 import { setSharedMemory, removeSharedMemory } from '../../src/state/shared-memory';
+import * as financeTracker from '../../src/services/finance-tracker';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 const mockTodo = vi.mocked(msTodo);
 const mockCal = vi.mocked(unifiedCal);
 const mockMail = vi.mocked(outlookMail);
+const mockFinance = vi.mocked(financeTracker);
+const AUTH_USER_ID = 42;
+const execAsUser = (tool: string, input: Record<string, any> = {}) => executeToolCall(tool, input, AUTH_USER_ID);
+
+beforeEach(() => {
+  mockResolveCanonicalUserId.mockReset();
+  mockResolveCanonicalUserId.mockImplementation((userRef: unknown) =>
+    typeof userRef === 'number' && userRef > 0 ? userRef : null
+  );
+  mockGetTaskProviderForUser.mockReset();
+  mockGetTaskProviderForUser.mockReturnValue(mockTodo);
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // Microsoft To Do tools
 // ═══════════════════════════════════════════════════════════════════
 
 describe('executeToolCall — Microsoft To Do', () => {
-  describe('when Outlook To Do is not configured', () => {
-    beforeEach(() => {
-      mockTodo.isOutlookTodoConfigured.mockReturnValue(false);
-    });
-
-    const todoTools = [
-      'ms_todo_get_lists',
-      'ms_todo_create_list',
-      'ms_todo_delete_list',
-      'ms_todo_get_tasks',
-      'ms_todo_create_task',
-      'ms_todo_update_task',
-      'ms_todo_complete_task',
-      'ms_todo_uncomplete_task',
-      'ms_todo_delete_task',
-      'ms_todo_search_tasks',
-      'ms_todo_get_due_tasks',
-      'ms_todo_move_task',
-      'ms_todo_get_checklist',
-      'ms_todo_add_checklist_item',
-    ];
-
-    it.each(todoTools)('%s returns configuration error', async (tool) => {
-      const result = await executeToolCall(tool, {});
-      expect(result).toHaveProperty('error');
-      expect(result.error).toContain('Microsoft To Do is not configured');
-    });
+  it('returns a tenant-scope error when task tools run without a user context', async () => {
+    const result = await executeToolCall('ms_todo_get_lists', {});
+    expect(result).toEqual({ error: 'ms_todo_get_lists requires an authenticated user context' });
   });
 
   describe('when configured', () => {
     beforeEach(() => {
       mockTodo.isOutlookTodoConfigured.mockReturnValue(true);
+      mockGetTaskProviderForUser.mockReset();
+      mockGetTaskProviderForUser.mockReturnValue(mockTodo);
     });
 
     it('ms_todo_get_lists — delegates to getLists()', async () => {
       const lists = [{ id: 'list1', displayName: 'Work', isOwner: true, isShared: false }];
       mockTodo.getLists.mockResolvedValue({ success: true, data: lists });
 
-      const result = await executeToolCall('ms_todo_get_lists', {});
+      const result = await execAsUser('ms_todo_get_lists');
       expect(result).toEqual({ success: true, data: lists });
       expect(mockTodo.getLists).toHaveBeenCalledOnce();
+      expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(AUTH_USER_ID);
     });
 
     it('ms_todo_create_list — delegates with list name', async () => {
       mockTodo.createList.mockResolvedValue({ success: true, data: { id: 'list2', displayName: 'Personal' } as any });
 
-      await executeToolCall('ms_todo_create_list', { name: 'Personal' });
+      await execAsUser('ms_todo_create_list', { name: 'Personal' });
       expect(mockTodo.createList).toHaveBeenCalledWith('Personal');
     });
 
     it('ms_todo_delete_list — delegates with list_id', async () => {
       mockTodo.deleteList.mockResolvedValue({ success: true, data: undefined });
 
-      await executeToolCall('ms_todo_delete_list', { list_id: 'list1' });
+      await execAsUser('ms_todo_delete_list', { list_id: 'list1' });
       expect(mockTodo.deleteList).toHaveBeenCalledWith('list1');
     });
 
     it('ms_todo_get_tasks — passes list_id, list_name and status filter', async () => {
       mockTodo.getTasks.mockResolvedValue({ success: true, data: [] });
 
-      await executeToolCall('ms_todo_get_tasks', {
+      await execAsUser('ms_todo_get_tasks', {
         list_id: 'list1',
         list_name: 'Work',
         status: 'notStarted',
@@ -163,7 +179,7 @@ describe('executeToolCall — Microsoft To Do', () => {
           data: { id: 'task123', title: 'Deploy app' } as any,
         });
 
-        const result = await executeToolCall('ms_todo_create_task', {
+        const result = await execAsUser('ms_todo_create_task', {
           list_id: 'list1',
           list_name: 'Work',
           title: 'Deploy app',
@@ -178,7 +194,7 @@ describe('executeToolCall — Microsoft To Do', () => {
           error: 'List not found',
         });
 
-        const result = await executeToolCall('ms_todo_create_task', {
+        const result = await execAsUser('ms_todo_create_task', {
           list_id: 'bad-id',
           list_name: 'Missing',
           title: 'Task',
@@ -189,7 +205,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('passes all optional fields to createTask', async () => {
         mockTodo.createTask.mockResolvedValue({ success: true, data: { id: 't1', title: 'Review' } as any });
 
-        await executeToolCall('ms_todo_create_task', {
+        await execAsUser('ms_todo_create_task', {
           list_id: 'list1',
           list_name: 'Work',
           title: 'Review',
@@ -208,9 +224,118 @@ describe('executeToolCall — Microsoft To Do', () => {
       });
     });
 
+    describe('per-user native task routing', () => {
+      it('falls back to the user default list when the model sends an invalid list_id', async () => {
+        mockResolveCanonicalUserId.mockImplementation((userRef: unknown) => {
+          if (userRef === 99) return 1001;
+          return typeof userRef === 'number' && userRef > 0 ? userRef : null;
+        });
+        const mockProvider = {
+          createTask: vi.fn(async (_listId: string, listName: string, payload: Record<string, unknown>) => ({
+            success: true,
+            data: { id: 'task-native-1', title: payload.title, listName } as any,
+          })),
+        };
+        mockGetTaskProviderForUser.mockReturnValue(mockProvider);
+
+        const result = await executeToolCall('ms_todo_create_task', {
+          list_id: '12345',
+          list_name: 'Inbox',
+          title: 'Review deck',
+        }, 99);
+
+        expect(result).toEqual({ success: true, id: 'task-native-1', title: 'Review deck' });
+        expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(1001);
+        expect(mockProvider.createTask).toHaveBeenCalledWith('12345', 'Inbox', expect.objectContaining({
+          title: 'Review deck',
+        }));
+      });
+
+      it('prefers the real capture list when the model sends a generic inbox label without a list id', async () => {
+        const mockProvider = {
+          getLists: vi.fn(async () => ({
+            success: true,
+            data: [
+              { id: 'tasks-1', displayName: 'Tasks', wellknownListName: 'defaultList' },
+              { id: 'ec-1', displayName: 'European Commision' },
+            ],
+          })),
+          findListByName: vi.fn(async (name: string) => {
+            if (name === 'Inbox') return null;
+            if (name === 'Tasks') return { id: 'tasks-1', displayName: 'Tasks' };
+            return null;
+          }),
+          getDefaultList: vi.fn(async () => ({ id: 'ec-1', displayName: 'European Commision' })),
+          createTask: vi.fn(async (_listId: string, listName: string, payload: Record<string, unknown>) => ({
+            success: true,
+            data: { id: 'task-native-2', title: payload.title, listName } as any,
+          })),
+        };
+        mockGetTaskProviderForUser.mockReturnValue(mockProvider);
+
+        const result = await executeToolCall('ms_todo_create_task', {
+          list_name: 'Inbox',
+          title: 'pay via verde',
+        }, 99);
+
+        expect(result).toEqual({ success: true, id: 'task-native-2', title: 'pay via verde' });
+        expect(mockProvider.createTask).toHaveBeenCalledWith(
+          'tasks-1',
+          'Tasks',
+          expect.objectContaining({ title: 'pay via verde' }),
+        );
+      });
+
+      it('uses the active task provider for due-task lookups when a user context exists', async () => {
+        const mockProvider = {
+          getTasksDueInRange: vi.fn(async (start: string, end: string) => ({
+            success: true,
+            data: [{ id: 'task-1', title: `due ${start} ${end}` }],
+          })),
+        };
+        mockGetTaskProviderForUser.mockReturnValue(mockProvider);
+
+        const result = await executeToolCall('ms_todo_get_due_tasks', {
+          start_date: '2026-04-15T00:00:00.000Z',
+          end_date: '2026-04-15T23:59:59.000Z',
+        }, 99);
+
+        expect(mockProvider.getTasksDueInRange).toHaveBeenCalledWith(
+          '2026-04-15T00:00:00.000Z',
+          '2026-04-15T23:59:59.000Z',
+        );
+        expect(mockTodo.getTasksDueInRange).not.toHaveBeenCalled();
+        expect(result).toEqual({
+          success: true,
+          data: [{ id: 'task-1', title: 'due 2026-04-15T00:00:00.000Z 2026-04-15T23:59:59.000Z' }],
+        });
+      });
+
+      it('uses the active task provider for task search when a user context exists', async () => {
+        const mockProvider = {
+          searchTasks: vi.fn(async (query: string) => ({
+            success: true,
+            data: [{ id: 'task-2', title: query }],
+          })),
+        };
+        mockGetTaskProviderForUser.mockReturnValue(mockProvider);
+
+        const result = await executeToolCall('ms_todo_search_tasks', {
+          query: 'review training deck',
+        }, 99);
+
+        expect(mockProvider.searchTasks).toHaveBeenCalledWith('review training deck');
+        expect(mockTodo.searchTasks).not.toHaveBeenCalled();
+        expect(result).toEqual({
+          success: true,
+          data: [{ id: 'task-2', title: 'review training deck' }],
+        });
+      });
+    });
+
     describe('ms_todo_update_task', () => {
       it('returns error when task_id is missing', async () => {
-        const result = await executeToolCall('ms_todo_update_task', { list_id: 'list1' });
+        const result = await execAsUser('ms_todo_update_task', { list_id: 'list1' });
         expect(result).toEqual({
           success: false,
           error: 'Missing task_id — cannot update a task without its ID.',
@@ -221,7 +346,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('returns slim success response on success', async () => {
         mockTodo.updateTask.mockResolvedValue({ success: true, data: { title: 'Updated' } as any });
 
-        const result = await executeToolCall('ms_todo_update_task', {
+        const result = await execAsUser('ms_todo_update_task', {
           list_id: 'list1',
           task_id: 'task1',
           title: 'Updated',
@@ -233,7 +358,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('uses fallback title "updated" when data has no title', async () => {
         mockTodo.updateTask.mockResolvedValue({ success: true, data: {} as any });
 
-        const result = await executeToolCall('ms_todo_update_task', {
+        const result = await execAsUser('ms_todo_update_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
@@ -243,7 +368,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('returns error response on failure', async () => {
         mockTodo.updateTask.mockResolvedValue({ success: false, data: null, error: 'Not found' });
 
-        const result = await executeToolCall('ms_todo_update_task', {
+        const result = await execAsUser('ms_todo_update_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
@@ -253,7 +378,7 @@ describe('executeToolCall — Microsoft To Do', () => {
 
     describe('ms_todo_complete_task', () => {
       it('returns error when task_id is missing', async () => {
-        const result = await executeToolCall('ms_todo_complete_task', { list_id: 'list1' });
+        const result = await execAsUser('ms_todo_complete_task', { list_id: 'list1' });
         expect(result).toEqual({
           success: false,
           error: 'Missing task_id — cannot complete a task without its ID.',
@@ -263,7 +388,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('returns slim success with title on success', async () => {
         mockTodo.completeTask.mockResolvedValue({ success: true, data: { title: 'Buy groceries' } as any });
 
-        const result = await executeToolCall('ms_todo_complete_task', {
+        const result = await execAsUser('ms_todo_complete_task', {
           list_id: 'list1',
           task_id: 'task1',
           list_name: 'Personal',
@@ -275,7 +400,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('uses fallback title "done" when data has no title', async () => {
         mockTodo.completeTask.mockResolvedValue({ success: true, data: {} as any });
 
-        const result = await executeToolCall('ms_todo_complete_task', {
+        const result = await execAsUser('ms_todo_complete_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
@@ -285,7 +410,7 @@ describe('executeToolCall — Microsoft To Do', () => {
 
     describe('ms_todo_uncomplete_task', () => {
       it('returns error when task_id is missing', async () => {
-        const result = await executeToolCall('ms_todo_uncomplete_task', { list_id: 'list1' });
+        const result = await execAsUser('ms_todo_uncomplete_task', { list_id: 'list1' });
         expect(result).toEqual({
           success: false,
           error: 'Missing task_id — cannot uncomplete a task without its ID.',
@@ -295,7 +420,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('returns slim success with fallback title "reopened"', async () => {
         mockTodo.uncompleteTask.mockResolvedValue({ success: true, data: {} as any });
 
-        const result = await executeToolCall('ms_todo_uncomplete_task', {
+        const result = await execAsUser('ms_todo_uncomplete_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
@@ -305,7 +430,7 @@ describe('executeToolCall — Microsoft To Do', () => {
 
     describe('ms_todo_delete_task', () => {
       it('returns error when task_id is missing', async () => {
-        const result = await executeToolCall('ms_todo_delete_task', { list_id: 'list1' });
+        const result = await execAsUser('ms_todo_delete_task', { list_id: 'list1' });
         expect(result).toEqual({
           success: false,
           error: 'Missing task_id — cannot delete a task without its ID.',
@@ -315,7 +440,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('returns { success: true } on success', async () => {
         mockTodo.deleteTask.mockResolvedValue({ success: true, data: undefined });
 
-        const result = await executeToolCall('ms_todo_delete_task', {
+        const result = await execAsUser('ms_todo_delete_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
@@ -326,7 +451,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       it('returns { success: false, error } on failure', async () => {
         mockTodo.deleteTask.mockResolvedValue({ success: false, data: undefined, error: 'Not found' });
 
-        const result = await executeToolCall('ms_todo_delete_task', {
+        const result = await execAsUser('ms_todo_delete_task', {
           list_id: 'list1',
           task_id: 'task1',
         });
@@ -338,7 +463,7 @@ describe('executeToolCall — Microsoft To Do', () => {
       const tasks = [{ id: 't1', title: 'Deploy' }];
       mockTodo.searchTasks.mockResolvedValue({ success: true, data: tasks as any });
 
-      const result = await executeToolCall('ms_todo_search_tasks', { query: 'Deploy' });
+      const result = await execAsUser('ms_todo_search_tasks', { query: 'Deploy' });
       expect(result).toEqual({ success: true, data: tasks });
       expect(mockTodo.searchTasks).toHaveBeenCalledWith('Deploy');
     });
@@ -346,7 +471,7 @@ describe('executeToolCall — Microsoft To Do', () => {
     it('ms_todo_get_due_tasks — delegates with date range', async () => {
       mockTodo.getTasksDueInRange.mockResolvedValue({ success: true, data: [] });
 
-      await executeToolCall('ms_todo_get_due_tasks', {
+      await execAsUser('ms_todo_get_due_tasks', {
         start_date: '2026-03-30',
         end_date: '2026-04-06',
       });
@@ -356,7 +481,7 @@ describe('executeToolCall — Microsoft To Do', () => {
     it('ms_todo_move_task — delegates all four IDs', async () => {
       mockTodo.moveTask.mockResolvedValue({ success: true, data: {} as any });
 
-      await executeToolCall('ms_todo_move_task', {
+      await execAsUser('ms_todo_move_task', {
         list_id: 'src-list',
         task_id: 'task1',
         target_list_id: 'tgt-list',
@@ -368,14 +493,14 @@ describe('executeToolCall — Microsoft To Do', () => {
     it('ms_todo_get_checklist — delegates list_id and task_id', async () => {
       mockTodo.getChecklistItems.mockResolvedValue({ success: true, data: [] });
 
-      await executeToolCall('ms_todo_get_checklist', { list_id: 'list1', task_id: 'task1' });
+      await execAsUser('ms_todo_get_checklist', { list_id: 'list1', task_id: 'task1' });
       expect(mockTodo.getChecklistItems).toHaveBeenCalledWith('list1', 'task1');
     });
 
     it('ms_todo_add_checklist_item — delegates list_id, task_id, title', async () => {
       mockTodo.addChecklistItem.mockResolvedValue({ success: true, data: {} as any });
 
-      await executeToolCall('ms_todo_add_checklist_item', {
+      await execAsUser('ms_todo_add_checklist_item', {
         list_id: 'list1',
         task_id: 'task1',
         title: 'Step one',
@@ -461,6 +586,7 @@ describe('executeToolCall — Calendar', () => {
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'evt1', new_title: 'Renamed' }),
           'outlook',
+          undefined,
         );
       });
 
@@ -474,6 +600,7 @@ describe('executeToolCall — Calendar', () => {
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'AAMkABC123' }),
           'outlook',
+          undefined,
         );
       });
 
@@ -487,6 +614,7 @@ describe('executeToolCall — Calendar', () => {
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'google_event_xyz' }),
           'google',
+          undefined,
         );
       });
     });
@@ -500,14 +628,14 @@ describe('executeToolCall — Calendar', () => {
           calendar_source: 'google',
         });
         expect(result).toEqual({ success: true, message: 'Event deleted' });
-        expect(mockCal.deleteEvent).toHaveBeenCalledWith('evt1', 'google');
+        expect(mockCal.deleteEvent).toHaveBeenCalledWith('evt1', 'google', undefined);
       });
 
       it('auto-detects outlook source from AAMk prefix', async () => {
         mockCal.deleteEvent.mockResolvedValue(undefined);
 
         await executeToolCall('delete_calendar_event', { event_id: 'AAMkXYZ' });
-        expect(mockCal.deleteEvent).toHaveBeenCalledWith('AAMkXYZ', 'outlook');
+        expect(mockCal.deleteEvent).toHaveBeenCalledWith('AAMkXYZ', 'outlook', undefined);
       });
     });
   });
@@ -518,17 +646,25 @@ describe('executeToolCall — Calendar', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('executeToolCall — Reminders', () => {
+  it('set_reminder — requires tenant-scoped user context', async () => {
+    const result = await executeToolCall('set_reminder', {
+      message: 'Call coach',
+      remind_at: '2026-04-01T08:00:00',
+    });
+    expect(result).toEqual({ error: 'set_reminder requires an authenticated user context' });
+  });
+
   it('set_reminder — delegates to setReminder with all fields', async () => {
     const reminder = { id: 1, message: 'Call coach', remind_at: '2026-04-01T08:00:00' };
     vi.mocked(setReminder).mockReturnValue(reminder as any);
 
-    const result = await executeToolCall('set_reminder', {
+    const result = await execAsUser('set_reminder', {
       message: 'Call coach',
       remind_at: '2026-04-01T08:00:00',
       recurring: 'weekly',
     });
     expect(result).toEqual(reminder);
-    expect(setReminder).toHaveBeenCalledWith(0, {
+    expect(setReminder).toHaveBeenCalledWith(AUTH_USER_ID, {
       message: 'Call coach',
       remind_at: '2026-04-01T08:00:00',
       recurring: 'weekly',
@@ -541,17 +677,22 @@ describe('executeToolCall — Reminders', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('executeToolCall — Notes', () => {
+  it('save_note — requires tenant-scoped user context', async () => {
+    const result = await executeToolCall('save_note', { content: 'Swim PR: 1:02:30' });
+    expect(result).toEqual({ error: 'save_note requires an authenticated user context' });
+  });
+
   it('save_note — delegates with content, domain, and tags', async () => {
     const note = { id: 1, content: 'Swim PR: 1:02:30' };
     vi.mocked(saveNote).mockReturnValue(note as any);
 
-    const result = await executeToolCall('save_note', {
+    const result = await execAsUser('save_note', {
       content: 'Swim PR: 1:02:30',
       domain: 'triathlon',
       tags: ['pr', 'swim'],
     });
     expect(result).toEqual(note);
-    expect(saveNote).toHaveBeenCalledWith(0, {
+    expect(saveNote).toHaveBeenCalledWith(AUTH_USER_ID, {
       content: 'Swim PR: 1:02:30',
       domain: 'triathlon',
       tags: ['pr', 'swim'],
@@ -562,13 +703,13 @@ describe('executeToolCall — Notes', () => {
     const notes = [{ id: 1, content: 'Swim PR' }];
     vi.mocked(searchNotes).mockReturnValue(notes as any);
 
-    const result = await executeToolCall('search_notes', {
+    const result = await execAsUser('search_notes', {
       query: 'swim',
       domain: 'triathlon',
       tag: 'pr',
     });
     expect(result).toEqual(notes);
-    expect(searchNotes).toHaveBeenCalledWith(0, {
+    expect(searchNotes).toHaveBeenCalledWith(AUTH_USER_ID, {
       query: 'swim',
       domain: 'triathlon',
       tag: 'pr',
@@ -678,32 +819,90 @@ describe('executeToolCall — Outlook Email', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('executeToolCall — Shared Memory', () => {
+  it('shared_memory_set — requires tenant-scoped user context', async () => {
+    const result = await executeToolCall('shared_memory_set', {
+      key: 'active_race',
+      value: 'Ironman 2026',
+    });
+    expect(result).toEqual({ error: 'shared_memory_set requires an authenticated user context' });
+  });
+
   it('shared_memory_set — delegates to setSharedMemory, returns entry fields', async () => {
     const entry = { key: 'active_race', value: 'Ironman 2026', domain: 'secretary', expires_at: undefined };
     vi.mocked(setSharedMemory).mockReturnValue(entry as any);
 
-    const result = await executeToolCall('shared_memory_set', {
+    const result = await execAsUser('shared_memory_set', {
       key: 'active_race',
       value: 'Ironman 2026',
       expires_at: undefined,
     });
     expect(result).toEqual({ success: true, key: 'active_race', value: 'Ironman 2026' });
-    expect(setSharedMemory).toHaveBeenCalledWith(0, 'active_race', 'Ironman 2026', 'secretary', undefined);
+    expect(setSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'active_race', 'Ironman 2026', 'secretary', undefined);
   });
 
   it('shared_memory_remove — returns { success: true, key } when entry exists', async () => {
     vi.mocked(removeSharedMemory).mockReturnValue(true);
 
-    const result = await executeToolCall('shared_memory_remove', { key: 'active_race' });
+    const result = await execAsUser('shared_memory_remove', { key: 'active_race' });
     expect(result).toEqual({ success: true, key: 'active_race' });
-    expect(removeSharedMemory).toHaveBeenCalledWith(0, 'active_race');
+    expect(removeSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'active_race');
   });
 
   it('shared_memory_remove — returns { success: false, key } when entry does not exist', async () => {
     vi.mocked(removeSharedMemory).mockReturnValue(false);
 
-    const result = await executeToolCall('shared_memory_remove', { key: 'nonexistent' });
+    const result = await execAsUser('shared_memory_remove', { key: 'nonexistent' });
     expect(result).toEqual({ success: false, key: 'nonexistent' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Finance tools
+// ═══════════════════════════════════════════════════════════════════
+
+describe('executeToolCall — Finance', () => {
+  beforeEach(() => {
+    mockFinance.addTransaction.mockReset();
+  });
+
+  it('preserves a user-specified currency when logging a transaction', async () => {
+    mockResolveCanonicalUserId.mockImplementation((userRef: unknown) => {
+      if (userRef === 77) return 7077;
+      return typeof userRef === 'number' && userRef > 0 ? userRef : null;
+    });
+    mockFinance.addTransaction.mockReturnValue({
+      id: 17,
+      date: '2026-04-15',
+      category: 'expense',
+      amount: 28,
+      currency: 'EUR',
+      subcategory: 'meals',
+      description: 'Lunch',
+      receipt_ref: null,
+    } as any);
+
+    const result = await executeToolCall('finance_add_transaction', {
+      date: '2026-04-15',
+      category: 'expense',
+      amount: 28,
+      currency: 'EUR',
+      subcategory: 'meals',
+      description: 'Lunch',
+    }, 77);
+
+    expect(mockFinance.addTransaction).toHaveBeenCalledWith(7077, '2026-04-15', 'expense', 28, {
+      subcategory: 'meals',
+      description: 'Lunch',
+      currency: 'EUR',
+    });
+    expect(result).toEqual({
+      success: true,
+      id: 17,
+      date: '2026-04-15',
+      category: 'expense',
+      amount: 28,
+      currency: 'EUR',
+    });
   });
 });
 
@@ -721,7 +920,7 @@ describe('executeToolCall — error handling', () => {
     mockTodo.isOutlookTodoConfigured.mockReturnValue(true);
     mockTodo.getLists.mockRejectedValue(new Error('Network timeout'));
 
-    const result = await executeToolCall('ms_todo_get_lists', {});
+    const result = await execAsUser('ms_todo_get_lists');
     expect(result).toEqual({ error: 'Tool execution failed: Network timeout' });
   });
 

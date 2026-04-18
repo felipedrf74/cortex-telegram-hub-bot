@@ -29,6 +29,10 @@ export interface Recipe {
   servings: number;
   tags: string | null;
   source: string | null;
+  protein: number | null;
+  fat: number | null;
+  carbs: number | null;
+  calories: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -68,12 +72,26 @@ export function addRecipe(
   userId: number,
   title: string,
   ingredients: Ingredient[],
-  opts?: { instructions?: string; prepTime?: number; cookTime?: number; servings?: number; tags?: string; source?: string },
+  opts?: {
+    instructions?: string;
+    prepTime?: number;
+    cookTime?: number;
+    servings?: number;
+    tags?: string;
+    source?: string;
+    protein?: number | null;
+    fat?: number | null;
+    carbs?: number | null;
+    calories?: number | null;
+  },
 ): Recipe {
   const db = getDb();
   db.prepare(`
-    INSERT INTO recipes (user_id, title, ingredients, instructions, prep_time_min, cook_time_min, servings, tags, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO recipes (
+      user_id, title, ingredients, instructions, prep_time_min, cook_time_min,
+      servings, tags, source, protein_g, fat_g, carbs_g, calories_kcal
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     userId, title, JSON.stringify(ingredients),
     opts?.instructions ?? null,
@@ -82,6 +100,10 @@ export function addRecipe(
     opts?.servings ?? 1,
     opts?.tags ?? null,
     opts?.source ?? null,
+    opts?.protein ?? null,
+    opts?.fat ?? null,
+    opts?.carbs ?? null,
+    opts?.calories ?? null,
   );
   const row = db.prepare('SELECT * FROM recipes WHERE rowid = last_insert_rowid()').get() as any;
   logger.info({ userId, title }, 'Recipe added');
@@ -154,6 +176,10 @@ export function updateRecipe(
     servings?: number;
     tags?: string | null;
     source?: string | null;
+    protein?: number | null;
+    fat?: number | null;
+    carbs?: number | null;
+    calories?: number | null;
   },
 ): Recipe | null {
   const db = getDb();
@@ -194,6 +220,22 @@ export function updateRecipe(
   if (updates.source !== undefined) {
     setParts.push('source = ?');
     params.push(updates.source);
+  }
+  if (updates.protein !== undefined) {
+    setParts.push('protein_g = ?');
+    params.push(updates.protein);
+  }
+  if (updates.fat !== undefined) {
+    setParts.push('fat_g = ?');
+    params.push(updates.fat);
+  }
+  if (updates.carbs !== undefined) {
+    setParts.push('carbs_g = ?');
+    params.push(updates.carbs);
+  }
+  if (updates.calories !== undefined) {
+    setParts.push('calories_kcal = ?');
+    params.push(updates.calories);
   }
 
   if (setParts.length > 0) {
@@ -356,9 +398,20 @@ export function updateShoppingListItemChecked(
 // ── Helpers ────────────────────────────────────────────────────────
 
 function parseRecipe(row: any): Recipe {
+  const {
+    protein_g,
+    fat_g,
+    carbs_g,
+    calories_kcal,
+    ...rest
+  } = row;
   return {
-    ...row,
+    ...rest,
     ingredients: typeof row.ingredients === 'string' ? JSON.parse(row.ingredients) : row.ingredients,
+    protein: protein_g ?? null,
+    fat: fat_g ?? null,
+    carbs: carbs_g ?? null,
+    calories: calories_kcal ?? null,
   };
 }
 

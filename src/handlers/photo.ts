@@ -21,9 +21,10 @@ import { enqueueInvoice, getPendingCount } from '../services/invoice-queue';
 import { recordFiling } from '../state/invoice-filings';
 import { getEvents, createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../services/unified-calendar';
 import { getCategoryNameForColor } from '../services/outlook-calendar';
-import * as msTodo from '../services/microsoft-todo';
 import { splitMessage, escapeHtml } from '../utils/telegram-formatter';
 import { formatTime } from '../utils/date-parser';
+import { resolveCanonicalUserId } from '../services/user-service';
+import { getTaskProviderForUser } from '../services/task-store/task-router';
 
 // ── Types ─────���───────────────────────────────────────────────────
 
@@ -151,6 +152,9 @@ export async function handleInvoiceFiling(
   fileId: string,
   caption: string,
 ): Promise<void> {
+  const telegramUserId = ctx.from?.id;
+  const canonicalUserId = telegramUserId ? resolveCanonicalUserId(telegramUserId) : null;
+
   if (!isInvoiceFilingConfigured() || analysis.confidence < config.invoices.minConfidence) {
     logger.info({ confidence: analysis.confidence }, 'Invoice detected but low confidence or filing not configured');
     await handleTaskExtraction(ctx, { type: 'task', title: analysis.vendor || 'Document', subtasks: [] }, caption);
@@ -175,6 +179,12 @@ export async function handleInvoiceFiling(
   const filingResult = await fileInvoice(buffer, mediaType, invoiceAnalysis);
 
   if (filingResult.success) {
+    if (!canonicalUserId) {
+      logger.error({ telegramUserId }, 'Invoice filing succeeded but no canonical user ID was resolved');
+      await ctx.reply('⚠️ Nota fiscal detectada, mas não foi possível associá-la à tua conta.');
+      return;
+    }
+
     recordFiling({
       vendor: analysis.vendor || 'Unknown',
       amount: analysis.totalAmount,
@@ -188,22 +198,22 @@ export async function handleInvoiceFiling(
       file_size_bytes: filingResult.originalSizeKB ? filingResult.originalSizeKB * 1024 : null,
       compressed_size_bytes: filingResult.compressedSizeKB ? filingResult.compressedSizeKB * 1024 : null,
       status: 'filed',
+      user_id: canonicalUserId,
     });
 
     // Auto-log receipt as finance expense transaction
-    const userId = ctx.from?.id;
     const parsedAmount = parseReceiptAmount(analysis.totalAmount);
     let txId: number | null = null;
 
-    if (userId && parsedAmount) {
+    if (canonicalUserId && parsedAmount) {
       const txDate = analysis.documentDate || new Date().toISOString().split('T')[0];
-      const tx = addTransaction(userId, txDate, 'expense', parsedAmount, {
+      const tx = addTransaction(canonicalUserId, txDate, 'expense', parsedAmount, {
         subcategory: 'receipt',
         description: analysis.vendor ? `Receipt: ${analysis.vendor}` : 'Receipt from photo',
         receiptRef: filingResult.filename || undefined,
       });
       txId = tx.id;
-      logger.info({ userId, amount: parsedAmount, vendor: analysis.vendor }, 'Receipt auto-logged as finance transaction');
+      logger.info({ userId: canonicalUserId, amount: parsedAmount, vendor: analysis.vendor }, 'Receipt auto-logged as finance transaction');
     }
 
     let msg = `🧾 <b>Nota fiscal arquivada!</b>\n\n`;
@@ -245,12 +255,17 @@ export async function handleInvoiceFiling(
 
   if (isSshError) {
     logger.warn({ error: filingResult.error }, 'Invoice filing failed (SSH) — queuing for retry');
+    if (!canonicalUserId) {
+      await ctx.reply('⚠️ Nota fiscal detectada, mas não foi possível colocá-la em fila para a tua conta.');
+      return;
+    }
     const queueId = enqueueInvoice(
       buffer,
       'image',
       mediaType,
       JSON.stringify(invoiceAnalysis),
       'photo',
+      canonicalUserId,
     );
     const pendingCount = getPendingCount();
 
@@ -410,8 +425,10 @@ export async function handleTaskExtraction(
   extracted: ImageTaskResult,
   caption: string,
 ): Promise<void> {
-  if (!msTodo.isOutlookTodoConfigured()) {
-    await ctx.reply('📷 Foto recebida, mas o Microsoft To Do não está configurado.');
+  const telegramUserId = ctx.from?.id;
+  const userId = telegramUserId ? resolveCanonicalUserId(telegramUserId) : null;
+  if (userId == null) {
+    await ctx.reply('📷 Foto recebida, mas o provedor de tarefas não está disponível para este utilizador.');
     return;
   }
 
@@ -420,11 +437,13 @@ export async function handleTaskExtraction(
     return;
   }
 
-  let targetList: msTodo.TodoList | null = null;
-  if (extracted.listHint) targetList = await msTodo.findListByName(extracted.listHint);
-  if (!targetList) targetList = await msTodo.getDefaultList();
+  const taskProvider = getTaskProviderForUser(userId);
+
+  let targetList: { id: string; displayName: string } | null = null;
+  if (extracted.listHint) targetList = await taskProvider.findListByName(extracted.listHint);
+  if (!targetList) targetList = await taskProvider.getDefaultList();
   if (!targetList) {
-    const lists = await msTodo.getLists();
+    const lists = await taskProvider.getLists();
     if (lists.success && lists.data.length > 0) targetList = lists.data[0];
   }
   if (!targetList) {
@@ -432,7 +451,7 @@ export async function handleTaskExtraction(
     return;
   }
 
-  const taskResult = await msTodo.createTask(targetList.id, targetList.displayName, {
+  const taskResult = await taskProvider.createTask(targetList.id, targetList.displayName, {
     title: extracted.title,
   });
   if (!taskResult.success) {
@@ -443,7 +462,7 @@ export async function handleTaskExtraction(
   let addedSubtasks = 0;
   if (extracted.subtasks.length > 0) {
     const subResults = await Promise.all(
-      extracted.subtasks.map((sub) => msTodo.addChecklistItem(targetList!.id, taskResult.data.id, sub)),
+      extracted.subtasks.map((sub) => taskProvider.addChecklistItem(targetList!.id, taskResult.data.id, sub)),
     );
     addedSubtasks = subResults.filter((r) => r.success).length;
   }

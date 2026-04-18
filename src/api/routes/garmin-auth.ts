@@ -20,6 +20,7 @@ import {
   markGarminConnectionActive,
   upsertGarminSession,
 } from '../../services/garmin-session-store';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 async function beginGarminLogin(userId: number, email: string, password: string) {
   const GarminConnect = (await import('garmin-connect')).GarminConnect;
@@ -69,6 +70,15 @@ async function beginGarminLogin(userId: number, email: string, password: string)
 
 export function garminAuthRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'garmin_auth_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * POST /api/v1/garmin/login

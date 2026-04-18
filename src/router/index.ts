@@ -1,7 +1,13 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DomainName } from '../domains/types';
-import { patternMatch, keywordMatch, classifyWithClaude, ConversationContext } from './classifier';
+import {
+  patternMatch,
+  keywordMatch,
+  classifyWithClaude,
+  ConversationContext,
+  hasStrongSecretaryIntent,
+} from './classifier';
 import { logger } from '../utils/logger';
 
 export { keywordMatch };
@@ -12,6 +18,12 @@ export interface RouteResult {
   confidence: number;
   strippedMessage: string;
 }
+
+const CONTEXT_OVERRIDE_SAFE_KEYWORD_DOMAINS = new Set<DomainName>([
+  'content',
+  'cooking',
+  'finance',
+]);
 
 const CONTEXT_FOLLOW_UP_PATTERNS = [
   /^(yes|yeah|yep|sure|ok|okay|do it|make it|move it|change it|shorten it|make it shorter|what about|how about|and do|and move|sim|claro|faz isso|faça isso|faz|muda|altera|encurta|resume|resuma|e faz|e move|e muda)\b/i,
@@ -24,13 +36,30 @@ const CONTENT_REFINEMENT_PATTERNS = [
   /\b(in\s+portuguese|in\s+english|portugu[eê]s|portugues|ingl[eê]s|european\s+portuguese|portugu[eê]s\s+europeu|mais\s+curt[oa]|mais\s+long[oa])\b/i,
 ];
 
+const FINANCE_REFINEMENT_PATTERNS = [
+  /\b(categori[sz]e|reclassif(?:y|ies)|tag|mark|split|rename|attach|file|reconcile|deductible|business\s+expense|personal\s+expense|software|travel|meals?)\b/i,
+  /\b(categoriza|reclassifica|marca|separa|divide|renomeia|anexa|lan[çc]a|reconcilia|dedut[ií]vel|despesa\s+(?:da\s+empresa|pessoal)|software|viagem|refei[çc][aã]o|almo[cç]o|jantar)\b/i,
+];
+
+const SECRETARY_REFINEMENT_PATTERNS = [
+  /\b(move it|reschedule it|cancel it|delete it|complete it|mark it done|shift it|fit it|slot it|push it|bring it forward|later today|tomorrow instead|this afternoon|next week)\b/i,
+  /\b(muda isso|move isso|remarca isso|reagenda isso|cancela isso|apaga isso|conclui isso|encaixa isso|mais tarde hoje|amanh[ãa] em vez disso|na pr[oó]xima semana)\b/i,
+  /^(what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|prioriti[sz]e my day|o que fa[çc]o primeiro|o que devo fazer primeiro|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia)[\s?!.]*$/i,
+];
+
+const TRIATHLON_REFINEMENT_PATTERNS = [
+  /\b(make it easier|make it harder|make it shorter|make it longer|move it to|swap it for|change the session|change the workout|keep the same plan|after the workout|before the workout|after the ride|before the run)\b/i,
+  /\b(deixa mais leve|deixa mais forte|deixa mais curto|deixa mais longo|muda para|troca por|altera o treino|mant[eé]m o plano|depois do treino|antes do treino|depois da corrida|antes da bike)\b/i,
+];
+
 function shouldPreferContext(message: string, activeContext?: ConversationContext | null): boolean {
   if (!activeContext) return false;
   const trimmed = message.trim();
   if (!trimmed) return false;
 
   const tokenCount = trimmed.split(/\s+/).length;
-  if (tokenCount > 12) return false;
+  const maxTokens = activeContext.domain === 'secretary' || activeContext.domain === 'triathlon' ? 18 : 12;
+  if (tokenCount > maxTokens) return false;
 
   return CONTEXT_FOLLOW_UP_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
@@ -40,11 +69,29 @@ function shouldForceActiveContext(message: string, activeContext?: ConversationC
   const trimmed = message.trim();
   if (!trimmed) return false;
 
-  const tokenCount = trimmed.split(/\s+/).length;
-  if (tokenCount > 18) return false;
-
   if (activeContext.domain === 'content') {
+    const tokenCount = trimmed.split(/\s+/).length;
+    if (tokenCount > 18) return false;
     return CONTENT_REFINEMENT_PATTERNS.some((pattern) => pattern.test(trimmed));
+  }
+
+  if (activeContext.domain === 'finance') {
+    const tokenCount = trimmed.split(/\s+/).length;
+    if (tokenCount > 18) return false;
+    return FINANCE_REFINEMENT_PATTERNS.some((pattern) => pattern.test(trimmed))
+      && !hasStrongSecretaryIntent(trimmed);
+  }
+
+  if (activeContext.domain === 'secretary') {
+    const tokenCount = trimmed.split(/\s+/).length;
+    if (tokenCount > 22) return false;
+    return SECRETARY_REFINEMENT_PATTERNS.some((pattern) => pattern.test(trimmed));
+  }
+
+  if (activeContext.domain === 'triathlon') {
+    const tokenCount = trimmed.split(/\s+/).length;
+    if (tokenCount > 22) return false;
+    return TRIATHLON_REFINEMENT_PATTERNS.some((pattern) => pattern.test(trimmed));
   }
 
   return false;
@@ -111,13 +158,20 @@ export async function routeMessage(
   }
 
   const preferContext = shouldPreferContext(message, activeContext);
+  const kwDomain = keywordMatch(message);
 
   // Step 2: keyword matching stays the default free fast path, but
   // short follow-up turns with an active context should not be ripped
   // out of that context just because they contain a broad keyword.
-  if (!preferContext) {
-    const kwDomain = keywordMatch(message);
-    if (kwDomain) {
+  if (kwDomain) {
+    const shouldUseKeyword =
+      !preferContext ||
+      !activeContext ||
+      kwDomain === activeContext.domain ||
+      CONTEXT_OVERRIDE_SAFE_KEYWORD_DOMAINS.has(kwDomain) ||
+      (kwDomain === 'secretary' && hasStrongSecretaryIntent(message));
+
+    if (shouldUseKeyword) {
       logger.debug({ domain: kwDomain, method: 'keyword', hadActiveContext: !!activeContext }, 'Routed by keyword');
       return {
         domain: kwDomain,
@@ -126,6 +180,11 @@ export async function routeMessage(
         strippedMessage: message,
       };
     }
+
+    logger.debug(
+      { domain: activeContext.domain, preservedOverKeyword: kwDomain },
+      'Preserving active context over broad follow-up keyword',
+    );
   }
 
   // Step 3: Claude classifier for genuinely ambiguous messages.

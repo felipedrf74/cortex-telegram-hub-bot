@@ -1,0 +1,60 @@
+{
+  "name": "finance",
+  "version": "1.0.0",
+  "description": "Finance orchestration for expenses, forecasts, tax deadlines, and subscription pressure",
+  "author": "Felipe Dominguez",
+  "domain": "finance",
+  "manifestVersion": 2,
+  "subSkills": [
+    {
+      "module_name": "expenses",
+      "description": "Transactions, categories, and receipt-linked expense state",
+      "enabled_by_default": true,
+      "tools": [
+        "finance_add_transaction",
+        "finance_get_transactions",
+        "finance_delete_transaction",
+        "finance_monthly_summary"
+      ],
+      "cronJobs": []
+    },
+    {
+      "module_name": "budget",
+      "description": "Budget runway and monthly cash-flow summaries",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "brazilian-tax",
+      "description": "DARF, Carnê-Leão, and annual summary support",
+      "enabled_by_default": true,
+      "tools": [
+        "finance_calculate_tax",
+        "finance_get_tax_events",
+        "finance_mark_tax_paid",
+        "finance_annual_summary"
+      ],
+      "cronJobs": []
+    },
+    {
+      "module_name": "subscriptions",
+      "description": "Subscription renewal visibility and billing pressure",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "forecast",
+      "description": "Runway and anomaly detection for the weekly plan mesh",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    }
+  ],
+  "requiredApiKeys": ["GEMINI_API_KEY"],
+  "config": {
+    "stateContextTtl": 30000,
+    "maxToolIterations": 4
+  }
+}

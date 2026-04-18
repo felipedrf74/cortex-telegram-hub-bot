@@ -23,7 +23,11 @@
 import { Router, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
+import { clearCache, clearCacheByPrefix } from '../../services/cache-store';
 import type { AuthenticatedRequest } from '../auth-middleware';
+import type Database from 'better-sqlite3';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 /** POST /api/v1/health-data/sync request body shape.
  *  Matches the iOS HealthDaySnapshot struct. */
@@ -37,8 +41,17 @@ interface HealthSyncPayload {
   deepSleepMinutes?: number;
   remSleepMinutes?: number;
   vo2Max?: number | null;
+  respiratoryRate?: number | null;
+  oxygenSaturation?: number | null;
+  walkingHeartRateAverage?: number | null;
+  bodyMassKg?: number | null;
+  bodyFatPercentage?: number | null;
+  leanBodyMassKg?: number | null;
+  basalCalories?: number | null;
+  exerciseMinutes?: number | null;
   workouts?: Array<{
-    activityType: number;   // HKWorkoutActivityType raw value
+    activityType?: number;
+    workoutActivityType?: string;
     start: string;          // ISO8601
     end: string;
     durationMinutes: number;
@@ -56,8 +69,51 @@ function sendError(res: Response, code: string, message: string, status = 400): 
   res.status(status).json({ ok: false, error: { code, message } });
 }
 
+function prepareAppleHealthUpsert(db: Database.Database): Database.Statement {
+  const tableInfo = db.prepare(`PRAGMA table_info(apple_health_data)`).all() as Array<{ name: string }>;
+  const columnNames = new Set(tableInfo.map((row) => row.name));
+  const sourceColumn = columnNames.has('source')
+    ? 'source'
+    : columnNames.has('source_name')
+      ? 'source_name'
+      : null;
+  const hasSyncedAt = columnNames.has('synced_at');
+
+  const insertColumns = ['user_id', 'date', 'data_type', 'data_json'];
+  const insertValues = ['?', '?', '?', '?'];
+  if (sourceColumn) {
+    insertColumns.push(sourceColumn);
+    insertValues.push(`'ios_app'`);
+  }
+
+  const updates = ['data_json = excluded.data_json'];
+  if (hasSyncedAt) {
+    updates.push(`synced_at = datetime('now')`);
+  }
+
+  const conflictTarget = sourceColumn === 'source_name'
+    ? '(user_id, data_type, date, source_name)'
+    : '(user_id, date, data_type)';
+
+  return db.prepare(`
+    INSERT INTO apple_health_data (${insertColumns.join(', ')})
+    VALUES (${insertValues.join(', ')})
+    ON CONFLICT${conflictTarget}
+    DO UPDATE SET ${updates.join(', ')}
+  `);
+}
+
 export function healthDataRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'health_data_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /** POST /api/v1/health-data/sync — receive a daily health snapshot from iOS */
   router.post('/sync', (req, res: Response) => {
@@ -70,31 +126,40 @@ export function healthDataRoutes(): Router {
 
     try {
       const db = getDb();
-      const upsert = db.prepare(`
-        INSERT INTO apple_health_data (user_id, date, data_type, data_json, source)
-        VALUES (?, ?, ?, ?, 'ios_app')
-        ON CONFLICT(user_id, date, data_type)
-        DO UPDATE SET data_json = excluded.data_json, synced_at = datetime('now')
-      `);
+      const upsert = prepareAppleHealthUpsert(db);
 
       let typesUpserted = 0;
 
       // ── HRV ────────────────────────────────────────────────
       if (payload.hrvMs != null) {
-        upsert.run(userId, payload.date, 'hrv', JSON.stringify({ sdnn_ms: payload.hrvMs }));
+        upsert.run(userId, payload.date, 'hrv', JSON.stringify({
+          value: payload.hrvMs,
+          sdnn_ms: payload.hrvMs,
+        }));
         typesUpserted++;
       }
 
       // ── Resting Heart Rate ─────────────────────────────────
       if (payload.restingHeartRate != null) {
-        upsert.run(userId, payload.date, 'resting_hr', JSON.stringify({ bpm: payload.restingHeartRate }));
+        upsert.run(userId, payload.date, 'resting_heart_rate', JSON.stringify({
+          value: payload.restingHeartRate,
+          bpm: payload.restingHeartRate,
+        }));
         typesUpserted++;
       }
 
       // ── Sleep ──────────────────────────────────────────────
       if ((payload.totalSleepMinutes ?? 0) > 0) {
         upsert.run(userId, payload.date, 'sleep', JSON.stringify({
-          totalMinutes: payload.totalSleepMinutes,
+          totalSleepSeconds: Math.round((payload.totalSleepMinutes ?? 0) * 60),
+          deepSleepSeconds: Math.round((payload.deepSleepMinutes ?? 0) * 60),
+          remSleepSeconds: Math.round((payload.remSleepMinutes ?? 0) * 60),
+          coreSleepSeconds: Math.max(
+            0,
+            Math.round(((payload.totalSleepMinutes ?? 0) - (payload.deepSleepMinutes ?? 0) - (payload.remSleepMinutes ?? 0)) * 60),
+          ),
+          awakeSleepSeconds: 0,
+          totalMinutes: payload.totalSleepMinutes ?? 0,
           deepMinutes: payload.deepSleepMinutes ?? 0,
           remMinutes: payload.remSleepMinutes ?? 0,
         }));
@@ -119,9 +184,82 @@ export function healthDataRoutes(): Router {
         typesUpserted++;
       }
 
+      // ── Body composition + metabolic context ─────────────────
+      if (payload.bodyMassKg != null) {
+        upsert.run(userId, payload.date, 'body_mass', JSON.stringify({ value: payload.bodyMassKg, kg: payload.bodyMassKg }));
+        typesUpserted++;
+      }
+
+      if (payload.bodyFatPercentage != null) {
+        upsert.run(
+          userId,
+          payload.date,
+          'body_fat_percentage',
+          JSON.stringify({ value: payload.bodyFatPercentage, percent: payload.bodyFatPercentage }),
+        );
+        typesUpserted++;
+      }
+
+      if (payload.leanBodyMassKg != null) {
+        upsert.run(
+          userId,
+          payload.date,
+          'lean_body_mass',
+          JSON.stringify({ value: payload.leanBodyMassKg, kg: payload.leanBodyMassKg }),
+        );
+        typesUpserted++;
+      }
+
+      if ((payload.basalCalories ?? 0) > 0) {
+        upsert.run(userId, payload.date, 'basal_calories', JSON.stringify({ kcal: payload.basalCalories }));
+        typesUpserted++;
+      }
+
+      if ((payload.exerciseMinutes ?? 0) > 0) {
+        upsert.run(userId, payload.date, 'exercise_minutes', JSON.stringify({ minutes: payload.exerciseMinutes }));
+        typesUpserted++;
+      }
+
       // ── Workouts ───────────────────────────────────────────
       if (payload.workouts && payload.workouts.length > 0) {
-        upsert.run(userId, payload.date, 'workouts', JSON.stringify(payload.workouts));
+        upsert.run(userId, payload.date, 'workout', JSON.stringify(payload.workouts));
+        typesUpserted++;
+      }
+
+      // ── Daily summary — raw health context for future scoring ──
+      if (
+        (payload.steps ?? 0) > 0
+        || (payload.activeCalories ?? 0) > 0
+        || payload.restingHeartRate != null
+        || payload.vo2Max != null
+        || payload.respiratoryRate != null
+        || payload.oxygenSaturation != null
+        || payload.walkingHeartRateAverage != null
+        || payload.bodyMassKg != null
+        || payload.bodyFatPercentage != null
+        || payload.leanBodyMassKg != null
+        || (payload.basalCalories ?? 0) > 0
+        || (payload.exerciseMinutes ?? 0) > 0
+        || (payload.totalSleepMinutes ?? 0) > 0
+      ) {
+        upsert.run(userId, payload.date, 'daily_summary', JSON.stringify({
+          steps: payload.steps ?? null,
+          activeCalories: payload.activeCalories ?? null,
+          restingHeartRate: payload.restingHeartRate ?? null,
+          vo2Max: payload.vo2Max ?? null,
+          totalSleepMinutes: payload.totalSleepMinutes ?? null,
+          deepSleepMinutes: payload.deepSleepMinutes ?? null,
+          remSleepMinutes: payload.remSleepMinutes ?? null,
+          respiratoryRate: payload.respiratoryRate ?? null,
+          oxygenSaturation: payload.oxygenSaturation ?? null,
+          walkingHeartRateAverage: payload.walkingHeartRateAverage ?? null,
+          bodyMassKg: payload.bodyMassKg ?? null,
+          bodyFatPercentage: payload.bodyFatPercentage ?? null,
+          leanBodyMassKg: payload.leanBodyMassKg ?? null,
+          basalCalories: payload.basalCalories ?? null,
+          exerciseMinutes: payload.exerciseMinutes ?? null,
+          workoutsCount: payload.workouts?.length ?? 0,
+        }));
         typesUpserted++;
       }
 
@@ -130,6 +268,11 @@ export function healthDataRoutes(): Router {
         'Apple Health data synced',
       );
 
+      clearCache(`readiness:${userId}`);
+      clearCache(`dashboard-readiness:${userId}`);
+      clearCache(`training-summary:${userId}`);
+      clearCacheByPrefix(`dashboard:${userId}:`);
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { date: payload.date, typesUpserted });
     } catch (err: any) {
       logger.error({ err, userId }, 'Health data sync failed');

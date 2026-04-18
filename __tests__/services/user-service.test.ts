@@ -24,6 +24,7 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/config', () => ({
   config: {
     telegram: { allowedUserIds: [111111] },
+    isStaging: false,
     app: { timezone: 'Europe/Lisbon' },
   },
 }));
@@ -43,6 +44,9 @@ function applyMigrations(db: Database.Database): void {
 
 import {
   getOrCreateUser, getUserByTelegramId, isUserAuthorized, isOwner,
+  isOwnerBootstrapTelegramId,
+  getOwnerBootstrapTelegramId,
+  assertOwnerBootstrapReadyForRuntime,
   touchUser, getUserLanguage, setUserLanguage, listUsers, setUserStatus,
   setUserTier, seedOwnerUser,
   createEmailUser,
@@ -60,6 +64,7 @@ describe('user-service', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     testDb?.close();
   });
 
@@ -130,7 +135,8 @@ describe('user-service', () => {
   });
 
   describe('seedOwnerUser', () => {
-    it('auto-creates from TELEGRAM_ALLOWED_USER_IDS[0]', () => {
+    it('auto-creates from OWNER_TELEGRAM_ID', () => {
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
       seedOwnerUser();
       const user = getUserByTelegramId(111111);
       expect(user).not.toBeNull();
@@ -139,10 +145,94 @@ describe('user-service', () => {
     });
 
     it('is idempotent', () => {
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
       seedOwnerUser();
       seedOwnerUser();
       const users = listUsers();
       expect(users.filter(u => u.telegram_id === 111111)).toHaveLength(1);
+    });
+
+    it('exposes the explicit owner bootstrap Telegram identity helper', () => {
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
+      expect(isOwnerBootstrapTelegramId(111111)).toBe(true);
+      expect(isOwnerBootstrapTelegramId(222222)).toBe(false);
+    });
+
+    it('prefers a persisted owner row over the legacy allowed-user fallback', () => {
+      testDb.prepare(`
+        INSERT INTO users (
+          telegram_id, first_name, language, tier, status,
+          daily_message_limit, daily_token_limit, daily_cost_limit_usd
+        )
+        VALUES (222222, 'Persisted Owner', 'pt-BR', 'owner', 'active', 0, 0, 0)
+      `).run();
+
+      expect(getOwnerBootstrapTelegramId()).toBe(222222);
+      expect(isOwnerBootstrapTelegramId(222222)).toBe(true);
+      expect(isOwnerBootstrapTelegramId(111111)).toBe(false);
+    });
+
+    it('no longer falls back to TELEGRAM_ALLOWED_USER_IDS[0] when no explicit or persisted owner exists', () => {
+      expect(getOwnerBootstrapTelegramId()).toBeNull();
+      expect(isOwnerBootstrapTelegramId(111111)).toBe(false);
+    });
+
+    it('upgrades an existing matching Telegram user into the owner bootstrap user', () => {
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
+      getOrCreateUser(111111, { firstName: 'Felipe' });
+
+      seedOwnerUser();
+
+      const user = getUserByTelegramId(111111);
+      expect(user).not.toBeNull();
+      expect(user!.tier).toBe('owner');
+      expect(user!.status).toBe('active');
+      expect(user!.daily_message_limit).toBe(0);
+      expect(user!.daily_token_limit).toBe(0);
+      expect(user!.daily_cost_limit_usd).toBe(0);
+    });
+
+    it('fails fast in production when no explicit or persisted owner bootstrap exists', () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('VITEST', '');
+      expect(() => assertOwnerBootstrapReadyForRuntime()).toThrow(
+        'Owner bootstrap unavailable. Set OWNER_TELEGRAM_ID or persist an owner-tier user row before starting Nexus Hub.',
+      );
+    });
+
+    it('fails fast in production when OWNER_TELEGRAM_ID disagrees with the persisted owner row', () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('VITEST', '');
+      vi.stubEnv('OWNER_TELEGRAM_ID', '111111');
+      testDb.prepare(`
+        INSERT INTO users (
+          telegram_id, first_name, language, tier, status,
+          daily_message_limit, daily_token_limit, daily_cost_limit_usd
+        )
+        VALUES (222222, 'Persisted Owner', 'pt-BR', 'owner', 'active', 0, 0, 0)
+      `).run();
+
+      expect(() => assertOwnerBootstrapReadyForRuntime()).toThrow(
+        'Owner bootstrap mismatch: OWNER_TELEGRAM_ID=111111 but persisted owner telegram_id=222222. Align bootstrap configuration before starting Nexus Hub.',
+      );
+    });
+  });
+
+  describe('bootstrap boundary structure', () => {
+    it('bot auth and /start use the explicit owner bootstrap helper instead of raw whitelist checks', () => {
+      const botSource = fs.readFileSync(
+        path.resolve(__dirname, '../../src/bot.ts'),
+        'utf8',
+      );
+      const systemSource = fs.readFileSync(
+        path.resolve(__dirname, '../../src/handlers/commands/system.ts'),
+        'utf8',
+      );
+
+      expect(botSource).toContain('isOwnerBootstrapTelegramId');
+      expect(systemSource).toContain('isOwnerBootstrapTelegramId');
+      expect(botSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
+      expect(systemSource).not.toContain('config.telegram.allowedUserIds.includes(userId)');
     });
   });
 

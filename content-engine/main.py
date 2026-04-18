@@ -12,13 +12,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 # Load .env from parent directory (shared with TS bot)
 from dotenv import load_dotenv
 
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-if _env_path.exists():
-    load_dotenv(_env_path, override=True)
-else:
-    _local_env = Path(__file__).resolve().parent / ".env"
-    if _local_env.exists():
-        load_dotenv(_local_env, override=True)
+_shared_env_candidates = (
+    Path(__file__).resolve().parent.parent / ".env",
+    Path(__file__).resolve().parent.parent / ".env.agents",
+    Path(__file__).resolve().parent / ".env",
+)
+
+for _env_path in _shared_env_candidates:
+    if _env_path.exists():
+        load_dotenv(_env_path, override=True)
+        break
 
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware

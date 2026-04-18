@@ -45,8 +45,8 @@ function getStmts(): Record<string, BetterSqlite3.Statement> {
   const db = getDb();
   _stmts = {
     enqueue: db.prepare(`
-      INSERT INTO invoice_queue (type, local_path, media_type, analysis_json, source, status)
-      VALUES (?, ?, ?, ?, ?, 'pending')`),
+      INSERT INTO invoice_queue (type, local_path, media_type, analysis_json, source, user_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending')`),
     pending: db.prepare(`
       SELECT * FROM invoice_queue WHERE status = 'pending' ORDER BY created_at ASC`),
     pendingCount: db.prepare(`
@@ -73,6 +73,7 @@ export interface QueuedInvoice {
   media_type: string | null;
   analysis_json: string;
   source: string;
+  user_id: number;
   status: string;
   retries: number;
   last_retry_at: string | null;
@@ -93,6 +94,7 @@ export function enqueueInvoice(
   mediaType: string | null,
   analysisJson: string,
   source: string,
+  userId: number,
 ): number {
   ensureQueueDir();
 
@@ -106,7 +108,7 @@ export function enqueueInvoice(
   fs.writeFileSync(localPath, buffer);
 
   const stmts = getStmts();
-  const result = stmts.enqueue.run(type, localPath, mediaType, analysisJson, source);
+  const result = stmts.enqueue.run(type, localPath, mediaType, analysisJson, source, userId);
 
   logger.info({ id: result.lastInsertRowid, localPath, source }, 'Invoice queued for later filing');
   pushEvent({
@@ -227,6 +229,7 @@ export async function flushQueue(): Promise<{ flushed: number; failed: number; r
             file_size_bytes: result.originalSizeKB ? result.originalSizeKB * 1024 : null,
             compressed_size_bytes: result.compressedSizeKB ? result.compressedSizeKB * 1024 : null,
             status: 'filed',
+            user_id: item.user_id,
           });
         })();
         flushed++;

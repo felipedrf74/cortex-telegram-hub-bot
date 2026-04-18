@@ -84,11 +84,13 @@ import { listTodos } from '../../src/state/todos';
 import { getSharedMemorySummary } from '../../src/state/shared-memory';
 import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
+import { callDomain } from '../../src/services/anthropic';
 
 // Use the provider-routed mocks (domain-handler now calls getActiveProvider().callDomain)
 const mockCallDomain = mockCallDomainFn;
 const mockContinue = mockContinueFn;
 const mockExecuteTool = vi.mocked(executeToolCall);
+const mockDirectAnthropicCall = vi.mocked(callDomain);
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -130,6 +132,8 @@ beforeEach(() => {
   testDb = new Database(':memory:');
   applyMigrations(testDb);
   __resetLastCoachStateCacheForTests();
+  delete process.env.ANTHROPIC_ENABLED;
+  delete process.env.ANTHROPIC_API_KEY;
   mockGetActiveProvider.mockReturnValue({
     name: 'mock-provider',
     callDomain: (...args: any[]) => mockCallDomainFn(...args),
@@ -203,7 +207,7 @@ describe('buildSimpleStateContext', () => {
   });
 
   it('includes the current date', async () => {
-    const ctx = await buildSimpleStateContext('triathlon');
+    const ctx = await buildSimpleStateContext('triathlon', 42);
     expect(ctx).toContain('Monday, March 30 2026');
   });
 
@@ -212,7 +216,7 @@ describe('buildSimpleStateContext', () => {
       { id: 1, title: 'Long run', priority: 'high', due_date: '2026-04-01', domain: 'triathlon', description: null, status: 'pending', tags: null, created_at: '', updated_at: '', completed_at: null },
     ] as any);
 
-    const ctx = await buildSimpleStateContext('triathlon');
+    const ctx = await buildSimpleStateContext('triathlon', 42);
     expect(ctx).toContain('Triathlon to-dos (1)');
     expect(ctx).toContain('[high] Long run');
     expect(ctx).toContain('due: 2026-04-01');
@@ -242,10 +246,27 @@ describe('buildSimpleStateContext', () => {
     expect(ctx).not.toContain('COACH RECOMMENDATIONS');
   });
 
+  it('includes onboarding-pending context for prescriptive training asks when profile data is missing', async () => {
+    ensureUser(77);
+
+    const ctx = await buildSimpleStateContext('triathlon', 77, 'build me a running workout for tomorrow');
+
+    expect(ctx).toContain('<onboarding_pending');
+    expect(ctx).toContain('Before generating any specific training prescription');
+  });
+
+  it('skips onboarding-pending context for existing-plan review and adjustment questions', async () => {
+    ensureUser(78);
+
+    const ctx = await buildSimpleStateContext('triathlon', 78, "is tomorrow's tempo ride too much after the heavy leg load?");
+
+    expect(ctx).not.toContain('<onboarding_pending');
+  });
+
   it('includes shared memory summary when present', async () => {
     vi.mocked(getSharedMemorySummary).mockReturnValue('[Shared] A-race: Ironman');
 
-    const ctx = await buildSimpleStateContext('triathlon');
+    const ctx = await buildSimpleStateContext('triathlon', 42);
     expect(ctx).toContain('[Shared] A-race: Ironman');
   });
 });
@@ -274,6 +295,19 @@ describe('handleSimpleDomain', () => {
     expect(mockCallDomain).toHaveBeenCalledOnce();
   });
 
+  it('returns an honest unavailable response when no routed provider exists and Anthropic direct fallback is disabled', async () => {
+    mockGetActiveProvider.mockReturnValue(null);
+    mockEnsureActiveProvider.mockReturnValue(null);
+
+    const result = await handleSimpleDomain('triathlon', 'Can you adjust my training today?', 5, 15);
+
+    expect(result).toEqual({
+      text: 'O chat com IA está temporariamente indisponível neste ambiente porque não há nenhum provedor configurado. As visualizações diretas e outras ações determinísticas continuam funcionando normalmente.',
+      domain: 'triathlon',
+    });
+    expect(mockDirectAnthropicCall).not.toHaveBeenCalled();
+  });
+
   it('stores user and assistant messages in conversation history', async () => {
     mockCallDomain.mockResolvedValue({
       text: 'Here is your plan.',
@@ -281,9 +315,9 @@ describe('handleSimpleDomain', () => {
       stopReason: 'end_turn',
     } as any);
 
-    await handleSimpleDomain('content', 'Write a hook');
-    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'content', 'user', 'Write a hook');
-    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'content', 'assistant', 'Here is your plan.');
+    await handleSimpleDomain('content', 'Write a hook', 5, 42);
+    expect(addToConversation).toHaveBeenCalledWith(42, 'content', 'user', 'Write a hook');
+    expect(addToConversation).toHaveBeenCalledWith(42, 'content', 'assistant', 'Here is your plan.');
   });
 
   it('lazily initializes the routing provider when the active singleton is cold', async () => {
@@ -322,9 +356,9 @@ describe('handleSimpleDomain', () => {
       stopReason: 'end_turn',
     } as any);
 
-    const result = await handleSimpleDomain('triathlon', 'What is on my calendar?');
+    const result = await handleSimpleDomain('triathlon', 'What is on my calendar?', 5, 15);
     expect(result.text).toBe('You have a team call this week.');
-    expect(mockExecuteTool).toHaveBeenCalledWith('get_calendar_events', { start_date: '2026-03-30', end_date: '2026-04-06' }, undefined);
+    expect(mockExecuteTool).toHaveBeenCalledWith('get_calendar_events', { start_date: '2026-03-30', end_date: '2026-04-06' }, 15);
     expect(mockContinue).toHaveBeenCalledOnce();
   });
 
@@ -341,7 +375,7 @@ describe('handleSimpleDomain', () => {
       stopReason: 'end_turn',
     } as any);
 
-    await handleSimpleDomain('triathlon', 'Save this note');
+    await handleSimpleDomain('triathlon', 'Save this note', 5, 88);
 
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
       (c) => c[2] === 'assistant',
@@ -367,7 +401,7 @@ describe('handleSimpleDomain', () => {
       stopReason: 'end_turn',
     } as any);
 
-    await handleSimpleDomain('triathlon', 'Find my notes');
+    await handleSimpleDomain('triathlon', 'Find my notes', 5, 88);
 
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
       (c) => c[2] === 'assistant',
@@ -427,5 +461,17 @@ describe('handleSimpleDomain', () => {
       expect.any(String),
       4096,
     );
+  });
+
+  it('does not persist conversation history when no user scope is provided', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Scoped nowhere.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+
+    await handleSimpleDomain('content', 'Write a hook');
+
+    expect(addToConversation).not.toHaveBeenCalled();
   });
 });

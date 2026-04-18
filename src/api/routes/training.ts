@@ -4,16 +4,55 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { getLatestByType } from '../../services/report-document-store';
+import { setLastCoachState } from '../../domains/domain-handler';
+import * as onboarding from '../../services/onboarding';
+import * as trainingPlans from '../../services/training-plans';
+import { readContentMeshContext, readCookingMeshContext, readFinanceMeshContext, readSecretaryMeshContext, readTrainingMeshContext } from '../../services/cross-agent-learning';
+import { completeOneShotWithFallback } from '../../services/gemini-provider';
+import { buildSharedDecisionContext } from '../../services/shared-decision-context';
+import { adaptTrainingPlanToAvailableEquipment, buildTrainingEquipmentAdaptation } from '../../services/training-plan-equipment-adaptation';
+import { createEvent, getEvents } from '../../services/unified-calendar';
+import { applyTrainingPlanCoordination, buildTrainingPlanCoordination } from '../../services/training-plan-coordination';
 import { sendSuccess, sendError } from '../response-helpers';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import type { CoachRecommendation } from '../../services/garmin-coach';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 // Cache TTLs (seconds)
 const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
-const READINESS_TTL = 30 * 60; // 30 minutes
+const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
 const SUMMARY_TTL = 5 * 60;    // 5 minutes
 
+function normalizeCoachRecommendation(rec: Record<string, any>) {
+  return {
+    action: typeof rec.action === 'string' ? rec.action : 'KEEP',
+    eventId: typeof rec.eventId === 'string' ? rec.eventId : null,
+    source: rec.source === 'google' ? 'google' : 'outlook',
+    originalTitle: typeof rec.originalTitle === 'string' ? rec.originalTitle : '',
+    newTitle: typeof rec.newTitle === 'string' ? rec.newTitle : null,
+    newStart: typeof rec.newStart === 'string' ? rec.newStart : null,
+    newEnd: typeof rec.newEnd === 'string' ? rec.newEnd : null,
+    summary: typeof rec.summary === 'string' ? rec.summary : null,
+    reason: typeof rec.reason === 'string'
+      ? rec.reason
+      : (typeof rec.summary === 'string' ? rec.summary : ''),
+  };
+}
+
 function restoreCoachBriefingFromLatestReport(userId: number) {
+  if (!isValidTenantUserId(userId)) {
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation: 'restore_coach_briefing_from_report',
+      reason: 'invalid_user_scope',
+      userId,
+      details: { reportType: 'coach_briefing' },
+    });
+    return null;
+  }
+
   try {
     const report = getLatestByType(userId, 'coach_briefing');
     if (!report?.documentJson) return null;
@@ -31,7 +70,9 @@ function restoreCoachBriefingFromLatestReport(userId: number) {
 
     return {
       briefing: documentJson.message || report.summary || 'Coach briefing available.',
-      recommendations: Array.isArray(documentJson.recommendations) ? documentJson.recommendations : [],
+      recommendations: Array.isArray(documentJson.recommendations)
+        ? documentJson.recommendations.map((rec) => normalizeCoachRecommendation(rec as Record<string, any>))
+        : [],
       garminData: readiness
         ? {
             sleepScore: readiness.factors?.sleep?.score ?? null,
@@ -48,6 +89,37 @@ function restoreCoachBriefingFromLatestReport(userId: number) {
   } catch {
     return null;
   }
+}
+
+function syncCoachStateForUser(userId: number, payload: Record<string, any>) {
+  const normalizedRecommendations = Array.isArray(payload.recommendations)
+    ? payload.recommendations.map((rec) => normalizeCoachRecommendation(rec as Record<string, any>))
+    : [];
+  const persistedRecommendations: CoachRecommendation[] = normalizedRecommendations.flatMap((rec) =>
+    rec.eventId
+      ? [{
+          action: rec.action as CoachRecommendation['action'],
+          eventId: rec.eventId,
+          source: rec.source as CoachRecommendation['source'],
+          originalTitle: rec.originalTitle,
+          newTitle: rec.newTitle,
+          newStart: rec.newStart,
+          newEnd: rec.newEnd,
+          summary: rec.summary ?? '',
+          reason: rec.reason,
+        }]
+      : []
+  );
+  const briefing = typeof payload.briefing === 'string' && payload.briefing.trim().length > 0
+    ? payload.briefing.trim()
+    : 'Coach briefing available.';
+
+  setLastCoachState(userId, persistedRecommendations, briefing.slice(0, 500));
+
+  return {
+    ...payload,
+    recommendations: normalizedRecommendations,
+  };
 }
 
 export function trainingRoutes(): Router {
@@ -139,15 +211,17 @@ export function trainingRoutes(): Router {
       const cached = getCached(cacheKey);
       if (cached) {
         logger.debug('Returning SQLite-cached coach briefing (no AI call)');
-        sendSuccess(res, cached, { cached: true });
+        const payload = syncCoachStateForUser(userId, cached);
+        sendSuccess(res, payload, { cached: true });
         return;
       }
 
       const restored = restoreCoachBriefingFromLatestReport(userId);
       if (restored) {
-        setCache(cacheKey, restored, COACH_TTL);
+        const payload = syncCoachStateForUser(userId, restored);
+        setCache(cacheKey, payload, COACH_TTL);
         logger.debug({ userId }, 'Restored coach briefing from latest report document');
-        sendSuccess(res, restored, { cached: true });
+        sendSuccess(res, payload, { cached: true });
         return;
       }
     }
@@ -173,8 +247,9 @@ export function trainingRoutes(): Router {
         cachedAt: new Date().toISOString(),
       };
 
-      setCache(cacheKey, payload, COACH_TTL);
-      sendSuccess(res, payload);
+      const hydratedPayload = syncCoachStateForUser(userId, payload);
+      setCache(cacheKey, hydratedPayload, COACH_TTL);
+      sendSuccess(res, hydratedPayload);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
       sendSuccess(res, {
@@ -203,19 +278,17 @@ export function trainingRoutes(): Router {
     const { sessionId, notes, rpe } = req.body;
 
     try {
-      const tp = require('../../services/training-plans');
-
       // 1. Resolve session id → numeric row id
       let rowId: number | null = null;
       if (sessionId && sessionId !== 'today' && !isNaN(Number(sessionId))) {
         rowId = Number(sessionId);
       } else {
         // Look up from active plan
-        const plan = tp.getActivePlan(userId);
+        const plan = trainingPlans.getActivePlan(userId);
         if (plan) {
-          const week = tp.getCurrentWeek(plan.id);
+          const week = trainingPlans.getCurrentWeek(plan.id);
           if (week) {
-            const sessions = tp.getSessionsForWeek(week.id);
+            const sessions = trainingPlans.getSessionsForWeek(week.id);
             const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
             const todaySession = sessions?.find(
               (s: any) => s.day_of_week === todayName && s.status !== 'completed',
@@ -226,35 +299,39 @@ export function trainingRoutes(): Router {
       }
 
       if (rowId === null) {
-        sendError(res, 'NO_ACTIVE_SESSION', 'No active training session could be completed.', 409);
+        sendSuccess(res, {
+          completed: true,
+          weeklyAdherence: null,
+          noActiveSession: true,
+        });
         return;
       }
 
       // 2. Mark completed (and log completion if we have RPE/notes)
       let adherenceRate: number | null = null;
       if (notes || rpe != null) {
-        const session = tp.getSessionById(rowId);
+        const session = trainingPlans.getSessionById(rowId);
         if (session) {
-          tp.logCompletion({
+          trainingPlans.logCompletion({
             session_id: rowId,
             plan_id: session.plan_id,
             rpe_overall: rpe ?? null,
             notes: notes ?? null,
           });
         } else {
-          tp.markSessionCompleted(rowId);
+          trainingPlans.markSessionCompleted(rowId);
         }
       } else {
-        tp.markSessionCompleted(rowId);
+        trainingPlans.markSessionCompleted(rowId);
       }
 
       // Adherence calculation — need planId + weekId
       try {
-        const plan = tp.getActivePlan(userId);
+        const plan = trainingPlans.getActivePlan(userId);
         if (plan) {
-          const week = tp.getCurrentWeek(plan.id);
+          const week = trainingPlans.getCurrentWeek(plan.id);
           if (week) {
-            const adh = tp.getWeeklyAdherence(plan.id, week.id);
+            const adh = trainingPlans.getWeeklyAdherence(plan.id, week.id);
             adherenceRate = typeof adh?.adherenceRate === 'number'
               ? adh.adherenceRate / 100  // backend returns 0-100, iOS expects 0-1
               : null;
@@ -268,6 +345,8 @@ export function trainingRoutes(): Router {
       clearCache(`coach-briefing:${userId}`);
       clearCache(`training-summary:${userId}`);
       clearCache(`readiness:${userId}`);
+      clearCache(`dashboard-readiness:${userId}`);
+      invalidatePlanningCaches(userId);
 
       sendSuccess(res, { completed: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {
@@ -283,6 +362,7 @@ export function trainingRoutes(): Router {
     try {
       const { applyCoachRecommendations } = require('../../services/garmin-coach');
       const applied = await applyCoachRecommendations(userId, recommendationIds);
+      invalidatePlanningCaches(userId);
       sendSuccess(res, {
         applied: applied?.count || 0,
         message: `Calendar updated with ${applied?.count || 0} recommendation(s).`,
@@ -405,8 +485,8 @@ export function trainingRoutes(): Router {
     }
 
     try {
-      const { getWeeklyActivitySummary } = require('../../services/session-analytics');
-      const summary = getWeeklyActivitySummary(userId);
+      const { getUnifiedWeeklyActivitySummary } = require('../../services/session-analytics');
+      const summary = await getUnifiedWeeklyActivitySummary(userId);
 
       // Phase 4 Slice C — Publish adherence signals as a side effect
       // of this fetch. The orchestrator is idempotent (skips when a
@@ -489,11 +569,6 @@ export function trainingRoutes(): Router {
     }
 
     try {
-      const tp = require('../../services/training-plans');
-      const onboarding = require('../../services/onboarding');
-      const { getEvents } = require('../../services/unified-calendar');
-      const { completeOneShotWithFallback } = require('../../services/gemini-provider');
-
       // ── Step 1: Check user profile ──────────────────────────────
       const fitnessProfile = onboarding.getProfile?.(userId, 'fitness');
       const gymProfile = onboarding.getProfile?.(userId, 'triathlon-gym');
@@ -516,7 +591,7 @@ export function trainingRoutes(): Router {
 
       let busySlots: string[] = [];
       try {
-        const events = await getEvents(startStr, endStr);
+        const events = await getEvents(startStr, endStr, userId);
         busySlots = (events || []).map((e: any) => {
           const start = e.start || e.startDateTime || '';
           const title = e.subject || e.summary || e.title || '';
@@ -532,6 +607,54 @@ export function trainingRoutes(): Router {
         gymProfile ? `Gym: ${JSON.stringify(gymProfile)}` : '',
         runProfile ? `Running: ${JSON.stringify(runProfile)}` : '',
       ].filter(Boolean).join('\n');
+      const equipmentAdaptation = buildTrainingEquipmentAdaptation({
+        fitnessProfile,
+        gymProfile,
+      });
+
+      let sharedDecisionContext = '';
+      let coordination = buildTrainingPlanCoordination({
+        sessionsPerWeek: Math.max(3, Math.min(7, Number(sessionsPerWeek) || 5)),
+        strengthSessionsPerWeek: Math.max(0, Math.min(4, Number(strengthSessionsPerWeek) || 0)),
+        longWorkoutDay: typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null,
+        fitnessProfile,
+        gymProfile,
+        runProfile,
+        training: null,
+        cooking: null,
+        finance: null,
+        content: null,
+        secretary: null,
+      });
+
+      try {
+        const [trainingContextResult, cookingContextResult, financeContextResult, contentContextResult, secretaryContextResult, sharedContextResult] = await Promise.allSettled([
+          readTrainingMeshContext({ userId, weekStart: startStr }),
+          readCookingMeshContext({ userId, weekStart: startStr }),
+          readFinanceMeshContext({ userId, weekStart: startStr }),
+          readContentMeshContext({ userId, weekStart: startStr }),
+          readSecretaryMeshContext({ userId, weekStart: startStr }),
+          buildSharedDecisionContext('triathlon', userId),
+        ]);
+
+        sharedDecisionContext = sharedContextResult.status === 'fulfilled' ? sharedContextResult.value : '';
+        coordination = buildTrainingPlanCoordination({
+          sessionsPerWeek: Math.max(3, Math.min(7, Number(sessionsPerWeek) || 5)),
+          strengthSessionsPerWeek: Math.max(0, Math.min(4, Number(strengthSessionsPerWeek) || 0)),
+          longWorkoutDay: typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null,
+          fitnessProfile,
+          gymProfile,
+          runProfile,
+          training: trainingContextResult.status === 'fulfilled' ? trainingContextResult.value : null,
+          cooking: cookingContextResult.status === 'fulfilled' ? cookingContextResult.value : null,
+          finance: financeContextResult.status === 'fulfilled' ? financeContextResult.value : null,
+          content: contentContextResult.status === 'fulfilled' ? contentContextResult.value : null,
+          secretary: secretaryContextResult.status === 'fulfilled' ? secretaryContextResult.value : null,
+          sharedDecisionContext,
+        });
+      } catch (err) {
+        logger.warn({ err, userId }, 'training plan coordination context unavailable — falling back to profile/calendar only');
+      }
 
       const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
       const calendarSummary = summarizeBusyCalendar(busySlots);
@@ -558,6 +681,15 @@ PREFERRED TRAINING TIME: ${preferredTime}
 
 START DATE: ${startStr}
 
+CROSS-SKILL SHARED CONTEXT:
+${sharedDecisionContext || 'No additional shared context available.'}
+
+COACHING COORDINATION RULES:
+${coordination.promptBlock}
+
+EQUIPMENT AND SUBSTITUTION RULES:
+${equipmentAdaptation.promptBlock}
+
 RULES:
 - Plan ${durationWeeks} weeks of training.
 - Week ${durationWeeks} should be a DELOAD week (lower volume/intensity).
@@ -573,6 +705,7 @@ RULES:
 - Place sessions on days that DON'T conflict with busy calendar slots.
 - Maximum 6 training days per week. At least 1 rest day.
 - Include warm-up and cool-down notes in the description.
+- Follow the coaching coordination rules above even if that means starting more conservatively or keeping one creator-work day lighter.
 
 Return ONLY valid JSON in this exact shape:
 {
@@ -614,18 +747,24 @@ Return ONLY valid JSON in this exact shape:
           },
           { maxTokens: 4096, temperature: 0.3, userId },
         );
-        planData = parseTrainingPlanJson(rawPlan);
+        planData = adaptTrainingPlanToAvailableEquipment(
+          applyTrainingPlanCoordination(parseTrainingPlanJson(rawPlan), coordination),
+          equipmentAdaptation,
+        );
       } catch (err: any) {
         logger.warn(
           { err, userId, objective },
           'AI training plan generation unavailable — using deterministic fallback template',
         );
-        planData = buildDeterministicTrainingPlan(objective, durationWeeks);
+        planData = adaptTrainingPlanToAvailableEquipment(
+          applyTrainingPlanCoordination(buildDeterministicTrainingPlan(objective, durationWeeks), coordination),
+          equipmentAdaptation,
+        );
         usedFallbackTemplate = true;
       }
 
       // ── Step 4: Bulk insert plan + weeks + sessions ────────────
-      const plan = tp.createPlan({
+      const plan = trainingPlans.createPlan({
         user_id: userId,
         name: planData.planName || `${objective} Plan`,
         sport: planData.sport || 'hybrid',
@@ -647,7 +786,7 @@ Return ONLY valid JSON in this exact shape:
       const calendarEvents: any[] = [];
 
       for (const weekData of (planData.weeks || [])) {
-        const week = tp.createWeek({
+        const week = trainingPlans.createWeek({
           plan_id: plan.id,
           week_number: weekData.weekNumber || 1,
           focus: weekData.focus || 'base',
@@ -694,7 +833,7 @@ Return ONLY valid JSON in this exact shape:
           if (sess.description) calBody += `\n${sess.description}`;
           calBody += `\n\nTIME: ~${sess.durationMinutes || 60} min total`;
 
-          const session = tp.createSession({
+          const session = trainingPlans.createSession({
             week_id: week.id,
             plan_id: plan.id,
             day_of_week: sess.dayOfWeek,
@@ -726,8 +865,6 @@ Return ONLY valid JSON in this exact shape:
 
       // ── Step 5: Create calendar events (parallel) ──────────────
       let eventsCreated = 0;
-      const { createEvent } = require('../../services/unified-calendar');
-
       const eventResults = await Promise.allSettled(
         calendarEvents.map(async (ev) => {
           try {
@@ -736,7 +873,7 @@ Return ONLY valid JSON in this exact shape:
               undefined, // auto-detect source
               userId,
             );
-            tp.linkSessionToCalendar(ev.sessionId, event.id, event.source);
+            trainingPlans.linkSessionToCalendar(ev.sessionId, event.id, event.source);
             eventsCreated++;
             return event;
           } catch (err) {
@@ -750,6 +887,7 @@ Return ONLY valid JSON in this exact shape:
         userId, planId: plan.id, totalSessions, eventsCreated,
         objective, durationWeeks,
       }, 'Training plan generated and scheduled');
+      invalidatePlanningCaches(userId);
 
       sendSuccess(res, {
         planId: plan.id,
@@ -807,7 +945,7 @@ Return ONLY valid JSON in this exact shape:
 
       const deletionResults = await Promise.allSettled(
         deletableSessions.map((session: any) =>
-          deleteEvent(session.calendar_event_id, session.calendar_source),
+          deleteEvent(session.calendar_event_id, session.calendar_source, userId),
         ),
       );
       const removedEvents = deletionResults.filter(r => r.status === 'fulfilled').length;
@@ -826,6 +964,8 @@ Return ONLY valid JSON in this exact shape:
       clearCache(`training-summary:${userId}`);
       clearCache(`coach-briefing:${userId}`);
       clearCache(`readiness:${userId}`);
+      clearCache(`dashboard-readiness:${userId}`);
+      invalidatePlanningCaches(userId);
 
       sendSuccess(res, {
         cancelled: true,
@@ -850,20 +990,19 @@ async function getTodaySession(userId: number) {
   let plan: any = null;
 
   try {
-    const tp = require('../../services/training-plans');
-    const activePlan = tp.getActivePlan(userId);
-    if (activePlan) {
-      const currentWeek = tp.getCurrentWeek(activePlan.id);
-      plan = {
-        name: activePlan.name,
-        weekNumber: currentWeek?.week_number || 1,
-        phase: activePlan.phase || null,
-      };
+      const activePlan = trainingPlans.getActivePlan(userId);
+      if (activePlan) {
+        const currentWeek = trainingPlans.getCurrentWeek(activePlan.id);
+        plan = {
+          name: activePlan.name,
+          weekNumber: currentWeek?.week_number || 1,
+          phase: currentWeek?.focus || activePlan.periodization || null,
+        };
       if (currentWeek) {
         const range = currentWeekDateRange(activePlan.start_date, currentWeek.week_number);
-        const calendarLookup = await buildCalendarEventLookup(range.start, range.end);
+        const calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
         // getSessionsForWeek takes a weekId, NOT a userId
-        const sessions = tp.getSessionsForWeek(currentWeek.id);
+        const sessions = trainingPlans.getSessionsForWeek(currentWeek.id);
         const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
         const rawSession = sessions?.find(
           (s: any) => s.day_of_week === todayName,
@@ -885,7 +1024,7 @@ async function getTodaySession(userId: number) {
     logger.debug({ err: e }, 'getTodaySession training-plans lookup failed');
   }
 
-  if (!session) session = await findTodayTrainingFromCalendar();
+  if (!session) session = await findTodayTrainingFromCalendar(userId);
 
   // CHAT-M3: Third fallback — check Garmin for today's recorded activities.
   // Users who do ad-hoc gym sessions (not in the plan or calendar) will have
@@ -935,15 +1074,14 @@ async function getWeekPlan(userId: number) {
   let adherence = 0;
 
   try {
-    const tp = require('../../services/training-plans');
-    const plan = tp.getActivePlan(userId);
+    const plan = trainingPlans.getActivePlan(userId);
     if (plan) {
-      const currentWeek = tp.getCurrentWeek(plan.id);
+      const currentWeek = trainingPlans.getCurrentWeek(plan.id);
       weekNumber = currentWeek?.week_number || 1;
-      const weekSessions = currentWeek ? tp.getSessionsForWeek(currentWeek.id) : [];
+      const weekSessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
         const range = currentWeekDateRange(plan.start_date, weekNumber);
-        const calendarLookup = await buildCalendarEventLookup(range.start, range.end);
+        const calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
         sessions = weekSessions.map((s: any) => ({
           id: s.id != null ? String(s.id) : undefined,
           day: s.day_of_week || 'Monday',
@@ -957,7 +1095,7 @@ async function getWeekPlan(userId: number) {
           exercises: parseExercises(s.exercises_json),
         }));
       }
-      const adh = currentWeek ? tp.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
+      const adh = currentWeek ? trainingPlans.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
       adherence = typeof adh === 'number'
         ? adh
         : typeof adh?.adherenceRate === 'number'
@@ -967,7 +1105,7 @@ async function getWeekPlan(userId: number) {
   } catch {}
 
   if (sessions.length === 0) {
-    sessions = await buildWeekFromCalendar();
+    sessions = await buildWeekFromCalendar(userId);
     const completed = sessions.filter(s => s.status === 'completed').length;
     const total = sessions.filter(s => s.status !== 'rest').length;
     adherence = total > 0 ? completed / total : 0;
@@ -1347,22 +1485,16 @@ function humanizeRecommendation(code: string, score: number): string {
   return map[code] || code.replace(/_/g, ' ');
 }
 
-async function findTodayTrainingFromCalendar(): Promise<any | null> {
+async function findTodayTrainingFromCalendar(userId: number): Promise<any | null> {
   try {
     const today = new Date();
     const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
-    const calendarLookup = await buildCalendarEventLookup(startOfDay, endOfDay);
+    const calendarLookup = await buildCalendarEventLookup(startOfDay, endOfDay, userId);
     const calEvents = [...calendarLookup.values()].map(entry => entry.event);
-
-    const keywords = [
-      'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
-      'treino', 'corrida', 'academia', 'natação', 'musculação', 'ciclismo', 'caminhada', 'walk',
-      'easy run', 'interval', 'tempo', 'long run', 'cross', 'stretch',
-    ];
     const trainingEvent = calEvents.find((e: any) => {
-      const title = (e.subject || e.summary || e.title || '').toLowerCase();
-      return keywords.some(kw => title.includes(kw));
+      const title = e.subject || e.summary || e.title || '';
+      return looksLikeTrainingCalendarEvent(title);
     });
 
     if (trainingEvent) {
@@ -1378,7 +1510,7 @@ async function findTodayTrainingFromCalendar(): Promise<any | null> {
   return null;
 }
 
-async function buildWeekFromCalendar(): Promise<any[]> {
+async function buildWeekFromCalendar(userId: number): Promise<any[]> {
   try {
     const today = new Date();
     const dayOfWeek = today.getDay();
@@ -1386,19 +1518,14 @@ async function buildWeekFromCalendar(): Promise<any[]> {
     const monday = new Date(today); monday.setDate(today.getDate() + mondayOffset); monday.setHours(0, 0, 0, 0);
     const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6); sunday.setHours(23, 59, 59, 999);
 
-    const calendarLookup = await buildCalendarEventLookup(monday, sunday);
+    const calendarLookup = await buildCalendarEventLookup(monday, sunday, userId);
     const calEvents = [...calendarLookup.values()].map(entry => entry.event);
-    const keywords = [
-      'run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength', 'hiit', 'yoga',
-      'treino', 'corrida', 'academia', 'natação', 'musculação', 'ciclismo', 'caminhada', 'walk',
-      'easy run', 'interval', 'tempo', 'long run', 'cross', 'stretch',
-    ];
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
     const dayMap = new Map<number, any>();
     for (const e of calEvents) {
-      const title = (e.subject || e.summary || e.title || '').toLowerCase();
-      if (!keywords.some(kw => title.includes(kw))) continue;
+      const title = e.subject || e.summary || e.title || '';
+      if (!looksLikeTrainingCalendarEvent(title)) continue;
       const startRaw = e.start?.dateTime || e.start;
       const d = new Date(startRaw);
       const dayIdx = d.getDay();
@@ -1416,6 +1543,10 @@ async function buildWeekFromCalendar(): Promise<any[]> {
           exercises: null,
         });
       }
+    }
+
+    if (dayMap.size === 0) {
+      return [];
     }
 
     const sessions = [];
@@ -1464,14 +1595,14 @@ function currentWeekDateRange(planStartIso: string, weekNumber: number) {
 async function buildCalendarEventLookup(
   start: Date,
   end: Date,
+  userId: number,
 ): Promise<Map<string, { time: string | null; event: any }>> {
-  const { getEvents } = require('../../services/unified-calendar');
   const lookup = new Map<string, { time: string | null; event: any }>();
-  const events = await getEvents(start.toISOString(), end.toISOString());
+  const events = await getEvents(start.toISOString(), end.toISOString(), userId);
 
   for (const event of events || []) {
     if (!event?.id) continue;
-    const timeMatch = String(event.start || event.startDateTime || '').match(/T(\d{2}:\d{2})/);
+    const timeMatch = String(event.start || '').match(/T(\d{2}:\d{2})/);
     lookup.set(event.id, {
       time: timeMatch ? timeMatch[1] : null,
       event,
@@ -1523,6 +1654,36 @@ function inferCalendarSessionType(title: string): string {
   if (lower.includes('gym') || lower.includes('strength') || lower.includes('upper body') || lower.includes('lower body')) return 'gym';
   if (lower.includes('rest')) return 'rest';
   return 'workout';
+}
+
+export function looksLikeTrainingCalendarEvent(title: string): boolean {
+  const normalized = title.trim().toLowerCase();
+  if (!normalized) return false;
+
+  const excludedPatterns = [
+    /\bwake\s*up\b/i,
+    /\bprepare\b/i,
+    /\breading\b/i,
+    /\batomic\s+habits\b/i,
+    /\bmorning\s+routine\b/i,
+    /\brotina\b/i,
+    /\bschool\b/i,
+    /\bescola\b/i,
+    /\bmeeting\b/i,
+    /\breuni[aã]o\b/i,
+  ];
+  if (excludedPatterns.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+
+  const explicitTrainingPatterns = [
+    /\b(?:tempo|interval|long)\s+(?:run|ride)\b/i,
+    /\b(?:run|running|corrida|ride|riding|bike|cycling|cycle|swim|swimming|nata[cç][aã]o|gym|academia|strength|for[çc]a|workout|training|treino|muscula[çc][aã]o|hiit|hyrox|pilates|yoga|mobility|ftp|zone\s*2|z2)\b/i,
+    /\b(?:brisk|power|recovery)\s+walk\b/i,
+    /\bcaminhada\s+(?:r[aá]pida|zona\s*2|recupera[çc][aã]o)\b/i,
+  ];
+
+  return explicitTrainingPatterns.some((pattern) => pattern.test(normalized));
 }
 
 function estimateCalendarDurationMinutes(startRaw?: string | null, endRaw?: string | null): number | null {

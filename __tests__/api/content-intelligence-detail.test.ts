@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request } from 'express';
+import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -107,13 +108,18 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(userId: number): Request {
-  return { userId } as any;
+function mockReq(userId: number, headers: Record<string, string> = {}): Request {
+  return {
+    userId,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name] ?? undefined;
+    },
+  } as any;
 }
 
-async function dispatch(url: string, userId: number): Promise<MockRes> {
+async function dispatch(url: string, userId: number, headers: Record<string, string> = {}): Promise<MockRes> {
   const router = contentRoutes();
-  const request = mockReq(userId);
+  const request = mockReq(userId, headers);
   const parsed = new URL(url, 'http://test.local');
   (request as any).method = 'GET';
   (request as any).url = parsed.pathname + parsed.search;
@@ -122,7 +128,7 @@ async function dispatch(url: string, userId: number): Promise<MockRes> {
   (request as any).path = parsed.pathname;
   (request as any).query = Object.fromEntries(parsed.searchParams.entries());
   (request as any).params = {};
-  (request as any).headers = {};
+  (request as any).headers = headers;
 
   const response = mockRes();
 
@@ -143,6 +149,7 @@ describe('Content API — intelligence detail', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
     setDbProvider(() => testDb);
+    clearTenantScopeAnomaliesForTests();
   });
 
   afterEach(() => {
@@ -167,6 +174,35 @@ describe('Content API — intelligence detail', () => {
       INSERT INTO content_ref_channels (user_id, channel_url, channel_name, status, video_count_analyzed, last_analyzed_at)
       VALUES (?, ?, ?, 'active', 12, ?)
     `).run(user.id, 'https://www.youtube.com/@felipe', 'Felipe', '2026-04-14T08:30:00.000Z');
+
+    testDb.exec(`
+      CREATE TABLE IF NOT EXISTS config_pillars (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        keywords TEXT,
+        weight REAL NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        language TEXT,
+        user_id INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+    testDb.prepare(`
+      INSERT INTO config_pillars (name, keywords, weight, enabled, user_id)
+      VALUES (?, ?, ?, 1, 0)
+    `).run('Training', JSON.stringify(['run', 'ride', 'gym']), 1.2);
+    testDb.prepare(`
+      INSERT INTO config_pillars (name, keywords, weight, enabled, user_id)
+      VALUES (?, ?, ?, 1, ?)
+    `).run('Recovery', JSON.stringify(['recovery', 'sleep']), 1.0, user.id);
+
+    testDb.prepare(`
+      INSERT INTO content_notifications (user_id, type, title, body, data, status, created_at)
+      VALUES (?, 'script_ready', ?, ?, '{}', 'unread', ?)
+    `).run(user.id, 'Roteiro pronto para Recovery vlog', 'O draft já está pronto para revisão.', '2026-04-14T09:15:00.000Z');
+    testDb.prepare(`
+      INSERT INTO content_notifications (user_id, type, title, body, data, status, created_at)
+      VALUES (?, 'topic_candidates_ready', ?, ?, '{}', 'unread', ?)
+    `).run(user.id, 'Tópicos prontos para esta semana', 'Há novas ideias a aguardar decisão.', '2026-04-14T09:10:00.000Z');
 
     const insertSignal = testDb.prepare(`
       INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
@@ -199,6 +235,15 @@ describe('Content API — intelligence detail', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
+    expect(response.body.data.discovery.deskReadyCount).toBe(2);
+    expect(response.body.data.discovery.deskItems[0]).toMatchObject({
+      type: 'script_ready',
+      title: 'Roteiro pronto para Recovery vlog',
+    });
+    expect(response.body.data.discovery.monitoredPillars).toEqual([
+      { name: 'Training', keywordCount: 3 },
+      { name: 'Recovery', keywordCount: 2 },
+    ]);
     expect(response.body.data.discovery.recentSignals).toHaveLength(1);
     expect(response.body.data.discovery.recentSignals[0]).toMatchObject({
       type: 'reaction_opportunity',
@@ -234,5 +279,67 @@ describe('Content API — intelligence detail', () => {
       title: 'Treino',
       summary: 'Performance de Treino: Training is outperforming other pillars this week.',
     });
+  });
+
+  it('applies creator radar preferences and english response language from X-Language', async () => {
+    const user = getOrCreateUser(57002, { username: 'content-english-radar' });
+    setUserLanguage(user.id, 'pt-BR');
+
+    testDb.prepare(`
+      INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
+      VALUES (?, ?, ?)
+    `).run(user.id, JSON.stringify(['fitness', 'training consistency']), '2026-04-16T11:00:00.000Z');
+
+    const insertSignal = testDb.prepare(`
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+    `);
+
+    insertSignal.run(
+      'reaction-radar',
+      'reaction_opportunity',
+      JSON.stringify({ title: 'fitness', summary: 'Janela de reação ativa: treino com forte gancho' }),
+      'urgent',
+      '2026-04-16T10:00:00.000Z'
+    );
+    insertSignal.run(
+      'reaction-radar',
+      'reaction_opportunity',
+      JSON.stringify({ title: 'politics', summary: 'Janela de reação ativa: debate fiscal' }),
+      'urgent',
+      '2026-04-16T09:00:00.000Z'
+    );
+
+    const response = await dispatch('/intelligence/detail', user.id, { 'x-language': 'en-US' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.discovery.preferredTopics).toEqual(['fitness', 'training consistency']);
+    expect(response.body.data.discovery.monitoredPillars).toEqual([
+      { name: 'fitness', keywordCount: 1 },
+      { name: 'training consistency', keywordCount: 1 },
+    ]);
+    expect(response.body.data.discovery.recentSignals).toHaveLength(1);
+    expect(response.body.data.discovery.recentSignals[0]).toMatchObject({
+      title: 'Training',
+      summary: 'Reaction window: treino com forte gancho',
+    });
+  });
+
+  it('fails closed on invalid tenant scope before building intelligence detail', async () => {
+    const response = await dispatch('/intelligence/detail', 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'content_route_intelligence_detail',
+          reason: 'invalid_user_scope',
+          userId: 0,
+        }),
+      ]),
+    );
   });
 });

@@ -132,6 +132,62 @@ export interface MonthlySummary {
   transactionCount: number;
 }
 
+const PLANNING_CURRENCY_CONVERSION_FROM_BRL: Record<string, number> = {
+  BRL: 1,
+  EUR: 0.18,
+  USD: 0.2,
+  GBP: 0.16,
+};
+
+export function defaultCurrencyForTimezone(timezone?: string | null): string {
+  const tz = timezone || 'Europe/Lisbon';
+  if (tz.includes('Sao_Paulo') || tz.includes('Brazil') || tz.includes('Brasilia')) return 'BRL';
+  if (tz.includes('America/New_York') || tz.includes('America/Los_Angeles') || tz.includes('America/Chicago')) return 'USD';
+  if (tz.includes('London')) return 'GBP';
+  return 'EUR';
+}
+
+export function getPreferredCurrencyForUser(userId: number): string {
+  try {
+    const db = getDb();
+    const dominant = db.prepare(`
+      SELECT currency, COUNT(*) as count, MAX(date) as last_date
+      FROM finance_transactions
+      WHERE user_id = ?
+        AND currency IS NOT NULL
+        AND TRIM(currency) != ''
+      GROUP BY currency
+      ORDER BY count DESC, last_date DESC
+      LIMIT 1
+    `).get(userId) as { currency?: string | null } | undefined;
+
+    if (dominant?.currency && dominant.currency.trim().length > 0) {
+      return dominant.currency.trim().toUpperCase();
+    }
+  } catch (err) {
+    logger.debug({ err, userId }, 'Finance tracker: preferred currency lookup fell back to timezone');
+  }
+
+  try {
+    const { getUserById } = require('./user-service');
+    const user = getUserById?.(userId);
+    return defaultCurrencyForTimezone(user?.timezone);
+  } catch {
+    return 'EUR';
+  }
+}
+
+export function convertPlanningEstimateFromBrl(amountBrl: number, currency: string): number {
+  const code = currency.toUpperCase();
+  const rate = PLANNING_CURRENCY_CONVERSION_FROM_BRL[code] ?? 1;
+  return Math.round(amountBrl * rate * 100) / 100;
+}
+
+export function formatCurrencyAmount(currency: string, amount: number): string {
+  const rounded = Math.round(amount * 100) / 100;
+  return `${currency.toUpperCase()} ${rounded.toFixed(2)}`;
+}
+
 // ── Brazilian Tax Tables (2024 — Carnê-Leão / IRPF Progressivo) ───
 
 /**

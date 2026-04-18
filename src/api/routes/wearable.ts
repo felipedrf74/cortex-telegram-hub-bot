@@ -14,6 +14,7 @@ import { logger } from '../../utils/logger';
 import { getDailySummary, getReadiness, getSleep, getUserProviders } from '../../services/wearable';
 import { getCached, setCache } from '../../services/cache-store';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // Wearable data updates a few times per day on most platforms; cache aggressively.
 const SUMMARY_TTL = 30 * 60;    // 30 min
@@ -22,6 +23,15 @@ const SLEEP_TTL = 60 * 60;      // 1 hour (sleep data is usually finalized by mi
 
 export function wearableRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'wearable_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/wearable/summary?date=YYYY-MM-DD

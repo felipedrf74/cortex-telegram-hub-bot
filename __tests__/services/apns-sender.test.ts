@@ -100,12 +100,14 @@ interface ScriptedResponse {
 
 let mockHttp2Responses: ScriptedResponse[] = [];
 const mockHttp2Requests: Array<{ headers: Record<string, string>; body: string }> = [];
+const mockHttp2Hosts: string[] = [];
 let mockHttp2Connected = false;
 
 vi.mock('node:http2', () => ({
   default: {
     connect: (host: string) => {
       mockHttp2Connected = true;
+      mockHttp2Hosts.push(host);
       const session = {
         host,
         closed: false,
@@ -169,6 +171,7 @@ import {
   _resetForTests,
 } from '../../src/services/apns-sender';
 import { logger } from '../../src/utils/logger';
+import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 // ── Shared setup/teardown ──────────────────────────────────────────
 
@@ -184,6 +187,7 @@ beforeEach(() => {
   };
   mockHttp2Responses = [];
   mockHttp2Requests.length = 0;
+  mockHttp2Hosts.length = 0;
   mockHttp2Connected = false;
   jwtSignCallCount = 0;
   for (const k of Object.keys(mockPushTokensForUser)) {
@@ -193,6 +197,7 @@ beforeEach(() => {
   vi.mocked(logger.warn).mockClear();
   vi.mocked(logger.error).mockClear();
   vi.mocked(logger.info).mockClear();
+  clearTenantScopeAnomaliesForTests();
   // CRITICAL: reset module-level singletons in the sender — without this,
   // cachedJwt and warnedMissingConfig leak across tests.
   _resetForTests();
@@ -249,6 +254,16 @@ describe('getPushTokensForUser', () => {
   it('returns all push tokens for a user with multiple devices', () => {
     mockPushTokensForUser[7] = ['tok-iphone', 'tok-ipad'];
     expect(getPushTokensForUser(7)).toEqual(['tok-iphone', 'tok-ipad']);
+  });
+
+  it('fails closed on invalid tenant scope and records the anomaly', () => {
+    expect(getPushTokensForUser(0)).toEqual([]);
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      layer: 'delivery',
+      operation: 'get_push_tokens_for_user',
+      reason: 'invalid_user_scope',
+      userId: 0,
+    });
   });
 });
 
@@ -359,6 +374,24 @@ describe('sendPushNotification (happy path)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('sendPushNotification (gating)', () => {
+  it('fails closed on invalid tenant scope before APNs lookup and records the anomaly', async () => {
+    const result = await sendPushNotification(0, {
+      title: 'Ignored',
+      body: 'Invalid scope should short-circuit',
+      category: 'coach_briefing',
+    });
+
+    expect(result).toEqual({ sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] });
+    expect(mockHttp2Connected).toBe(false);
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      layer: 'delivery',
+      operation: 'send_push_notification',
+      reason: 'invalid_user_scope',
+      userId: 0,
+      details: { category: 'coach_briefing' },
+    });
+  });
+
   it('no-ops when APNs is not enabled and logs a warn exactly once', async () => {
     mockedApnsConfig.enabled = false;
     mockPushTokensForUser[1] = ['tok-1', 'tok-2'];
@@ -437,7 +470,7 @@ describe('sendPushNotification (error handling)', () => {
 
   it('tallies 400 as failed (permanent)', async () => {
     mockPushTokensForUser[1] = ['bad-payload-tok'];
-    mockHttp2Responses = [{ status: 400, body: '{"reason":"BadDeviceToken"}' }];
+    mockHttp2Responses = [{ status: 400, body: '{"reason":"BadPriority"}' }];
 
     const result = await sendPushNotification(1, { title: 'T', body: 'B' });
     expect(result.failed).toBe(1);
@@ -450,6 +483,23 @@ describe('sendPushNotification (error handling)', () => {
 
     const result = await sendPushNotification(1, { title: 'T', body: 'B' });
     expect(result.retriable).toBe(1);
+  });
+
+  it('retries against the alternate APNs environment on token mismatch', async () => {
+    mockPushTokensForUser[1] = ['environment-mismatch-token'];
+    mockedApnsConfig.environment = 'sandbox';
+    mockHttp2Responses = [
+      { status: 400, body: '{"reason":"BadDeviceToken"}' },
+      { status: 200 },
+    ];
+
+    const result = await sendPushNotification(1, { title: 'T', body: 'B' });
+
+    expect(result.sent).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(mockHttp2Requests).toHaveLength(2);
+    expect(mockHttp2Hosts).toContain('https://api.sandbox.push.apple.com:443');
+    expect(mockHttp2Hosts).toContain('https://api.push.apple.com:443');
   });
 });
 

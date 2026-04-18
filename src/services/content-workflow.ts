@@ -18,6 +18,7 @@ import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
 import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas';
 import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
+import { getUserLanguage } from './user-service';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -132,7 +133,7 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean,
 
   // userId passed explicitly — no more AsyncLocalStorage dependency.
   // This makes personalization stable across transports (iOS, Telegram, scheduler).
-  const knowledgeBlock = buildKnowledgePromptBlock();
+  const knowledgeBlock = buildKnowledgePromptBlock(userId);
   const tasteBlock = buildTasteProfileBlock(userId);
 
   return loadPromptWithConfig('topic-generation', {
@@ -158,7 +159,7 @@ export async function generateTopicCandidates(
   // Book knowledge injection (Sprint 3.2)
   let bookBlock = '';
   try {
-    const bookSignals = readSignals('content-workflow', ['book_knowledge']);
+    const bookSignals = readSignals('content-workflow', ['book_knowledge'], 20, userId);
     if (bookSignals.length > 0) {
       const bookLines = bookSignals.slice(0, 5).map((s: any) => {
         const p = s.payload as any;
@@ -172,7 +173,7 @@ export async function generateTopicCandidates(
   // Discovery cross-pollination (Sprint 2.4)
   let discoveryBlock = '';
   try {
-    const eligible = getWorkflowEligibleIdeas();
+    const eligible = getWorkflowEligibleIdeas(userId);
     if (eligible.length > 0) {
       const ideasList = eligible.slice(0, 5).map(i => `- ${i.title}`).join('\n');
       discoveryBlock = `\n## Pre-Researched Ideas from Daily Discovery\nThese high-scoring ideas were found by the daily trend scanner. Consider including, modifying, or building on them:\n${ideasList}\n`;
@@ -326,8 +327,27 @@ export async function generateScript(
   const { getScript } = await import('./content-engine');
   const maxDuration = format === 'reel' ? 1 : 8;
   const engineFormat = format === 'reel' ? 'Reel' : 'YouTube';
+  const targetLanguage = userId > 0 ? getUserLanguage(userId) : 'pt-BR';
 
-  const result = await getScript(topic.title, topic.niche || 'general', maxDuration, engineFormat);
+  const result = await getScript(
+    topic.title,
+    topic.niche || 'general',
+    maxDuration,
+    engineFormat,
+    'standard',
+    null,
+    targetLanguage,
+    'structured',
+    userId,
+    undefined,
+    {
+      topicFeedbackId: topic.feedbackId ?? null,
+      niche: topic.niche || 'general',
+      hookIdea: topic.hookIdea || null,
+      whyNow: topic.whyNow || null,
+      angleTag: topic.angleTag || null,
+    },
+  );
 
   // ── Durable script storage (April 2026) ──
   // Persist raw script text in the DB so voice-evolution-agent can
@@ -344,6 +364,9 @@ export async function generateScript(
       titleOptions: result.title_options,
       sourcesUsed: result.sources_used,
       estimatedDuration: result.estimated_duration,
+      hashtags: result.hashtags,
+      caption: result.caption,
+      cta: result.cta,
       niche: topic.niche || 'general',
       generationDurationMs: result.duration_ms,
       userId,

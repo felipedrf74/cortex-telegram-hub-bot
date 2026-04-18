@@ -15,30 +15,29 @@ from searchers.news import NewsSearcher
 from searchers.reddit import RedditSearcher
 from .scorer import score_results
 from .brief_builder import build_briefs
+from services.creator_profile import get_profile
 from datetime import datetime, timezone
 
 logger = logging.getLogger("content-engine")
 
-# Default content niches — aligned with Felipe's creator profile
+# Default content niches — broad enough to follow real topic interest
 DEFAULT_NICHES = [
-    "fitness treino musculação academia tendências Brasil",
-    "corrida ciclismo triathlon esportes resistência",
-    "política conservadora Brasil liberdade econômica estado",
-    "economia austríaca livre mercado inflação impostos Brasil",
-    "fé cristã família tradicional valores masculinidade",
-    "desenvolvimento pessoal disciplina mentalidade estoicismo",
-    "geopolítica guerra conflito internacional consequências",
+    "ai automation product startup builder tools internet culture",
+    "commentary reactions economics politics creator debates internet trends",
+    "training endurance strength recovery lifestyle experimentation",
+    "gaming creator internet nostalgia streaming",
+    "self-direction business discipline entrepreneurship systems",
 ]
 
 # Search queries for hot news — more specific, higher signal
 HOT_NEWS_QUERIES = [
-    "política Brasil polêmica governo economia hoje",
-    "treino fitness academia tendência viral",
-    "liberdade econômica impostos estado regulação Brasil",
-    "masculinidade fé família valores tradicionais",
-    "geopolítica guerra petróleo impacto Brasil",
-    "desenvolvimento pessoal disciplina produtividade",
-    "YouTube viral tendência debate reação",
+    "AI startup product launch debate today",
+    "creator economy YouTube Instagram internet trend today",
+    "politics economics policy debate today",
+    "training performance recovery trend today",
+    "gaming internet culture reaction today",
+    "business systems entrepreneurship build in public today",
+    "viral debate commentary reaction today",
 ]
 
 EVERGREEN_HINTS = [
@@ -183,6 +182,31 @@ class ResearchOrchestrator:
             merged.extend(result)
         return merged
 
+    async def quick_search(self, query: str, max_results: int = 3) -> DeepSearchResponse:
+        """Cheap research path for cache-miss quick mode — no AI synthesis, single fan-out, conservative briefs."""
+        start = time.monotonic()
+        results = await self._fan_out(query, max_per_searcher=2)
+        scored = score_results(results)
+
+        seen_urls: set[str] = set()
+        unique_scored = []
+        for item in scored:
+            if item.result.url in seen_urls:
+                continue
+            seen_urls.add(item.result.url)
+            unique_scored.append(item)
+
+        briefs = build_briefs(unique_scored, max_briefs=max_results)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        return DeepSearchResponse(
+            query=query,
+            briefs=briefs,
+            search_count=len(self.searchers),
+            duration_ms=duration_ms,
+            degraded=False,
+            warnings=["Quick mode used shallow research without AI synthesis."],
+        )
+
     async def deep_search(self, query: str, niches: list[str] | None = None, max_results: int = 10) -> DeepSearchResponse:
         """Full research pipeline: fan-out → score → AI synthesis → actionable briefs."""
         import json
@@ -253,9 +277,11 @@ class ResearchOrchestrator:
             )
 
         # Phase 2: AI synthesis — Claude analyzes all sources and builds real briefs
-        synthesis_prompt = f"""You are Felipe's deep research analyst. He is a Brazilian conservative, Christian, libertarian content creator.
-His pillars: fitness/triathlon, politics (anti-state, free market, Austrian economics), faith/family/masculinity, self-development, geopolitics.
-Audience: Brazilian men, 18-35.
+        synthesis_prompt = f"""You are the creator's deep research analyst.
+Use the creator configuration below as the canonical source of worldview, audience, editorial fit, and language defaults.
+
+CREATOR CONFIG:
+{get_profile(short=True)}
 
 TOPIC: {query}
 
@@ -433,9 +459,11 @@ Return ONLY the JSON object."""
 
         # Phase 2: AI curation — filter and rank through creator lens
         import json
-        curation_prompt = f"""You are Felipe's content curator. He is a Brazilian conservative, Christian, libertarian creator.
-His content pillars: fitness/triathlon, politics (anti-state, free market, Austrian economics), faith/family/masculinity, self-development, geopolitics.
-His audience: Brazilian men, 18-35.
+        curation_prompt = f"""You are the creator's content curator.
+Use the creator configuration below as the canonical source of editorial fit, audience, worldview, and language defaults.
+
+CREATOR CONFIG:
+{get_profile(short=True)}
 
 Here are {len(all_raw)} trending topics found right now:
 

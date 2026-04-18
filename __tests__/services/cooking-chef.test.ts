@@ -42,7 +42,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import {
-  addRecipe, getRecipes, deleteRecipe,
+  addRecipe, getRecipes, deleteRecipe, updateRecipe,
   setMealPlan, getMealPlan, deleteMealPlan,
   generateShoppingList, getShoppingList,
 } from '../../src/services/cooking-chef';
@@ -56,7 +56,7 @@ describe('Recipe CRUD', () => {
       { name: 'Ribeye steak', quantity: '400', unit: 'g' },
       { name: 'Salt', quantity: '1', unit: 'tsp' },
       { name: 'Butter', quantity: '30', unit: 'g' },
-    ], { tags: 'carnivore,quick', prepTime: 5, cookTime: 15, servings: 2 });
+    ], { tags: 'carnivore,quick', prepTime: 5, cookTime: 15, servings: 2, protein: 32, fat: 18, carbs: 6, calories: 314 });
 
     expect(recipe.id).toBeDefined();
     expect(recipe.title).toBe('Grilled Ribeye');
@@ -64,6 +64,28 @@ describe('Recipe CRUD', () => {
     expect(recipe.ingredients[0].name).toBe('Ribeye steak');
     expect(recipe.tags).toBe('carnivore,quick');
     expect(recipe.servings).toBe(2);
+    expect(recipe.protein).toBe(32);
+    expect(recipe.fat).toBe(18);
+    expect(recipe.carbs).toBe(6);
+    expect(recipe.calories).toBe(314);
+  });
+
+  it('updates recipe nutrition fields', () => {
+    const recipe = addRecipe(1, 'Protein oats', [
+      { name: 'Oats', quantity: '60', unit: 'g' },
+    ]);
+
+    const updated = updateRecipe(1, recipe.id, {
+      protein: 28,
+      fat: 7,
+      carbs: 42,
+      calories: 339,
+    });
+
+    expect(updated?.protein).toBe(28);
+    expect(updated?.fat).toBe(7);
+    expect(updated?.carbs).toBe(42);
+    expect(updated?.calories).toBe(339);
   });
 
   it('searches recipes by tag', () => {

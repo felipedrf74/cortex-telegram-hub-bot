@@ -220,7 +220,6 @@ describe('REGRESSION: Triathlon keywords classify correctly', () => {
       'lower body day today',
       'upper body focus tomorrow',
       'endurance is improving steadily',
-      'need a carnivore meal plan',
       'coach report please',
       'curls at the gym today',
       '4 sets x 8 reps squats',
@@ -231,6 +230,10 @@ describe('REGRESSION: Triathlon keywords classify correctly', () => {
 
     it.each(messages)('EN "%s" → triathlon (keyword)', (msg) => {
       expect(keywordMatch(msg)).toBe('triathlon');
+    });
+
+    it('routes explicit meal-plan asks to cooking even when the subject is carnivore', () => {
+      expect(keywordMatch('need a carnivore meal plan')).toBe('cooking');
     });
   });
 
@@ -387,14 +390,16 @@ describe('REGRESSION: Three-tier cascade functions correctly', () => {
       expect(result.domain).toBe('secretary');
     });
 
-    it('with active secretary context, "training plan" keyword-matches to triathlon', async () => {
+    it('with active secretary context, explicit task actions stay in secretary even if the subject is training', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.8 });
       const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here are your tasks.' };
 
       const result = await routeMessage('add training plan to my tasks', context);
-      // "training" matches triathlon keyword — classifier NOT called
+      // Explicit task mutation should stay in Secretary; the subject being
+      // a training plan should not steal the whole request into Triathlon.
       expect(result.method).toBe('keyword');
-      expect(result.domain).toBe('triathlon');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
     it('with active content context, "deadline" follow-ups preserve content context', async () => {

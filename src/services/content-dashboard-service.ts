@@ -20,6 +20,38 @@ function db() {
   return getDb();
 }
 
+const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
+
+function effectiveContentOwnerScope(row: { owner_scope?: string | null; user_id?: number | null }): 'system' | 'user' {
+  if (row.owner_scope === 'system') return 'system';
+  if (row.owner_scope === 'user') return 'user';
+  return row.user_id === 0 ? 'system' : 'user';
+}
+
+function isUserOwnedContentRow(
+  row: { owner_scope?: string | null; user_id?: number | null },
+  userId?: number,
+): boolean {
+  return userId != null && row.user_id === userId && effectiveContentOwnerScope(row) === 'user';
+}
+
+function dedupeScopedRows<T extends { owner_scope?: string | null; user_id?: number | null }>(
+  rows: T[],
+  keyFn: (row: T) => string,
+  userId?: number,
+): T[] {
+  if (userId == null) return rows;
+  const deduped = new Map<string, T>();
+  for (const row of rows) {
+    const key = keyFn(row);
+    const existing = deduped.get(key);
+    if (!existing || (isUserOwnedContentRow(row, userId) && !isUserOwnedContentRow(existing, userId))) {
+      deduped.set(key, row);
+    }
+  }
+  return Array.from(deduped.values());
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Books
 // ═══════════════════════════════════════════════════════════════════
@@ -51,29 +83,41 @@ export interface BooksOverview {
  * @param dbOverride - optional DB reference (for test environments where
  *   the module-level getDb mock may not propagate to dynamic requires)
  */
-export function getBooks(limit = 50, dbOverride?: any): BooksOverview {
+export function getBooks(limit = 50, dbOverride?: any, userId?: number): BooksOverview {
   const d = dbOverride || db();
-  const rows = d.prepare(`
-    SELECT id, title, author, core_thesis, key_frameworks, pillar_mapping,
-           extraction_status, times_referenced, created_at
-    FROM book_library
-    ORDER BY times_referenced DESC, created_at DESC
-    LIMIT ?
-  `).all(limit) as any[];
+  const rows = userId != null
+    ? d.prepare(`
+        SELECT id, title, author, core_thesis, key_frameworks, pillar_mapping,
+               extraction_status, times_referenced, created_at, user_id, owner_scope
+        FROM book_library
+        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
+           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
+        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+                 times_referenced DESC,
+                 created_at DESC
+        LIMIT ?
+      `).all(userId, userId, limit * 2) as any[]
+    : d.prepare(`
+        SELECT id, title, author, core_thesis, key_frameworks, pillar_mapping,
+               extraction_status, times_referenced, created_at, user_id, owner_scope
+        FROM book_library
+        ORDER BY times_referenced DESC, created_at DESC
+        LIMIT ?
+      `).all(limit) as any[];
 
-  const totals = d.prepare(`
-    SELECT
-      COUNT(*) as total,
-      SUM(CASE WHEN extraction_status = 'extracted' THEN 1 ELSE 0 END) as extracted,
-      SUM(CASE WHEN extraction_status IN ('pending', 'extracting') THEN 1 ELSE 0 END) as pending
-    FROM book_library
-  `).get() as any;
+  const dedupedRows = dedupeScopedRows(rows, (row) => `${row.title}::${row.author}`, userId).slice(0, limit);
+  const totals = dedupedRows.reduce((acc, row) => {
+    acc.total += 1;
+    if (row.extraction_status === 'extracted') acc.extracted += 1;
+    if (row.extraction_status === 'pending' || row.extraction_status === 'extracting') acc.pending += 1;
+    return acc;
+  }, { total: 0, extracted: 0, pending: 0 });
 
   return {
     total: totals?.total ?? 0,
     extracted: totals?.extracted ?? 0,
     pending: totals?.pending ?? 0,
-    rows: rows.map(r => ({
+    rows: dedupedRows.map(r => ({
       id: r.id,
       title: r.title,
       author: r.author,
@@ -109,6 +153,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export interface VoiceDnaEntry {
+  id: number;
   category: string;
   label: string;
   text: string;
@@ -127,13 +172,16 @@ export function getVoiceDna(dbOverride?: any, userId?: number): VoiceDnaEntry[] 
   try {
     const rows = userId != null
       ? d.prepare(
-          `SELECT category, synthesized_text, source_channels, version, updated_at, user_id
+          `SELECT id, category, synthesized_text, source_channels, version, updated_at, user_id, owner_scope
              FROM content_knowledge
-            WHERE user_id IN (0, ?)
-            ORDER BY category ASC, user_id DESC, updated_at DESC`,
-        ).all(userId) as any[]
+            WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
+               OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
+            ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+                     category ASC,
+                     updated_at DESC`,
+        ).all(userId, userId) as any[]
       : d.prepare(
-          'SELECT category, synthesized_text, source_channels, version, updated_at, user_id FROM content_knowledge ORDER BY updated_at DESC',
+          'SELECT id, category, synthesized_text, source_channels, version, updated_at, user_id, owner_scope FROM content_knowledge ORDER BY updated_at DESC',
         ).all() as any[];
 
     const deduped = new Map<string, any>();
@@ -144,6 +192,7 @@ export function getVoiceDna(dbOverride?: any, userId?: number): VoiceDnaEntry[] 
     }
 
     return Array.from(deduped.values()).map((k: any) => ({
+      id: k.id,
       category: k.category,
       label: CATEGORY_LABELS[k.category] ?? k.category,
       text: k.synthesized_text,
@@ -180,9 +229,20 @@ export function getKnowledgeStats(dbOverride?: any, userId?: number): KnowledgeS
       sources: entry.sources.length,
     }));
 
-    const rc = userId != null
-      ? d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels WHERE user_id IN (0, ?)').get(userId) as any
-      : d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels').get() as any;
+    const referenceChannels = userId != null
+      ? dedupeScopedRows(
+          d.prepare(
+            `SELECT channel_url, user_id, owner_scope
+               FROM content_ref_channels
+              WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
+                 OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
+              ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+                       channel_url ASC`,
+          ).all(userId, userId) as any[],
+          (row) => row.channel_url,
+          userId,
+        ).length
+      : ((d.prepare('SELECT COUNT(*) as cnt FROM content_ref_channels').get() as any)?.cnt ?? 0);
 
     return {
       categories: kStats.map(r => ({
@@ -190,7 +250,7 @@ export function getKnowledgeStats(dbOverride?: any, userId?: number): KnowledgeS
         updatedAt: r.updatedAt,
         sources: r.sources ?? 0,
       })),
-      referenceChannels: rc?.cnt ?? 0,
+      referenceChannels,
     };
   } catch (err) {
     logger.debug({ err }, 'getKnowledgeStats failed');

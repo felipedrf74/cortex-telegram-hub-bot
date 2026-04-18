@@ -9,6 +9,9 @@ import { executeToolCall } from '../services/tool-executor';
 import { getActivePlanSummary } from '../services/training-plans';
 import { ensureActiveProvider, getActiveProvider } from '../services/provider-registry';
 import { getDailyContext } from '../services/context-engine';
+import { buildSharedDecisionContext } from '../services/shared-decision-context';
+import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
+import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
 import {
   formatAthleteProfileBlock,
   getMissingProfileFields,
@@ -55,6 +58,7 @@ const SPORT_TO_PROFILE_TYPE: Record<Sport, string> = {
  */
 function buildOnboardingPendingBlock(userId: number, message: string): string {
   if (!message || message.trim().length === 0) return '';
+  if (!isTrainingPrescriptionIntent(message)) return '';
   const result = classifySport(message);
   if (!result.sport || result.confidence < 0.7) return '';
 
@@ -98,6 +102,10 @@ function buildOnboardingPendingBlock(userId: number, message: string): string {
   }
   lines.push('</onboarding_pending>');
   return lines.join('\n');
+}
+
+function isTrainingPrescriptionIntent(message: string): boolean {
+  return /\b(create|build|generate|make|design|write|prescribe|give\s+me|what\s+(?:workout|session)\s+should\s+i\s+do|how\s+should\s+i\s+train|new\s+training\s+plan|training\s+plan|workout\s+plan|tempo\s+run|ftp\s+test|freestyle|deadlift|bench\s+press|squat|5x5|css|cria|crie|gera|gerar|monta|monte|faz|fa[çc]a|prescreve|prescreva|me\s+d[aá]|que\s+treino\s+devo\s+fazer|qual\s+treino\s+devo\s+fazer|como\s+devo\s+treinar|plano\s+de\s+treino)\b/i.test(message);
 }
 
 // ─── Last Coach Briefing State (per-user, in-memory) ─────────────────
@@ -168,10 +176,11 @@ export async function buildSimpleStateContext(
   userId?: number,
   message?: string,
 ): Promise<string> {
+  const hasUserScope = typeof userId === 'number';
   const parts: string[] = [];
   parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
-  const todos = listTodos(userId ?? 0, { domain, status: 'pending' });
+  const todos = hasUserScope ? listTodos(userId, { domain, status: 'pending' }) : [];
   if (todos.length > 0) {
     const label = domain.charAt(0).toUpperCase() + domain.slice(1);
     parts.push(`\n${label} to-dos (${todos.length}):`);
@@ -311,15 +320,20 @@ export async function buildSimpleStateContext(
   }
 
   // Cross-domain shared context
-  const sharedCtx = getSharedMemorySummary(userId ?? 0);
+  const sharedCtx = hasUserScope ? getSharedMemorySummary(userId) : '';
   if (sharedCtx) parts.push(sharedCtx);
+
+  if (hasUserScope) {
+    const decisionCtx = await buildSharedDecisionContext(domain, userId);
+    if (decisionCtx) parts.push(`\n${decisionCtx}`);
+  }
 
   // Daily cross-domain context summary (TASK-16a).
   // Pre-built at 5 AM and refreshed on every task write — replaces the
   // 5+ speculative tool calls the AI used to make to gather "what's my
   // day looking like?" before answering. Cost: ~500 tokens per message
   // instead of ~1350. See src/services/context-engine.ts.
-  if (userId) {
+  if (hasUserScope) {
     const dailyContext = getDailyContext(userId);
     if (dailyContext) {
       parts.push('\n--- Daily Context ---\n' + dailyContext);
@@ -345,20 +359,23 @@ export async function handleSimpleDomain(
   userId?: number,
   maxTokensOverride?: number,
 ): Promise<DomainResponse> {
-  const uid = userId ?? 0;
-  const history = getConversationHistory(uid, domain);
+  const hasUserScope = typeof userId === 'number';
+  const history = hasUserScope ? getConversationHistory(userId, domain) : [];
   // Phase 3 Slice A: pass the incoming message so the triathlon
   // branch of buildSimpleStateContext can run the sport classifier
   // and inject the onboarding-pending block when appropriate.
-  const stateContext = await buildSimpleStateContext(domain, uid, message);
+  const stateContext = await buildSimpleStateContext(domain, userId, message);
 
   try {
     // Get the active routing provider (handles fallback + circuit breaker)
     const provider = getActiveProvider() || ensureActiveProvider();
     if (!provider) {
+      if (!canUseDirectAnthropicFallback()) {
+        return buildAIUnavailableResponse(domain, userId);
+      }
       // Fallback to direct Anthropic if routing provider not initialized
       const { callDomain, continueWithToolResults } = require('../services/anthropic');
-      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, uid, maxTokensOverride, callDomain, continueWithToolResults);
+      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, userId, maxTokensOverride, callDomain, continueWithToolResults);
     }
 
     // Route through the provider-agnostic interface
@@ -404,12 +421,15 @@ export async function handleSimpleDomain(
       finalText = result.text;
     }
 
-    // Store conversation
-    addToConversation(uid, domain, 'user', message);
-    const storedText = toolsUsed.length > 0
-      ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
-      : finalText;
-    addToConversation(uid, domain, 'assistant', storedText);
+    finalText = normalizeReplyForUserLanguage(finalText, userId);
+
+    if (hasUserScope) {
+      addToConversation(userId, domain, 'user', message);
+      const storedText = toolsUsed.length > 0
+        ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+        : finalText;
+      addToConversation(userId, domain, 'assistant', storedText);
+    }
 
     return { text: finalText, domain };
   } catch (err: unknown) {
@@ -427,7 +447,7 @@ export async function handleSimpleDomain(
  */
 async function handleWithDirectCalls(
   domain: DomainName, history: any[], message: string, stateContext: string,
-  maxIterations: number, userId: number, maxTokensOverride: number | undefined,
+  maxIterations: number, userId: number | undefined, maxTokensOverride: number | undefined,
   callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
 ): Promise<DomainResponse> {
   let result = await callDomainFn(domain, history, message, stateContext, maxTokensOverride, userId);
@@ -462,11 +482,15 @@ async function handleWithDirectCalls(
     finalText = result.text;
   }
 
-  addToConversation(userId ?? 0, domain, 'user', message);
-  const storedText = toolsUsed.length > 0
-    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
-    : finalText;
-  addToConversation(userId ?? 0, domain, 'assistant', storedText);
+  finalText = normalizeReplyForUserLanguage(finalText, userId);
+
+  if (typeof userId === 'number') {
+    addToConversation(userId, domain, 'user', message);
+    const storedText = toolsUsed.length > 0
+      ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+      : finalText;
+    addToConversation(userId, domain, 'assistant', storedText);
+  }
 
   return { text: finalText, domain };
 }

@@ -21,6 +21,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // Hard size caps — keep in sync with the iOS reporter so it can pre-truncate.
 const MAX_MESSAGE = 2_000;
@@ -50,6 +51,15 @@ function asString(v: unknown, max: number): string | null {
 
 export function clientErrorsRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'client_errors_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * POST /api/v1/client-errors

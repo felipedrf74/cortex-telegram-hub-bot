@@ -15,6 +15,10 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request, Response } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -122,6 +126,7 @@ describe('GET /api/v1/onboarding/profile/detail', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
 
@@ -153,6 +158,22 @@ describe('GET /api/v1/onboarding/profile/detail', () => {
         expect(field.answered).toBe(false);
       }
     }
+  });
+
+  it('fails closed on invalid tenant scope before loading profile detail', async () => {
+    const res = await dispatch('GET', '/profile/detail', 0);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'onboarding_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
   });
 
   it('includes field schema metadata (prompt, type, options)', async () => {

@@ -27,15 +27,8 @@
  * are common phrasings missing from the dictionary that should be added.
  */
 
-import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
-import {
-  isOutlookTodoConfigured,
-  getAllPendingTasks,
-  getDefaultList,
-  createTask,
-  type TodoTask,
-} from './microsoft-todo';
-import { getUnreadCount, isOutlookMailConfigured } from './outlook-mail';
+import { getEvents, hasConnectedCalendarForUser } from './unified-calendar';
+import type { TodoTask } from './microsoft-todo';
 import { getRemindersForToday, setReminder } from '../state/reminders';
 import {
   now,
@@ -51,6 +44,9 @@ import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import type { Lang } from '../utils/i18n';
 import { getUserLanguage } from './user-service';
+import { getTaskProviderForUser } from './task-store/task-router';
+import { composeDailyBrief } from './daily-brief-orchestrator';
+import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -78,6 +74,11 @@ interface PatternEntry {
 // ─── Helpers ────────────────────────────────────────────────────────
 
 const SECRETARY: DomainName = 'secretary';
+
+function getScopedTaskProvider(userId: number) {
+  if (!userId) return null;
+  return getTaskProviderForUser(userId);
+}
 
 // ─── Bilingual copy table ───────────────────────────────────────────
 //
@@ -113,6 +114,7 @@ type CopyKey =
   | 'overdueEmpty'
   | 'overdueDueLabel'
   | 'emailConfigMissing'
+  | 'priorityHeader'
   | 'inboxClean'
   | 'emailUnreadLine'
   | 'reminderInvalidTime'
@@ -155,7 +157,8 @@ const COPY: Record<Lang, Copy> = {
     overdueHeaderPlural: 'Tarefas Atrasadas',
     overdueEmpty: '✅ Nenhuma tarefa atrasada!',
     overdueDueLabel: 'prazo:',
-    emailConfigMissing: '⚠️ Email não configurado. Use /connect outlook para vincular.',
+    emailConfigMissing: '⚠️ Email não configurado. Ligue Outlook ou Gmail em /settings.',
+    priorityHeader: 'PRIORIDADE DE HOJE',
     inboxClean: '📧 Caixa de entrada limpa! ✨',
     emailUnreadLine: '📧 Você tem <b>%COUNT%</b> e-mail%S% não lido%S%.',
     reminderInvalidTime: '❌ Horário inválido:',
@@ -192,7 +195,8 @@ const COPY: Record<Lang, Copy> = {
     overdueHeaderPlural: 'Overdue Tasks',
     overdueEmpty: '✅ No overdue tasks!',
     overdueDueLabel: 'due:',
-    emailConfigMissing: '⚠️ Email not configured. Use /connect outlook to link.',
+    emailConfigMissing: '⚠️ Email not configured. Connect Outlook or Gmail in /settings.',
+    priorityHeader: 'TODAY\'S PRIORITY',
     inboxClean: '📧 Inbox clean! ✨',
     emailUnreadLine: '📧 You have <b>%COUNT%</b> unread email%S%.',
     reminderInvalidTime: '❌ Invalid time:',
@@ -229,7 +233,8 @@ const COPY: Record<Lang, Copy> = {
     overdueHeaderPlural: 'Tarefas Atrasadas',
     overdueEmpty: '✅ Nenhuma tarefa atrasada!',
     overdueDueLabel: 'prazo:',
-    emailConfigMissing: '⚠️ Email não configurado. Usa /connect outlook para ligar.',
+    emailConfigMissing: '⚠️ Email não configurado. Liga Outlook ou Gmail em /settings.',
+    priorityHeader: 'PRIORIDADE DE HOJE',
     inboxClean: '📧 Caixa de entrada limpa! ✨',
     emailUnreadLine: '📧 Tens <b>%COUNT%</b> e-mail%S% por ler.',
     reminderInvalidTime: '❌ Hora inválida:',
@@ -411,14 +416,16 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       const calOk = isSubmoduleEnabled('secretary', 'calendar');
       const emailOk = isSubmoduleEnabled('secretary', 'email');
       const remOk = isSubmoduleEnabled('secretary', 'reminders');
+      const taskProvider = tasksOk ? getScopedTaskProvider(userId) : null;
+      const hasCalendar = calOk && !!userId && hasConnectedCalendarForUser(userId);
+      const hasMail = emailOk && !!userId && isAnyMailConfiguredForUser(userId);
 
       const [events, todoResult, reminders] = await Promise.all([
-        calOk && isAnyCalendarConfigured()
-          // CHAT-M2: pass userId for per-user Outlook calendar tokens
+        hasCalendar
           ? getEvents(startOfDay(), endOfDay(), userId).catch(() => [])
           : Promise.resolve([]),
-        tasksOk && isOutlookTodoConfigured()
-          ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
+        taskProvider
+          ? taskProvider.getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
           : Promise.resolve({ success: false as const, data: [], error: 'disabled' }),
         remOk ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
       ]);
@@ -439,7 +446,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         for (const e of events) {
           msg += `▸ ${formatTime(e.start)}–${formatTime(e.end)}  ${escapeHtml(e.summary)}\n`;
         }
-      } else if (calOk && isAnyCalendarConfigured()) {
+      } else if (hasCalendar) {
         msg += `📋 <b>${c.agendaHeader}</b> ${c.agendaEmpty}\n`;
       }
 
@@ -477,11 +484,11 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       }
 
       // Unread emails (best-effort, non-fatal)
-      if (emailOk && isOutlookMailConfigured()) {
+      if (hasMail) {
         try {
-          const unread = await getUnreadCount();
-          if (unread && unread > 0) {
-            msg += `\n📧 <b>${c.emailsHeader}</b> ${unread} ${c.emailsUnreadSuffix}\n`;
+          const unread = await getUnreadMailSummaryForUser(userId);
+          if (unread.totalUnread > 0) {
+            msg += `\n📧 <b>${c.emailsHeader}</b> ${unread.totalUnread} ${c.emailsUnreadSuffix}\n`;
           }
         } catch { /* silent */ }
       }
@@ -493,13 +500,44 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // ── Week Overview ───────────────────────────────────────────────
   // "what's my week", "show my week", "/week", "esta semana", "minha semana"
   {
+    id: 'daily_priority',
+    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia)[\s?!.]*$/i,
+    handler: async (_userId, _match, lang) => {
+      const c = copyForLang(lang);
+      const brief = await composeDailyBrief({ userId: _userId });
+      const topPriority = brief.coordination.topPriority ?? brief.day.secretary.priorityNote;
+      const executionOrder = brief.coordination.executionOrder.length > 0
+        ? brief.coordination.executionOrder
+        : brief.day.secretary.sequence.slice(0, 4);
+
+      if (!topPriority && executionOrder.length === 0) {
+        return { text: c.inboxClean, domain: SECRETARY };
+      }
+
+      const lines = [`🎯 <b>${c.priorityHeader}</b>`];
+      if (topPriority) lines.push(`• ${escapeHtml(topPriority)}`);
+      if (executionOrder.length > 0) {
+        lines.push('');
+        lines.push(...executionOrder.map((step, index) => `${index + 1}. ${escapeHtml(step)}`));
+      }
+      if (brief.coordination.watchouts.length > 0) {
+        lines.push('');
+        lines.push(`⚠️ ${escapeHtml(brief.coordination.watchouts.join(' | '))}`);
+      }
+      if (brief.coordination.handoffs.length > 0) {
+        lines.push(`↔️ ${escapeHtml(brief.coordination.handoffs.join(' | '))}`);
+      }
+      return { text: lines.join('\n').trim(), domain: SECRETARY };
+    },
+  },
+
+  {
     id: 'week_overview',
     pattern: /^(?:what(?:'s| is) my week|(?:show|mostra) (?:my |a |minha )?(?:week|semana)|(?:como|o que)(?: está)? (?:a |minha )?semana|\/week|this week|esta semana)[\s?!.]*$/i,
     requires: 'calendar',
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
-      const events = isAnyCalendarConfigured()
-        // CHAT-M2: pass userId for per-user Outlook calendar tokens
+      const events = _userId && hasConnectedCalendarForUser(_userId)
         ? await getEvents(startOfWeek(), endOfWeek(), _userId).catch(() => [])
         : [];
 
@@ -544,11 +582,14 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     requires: 'tasks',
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
-      const result = await getAllPendingTasks().catch(() => ({
-        success: false as const,
-        data: [],
-        error: 'API error',
-      }));
+      const taskProvider = getScopedTaskProvider(_userId);
+      const result = taskProvider
+        ? await taskProvider.getAllPendingTasks().catch(() => ({
+            success: false as const,
+            data: [],
+            error: 'API error',
+          }))
+        : { success: false as const, data: [], error: 'disabled' };
 
       if (!result.success) {
         return { text: c.tasksErrorFetch, domain: SECRETARY };
@@ -589,11 +630,11 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     requires: 'email',
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
-      if (!isOutlookMailConfigured()) {
+      if (!_userId || !isAnyMailConfiguredForUser(_userId)) {
         return { text: c.emailConfigMissing, domain: SECRETARY };
       }
-      const count = await getUnreadCount();
-      if (count === 0) {
+      const summary = await getUnreadMailSummaryForUser(_userId);
+      if (summary.totalUnread === 0) {
         return { text: c.inboxClean, domain: SECRETARY };
       }
       // The EN line doesn't need the Portuguese "email/emails" suffix
@@ -601,8 +642,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       // but we keep %S% in the template so a single replace handles
       // both languages cleanly.
       const text = c.emailUnreadLine
-        .replace('%COUNT%', String(count))
-        .replace(/%S%/g, count > 1 ? 's' : '');
+        .replace('%COUNT%', String(summary.totalUnread))
+        .replace(/%S%/g, summary.totalUnread > 1 ? 's' : '');
       return { text, domain: SECRETARY };
     },
   },
@@ -615,11 +656,14 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     requires: 'tasks',
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
-      const result = await getAllPendingTasks().catch(() => ({
-        success: false as const,
-        data: [],
-        error: 'API error',
-      }));
+      const taskProvider = getScopedTaskProvider(_userId);
+      const result = taskProvider
+        ? await taskProvider.getAllPendingTasks().catch(() => ({
+            success: false as const,
+            data: [],
+            error: 'API error',
+          }))
+        : { success: false as const, data: [], error: 'disabled' };
       if (!result.success) {
         return { text: c.tasksErrorFetch, domain: SECRETARY };
       }
@@ -699,11 +743,15 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       }
 
       try {
-        const list = await getDefaultList();
+        const taskProvider = getScopedTaskProvider(_userId);
+        if (!taskProvider) {
+          return { text: c.taskCreateError, domain: SECRETARY };
+        }
+        const list = await taskProvider.getDefaultList();
         if (!list) {
           return { text: c.taskCreateNoList, domain: SECRETARY };
         }
-        const result = await createTask(list.id, list.displayName, { title });
+        const result = await taskProvider.createTask(list.id, list.displayName, { title });
         if (!result.success) {
           return {
             text: `${c.taskCreateErrorDetail} ${result.error || 'unknown'}`,

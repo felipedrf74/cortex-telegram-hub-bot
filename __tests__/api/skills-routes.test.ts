@@ -23,6 +23,10 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request, Response } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -127,6 +131,7 @@ describe('Skills API — GET /catalog', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
   });
   afterEach(() => testDb?.close());
 
@@ -135,6 +140,21 @@ describe('Skills API — GET /catalog', () => {
     expect(res.statusCode).toBe(404);
     expect(res.body.ok).toBe(false);
     expect(res.body.error.code).toBe('USER_NOT_FOUND');
+  });
+
+  it('fails closed on invalid tenant scope before loading the skills catalog', async () => {
+    const res = await dispatch('GET', '/catalog', 0);
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'skills_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
   });
 
   it('returns the full catalog for a pro user with all parents accessible', async () => {

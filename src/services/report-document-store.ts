@@ -19,6 +19,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
 // ═══════════════════════════════════════════════════════════════════
 // Types
@@ -43,6 +44,20 @@ export interface ReportDocument {
   createdAt: string;
 }
 
+function reportInvalidReportScope(
+  operation: string,
+  userId: number | undefined,
+  details?: Record<string, unknown>,
+): void {
+  recordTenantScopeAnomaly({
+    layer: 'delivery',
+    operation,
+    reason: userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+    userId: userId ?? null,
+    details,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Create
 // ═══════════════════════════════════════════════════════════════════
@@ -62,6 +77,20 @@ export function storeReport(opts: {
   documentJson: Record<string, any>;
   sourceJob?: string;
 }): number {
+  if (!isValidTenantUserId(opts.userId)) {
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation: 'store_report',
+      reason: opts.userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+      userId: opts.userId ?? null,
+      details: {
+        reportType: opts.type,
+        sourceJob: opts.sourceJob ?? null,
+      },
+    });
+    return -1;
+  }
+
   const db = getDb();
   const result = db.prepare(`
     INSERT INTO report_documents (user_id, type, title, summary, document_json, source_job)
@@ -93,6 +122,9 @@ export async function storeAndPushReport(opts: {
   pushCategory?: string;
 }): Promise<number> {
   const id = storeReport(opts);
+  if (id <= 0) {
+    return -1;
+  }
 
   // Check push preferences before sending
   if (!isPushEnabled(opts.userId, opts.pushCategory || opts.type)) {
@@ -128,6 +160,14 @@ export function getRecentReports(
   userId: number,
   opts: { type?: ReportType; limit?: number } = {},
 ): ReportDocument[] {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('get_recent_reports', userId, {
+      reportType: opts.type ?? null,
+      limit: opts.limit ?? null,
+    });
+    return [];
+  }
+
   const db = getDb();
   const clauses = ['user_id = ?'];
   const params: any[] = [userId];
@@ -153,11 +193,18 @@ export function getRecentReports(
  * Get a single report by ID (with user ownership check).
  */
 export function getReportById(reportId: number, userId?: number): ReportDocument | null {
+  if (userId !== undefined && !isValidTenantUserId(userId)) {
+    reportInvalidReportScope('get_report_by_id', userId, {
+      reportId,
+    });
+    return null;
+  }
+
   const db = getDb();
-  const query = userId
+  const query = userId !== undefined
     ? 'SELECT * FROM report_documents WHERE id = ? AND user_id = ?'
     : 'SELECT * FROM report_documents WHERE id = ?';
-  const params = userId ? [reportId, userId] : [reportId];
+  const params = userId !== undefined ? [reportId, userId] : [reportId];
 
   const row = db.prepare(query).get(...params) as any;
   return row ? mapReport(row) : null;
@@ -168,6 +215,13 @@ export function getReportById(reportId: number, userId?: number): ReportDocument
  * Used by the dashboard to show "today's briefing" without listing all.
  */
 export function getLatestByType(userId: number, type: ReportType): ReportDocument | null {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('get_latest_report_by_type', userId, {
+      reportType: type,
+    });
+    return null;
+  }
+
   const db = getDb();
   const row = db.prepare(`
     SELECT * FROM report_documents
@@ -182,6 +236,11 @@ export function getLatestByType(userId: number, type: ReportType): ReportDocumen
  * Get unread report count for badge display.
  */
 export function getUnreadReportCount(userId: number): number {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('get_unread_report_count', userId);
+    return 0;
+  }
+
   const db = getDb();
   const row = db.prepare(
     "SELECT COUNT(*) as cnt FROM report_documents WHERE user_id = ? AND status = 'unread'",
@@ -197,6 +256,13 @@ export function getUnreadReportCount(userId: number): number {
  * Mark a report as read.
  */
 export function markReportRead(reportId: number, userId: number): boolean {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('mark_report_read', userId, {
+      reportId,
+    });
+    return false;
+  }
+
   const db = getDb();
   const result = db.prepare(
     "UPDATE report_documents SET status = 'read', read_at = datetime('now') WHERE id = ? AND user_id = ?",
@@ -230,13 +296,34 @@ const DEFAULT_CATEGORIES = [
   'coach_briefing', 'content_updates', 'reminders',
 ];
 
+function ensurePushPreferencesTable(): void {
+  const db = getDb();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS push_preferences (
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, category)
+    )
+  `);
+}
+
 /**
  * Check if push is enabled for a user+category.
  * Default: enabled (if no row exists, treat as enabled).
  */
 export function isPushEnabled(userId: number, category: string): boolean {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('is_push_enabled', userId, {
+      category,
+    });
+    return false;
+  }
+
   const db = getDb();
   try {
+    ensurePushPreferencesTable();
     const row = db.prepare(
       'SELECT enabled FROM push_preferences WHERE user_id = ? AND category = ?',
     ).get(userId, category) as { enabled: number } | undefined;
@@ -252,8 +339,14 @@ export function isPushEnabled(userId: number, category: string): boolean {
  * Creates default rows for missing categories.
  */
 export function getPushPreferences(userId: number): Array<{ category: string; enabled: boolean }> {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('get_push_preferences', userId);
+    return DEFAULT_CATEGORIES.map((category) => ({ category, enabled: false }));
+  }
+
   const db = getDb();
   try {
+    ensurePushPreferencesTable();
     const rows = db.prepare(
       'SELECT category, enabled FROM push_preferences WHERE user_id = ?',
     ).all(userId) as Array<{ category: string; enabled: number }>;
@@ -277,7 +370,16 @@ export function setPushPreference(
   category: string,
   enabled: boolean,
 ): void {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('set_push_preference', userId, {
+      category,
+      enabled,
+    });
+    return;
+  }
+
   const db = getDb();
+  ensurePushPreferencesTable();
   db.prepare(`
     INSERT INTO push_preferences (user_id, category, enabled, updated_at)
     VALUES (?, ?, ?, datetime('now'))

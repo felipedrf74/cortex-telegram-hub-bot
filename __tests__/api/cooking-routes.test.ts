@@ -4,6 +4,10 @@ import fs from 'fs';
 import path from 'path';
 import type { Request } from 'express';
 import { DateTime } from 'luxon';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -122,6 +126,7 @@ describe('Cooking API — shopping list item updates', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
     setDbProvider(() => testDb);
+    clearTenantScopeAnomaliesForTests();
   });
 
   afterEach(() => testDb?.close());
@@ -143,6 +148,22 @@ describe('Cooking API — shopping list item updates', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.list.items[0].name).toBe('Tomatoes');
     expect(res.body.data.list.items[0].checked).toBe(true);
+  });
+
+  it('fails closed on invalid tenant scope before loading a meal plan', async () => {
+    const res = await dispatch('GET', '/meal-plan?from=2026-04-13&to=2026-04-13', 0);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'cooking_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
   });
 
   it('returns 404 when the week has no shopping list', async () => {

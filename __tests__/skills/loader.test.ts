@@ -63,6 +63,20 @@ describe('SkillLoader — validateManifest() required fields', () => {
     expect(result.errors).toHaveLength(0);
   });
 
+  it('accepts v2 manifests that declare subSkills', () => {
+    const result = validateManifest({
+      name: 'mesh-skill',
+      version: '1.0.0',
+      manifestVersion: 2,
+      subSkills: [
+        { module_name: 'alpha', enabled_by_default: true },
+        { module_name: 'beta', enabled_by_default: false, dependencies: ['alpha'] },
+      ],
+    });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
   it('rejects null manifest', () => {
     const result = validateManifest(null);
     expect(result.valid).toBe(false);
@@ -497,6 +511,18 @@ describe('SkillLoader — loadManifest()', () => {
     expect(manifest.domain).toBe('secretary');
     expect(manifest.dependencies).toEqual(['core']);
     expect(manifest.submodules).toHaveLength(1);
+  });
+
+  it('normalizes subSkills to submodules when loading v2 manifests', () => {
+    const dir = writeManifest({
+      name: 'training',
+      version: '1.0.0',
+      manifestVersion: 2,
+      subSkills: [{ module_name: 'load-forecast', enabled_by_default: true }],
+    });
+    const manifest = loadManifest(dir);
+    expect(manifest.subSkills).toEqual([{ module_name: 'load-forecast', enabled_by_default: true }]);
+    expect(manifest.submodules).toEqual([{ module_name: 'load-forecast', enabled_by_default: true }]);
   });
 
   it('throws when manifest.json is missing', () => {

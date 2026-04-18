@@ -29,6 +29,7 @@ import {
 } from '../../services/skill-tiers';
 import { getUserByTelegramId, getUserById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // ─── Response shapes ────────────────────────────────────────────────
 
@@ -104,6 +105,15 @@ function skillToCatalog(
 
 export function skillsRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'skills_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/skills/catalog

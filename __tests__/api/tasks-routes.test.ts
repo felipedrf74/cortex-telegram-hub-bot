@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const mockResolveTaskProvider = vi.fn();
 const mockGetTaskProviderForUser = vi.fn();
@@ -7,6 +11,7 @@ const mockGetCachedSWR = vi.fn();
 const mockSetCacheSWR = vi.fn();
 const mockSetCache = vi.fn();
 const mockClearCache = vi.fn();
+const mockClearCacheByPrefix = vi.fn();
 const mockLoggerError = vi.fn();
 
 vi.mock('../../src/api/routes/../../services/task-store/task-router', () => ({
@@ -37,6 +42,7 @@ vi.mock('../../src/services/cache-store', () => ({
   getCached: vi.fn(),
   setCache: (...args: unknown[]) => mockSetCache(...args),
   clearCache: (...args: unknown[]) => mockClearCache(...args),
+  clearCacheByPrefix: (...args: unknown[]) => mockClearCacheByPrefix(...args),
   getCachedSWR: (...args: unknown[]) => mockGetCachedSWR(...args),
   setCacheSWR: (...args: unknown[]) => mockSetCacheSWR(...args),
   userCacheKey: (userId: number, key: string) => `u:${userId}:${key}`,
@@ -82,6 +88,7 @@ function mockReq(
   method: string,
   path: string,
   options: {
+    userId?: number;
     query?: Record<string, any>;
     params?: Record<string, string>;
     body?: Record<string, any>;
@@ -97,7 +104,7 @@ function mockReq(
     params: options.params || {},
     body: options.body || {},
     headers: {},
-    userId: 12,
+    userId: options.userId ?? 12,
   } as any;
 }
 
@@ -105,6 +112,7 @@ async function dispatch(
   method: string,
   path: string,
   options: {
+    userId?: number;
     query?: Record<string, any>;
     params?: Record<string, string>;
     body?: Record<string, any>;
@@ -130,20 +138,34 @@ async function dispatch(
 
 describe('Task routes sync provider metadata', () => {
   const providerApi = {
+    getLists: vi.fn(),
+    getTasks: vi.fn(),
     getAllPendingTasks: vi.fn(),
     findListByName: vi.fn(),
     getDefaultList: vi.fn(),
     createTask: vi.fn(),
+    updateTask: vi.fn(),
+    completeTask: vi.fn(),
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    clearTenantScopeAnomaliesForTests();
     mockResolveTaskProvider.mockReturnValue('ms_todo');
     mockGetTaskProviderForUser.mockReturnValue(providerApi);
     mockGetCachedSWR.mockReturnValue(null);
     mockSetCacheSWR.mockReturnValue(undefined);
     mockSetCache.mockReturnValue(undefined);
     mockClearCache.mockReturnValue(undefined);
+    mockClearCacheByPrefix.mockReturnValue(undefined);
+    providerApi.getLists.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'list-1', displayName: 'Tasks' },
+        { id: 'list-2', displayName: 'Work' },
+      ],
+    });
+    providerApi.getTasks.mockResolvedValue({ success: true, data: [] });
     providerApi.getAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     providerApi.findListByName.mockResolvedValue({ id: 'list-1', displayName: 'Tasks' });
     providerApi.getDefaultList.mockResolvedValue({ id: 'list-1', displayName: 'Tasks' });
@@ -156,6 +178,14 @@ describe('Task routes sync provider metadata', () => {
         importance: 'high',
         status: 'notStarted',
       },
+    });
+    providerApi.updateTask.mockResolvedValue({
+      success: true,
+      data: { id: 'task-1' },
+    });
+    providerApi.completeTask.mockResolvedValue({
+      success: true,
+      data: { id: 'task-1', status: 'completed' },
     });
   });
 
@@ -188,6 +218,54 @@ describe('Task routes sync provider metadata', () => {
     ]);
   });
 
+  it('fails closed on invalid tenant scope before loading task lists', async () => {
+    const res = await dispatch('GET', '/lists', { userId: 0 });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockGetTaskProviderForUser).not.toHaveBeenCalled();
+    expect(mockGetCachedSWR).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'tasks_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
+  });
+
+  it('includes nexus syncProvider on filtered task responses when using native storage', async () => {
+    mockResolveTaskProvider.mockReturnValue('nexus');
+    providerApi.getAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'task-9',
+          title: 'Inbox cleanup',
+          body: 'Sort the onboarding notes',
+          importance: 'normal',
+          status: 'notStarted',
+          listId: 'inbox',
+          listName: 'Inbox',
+        },
+      ],
+    });
+
+    const res = await dispatch('GET', '/filtered', { query: { filter: 'all' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.tasks).toEqual([
+      expect.objectContaining({
+        id: 'task-9',
+        title: 'Inbox cleanup',
+        syncProvider: 'nexus',
+      }),
+    ]);
+  });
+
   it('includes syncProvider on created tasks', async () => {
     const res = await dispatch('POST', '/', {
       body: {
@@ -204,6 +282,154 @@ describe('Task routes sync provider metadata', () => {
         listId: 'list-1',
         listName: 'Tasks',
         syncProvider: 'ms_todo',
+      }),
+    );
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
+  });
+
+  it('routes generic inbox task creation to the capture list before provider-default fallbacks', async () => {
+    providerApi.getLists.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'list-1', displayName: 'Tasks', wellknownListName: 'defaultList' },
+        { id: 'list-2', displayName: 'European Commision' },
+      ],
+    });
+    providerApi.findListByName.mockImplementation(async (name: string) => {
+      if (name === 'Inbox') return null;
+      if (name === 'Tasks') return { id: 'list-1', displayName: 'Tasks' };
+      return null;
+    });
+    providerApi.getDefaultList.mockResolvedValue({ id: 'list-2', displayName: 'European Commision' });
+
+    const res = await dispatch('POST', '/', {
+      body: {
+        title: 'pay via verde',
+        listName: 'Inbox',
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(providerApi.createTask).toHaveBeenCalledWith(
+      'list-1',
+      'Tasks',
+      expect.objectContaining({ title: 'pay via verde' }),
+    );
+    expect(res.body.data.task).toEqual(
+      expect.objectContaining({
+        listId: 'list-1',
+        listName: 'Tasks',
+      }),
+    );
+  });
+
+  it('returns real list task counts instead of placeholder sentinel values', async () => {
+    providerApi.getAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [
+        { id: 'task-1', listId: 'list-1' },
+        { id: 'task-2', listId: 'list-1' },
+        { id: 'task-3', listId: 'list-2' },
+      ],
+    });
+
+    const res = await dispatch('GET', '/lists');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.lists).toEqual([
+      { id: 'list-1', name: 'Tasks', taskCount: 2 },
+      { id: 'list-2', name: 'Work', taskCount: 1 },
+    ]);
+  });
+
+  it('normalizes update responses when the provider only returns a partial task payload', async () => {
+    providerApi.getTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'task-1',
+          title: 'Inbox cleanup',
+          body: 'Sort the onboarding notes',
+          importance: 'normal',
+          status: 'notStarted',
+          listId: 'list-1',
+          listName: 'Tasks',
+          createdDateTime: '2026-04-17T08:00:00Z',
+        },
+      ],
+    });
+
+    const res = await dispatch('PATCH', '/list-1/task-1', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+      body: { title: 'Inbox cleanup' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task).toEqual(
+      expect.objectContaining({
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        listId: 'list-1',
+        listName: 'Tasks',
+        syncProvider: 'ms_todo',
+      }),
+    );
+  });
+
+  it('normalizes complete responses when the provider only returns completion metadata', async () => {
+    providerApi.getTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'task-1',
+          title: 'Inbox cleanup',
+          body: null,
+          importance: 'normal',
+          status: 'completed',
+          listId: 'list-1',
+          listName: 'Tasks',
+          createdDateTime: '2026-04-17T08:00:00Z',
+        },
+      ],
+    });
+
+    const res = await dispatch('POST', '/list-1/task-1/complete', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.task).toEqual(
+      expect.objectContaining({
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        status: 'completed',
+        listId: 'list-1',
+        listName: 'Tasks',
+      }),
+    );
+    expect(res.body.data.message).toContain('Inbox cleanup');
+  });
+
+  it('includes nexus syncProvider on created tasks when using native storage', async () => {
+    mockResolveTaskProvider.mockReturnValue('nexus');
+
+    const res = await dispatch('POST', '/', {
+      body: {
+        title: 'Inbox cleanup',
+        importance: 'normal',
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.task).toEqual(
+      expect.objectContaining({
+        id: 'task-1',
+        listId: 'list-1',
+        listName: 'Tasks',
+        syncProvider: 'nexus',
       }),
     );
   });

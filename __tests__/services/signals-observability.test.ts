@@ -28,6 +28,10 @@ vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
 }));
 
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+}));
+
 import { setDbProvider } from '../../src/services/intelligence-bus';
 import {
   publishLowSleep,
@@ -107,6 +111,31 @@ describe('buildActiveSignalsResponse — per-type formatting', () => {
     expect(s.summary).toContain('42');
     expect(s.summary).toContain('5.2h');
     expect(s.priority).toBe('urgent');
+  });
+
+  it('overrides stale low_sleep hours with the latest readiness factors when available', () => {
+    publishLowSleep({ userId: 2010, score: 20, totalHours: 0 });
+    testDb.prepare(`
+      INSERT OR REPLACE INTO readiness_scores (user_id, date, score, factors, recommendation)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      2010,
+      '2026-04-16',
+      41,
+      JSON.stringify({
+        sleep: {
+          durationHours: 6.8,
+          qualityScore: 41,
+          score: 41,
+        },
+      }),
+      'reduce_25pct',
+    );
+
+    const res = buildActiveSignalsResponse(2010);
+    const s = res.signals.find((x) => x.type === 'low_sleep')!;
+    expect(s.summary).toContain('6.8h');
+    expect(res.flags.lowSleep).toBe(true);
   });
 
   it('formats low_hrv with delta percentage', () => {

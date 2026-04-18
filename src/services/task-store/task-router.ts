@@ -117,16 +117,31 @@ function createNativeWrapper(userId: number) {
     },
 
     async createTask(listId: string, listName: string, data: any) {
+      const projects = await nativeAdapter.getProjects(userId);
+      const parsedListId = typeof listId === 'string' ? parseInt(listId, 10) : NaN;
+      const matchedProject = projects.find((project) => {
+        if (!Number.isNaN(parsedListId) && Number(project.externalId) === parsedListId) return true;
+        if (listName && project.name.toLowerCase() === String(listName).trim().toLowerCase()) return true;
+        return false;
+      });
+      const fallbackProject = matchedProject || projects.find((project) => project.isDefault) || projects[0];
       const task = await nativeAdapter.createTask(userId, {
         title: data.title || '(Untitled)',
         description: data.body || undefined,
         status: 'pending',
         priority: data.importance === 'high' ? 3 : data.importance === 'low' ? 1 : 2,
         dueDate: data.dueDateTime || undefined,
-        projectId: parseInt(listId, 10),
-        projectName: listName,
+        projectId: fallbackProject ? parseInt(fallbackProject.externalId, 10) : undefined,
+        projectName: fallbackProject?.name || listName,
       });
-      return { success: true, data: taskToMsTodoShape(task, listId, listName) };
+      return {
+        success: true,
+        data: taskToMsTodoShape(
+          task,
+          fallbackProject?.externalId || listId,
+          fallbackProject?.name || listName,
+        ),
+      };
     },
 
     async updateTask(listId: string, taskId: string, data: any) {
@@ -144,6 +159,11 @@ function createNativeWrapper(userId: number) {
     async completeTask(listId: string, taskId: string) {
       await nativeAdapter.completeTask(userId, taskId);
       return { success: true, data: { id: taskId, status: 'completed' } };
+    },
+
+    async uncompleteTask(listId: string, taskId: string) {
+      await nativeAdapter.updateTask(userId, taskId, { status: 'pending' as any });
+      return { success: true, data: { id: taskId, status: 'notStarted' } };
     },
 
     async deleteTask(listId: string, taskId: string) {
@@ -165,6 +185,23 @@ function createNativeWrapper(userId: number) {
       };
     },
 
+    async deleteList(listId: string) {
+      const db = require('../database').getDb();
+      const parsedListId = parseInt(listId, 10);
+      const list = db.prepare(
+        'SELECT id, is_default FROM native_task_lists WHERE id = ? AND user_id = ?'
+      ).get(parsedListId, userId) as { id: number; is_default: number } | undefined;
+      if (!list) {
+        return { success: false, data: undefined, error: 'List not found' };
+      }
+      if (list.is_default) {
+        return { success: false, data: undefined, error: 'Cannot delete the default list' };
+      }
+      db.prepare('DELETE FROM native_tasks WHERE list_id = ? AND user_id = ?').run(parsedListId, userId);
+      db.prepare('DELETE FROM native_task_lists WHERE id = ? AND user_id = ?').run(parsedListId, userId);
+      return { success: true, data: undefined };
+    },
+
     async getDefaultList() {
       const projects = await nativeAdapter.getProjects(userId);
       const defaultList = projects.find(p => p.isDefault) || projects[0];
@@ -177,6 +214,88 @@ function createNativeWrapper(userId: number) {
       const found = projects.find(p => p.name.toLowerCase() === name.toLowerCase());
       if (!found) return null;
       return { id: found.externalId, displayName: found.name };
+    },
+
+    async getTasksDueInRange(startDate: string, endDate: string) {
+      const result = await nativeAdapter.getTasks(userId);
+      const start = new Date(startDate).getTime();
+      const end = new Date(endDate).getTime();
+      const dueTasks = result.tasks.filter((task) => {
+        if (!task.dueDate) return false;
+        const due = new Date(task.dueDate).getTime();
+        return Number.isFinite(due) && due >= start && due <= end;
+      });
+      return {
+        success: true,
+        data: dueTasks.map((task) =>
+          taskToMsTodoShape(task, String(task.projectId || ''), task.projectName || '')
+        ),
+      };
+    },
+
+    async searchTasks(query: string) {
+      const normalizedQuery = String(query || '').trim().toLowerCase();
+      const result = await nativeAdapter.getTasks(userId);
+      const matches = result.tasks.filter((task) => {
+        if (!normalizedQuery) return true;
+        const haystack = [
+          task.title,
+          task.description,
+          task.notes,
+          task.projectName,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(normalizedQuery);
+      });
+      return {
+        success: true,
+        data: matches.map((task) =>
+          taskToMsTodoShape(task, String(task.projectId || ''), task.projectName || '')
+        ),
+      };
+    },
+
+    async moveTask(listId: string, taskId: string, targetListId: string, targetListName?: string) {
+      const parsedTargetListId = parseInt(targetListId, 10);
+      await nativeAdapter.updateTask(userId, taskId, { projectId: parsedTargetListId } as any);
+      return {
+        success: true,
+        data: { id: taskId, listId: targetListId, listName: targetListName || '' },
+      };
+    },
+
+    async getCompletedTasksInRange(startDate: string, endDate: string) {
+      const result = await nativeAdapter.getTasks(userId);
+      const start = new Date(startDate).getTime();
+      const end = new Date(endDate).getTime();
+      const completedTasks = result.tasks.filter((task) => {
+        if (!task.completedAt) return false;
+        const completed = new Date(task.completedAt).getTime();
+        return Number.isFinite(completed) && completed >= start && completed <= end;
+      });
+      return {
+        success: true,
+        data: completedTasks.map((task) =>
+          taskToMsTodoShape(task, String(task.projectId || ''), task.projectName || '')
+        ),
+      };
+    },
+
+    async getChecklistItems(_listId: string, _taskId: string) {
+      return {
+        success: true,
+        data: [],
+      };
+    },
+
+    async addChecklistItem(_listId: string, _taskId: string, _displayName: string) {
+      return {
+        success: false,
+        data: null,
+        error: 'Checklist items are not supported by the active task provider.',
+      };
     },
   };
 }

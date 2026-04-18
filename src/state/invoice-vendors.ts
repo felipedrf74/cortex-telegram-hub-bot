@@ -10,8 +10,8 @@ import { InvoiceVendor } from '../domains/types';
 export function addVendor(
   name: string,
   senderPattern: string,
+  userId: number,
   subjectPatterns?: string,
-  userId: number = 0,
 ): InvoiceVendor {
   const db = getDb();
   // Re-enable if the sender_pattern was previously disabled (per-user)
@@ -39,54 +39,44 @@ export function addVendor(
 }
 
 /** Soft-delete: disable a vendor by ID (keeps history for audit trail). */
-export function removeVendor(id: number): boolean {
+export function removeVendor(id: number, userId: number): boolean {
   const db = getDb();
   const info = db.prepare(
-    'UPDATE invoice_vendors SET enabled = 0 WHERE id = ?',
-  ).run(id);
+    'UPDATE invoice_vendors SET enabled = 0 WHERE id = ? AND user_id = ?',
+  ).run(id, userId);
   return info.changes > 0;
 }
 
 /** Disable a vendor by name (case-insensitive). Returns true if found. */
-export function removeVendorByName(name: string): boolean {
+export function removeVendorByName(name: string, userId: number): boolean {
   const db = getDb();
   const info = db.prepare(
-    'UPDATE invoice_vendors SET enabled = 0 WHERE LOWER(name) = LOWER(?)',
-  ).run(name);
+    'UPDATE invoice_vendors SET enabled = 0 WHERE LOWER(name) = LOWER(?) AND user_id = ?',
+  ).run(name, userId);
   return info.changes > 0;
 }
 
 /** Get all enabled custom vendors (merged with builtins at runtime). */
-export function getActiveVendors(userId?: number): InvoiceVendor[] {
+export function getActiveVendors(userId: number): InvoiceVendor[] {
   const db = getDb();
-  if (userId != null) {
-    return db.prepare(
-      'SELECT * FROM invoice_vendors WHERE enabled = 1 AND user_id = ? ORDER BY name ASC',
-    ).all(userId) as InvoiceVendor[];
-  }
   return db.prepare(
-    'SELECT * FROM invoice_vendors WHERE enabled = 1 ORDER BY name ASC',
-  ).all() as InvoiceVendor[];
+    'SELECT * FROM invoice_vendors WHERE enabled = 1 AND user_id = ? ORDER BY name ASC',
+  ).all(userId) as InvoiceVendor[];
 }
 
 /** Check if a sender pattern is already registered. */
-export function vendorExists(senderPattern: string): boolean {
+export function vendorExists(senderPattern: string, userId: number): boolean {
   const db = getDb();
   const row = db.prepare(
-    'SELECT COUNT(*) as count FROM invoice_vendors WHERE sender_pattern = ? AND enabled = 1',
-  ).get(senderPattern) as { count: number };
+    'SELECT COUNT(*) as count FROM invoice_vendors WHERE sender_pattern = ? AND enabled = 1 AND user_id = ?',
+  ).get(senderPattern, userId) as { count: number };
   return row.count > 0;
 }
 
 /** Get all vendors including disabled ones (for admin listing). */
-export function getAllVendors(userId?: number): InvoiceVendor[] {
+export function getAllVendors(userId: number): InvoiceVendor[] {
   const db = getDb();
-  if (userId != null) {
-    return db.prepare(
-      'SELECT * FROM invoice_vendors WHERE user_id = ? ORDER BY enabled DESC, name ASC',
-    ).all(userId) as InvoiceVendor[];
-  }
   return db.prepare(
-    'SELECT * FROM invoice_vendors ORDER BY enabled DESC, name ASC',
-  ).all() as InvoiceVendor[];
+    'SELECT * FROM invoice_vendors WHERE user_id = ? ORDER BY enabled DESC, name ASC',
+  ).all(userId) as InvoiceVendor[];
 }

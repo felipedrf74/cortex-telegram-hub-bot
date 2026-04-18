@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const mockUpsertGarminSession = vi.fn();
 const mockMarkGarminConnectionActive = vi.fn();
@@ -76,6 +80,7 @@ function mockReq(
   method: string,
   path: string,
   body?: any,
+  userId = 12,
 ): Request {
   return {
     method,
@@ -87,13 +92,13 @@ function mockReq(
     params: {},
     headers: {},
     body,
-    userId: 12,
+    userId,
   } as any;
 }
 
-async function dispatch(method: string, path: string, body?: any): Promise<MockRes> {
+async function dispatch(method: string, path: string, body?: any, userId = 12): Promise<MockRes> {
   const router = garminAuthRoutes();
-  const req = mockReq(method, path, body);
+  const req = mockReq(method, path, body, userId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -109,6 +114,7 @@ async function dispatch(method: string, path: string, body?: any): Promise<MockR
 
 describe('Garmin auth routes', () => {
   beforeEach(() => {
+    clearTenantScopeAnomaliesForTests();
     mockUpsertGarminSession.mockReset();
     mockMarkGarminConnectionActive.mockReset();
     mockClearGarminSession.mockReset();
@@ -144,6 +150,24 @@ describe('Garmin auth routes', () => {
       credentialsRequired: true,
     });
     expect(mockLogin).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on invalid tenant scope before starting Garmin reauth', async () => {
+    const res = await dispatch('POST', '/reauth', {}, 0);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockDbGet).not.toHaveBeenCalled();
+    expect(mockLogin).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'garmin_auth_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
   });
 
   it('stores DB-backed session tokens on successful manual login', async () => {

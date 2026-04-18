@@ -18,9 +18,19 @@ import {
   checkQuota,
 } from '../../services/usage-metering';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function usageRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'usage_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/usage

@@ -48,10 +48,12 @@ import {
 } from '../../services/cooking-chef';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
 import { config } from '../../config';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 type MealAdaptationKind = 'protein_up' | 'recovery' | 'carbs_up' | 'carbs_down';
 
@@ -78,6 +80,12 @@ interface CookingTrainingSnapshot {
   todayHasHardSession: boolean;
   tomorrowHasTraining: boolean;
   tomorrowHasHardSession: boolean;
+}
+
+function isValidNutritionField(value: unknown): value is number | null | undefined {
+  return value === undefined
+    || value === null
+    || (typeof value === 'number' && Number.isFinite(value) && value >= 0);
 }
 
 function isHardTrainingSession(session: TrainingSession): boolean {
@@ -273,6 +281,15 @@ function buildMealAdaptation(meal: MealPlan, snapshot: CookingTrainingSnapshot):
 export function cookingRoutes(): Router {
   const router = Router();
 
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'cooking_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
+
   // ── Recipes ────────────────────────────────────────────────────────
 
   /**
@@ -307,7 +324,7 @@ export function cookingRoutes(): Router {
    */
   router.post('/recipes', asyncHandler(async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
-    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source } = req.body;
+    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       sendError(res, 'BAD_REQUEST', 'title is required');
@@ -315,6 +332,11 @@ export function cookingRoutes(): Router {
     }
     if (!Array.isArray(ingredients)) {
       sendError(res, 'BAD_REQUEST', 'ingredients must be an array');
+      return;
+    }
+    if (!isValidNutritionField(protein) || !isValidNutritionField(fat)
+        || !isValidNutritionField(carbs) || !isValidNutritionField(calories)) {
+      sendError(res, 'BAD_REQUEST', 'nutrition fields must be non-negative numbers or null');
       return;
     }
 
@@ -326,6 +348,10 @@ export function cookingRoutes(): Router {
         servings,
         tags,
         source,
+        protein,
+        fat,
+        carbs,
+        calories,
       });
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
       sendSuccess(res, { recipe }, { status: 201 });
@@ -370,7 +396,7 @@ export function cookingRoutes(): Router {
   router.patch('/recipes/:id', asyncHandler(async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     const recipeId = parseInt(req.params.id, 10);
-    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source } = req.body;
+    const { title, ingredients, instructions, prepTime, cookTime, servings, tags, source, protein, fat, carbs, calories } = req.body;
 
     if (Number.isNaN(recipeId)) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
@@ -380,7 +406,8 @@ export function cookingRoutes(): Router {
     // Reject completely-empty bodies.
     if (title === undefined && ingredients === undefined && instructions === undefined
         && prepTime === undefined && cookTime === undefined && servings === undefined
-        && tags === undefined && source === undefined) {
+        && tags === undefined && source === undefined
+        && protein === undefined && fat === undefined && carbs === undefined && calories === undefined) {
       sendError(res, 'BAD_REQUEST', 'At least one field must be provided');
       return;
     }
@@ -391,6 +418,11 @@ export function cookingRoutes(): Router {
     }
     if (ingredients !== undefined && !Array.isArray(ingredients)) {
       sendError(res, 'BAD_REQUEST', 'ingredients must be an array when provided');
+      return;
+    }
+    if (!isValidNutritionField(protein) || !isValidNutritionField(fat)
+        || !isValidNutritionField(carbs) || !isValidNutritionField(calories)) {
+      sendError(res, 'BAD_REQUEST', 'nutrition fields must be non-negative numbers or null');
       return;
     }
 
@@ -404,6 +436,10 @@ export function cookingRoutes(): Router {
         servings,
         tags,
         source,
+        protein,
+        fat,
+        carbs,
+        calories,
       });
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Recipe not found or not owned by user', 404);
@@ -487,6 +523,7 @@ export function cookingRoutes(): Router {
 
     try {
       const plan = setMealPlan(userId, date, mealType, title, { recipeId, notes });
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { meal: plan });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS cooking meal-plan set failed');
@@ -509,6 +546,7 @@ export function cookingRoutes(): Router {
 
     try {
       const deleted = deleteMealPlan(userId, date, mealType);
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { deleted, date, mealType });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS cooking meal-plan delete failed');
@@ -558,6 +596,7 @@ export function cookingRoutes(): Router {
     try {
       const list = generateShoppingList(userId, week);
       logger.info({ userId, week, itemCount: list.items.length }, 'iOS shopping list generated');
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { list });
     } catch (err: any) {
       logger.error({ err, userId, week }, 'iOS cooking shopping-list generate failed');
@@ -594,6 +633,7 @@ export function cookingRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Shopping list not found for that week', 404);
         return;
       }
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { list });
     } catch (err: any) {
       logger.error({ err, userId, week, index }, 'iOS cooking shopping-list item update failed');
@@ -727,12 +767,13 @@ export function cookingRoutes(): Router {
         start: startDt.toISO() || startDt.toFormat("yyyy-LL-dd'T'HH:mm:ss"),
         end: endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss"),
         description,
-      });
+      }, undefined, userId);
 
       logger.info(
         { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },
         'iOS meal prep calendar event created',
       );
+      invalidatePlanningCaches(userId);
 
       sendSuccess(res, {
         event: {

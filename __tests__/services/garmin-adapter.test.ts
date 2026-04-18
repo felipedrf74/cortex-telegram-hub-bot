@@ -11,10 +11,16 @@ vi.mock('../../src/services/garmin', () => ({
   getDailySummary: vi.fn(),
 }));
 
+vi.mock('../../src/services/garmin-session-store', () => ({
+  hasActiveGarminConnection: vi.fn(),
+}));
+
 import { GarminAdapter, mapGarminActivityType } from '../../src/services/wearable/garmin-adapter';
 import * as garmin from '../../src/services/garmin';
+import { hasActiveGarminConnection } from '../../src/services/garmin-session-store';
 
 const mockedGarmin = vi.mocked(garmin);
+const mockedHasActiveGarminConnection = vi.mocked(hasActiveGarminConnection);
 
 describe('mapGarminActivityType', () => {
   it('maps running → run', () => {
@@ -69,6 +75,7 @@ describe('GarminAdapter', () => {
   beforeEach(() => {
     adapter = new GarminAdapter();
     vi.clearAllMocks();
+    mockedHasActiveGarminConnection.mockReturnValue(false);
   });
 
   it('has correct provider and capabilities', () => {
@@ -82,14 +89,22 @@ describe('GarminAdapter', () => {
   });
 
   describe('isConfigured', () => {
-    it('delegates to garmin.isGarminConfigured()', async () => {
+    it('requires both environment support and an active Garmin connection', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       expect(await adapter.isConfigured(123)).toBe(true);
       expect(mockedGarmin.isGarminConfigured).toHaveBeenCalled();
+      expect(mockedHasActiveGarminConnection).toHaveBeenCalledWith(123);
     });
 
-    it('returns false when garmin is not configured', async () => {
+    it('returns false when Garmin is not configured in the environment', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(false);
+      expect(await adapter.isConfigured(123)).toBe(false);
+    });
+
+    it('returns false when Garmin is configured globally but not connected for this user', async () => {
+      mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(false);
       expect(await adapter.isConfigured(123)).toBe(false);
     });
   });
@@ -178,10 +193,19 @@ describe('GarminAdapter', () => {
         hrvSummary: { weeklyAvg: 55 },
       });
       mockedGarmin.getBodyBatteryEvents.mockResolvedValue([
-        { bodyBatteryLevel: 78 },
+        {
+          bodyBatteryValuesArray: [
+            [1713232800000, 'stable', 82],
+            [1713236400000, 'draining', 78],
+          ],
+        },
       ]);
       mockedGarmin.getTrainingReadiness.mockResolvedValue({
         score: 65,
+      });
+      mockedGarmin.getDailySummary.mockResolvedValue({
+        bodyBatteryHighestValue: 90,
+        bodyBatteryLowestValue: 44,
       });
 
       const readiness = await adapter.getReadiness(123, '2025-01-15');

@@ -38,6 +38,11 @@ function getGmail(): gmail_v1.Gmail {
   return gmailClient;
 }
 
+function getGmailForUser(userId: number): gmail_v1.Gmail {
+  const oauth2Client = buildGoogleOAuth2ClientForUser(userId);
+  return google.gmail({ version: 'v1', auth: oauth2Client });
+}
+
 export function isGmailConfigured(): boolean {
   return isGoogleConfigured();
 }
@@ -106,9 +111,8 @@ function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, nam
   return headers?.find((h) => h.name === name)?.value || '';
 }
 
-export async function searchEmails(query: string, maxResults = 10): Promise<EmailMessage[]> {
+async function searchEmailsWithClient(gmail: gmail_v1.Gmail, query: string, maxResults = 10): Promise<EmailMessage[]> {
   try {
-    const gmail = getGmail();
     const response = await withTimeout(
       gmail.users.messages.list({
         userId: 'me',
@@ -120,39 +124,73 @@ export async function searchEmails(query: string, maxResults = 10): Promise<Emai
 
     if (!response.data.messages) return [];
 
-    const emails: EmailMessage[] = [];
-    for (const msg of response.data.messages.slice(0, maxResults)) {
-      const detail = await withTimeout(
-        gmail.users.messages.get({
-          userId: 'me',
+    const detailResults = await Promise.allSettled(
+      response.data.messages.slice(0, maxResults).map((msg) =>
+        withTimeout(
+          gmail.users.messages.get({
+            userId: 'me',
+            id: msg.id!,
+            format: 'metadata',
+            metadataHeaders: ['From', 'To', 'Subject', 'Date'],
+          }),
+          GMAIL_API_TIMEOUT_MS,
+        ).then((detail) => ({
           id: msg.id!,
-          format: 'metadata',
-          metadataHeaders: ['From', 'To', 'Subject', 'Date'],
-        }),
-        GMAIL_API_TIMEOUT_MS,
-      );
+          threadId: msg.threadId || '',
+          from: getHeader(detail.data.payload?.headers, 'From'),
+          to: getHeader(detail.data.payload?.headers, 'To'),
+          subject: getHeader(detail.data.payload?.headers, 'Subject'),
+          snippet: detail.data.snippet || '',
+          date: getHeader(detail.data.payload?.headers, 'Date'),
+        })),
+      ),
+    );
 
-      emails.push({
-        id: msg.id!,
-        threadId: msg.threadId || '',
-        from: getHeader(detail.data.payload?.headers, 'From'),
-        to: getHeader(detail.data.payload?.headers, 'To'),
-        subject: getHeader(detail.data.payload?.headers, 'Subject'),
-        snippet: detail.data.snippet || '',
-        date: getHeader(detail.data.payload?.headers, 'Date'),
-      });
-    }
-
-    return emails;
+    return detailResults.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : [],
+    );
   } catch (err) {
     logger.error({ err }, 'Failed to search emails');
     throw err;
   }
 }
 
-export async function readEmail(messageId: string): Promise<EmailMessage & { body: string }> {
+export async function searchEmails(query: string, maxResults = 10): Promise<EmailMessage[]> {
+  return searchEmailsWithClient(getGmail(), query, maxResults);
+}
+
+export async function searchEmailsForUser(userId: number, query: string, maxResults = 10): Promise<EmailMessage[]> {
+  return searchEmailsWithClient(getGmailForUser(userId), query, maxResults);
+}
+
+async function countEmailsWithClient(gmail: gmail_v1.Gmail, query: string): Promise<number> {
   try {
-    const gmail = getGmail();
+    const response = await withTimeout(
+      gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults: 1,
+      }),
+      GMAIL_API_TIMEOUT_MS,
+    );
+
+    return response.data.resultSizeEstimate || 0;
+  } catch (err) {
+    logger.error({ err }, 'Failed to count Gmail emails');
+    throw err;
+  }
+}
+
+export async function countEmails(query: string): Promise<number> {
+  return countEmailsWithClient(getGmail(), query);
+}
+
+export async function countEmailsForUser(userId: number, query: string): Promise<number> {
+  return countEmailsWithClient(getGmailForUser(userId), query);
+}
+
+async function readEmailWithClient(gmail: gmail_v1.Gmail, messageId: string): Promise<EmailMessage & { body: string }> {
+  try {
     const detail = await withTimeout(
       gmail.users.messages.get({
         userId: 'me',
@@ -187,6 +225,14 @@ export async function readEmail(messageId: string): Promise<EmailMessage & { bod
     logger.error({ err }, 'Failed to read email');
     throw err;
   }
+}
+
+export async function readEmail(messageId: string): Promise<EmailMessage & { body: string }> {
+  return readEmailWithClient(getGmail(), messageId);
+}
+
+export async function readEmailForUser(userId: number, messageId: string): Promise<EmailMessage & { body: string }> {
+  return readEmailWithClient(getGmailForUser(userId), messageId);
 }
 
 export async function getAttachments(

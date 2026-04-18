@@ -3,6 +3,15 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import {
+  getLatestByType,
+  getRecentReports,
+  getReportById,
+  getUnreadReportCount,
+  markReportRead,
+  type ReportType,
+} from '../../services/report-document-store';
 
 /**
  * Report Documents — iOS API routes.
@@ -15,6 +24,24 @@ import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 export function reportRoutes(): Router {
   const router = Router();
 
+  function ensureValidReportsRouteScope(
+    res: Response,
+    userId: number | undefined,
+    operation: string,
+    details?: Record<string, unknown>,
+  ): userId is number {
+    if (isValidTenantUserId(userId)) return true;
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation,
+      reason: 'invalid_user_scope',
+      userId: typeof userId === 'number' ? userId : null,
+      details,
+    });
+    sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+    return false;
+  }
+
   /**
    * GET /api/v1/reports
    *
@@ -23,10 +50,10 @@ export function reportRoutes(): Router {
    */
   router.get('/', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const type = req.query.type as string | undefined;
+    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_list')) return;
+    const type = req.query.type as ReportType | undefined;
     const limit = parseInt(String(req.query.limit || '20'), 10);
 
-    const { getRecentReports, getUnreadReportCount } = require('../../services/report-document-store');
     const reports = getRecentReports(userId, { type, limit });
     const unreadCount = getUnreadReportCount(userId);
 
@@ -52,14 +79,14 @@ export function reportRoutes(): Router {
    */
   router.get('/latest', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const type = req.query.type as string;
+    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_latest', { type: req.query.type ?? null })) return;
+    const type = req.query.type as ReportType;
 
     if (!type) {
       sendError(res, 'VALIDATION', 'type query parameter is required', 400);
       return;
     }
 
-    const { getLatestByType } = require('../../services/report-document-store');
     const report = getLatestByType(userId, type);
 
     if (!report) {
@@ -87,9 +114,9 @@ export function reportRoutes(): Router {
    */
   router.get('/:id', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_detail', { reportId: req.params.id })) return;
     const { id } = req.params;
 
-    const { getReportById } = require('../../services/report-document-store');
     const report = getReportById(parseInt(id, 10), userId);
 
     if (!report) {
@@ -119,9 +146,9 @@ export function reportRoutes(): Router {
    */
   router.post('/:id/read', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidReportsRouteScope(res, userId, 'reports_route_mark_read', { reportId: req.params.id })) return;
     const { id } = req.params;
 
-    const { markReportRead } = require('../../services/report-document-store');
     const success = markReportRead(parseInt(id, 10), userId);
 
     if (!success) {

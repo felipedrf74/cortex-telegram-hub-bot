@@ -117,11 +117,33 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     expect(engineSource).toContain('export function buildScriptCacheKey');
+    expect(engineSource).toContain("'script-v4'");
     expect(engineSource).toContain('`duration:${maxDuration}`');
+    expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
     expect(engineSource).toContain('`mode:${mode}`');
     expect(engineSource).toContain('`lang:${normalizeScriptLanguage(language)}`');
     expect(engineSource).toContain('`voice:${hashBrandVoice(brandVoice)}`');
     expect(engineSource).toContain('`render:${normalizeScriptRenderMode(renderMode)}`');
+    expect(engineSource).toContain('`ctx:${hashScriptContext(scriptContext)}`');
+    expect(engineSource).toContain("`scope:${userId ?? 'global'}`");
+  });
+
+  it('script signal reads are user-scoped instead of using global signal context', () => {
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+
+    expect(engineSource).toContain("readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays)");
+  });
+
+  it('script engine forwards first-party topic context into the Python request', () => {
+    const engineSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
+      'utf8',
+    );
+
+    expect(engineSource).toContain('topic_context: scriptContext ?? undefined');
   });
 });
 
@@ -300,6 +322,17 @@ describe('script-pipeline: iOS API route', () => {
 
     // Should validate topic is required
     expect(routeSource).toContain("'topic is required'");
+  });
+
+  it('iOS /script route validates explicit YouTube and short presets', () => {
+    const routeSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+      'utf8',
+    );
+
+    expect(routeSource).toContain('targetDurationSeconds');
+    expect(routeSource).toContain('Reel duration must be one of 15, 30, 45, or 60 seconds');
+    expect(routeSource).toContain('YouTube duration must be one of 8, 10, or 15 minutes');
   });
 });
 

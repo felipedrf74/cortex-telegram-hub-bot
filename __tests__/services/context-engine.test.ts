@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { afterEach } from 'vitest';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -38,18 +39,27 @@ function applyMigrations(db: Database.Database): void {
 }
 
 let testDb: Database.Database;
+const mockGoogleGetEvents = vi.fn().mockResolvedValue([]);
+const mockOutlookGetEvents = vi.fn().mockResolvedValue([]);
+const mockIsGoogleCalendarConfigured = vi.fn(() => false);
+const mockIsOutlookCalendarConfigured = vi.fn(() => false);
+const mockOauthIsConnected = vi.fn(() => false);
 
 vi.mock('../../src/services/database', () => ({ getDb: () => testDb }));
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-// Stub the calendar + training services so the context engine doesn't try
-// to require real OAuth/Garmin clients during tests. The test mostly cares
-// about the tasks and readiness sections, which read directly from SQLite.
-vi.mock('../../src/services/unified-calendar', () => ({
-  getEvents: vi.fn().mockResolvedValue([]),
-  isAnyCalendarConfigured: vi.fn(() => false),
+vi.mock('../../src/services/google-calendar', () => ({
+  getEvents: (...args: unknown[]) => mockGoogleGetEvents(...args),
+  isGoogleCalendarConfigured: (...args: unknown[]) => mockIsGoogleCalendarConfigured(...args),
+}));
+vi.mock('../../src/services/outlook-calendar', () => ({
+  getEvents: (...args: unknown[]) => mockOutlookGetEvents(...args),
+  isOutlookCalendarConfigured: (...args: unknown[]) => mockIsOutlookCalendarConfigured(...args),
+}));
+vi.mock('../../src/services/oauth-store', () => ({
+  isConnected: (...args: unknown[]) => mockOauthIsConnected(...args),
 }));
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: vi.fn(() => null),
@@ -85,6 +95,24 @@ beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
   _resetContextCacheForTests();
+  mockGoogleGetEvents.mockReset();
+  mockOutlookGetEvents.mockReset();
+  mockIsGoogleCalendarConfigured.mockReset();
+  mockIsOutlookCalendarConfigured.mockReset();
+  mockOauthIsConnected.mockReset();
+  mockGoogleGetEvents.mockResolvedValue([]);
+  mockOutlookGetEvents.mockResolvedValue([]);
+  mockIsGoogleCalendarConfigured.mockReturnValue(false);
+  mockIsOutlookCalendarConfigured.mockReturnValue(false);
+  mockOauthIsConnected.mockReturnValue(false);
+});
+
+afterEach(() => {
+  mockGoogleGetEvents.mockReset();
+  mockOutlookGetEvents.mockReset();
+  mockIsGoogleCalendarConfigured.mockReset();
+  mockIsOutlookCalendarConfigured.mockReset();
+  mockOauthIsConnected.mockReset();
 });
 
 // ── buildDailyContext ──────────────────────────────────────────────
@@ -208,6 +236,18 @@ describe('getDailyContext cache', () => {
 
     invalidateContextCache(USER_ID);
     expect(getDailyContext(USER_ID)).toBe('');
+  });
+
+  it('global invalidateContextCache drops cached rows for today', async () => {
+    upsertTask(USER_ID, makeTask({ title: 'Mine' }));
+    upsertTask(USER_ID + 1, makeTask({ title: 'Other' }));
+    await buildDailyContext(USER_ID);
+    await buildDailyContext(USER_ID + 1);
+
+    invalidateContextCache();
+
+    expect(getDailyContext(USER_ID)).toBe('');
+    expect(getDailyContext(USER_ID + 1)).toBe('');
   });
 
   it('cache is per-user', async () => {

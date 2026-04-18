@@ -42,7 +42,7 @@ export function getDomainSystemPrompt(domain: DomainName, message?: string): str
     const promptName = getTriathlonPromptNameForMessage(message);
     try {
       basePrompt = loadPrompt(promptName);
-      return withLanguageInstruction(basePrompt);
+      return withLanguageInstruction(basePrompt, message);
     } catch (err) {
       // Persona file missing on disk — fall through to the generic
       // triathlon prompt rather than crashing the request. Log once
@@ -59,36 +59,115 @@ export function getDomainSystemPrompt(domain: DomainName, message?: string): str
   basePrompt = domain === 'content'
     ? loadPromptWithConfig(domain)
     : loadPrompt(domain);
-  return withLanguageInstruction(basePrompt);
+  return withLanguageInstruction(basePrompt, message);
 }
 
-function withLanguageInstruction(prompt: string): string {
-  const instruction = getReplyLanguageInstruction();
+function withLanguageInstruction(prompt: string, message?: string): string {
+  const instruction = getReplyLanguageInstruction(message);
   return instruction ? `${prompt}\n\n${instruction}` : prompt;
 }
 
-function getReplyLanguageInstruction(): string {
+function normalizeReplyLanguage(lang: string | null | undefined): 'pt-BR' | 'pt-PT' | 'en-US' {
+  const normalized = String(lang || 'pt-BR').trim().toLowerCase();
+  if (normalized.startsWith('en')) return 'en-US';
+  if (normalized === 'pt-pt' || normalized.includes('pt-pt') || normalized.includes('portugal') || normalized.includes('europe')) {
+    return 'pt-PT';
+  }
+  return 'pt-BR';
+}
+
+function englishSignalCount(message: string): number {
+  const lower = message.toLowerCase();
+  const englishPatterns = [
+    /\b(what|how|why|when|which|should|could|would|help|build|give|create|delete|update|write|script|intro|menu|meal|recipe)\b/g,
+    /\b(today|tomorrow|week|month|morning|before|after|next|ready|desk|pillars|ride|training|consistency|accountant|invoice|spend)\b/g,
+  ];
+  return englishPatterns.reduce((total, pattern) => total + ((lower.match(pattern) || []).length), 0);
+}
+
+function portugueseSignalCount(message: string): number {
+  const lower = message
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const portuguesePatterns = [
+    /\b(como|qual|quais|quanto|quando|devo|quero|preciso|roteiro|treino|amanha|hoje|semana|conteudo|despesa|contabilista|contador)\b/g,
+    /\b(para|com|uma|um|meu|minha|esta|esse|isso|gastei|publicar|filmar)\b/g,
+  ];
+  return portuguesePatterns.reduce((total, pattern) => total + ((lower.match(pattern) || []).length), 0);
+}
+
+function isLikelyEnglishMessage(message?: string | null): boolean {
+  if (!message) return false;
+  const lower = message.trim().toLowerCase();
+  if (!lower) return false;
+  if (/(?:\bin english\b|\benglish version\b|\benglish please\b|\bem ingl[eê]s\b)/i.test(lower)) return true;
+  if (/(?:\bpt-pt\b|portugu[eê]s europeu|portugu[eê]s de portugal|european portuguese|brazilian portuguese|portugu[eê]s brasileiro|pt-br)/i.test(lower)) {
+    return false;
+  }
+  const englishScore = englishSignalCount(lower);
+  const portugueseScore = portugueseSignalCount(lower);
+  return englishScore >= 2 && portugueseScore === 0;
+}
+
+export function resolveReplyLanguage(language: string, message?: string): 'pt-BR' | 'pt-PT' | 'en-US' {
+  const fallback = normalizeReplyLanguage(language);
+  const lower = message?.trim().toLowerCase() || '';
+  if (!lower) return fallback;
+  if (/(?:\bin english\b|\benglish version\b|\benglish please\b|\bem ingl[eê]s\b)/i.test(lower)) return 'en-US';
+  if (/(?:\bpt-pt\b|portugu[eê]s europeu|portugu[eê]s de portugal|portuguese from portugal|european portuguese)/i.test(lower)) return 'pt-PT';
+  if (/(?:\bpt-br\b|portugu[eê]s brasileiro|brazilian portuguese)/i.test(lower)) return 'pt-BR';
+  if (isLikelyEnglishMessage(lower)) return 'en-US';
+  return fallback;
+}
+
+export function buildReplyLanguageInstruction(lang: string): string {
+  if (lang.startsWith('pt')) {
+    const regionalInstruction = lang === 'pt-PT'
+      ? [
+          'Use vocabulário e construções naturais de português europeu.',
+          'Evite vocabulário típico do Brasil como "você", "ônibus", "celular", "tela", "café da manhã", "agora há pouco".',
+        ].join(' ')
+      : [
+          'Use vocabulário e construções naturais de pt-BR.',
+          'Evite vocabulário típico de português europeu como "tu", "ti", "contigo", "ecrã", "telemóvel", "pequeno-almoço", "fixe", "giro".',
+        ].join(' ');
+    return [
+      '[Reply Language]',
+      `Responda em ${lang === 'pt-PT' ? 'português europeu' : 'pt-BR'}, a menos que o utilizador peça explicitamente outra língua.`,
+      `Nunca mude para ${lang === 'pt-PT' ? 'pt-BR' : 'português europeu'} ou inglês por iniciativa própria.`,
+      'Estas regras de idioma têm prioridade sobre quaisquer instruções conflitantes do prompt base, creator-config, títulos, hooks, scripts ou formato.',
+      regionalInstruction,
+      'Mantenha nomes próprios, títulos de eventos e citações do utilizador na forma original.',
+    ].join('\n');
+  }
+  return [
+    '[Reply Language]',
+    'Reply in English unless the user explicitly asks to switch languages.',
+    'Do not answer in Portuguese unless the user explicitly asks for Portuguese.',
+    'These reply-language rules override any conflicting creator-config, prompt-default, title, hook, script, or formatting instruction about output language for this reply.',
+    'If the base prompt mentions PT-BR, Brazilian Portuguese, or Portuguese-only titles/hooks, treat that as creator background context and still answer this reply fully in English.',
+    'Unless the user explicitly asks for PT-BR deliverables, keep generated titles, hooks, captions, outlines, and scripts in English too.',
+    'Before returning, rewrite any Portuguese draft text back into English so the final answer is fully English.',
+    'Every heading, bullet label, meal name, menu title, and checklist item must be in English too.',
+    'Keep proper nouns, event titles, and quoted user text in their original form.',
+  ].join('\n');
+}
+
+function getReplyLanguageInstruction(message?: string): string {
   try {
     const { getCurrentContext } = require('../utils/request-context');
     const userId = getCurrentContext()?.userId;
     if (!userId) return '';
 
     const { getUserLanguage } = require('./user-service');
-    const lang = getUserLanguage(userId);
-    if (lang.startsWith('pt')) {
-      return [
-        '[Reply Language]',
-        `Responda em ${lang === 'pt-PT' ? 'português europeu' : 'pt-BR'}, a menos que o utilizador peça explicitamente outra língua.`,
-        `Nunca mude para ${lang === 'pt-PT' ? 'pt-BR' : 'português europeu'} ou inglês por iniciativa própria.`,
-        'Mantenha nomes próprios, títulos de eventos e citações do utilizador na forma original.',
-      ].join('\n');
+    const storedLanguage = getUserLanguage(userId);
+    const resolvedLanguage = resolveReplyLanguage(storedLanguage, message);
+    let instruction = buildReplyLanguageInstruction(resolvedLanguage);
+    if (resolvedLanguage === 'en-US' && isLikelyEnglishMessage(message)) {
+      instruction = `${instruction}\nThe user's current message is clearly in English. Answer this reply fully in English.`;
     }
-    return [
-      '[Reply Language]',
-      'Reply in English unless the user explicitly asks to switch languages.',
-      'Do not answer in Portuguese unless the user explicitly asks for Portuguese.',
-      'Keep proper nouns, event titles, and quoted user text in their original form.',
-    ].join('\n');
+    return instruction;
   } catch {
     return '';
   }
@@ -284,7 +363,8 @@ export const TOOLS: Anthropic.Tool[] = [
     input_schema: { type: 'object' as const, properties: {
       date: { type: 'string', description: 'ISO date YYYY-MM-DD' },
       category: { type: 'string', enum: ['income', 'expense', 'deduction'], description: 'Transaction type' },
-      amount: { type: 'number', description: 'Amount in BRL (always positive)' },
+      amount: { type: 'number', description: 'Amount in the original currency (always positive). Do not convert unless the user asks.' },
+      currency: { type: 'string', description: 'ISO currency code like BRL, EUR, or USD. Preserve the user-stated currency; default to BRL only if unspecified.' },
       subcategory: { type: 'string', description: 'e.g. freelance, rent, software, health, education' },
       description: { type: 'string', description: 'Brief description of the transaction' },
     }, required: ['date', 'category', 'amount'] },
@@ -738,6 +818,33 @@ export async function classifyMessage(
   activeConversationContext?: { domain: DomainName; lastAssistantMessage: string } | null,
   userId?: number,
 ): Promise<{ domain: DomainName; confidence: number }> {
+  function inferFallbackDomain(): DomainName {
+    if (activeConversationContext?.domain) {
+      return activeConversationContext.domain;
+    }
+
+    const normalized = message.trim().toLowerCase();
+    if (!normalized) return 'secretary';
+
+    if (/\b(script|caption|hook|thumbnail|youtube|reel|video|roteiro|legenda|gancho|miniatura|conte[uú]do)\b/i.test(normalized)) {
+      return 'content';
+    }
+    if (/\b(workout|training|run|ride|swim|gym|recovery|tempo|interval|treino|corrida|pedal|academia|recupera[çc][aã]o)\b/i.test(normalized)) {
+      return 'triathlon';
+    }
+    if (/\b(expense|budget|invoice|receipt|tax|darf|finance|despesa|gasto|fatura|recibo|imposto|finan[çc]a)\b/i.test(normalized)) {
+      return 'finance';
+    }
+    if (/\b(recipe|meal|cook|grocer|shopping list|receita|refei[çc][aã]o|cozinhar|lista de compras)\b/i.test(normalized)) {
+      return 'cooking';
+    }
+    if (/\b(task|tasks|reminder|calendar|meeting|email|emails|inbox|agenda|schedule|tarefas?|lembrete|reuni[aã]o|e-?mails?)\b/i.test(normalized)) {
+      return 'secretary';
+    }
+
+    return 'secretary';
+  }
+
   try {
     // Build the classifier input — include active conversation context if available
     let classifierInput = message;
@@ -787,11 +894,28 @@ ${message}`;
     const domain = parsed.domain as DomainName;
     const confidence = parsed.confidence as number;
 
-    if (confidence < 0.6) return { domain: 'secretary', confidence };
+    if (confidence < 0.6) {
+      logger.warn(
+        {
+          requestedDomain: domain,
+          confidence,
+          activeDomain: activeConversationContext?.domain ?? null,
+        },
+        'Low-confidence classifier result — keeping requested domain instead of forcing secretary',
+      );
+    }
     return { domain, confidence };
   } catch (err) {
-    logger.error({ err }, 'Classification failed, defaulting to secretary');
-    return { domain: 'secretary', confidence: 0 };
+    const fallbackDomain = inferFallbackDomain();
+    logger.error(
+      {
+        err,
+        fallbackDomain,
+        activeDomain: activeConversationContext?.domain ?? null,
+      },
+      'Classification failed — using heuristic/domain-context fallback instead of forcing secretary',
+    );
+    return { domain: fallbackDomain, confidence: activeConversationContext?.domain === fallbackDomain ? 0.4 : 0.2 };
   }
 }
 
@@ -827,7 +951,7 @@ export async function callDomain(
   // persona prompt file. Non-triathlon domains ignore the message arg.
   let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
-    const knowledgeBlock = buildKnowledgePromptBlock();
+    const knowledgeBlock = buildKnowledgePromptBlock(userId);
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
   // Layer 3: tool filtering. If the routing layer pre-computed the
@@ -934,7 +1058,7 @@ export async function continueWithToolResults(
   // currentMessage guarantees the classifier produces the same answer.
   let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
-    const knowledgeBlock = buildKnowledgePromptBlock();
+    const knowledgeBlock = buildKnowledgePromptBlock(userId);
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
 

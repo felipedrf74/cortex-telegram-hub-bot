@@ -1,6 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
+import {
+  getGraphClient,
+  getGraphClientForUser,
+  getOutlookRefreshTokenForUser,
+  isMicrosoftConfigured,
+} from './microsoft-auth';
 import { logger } from '../utils/logger';
 import { pushEvent } from '../portal/telemetry';
 
@@ -23,6 +28,10 @@ export function isOutlookMailConfigured(): boolean {
   return isMicrosoftConfigured();
 }
 
+export function isOutlookMailConfiguredForUser(userId: number): boolean {
+  return !!getOutlookRefreshTokenForUser(userId);
+}
+
 export interface OutlookEmail {
   id: string;
   conversationId: string;
@@ -36,9 +45,22 @@ export interface OutlookEmail {
   importance: string;
 }
 
-export async function searchEmails(query: string, maxResults = 10): Promise<OutlookEmail[]> {
+function mapGraphMessages(messages: any[]): OutlookEmail[] {
+  return (messages || []).map((msg: any) => ({
+    id: msg.id || '',
+    conversationId: msg.conversationId || '',
+    from: msg.from?.emailAddress?.address || '',
+    to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
+    subject: msg.subject || '(No subject)',
+    snippet: msg.bodyPreview || '',
+    date: msg.receivedDateTime || '',
+    isRead: msg.isRead || false,
+    importance: msg.importance || 'normal',
+  }));
+}
+
+async function searchEmailsWithClient(client: any, query: string, maxResults = 10): Promise<OutlookEmail[]> {
   try {
-    const client = getGraphClient();
     const response = await client
       .api('/me/messages')
       .query({
@@ -49,26 +71,23 @@ export async function searchEmails(query: string, maxResults = 10): Promise<Outl
       })
       .get();
 
-    return (response.value || []).map((msg: any) => ({
-      id: msg.id || '',
-      conversationId: msg.conversationId || '',
-      from: msg.from?.emailAddress?.address || '',
-      to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
-      subject: msg.subject || '(No subject)',
-      snippet: msg.bodyPreview || '',
-      date: msg.receivedDateTime || '',
-      isRead: msg.isRead || false,
-      importance: msg.importance || 'normal',
-    }));
+    return mapGraphMessages(response.value || []);
   } catch (err) {
     logger.error({ err }, 'Failed to search Outlook emails');
     throw err;
   }
 }
 
-export async function readEmail(messageId: string): Promise<OutlookEmail & { body: string }> {
+export async function searchEmails(query: string, maxResults = 10): Promise<OutlookEmail[]> {
+  return searchEmailsWithClient(getGraphClient(), query, maxResults);
+}
+
+export async function searchEmailsForUser(userId: number, query: string, maxResults = 10): Promise<OutlookEmail[]> {
+  return searchEmailsWithClient(getGraphClientForUser(userId), query, maxResults);
+}
+
+async function readEmailWithClient(client: any, messageId: string): Promise<OutlookEmail & { body: string }> {
   try {
-    const client = getGraphClient();
     const msg = await client
       .api(`/me/messages/${messageId}`)
       .select('id,conversationId,from,toRecipients,subject,bodyPreview,body,receivedDateTime,isRead,importance')
@@ -90,6 +109,14 @@ export async function readEmail(messageId: string): Promise<OutlookEmail & { bod
     logger.error({ err }, 'Failed to read Outlook email');
     throw err;
   }
+}
+
+export async function readEmail(messageId: string): Promise<OutlookEmail & { body: string }> {
+  return readEmailWithClient(getGraphClient(), messageId);
+}
+
+export async function readEmailForUser(userId: number, messageId: string): Promise<OutlookEmail & { body: string }> {
+  return readEmailWithClient(getGraphClientForUser(userId), messageId);
 }
 
 export async function sendEmail(data: {
@@ -158,6 +185,20 @@ export async function getUnreadCount(): Promise<number> {
     return response.unreadItemCount || 0;
   } catch (err) {
     logger.error({ err }, 'Failed to get Outlook unread count');
+    return -1;
+  }
+}
+
+export async function getUnreadCountForUser(userId: number): Promise<number> {
+  try {
+    const client = getGraphClientForUser(userId);
+    const response = await client
+      .api('/me/mailFolders/inbox')
+      .select('unreadItemCount')
+      .get();
+    return response.unreadItemCount || 0;
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to get Outlook unread count for user');
     return -1;
   }
 }
@@ -347,8 +388,11 @@ export async function getRecentEmails(maxResults = 10): Promise<OutlookEmail[]> 
 }
 
 export async function getUnreadEmails(maxResults = 10): Promise<{ count: number; emails: OutlookEmail[] }> {
+  return getUnreadEmailsForClient(getGraphClient(), maxResults);
+}
+
+async function getUnreadEmailsForClient(client: any, maxResults = 10): Promise<{ count: number; emails: OutlookEmail[] }> {
   try {
-    const client = getGraphClient();
     const [folderResp, emailsResp] = await Promise.all([
       client.api('/me/mailFolders/inbox').select('unreadItemCount').get(),
       client.api('/me/messages')
@@ -361,21 +405,18 @@ export async function getUnreadEmails(maxResults = 10): Promise<{ count: number;
         .get(),
     ]);
 
-    const emails: OutlookEmail[] = (emailsResp.value || []).map((msg: any) => ({
-      id: msg.id || '',
-      conversationId: msg.conversationId || '',
-      from: msg.from?.emailAddress?.address || '',
-      to: (msg.toRecipients || []).map((r: any) => r.emailAddress?.address).join(', '),
-      subject: msg.subject || '(No subject)',
-      snippet: msg.bodyPreview || '',
-      date: msg.receivedDateTime || '',
+    const emails: OutlookEmail[] = mapGraphMessages((emailsResp.value || []).map((msg: any) => ({
+      ...msg,
       isRead: false,
-      importance: msg.importance || 'normal',
-    }));
+    })));
 
     return { count: folderResp.unreadItemCount || 0, emails };
   } catch (err) {
     logger.error({ err }, 'Failed to get unread Outlook emails');
     throw err;
   }
+}
+
+export async function getUnreadEmailsForUser(userId: number, maxResults = 10): Promise<{ count: number; emails: OutlookEmail[] }> {
+  return getUnreadEmailsForClient(getGraphClientForUser(userId), maxResults);
 }

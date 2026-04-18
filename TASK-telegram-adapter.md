@@ -1,5 +1,15 @@
 # TASK-telegram-adapter.md — Implementation Spec for Claude Code
 
+> Status: decommissioned historical implementation spec.
+>
+> This file is not a live source of truth. It was a point-in-time execution
+> brief for a Claude Code task.
+>
+> Use the current code, tests, and canonical docs instead:
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/CLAUDE.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/DOCUMENTATION.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/DOCUMENTATION-MAP.md`
+
 > **Branch:** `main` (hot release)  
 > **Commit message:** `feat(adapters): TelegramAdapter — rate limiting, message splitting, parse fallback, new methods`  
 > **After implementation:** run `npx vitest run && npx tsc --noEmit`, commit, push.

@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request } from 'express';
+import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -107,13 +108,18 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(userId: number): Request {
-  return { userId } as any;
+function mockReq(userId: number, headers: Record<string, string> = {}): Request {
+  return {
+    userId,
+    header(name: string) {
+      return headers[name.toLowerCase()] ?? headers[name] ?? undefined;
+    },
+  } as any;
 }
 
-async function dispatch(url: string, userId: number): Promise<MockRes> {
+async function dispatch(url: string, userId: number, headers: Record<string, string> = {}): Promise<MockRes> {
   const router = contentRoutes();
-  const request = mockReq(userId);
+  const request = mockReq(userId, headers);
   const parsed = new URL(url, 'http://test.local');
   (request as any).method = 'GET';
   (request as any).url = parsed.pathname + parsed.search;
@@ -122,7 +128,7 @@ async function dispatch(url: string, userId: number): Promise<MockRes> {
   (request as any).path = parsed.pathname;
   (request as any).query = Object.fromEntries(parsed.searchParams.entries());
   (request as any).params = {};
-  (request as any).headers = {};
+  (request as any).headers = headers;
 
   const response = mockRes();
 
@@ -175,6 +181,7 @@ describe('Content API — intelligence summary', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
     setDbProvider(() => testDb);
+    clearTenantScopeAnomaliesForTests();
   });
 
   afterEach(() => {
@@ -242,5 +249,46 @@ describe('Content API — intelligence summary', () => {
     expect(response.body.data.script.status).toBe('needs_setup');
     expect(response.body.data.optimization.status).toBe('warming_up');
     expect(response.body.data.script.referenceChannelCount).toBe(0);
+  });
+
+  it('filters discovery counts through creator radar preferences when present', async () => {
+    const user = getOrCreateUser(47003, { username: 'creator-filtered-radar' });
+    setUserLanguage(user.id, 'pt-BR');
+
+    testDb.prepare(`
+      INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
+      VALUES (?, ?, ?)
+    `).run(user.id, JSON.stringify(['fitness']), '2026-04-16T11:00:00.000Z');
+
+    const insertSignal = testDb.prepare(`
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+    `);
+
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'fitness reaction angle' }), 'urgent', '2026-04-16T08:05:00.000Z');
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'politics reaction angle' }), 'urgent', '2026-04-16T08:10:00.000Z');
+
+    const response = await dispatch('/intelligence', user.id);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.data.discovery.activeCount).toBe(1);
+  });
+
+  it('fails closed on invalid tenant scope before building intelligence summary', async () => {
+    const response = await dispatch('/intelligence', 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'content_route_intelligence_summary',
+          reason: 'invalid_user_scope',
+          userId: 0,
+        }),
+      ]),
+    );
   });
 });

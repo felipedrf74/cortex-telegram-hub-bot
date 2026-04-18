@@ -54,6 +54,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDb } from './database';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
 // ────────────────────────────────────────────────────────────────────
 // Types
@@ -199,6 +200,16 @@ function describeMissingConfig(): string {
  * is plural by design. Each token is sent a push independently.
  */
 export function getPushTokensForUser(userId: number): string[] {
+  if (!isValidTenantUserId(userId)) {
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation: 'get_push_tokens_for_user',
+      reason: userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+      userId: userId ?? null,
+    });
+    return [];
+  }
+
   try {
     const db = getDb();
     const rows = db
@@ -232,42 +243,53 @@ export function deleteDeadPushToken(token: string): void {
 // HTTP/2 client (one persistent session, lazily opened)
 // ────────────────────────────────────────────────────────────────────
 
-let http2Client: http2.ClientHttp2Session | null = null;
+let http2Clients: Partial<Record<'sandbox' | 'production', http2.ClientHttp2Session>> = {};
 
-function getHttp2Client(): http2.ClientHttp2Session {
-  if (http2Client && !http2Client.closed && !http2Client.destroyed) {
-    return http2Client;
+function hostForEnvironment(environment: 'sandbox' | 'production'): string {
+  return environment === 'sandbox'
+    ? 'https://api.sandbox.push.apple.com:443'
+    : 'https://api.push.apple.com:443';
+}
+
+function getAlternateEnvironment(environment: 'sandbox' | 'production'): 'sandbox' | 'production' {
+  return environment === 'sandbox' ? 'production' : 'sandbox';
+}
+
+function getHttp2Client(
+  environment: 'sandbox' | 'production' = config.apns.environment,
+): http2.ClientHttp2Session {
+  const existing = http2Clients[environment];
+  if (existing && !existing.closed && !existing.destroyed) {
+    return existing;
   }
 
-  const host =
-    config.apns.environment === 'sandbox'
-      ? 'https://api.sandbox.push.apple.com:443'
-      : 'https://api.push.apple.com:443';
-
-  http2Client = http2.connect(host);
-  http2Client.on('error', (err) => {
-    logger.warn({ err }, '[apns-sender] HTTP/2 session error, will reconnect on next send');
-    http2Client = null;
+  const client = http2.connect(hostForEnvironment(environment));
+  client.on('error', (err) => {
+    logger.warn({ err, environment }, '[apns-sender] HTTP/2 session error, will reconnect on next send');
+    delete http2Clients[environment];
   });
-  http2Client.on('close', () => {
-    http2Client = null;
+  client.on('close', () => {
+    delete http2Clients[environment];
   });
 
-  return http2Client;
+  http2Clients[environment] = client;
+  return client;
 }
 
 /**
  * Close the persistent HTTP/2 client. Useful for tests and graceful shutdown.
  */
 export function closeApnsClient(): void {
-  if (http2Client) {
+  for (const environment of Object.keys(http2Clients) as Array<'sandbox' | 'production'>) {
+    const client = http2Clients[environment];
+    if (!client) continue;
     try {
-      http2Client.close();
+      client.close();
     } catch {
       // best-effort
     }
-    http2Client = null;
   }
+  http2Clients = {};
 }
 
 /**
@@ -291,6 +313,7 @@ export function _resetForTests(): void {
 interface SingleSendOutcome {
   status: number;
   reason?: string;
+  environment: 'sandbox' | 'production';
 }
 
 /**
@@ -300,8 +323,9 @@ interface SingleSendOutcome {
 async function dispatchOne(
   deviceToken: string,
   payload: PushNotificationPayload,
+  environment: 'sandbox' | 'production' = config.apns.environment,
 ): Promise<SingleSendOutcome> {
-  const client = getHttp2Client();
+  const client = getHttp2Client(environment);
   const jwtToken = getProviderJwt();
 
   const apsPayload: Record<string, unknown> = {
@@ -343,7 +367,7 @@ async function dispatchOne(
     });
     req.on('end', () => {
       if (statusCode === 200) {
-        resolve({ status: 200 });
+        resolve({ status: 200, environment });
       } else {
         let reason = '';
         try {
@@ -351,18 +375,28 @@ async function dispatchOne(
         } catch {
           reason = responseBody.slice(0, 200);
         }
-        resolve({ status: statusCode, reason });
+        resolve({ status: statusCode, reason, environment });
       }
       req.close();
     });
     req.on('error', (err) => {
-      logger.warn({ err, tokenSuffix: deviceToken.slice(-8) }, '[apns-sender] Request error');
-      resolve({ status: 0, reason: err.message });
+      logger.warn(
+        { err, tokenSuffix: deviceToken.slice(-8), environment },
+        '[apns-sender] Request error',
+      );
+      resolve({ status: 0, reason: err.message, environment });
     });
 
     req.setEncoding('utf8');
     req.end(bodyStr);
   });
+}
+
+function shouldRetryInAlternateEnvironment(outcome: SingleSendOutcome): boolean {
+  return (
+    outcome.status === 400 &&
+    (outcome.reason === 'BadDeviceToken' || outcome.reason === 'DeviceTokenNotForTopic')
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -380,6 +414,20 @@ export async function sendPushNotification(
   userId: number,
   payload: PushNotificationPayload,
 ): Promise<SendResult> {
+  if (!isValidTenantUserId(userId)) {
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation: 'send_push_notification',
+      reason: userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+      userId: userId ?? null,
+      details: {
+        category: payload.category ?? null,
+        threadId: payload.threadId ?? null,
+      },
+    });
+    return { sent: 0, failed: 0, skipped: 0, retriable: 0, unregistered: [] };
+  }
+
   if (!isApnsConfigured()) {
     if (!warnedMissingConfig) {
       warnedMissingConfig = true;
@@ -409,7 +457,25 @@ export async function sendPushNotification(
   // Dispatch in parallel — APNs handles concurrent HTTP/2 streams natively
   // over a single connection, so there's no benefit to serializing. A user
   // usually has 1-3 devices, so the fan-out is small.
-  const outcomes = await Promise.all(tokens.map((t) => dispatchOne(t, payload).then((o) => ({ token: t, outcome: o }))));
+  const outcomes = await Promise.all(tokens.map(async (token) => {
+    const primary = await dispatchOne(token, payload, config.apns.environment);
+    if (!shouldRetryInAlternateEnvironment(primary)) {
+      return { token, outcome: primary };
+    }
+
+    const alternateEnvironment = getAlternateEnvironment(primary.environment);
+    logger.warn(
+      {
+        configuredEnvironment: primary.environment,
+        alternateEnvironment,
+        reason: primary.reason,
+        tokenSuffix: token.slice(-8),
+      },
+      '[apns-sender] Retrying APNs send against alternate environment after token mismatch',
+    );
+    const retried = await dispatchOne(token, payload, alternateEnvironment);
+    return { token, outcome: retried };
+  }));
 
   for (const { token, outcome } of outcomes) {
     if (outcome.status === 200) {

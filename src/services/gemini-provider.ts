@@ -640,6 +640,59 @@ export class GeminiProvider implements AIProvider {
     throw new Error('withRetry: unreachable');
   }
 
+  private buildModel(
+    modelName: string,
+    systemPrompt: string,
+    maxOutputTokens: number,
+    useTools: boolean,
+    filteredTools: Anthropic.Tool[],
+  ) {
+    return getClient().getGenerativeModel({
+      model: modelName,
+      systemInstruction: systemPrompt,
+      generationConfig: {
+        maxOutputTokens,
+      },
+      ...(useTools && filteredTools.length > 0 ? {
+        tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
+        toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
+      } : {}),
+    });
+  }
+
+  private async generateWithRouting(
+    request: { contents: Content[] },
+    systemPrompt: string,
+    filteredTools: Anthropic.Tool[],
+    useTools: boolean,
+    routing: { model: string; maxTokens: number },
+    usageCategory: string,
+    maxTokensOverride?: number,
+    maxRetries = 3,
+  ): Promise<GenerateContentResult> {
+    const model = this.buildModel(
+      routing.model,
+      systemPrompt,
+      maxTokensOverride || routing.maxTokens,
+      useTools,
+      filteredTools,
+    );
+
+    const start = Date.now();
+    const result = await this.withRetry(() => model.generateContent(request), maxRetries);
+    const durationMs = Date.now() - start;
+
+    const usage = result.response.usageMetadata;
+    if (usage) {
+      logGeminiUsage(routing.model, usageCategory, {
+        promptTokenCount: usage.promptTokenCount ?? 0,
+        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
+      }, durationMs);
+    }
+
+    return result;
+  }
+
   // ─── classify ─────────────────────────────────────────────────────
 
   async classify(
@@ -722,18 +775,6 @@ ${message}`;
     // fall back to the full TOOLS array (legacy callers)
     const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
 
-    const model = getClient().getGenerativeModel({
-      model: routing.model,
-      systemInstruction: systemPrompt,
-      generationConfig: {
-        maxOutputTokens: opts.maxTokensOverride || routing.maxTokens,
-      },
-      ...(useTools && filteredTools.length > 0 ? {
-        tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
-        toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
-      } : {}),
-    });
-
     // Layer 5: history is sliced upstream by planSecretaryOptimization
     // when modelTier === 'light'. We just consume whatever the caller
     // passes — no double-slicing here.
@@ -748,17 +789,15 @@ ${message}`;
       },
     ];
 
-    const start = Date.now();
-    const result = await this.withRetry(() => model.generateContent({ contents }));
-    const durationMs = Date.now() - start;
-
-    const usage = result.response.usageMetadata;
-    if (usage) {
-      logGeminiUsage(routing.model, `gemini_domain_${domain}`, {
-        promptTokenCount: usage.promptTokenCount ?? 0,
-        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-      }, durationMs);
-    }
+    const result = await this.generateWithRouting(
+      { contents },
+      systemPrompt,
+      filteredTools,
+      useTools,
+      routing,
+      `gemini_domain_${domain}`,
+      opts.maxTokensOverride,
+    );
 
     return {
       text: extractText(result),
@@ -794,18 +833,6 @@ ${message}`;
     const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
 
     const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
-
-    const model = getClient().getGenerativeModel({
-      model: routing.model,
-      systemInstruction: systemPrompt,
-      generationConfig: {
-        maxOutputTokens: opts.maxTokensOverride || routing.maxTokens,
-      },
-      ...(useTools && filteredTools.length > 0 ? {
-        tools: [{ functionDeclarations: toGeminiFunctionDeclarations(filteredTools) }],
-        toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } },
-      } : {}),
-    });
 
     const contents: Content[] = [
       ...history.map((m) => ({
@@ -872,17 +899,15 @@ ${message}`;
       }
     }
 
-    const start = Date.now();
-    const result = await this.withRetry(() => model.generateContent({ contents }));
-    const durationMs = Date.now() - start;
-
-    const usage = result.response.usageMetadata;
-    if (usage) {
-      logGeminiUsage(routing.model, 'gemini_tool_continuation', {
-        promptTokenCount: usage.promptTokenCount ?? 0,
-        candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-      }, durationMs);
-    }
+    const result = await this.generateWithRouting(
+      { contents },
+      systemPrompt,
+      filteredTools,
+      useTools,
+      routing,
+      'gemini_tool_continuation',
+      opts.maxTokensOverride,
+    );
 
     return {
       text: extractText(result),

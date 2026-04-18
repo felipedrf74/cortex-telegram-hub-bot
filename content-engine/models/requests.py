@@ -71,9 +71,12 @@ class ScriptRequest(BaseModel):
     topic: str = Field(min_length=1)
     niche: str = Field(default="general")
     format: str = Field(default="YouTube")
+    mode: str = Field(default="standard")
     language: str = Field(default="pt-BR")
     render_mode: str = Field(default="structured")
     max_duration_minutes: int = Field(default=8, ge=1, le=30)
+    target_duration_seconds: int | None = Field(default=None, ge=15, le=900)
+    topic_context: dict | None = Field(default=None)
     context_signals: list[dict] | None = Field(default=None)  # Intelligence bus signals
     brand_voice: str | None = Field(default=None)
 

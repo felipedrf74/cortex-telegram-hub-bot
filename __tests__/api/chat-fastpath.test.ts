@@ -27,14 +27,24 @@ vi.mock('../../src/services/microsoft-todo', () => ({
   getTasksDueInRange: vi.fn(async () => ({ success: true, data: [] })),
 }));
 
+const mockGetTaskProviderForUser = vi.fn();
+vi.mock('../../src/services/task-store/task-router', () => ({
+  getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
+}));
+
 vi.mock('../../src/services/unified-calendar', () => ({
+  hasConnectedCalendarForUser: vi.fn(() => false),
   isAnyCalendarConfigured: vi.fn(() => false),
   getEvents: vi.fn(async () => []),
 }));
 
-vi.mock('../../src/services/outlook-mail', () => ({
-  isOutlookMailConfigured: vi.fn(() => false),
-  getUnreadCount: vi.fn(async () => 0),
+vi.mock('../../src/services/unified-mail-pressure', () => ({
+  isAnyMailConfiguredForUser: vi.fn(() => false),
+  getUnreadMailSummaryForUser: vi.fn(async () => ({
+    totalUnread: 0,
+    outlookUnread: null,
+    gmailUnread: null,
+  })),
 }));
 
 vi.mock('../../src/state/reminders', () => ({
@@ -42,10 +52,15 @@ vi.mock('../../src/state/reminders', () => ({
 }));
 
 import { tryDeterministicChatCommand } from '../../src/api/routes/chat-fastpath';
+import * as msTodo from '../../src/services/microsoft-todo';
+import { getActiveReminders } from '../../src/state/reminders';
+import { getEvents, hasConnectedCalendarForUser } from '../../src/services/unified-calendar';
+import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../src/services/unified-mail-pressure';
 
 describe('Chat Fast-Path Command Interceptor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetTaskProviderForUser.mockReset();
   });
 
   it('returns null for non-slash messages (free-form questions)', async () => {
@@ -142,5 +157,93 @@ describe('Chat Fast-Path Command Interceptor', () => {
   it('trims whitespace before parsing', async () => {
     const result = await tryDeterministicChatCommand('  /overdue  ');
     expect(result).not.toBeNull();
+  });
+
+  it('uses the per-user task provider for authenticated /todo instead of the global singleton', async () => {
+    const provider = {
+      getDefaultList: vi.fn(async () => ({ id: 'native-1', displayName: 'Inbox' })),
+      getTasks: vi.fn(async () => ({
+        success: true,
+        data: [
+          { id: 'n1', title: 'Native task', listName: 'Inbox', listId: 'native-1', status: 'notStarted', importance: 'normal' },
+        ],
+      })),
+      getLists: vi.fn(),
+      getAllPendingTasks: vi.fn(async () => ({ success: true, data: [] })),
+      getTasksDueInRange: vi.fn(),
+    };
+    mockGetTaskProviderForUser.mockReturnValue(provider);
+
+    const result = await tryDeterministicChatCommand('/todo', 42);
+
+    expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(42);
+    expect(provider.getDefaultList).toHaveBeenCalled();
+    expect(provider.getTasks).toHaveBeenCalledWith('native-1', 'Inbox', { status: 'notStarted' });
+    expect(msTodo.getDefaultList).not.toHaveBeenCalled();
+    expect(result?.text).toContain('Native task');
+  });
+
+  it('uses scoped reminders and calendar data for authenticated /status', async () => {
+    const provider = {
+      getDefaultList: vi.fn(),
+      getTasks: vi.fn(),
+      getLists: vi.fn(),
+      getAllPendingTasks: vi.fn(async () => ({
+        success: true,
+        data: [
+          { id: 't1', title: 'Scoped task', listName: 'Inbox', listId: 'list-1', status: 'notStarted', importance: 'high' },
+        ],
+      })),
+      getTasksDueInRange: vi.fn(),
+    };
+    mockGetTaskProviderForUser.mockReturnValue(provider);
+    vi.mocked(hasConnectedCalendarForUser).mockReturnValue(true);
+    vi.mocked(getEvents).mockResolvedValue([
+      {
+        id: 'e1',
+        summary: 'Scoped meeting',
+        start: new Date().toISOString(),
+        end: new Date().toISOString(),
+        source: 'google',
+      } as any,
+    ]);
+    vi.mocked(getActiveReminders).mockReturnValue([
+      { id: 1, user_id: 42, message: 'Scoped reminder', remind_at: new Date().toISOString(), status: 'active' } as any,
+    ]);
+
+    const result = await tryDeterministicChatCommand('/status', 42);
+
+    expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(42);
+    expect(getActiveReminders).toHaveBeenCalledWith(42);
+    expect(hasConnectedCalendarForUser).toHaveBeenCalledWith(42);
+    expect(getEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 42);
+    expect(result?.text).toContain('Active reminders: 1');
+    expect(result?.text).toContain('Events today: 1');
+  });
+
+  it('uses unified Gmail and Outlook unread pressure for authenticated /status', async () => {
+    const provider = {
+      getDefaultList: vi.fn(),
+      getTasks: vi.fn(),
+      getLists: vi.fn(),
+      getAllPendingTasks: vi.fn(async () => ({ success: true, data: [] })),
+      getTasksDueInRange: vi.fn(),
+    };
+    mockGetTaskProviderForUser.mockReturnValue(provider);
+    vi.mocked(isAnyMailConfiguredForUser).mockReturnValue(true);
+    vi.mocked(getUnreadMailSummaryForUser).mockResolvedValue({
+      totalUnread: 9,
+      outlookUnread: 4,
+      gmailUnread: 5,
+      configuredProviders: ['outlook', 'gmail'],
+    });
+
+    const result = await tryDeterministicChatCommand('/status', 42);
+
+    expect(isAnyMailConfiguredForUser).toHaveBeenCalledWith(42);
+    expect(getUnreadMailSummaryForUser).toHaveBeenCalledWith(42);
+    expect(result?.text).toContain('Inbox unread: 9');
+    expect(result?.text).toContain('Outlook 4');
+    expect(result?.text).toContain('Gmail 5');
   });
 });

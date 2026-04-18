@@ -26,7 +26,12 @@ vi.mock('../../src/services/database', () => ({
   }),
 }));
 
+vi.mock('../../src/services/garmin-session-store', () => ({
+  hasActiveGarminConnection: vi.fn().mockReturnValue(false),
+}));
+
 import * as garmin from '../../src/services/garmin';
+import { hasActiveGarminConnection } from '../../src/services/garmin-session-store';
 import { isConnected } from '../../src/services/oauth-store';
 import {
   getUserProviders,
@@ -38,6 +43,7 @@ import {
 import type { NormalizedActivity, NormalizedReadiness } from '../../src/services/wearable/types';
 
 const mockedGarmin = vi.mocked(garmin);
+const mockedHasActiveGarminConnection = vi.mocked(hasActiveGarminConnection);
 const mockedIsConnected = vi.mocked(isConnected);
 
 describe('WearableService', () => {
@@ -51,12 +57,14 @@ describe('WearableService', () => {
     mockedGarmin.getBodyBatteryEvents.mockResolvedValue(null);
     mockedGarmin.getTrainingReadiness.mockResolvedValue(null);
     mockedGarmin.getDailySummary.mockResolvedValue(null);
+    mockedHasActiveGarminConnection.mockReturnValue(false);
     mockedIsConnected.mockReturnValue(false);
   });
 
   describe('getUserProviders', () => {
     it('returns garmin when configured', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       const providers = await getUserProviders(123);
       expect(providers).toContain('garmin');
     });
@@ -69,6 +77,7 @@ describe('WearableService', () => {
 
     it('returns multiple connected providers', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       mockedIsConnected.mockImplementation((_userId, provider) =>
         provider === 'strava' || provider === 'whoop'
       );
@@ -88,6 +97,7 @@ describe('WearableService', () => {
   describe('getPrimaryReadinessProvider', () => {
     it('returns whoop before garmin when both connected', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       mockedIsConnected.mockImplementation((_userId, provider) => provider === 'whoop');
 
       const primary = await getPrimaryReadinessProvider(123);
@@ -96,6 +106,7 @@ describe('WearableService', () => {
 
     it('returns garmin when whoop not connected', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       const primary = await getPrimaryReadinessProvider(123);
       expect(primary).toBe('garmin');
     });
@@ -190,6 +201,7 @@ describe('WearableService', () => {
   describe('getActivities', () => {
     it('merges activities from multiple providers', async () => {
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       mockedGarmin.getActivitiesByDate.mockResolvedValue([
         {
           activityId: 1, activityName: 'Garmin Run',
@@ -210,6 +222,7 @@ describe('WearableService', () => {
     it('falls back to next provider if primary fails', async () => {
       // Connect both whoop and garmin
       mockedGarmin.isGarminConfigured.mockReturnValue(true);
+      mockedHasActiveGarminConnection.mockReturnValue(true);
       mockedIsConnected.mockImplementation((_userId, provider) => provider === 'whoop');
 
       // Whoop will fail (no real token), garmin will succeed

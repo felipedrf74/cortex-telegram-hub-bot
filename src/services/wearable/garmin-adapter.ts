@@ -4,12 +4,14 @@
  * Garmin Adapter — wraps the existing garmin.ts service (no modifications).
  *
  * Maps Garmin-proprietary data structures into the normalized wearable types.
- * Garmin uses credential-based auth (not OAuth), so isConfigured does not
- * depend on the user — it checks global configuration via garmin.isGarminConfigured().
+ * Garmin support can be available in the environment without this specific
+ * user having an active Garmin session, so isConfigured must follow
+ * per-user session truth instead of environment-level truth alone.
  */
 
 import * as garmin from '../garmin';
 import type { GarminActivity } from '../garmin';
+import { hasActiveGarminConnection } from '../garmin-session-store';
 import type { WearableAdapter } from './adapter-interface';
 import type {
   WearableProvider,
@@ -20,6 +22,7 @@ import type {
   NormalizedDailySummary,
   ActivityType,
 } from './types';
+import { extractGarminBodyBatterySnapshot } from './energy-reserve';
 
 // ─── Type Mapping ──────────────────────────────────────────────────
 
@@ -69,8 +72,8 @@ export class GarminAdapter implements WearableAdapter {
     dailySummary: true,
   };
 
-  async isConfigured(_userId: number): Promise<boolean> {
-    return garmin.isGarminConfigured();
+  async isConfigured(userId: number): Promise<boolean> {
+    return garmin.isGarminConfigured() && hasActiveGarminConnection(userId);
   }
 
   async getActivities(_userId: number, startDate: string, endDate: string): Promise<NormalizedActivity[]> {
@@ -103,24 +106,18 @@ export class GarminAdapter implements WearableAdapter {
   }
 
   async getReadiness(_userId: number, date: string): Promise<NormalizedReadiness | null> {
-    const [hrv, bb, readiness] = await Promise.allSettled([
+    const [hrv, bb, readiness, summary] = await Promise.allSettled([
       garmin.getHrvData(date),
       garmin.getBodyBatteryEvents(date),
       garmin.getTrainingReadiness(date),
+      garmin.getDailySummary(date),
     ]);
 
     const hrvData = hrv.status === 'fulfilled' ? hrv.value as any : null;
     const bbData = bb.status === 'fulfilled' ? bb.value as any : null;
     const readinessData = readiness.status === 'fulfilled' ? readiness.value as any : null;
-
-    // Extract body battery current value from events array
-    let bodyBattery: number | null = null;
-    if (Array.isArray(bbData)) {
-      const last = bbData[bbData.length - 1];
-      bodyBattery = last?.bodyBatteryLevel ?? null;
-    } else if (bbData?.bodyBatteryLevel != null) {
-      bodyBattery = bbData.bodyBatteryLevel;
-    }
+    const summaryData = summary.status === 'fulfilled' ? summary.value as any : null;
+    const bodyBatterySnapshot = extractGarminBodyBatterySnapshot(bbData, summaryData);
 
     // Extract readiness score
     let readinessScore: number | null = null;
@@ -135,9 +132,9 @@ export class GarminAdapter implements WearableAdapter {
       readinessScore,
       hrvMs: hrvData?.hrvSummary?.weeklyAvg ?? hrvData?.lastNightAvg ?? null,
       restingHeartRate: hrvData?.startTimestampLocal ? null : null, // RHR comes from daily summary
-      bodyBattery,
+      bodyBattery: bodyBatterySnapshot.current,
       recoveryScore: null, // Garmin doesn't have a native recovery score
-      raw: { hrv: hrvData, bodyBattery: bbData, readiness: readinessData },
+      raw: { hrv: hrvData, bodyBattery: bbData, readiness: readinessData, dailySummary: summaryData },
     };
   }
 

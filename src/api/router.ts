@@ -32,6 +32,7 @@ import { garminAuthRoutes } from './routes/garmin-auth';
 import { billingRoutes } from './routes/billing';
 import { oauthInitiateRoutes } from './routes/oauth-initiate';
 import { internalRoutes } from './routes/internal';
+import { planRoutes } from './routes/plan';
 
 /**
  * Creates the iOS API router.
@@ -68,6 +69,7 @@ export function createApiRouter(): Router {
         finance: 'GET/POST/DELETE /api/v1/finance/{transactions|monthly-summary|tax/events|tax/calculate}',
         invoices: 'GET/POST/DELETE /api/v1/invoices/{vendors|scan-now} — vendor config + on-demand collection',
         billing: 'GET /api/v1/billing/status, POST /api/v1/billing/{checkout|portal|apple-verify}',
+        plan: 'GET /api/v1/plan/{week|today}, POST /api/v1/plan/recompute — multiskill mesh (feature-flagged)',
       },
       auth_note: 'POST /auth/register with inviteCode to get a JWT. Include as Authorization: Bearer <token> on all other endpoints.',
     });
@@ -241,6 +243,7 @@ export function createApiRouter(): Router {
 
   // Billing — subscription status (token-zero), Stripe checkout, Apple verify
   router.use('/billing', billingRoutes());
+  router.use('/plan', planRoutes());
 
   // OAuth initiate — generate consent URLs for iOS integration onboarding
   router.use('/auth/oauth', oauthInitiateRoutes());

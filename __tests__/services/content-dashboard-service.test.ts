@@ -103,6 +103,23 @@ describe('content-dashboard-service: books', () => {
     expect(result.extracted).toBe(2);
     expect(result.pending).toBe(1);
   });
+
+  it('prefers a user-owned book over the same system seed book', () => {
+    testDb.prepare(`
+      INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope)
+      VALUES ('The Law', 'Bastiat', 'extracted', 0, 'system')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO book_library (title, author, extraction_status, user_id, owner_scope)
+      VALUES ('The Law', 'Bastiat', 'pending', 42, 'user')
+    `).run();
+
+    const result = getBooks(50, undefined, 42);
+
+    expect(result.total).toBe(1);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].status).toBe('pending');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -139,6 +156,22 @@ describe('content-dashboard-service: voice DNA', () => {
 
     const voiceDna = getVoiceDna();
     expect(voiceDna[0].label).toBe('custom_cat'); // Falls back to raw category name
+  });
+
+  it('prefers user voice DNA over a system row with the same category', () => {
+    testDb.prepare(`
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, user_id, owner_scope)
+      VALUES ('brand_voice', 'System voice', '["system"]', 1, 0, 'system')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, version, user_id, owner_scope)
+      VALUES ('brand_voice', 'User voice', '["@user"]', 2, 42, 'user')
+    `).run();
+
+    const voiceDna = getVoiceDna(undefined, 42);
+
+    expect(voiceDna).toHaveLength(1);
+    expect(voiceDna[0].text).toBe('User voice');
   });
 });
 
@@ -208,6 +241,21 @@ describe('content-dashboard-service: knowledge stats', () => {
     expect(stats.categories).toHaveLength(1);
     expect(stats.categories[0].category).toBe('hook_style');
     expect(stats.categories[0].sources).toBe(2);
+    expect(stats.referenceChannels).toBe(1);
+  });
+
+  it('dedupes reference channels when a user overrides a system seed', () => {
+    testDb.prepare(`
+      INSERT INTO content_ref_channels (channel_url, status, user_id, owner_scope)
+      VALUES ('https://youtube.com/@shared', 'active', 0, 'system')
+    `).run();
+    testDb.prepare(`
+      INSERT INTO content_ref_channels (channel_url, status, user_id, owner_scope)
+      VALUES ('https://youtube.com/@shared', 'active', 42, 'user')
+    `).run();
+
+    const stats = getKnowledgeStats(undefined, 42);
+
     expect(stats.referenceChannels).toBe(1);
   });
 });

@@ -1,0 +1,57 @@
+{
+  "name": "cooking",
+  "version": "1.0.0",
+  "description": "Cooking orchestration for recipes, meal plans, shopping, and fueling support",
+  "author": "Felipe Dominguez",
+  "domain": "cooking",
+  "manifestVersion": 2,
+  "subSkills": [
+    {
+      "module_name": "recipes",
+      "description": "Recipe library and save-from-chat workflow",
+      "enabled_by_default": true,
+      "tools": ["cooking_add_recipe", "cooking_get_recipes", "cooking_delete_recipe"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "meal-planning",
+      "description": "Weekly meal planning and slot editing",
+      "enabled_by_default": true,
+      "tools": ["cooking_set_meal", "cooking_get_meal_plan", "cooking_delete_meal"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "shopping-list",
+      "description": "Shopping list generation from the active menu",
+      "enabled_by_default": true,
+      "tools": ["cooking_generate_shopping_list", "cooking_get_shopping_list"],
+      "cronJobs": []
+    },
+    {
+      "module_name": "batch-cook",
+      "description": "Prep-day grouping and kitchen batching heuristics",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "electrolytes",
+      "description": "Hydration and electrolyte reminders for training weeks",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "fueling-advisor",
+      "description": "Training-aware meal adaptation and macro direction",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    }
+  ],
+  "requiredApiKeys": ["GEMINI_API_KEY"],
+  "config": {
+    "stateContextTtl": 30000,
+    "maxToolIterations": 4
+  }
+}

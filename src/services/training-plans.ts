@@ -9,7 +9,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from './unified-calendar';
+import { createEvent as createCalendarEvent, hasWritableCalendarForUser } from './unified-calendar';
 import { publishTrainingSessionScheduled } from './training-signals';
 
 // ─── Phase 1 Slice B helper ─────────────────────────────────────────
@@ -654,7 +654,8 @@ function addMinutesToISO(isoDateTime: string, minutes: number): string {
 
 /**
  * Create calendar events for all sessions in a training week.
- * Uses the owner's calendar (Outlook or Google). Skips gracefully if no calendar is connected.
+ * Uses the authenticated user's connected calendar. Skips gracefully if the
+ * user has not connected a writable provider yet.
  *
  * @param weekOf - ISO Monday date, e.g., '2026-04-06'
  * @param sessions - Training sessions for the week
@@ -666,18 +667,23 @@ export async function createCalendarBlockers(
   sessions: TrainingSession[],
   preferredTime: string,
 ): Promise<{ created: number; failed: number }> {
-  if (!isAnyCalendarConfigured()) {
-    logger.info({ userId }, 'No calendar connected — skipping blocker creation');
+  if (!hasWritableCalendarForUser(userId)) {
+    logger.info({ userId }, 'No writable user calendar connected — skipping blocker creation');
     return { created: 0, failed: 0 };
   }
 
-  // Determine which calendar to use — try per-user OAuth, fall back to owner's
+  // Determine which calendar to use for this user only.
   let calendarSource: 'outlook' | 'google' | undefined;
   try {
     const { isConnected } = require('./oauth-store');
     if (isConnected(userId, 'outlook')) calendarSource = 'outlook';
     else if (isConnected(userId, 'google')) calendarSource = 'google';
   } catch { /* oauth-store not available */ }
+
+  if (!calendarSource) {
+    logger.info({ userId }, 'No user-scoped calendar provider found for blocker creation');
+    return { created: 0, failed: 0 };
+  }
 
   // Resolve sport once for the batch — all sessions belong to the same plan.
   let batchSport: 'gym' | 'running' | 'cycling' | 'swim' | null = null;
@@ -706,9 +712,9 @@ export async function createCalendarBlockers(
         end: endISO,
         description: session.description || undefined,
         categories: ['Green category'],
-      }, calendarSource);
+      }, calendarSource, userId);
 
-      linkSessionToCalendar(session.id, event.id || event.summary, calendarSource || 'outlook');
+      linkSessionToCalendar(session.id, event.id || event.summary, calendarSource);
       created++;
 
       // ─── Phase 1 Slice B — Signal C publishing ───

@@ -25,11 +25,10 @@ import {
   addChannel,
   getAllChannels,
   getActiveChannels,
-  getPendingChannels,
+  getPatternsForChannel,
   updateChannelStatus,
   upsertPatterns,
   upsertKnowledge,
-  getAllPatternsByCategory,
   PATTERN_CATEGORIES,
   type PatternCategory,
   type ContentRefChannel,
@@ -41,6 +40,47 @@ const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
+
+const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
+
+function getScopeClause(userId?: number): { clause: string; params: unknown[] } {
+  if (userId != null && userId > 0) {
+    return {
+      clause: `${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?`,
+      params: [userId],
+    };
+  }
+  return {
+    clause: `${CONTENT_OWNER_SCOPE_SQL} = 'system'`,
+    params: [],
+  };
+}
+
+function getScopedChannelsForProcessing(
+  status: ContentRefChannel['status'],
+  userId?: number,
+): ContentRefChannel[] {
+  const db = getDb();
+  const { clause, params } = getScopeClause(userId);
+  return db.prepare(
+    `SELECT * FROM content_ref_channels
+      WHERE status = ?
+        AND ${clause}
+      ORDER BY created_at ASC`,
+  ).all(status, ...params) as ContentRefChannel[];
+}
+
+function listContentChannelUserIds(): number[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT DISTINCT user_id
+       FROM content_ref_channels
+      WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'user'
+        AND user_id > 0
+      ORDER BY user_id ASC`,
+  ).all() as Array<{ user_id: number }>;
+  return rows.map((row) => row.user_id);
+}
 
 // ─── YouTube Data API helpers ────────────────────────────────────────
 
@@ -309,27 +349,27 @@ Return ONLY valid JSON:
   ]
 }`;
 
-async function synthesizeKnowledge(): Promise<void> {
-  const channels = getActiveChannels();
+async function synthesizeKnowledge(userId?: number): Promise<void> {
+  const scopedUserId = userId != null && userId > 0 ? userId : 0;
+  const channels = getActiveChannels(scopedUserId);
   if (channels.length === 0) {
-    logger.info('No active channels to synthesize knowledge from');
+    logger.info({ userId: userId ?? null }, 'No active channels to synthesize knowledge from');
     return;
   }
 
-  logger.info({ channelCount: channels.length }, 'Synthesizing cross-channel knowledge');
+  logger.info({ channelCount: channels.length, userId: userId ?? null }, 'Synthesizing cross-channel knowledge');
 
   for (const category of PATTERN_CATEGORIES) {
-    const patterns = getAllPatternsByCategory(category);
-    if (patterns.length === 0) continue;
-
     // Group by channel
-    const byChannel = new Map<string, typeof patterns>();
-    for (const p of patterns) {
-      const name = (p as any).channel_name || 'Unknown';
-      const existing = byChannel.get(name) || [];
-      existing.push(p);
-      byChannel.set(name, existing);
+    const byChannel = new Map<string, ReturnType<typeof getPatternsForChannel>>();
+    for (const channel of channels) {
+      const patterns = getPatternsForChannel(channel.id)
+        .filter((pattern) => pattern.category === category && pattern.confidence >= 0.5);
+      if (patterns.length === 0) continue;
+      const name = channel.channel_name || channel.channel_url;
+      byChannel.set(name, patterns);
     }
+    if (byChannel.size === 0) continue;
 
     // Build context for Claude
     const context = [...byChannel.entries()].map(([name, pats]) => {
@@ -350,7 +390,7 @@ async function synthesizeKnowledge(): Promise<void> {
         return `${p.pattern_text}\nExamples from ${channelName}: ${examples.slice(0, 3).join('; ')}`;
       }).join('\n');
 
-      upsertKnowledge(category, directText, [channelName]);
+      upsertKnowledge(category, directText, [channelName], scopedUserId);
       continue;
     }
 
@@ -401,15 +441,15 @@ async function synthesizeKnowledge(): Promise<void> {
 
       for (const cat of result.categories) {
         if (cat.category === category) {
-          upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels);
+          upsertKnowledge(category as PatternCategory, cat.synthesized_text, cat.source_channels, scopedUserId);
           break;
         }
       }
     } catch (err) {
       logger.warn({ err, category }, 'Failed to synthesize category — using concatenation fallback');
       // Fallback: concatenate all patterns
-      const allText = patterns
-        .filter((p) => p.confidence >= 0.5)
+      const allText = [...byChannel.values()]
+        .flat()
         .map((p) => p.pattern_text)
         .join('\n');
       if (allText) {
@@ -417,33 +457,38 @@ async function synthesizeKnowledge(): Promise<void> {
           category,
           allText,
           [...byChannel.keys()],
+          scopedUserId,
         );
       }
     }
   }
 
-  logger.info('Knowledge synthesis complete');
+  logger.info({ userId: userId ?? null }, 'Knowledge synthesis complete');
   pushEvent({
     ts: new Date().toISOString(),
     type: 'job',
-    summary: `Content knowledge synthesized from ${channels.length} channel(s)`,
+    summary: `Content knowledge synthesized from ${channels.length} channel(s)${userId != null && userId > 0 ? ` for user ${userId}` : ' (system scope)'}`,
   });
 
-  // Write structured Channel DNA signals to the intelligence bus
-  writeChannelDNASignals(channels);
+  // Keep channel_dna as a system-level content mesh signal for now.
+  // User-specific knowledge is already persisted explicitly in content_knowledge,
+  // but broader signal isolation still belongs to the later tenant hardening wave.
+  if (scopedUserId === 0) {
+    writeChannelDNASignals(channels);
+  }
 }
 
 /**
  * Writes one signal per channel per pattern category to the intelligence bus.
  * Other agents (Script, Hooks, SEO, Performance) can read these independently.
  */
-function writeChannelDNASignals(channels: ContentRefChannel[]): void {
+function writeChannelDNASignals(channels: ContentRefChannel[], userId?: number): void {
   let signalCount = 0;
 
   for (const channel of channels) {
     for (const category of PATTERN_CATEGORIES) {
-      const patterns = getAllPatternsByCategory(category)
-        .filter((p) => (p as any).channel_id === channel.id && p.confidence >= 0.4);
+      const patterns = getPatternsForChannel(channel.id)
+        .filter((p) => p.category === category && p.confidence >= 0.4);
 
       if (patterns.length === 0) continue;
 
@@ -471,6 +516,7 @@ function writeChannelDNASignals(channels: ContentRefChannel[]): void {
             effectiveness_score: null, // filled by Performance Agent later
             extracted_at: new Date().toISOString(),
           },
+          user_id: userId != null && userId > 0 ? userId : undefined,
         });
         signalCount++;
       } catch (err) {
@@ -616,13 +662,14 @@ export async function analyzeChannel(channelId: number): Promise<{
  * Process all pending channels and re-analyze stale active channels.
  * Called by the scheduler weekly.
  */
-export async function processAllChannels(force = false): Promise<{
+export async function processAllChannels(force = false, userId?: number): Promise<{
   analyzed: number;
   failed: number;
   synthesized: boolean;
 }> {
   let analyzed = 0;
   let failed = 0;
+  const { clause: scopeClause, params: scopeParams } = getScopeClause(userId);
 
   // ── Recovery: resurrect stuck / failed channels ────────────────
   //
@@ -651,8 +698,9 @@ export async function processAllChannels(force = false): Promise<{
     const stuckAnalyzing = db.prepare(`
       SELECT id, channel_name FROM content_ref_channels
       WHERE status = 'analyzing'
+        AND ${scopeClause}
         AND updated_at < datetime('now', '-30 minutes')
-    `).all() as Array<{ id: number; channel_name: string | null }>;
+    `).all(...scopeParams) as Array<{ id: number; channel_name: string | null }>;
 
     for (const ch of stuckAnalyzing) {
       updateChannelStatus(ch.id, 'pending', {
@@ -667,8 +715,9 @@ export async function processAllChannels(force = false): Promise<{
     const failedRetryable = db.prepare(`
       SELECT id, channel_name FROM content_ref_channels
       WHERE status = 'failed'
+        AND ${scopeClause}
         AND updated_at < datetime('now', '-12 hours')
-    `).all() as Array<{ id: number; channel_name: string | null }>;
+    `).all(...scopeParams) as Array<{ id: number; channel_name: string | null }>;
 
     for (const ch of failedRetryable) {
       updateChannelStatus(ch.id, 'pending', { error_message: null });
@@ -691,7 +740,7 @@ export async function processAllChannels(force = false): Promise<{
   }
 
   // Process pending channels first (now includes any just-recovered ones)
-  const pending = getPendingChannels();
+  const pending = getScopedChannelsForProcessing('pending', userId);
   for (const ch of pending) {
     const result = await analyzeChannel(ch.id);
     if (result.success) analyzed++;
@@ -701,7 +750,7 @@ export async function processAllChannels(force = false): Promise<{
   }
 
   // Re-analyze active channels (skip fresh ones unless forced)
-  const active = getActiveChannels();
+  const active = getScopedChannelsForProcessing('active', userId);
   const staleThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000;
   for (const ch of active) {
     if (!force && ch.last_analyzed_at && new Date(ch.last_analyzed_at).getTime() > staleThreshold) {
@@ -716,8 +765,41 @@ export async function processAllChannels(force = false): Promise<{
   // Synthesize knowledge if anything was analyzed
   let synthesized = false;
   if (analyzed > 0) {
-    await synthesizeKnowledge();
+    await synthesizeKnowledge(userId);
     synthesized = true;
+  }
+
+  return { analyzed, failed, synthesized };
+}
+
+export async function processAllChannelScopes(force = false): Promise<{
+  analyzed: number;
+  failed: number;
+  synthesized: boolean;
+}> {
+  let analyzed = 0;
+  let failed = 0;
+  let synthesized = false;
+
+  const scopes = [undefined, ...listContentChannelUserIds()];
+  let systemScopeChanged = false;
+  for (const scopeUserId of scopes) {
+    const result = await processAllChannels(force, scopeUserId);
+    analyzed += result.analyzed;
+    failed += result.failed;
+    synthesized = synthesized || result.synthesized;
+    if (scopeUserId == null) {
+      systemScopeChanged = result.synthesized;
+      continue;
+    }
+
+    // If shared system channels were refreshed, resynthesize user-owned
+    // knowledge too so user prompts do not keep stale copies of the shared base.
+    const hasActiveUserChannels = getScopedChannelsForProcessing('active', scopeUserId).length > 0;
+    if (systemScopeChanged && hasActiveUserChannels && !result.synthesized) {
+      await synthesizeKnowledge(scopeUserId);
+      synthesized = true;
+    }
   }
 
   return { analyzed, failed, synthesized };
@@ -730,16 +812,17 @@ export async function processAllChannels(force = false): Promise<{
 export async function addAndAnalyzeChannel(
   channelUrl: string,
   addedVia: 'manual' | 'portal' | 'bot' = 'bot',
+  userId = 0,
 ): Promise<{
   channel: ContentRefChannel;
   analysis: Awaited<ReturnType<typeof analyzeChannel>>;
 }> {
-  const channel = addChannel(channelUrl, addedVia);
+  const channel = addChannel(channelUrl, addedVia, userId);
   const analysis = await analyzeChannel(channel.id);
 
   // Re-synthesize if analysis was successful
   if (analysis.success) {
-    await synthesizeKnowledge();
+    await synthesizeKnowledge(userId);
   }
 
   // Return fresh channel data
@@ -777,12 +860,12 @@ const DEFAULT_CHANNELS = getDefaultChannels();
  * Called once during bot startup.
  */
 export function seedDefaultChannels(): void {
-  const existing = getAllChannels();
+  const existing = getAllChannels(0);
   if (existing.length > 0) return; // Already seeded
 
   logger.info({ channels: DEFAULT_CHANNELS }, 'Seeding default content reference channels');
   for (const url of DEFAULT_CHANNELS) {
-    addChannel(url, 'manual');
+    addChannel(url, 'manual', 0);
   }
 }
 

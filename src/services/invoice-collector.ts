@@ -83,7 +83,7 @@ const BUILTIN_VENDORS: VendorConfig[] = [
 ];
 
 /** Merge hardcoded + user-added vendors from DB. */
-export function getAllVendors(userId?: number): VendorConfig[] {
+export function getAllVendors(userId: number): VendorConfig[] {
   const dbVendors = getActiveVendors(userId).map((v) => ({
     name: v.name,
     senderPatterns: [v.sender_pattern],
@@ -208,7 +208,7 @@ async function collectForVendor(
   allEmails: OutlookEmail[],
   targetYear: number,
   targetMonth: number,
-  userId?: number,
+  userId: number,
 ): Promise<VendorCollectionResult> {
   const result: VendorCollectionResult = {
     vendor: vendor.name,
@@ -345,7 +345,7 @@ async function collectForVendor(
  *   - Manual `/invoices [YYYY-MM]` command
  */
 export async function collectMonthlyInvoices(
-  userId: number | undefined,
+  userId: number,
   year: number,
   month: number,
 ): Promise<MonthlyCollectionResult> {

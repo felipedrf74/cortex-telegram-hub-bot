@@ -916,6 +916,7 @@ async function downloadInvoicePdf(page: Page, url: string): Promise<Buffer | nul
  *   - Manual `/amazon [YYYY-MM]` command (with Telegram callbacks for 2FA)
  */
 export async function collectAmazonInvoices(
+  userId: number,
   year: number,
   month: number,
   sendTelegram?: (text: string) => Promise<void>,
@@ -1034,7 +1035,7 @@ export async function collectAmazonInvoices(
 
       try {
         // Check for duplicates (use orderId as the base reference)
-        if (isDuplicate('Amazon.es', order.orderId) || isEmailAlreadyFiled(order.orderId)) {
+        if (isDuplicate('Amazon.es', order.orderId, userId) || isEmailAlreadyFiled(order.orderId, userId)) {
           orderResult.status = 'duplicate';
           result.totalDuplicates++;
           result.orders.push(orderResult);
@@ -1057,6 +1058,7 @@ export async function collectAmazonInvoices(
             source_ref: order.orderId,
             status: 'failed',
             error_message: 'No invoice PDFs found in popover',
+            user_id: userId,
           });
           continue;
         }
@@ -1072,7 +1074,7 @@ export async function collectAmazonInvoices(
             : `${order.orderId}_Inv${inv.index}`;
 
           // Check if THIS specific invoice was already filed
-          if (isDuplicate('Amazon.es', invoiceRef) || isEmailAlreadyFiled(invoiceRef)) {
+          if (isDuplicate('Amazon.es', invoiceRef, userId) || isEmailAlreadyFiled(invoiceRef, userId)) {
             logger.debug({ invoiceRef }, 'Invoice already filed (duplicate)');
             result.totalDuplicates++;
             continue;
@@ -1110,6 +1112,7 @@ export async function collectAmazonInvoices(
               filename: filingResult.filename,
               file_size_bytes: pdfBuffer.length,
               status: 'filed',
+              user_id: userId,
             });
           } else {
             errorCount++;
@@ -1123,6 +1126,7 @@ export async function collectAmazonInvoices(
               source_ref: invoiceRef,
               status: 'failed',
               error_message: filingResult.error,
+              user_id: userId,
             });
           }
 

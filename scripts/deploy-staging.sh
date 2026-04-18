@@ -86,11 +86,12 @@ ssh "$SERVER" "export PATH=\$PATH:$(dirname $PM2) && $PM2 stop nexus-hub-staging
 #   - We preserve .env, data/, logs/, .venv (managed manually on staging)
 echo ""
 echo "📤 Syncing files to staging..."
-rsync -avz --delete \
-  --exclude='.env' \
-  --exclude='data/' \
-  --exclude='logs/' \
-  --exclude='node_modules/' \
+  rsync -avz --delete \
+    --exclude='.env' \
+    --exclude='.db.sqlite' \
+    --exclude='data/' \
+    --exclude='logs/' \
+    --exclude='node_modules/' \
   --exclude='content-engine/.venv/' \
   --exclude='content-engine/data/' \
   --exclude='content-engine/__pycache__/' \
@@ -107,6 +108,13 @@ echo "📥 Installing dependencies..."
 ssh "$SERVER" "cd $STAGING_DIR && npm ci --production 2>&1 | tail -1"
 ssh "$SERVER" "cd $STAGING_DIR/content-engine && [ -d .venv ] && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -1 || echo '   ⚠️  No staging .venv yet — see first-time setup in deploy-staging.sh header'"
 echo "   ✅ Dependencies updated"
+
+# ── 5a. Owner bootstrap preflight (warn-only) ────────
+# Staging can run without a production-ready owner bootstrap, but we still
+# want the signal visible before restart.
+echo ""
+echo "🧭 Verifying owner bootstrap on staging..."
+ssh "$SERVER" "cd $STAGING_DIR && node dist/tools/owner-bootstrap-preflight.js || true"
 
 # ── 6. Rebuild native modules against system Node ────
 # Same reason as prod deploy: PM2 daemon runs under brew Node but child

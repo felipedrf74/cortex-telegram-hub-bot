@@ -18,6 +18,7 @@ import { config } from './config';
 import { logger } from './utils/logger';
 import { runWithContext, generateRequestId } from './utils/request-context';
 import { DomainName } from './domains/types';
+import { isOwnerBootstrapTelegramId } from './services/user-service';
 
 // ── Domain Handlers ──
 import { handleSecretary } from './domains/secretary';
@@ -87,7 +88,7 @@ export function createBot(): Bot {
     );
   });
 
-  // ── Auth Middleware (DB-backed with legacy whitelist fallback) ──
+  // ── Auth Middleware (DB-backed with explicit owner bootstrap fallback) ──
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!userId) return;
@@ -118,8 +119,9 @@ export function createBot(): Bot {
       // user-service not loaded yet (startup race) — fall through to legacy
     }
 
-    // Legacy fallback: TELEGRAM_ALLOWED_USER_IDS still works
-    if (!authorized && config.telegram.allowedUserIds.includes(userId)) {
+    // Narrow bootstrap fallback: only the explicit owner bootstrap Telegram id
+    // bypasses DB registration during early startup / migration windows.
+    if (!authorized && isOwnerBootstrapTelegramId(userId)) {
       authorized = true;
     }
 

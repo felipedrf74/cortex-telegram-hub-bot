@@ -15,6 +15,7 @@ import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { fetchDailyCoachData, isGarminConfigured, GarminCoachData, summarizeActivityDetails } from './garmin';
 import {
   getEvents,
+  hasConnectedCalendarForUser,
   isAnyCalendarConfigured,
   CalendarSource,
   updateEvent as updateCalendarEvent,
@@ -24,6 +25,8 @@ import { getDomainSystemPrompt } from './anthropic';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getLastCoachState } from '../domains/domain-handler';
+import { isOwnerUserRef } from './user-service';
+import { getDb } from './database';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -138,6 +141,7 @@ export interface CoachRecommendation {
   newStart: string | null;
   newEnd: string | null;
   summary: string;
+  reason: string;
 }
 
 export interface CoachBriefingResult {
@@ -247,7 +251,6 @@ async function tryAppleHealthFallback(userId: number | undefined, errors: string
   if (!userId) return null;
 
   try {
-    const { getDb } = require('./database');
     const db = getDb();
     const today = new Date().toISOString().slice(0, 10);
 
@@ -297,12 +300,13 @@ export async function generateCoachBriefing(userId?: number): Promise<CoachBrief
   const errors: string[] = [];
   const collectStart = Date.now();
   let garminData: GarminCoachData | null = null;
+  const canUseScopedGarmin = isGarminConfigured() && (userId == null || isOwnerUserRef(userId));
 
   // ── Data source resolution ─────────────────────────────────
   // Priority: Garmin (richer data) → Apple Health (HealthKit sync)
   // Apple Health users sync via POST /health-data/sync from iOS;
   // data lives in apple_health_data table.
-  if (isGarminConfigured()) {
+  if (canUseScopedGarmin) {
     try {
       garminData = await fetchDailyCoachData();
       errors.push(...garminData.errors);
@@ -333,13 +337,14 @@ export async function generateCoachBriefing(userId?: number): Promise<CoachBrief
   // Include id + source so Claude can reference them in structured recommendations
   let todayCalendarEvents: { summary: string; start: string; end: string }[] = [];
   let tomorrowCalendarEvents: { id: string; source: CalendarSource; summary: string; start: string; end: string }[] = [];
-  if (isAnyCalendarConfigured()) {
+  const hasCalendar = userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured();
+  if (hasCalendar) {
     try {
       const today = now();
       const tomorrow = today.plus({ days: 1 });
       const [todayEvents, tomorrowEvents] = await Promise.all([
-        getEvents(today.startOf('day').toISO()!, today.endOf('day').toISO()!),
-        getEvents(tomorrow.startOf('day').toISO()!, tomorrow.endOf('day').toISO()!),
+        getEvents(today.startOf('day').toISO()!, today.endOf('day').toISO()!, userId),
+        getEvents(tomorrow.startOf('day').toISO()!, tomorrow.endOf('day').toISO()!, userId),
       ]);
       todayCalendarEvents = todayEvents.map((e) => ({
         summary: e.summary,
@@ -557,6 +562,7 @@ function extractRecommendations(text: string): {
         newStart: r.newStart ?? null,
         newEnd: r.newEnd ?? null,
         summary: String(r.summary ?? ''),
+        reason: String(r.reason ?? r.summary ?? ''),
       }));
 
     logger.info({ count: recommendations.length }, 'Coach: parsed structured recommendations');

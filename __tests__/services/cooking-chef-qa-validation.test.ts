@@ -79,6 +79,10 @@ describe('QA: Cooking migration schema', () => {
     expect(names).toContain('servings');
     expect(names).toContain('tags');
     expect(names).toContain('source');
+    expect(names).toContain('protein_g');
+    expect(names).toContain('fat_g');
+    expect(names).toContain('carbs_g');
+    expect(names).toContain('calories_kcal');
     expect(names).toContain('created_at');
     expect(names).toContain('updated_at');
   });
@@ -168,6 +172,10 @@ describe('QA: Recipe edge cases', () => {
       servings: 4,
       tags: 'carnivore,grilled,quick',
       source: 'https://example.com/recipe',
+      protein: 35,
+      fat: 22,
+      carbs: 8,
+      calories: 374,
     });
     expect(recipe.instructions).toBe('Grill at 200°C for 15 min');
     expect(recipe.prep_time_min).toBe(10);
@@ -175,6 +183,10 @@ describe('QA: Recipe edge cases', () => {
     expect(recipe.servings).toBe(4);
     expect(recipe.tags).toBe('carnivore,grilled,quick');
     expect(recipe.source).toBe('https://example.com/recipe');
+    expect(recipe.protein).toBe(35);
+    expect(recipe.fat).toBe(22);
+    expect(recipe.carbs).toBe(8);
+    expect(recipe.calories).toBe(374);
   });
 
   it('getRecipes returns empty array for user with no recipes', () => {

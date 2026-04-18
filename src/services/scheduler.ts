@@ -7,8 +7,9 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getDueReminders, markReminderFired, getRemindersForToday } from '../state/reminders';
 import * as msTodo from './microsoft-todo';
-import { getEvents, isAnyCalendarConfigured } from './unified-calendar';
-import { isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
+import type { TodoTask } from './microsoft-todo';
+import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from './unified-calendar';
+import { getUnreadCountForUser, isOutlookMailConfiguredForUser, isOutlookMailConfigured, getUnreadCount, sendEmail } from './outlook-mail';
 import { formatDailyBriefing, DailyBriefingData, escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import { now, startOfDay, endOfDay, startOfWeek, endOfWeek, formatTime, formatDateTime } from '../utils/date-parser';
 // content-discovery.ts still exists for manual /discover but removed from scheduler
@@ -27,7 +28,7 @@ import { flushQueue, getPendingCount } from './invoice-queue';
 import { setLastCoachState } from '../domains/domain-handler';
 import { setLastActiveDomain } from '../bot';
 import { addToConversation } from '../state/conversation';
-import { processAllChannels, seedDefaultChannels } from './channel-learner';
+import { processAllChannelScopes, seedDefaultChannels } from './channel-learner';
 import { sendTopicCandidates, sendWeeklyPackage } from './content-workflow';
 import { runPipelineAgent } from '../agents/pipeline-agent';
 import { runSEOAgent, seedKeywordsIfEmpty } from '../agents/seo-agent';
@@ -41,45 +42,504 @@ import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
 import { runWithContext } from '../utils/request-context';
+import { getOwnerBootstrapTarget, getUserById } from './user-service';
+import { getTaskProviderForUser } from './task-store/task-router';
+import { storeAndPushReport } from './report-document-store';
+
+interface ActiveUserTarget {
+  tenantId: number;
+  telegramId: number | null;
+}
 
 /**
- * Get all active user Telegram IDs from the database.
- * Falls back to config.telegram.allowedUserIds if users table doesn't exist yet.
+ * Get all active canonical tenant ids from the database.
+ * Falls back only to the explicit owner bootstrap target when the users table
+ * is unavailable, instead of fanning out across every legacy allowed Telegram id.
  */
 function getActiveUserIds(): number[] {
   try {
     const db = getDb();
     const rows = db.prepare(
-      "SELECT telegram_id FROM users WHERE status = 'active'"
-    ).all() as { telegram_id: number }[];
-    if (rows.length > 0) return rows.map(r => r.telegram_id);
+      "SELECT id FROM users WHERE status = 'active'"
+    ).all() as { id: number }[];
+    if (rows.length > 0) return rows.map((row) => row.id);
   } catch { /* users table might not exist yet */ }
-  return config.telegram.allowedUserIds;
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget.tenantId] : [];
 }
 
 /**
- * Get only owner-tier user IDs (for admin-only notifications).
+ * Get only owner-tier Telegram IDs (for admin-only notifications).
  */
 function getOwnerUserIds(): number[] {
   try {
     const db = getDb();
     const rows = db.prepare(
       "SELECT telegram_id FROM users WHERE tier = 'owner' AND status = 'active'"
-    ).all() as { telegram_id: number }[];
-    if (rows.length > 0) return rows.map(r => r.telegram_id);
+    ).all() as { telegram_id: number | null }[];
+    if (rows.length > 0) {
+      return rows
+        .map((row) => row.telegram_id)
+        .filter((telegramId): telegramId is number => telegramId != null);
+    }
   } catch { /* users table might not exist yet */ }
-  return config.telegram.allowedUserIds;
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget.telegramId] : [];
 }
 
 export { getActiveUserIds, getOwnerUserIds };
 
-// Track known shared list task IDs — seeded on first run, new IDs trigger notifications
-const knownSharedTaskIds = new Set<string>();
-let sharedListSeeded = false; // first run seeds without notifying
+function getOwnerTenantIds(): number[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT id FROM users WHERE tier = 'owner' AND status = 'active'"
+    ).all() as { id: number }[];
+    if (rows.length > 0) return rows.map((row) => row.id);
+  } catch { /* users table might not exist yet */ }
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget.tenantId] : [];
+}
+
+function getActiveUserTargets(): ActiveUserTarget[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT id, telegram_id FROM users WHERE status = 'active'"
+    ).all() as { id: number; telegram_id: number | null }[];
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        tenantId: row.id,
+        telegramId: row.telegram_id ?? null,
+      }));
+    }
+  } catch { /* users table might not exist yet */ }
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget] : [];
+}
+
+function buildTrainingSectionForSessions(sessions: any[]): string {
+  const todaySessions = sessions.filter((s: any) => {
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    return s.day_of_week?.toLowerCase() === dayNames[new Date().getDay()];
+  });
+
+  if (todaySessions.length === 0) return '';
+
+  const completed = todaySessions.filter((s: any) => s.status === 'completed');
+  const pending = todaySessions.filter((s: any) => s.status !== 'completed' && s.status !== 'skipped');
+
+  if (completed.length === 0 && pending.length === 0) return '';
+
+  let trainingSection = `\n🏋️ <b>Training</b>\n`;
+  for (const s of completed) {
+    trainingSection += `✅ ${s.title} — completed\n`;
+  }
+  for (const s of pending) {
+    trainingSection += `⏳ ${s.title} — not completed\n`;
+  }
+
+  const tomorrowDay = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][(new Date().getDay() + 1) % 7];
+  const tomorrowSessions = sessions.filter((s: any) => s.day_of_week?.toLowerCase() === tomorrowDay);
+  if (tomorrowSessions.length > 0) {
+    trainingSection += `\n📅 Tomorrow: ${tomorrowSessions.map((s: any) => s.title).join(', ')}\n`;
+  }
+
+  return trainingSection;
+}
+
+export async function buildEndOfDaySummaryForUser(userId: number): Promise<{
+  message: string;
+  summary: string;
+  documentJson: Record<string, any>;
+} | null> {
+  const taskProvider = getTaskProviderForUser(userId);
+  const pendingResult = await runWithContext({ source: 'cron:end_of_day', userId }, async () =>
+    taskProvider.getAllPendingTasks(),
+  );
+  if (!pendingResult.success) return null;
+
+  const tasks = pendingResult.data;
+  const todayStart = new Date(startOfDay()).getTime();
+  const todayEnd = new Date(endOfDay()).getTime();
+
+  const dueToday = tasks.filter((t: TodoTask) => {
+    if (!t.dueDateTime) return false;
+    const due = new Date(t.dueDateTime).getTime();
+    return due >= todayStart && due <= todayEnd;
+  });
+
+  const overdue = tasks.filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
+
+  let trainingSection = '';
+  try {
+    const tp = require('./training-plans');
+    const plans = tp.getActivePlans?.(userId) || [];
+    const plan = plans[0] || tp.getActivePlan(userId);
+    if (plan) {
+      const week = tp.getCurrentWeek(plan.id);
+      if (week) {
+        const sessions = tp.getSessionsForWeek(week.id);
+        trainingSection = buildTrainingSectionForSessions(sessions);
+      }
+    }
+  } catch { /* training not available — non-fatal */ }
+
+  if (dueToday.length === 0 && overdue.length === 0 && !trainingSection) {
+    return null;
+  }
+
+  let message = `🌙 <b>End-of-Day Summary</b>\n\n`;
+
+  if (dueToday.length > 0) {
+    message += `📅 <b>Due today (${dueToday.length}):</b>\n`;
+    for (const t of dueToday) {
+      message += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    }
+    message += '\n';
+  }
+
+  if (overdue.length > 0) {
+    message += `⚠️ <b>Overdue (${overdue.length}):</b>\n`;
+    for (const t of overdue) {
+      const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+      message += `• ${escapeHtml(t.title)} — ${daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
+    }
+  }
+
+  if (trainingSection) {
+    message += trainingSection + '\n';
+  }
+
+  const summary =
+    dueToday.length > 0 && overdue.length > 0
+      ? `${dueToday.length} due today · ${overdue.length} overdue`
+      : dueToday.length > 0
+        ? `${dueToday.length} task${dueToday.length === 1 ? '' : 's'} due today`
+        : overdue.length > 0
+          ? `${overdue.length} overdue task${overdue.length === 1 ? '' : 's'}`
+          : 'Training check-in ready';
+
+  return {
+    message: message.trim(),
+    summary,
+    documentJson: {
+      dueToday: dueToday.map((t: TodoTask) => ({ id: t.id, title: t.title, importance: t.importance })),
+      overdue: overdue.map((t: TodoTask) => ({ id: t.id, title: t.title, importance: t.importance })),
+      trainingSummary: trainingSection ? trainingSection.trim() : null,
+    },
+  };
+}
+
+export async function buildDailyBriefingDataForUser(userId: number): Promise<DailyBriefingData> {
+  const today = now();
+  const data: DailyBriefingData = {
+    date: today.toFormat('cccc, LLLL dd'),
+    events: [],
+    highPriorityTasks: [],
+    dueTodayTasks: [],
+    overdueTasks: [],
+    reminders: [],
+    unreadEmails: 0,
+    yesterdayCompleted: 0,
+  };
+
+  if (hasConnectedCalendarForUser(userId)) {
+    try {
+      const events = await getEvents(startOfDay(), endOfDay(), userId);
+      data.events = events.map((e) => ({
+        summary: e.summary,
+        start: e.start,
+        end: e.end,
+      }));
+      const training = events.find((e) =>
+        /gym|train|run|bike|cycling|workout|strength/i.test(e.summary)
+      );
+      if (training) {
+        data.training = `${training.summary} at ${formatTime(training.start)}`;
+      }
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to fetch events for briefing');
+    }
+  }
+
+  try {
+    const taskProvider = getTaskProviderForUser(userId);
+    const [pendingResult, yesterdayResult] = await runWithContext({ source: 'cron:daily_briefing', userId }, async () =>
+      Promise.all([
+        taskProvider.getAllPendingTasks(),
+        taskProvider.getCompletedTasksInRange(
+          startOfDay(now().minus({ days: 1 })),
+          endOfDay(now().minus({ days: 1 }))
+        ),
+      ]),
+    );
+
+    if (pendingResult.success) {
+      const tasks = pendingResult.data;
+      const todayStart = new Date(startOfDay()).getTime();
+      const todayEnd = new Date(endOfDay()).getTime();
+
+      data.highPriorityTasks = tasks
+        .filter((t: TodoTask) => t.importance === 'high')
+        .map((t: TodoTask) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
+
+      data.dueTodayTasks = tasks
+        .filter((t: TodoTask) => {
+          if (!t.dueDateTime) return false;
+          const due = new Date(t.dueDateTime).getTime();
+          return due >= todayStart && due <= todayEnd;
+        })
+        .map((t: TodoTask) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
+
+      const MAX_OVERDUE_DISPLAY = 20;
+      const allOverdue = tasks
+        .filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart)
+        .map((t: TodoTask) => {
+          const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
+          return { title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance, daysLate };
+        })
+        .sort((a: { daysLate: number }, b: { daysLate: number }) => a.daysLate - b.daysLate);
+      data.overdueTasks = allOverdue.slice(0, MAX_OVERDUE_DISPLAY);
+      if (allOverdue.length > MAX_OVERDUE_DISPLAY) {
+        data.overdueExtra = allOverdue.length - MAX_OVERDUE_DISPLAY;
+      }
+    }
+
+    if (yesterdayResult.success) {
+      data.yesterdayCompleted = yesterdayResult.data.length;
+    }
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to fetch tasks for briefing');
+  }
+
+  const reminders = getRemindersForToday(userId);
+  data.reminders = reminders.map((r) => ({
+    message: r.message,
+    time: formatTime(r.remind_at),
+  }));
+
+  if (isOutlookMailConfiguredForUser(userId)) {
+    try {
+      data.unreadEmails = await getUnreadCountForUser(userId);
+    } catch (err) {
+      logger.warn({ err, userId }, 'Daily briefing: failed to fetch Outlook unread count');
+    }
+  }
+
+  if (todayNotifications.length > 0) {
+    data.automatedNotifications = [...todayNotifications];
+  }
+
+  return data;
+}
+
+export async function buildWeeklyReviewPayloadForUser(userId: number): Promise<{
+  message: string;
+  summary: string;
+  documentJson: Record<string, any>;
+}> {
+  let message = `<b>📊 Week in Review</b>\n`;
+  message += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
+
+  const taskProvider = getTaskProviderForUser(userId);
+  const [todoData, calendarEvents] = await Promise.all([
+    Promise.resolve(runWithContext({ source: 'cron:weekly_review', userId }, async () =>
+      Promise.all([
+        taskProvider.getCompletedTasksInRange(startOfWeek(), endOfWeek()),
+        taskProvider.getAllPendingTasks(),
+      ]),
+    )).catch((err: unknown) => {
+      logger.error({ err, userId }, 'Failed to fetch task data for weekly review');
+      return null;
+    }),
+    hasConnectedCalendarForUser(userId)
+      ? getEvents(startOfWeek(), endOfWeek(), userId).catch((err) => {
+          logger.warn({ err, userId }, 'Weekly review: failed to fetch calendar events');
+          return [] as any[];
+        })
+      : Promise.resolve([] as any[]),
+  ]);
+
+  if (todoData) {
+    const [completedResult, pendingResult] = todoData;
+    const completedCount = completedResult.success ? completedResult.data.length : 0;
+    message += `✅ Completed: ${completedCount} tasks\n`;
+
+    if (pendingResult.success) {
+      message += `📋 Still pending: ${pendingResult.data.length} tasks\n`;
+
+      const nowDate = new Date();
+      const overdue = pendingResult.data.filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
+      if (overdue.length > 0) {
+        message += `\n⚠️ Overdue tasks (${overdue.length}):\n`;
+        for (const t of overdue) {
+          message += `- ${escapeHtml(t.title)}`;
+          if (t.dueDateTime) message += ` (was due: ${formatDateTime(t.dueDateTime)})`;
+          message += '\n';
+        }
+        message += '\nWant to reschedule or drop these?';
+      }
+    }
+  }
+
+  if (calendarEvents.length > 0) {
+    message += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
+  }
+
+  const documentJson: Record<string, any> = {
+    weekStart: now().startOf('week').toISO(),
+    weekEnd: now().endOf('week').toISO(),
+    meetingsCount: calendarEvents.length,
+  };
+  if (todoData) {
+    const [completedResult, pendingResult] = todoData;
+    documentJson.completedCount = completedResult.success ? completedResult.data.length : 0;
+    documentJson.pendingCount = pendingResult.success ? pendingResult.data.length : 0;
+    if (pendingResult.success) {
+      const nowDate = new Date();
+      const overdue = pendingResult.data.filter((t: TodoTask) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
+      documentJson.overdueCount = overdue.length;
+      documentJson.overdueTasks = overdue.slice(0, 10).map((t: TodoTask) => ({
+        title: t.title,
+        dueDateTime: t.dueDateTime,
+      }));
+    }
+  }
+
+  return {
+    message: message.trim(),
+    summary: `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd')}`,
+    documentJson,
+  };
+}
+
+// Track known shared list task IDs per tenant — seeded on first run, new IDs trigger notifications
+const knownSharedTaskIdsByUser = new Map<number, Set<string>>();
+const sharedListSeededUsers = new Set<number>();
 
 // Track automated notifications for the morning briefing (cleared daily at midnight)
 const todayNotifications: string[] = [];
 export function getTodayNotifications(): string[] { return todayNotifications; }
+
+export function _resetSchedulerTenantStateForTesting(): void {
+  knownSharedTaskIdsByUser.clear();
+  sharedListSeededUsers.clear();
+  todayNotifications.length = 0;
+}
+
+function getKnownSharedTaskIds(userId: number): Set<string> {
+  const existing = knownSharedTaskIdsByUser.get(userId);
+  if (existing) return existing;
+  const created = new Set<string>();
+  knownSharedTaskIdsByUser.set(userId, created);
+  return created;
+}
+
+export async function buildSharedListNotificationForUser(userId: number): Promise<string | null> {
+  const taskProvider = getTaskProviderForUser(userId) as {
+    getSharedListPendingTasks?: () => Promise<{ success: boolean; data: TodoTask[] }>;
+    isSelfCreatedTask?: (taskId: string) => boolean;
+  };
+
+  if (typeof taskProvider.getSharedListPendingTasks !== 'function') {
+    return null;
+  }
+
+  const result = await runWithContext({ source: 'cron:shared_list', userId }, async () =>
+    taskProvider.getSharedListPendingTasks!(),
+  );
+  if (!result.success) return null;
+
+  const knownSharedTaskIds = getKnownSharedTaskIds(userId);
+  const currentIds = new Set(result.data.map((t) => t.id));
+
+  if (!sharedListSeededUsers.has(userId)) {
+    for (const id of currentIds) knownSharedTaskIds.add(id);
+    sharedListSeededUsers.add(userId);
+    logger.info({ seededCount: currentIds.size, userId }, 'Shared list checker seeded');
+    return null;
+  }
+
+  const newTasks = result.data.filter((t) => {
+    if (knownSharedTaskIds.has(t.id)) return false;
+    if (typeof taskProvider.isSelfCreatedTask === 'function' && taskProvider.isSelfCreatedTask(t.id)) return false;
+    return true;
+  });
+
+  for (const id of currentIds) knownSharedTaskIds.add(id);
+  for (const id of [...knownSharedTaskIds]) {
+    if (!currentIds.has(id)) knownSharedTaskIds.delete(id);
+  }
+
+  if (newTasks.length === 0) return null;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const dueToday = newTasks.filter((t) => t.dueDateTime && t.dueDateTime.slice(0, 10) === todayStr);
+  const otherNew = newTasks.filter((t) => !t.dueDateTime || t.dueDateTime.slice(0, 10) !== todayStr);
+
+  let message = '';
+
+  if (dueToday.length > 0) {
+    message += `📋 <b>Due today</b> (shared)\n`;
+    for (const t of dueToday) {
+      message += `  ▸ ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    }
+  }
+
+  if (otherNew.length > 0) {
+    if (message) message += '\n';
+    message += `🆕 <b>New tasks assigned</b>\n`;
+    for (const t of otherNew.slice(0, 8)) {
+      const due = t.dueDateTime ? ` 📅 ${t.dueDateTime.slice(0, 10)}` : '';
+      message += `  ▸ ${escapeHtml(t.title)}${due} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    }
+    if (otherNew.length > 8) message += `  ... +${otherNew.length - 8} more\n`;
+  }
+
+  return message || null;
+}
+
+export async function buildConflictAlertForUser(userId: number): Promise<string | null> {
+  if (!hasConnectedCalendarForUser(userId)) return null;
+
+  const tomorrow = now().plus({ days: 1 });
+  const events = await getEvents(
+    tomorrow.startOf('day').toISO()!,
+    tomorrow.endOf('day').toISO()!,
+    userId,
+  );
+
+  if (events.length < 2) return null;
+
+  const sorted = [...events].sort((a, b) =>
+    new Date(a.start).getTime() - new Date(b.start).getTime()
+  );
+
+  const conflicts: { a: typeof sorted[0]; b: typeof sorted[0] }[] = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const endA = new Date(sorted[i].end).getTime();
+    const startB = new Date(sorted[i + 1].start).getTime();
+    if (endA > startB) {
+      conflicts.push({ a: sorted[i], b: sorted[i + 1] });
+    }
+  }
+
+  if (conflicts.length === 0) return null;
+
+  let message = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
+  for (const { a, b } of conflicts) {
+    message += `🔴 <b>${escapeHtml(a.summary)}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
+    message += `   overlaps with <b>${escapeHtml(b.summary)}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
+  }
+  message += 'Consider rescheduling one of these events.';
+
+  return message;
+}
 
 export function startScheduler(bot?: any): void {
   // Register sub-skill gating so disabled sub-skills skip their cron jobs
@@ -202,124 +662,31 @@ export function startScheduler(bot?: any): void {
 
   // ── End-of-day task summary (21:00) ────────────────────────────────
   cron.schedule('0 21 * * *', wrapJob('end_of_day', async () => {
-    if (!msTodo.isOutlookTodoConfigured()) return;
+    for (const target of getActiveUserTargets()) {
+      const report = await buildEndOfDaySummaryForUser(target.tenantId);
+      if (!report) continue;
 
-    const pendingResult = await msTodo.getAllPendingTasks();
-    if (!pendingResult.success) return;
-
-    const tasks = pendingResult.data;
-    const todayStart = new Date(startOfDay()).getTime();
-    const todayEnd = new Date(endOfDay()).getTime();
-
-    const dueToday = tasks.filter((t) => {
-      if (!t.dueDateTime) return false;
-      const due = new Date(t.dueDateTime).getTime();
-      return due >= todayStart && due <= todayEnd;
-    });
-
-    const overdue = tasks.filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart);
-
-    // ── Training section ──────────────────────────────────────
-    let trainingSection = '';
-    try {
-      const tp = require('./training-plans');
-      for (const userId of getActiveUserIds()) {
-        const plans = tp.getActivePlans?.(userId) || [];
-        const plan = plans[0] || tp.getActivePlan(userId);
-        if (!plan) continue;
-
-        const week = tp.getCurrentWeek(plan.id);
-        if (!week) continue;
-        const sessions = tp.getSessionsForWeek(week.id);
-        const todaySessions = sessions.filter((s: any) => {
-          const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-          return s.day_of_week?.toLowerCase() === dayNames[new Date().getDay()];
-        });
-
-        if (todaySessions.length > 0) {
-          const completed = todaySessions.filter((s: any) => s.status === 'completed');
-          const pending = todaySessions.filter((s: any) => s.status !== 'completed' && s.status !== 'skipped');
-
-          if (completed.length > 0 || pending.length > 0) {
-            trainingSection += `\n🏋️ <b>Training</b>\n`;
-            for (const s of completed) {
-              trainingSection += `✅ ${s.title} — completed\n`;
-            }
-            for (const s of pending) {
-              trainingSection += `⏳ ${s.title} — not completed\n`;
-            }
-
-            // Tomorrow's session preview
-            const tomorrowDay = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][(new Date().getDay() + 1) % 7];
-            const tomorrowSessions = sessions.filter((s: any) => s.day_of_week?.toLowerCase() === tomorrowDay);
-            if (tomorrowSessions.length > 0) {
-              trainingSection += `\n📅 Tomorrow: ${tomorrowSessions.map((s: any) => s.title).join(', ')}\n`;
-            }
-          }
-        }
-      }
-    } catch { /* training not available — non-fatal */ }
-
-    if (dueToday.length === 0 && overdue.length === 0 && !trainingSection) return;
-
-    let msg = `🌙 <b>End-of-Day Summary</b>\n\n`;
-
-    if (dueToday.length > 0) {
-      msg += `📅 <b>Due today (${dueToday.length}):</b>\n`;
-      for (const t of dueToday) {
-        msg += `• ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
-      }
-      msg += '\n';
-    }
-
-    if (overdue.length > 0) {
-      msg += `⚠️ <b>Overdue (${overdue.length}):</b>\n`;
-      for (const t of overdue) {
-        const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
-        msg += `• ${escapeHtml(t.title)} — ${daysLate}d late <i>[${escapeHtml(t.listName)}]</i>\n`;
-      }
-    }
-
-    // Add training section if available
-    if (trainingSection) {
-      msg += trainingSection + '\n';
-    }
-
-    // Build a short APNs summary separate from the rich Telegram HTML.
-    // iOS pushes should be terse — the user taps through to the app for detail.
-    const pushBody =
-      dueToday.length > 0 && overdue.length > 0
-        ? `${dueToday.length} due today · ${overdue.length} overdue`
-        : dueToday.length > 0
-          ? `${dueToday.length} task${dueToday.length === 1 ? '' : 's'} due today`
-          : `${overdue.length} overdue task${overdue.length === 1 ? '' : 's'}`;
-
-    for (const userId of getActiveUserIds()) {
       // Store durable evening report
       try {
-        const { storeAndPushReport } = require('./report-document-store');
         await storeAndPushReport({
-          userId,
+          userId: target.tenantId,
           type: 'evening_summary' as const,
           title: 'End-of-day summary',
-          summary: pushBody,
-          documentJson: {
-            dueToday: dueToday.map((t: any) => ({ id: t.id, title: t.title, importance: t.importance })),
-            overdue: overdue.map((t: any) => ({ id: t.id, title: t.title, importance: t.importance })),
-          },
+          summary: report.summary,
+          documentJson: report.documentJson,
           sourceJob: 'end_of_day',
           pushCategory: 'evening_summary',
         });
       } catch (err) {
-        logger.debug({ err, userId }, 'Failed to store evening summary report (non-fatal)');
+        logger.debug({ err, userId: target.tenantId }, 'Failed to store evening summary report (non-fatal)');
       }
 
       // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
-      if (telegramLegacyEnabled) {
+      if (telegramLegacyEnabled && target.telegramId) {
         try {
-          await safeSend(userId, msg.trim(), { parse_mode: 'HTML' });
+          await safeSend(target.telegramId, report.message, { parse_mode: 'HTML' });
         } catch (err) {
-          logger.error({ err, userId }, 'Failed to send end-of-day summary');
+          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send end-of-day summary');
         }
       }
     }
@@ -331,8 +698,8 @@ export function startScheduler(bot?: any): void {
     await sendDailyBriefing(bot);
     // sendDailyBriefing sends rich HTML via Telegram. Pair with a terse push
     // per active user — the full briefing stays in the app, push is the nudge.
-    for (const userId of getActiveUserIds()) {
-      await sendPushNotification(userId, {
+    for (const target of getActiveUserTargets()) {
+      await sendPushNotification(target.tenantId, {
         title: 'Good morning',
         body: 'Your daily briefing is ready',
         sound: 'default',
@@ -346,8 +713,8 @@ export function startScheduler(bot?: any): void {
   // ── Weekly review (Friday 17:00) ───────────────────────────────────
   cron.schedule('0 17 * * 5', wrapJob('weekly_review', async () => {
     await sendWeeklyReview(bot);
-    for (const userId of getActiveUserIds()) {
-      await sendPushNotification(userId, {
+    for (const target of getActiveUserTargets()) {
+      await sendPushNotification(target.tenantId, {
         title: 'Weekly review',
         body: 'Your week in review is ready',
         sound: 'default',
@@ -360,65 +727,18 @@ export function startScheduler(bot?: any): void {
 
   // ── Shared list task notifications (every 5 min) ───────────────────
   cron.schedule('*/5 * * * *', wrapJob('shared_list', async () => {
-    if (!msTodo.isOutlookTodoConfigured()) return;
-
     const { hour: currentHour, minute: currentMinute } = now();
     if ((currentHour >= 22 || currentHour < 7) && currentMinute % 15 !== 0) return;
 
-    const result = await msTodo.getSharedListPendingTasks();
-    if (!result.success) return;
+    for (const target of getActiveUserTargets()) {
+      if (!target.telegramId) continue;
+      const message = await buildSharedListNotificationForUser(target.tenantId);
+      if (!message) continue;
 
-    const currentIds = new Set(result.data.map((t) => t.id));
-
-    if (!sharedListSeeded) {
-      for (const id of currentIds) knownSharedTaskIds.add(id);
-      sharedListSeeded = true;
-      logger.info({ seededCount: currentIds.size }, 'Shared list checker seeded');
-      return;
-    }
-
-    const newTasks = result.data.filter((t) => {
-      if (knownSharedTaskIds.has(t.id)) return false;
-      if (msTodo.isSelfCreatedTask(t.id)) return false;
-      return true;
-    });
-
-    for (const id of currentIds) knownSharedTaskIds.add(id);
-    for (const id of knownSharedTaskIds) {
-      if (!currentIds.has(id)) knownSharedTaskIds.delete(id);
-    }
-
-    if (newTasks.length === 0) return;
-
-    // Categorize: due today vs other new tasks
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const dueToday = newTasks.filter((t) => t.dueDateTime && t.dueDateTime.slice(0, 10) === todayStr);
-    const otherNew = newTasks.filter((t) => !t.dueDateTime || t.dueDateTime.slice(0, 10) !== todayStr);
-
-    let msg = '';
-
-    if (dueToday.length > 0) {
-      msg += `📋 <b>Due today</b> (shared)\n`;
-      for (const t of dueToday) {
-        msg += `  ▸ ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
-      }
-    }
-
-    if (otherNew.length > 0) {
-      if (msg) msg += '\n';
-      msg += `🆕 <b>New tasks assigned</b>\n`;
-      for (const t of otherNew.slice(0, 8)) {
-        const due = t.dueDateTime ? ` 📅 ${t.dueDateTime.slice(0, 10)}` : '';
-        msg += `  ▸ ${escapeHtml(t.title)}${due} <i>[${escapeHtml(t.listName)}]</i>\n`;
-      }
-      if (otherNew.length > 8) msg += `  ... +${otherNew.length - 8} more\n`;
-    }
-
-    for (const userId of getActiveUserIds()) {
       try {
-        await safeSend(userId, msg, { parse_mode: 'HTML' });
+        await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId }, 'Failed to send shared list notification');
+        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send shared list notification');
       }
     }
   }), { timezone: tz });
@@ -568,14 +888,16 @@ export function startScheduler(bot?: any): void {
     if (!config.invoices.monthlyCollectionEnabled || !isInvoiceFilingConfigured()) return;
 
     const prev = now().minus({ months: 1 });
-    const result = await collectMonthlyInvoices(undefined, prev.year, prev.month);
-    const notification = formatCollectionNotification(result);
-
-    for (const userId of getOwnerUserIds()) {
+    const ownerTenantIds = getOwnerTenantIds();
+    for (const tenantId of ownerTenantIds) {
+      const result = await collectMonthlyInvoices(tenantId, prev.year, prev.month);
+      const notification = formatCollectionNotification(result);
+      const ownerTelegramId = getUserById(tenantId)?.telegram_id;
+      if (!ownerTelegramId) continue;
       try {
-        await safeSend(userId, notification, { parse_mode: 'HTML' });
+        await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId }, 'Failed to send invoice collection notification');
+        logger.error({ err, userId: ownerTelegramId, tenantId }, 'Failed to send invoice collection notification');
       }
     }
   }), { timezone: tz });
@@ -636,14 +958,16 @@ export function startScheduler(bot?: any): void {
     if (!config.invoices.amazonEnabled || !isAmazonConfigured() || !isInvoiceFilingConfigured()) return;
 
     const prev = now().minus({ months: 1 });
-    const result = await collectAmazonInvoices(prev.year, prev.month);
-    const notification = formatAmazonNotification(result);
-
-    for (const userId of getOwnerUserIds()) {
+    const ownerTenantIds = getOwnerTenantIds();
+    for (const tenantId of ownerTenantIds) {
+      const result = await collectAmazonInvoices(tenantId, prev.year, prev.month);
+      const notification = formatAmazonNotification(result);
+      const ownerTelegramId = getUserById(tenantId)?.telegram_id;
+      if (!ownerTelegramId) continue;
       try {
-        await safeSend(userId, notification, { parse_mode: 'HTML' });
+        await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId }, 'Failed to send Amazon collection notification');
+        logger.error({ err, userId: ownerTelegramId, tenantId }, 'Failed to send Amazon collection notification');
       }
     }
   }), { timezone: tz });
@@ -653,14 +977,16 @@ export function startScheduler(bot?: any): void {
     if (!config.invoices.uberEnabled || !isUberConfigured() || !isInvoiceFilingConfigured()) return;
 
     const prev = now().minus({ months: 1 });
-    const result = await collectUberInvoices(prev.year, prev.month);
-    const notification = formatUberNotification(result);
-
-    for (const userId of getOwnerUserIds()) {
+    const ownerTenantIds = getOwnerTenantIds();
+    for (const tenantId of ownerTenantIds) {
+      const result = await collectUberInvoices(tenantId, prev.year, prev.month);
+      const notification = formatUberNotification(result);
+      const ownerTelegramId = getUserById(tenantId)?.telegram_id;
+      if (!ownerTelegramId) continue;
       try {
-        await safeSend(userId, notification, { parse_mode: 'HTML' });
+        await safeSend(ownerTelegramId, notification, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId }, 'Failed to send Uber collection notification');
+        logger.error({ err, userId: ownerTelegramId, tenantId }, 'Failed to send Uber collection notification');
       }
     }
   }), { timezone: tz });
@@ -702,43 +1028,15 @@ export function startScheduler(bot?: any): void {
 
   // ── Conflict detection (19:30) ─────────────────────────────────────
   cron.schedule('30 19 * * *', wrapJob('conflict_detection', async () => {
-    if (!isAnyCalendarConfigured()) return;
+    for (const target of getActiveUserTargets()) {
+      if (!target.telegramId) continue;
+      const message = await buildConflictAlertForUser(target.tenantId);
+      if (!message) continue;
 
-    const tomorrow = now().plus({ days: 1 });
-    const events = await getEvents(
-      tomorrow.startOf('day').toISO()!,
-      tomorrow.endOf('day').toISO()!
-    );
-
-    if (events.length < 2) return;
-
-    const sorted = [...events].sort((a, b) =>
-      new Date(a.start).getTime() - new Date(b.start).getTime()
-    );
-
-    const conflicts: { a: typeof sorted[0]; b: typeof sorted[0] }[] = [];
-    for (let i = 0; i < sorted.length - 1; i++) {
-      const endA = new Date(sorted[i].end).getTime();
-      const startB = new Date(sorted[i + 1].start).getTime();
-      if (endA > startB) {
-        conflicts.push({ a: sorted[i], b: sorted[i + 1] });
-      }
-    }
-
-    if (conflicts.length === 0) return;
-
-    let msg = `⚠️ <b>Calendar Conflicts Tomorrow</b> (${tomorrow.toFormat('cccc, LLL dd')})\n\n`;
-    for (const { a, b } of conflicts) {
-      msg += `🔴 <b>${escapeHtml(a.summary)}</b> (${formatTime(a.start)}-${formatTime(a.end)})\n`;
-      msg += `   overlaps with <b>${escapeHtml(b.summary)}</b> (${formatTime(b.start)}-${formatTime(b.end)})\n\n`;
-    }
-    msg += 'Consider rescheduling one of these events.';
-
-    for (const userId of getActiveUserIds()) {
       try {
-        await safeSend(userId, msg.trim(), { parse_mode: 'HTML' });
+        await safeSend(target.telegramId, message, { parse_mode: 'HTML' });
       } catch (err) {
-        logger.error({ err, userId }, 'Failed to send conflict alert');
+        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send conflict alert');
       }
     }
   }), { timezone: tz });
@@ -808,9 +1106,12 @@ export function startScheduler(bot?: any): void {
 
       const chunks = splitMessage(result.message);
 
-      // Save coach briefing to triathlon conversation history so follow-up replies have context
-      // Uses userId 0 (default/owner) — scheduler doesn't have per-user context yet
-      addToConversation(0, 'triathlon', 'assistant', result.message);
+      // Save coach briefing to each owner Telegram conversation history so
+      // follow-up replies stay in the same legacy Telegram context without
+      // writing under the old synthetic tenant 0.
+      for (const userId of getOwnerUserIds()) {
+        addToConversation(userId, 'triathlon', 'assistant', result.message);
+      }
 
       for (const userId of getOwnerUserIds()) {
         // Set conversation continuity to triathlon so follow-up replies stay in context
@@ -820,7 +1121,6 @@ export function startScheduler(bot?: any): void {
         // Coach briefing previously had NO APNs push — only Telegram.
         // Now stored as a durable report with structured data.
         try {
-          const { storeAndPushReport } = require('./report-document-store');
           // Fetch readiness for structured metrics in the coach report
           let readinessData: any = null;
           try {
@@ -1028,7 +1328,7 @@ export function startScheduler(bot?: any): void {
 
   // ── Weekly channel re-analysis (Sunday 03:00) ─────────────────
   cron.schedule('0 3 * * 0', wrapJob('channel_relearn', async () => {
-    const result = await processAllChannels();
+    const result = await processAllChannelScopes();
     if (result.analyzed > 0 || result.failed > 0) {
       const msg = `📚 <b>Weekly Channel Re-Learn</b>\n\n` +
         `✅ ${result.analyzed} analyzed · ❌ ${result.failed} failed · 🧠 ${result.synthesized ? 'Knowledge updated' : 'No changes'}`;
@@ -1261,118 +1561,15 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
     if (!_telegramEnabled) return;
     try { await bot.api.sendMessage(userId, msg, opts); } catch {}
   };
-  const today = now();
-  const data: DailyBriefingData = {
-    date: today.toFormat('cccc, LLLL dd'),
-    events: [],
-    highPriorityTasks: [],
-    dueTodayTasks: [],
-    overdueTasks: [],
-    reminders: [],
-    unreadEmails: 0,
-    yesterdayCompleted: 0,
-  };
+  for (const target of getActiveUserTargets()) {
+    const data = await buildDailyBriefingDataForUser(target.tenantId);
+    const msg = formatDailyBriefing(data);
+    const chunks = splitMessage(msg);
 
-  // Calendar events
-  if (isAnyCalendarConfigured()) {
+    // ── Store durable report + push (April 2026) ────────────────────
     try {
-      const events = await getEvents(startOfDay(), endOfDay());
-      data.events = events.map((e) => ({
-        summary: e.summary,
-        start: e.start,
-        end: e.end,
-      }));
-      const training = events.find((e) =>
-        /gym|train|run|bike|cycling|workout|strength/i.test(e.summary)
-      );
-      if (training) {
-        data.training = `${training.summary} at ${formatTime(training.start)}`;
-      }
-    } catch (err) {
-      logger.error({ err }, 'Failed to fetch events for briefing');
-    }
-  }
-
-  // Microsoft To Do tasks
-  if (msTodo.isOutlookTodoConfigured()) {
-    try {
-      const [pendingResult, yesterdayResult] = await Promise.all([
-        msTodo.getAllPendingTasks(),
-        msTodo.getCompletedTasksInRange(
-          startOfDay(now().minus({ days: 1 })),
-          endOfDay(now().minus({ days: 1 }))
-        ),
-      ]);
-
-      if (pendingResult.success) {
-        const tasks = pendingResult.data;
-        const todayStart = new Date(startOfDay()).getTime();
-        const todayEnd = new Date(endOfDay()).getTime();
-
-        data.highPriorityTasks = tasks
-          .filter((t) => t.importance === 'high')
-          .map((t) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
-
-        data.dueTodayTasks = tasks
-          .filter((t) => {
-            if (!t.dueDateTime) return false;
-            const due = new Date(t.dueDateTime).getTime();
-            return due >= todayStart && due <= todayEnd;
-          })
-          .map((t) => ({ title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance }));
-
-        const MAX_OVERDUE_DISPLAY = 20;
-        const allOverdue = tasks
-          .filter((t) => t.dueDateTime && new Date(t.dueDateTime).getTime() < todayStart)
-          .map((t) => {
-            const daysLate = Math.ceil((todayStart - new Date(t.dueDateTime!).getTime()) / (1000 * 60 * 60 * 24));
-            return { title: t.title, listName: t.listName, dueDateTime: t.dueDateTime, importance: t.importance, daysLate };
-          })
-          .sort((a, b) => a.daysLate - b.daysLate);
-        data.overdueTasks = allOverdue.slice(0, MAX_OVERDUE_DISPLAY);
-        if (allOverdue.length > MAX_OVERDUE_DISPLAY) {
-          data.overdueExtra = allOverdue.length - MAX_OVERDUE_DISPLAY;
-        }
-      }
-
-      if (yesterdayResult.success) {
-        data.yesterdayCompleted = yesterdayResult.data.length;
-      }
-    } catch (err) {
-      logger.error({ err }, 'Failed to fetch MS Todo tasks for briefing');
-    }
-  }
-
-  // Use userId 0 (default/owner) for the daily briefing — per-user briefings in v1.1
-  const reminders = getRemindersForToday(0);
-  data.reminders = reminders.map((r) => ({
-    message: r.message,
-    time: formatTime(r.remind_at),
-  }));
-
-  if (isOutlookMailConfigured()) {
-    try {
-      data.unreadEmails = await getUnreadCount();
-    } catch (err) {
-      logger.warn({ err }, 'Daily briefing: failed to fetch Outlook unread count');
-    }
-  }
-
-  if (todayNotifications.length > 0) {
-    data.automatedNotifications = [...todayNotifications];
-  }
-
-  const msg = formatDailyBriefing(data);
-  const chunks = splitMessage(msg);
-
-  // ── Store durable report + push (April 2026) ──────────────────────
-  // Store the structured briefing data as a durable report document
-  // BEFORE the Telegram send. iOS fetches these via GET /api/v1/reports.
-  for (const userId of getActiveUserIds()) {
-    try {
-      const { storeAndPushReport } = require('./report-document-store');
       await storeAndPushReport({
-        userId,
+        userId: target.tenantId,
         type: 'morning_briefing' as const,
         title: `☀️ ${data.date}`,
         summary: `${data.events.length} events, ${data.dueTodayTasks.length + data.overdueTasks.length} tasks`,
@@ -1381,19 +1578,17 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
         pushCategory: 'morning_briefing',
       });
     } catch (err) {
-      logger.debug({ err, userId }, 'Failed to store morning briefing report (non-fatal)');
+      logger.debug({ err, userId: target.tenantId }, 'Failed to store morning briefing report (non-fatal)');
     }
-  }
 
-  // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
-  if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true') {
-    for (const userId of getActiveUserIds()) {
+    // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
+    if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && target.telegramId) {
       try {
         for (const chunk of chunks) {
-          await safeSend(userId, chunk, { parse_mode: 'HTML' });
+          await safeSend(target.telegramId, chunk, { parse_mode: 'HTML' });
         }
       } catch (err) {
-        logger.error({ err, userId }, 'Failed to send daily briefing');
+        logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send daily briefing');
       }
     }
   }
@@ -1405,92 +1600,28 @@ async function sendWeeklyReview(bot?: any): Promise<void> {
     if (!_telegramEnabled) return;
     try { await bot.api.sendMessage(userId, msg, opts); } catch {}
   };
-  let msg = `<b>📊 Week in Review</b>\n`;
-  msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
-
-  const [todoData, calendarEvents] = await Promise.all([
-    msTodo.isOutlookTodoConfigured()
-      ? Promise.all([
-          msTodo.getCompletedTasksInRange(startOfWeek(), endOfWeek()),
-          msTodo.getAllPendingTasks(),
-        ]).catch((err) => { logger.error({ err }, 'Failed to fetch MS Todo data for weekly review'); return null; })
-      : Promise.resolve(null),
-    isAnyCalendarConfigured()
-      ? getEvents(startOfWeek(), endOfWeek()).catch((err) => { logger.warn({ err }, 'Weekly review: failed to fetch calendar events'); return [] as any[]; })
-      : Promise.resolve([] as any[]),
-  ]);
-
-  if (todoData) {
-    const [completedResult, pendingResult] = todoData;
-    const completedCount = completedResult.success ? completedResult.data.length : 0;
-    msg += `✅ Completed: ${completedCount} tasks\n`;
-
-    if (pendingResult.success) {
-      msg += `📋 Still pending: ${pendingResult.data.length} tasks\n`;
-
-      const nowDate = new Date();
-      const overdue = pendingResult.data.filter((t) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
-      if (overdue.length > 0) {
-        msg += `\n⚠️ Overdue tasks (${overdue.length}):\n`;
-        for (const t of overdue) {
-          msg += `- ${escapeHtml(t.title)}`;
-          if (t.dueDateTime) msg += ` (was due: ${formatDateTime(t.dueDateTime)})`;
-          msg += '\n';
-        }
-        msg += '\nWant to reschedule or drop these?';
-      }
-    }
-  } else if (msTodo.isOutlookTodoConfigured()) {
-    msg += '📋 Tasks: unable to fetch\n';
-  }
-
-  if (calendarEvents.length > 0) {
-    msg += `\n📅 Meetings this week: ${calendarEvents.length}\n`;
-  }
-
-  // Build structured weekly data for durable storage
-  const weeklyData: Record<string, any> = {
-    weekStart: now().startOf('week').toISO(),
-    weekEnd: now().endOf('week').toISO(),
-    meetingsCount: calendarEvents.length,
-  };
-  if (todoData) {
-    const [completedResult, pendingResult] = todoData;
-    weeklyData.completedCount = completedResult.success ? completedResult.data.length : 0;
-    weeklyData.pendingCount = pendingResult.success ? pendingResult.data.length : 0;
-    if (pendingResult.success) {
-      const nowDate = new Date();
-      const overdue = pendingResult.data.filter((t: any) => t.dueDateTime && new Date(t.dueDateTime) < nowDate);
-      weeklyData.overdueCount = overdue.length;
-      weeklyData.overdueTasks = overdue.slice(0, 10).map((t: any) => ({
-        title: t.title,
-        dueDateTime: t.dueDateTime,
-      }));
-    }
-  }
-
-  for (const userId of getActiveUserIds()) {
+  for (const target of getActiveUserTargets()) {
+    const payload = await buildWeeklyReviewPayloadForUser(target.tenantId);
     // Store durable report + push
     try {
-      const { storeAndPushReport } = require('./report-document-store');
       await storeAndPushReport({
-        userId,
+        userId: target.tenantId,
         type: 'weekly_review' as const,
         title: '📊 Week in Review',
-        summary: `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd')}`,
-        documentJson: weeklyData,
+        summary: payload.summary,
+        documentJson: payload.documentJson,
         sourceJob: 'weekly_review',
         pushCategory: 'weekly_review',
       });
     } catch (err) {
-      logger.debug({ err, userId }, 'Failed to store weekly review report (non-fatal)');
+      logger.debug({ err, userId: target.tenantId }, 'Failed to store weekly review report (non-fatal)');
     }
 
     // Legacy Telegram delivery (gated)
-    if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true') try {
-      await safeSend(userId, msg, { parse_mode: 'HTML' });
+    if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && target.telegramId) try {
+      await safeSend(target.telegramId, payload.message, { parse_mode: 'HTML' });
     } catch (err) {
-      logger.error({ err, userId }, 'Failed to send weekly review');
+      logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send weekly review');
     }
   }
 }

@@ -42,11 +42,16 @@ export function initDatabase(): Database.Database {
     setConfigProvider(dbConfig);
   } catch { /* config-provider not yet available — non-critical */ }
 
-  // Seed owner user from TELEGRAM_ALLOWED_USER_IDS or OWNER_TELEGRAM_ID
+  // Seed the owner user only from explicit OWNER_TELEGRAM_ID, then verify
+  // the runtime still has an unambiguous owner bootstrap source.
   try {
-    const { seedOwnerUser } = require('./user-service');
+    const { seedOwnerUser, assertOwnerBootstrapReadyForRuntime } = require('./user-service');
     seedOwnerUser();
-  } catch { /* user-service not yet available — non-critical */ }
+    assertOwnerBootstrapReadyForRuntime();
+  } catch (err) {
+    logger.error({ err }, 'Owner bootstrap initialization failed');
+    throw err;
+  }
 
   // OAuth encryption is mandatory: refuse to start without a key, then
   // run a one-shot in-place migration that encrypts any legacy plaintext

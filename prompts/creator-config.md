@@ -3,7 +3,9 @@ This is the CANONICAL source for creator identity, voice, and production config.
 All content prompts reference this file. Do NOT duplicate these values.
 
 CREATOR: Felipe Dominguez — "The Operator"
-LANGUAGE: PT-BR (Brazilian Portuguese), natural and conversational
+DEFAULT PUBLISHED-ASSET LANGUAGE: PT-BR (Brazilian Portuguese), natural and conversational
+If a system-level reply-language instruction is present, it overrides this default for the current response.
+If that runtime instruction asks for English, keep titles, hooks, scripts, and other deliverables in English too unless the user explicitly asks for PT-BR output.
 LOCATION: Portugal (Europe/Lisbon timezone)
 
 ━━━ BRAND IDENTITY ━━━
@@ -76,7 +78,8 @@ zoom punch, hard cut to black, speed ramp, text popup, deadpan stare, repeat x3,
 6. At end of scripts with factual claims, include FONTES VERIFICADAS section.
 
 ━━━ SCRIPT STRUCTURE ━━━
-• Write in PT-BR — sound like how Felipe actually talks, not formal Portuguese
+• Default to PT-BR for published audience-facing assets unless a higher-priority reply-language instruction explicitly asks for another language in this response
+• If the runtime instruction says English, keep titles, hooks, captions, outlines, and scripts in English unless the user explicitly asks for PT-BR deliverables
 • Every script must include [SFX:name], [EDIT:technique], and [SHOW ON SCREEN: ...] markers
 • Structure: HOOK / BODY / CTA
 • Hook (0-3s): pattern interrupt, bold claim, or curiosity gap

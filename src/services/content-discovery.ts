@@ -10,72 +10,63 @@ import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithSearch, isGeminiProviderConfigured } from './gemini-provider';
 import { saveIdea } from '../state/saved-ideas';
 import { isDuplicateIdea } from './content-dedup';
+import { loadCreatorConfig } from '../utils/prompt-loader';
+import { getUserLanguage } from './user-service';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-// Felipe's content niches — edit these to change search focus
+// Broad interest buckets — let the actual topic energy decide the mix.
 const CONTENT_NICHES = [
-  'fitness strength training gym trends',
-  'running cycling endurance sports',
-  'politics news trending debates',
-  'viral reaction content YouTube trends',
-  'self development motivational content',
+  'ai automation product builder tools startup internet culture',
+  'commentary reactions economics politics culture internet debates',
+  'training endurance strength recovery performance lifestyle',
+  'gaming creator internet nostalgia streaming',
+  'business systems entrepreneurship self-direction',
 ];
 
-const DISCOVERY_SYSTEM_PROMPT = `You are Felipe's content discovery engine. Your job: find TODAY's freshest trending topics and turn them into irresistible content ideas tailored to his audience.
+function buildDiscoverySystemPrompt(language: string): string {
+  return `You are the creator's content discovery engine. Use the creator configuration below as the canonical source of audience, worldview, language defaults, and editorial fit.
 
-Felipe's profile:
-- YouTube & Instagram creator
-- Based in Portugal, content primarily in PT-BR (Brazilian Portuguese)
-- Style: authentic, conversational, motivational — shares life experiences and world observations to offer a different perspective on personal growth
-- Formats: YouTube videos (motivational, trending topic conversations, idea discussions, self-development), YouTube Shorts/Reels (30-60s), Instagram carousels/stories
-- Content pillars: Fitness/gym, running, cycling, politics & news reactions, self-development, trending topic commentary
+CREATOR CONFIG:
+${loadCreatorConfig()}
 
-TARGET AUDIENCE:
-- Male, Brazilian, ages 18-35
-- Loves: learning new things, understanding what's happening around him
-- Dislikes: laziness
-- Desires: personal growth
-- Video preferences: motivational content, conversations about trending topics, discussions about ideas and self-development
-- How videos help him: real life experiences + world observations → different perspective on how to develop himself
-- Value proposition: "learn from my mistakes and if you see yourself a bit in me, this will help understand better how you see the world"
+ACTIVE OUTPUT LANGUAGE: ${language}
 
 SEARCH STRATEGY:
-1. Search for trending/viral topics in EACH niche (use 3-5 searches total to stay efficient)
-2. Look for: breaking news, viral social media debates, political hot takes, fitness trends, sports moments, motivational stories, cultural phenomena in Brazil/globally
-3. Cross-reference niches for unique angles (e.g., "what this political debate teaches about discipline" or "running lessons that apply to life growth")
+1. Search for the freshest topics across the interest buckets below, but do NOT force quota-based coverage if a bucket is cold.
+2. Look for: breaking news, creator economy shifts, product launches, culture debates, AI/tooling changes, training/performance stories, gaming/internet moments, and useful self-direction themes.
+3. Follow what is genuinely interesting RIGHT NOW instead of dragging every idea into fitness, politics, or motivational framing.
+4. When a topic is evergreen or practical rather than news-driven, say why it is still worth filming this week without faking virality.
 
 OUTPUT FORMAT — Return EXACTLY this structure:
 
 # Content Ideas — [today's date]
 
-## Idea 1: [Catchy Title in PT-BR]
+## Idea 1: [Catchy Title]
 **Niche:** [which niche]
-**Why now:** [what makes this trending TODAY — cite source]
+**Why now:** [what makes this relevant THIS WEEK — cite source when timely]
 **Format:** [YouTube / Reel / Carousel / Short]
-**Hook (first 3s):** [the exact opening line/visual in PT-BR]
+**Hook (first 3s):** [the exact opening line/visual]
 **Angle:** [what makes Felipe's take unique]
 **Key points:** [3-5 bullet points for the content]
-**Title options:** [3 SEO-friendly title variations in PT-BR]
+**Title options:** [3 SEO-friendly title variations]
 **Estimated virality:** [Low / Medium / High — and why]
 
-[Repeat for each idea — aim for 8-10 ideas across all niches]
+[Repeat for each idea — aim for 8-10 ideas]
 
 ## Quick-Fire Shorts (bonus)
 [3-5 one-liner Short/Reel ideas that can be filmed in <5 minutes]
 
 ## Cross-Niche Mashup
-[1-2 ideas that combine multiple niches in a creative way]
+[1-2 ideas that combine multiple interests in a creative way]
 
 RULES:
-- Every idea must be tied to something CURRENT — no evergreen filler
-- Be specific: "Lula's new economic policy reaction" not "politics in Brazil"
-- Hooks must be scroll-stopping — think pattern interrupt, curiosity gap, bold claim
-- Prioritize ideas with HIGH shareability and comment potential among Brazilian men (18-35)
-- Include at least 2 ideas per major niche (fitness, news/politics, self-development)
-- Flag if any topic is time-sensitive (will expire in 24-48h)
-- ALL titles and hooks should be in PT-BR (Brazilian Portuguese) — the audience speaks Portuguese
-- Think about what would make a Brazilian man (18-35) stop scrolling and watch`;
+- Every idea must be tied to something current, newly useful, or clearly relevant now — no generic filler.
+- Hooks must be scroll-stopping and specific.
+- Keep titles and hooks in the active output language above.
+- Stay grounded in the topic; do NOT inject training/politics/worldview just because those exist in the broader creator profile.
+- Prefer ideas with comment potential, shareability, or strong practical usefulness.`;
+}
 
 export interface ContentDiscoveryResult {
   ideas: string[];       // just the titles/headers
@@ -88,6 +79,8 @@ export async function runContentDiscovery(userId?: number): Promise<ContentDisco
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
   const dayName = today.toFormat('cccc');
+  const targetLanguage = userId ? getUserLanguage(userId) : 'pt-BR';
+  const systemPrompt = buildDiscoverySystemPrompt(targetLanguage);
 
   const userMessage = `Today is ${dayName}, ${today.toFormat('LLLL dd, yyyy')}.
 
@@ -95,7 +88,7 @@ Search for what's trending RIGHT NOW in these niches and generate content ideas:
 ${CONTENT_NICHES.map((n, i) => `${i + 1}. ${n}`).join('\n')}
 
 Focus on what happened TODAY or in the last 24-48 hours. I need ideas I can film/create THIS WEEK.
-Remember: my audience is Brazilian men (18-35) who want growth and hate laziness. Titles and hooks in PT-BR.`;
+Remember: follow the creator configuration for audience fit, but keep the ideas anchored to the real topic instead of forcing an old niche. Titles and hooks in ${targetLanguage}.`;
 
   logger.info('Starting daily content discovery with web search...');
 
@@ -115,7 +108,7 @@ Remember: my audience is Brazilian men (18-35) who want growth and hate laziness
   if (isGeminiProviderConfigured()) {
     try {
       const { text, sources } = await completeOneShotWithSearch(
-        DISCOVERY_SYSTEM_PROMPT,
+        systemPrompt,
         userMessage,
         'content_discovery',
         { maxTokens: 4096, temperature: 0.7 },
@@ -135,7 +128,7 @@ Remember: my audience is Brazilian men (18-35) who want growth and hate laziness
     // Anthropic fallback — preserves the pause_turn handling because
     // Claude's web_search_* tool can return pause_turn mid-search.
     const cachedSystem: Anthropic.TextBlockParam[] = [
-      { type: 'text', text: DISCOVERY_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
     ];
 
     const response = await trackedCreate(client, {

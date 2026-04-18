@@ -23,6 +23,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -38,6 +39,15 @@ interface AuditRowOut {
 
 export function auditTrailRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'audit_trail_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/audit-trail/me

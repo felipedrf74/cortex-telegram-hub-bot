@@ -3,27 +3,26 @@
 /**
  * Domain Provider Router — determines which AI provider handles each domain.
  *
- * Strategy (April 2026 revision — Gemini-first across the board):
- *   - secretary → Gemini 3 Flash (multi-turn tool-use, cheapest production viable path)
+ * Strategy (April 2026 revision — mixed primary routing):
+ *   - secretary → OpenAI GPT-5.4 nano (best low-cost tool-use path)
  *   - triathlon → Gemini 3 Flash
  *   - content  → Gemini 3 Flash
  *   - finance  → Gemini 3 Flash
  *   - cooking  → Gemini 3 Flash
  *
- * No Claude models are used as PRIMARY for any domain. Anthropic is still
- * wired in as the fallback — if Gemini is down or returns an error the
- * provider-fallback layer transparently degrades to Haiku 4.5 so the user
- * never sees a hard failure. Anthropic being fallback-only satisfies the
- * "no Claude as main model" constraint while keeping the safety net.
+ * Anthropic is fallback-only — if the primary provider errors the
+ * provider-fallback layer transparently degrades to Anthropic Haiku so the
+ * user never sees a hard failure.
  *
  * Cost rationale (per MTK):
- *   Gemini 3 Flash: $0.50 / $3  — primary for every domain
+ *   Gemini 3 Flash: $0.50 / $3  — primary for non-secretary domains
+ *   GPT-5.4 nano:   $0.20 / $1.25 — primary for secretary
  *   Haiku 4.5:      $1.00 / $5  — fallback across every domain
- *   Sonnet 4.6:     $3.00 / $15 — NO LONGER USED anywhere in the router
+ *   Sonnet 4.6:     $3.00 / $15 — not used in this router
  *
- * Feature flag: GEMINI_ROUTING_ENABLED is a kill-switch — when explicitly
- * set to 'false' the router will route everything back to anthropic as an
- * emergency escape hatch. Default behavior is Gemini-everywhere.
+ * Feature flag: GEMINI_ROUTING_ENABLED is a kill-switch for the Gemini-backed
+ * domains. When explicitly set to 'false' they route back to Anthropic as an
+ * emergency escape hatch. Secretary remains OpenAI unless its own override is disabled.
  */
 
 import type { DomainName } from '../domains/types';
@@ -54,9 +53,7 @@ const DOMAIN_FALLBACK_MAP: Record<string, ProviderName> = {
 
 // ─── Feature Flag ───────────────────────────────────────────────────
 
-// Gemini routing is ENABLED by default — this matches the project's intended
-// cost model: secretary stays on Claude (tool-use quality), everything else
-// moves to Gemini (6x cheaper). Opt out by setting GEMINI_ROUTING_ENABLED=false
+// Gemini routing is ENABLED by default for non-secretary domains. Opt out by setting GEMINI_ROUTING_ENABLED=false
 // in the environment, or toggle via the portal UI (persists to kv_store).
 //
 // Safe default: if GEMINI_API_KEY is not set, provider-registry returns null
@@ -64,17 +61,14 @@ const DOMAIN_FALLBACK_MAP: Record<string, ProviderName> = {
 // enabling this flag on a Gemini-less install is a no-op rather than a crash.
 let _geminiRoutingEnabled = true;
 
-// Default per-domain mapping — every domain (including secretary) routes
-// through Gemini by default. This matches DOMAIN_PROVIDER_MAP and is the
-// intended production config as of the "no Claude as main" revision.
-const DEFAULT_GEMINI_DOMAINS = ['secretary', 'triathlon', 'content', 'finance', 'cooking'];
+// Domains controlled by the Gemini routing flagset. Secretary is not part of
+// this set because its primary provider is OpenAI.
+const DEFAULT_GEMINI_DOMAINS = ['triathlon', 'content', 'finance', 'cooking'];
 let _geminiDomains = new Set<string>(DEFAULT_GEMINI_DOMAINS);
 
-// Historical toggle — used to be an opt-in for routing secretary through
-// Gemini during evaluation runs. Now that secretary routes through Gemini
-// by default, this flag defaults to `true` and is kept as a kill-switch:
-// set GEMINI_INCLUDE_SECRETARY=false (or flip the portal toggle) to force
-// secretary back onto Anthropic as an emergency escape hatch.
+// Historical toggle — now repurposed as the secretary primary-provider
+// safeguard. When true (default), secretary stays on OpenAI. When false,
+// secretary degrades straight to Anthropic as an emergency escape hatch.
 let _geminiIncludeSecretary = true;
 
 /** Initialize from environment or kv_store */
@@ -87,7 +81,7 @@ export function initDomainRouting(): void {
     _geminiRoutingEnabled = true;
   }
 
-  // Env override for the include-secretary flag (off by default)
+  // Env override for the secretary primary-provider safeguard
   if (process.env.GEMINI_INCLUDE_SECRETARY === 'true') {
     _geminiIncludeSecretary = true;
   } else if (process.env.GEMINI_INCLUDE_SECRETARY === 'false') {
@@ -163,12 +157,10 @@ export function isGeminiIncludeSecretaryEnabled(): boolean {
 /**
  * Get the primary AI provider for a domain.
  *
- * Default routing is Gemini-everywhere. The two escape hatches for going
- * back to Anthropic are both explicit operator actions:
+ * Non-secretary domains are Gemini-first. The Anthropic escape hatches are:
  *   1. GEMINI_ROUTING_ENABLED=false    — global kill-switch
  *   2. GEMINI_INCLUDE_SECRETARY=false  — secretary-only kill-switch
- * Both default to the Gemini path; Anthropic is only reachable via runtime
- * overrides, not as the resting-state default.
+ * Anthropic is only reachable via runtime overrides, not as the resting-state default.
  */
 export function getProviderForDomain(domain: DomainName): ProviderName {
   // Global kill-switch — if Gemini routing is disabled entirely, fall
@@ -204,7 +196,7 @@ export function getFallbackForDomain(domain: DomainName): ProviderName {
  *
  * Returns one row per domain with the resolved primary provider, fallback
  * provider, default provider (what the code says it should be), and a flag
- * indicating whether Gemini is currently enabled for that domain. The portal
+ * indicating whether Gemini is currently the active primary for that domain. The portal
  * uses this to render the routing table and the per-domain toggles.
  */
 export function getDomainProviderConfig(): Array<{
@@ -218,15 +210,11 @@ export function getDomainProviderConfig(): Array<{
   const domains = ['secretary', 'triathlon', 'content', 'finance', 'cooking'];
   return domains.map(domain => {
     const isSecretary = domain === 'secretary';
-    // Secretary has its own kill-switch; other domains use the per-domain
-    // allow-list. Either way the master flag (_geminiRoutingEnabled) must
-    // be true for the row to show as "gemini-enabled" in the portal.
-    const geminiEnabled = isSecretary
-      ? (_geminiRoutingEnabled && _geminiIncludeSecretary)
-      : (_geminiRoutingEnabled && (_geminiDomains.size === 0 || _geminiDomains.has(domain)));
+    const resolvedProvider = getProviderForDomain(domain as DomainName);
+    const geminiEnabled = resolvedProvider === 'gemini';
     return {
       domain,
-      provider: getProviderForDomain(domain as DomainName),
+      provider: resolvedProvider,
       fallback: getFallbackForDomain(domain as DomainName),
       defaultProvider: DOMAIN_PROVIDER_MAP[domain] || 'anthropic',
       geminiEnabled,

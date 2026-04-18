@@ -9,7 +9,7 @@
  * - Conversation history management
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ─── Mock all dependencies ──────────────────────────────────────────
 
@@ -39,24 +39,55 @@ vi.mock('../../src/state/reminders', () => ({
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
-  isAnyCalendarConfigured: vi.fn().mockReturnValue(false),
+  hasConnectedCalendarForUser: vi.fn().mockReturnValue(false),
   getEvents: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../src/services/outlook-mail', () => ({
-  isOutlookMailConfigured: vi.fn().mockReturnValue(false),
-  getUnreadCount: vi.fn().mockResolvedValue(0),
+  isOutlookMailConfiguredForUser: vi.fn().mockReturnValue(false),
+  getUnreadCountForUser: vi.fn().mockResolvedValue(0),
+}));
+vi.mock('../../src/services/unified-mail-pressure', () => ({
+  isAnyMailConfiguredForUser: vi.fn().mockReturnValue(false),
+  getUnreadMailSummaryForUser: vi.fn().mockResolvedValue({
+    configuredProviders: [],
+    totalUnread: 0,
+    outlookUnread: null,
+    gmailUnread: null,
+  }),
 }));
 
-vi.mock('../../src/services/microsoft-todo', () => ({
-  isOutlookTodoConfigured: vi.fn().mockReturnValue(false),
-  getAllPendingTasks: vi.fn().mockResolvedValue({ success: true, data: [] }),
+const mockGetTaskProviderForUser = vi.fn();
+const mockTaskGetAllPendingTasks = vi.fn();
+vi.mock('../../src/services/task-store/task-router', () => ({
+  getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
 vi.mock('../../src/services/garmin', () => ({
-  isGarminConfigured: vi.fn().mockReturnValue(false),
-  getActivitiesByDate: vi.fn().mockResolvedValue([]),
-  getBodyBatteryEvents: vi.fn().mockResolvedValue(null),
+  isGarminConfiguredForUser: vi.fn().mockReturnValue(false),
+  getActivitiesByDateForUser: vi.fn().mockResolvedValue([]),
+  getBodyBatteryEventsForUser: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('../../src/services/daily-brief-orchestrator', () => ({
+  composeDailyBrief: vi.fn().mockResolvedValue({
+    coordination: {
+      topPriority: null,
+      executionOrder: [],
+      watchouts: [],
+      handoffs: [],
+    },
+    day: {
+      secretary: {
+        priorityNote: null,
+        sequence: [],
+        tradeoffNote: null,
+      },
+    },
+  }),
+}));
+vi.mock('../../src/services/shared-decision-context', () => ({
+  buildSharedDecisionContext: vi.fn().mockResolvedValue(''),
+  buildSharedDecisionContracts: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../src/state/shared-memory', () => ({
@@ -87,15 +118,20 @@ vi.mock('../../src/utils/logger', () => ({
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { handleSecretary } from '../../src/domains/secretary';
+import { handleSecretary, _resetStateContextCacheForTesting } from '../../src/domains/secretary';
 import { callDomain, continueWithToolResults } from '../../src/services/anthropic';
 import { addToConversation } from '../../src/state/conversation';
 import { executeToolCall } from '../../src/services/tool-executor';
 import { now } from '../../src/utils/date-parser';
-import { isOutlookTodoConfigured, getAllPendingTasks } from '../../src/services/microsoft-todo';
-import { isAnyCalendarConfigured, getEvents } from '../../src/services/unified-calendar';
-import { isOutlookMailConfigured, getUnreadCount } from '../../src/services/outlook-mail';
+import { hasConnectedCalendarForUser, getEvents } from '../../src/services/unified-calendar';
+import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../src/services/unified-mail-pressure';
 import { getRemindersForToday } from '../../src/state/reminders';
+import { isSubmoduleEnabled } from '../../src/skills/registry';
+import { composeDailyBrief } from '../../src/services/daily-brief-orchestrator';
+import {
+  buildSharedDecisionContext,
+  buildSharedDecisionContracts,
+} from '../../src/services/shared-decision-context';
 
 const mockCallDomain = vi.mocked(callDomain);
 const mockContinue = vi.mocked(continueWithToolResults);
@@ -109,14 +145,63 @@ let fakeTime = Date.now();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetStateContextCacheForTesting();
+  mockCallDomain.mockReset();
+  mockContinue.mockReset();
+  mockExecuteTool.mockReset();
+  mockProviderCall.mockReset();
+  mockProviderContinue.mockReset();
+  mockGetActiveProvider.mockReset();
+  mockEnsureActiveProvider.mockReset();
   fakeTime += 60_000; // 60s jump — well past the 30s cache TTL
   vi.spyOn(Date, 'now').mockReturnValue(fakeTime);
+  process.env.ANTHROPIC_ENABLED = 'true';
+  process.env.ANTHROPIC_API_KEY = 'test-key';
   mockGetActiveProvider.mockReturnValue(null);
   mockEnsureActiveProvider.mockReturnValue(null);
+  vi.mocked(isSubmoduleEnabled).mockReturnValue(true);
+  mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] } as any);
+  mockGetTaskProviderForUser.mockReturnValue({
+    getAllPendingTasks: mockTaskGetAllPendingTasks,
+  });
+  vi.mocked(hasConnectedCalendarForUser).mockReturnValue(false);
+  vi.mocked(getEvents).mockResolvedValue([] as any);
+  vi.mocked(isAnyMailConfiguredForUser).mockReturnValue(false);
+  vi.mocked(getUnreadMailSummaryForUser).mockResolvedValue({
+    configuredProviders: [],
+    totalUnread: 0,
+    outlookUnread: null,
+    gmailUnread: null,
+  });
+  vi.mocked(composeDailyBrief).mockResolvedValue({
+    coordination: {
+      topPriority: null,
+      executionOrder: [],
+      watchouts: [],
+      handoffs: [],
+    },
+    day: {
+      secretary: {
+        priorityNote: null,
+        sequence: [],
+        tradeoffNote: null,
+      },
+    },
+  } as any);
+  vi.mocked(buildSharedDecisionContext).mockResolvedValue('');
+  vi.mocked(buildSharedDecisionContracts).mockResolvedValue({});
+  vi.mocked(getRemindersForToday).mockReturnValue([] as any);
   vi.mocked(now).mockReturnValue({
     toFormat: vi.fn().mockReturnValue('Monday, March 30 2026, 10:00'),
     minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-03-27') }),
   } as any);
+});
+
+afterEach(() => {
+  _resetStateContextCacheForTesting();
+  vi.restoreAllMocks();
+  delete process.env.ANTHROPIC_ENABLED;
+  delete process.env.ANTHROPIC_API_KEY;
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -129,7 +214,7 @@ describe('handleSecretary', () => {
       stopReason: 'end_turn',
     } as any);
 
-    const result = await handleSecretary('What do I have today?');
+    const result = await handleSecretary('What do I have today?', 42);
     expect(result).toEqual({ text: 'You have 3 tasks today.', domain: 'secretary' });
     expect(mockCallDomain).toHaveBeenCalledOnce();
   });
@@ -166,12 +251,25 @@ describe('handleSecretary', () => {
 
     expect(mockCallDomain).toHaveBeenCalledWith(
       'secretary',
-      expect.any(Array),
+      undefined,
       'Hello',
       expect.any(String),
       undefined,
       77,
     );
+  });
+
+  it('returns an honest unavailable response when routing stays unavailable and Anthropic direct fallback is disabled', async () => {
+    delete process.env.ANTHROPIC_ENABLED;
+    delete process.env.ANTHROPIC_API_KEY;
+
+    const result = await handleSecretary('Organiza o meu dia', 77);
+
+    expect(result).toEqual({
+      text: 'O chat com IA está temporariamente indisponível neste ambiente porque não há nenhum provedor configurado. As visualizações diretas e outras ações determinísticas continuam funcionando normalmente.',
+      domain: 'secretary',
+    });
+    expect(mockCallDomain).not.toHaveBeenCalled();
   });
 
   it('stores user and assistant messages in conversation', async () => {
@@ -186,9 +284,9 @@ describe('handleSecretary', () => {
     // for. "Triage my emails today" → no fastpath match → AI path runs
     // → mocked callDomain returns 'Done.' → addToConversation gets the
     // raw assistant text (no fastpath wrapper).
-    await handleSecretary('Triage my email backlog');
-    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'user', 'Triage my email backlog');
-    expect(addToConversation).toHaveBeenCalledWith(expect.any(Number), 'secretary', 'assistant', 'Done.');
+    await handleSecretary('Triage my email backlog', 42);
+    expect(addToConversation).toHaveBeenCalledWith(42, 'secretary', 'user', 'Triage my email backlog');
+    expect(addToConversation).toHaveBeenCalledWith(42, 'secretary', 'assistant', 'Done.');
   });
 
   it('executes tool calls and returns final text', async () => {
@@ -204,9 +302,9 @@ describe('handleSecretary', () => {
       stopReason: 'end_turn',
     } as any);
 
-    const result = await handleSecretary('Show my lists');
+    const result = await handleSecretary('Show my lists', 42);
     expect(result.text).toBe('You have no task lists.');
-    expect(mockExecuteTool).toHaveBeenCalledWith('ms_todo_get_lists', {}, 0);
+    expect(mockExecuteTool).toHaveBeenCalledWith('ms_todo_get_lists', {}, 42);
   });
 
   it('truncates tool results larger than 2000 characters', async () => {
@@ -226,7 +324,7 @@ describe('handleSecretary', () => {
       stopReason: 'end_turn',
     } as any);
 
-    await handleSecretary('Search emails');
+    await handleSecretary('Search emails', 42);
 
     // Verify continueWithToolResults received truncated content
     const continueArgs = mockContinue.mock.calls[0];
@@ -272,7 +370,7 @@ describe('handleSecretary', () => {
       text: 'Still working...', toolCalls: [toolCall], stopReason: 'tool_use',
     } as any);
 
-    await handleSecretary('Complex task');
+    await handleSecretary('Complex task', 42);
     expect(mockContinue).toHaveBeenCalledTimes(4);
   });
 
@@ -290,7 +388,7 @@ describe('handleSecretary', () => {
       text: 'Here are your tasks.', toolCalls: [], stopReason: 'end_turn',
     } as any);
 
-    await handleSecretary('Get tasks');
+    await handleSecretary('Get tasks', 42);
 
     const storedCall = vi.mocked(addToConversation).mock.calls.find(
       (c) => c[2] === 'assistant',
@@ -307,15 +405,15 @@ describe('Secretary state context', () => {
   it('includes current date in context', async () => {
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
 
-    await handleSecretary('Hi');
+    await handleSecretary('Hi', 42);
 
-    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+    expect(mockCallDomain).toHaveBeenCalled();
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
     expect(stateCtx).toContain('Monday, March 30 2026');
   });
 
   it('includes pending todo summary when configured', async () => {
-    vi.mocked(isOutlookTodoConfigured).mockReturnValue(true);
-    vi.mocked(getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [
         { id: 't1', listId: 'l1', listName: 'Work', title: 'Deploy v5', importance: 'high', status: 'notStarted', dueDateTime: '2026-03-29T09:00:00', isReminderOn: false, createdDateTime: '2026-03-28' },
@@ -323,35 +421,45 @@ describe('Secretary state context', () => {
     } as any);
 
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
-    await handleSecretary('Check tasks');
+    await handleSecretary('Check tasks', 42);
 
-    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+    expect(mockCallDomain).toHaveBeenCalled();
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
     expect(stateCtx).toContain('To Do: 1 pending');
     expect(stateCtx).toContain('1 overdue');
     expect(stateCtx).toContain('Work(1)');
   });
 
   it('includes unread email count when Outlook is configured', async () => {
-    vi.mocked(isOutlookMailConfigured).mockReturnValue(true);
-    vi.mocked(getUnreadCount).mockResolvedValue(7);
+    vi.mocked(isAnyMailConfiguredForUser).mockReturnValue(true);
+    vi.mocked(getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['outlook', 'gmail'],
+      totalUnread: 7,
+      outlookUnread: 4,
+      gmailUnread: 3,
+    });
 
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
-    await handleSecretary('Check inbox');
+    await handleSecretary('Check inbox', 42);
 
-    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
-    expect(stateCtx).toContain('Outlook: 7 unread');
+    expect(mockCallDomain).toHaveBeenCalled();
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
+    expect(stateCtx).toContain('Mail: 7 unread');
+    expect(stateCtx).toContain('Outlook 4');
+    expect(stateCtx).toContain('Gmail 3');
   });
 
   it('includes calendar events when configured', async () => {
-    vi.mocked(isAnyCalendarConfigured).mockReturnValue(true);
+    vi.mocked(hasConnectedCalendarForUser).mockReturnValue(true);
     vi.mocked(getEvents).mockResolvedValue([
       { summary: 'Team standup', start: '2026-03-30T09:00:00', end: '2026-03-30T09:30:00' },
     ] as any);
 
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
-    await handleSecretary('My calendar');
+    await handleSecretary('My calendar', 42);
 
-    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+    expect(mockCallDomain).toHaveBeenCalled();
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
     expect(stateCtx).toContain('Calendar today (1)');
     expect(stateCtx).toContain('Team standup');
   });
@@ -362,23 +470,72 @@ describe('Secretary state context', () => {
     ] as any);
 
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
-    await handleSecretary('Reminders');
+    await handleSecretary('Reminders', 42);
 
-    const stateCtx = mockCallDomain.mock.calls[0][3] as string;
+    expect(mockCallDomain).toHaveBeenCalled();
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
     expect(stateCtx).toContain('Reminders today');
     expect(stateCtx).toContain('Call dentist');
   });
 
   it('gracefully handles API errors without crashing', async () => {
-    vi.mocked(isOutlookTodoConfigured).mockReturnValue(true);
-    vi.mocked(getAllPendingTasks).mockRejectedValue(new Error('API timeout'));
-    vi.mocked(isAnyCalendarConfigured).mockReturnValue(true);
+    mockTaskGetAllPendingTasks.mockRejectedValue(new Error('API timeout'));
+    vi.mocked(hasConnectedCalendarForUser).mockReturnValue(true);
     vi.mocked(getEvents).mockRejectedValue(new Error('Token expired'));
 
     mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
 
     // Should not throw — all external calls have .catch() guards
-    const result = await handleSecretary('Overview');
+    const result = await handleSecretary('Overview', 42);
     expect(result.text).toBe('OK');
+  });
+
+  it('includes planner coordination and typed contracts in the state context', async () => {
+    vi.mocked(composeDailyBrief).mockResolvedValue({
+      coordination: {
+        topPriority: 'Protect the key session before adding admin.',
+        executionOrder: ['Key session', 'Fueling coverage', 'Sponsor review'],
+        watchouts: ['Inbox pressure is elevated'],
+        handoffs: ['Content should follow training'],
+      },
+      day: {
+        secretary: {
+          priorityNote: 'Protect the key session before adding admin.',
+          sequence: ['Key session', 'Fueling coverage', 'Sponsor review'],
+          tradeoffNote: 'Move admin first, not training.',
+        },
+      },
+    } as any);
+    vi.mocked(buildSharedDecisionContracts).mockResolvedValue({
+      training: {
+        nonNegotiables: ['Keep the tempo run protected.'],
+        preferredWindows: ['Sequence the day around the tempo run.'],
+        fallbackIfDeferred: ['Cut optional admin before moving the session.'],
+        budgetMode: null,
+        publishDeadline: null,
+        notes: [],
+      },
+    });
+
+    mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
+    await handleSecretary('What should I prioritize today?', 42);
+
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
+    expect(stateCtx).toContain('[PLANNER COORDINATION]');
+    expect(stateCtx).toContain('Top priority: Protect the key session before adding admin.');
+    expect(stateCtx).toContain('<shared_decision_contracts domain="secretary">');
+    expect(stateCtx).toContain('training: nonNegotiables=Keep the tempo run protected.');
+  });
+
+  it('does not persist conversation or run fastpath state reads when no user scope is provided', async () => {
+    mockCallDomain.mockResolvedValue({
+      text: 'Anonymous reply.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+    } as any);
+    await handleSecretary('What do I have today?');
+
+    expect(addToConversation).not.toHaveBeenCalled();
+    expect(mockTaskGetAllPendingTasks).not.toHaveBeenCalled();
   });
 });

@@ -14,11 +14,11 @@
 import { Bot, Context, InlineKeyboard } from 'grammy';
 import { config } from '../../config';
 import { storeCallback } from '../../utils/callback-store';
-import * as msTodo from '../../services/microsoft-todo';
 import { enqueue } from '../shared-state';
 import {
   buildTaskListKeyboard, handleUndone, handleDeleteTask,
   handleTodoSummary, handleStatus, handleDayOverview, handleWeekOverview,
+  getTelegramTaskScope, replyTaskProviderUnavailable,
 } from './secretary-helpers';
 import { handleDomainMessage } from '../message';
 import {
@@ -30,6 +30,15 @@ import { getUserLanguage } from '../../services/user-service';
 import { t } from '../../utils/i18n';
 import { logger } from '../../utils/logger';
 import type { DomainHandlerFn } from '../photo';
+
+async function requireTelegramTaskScope(ctx: Context) {
+  const taskScope = getTelegramTaskScope(ctx);
+  if (!taskScope) {
+    await replyTaskProviderUnavailable(ctx);
+    return null;
+  }
+  return taskScope;
+}
 
 /**
  * Register all secretary / MS ToDo command handlers on the bot.
@@ -46,12 +55,10 @@ export function registerSecretaryCommands(
 
   bot.command('lists', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
-      const result = await msTodo.getLists();
+      const result = await taskScope.provider.getLists();
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch lists');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -74,20 +81,18 @@ export function registerSecretaryCommands(
 
   bot.command('tasks', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
       const listName = ctx.match?.trim() || config.todo.defaultList;
-      const list = await msTodo.findListByName(listName);
+      const list = await taskScope.provider.findListByName(listName);
       if (!list) {
         await ctx.reply(`⚠️ List "${escapeHtml(listName)}" not found. Use /lists to see available lists.`, { parse_mode: 'HTML' });
         return;
       }
 
-      const result = await msTodo.getTasks(list.id, list.displayName, { status: 'notStarted' });
+      const result = await taskScope.provider.getTasks(list.id, list.displayName, { status: 'notStarted' });
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -106,10 +111,8 @@ export function registerSecretaryCommands(
 
   bot.command('newtask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const text = ctx.match?.trim();
       if (!text) {
         await ctx.reply('Usage: /newtask Buy coffee\nor: /newtask Work | Review PR #42');
@@ -127,13 +130,13 @@ export function registerSecretaryCommands(
         title = parts[1].trim();
       }
 
-      const list = await msTodo.findListByName(listName);
+      const list = await taskScope.provider.findListByName(listName);
       if (!list) {
         await ctx.reply(`⚠️ List "${escapeHtml(listName)}" not found. Use /lists to see available lists.`, { parse_mode: 'HTML' });
         return;
       }
 
-      const result = await msTodo.createTask(list.id, list.displayName, { title });
+      const result = await taskScope.provider.createTask(list.id, list.displayName, { title });
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to create task');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -146,10 +149,8 @@ export function registerSecretaryCommands(
 
   bot.command('done', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const query = ctx.match?.trim();
       if (!query) {
         await ctx.reply('Usage: /done Buy coffee');
@@ -157,7 +158,7 @@ export function registerSecretaryCommands(
       }
       await ctx.replyWithChatAction('typing');
 
-      const searchResult = await msTodo.searchTasks(query);
+      const searchResult = await taskScope.provider.searchTasks(query);
       if (!searchResult.success || searchResult.data.length === 0) {
         await ctx.reply(`❌ No task matching "${escapeHtml(query)}" found.`, { parse_mode: 'HTML' });
         return;
@@ -172,7 +173,7 @@ export function registerSecretaryCommands(
 
       if (pending.length === 1) {
         const task = pending[0];
-        const result = await msTodo.completeTask(task.listId, task.id);
+        const result = await taskScope.provider.completeTask(task.listId, task.id);
         if (result.success) {
           await ctx.reply(`✅ Completed: "<b>${escapeHtml(task.title)}</b>" [${escapeHtml(task.listName)}]`, { parse_mode: 'HTML' });
         } else {
@@ -199,10 +200,8 @@ export function registerSecretaryCommands(
 
   bot.command('undone', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const query = ctx.match?.trim();
       if (!query) {
         await ctx.reply('Usage: /undone Buy coffee');
@@ -215,17 +214,15 @@ export function registerSecretaryCommands(
 
   bot.command('newlist', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const name = ctx.match?.trim();
       if (!name) {
         await ctx.reply('Usage: /newlist Groceries');
         return;
       }
       await ctx.replyWithChatAction('typing');
-      const result = await msTodo.createList(name);
+      const result = await taskScope.provider.createList(name);
       if (result.success) {
         await ctx.reply(`📋 List created: "<b>${escapeHtml(result.data.displayName)}</b>"`, { parse_mode: 'HTML' });
       } else {
@@ -237,10 +234,8 @@ export function registerSecretaryCommands(
 
   bot.command('deletelist', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const name = ctx.match?.trim();
       if (!name) {
         await ctx.reply('Usage: /deletelist Old Projects');
@@ -248,7 +243,7 @@ export function registerSecretaryCommands(
       }
       await ctx.replyWithChatAction('typing');
 
-      const list = await msTodo.findListByName(name);
+      const list = await taskScope.provider.findListByName(name);
       if (!list) {
         await ctx.reply(`⚠️ List "${escapeHtml(name)}" not found.`, { parse_mode: 'HTML' });
         return;
@@ -268,10 +263,8 @@ export function registerSecretaryCommands(
 
   bot.command('deletetask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const query = ctx.match?.trim();
       if (!query) {
         await ctx.reply('Usage: /deletetask Old reminder');
@@ -318,10 +311,8 @@ export function registerSecretaryCommands(
 
   bot.command('search', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const query = ctx.match?.trim();
       if (!query) {
         await ctx.reply('Usage: /search coffee');
@@ -329,7 +320,7 @@ export function registerSecretaryCommands(
       }
       await ctx.replyWithChatAction('typing');
 
-      const result = await msTodo.searchTasks(query);
+      const result = await taskScope.provider.searchTasks(query);
       if (!result.success) {
         logger.warn({ err: result.error }, 'Search failed');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -357,10 +348,8 @@ export function registerSecretaryCommands(
 
   bot.command('todosummary', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
       await handleTodoSummary(ctx);
     });
@@ -370,13 +359,11 @@ export function registerSecretaryCommands(
 
   bot.command('overdue', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
-      const pendingResult = await msTodo.getAllPendingTasks();
+      const pendingResult = await taskScope.provider.getAllPendingTasks();
       if (!pendingResult.success) {
         logger.warn({ err: pendingResult.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -405,13 +392,11 @@ export function registerSecretaryCommands(
 
   bot.command('duetoday', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
-      const result = await msTodo.getTasksDueInRange(startOfDay(), endOfDay());
+      const result = await taskScope.provider.getTasksDueInRange(startOfDay(), endOfDay());
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -438,13 +423,11 @@ export function registerSecretaryCommands(
 
   bot.command('dueweek', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
-      const result = await msTodo.getTasksDueInRange(startOfWeek(), endOfWeek());
+      const result = await taskScope.provider.getTasksDueInRange(startOfWeek(), endOfWeek());
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -471,13 +454,11 @@ export function registerSecretaryCommands(
 
   bot.command('alltasks', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
-      const result = await msTodo.getAllPendingTasks();
+      const result = await taskScope.provider.getAllPendingTasks();
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -494,22 +475,20 @@ export function registerSecretaryCommands(
 
   bot.command('completed', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
       const listName = ctx.match?.trim();
 
       if (listName) {
         // Completed tasks from a specific list
-        const list = await msTodo.findListByName(listName);
+        const list = await taskScope.provider.findListByName(listName);
         if (!list) {
           await ctx.reply(`⚠️ List "${escapeHtml(listName)}" not found.`, { parse_mode: 'HTML' });
           return;
         }
-        const result = await msTodo.getTasks(list.id, list.displayName, { status: 'completed' });
+        const result = await taskScope.provider.getTasks(list.id, list.displayName, { status: 'completed' });
         if (!result.success) {
           logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -523,7 +502,7 @@ export function registerSecretaryCommands(
       } else {
         // Completed tasks across all lists (last 7 days)
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const result = await msTodo.getCompletedTasksInRange(sevenDaysAgo, new Date().toISOString());
+        const result = await taskScope.provider.getCompletedTasksInRange(sevenDaysAgo, new Date().toISOString());
         if (!result.success) {
           logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -540,10 +519,8 @@ export function registerSecretaryCommands(
 
   bot.command('movetask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const text = ctx.match?.trim();
       if (!text || !text.includes('|')) {
         await ctx.reply('Usage: /movetask Buy milk | Groceries');
@@ -553,7 +530,7 @@ export function registerSecretaryCommands(
 
       const [taskQuery, targetListName] = text.split('|', 2).map((s) => s.trim());
 
-      const searchResult = await msTodo.searchTasks(taskQuery);
+      const searchResult = await taskScope.provider.searchTasks(taskQuery);
       if (!searchResult.success || searchResult.data.length === 0) {
         await ctx.reply(`❌ No task matching "${escapeHtml(taskQuery)}" found.`, { parse_mode: 'HTML' });
         return;
@@ -561,7 +538,7 @@ export function registerSecretaryCommands(
 
       const task = searchResult.data.find((t) => t.status !== 'completed') || searchResult.data[0];
 
-      const targetList = await msTodo.findListByName(targetListName);
+      const targetList = await taskScope.provider.findListByName(targetListName);
       if (!targetList) {
         await ctx.reply(`⚠️ List "${escapeHtml(targetListName)}" not found.`, { parse_mode: 'HTML' });
         return;
@@ -572,7 +549,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      const result = await msTodo.moveTask(task.listId, task.id, targetList.id, targetList.displayName);
+      const result = await taskScope.provider.moveTask(task.listId, task.id, targetList.id, targetList.displayName);
       if (result.success) {
         await ctx.reply(`📦 Moved "<b>${escapeHtml(task.title)}</b>" from ${escapeHtml(task.listName)} → <b>${escapeHtml(targetList.displayName)}</b>`, { parse_mode: 'HTML' });
       } else {
@@ -584,10 +561,8 @@ export function registerSecretaryCommands(
 
   bot.command('edittask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const text = ctx.match?.trim();
       if (!text || !text.includes('|')) {
         await ctx.reply('Usage: /edittask Buy milk | Buy oat milk');
@@ -597,14 +572,14 @@ export function registerSecretaryCommands(
 
       const [taskQuery, newTitle] = text.split('|', 2).map((s) => s.trim());
 
-      const searchResult = await msTodo.searchTasks(taskQuery);
+      const searchResult = await taskScope.provider.searchTasks(taskQuery);
       if (!searchResult.success || searchResult.data.length === 0) {
         await ctx.reply(`❌ No task matching "${escapeHtml(taskQuery)}" found.`, { parse_mode: 'HTML' });
         return;
       }
 
       const task = searchResult.data[0];
-      const result = await msTodo.updateTask(task.listId, task.id, { title: newTitle });
+      const result = await taskScope.provider.updateTask(task.listId, task.id, { title: newTitle });
       if (result.success) {
         await ctx.reply(`📝 Renamed: "${escapeHtml(task.title)}" → "<b>${escapeHtml(newTitle)}</b>" [${escapeHtml(task.listName)}]`, { parse_mode: 'HTML' });
       } else {
@@ -616,10 +591,8 @@ export function registerSecretaryCommands(
 
   bot.command('notetask', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const text = ctx.match?.trim();
       if (!text || !text.includes('|')) {
         await ctx.reply('Usage: /notetask Buy milk | Get the organic brand from Lidl');
@@ -629,14 +602,14 @@ export function registerSecretaryCommands(
 
       const [taskQuery, note] = text.split('|', 2).map((s) => s.trim());
 
-      const searchResult = await msTodo.searchTasks(taskQuery);
+      const searchResult = await taskScope.provider.searchTasks(taskQuery);
       if (!searchResult.success || searchResult.data.length === 0) {
         await ctx.reply(`❌ No task matching "${escapeHtml(taskQuery)}" found.`, { parse_mode: 'HTML' });
         return;
       }
 
       const task = searchResult.data[0];
-      const result = await msTodo.updateTask(task.listId, task.id, { body: note });
+      const result = await taskScope.provider.updateTask(task.listId, task.id, { body: note });
       if (result.success) {
         await ctx.reply(`📝 Note added to "<b>${escapeHtml(task.title)}</b>": ${escapeHtml(note)}`, { parse_mode: 'HTML' });
       } else {
@@ -648,10 +621,8 @@ export function registerSecretaryCommands(
 
   bot.command('addstep', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const text = ctx.match?.trim();
       if (!text || !text.includes('|')) {
         await ctx.reply('Usage: /addstep Buy milk | Check fridge first');
@@ -661,14 +632,14 @@ export function registerSecretaryCommands(
 
       const [taskQuery, stepTitle] = text.split('|', 2).map((s) => s.trim());
 
-      const searchResult = await msTodo.searchTasks(taskQuery);
+      const searchResult = await taskScope.provider.searchTasks(taskQuery);
       if (!searchResult.success || searchResult.data.length === 0) {
         await ctx.reply(`❌ No task matching "${escapeHtml(taskQuery)}" found.`, { parse_mode: 'HTML' });
         return;
       }
 
       const task = searchResult.data[0];
-      const result = await msTodo.addChecklistItem(task.listId, task.id, stepTitle);
+      const result = await taskScope.provider.addChecklistItem(task.listId, task.id, stepTitle);
       if (result.success) {
         await ctx.reply(`☑️ Step added to "<b>${escapeHtml(task.title)}</b>": ${escapeHtml(stepTitle)}`, { parse_mode: 'HTML' });
       } else {
@@ -680,10 +651,8 @@ export function registerSecretaryCommands(
 
   bot.command('steps', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       const query = ctx.match?.trim();
       if (!query) {
         await ctx.reply('Usage: /steps Buy milk');
@@ -691,14 +660,14 @@ export function registerSecretaryCommands(
       }
       await ctx.replyWithChatAction('typing');
 
-      const searchResult = await msTodo.searchTasks(query);
+      const searchResult = await taskScope.provider.searchTasks(query);
       if (!searchResult.success || searchResult.data.length === 0) {
         await ctx.reply(`❌ No task matching "${escapeHtml(query)}" found.`, { parse_mode: 'HTML' });
         return;
       }
 
       const task = searchResult.data[0];
-      const result = await msTodo.getChecklistItems(task.listId, task.id);
+      const result = await taskScope.provider.getChecklistItems(task.listId, task.id);
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch steps');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
@@ -723,19 +692,17 @@ export function registerSecretaryCommands(
 
   bot.command('todos', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      if (!msTodo.isOutlookTodoConfigured()) {
-        await ctx.reply(t('ms_todo_not_connected', getUserLanguage(ctx.from!.id)));
-        return;
-      }
+      const taskScope = await requireTelegramTaskScope(ctx);
+      if (!taskScope) return;
       await ctx.replyWithChatAction('typing');
 
-      const defaultList = await msTodo.getDefaultList();
+      const defaultList = await taskScope.provider.getDefaultList();
       if (!defaultList) {
         await ctx.reply('⚠️ Default list not found. Use /lists to see available lists.');
         return;
       }
 
-      const result = await msTodo.getTasks(defaultList.id, defaultList.displayName, { status: 'notStarted' });
+      const result = await taskScope.provider.getTasks(defaultList.id, defaultList.displayName, { status: 'notStarted' });
       if (!result.success) {
         logger.warn({ err: result.error }, 'Failed to fetch tasks');
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));

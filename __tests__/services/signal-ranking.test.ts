@@ -32,6 +32,7 @@ vi.mock('../../src/config', () => ({
   config: {
     anthropic: { apiKey: 'test' },
     app: { timezone: 'Europe/Lisbon' },
+    garmin: { tokenPath: '/tmp' },
   },
 }));
 
@@ -80,13 +81,24 @@ describe('signal-ranking: schema upgrade', () => {
     const cols = testDb.prepare("PRAGMA table_info('agent_signals')").all() as any[];
     expect(cols.map((c: any) => c.name)).toContain('evidence_count');
   });
+
+  it('agent_signals table has mesh_priority column', () => {
+    const cols = testDb.prepare("PRAGMA table_info('agent_signals')").all() as any[];
+    expect(cols.map((c: any) => c.name)).toContain('mesh_priority');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════
 // 2. writeSignal with new fields
 // ═══════════════════════════════════════════════════════════════════
 
-import { writeSignal, readRankedSignals, setDbProvider } from '../../src/services/intelligence-bus';
+import {
+  writeSignal,
+  readRankedSignals,
+  setDbProvider,
+  setCacheInvalidator,
+  setPlanningInvalidator,
+} from '../../src/services/intelligence-bus';
 
 describe('signal-ranking: writeSignal with new fields', () => {
   beforeEach(() => {
@@ -126,6 +138,26 @@ describe('signal-ranking: writeSignal with new fields', () => {
 
     const row = testDb.prepare('SELECT confidence FROM agent_signals WHERE id = ?').get(id) as any;
     expect(row.confidence).toBe(0.5);
+  });
+
+  it('writes meshPriority and invalidates plan caches for priority-1 signals', () => {
+    const invalidations: string[] = [];
+    const planningInvalidations: Array<number | undefined> = [];
+    setCacheInvalidator((prefix) => invalidations.push(prefix));
+    setPlanningInvalidator((userId) => planningInvalidations.push(userId));
+
+    const id = writeSignal({
+      source_agent: 'mesh-agent',
+      signal_type: 'tax_deadline',
+      payload: { dueAt: '2026-04-28T12:00:00Z' },
+      meshPriority: 1,
+      user_id: 42,
+    });
+
+    const row = testDb.prepare('SELECT mesh_priority FROM agent_signals WHERE id = ?').get(id) as any;
+    expect(row.mesh_priority).toBe(1);
+    expect(planningInvalidations).toEqual([42]);
+    expect(invalidations).toEqual([]);
   });
 });
 

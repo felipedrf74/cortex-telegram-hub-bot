@@ -1,0 +1,65 @@
+{
+  "name": "training",
+  "version": "1.0.0",
+  "description": "Training orchestration layer for the existing triathlon coaching system",
+  "author": "Felipe Dominguez",
+  "domain": "triathlon",
+  "manifestVersion": 2,
+  "subSkills": [
+    {
+      "module_name": "garmin-coach",
+      "description": "Wearable-backed readiness and coach briefing context",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": ["garmin_coach"]
+    },
+    {
+      "module_name": "training-plans",
+      "description": "Structured plan CRUD and scheduled session state",
+      "enabled_by_default": true,
+      "tools": [
+        "create_training_plan",
+        "add_training_week",
+        "add_training_session",
+        "get_training_plan",
+        "log_training_completion",
+        "update_training_session",
+        "link_session_calendar"
+      ],
+      "cronJobs": ["training_plan_adjust"]
+    },
+    {
+      "module_name": "readiness",
+      "description": "Daily readiness, recovery, and stale-snapshot fallback",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "load-forecast",
+      "description": "Forward load and interference outlook derived from existing training signals",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "race-prep",
+      "description": "Race-week taper and event preparation heuristics",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    },
+    {
+      "module_name": "training-signals",
+      "description": "Cross-skill training signals consumed by the mesh",
+      "enabled_by_default": true,
+      "tools": [],
+      "cronJobs": []
+    }
+  ],
+  "requiredApiKeys": ["GEMINI_API_KEY"],
+  "config": {
+    "stateContextTtl": 30000,
+    "maxToolIterations": 4
+  }
+}

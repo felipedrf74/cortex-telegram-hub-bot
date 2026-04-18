@@ -22,11 +22,57 @@
  *   Pipeline reads: keyword_opportunity, hook_effectiveness (prioritize topics)
  */
 
+import { DateTime } from 'luxon';
 import {
   readSignals, writeSignal, markConsumed,
-  type SignalType, type AgentSignal,
+  type SignalType, type AgentSignal, type MeshPriority, type SignalPriority,
 } from './intelligence-bus';
+import { config } from '../config';
+import { getMealPlan, getShoppingList, type MealPlan, type ShoppingList } from './cooking-chef';
+import { getUnreadNotifications, type ContentNotification } from './content-notification-store';
+import {
+  getFilmingRecommendation,
+  getTopics,
+  getUpcomingTopicCount,
+  type ContentTopicStatus,
+  type ContentFilmingRecommendation,
+} from './content-scheduler';
+import { getKnowledgeStats, getVoiceDna } from './content-dashboard-service';
+import {
+  convertPlanningEstimateFromBrl,
+  getPreferredCurrencyForUser,
+  getAnnualTaxSummary,
+  getMonthlySummary,
+  getTaxEvents,
+  type AnnualTaxSummary,
+  type MonthlySummary,
+  type TaxEvent,
+} from './finance-tracker';
+import { getLatestByType, type ReportDocument } from './report-document-store';
+import { getSubscriptionStatus, type SubscriptionStatus } from './stripe-service';
+import {
+  getOverdueTasks,
+  getPendingTasks,
+  getTasksDueThisWeek,
+  getTasksDueToday,
+} from './task-store/unified-task-store';
+import type { NormalizedTask } from './task-store/types';
+import { getFocusBlockRecommendation, type FocusBlockRecommendation } from './focus-planner';
+import { readTrainingContextAll, type TrainingContext } from './training-signals';
+import {
+  getActivePlans,
+  getSessionsForWeek,
+  getWeeklyAdherence,
+  getWeeksForPlan,
+  type TrainingPlan,
+  type TrainingSession,
+  type TrainingWeek,
+  type WeeklyAdherenceStats,
+} from './training-plans';
+import { getEvents, hasWritableCalendarForUser, type UnifiedCalendarEvent } from './unified-calendar';
+import { getUnreadMailSummaryForUser, type UserMailPressureSummary } from './unified-mail-pressure';
 import { logger } from '../utils/logger';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -83,6 +129,221 @@ export interface ContentFormulaContext {
   pillar: string;
   confidence: number;
   source: string;
+}
+
+export interface MeshSignalDraft {
+  sourceAgent: string;
+  signalType: SignalType;
+  meshPriority: MeshPriority;
+  priority: SignalPriority;
+  payload: Record<string, unknown>;
+  expiresAt?: string;
+}
+
+export interface TrainingMeshContext {
+  userId: number;
+  weekStart: string;
+  weekEnd: string;
+  activePlan: TrainingPlan | null;
+  activeWeek: TrainingWeek | null;
+  sessions: TrainingSession[];
+  trainingContext: TrainingContext;
+  coachBriefing: ReportDocument | null;
+  adherence: WeeklyAdherenceStats | null;
+  derivedSignals: MeshSignalDraft[];
+}
+
+export interface CookingMeshContext {
+  userId: number;
+  weekStart: string;
+  weekEnd: string;
+  meals: MealPlan[];
+  shoppingList: ShoppingList | null;
+  derivedSignals: MeshSignalDraft[];
+}
+
+export interface ContentMeshContext {
+  userId: number;
+  weekStart: string;
+  weekEnd: string;
+  upcomingTopicCount: number;
+  scheduledTopics: Array<{
+    id: number;
+    title: string;
+    scheduledDate: string;
+    status: ContentTopicStatus;
+  }>;
+  filmingRecommendation: ContentFilmingRecommendation | null;
+  unreadNotifications: ContentNotification[];
+  voiceDnaEntries: ReturnType<typeof getVoiceDna>;
+  knowledgeStats: ReturnType<typeof getKnowledgeStats>;
+  derivedSignals: MeshSignalDraft[];
+}
+
+export interface SecretaryMeshContext {
+  userId: number;
+  weekStart: string;
+  weekEnd: string;
+  events: UnifiedCalendarEvent[];
+  focusBlock: FocusBlockRecommendation | null;
+  dueToday: NormalizedTask[];
+  dueThisWeek: NormalizedTask[];
+  overdue: NormalizedTask[];
+  pending: NormalizedTask[];
+  writableCalendar: boolean;
+  mailPressure?: UserMailPressureSummary | null;
+  derivedSignals: MeshSignalDraft[];
+}
+
+export interface FinanceMeshContext {
+  userId: number;
+  weekStart: string;
+  weekEnd: string;
+  month: string;
+  monthlySummary: MonthlySummary;
+  taxEvents: TaxEvent[];
+  annualSummary: AnnualTaxSummary;
+  subscription: SubscriptionStatus;
+  derivedSignals: MeshSignalDraft[];
+}
+
+function emptyTrainingFlags(): TrainingContext['flags'] {
+  return {
+    lowSleep: false,
+    lowHrv: false,
+    lowReadiness: false,
+    highLegLoad: false,
+    highShoulderLoad: false,
+    raceThisWeek: false,
+    lowAdherence: false,
+    highAdherence: false,
+    planDrift: false,
+    otherSportRpeToday: 0,
+  };
+}
+
+function reportInvalidMeshScope(operation: string, userId: number | null | undefined, weekStart?: string): void {
+  recordTenantScopeAnomaly({
+    layer: 'mesh_context',
+    operation,
+    reason: userId == null ? 'missing_user_scope' : 'invalid_user_scope',
+    userId: userId ?? null,
+    details: {
+      weekStart: weekStart ?? null,
+    },
+  });
+}
+
+function emptyTrainingMeshContext(opts: { userId: number; weekStart?: string }): TrainingMeshContext {
+  const window = resolveWeekWindow(opts.weekStart);
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    activePlan: null,
+    activeWeek: null,
+    sessions: [],
+    trainingContext: {
+      signals: [],
+      flags: emptyTrainingFlags(),
+    },
+    coachBriefing: null,
+    adherence: null,
+    derivedSignals: [],
+  };
+}
+
+function emptyCookingMeshContext(opts: { userId: number; weekStart?: string }): CookingMeshContext {
+  const window = resolveWeekWindow(opts.weekStart);
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    meals: [],
+    shoppingList: null,
+    derivedSignals: [],
+  };
+}
+
+function emptyContentMeshContext(opts: { userId: number; weekStart?: string }): ContentMeshContext {
+  const window = resolveWeekWindow(opts.weekStart);
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    upcomingTopicCount: 0,
+    scheduledTopics: [],
+    filmingRecommendation: null,
+    unreadNotifications: [],
+    voiceDnaEntries: [],
+    knowledgeStats: {
+      categories: [],
+      referenceChannels: 0,
+    },
+    derivedSignals: [],
+  };
+}
+
+function emptySecretaryMeshContext(opts: { userId: number; weekStart?: string }): SecretaryMeshContext {
+  const window = resolveWeekWindow(opts.weekStart);
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    events: [],
+    focusBlock: null,
+    dueToday: [],
+    dueThisWeek: [],
+    overdue: [],
+    pending: [],
+    writableCalendar: false,
+    derivedSignals: [],
+  };
+}
+
+function emptyFinanceMeshContext(opts: { userId: number; weekStart?: string }): FinanceMeshContext {
+  const window = resolveWeekWindow(opts.weekStart);
+  const month = window.start.toFormat('yyyy-MM');
+  const year = window.start.year;
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    month,
+    monthlySummary: {
+      month,
+      totalIncome: 0,
+      totalExpenses: 0,
+      totalDeductions: 0,
+      netIncome: 0,
+      transactionCount: 0,
+    },
+    taxEvents: [],
+    annualSummary: {
+      year,
+      totalGrossIncome: 0,
+      totalDeductions: 0,
+      totalInssDue: 0,
+      totalTaxDue: 0,
+      totalPaid: 0,
+      totalPending: 0,
+      effectiveAnnualRate: 0,
+      monthsPaid: 0,
+      monthsPending: 0,
+      months: [],
+    },
+    subscription: {
+      plan: 'free',
+      period: 'monthly',
+      status: 'inactive',
+      provider: 'none',
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      isActive: false,
+      isPro: false,
+    },
+    derivedSignals: [],
+  };
 }
 
 // ── Agent-specific signal consumption maps ─────────────────────────
@@ -367,4 +628,1046 @@ function emptyContext(): AgentContext {
     contentFormulas: [],
     signalsConsumed: 0,
   };
+}
+
+// ── Stage 2 mesh context helpers ───────────────────────────────────
+
+export async function readTrainingMeshContext(opts: {
+  userId: number;
+  weekStart?: string;
+}): Promise<TrainingMeshContext> {
+  if (!isValidTenantUserId(opts.userId)) {
+    reportInvalidMeshScope('read_training_mesh_context', opts.userId, opts.weekStart);
+    return emptyTrainingMeshContext(opts);
+  }
+
+  const window = resolveWeekWindow(opts.weekStart);
+  const trainingContext = readTrainingContextAll({ userId: opts.userId });
+  const coachBriefing = getLatestByType(opts.userId, 'coach_briefing');
+  const activePlanMatch = findActivePlanForWeek(opts.userId, window.start);
+
+  const sessions = activePlanMatch?.week ? getSessionsForWeek(activePlanMatch.week.id) : [];
+  const adherence = activePlanMatch?.week
+    ? getWeeklyAdherence(activePlanMatch.plan.id, activePlanMatch.week.id)
+    : null;
+
+  const scheduledSessions = sessions
+    .map((session) => ({
+      session,
+      date: sessionDateForWeek(session, window.start),
+      load: inferTrainingLoad(session),
+    }))
+    .filter((entry) => Boolean(entry.date));
+
+  const hardDays = scheduledSessions
+    .filter((entry) => entry.load === 'hard')
+    .map((entry) => entry.date);
+  const nextSession = nextScheduledSessionForWindow(scheduledSessions);
+  const restDays = weekIsoDates(window.start).filter((date) => !scheduledSessions.some((entry) => entry.date === date));
+  const recoverySignalIds = trainingContext.signals
+    .filter((signal) => ['low_sleep', 'low_hrv', 'low_readiness'].includes(signal.signal_type))
+    .map((signal) => signal.id);
+
+  const recoveryState = recoverySignalIds.length >= 2
+    ? 'critical'
+    : recoverySignalIds.length === 1
+      ? 'strained'
+      : trainingContext.flags.highAdherence
+        ? 'primed'
+        : 'stable';
+
+  const derivedSignals: MeshSignalDraft[] = [
+    {
+      sourceAgent: 'mesh.training-context',
+      signalType: 'training_load_forecast',
+      meshPriority: 3,
+      priority: 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        weekStart: window.weekStart,
+        weekEnd: window.weekEnd,
+        totalSessions: scheduledSessions.length,
+        hardDays,
+        hardSessionCount: hardDays.length,
+        focus: activePlanMatch?.week?.focus ?? null,
+        adherenceRate: adherence?.adherenceRate ?? null,
+      },
+    },
+    {
+      sourceAgent: 'mesh.training-context',
+      signalType: 'recovery_state',
+      meshPriority: recoveryState === 'critical' || recoveryState === 'strained' ? 2 : 3,
+      priority: recoveryState === 'critical' || recoveryState === 'strained' ? 'urgent' : 'normal',
+      expiresAt: endOfDayIso(window.start),
+      payload: {
+        date: nextSession?.date ?? window.weekStart,
+        state: recoveryState,
+        lowSleep: trainingContext.flags.lowSleep,
+        lowHrv: trainingContext.flags.lowHrv,
+        lowReadiness: trainingContext.flags.lowReadiness,
+        sourceSignalIds: recoverySignalIds,
+        coachBriefingCreatedAt: coachBriefing?.createdAt ?? null,
+      },
+    },
+  ];
+
+  if (nextSession) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.training-context',
+      signalType: 'session_prescription',
+      meshPriority: 3,
+      priority: 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        date: nextSession.date,
+        title: nextSession.session.title,
+        sessionType: nextSession.session.session_type,
+        durationMinutes: nextSession.session.duration_minutes,
+        intensity: nextSession.session.intensity_text,
+        description: nextSession.session.description,
+      },
+    });
+
+    const immovability = deriveSessionImmovability(nextSession);
+    if (immovability) {
+      derivedSignals.push({
+        sourceAgent: 'mesh.training-context',
+        signalType: 'session_immovability',
+        meshPriority: immovability.level === 'high' ? 2 : 3,
+        priority: immovability.level === 'high' ? 'urgent' : 'normal',
+        expiresAt: endOfDayIso(window.end),
+        payload: {
+          date: nextSession.date,
+          title: nextSession.session.title,
+          sessionType: nextSession.session.session_type,
+          load: nextSession.load,
+          level: immovability.level,
+          reason: immovability.reason,
+        },
+      });
+    }
+
+    const fueling = deriveFuelingRequirements(nextSession);
+    if (fueling) {
+      derivedSignals.push({
+        sourceAgent: 'mesh.training-context',
+        signalType: 'fueling_requirements',
+        meshPriority: fueling.supportLevel === 'elevated' ? 2 : 3,
+        priority: fueling.supportLevel === 'elevated' ? 'urgent' : 'normal',
+        expiresAt: endOfDayIso(window.end),
+        payload: {
+          date: nextSession.date,
+          title: nextSession.session.title,
+          sessionType: nextSession.session.session_type,
+          load: nextSession.load,
+          supportLevel: fueling.supportLevel,
+          carbFocus: fueling.carbFocus,
+          hydrationFocus: fueling.hydrationFocus,
+          proteinRecovery: fueling.proteinRecovery,
+          timing: fueling.timing,
+        },
+      });
+    }
+
+    const storyOpportunity = deriveTrainingContentCaptureOpportunity({
+      nextSession,
+      adherenceRate: adherence?.adherenceRate ?? null,
+      recoveryState,
+      activeWeekFocus: activePlanMatch?.week?.focus ?? null,
+    });
+    if (storyOpportunity) {
+      derivedSignals.push({
+        sourceAgent: 'mesh.training-context',
+        signalType: 'content_capture_opportunity',
+        meshPriority: storyOpportunity.meshPriority,
+        priority: storyOpportunity.priority,
+        expiresAt: endOfDayIso(window.end),
+        payload: {
+          date: nextSession.date,
+          title: nextSession.session.title,
+          sessionType: nextSession.session.session_type,
+          load: nextSession.load,
+          angle: storyOpportunity.angle,
+          reason: storyOpportunity.reason,
+          focus: activePlanMatch?.week?.focus ?? null,
+          adherenceRate: adherence?.adherenceRate ?? null,
+          recoveryState,
+        },
+      });
+    }
+  }
+
+  if (restDays.length > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.training-context',
+      signalType: 'rest_day_scheduled',
+      meshPriority: 2,
+      priority: 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        dates: restDays,
+      },
+    });
+  }
+
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    activePlan: activePlanMatch?.plan ?? null,
+    activeWeek: activePlanMatch?.week ?? null,
+    sessions,
+    trainingContext,
+    coachBriefing,
+    adherence,
+    derivedSignals,
+  };
+}
+
+export async function readCookingMeshContext(opts: {
+  userId: number;
+  weekStart?: string;
+}): Promise<CookingMeshContext> {
+  if (!isValidTenantUserId(opts.userId)) {
+    reportInvalidMeshScope('read_cooking_mesh_context', opts.userId, opts.weekStart);
+    return emptyCookingMeshContext(opts);
+  }
+
+  const window = resolveWeekWindow(opts.weekStart);
+  let meals: MealPlan[] = [];
+  let shoppingList: ShoppingList | null = null;
+
+  try {
+    meals = getMealPlan(opts.userId, window.weekStart, window.weekEnd);
+  } catch (err) {
+    logger.debug({ err, userId: opts.userId }, 'Mesh: cooking meal plan unavailable');
+  }
+
+  try {
+    shoppingList = getShoppingList(opts.userId, window.weekStart);
+  } catch (err) {
+    logger.debug({ err, userId: opts.userId }, 'Mesh: shopping list unavailable');
+  }
+
+  const coveredDays = new Set(meals.map((meal) => meal.date));
+  const missingDates = weekIsoDates(window.start).filter((date) => !coveredDays.has(date));
+  const aisleCount = new Set(shoppingList?.items.map((item) => item.aisle).filter(Boolean) ?? []).size;
+  const estimatedSpendBrl = Math.round(((shoppingList?.items.length ?? 0) * 18.5) * 100) / 100;
+  const preferredCurrency = getPreferredCurrencyForUser(opts.userId);
+  const estimatedSpend = convertPlanningEstimateFromBrl(estimatedSpendBrl, preferredCurrency);
+  const shoppingReady = (shoppingList?.items.length ?? 0) > 0;
+
+  const activePlanMatch = findActivePlanForWeek(opts.userId, window.start);
+  const trainingSessions = activePlanMatch?.week ? getSessionsForWeek(activePlanMatch.week.id) : [];
+  const scheduledTraining = trainingSessions
+    .map((session) => ({
+      session,
+      date: sessionDateForWeek(session, window.start),
+      load: inferTrainingLoad(session),
+    }))
+    .filter((entry) => Boolean(entry.date));
+  const trainingDates = uniqueStrings(scheduledTraining.map((entry) => entry.date));
+  const hardTrainingDates = uniqueStrings(
+    scheduledTraining
+      .filter((entry) => entry.load === 'hard')
+      .map((entry) => entry.date),
+  );
+  const trainingDatesMissingMeals = trainingDates.filter((date) => !coveredDays.has(date));
+  const hardDatesMissingMeals = hardTrainingDates.filter((date) => !coveredDays.has(date));
+  const trainingCoverageRatio = trainingDates.length > 0
+    ? roundTo((trainingDates.length - trainingDatesMissingMeals.length) / trainingDates.length, 2)
+    : null;
+  const fuelingSupportStatus = trainingDates.length === 0
+    ? null
+    : hardDatesMissingMeals.length > 0
+      ? 'at_risk'
+      : trainingDatesMissingMeals.length > 0 || !shoppingReady
+        ? 'partial'
+        : 'ready';
+  const mealExecutionStatus = missingDates.length >= 3 && !shoppingReady
+    ? 'at_risk'
+    : missingDates.length > 0 || !shoppingReady
+      ? 'partial'
+      : 'ready';
+
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    meals,
+    shoppingList,
+    derivedSignals: [
+      {
+        sourceAgent: 'mesh.cooking-context',
+        signalType: 'meal_plan_window',
+        meshPriority: 3,
+        priority: 'normal',
+        expiresAt: endOfDayIso(window.end),
+        payload: {
+          weekStart: window.weekStart,
+          weekEnd: window.weekEnd,
+          coveredDays: [...coveredDays],
+          totalMeals: meals.length,
+          missingDates,
+        },
+      },
+      ...(fuelingSupportStatus
+        ? [{
+            sourceAgent: 'mesh.cooking-context',
+            signalType: 'fueling_support_status' as const,
+            meshPriority: (fuelingSupportStatus === 'at_risk' ? 2 : 3) as MeshPriority,
+            priority: fuelingSupportStatus === 'at_risk' ? 'urgent' as const : 'normal' as const,
+            expiresAt: endOfDayIso(window.end),
+            payload: {
+              status: fuelingSupportStatus,
+              trainingDates,
+              trainingDatesMissingMeals,
+              hardDatesMissingMeals,
+              trainingCoverageRatio,
+              shoppingReady,
+            },
+          }]
+        : []),
+      {
+        sourceAgent: 'mesh.cooking-context',
+        signalType: 'meal_execution_readiness',
+        meshPriority: (mealExecutionStatus === 'at_risk' ? 2 : 3) as MeshPriority,
+        priority: mealExecutionStatus === 'at_risk' ? 'urgent' : 'normal',
+        expiresAt: endOfDayIso(window.end),
+        payload: {
+          status: mealExecutionStatus,
+          missingDates,
+          shoppingReady,
+          shoppingItemCount: shoppingList?.items.length ?? 0,
+          coveredDayCount: coveredDays.size,
+        },
+      },
+      {
+        sourceAgent: 'mesh.cooking-context',
+        signalType: 'grocery_spend_forecast',
+        meshPriority: 3 as MeshPriority,
+        priority: 'background',
+        expiresAt: endOfDayIso(window.end),
+        payload: {
+          estimatedSpendBrl,
+          estimatedSpend,
+          currency: preferredCurrency,
+          itemCount: shoppingList?.items.length ?? 0,
+          aisleCount,
+        },
+      },
+    ],
+  };
+}
+
+export async function readContentMeshContext(opts: {
+  userId: number;
+  weekStart?: string;
+}): Promise<ContentMeshContext> {
+  if (!isValidTenantUserId(opts.userId)) {
+    reportInvalidMeshScope('read_content_mesh_context', opts.userId, opts.weekStart);
+    return emptyContentMeshContext(opts);
+  }
+
+  const window = resolveWeekWindow(opts.weekStart);
+
+  const [filmingResult] = await Promise.allSettled([
+    getFilmingRecommendation(opts.userId),
+  ]);
+
+  const filmingRecommendation = filmingResult.status === 'fulfilled' ? filmingResult.value : null;
+  const unreadNotifications = safely(() => getUnreadNotifications(opts.userId, 10), []);
+  const upcomingTopicCount = safely(() => getUpcomingTopicCount(opts.userId, 14), 0);
+  const scheduledTopics = safely(
+    () => getTopics(opts.userId, {
+      includeTerminal: false,
+      scheduledOnly: true,
+      from: window.weekStart,
+      to: window.weekEnd,
+      limit: 20,
+    }).map((topic) => ({
+      id: topic.id,
+      title: topic.title,
+      scheduledDate: topic.scheduled_date ?? window.weekStart,
+      status: topic.status,
+    })),
+    [],
+  );
+  const voiceDnaEntries = safely(() => getVoiceDna(undefined, opts.userId), []);
+  const knowledgeStats = safely(() => getKnowledgeStats(undefined, opts.userId), {
+    categories: [],
+    referenceChannels: 0,
+  });
+
+  const derivedSignals: MeshSignalDraft[] = [];
+  if (upcomingTopicCount > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.content-context',
+      signalType: 'publishing_commitment',
+      meshPriority: 2,
+      priority: 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        upcomingTopicCount,
+        unreadContentNotifications: unreadNotifications.length,
+        dates: [...new Set(scheduledTopics.map((topic) => topic.scheduledDate))],
+        topics: scheduledTopics.slice(0, 8).map((topic) => ({
+          id: topic.id,
+          title: topic.title,
+          date: topic.scheduledDate,
+          status: topic.status,
+        })),
+        nextDate: scheduledTopics[0]?.scheduledDate ?? null,
+        nextTopicTitle: scheduledTopics[0]?.title ?? null,
+      },
+    });
+  }
+
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    upcomingTopicCount,
+    scheduledTopics,
+    filmingRecommendation,
+    unreadNotifications,
+    voiceDnaEntries,
+    knowledgeStats,
+    derivedSignals,
+  };
+}
+
+export async function readSecretaryMeshContext(opts: {
+  userId: number;
+  weekStart?: string;
+}): Promise<SecretaryMeshContext> {
+  if (!isValidTenantUserId(opts.userId)) {
+    reportInvalidMeshScope('read_secretary_mesh_context', opts.userId, opts.weekStart);
+    return emptySecretaryMeshContext(opts);
+  }
+
+  const window = resolveWeekWindow(opts.weekStart);
+  const [eventsResult, focusResult, mailPressureResult] = await Promise.allSettled([
+    getEvents(window.start.toUTC().toISO()!, window.end.endOf('day').toUTC().toISO()!, opts.userId),
+    getFocusBlockRecommendation(opts.userId, { horizonDays: 7 }),
+    getUnreadMailSummaryForUser(opts.userId),
+  ]);
+
+  const events = eventsResult.status === 'fulfilled' ? eventsResult.value : [];
+  const focusBlock = focusResult.status === 'fulfilled' ? focusResult.value : null;
+  const mailPressure = mailPressureResult.status === 'fulfilled' ? mailPressureResult.value : null;
+  const dueToday = safely(() => getTasksDueToday(opts.userId), []);
+  const dueThisWeek = safely(() => getTasksDueThisWeek(opts.userId), []);
+  const overdue = safely(() => getOverdueTasks(opts.userId), []);
+  const pending = safely(() => getPendingTasks(opts.userId), []);
+  const writableCalendar = safely(() => hasWritableCalendarForUser(opts.userId), false);
+
+  const busyDates = summarizeBusyDates(events);
+  const travelDates = extractTravelDates(events);
+  const fragmentation = summarizeCalendarFragmentation(events);
+  const criticalMeetings = summarizeMeetingCriticality(events);
+  const portability = summarizeTaskPortability(pending);
+  const deadlinePressure = summarizeDeadlinePressure({
+    overdueCount: overdue.length,
+    dueTodayCount: dueToday.length,
+    dueThisWeekCount: dueThisWeek.length,
+    pendingCount: pending.length,
+    mailUnreadTotal: mailPressure?.totalUnread ?? 0,
+  });
+  const derivedSignals: MeshSignalDraft[] = [];
+
+  if (busyDates.length > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.secretary-context',
+      signalType: 'calendar_busy_blocks',
+      meshPriority: 1,
+      priority: 'urgent',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        dates: busyDates,
+        totalEvents: events.length,
+      },
+    });
+  }
+
+  if (travelDates.length > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.secretary-context',
+      signalType: 'travel_window',
+      meshPriority: 1,
+      priority: 'urgent',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        dates: travelDates,
+      },
+    });
+  }
+
+  derivedSignals.push({
+    sourceAgent: 'mesh.secretary-context',
+    signalType: 'inbox_pressure',
+    meshPriority: deadlinePressure.level === 'high' ? 2 : 4,
+    priority: deadlinePressure.level === 'high' ? 'urgent' : overdue.length > 0 ? 'normal' : 'background',
+    expiresAt: endOfDayIso(window.start),
+    payload: {
+      overdueCount: overdue.length,
+      dueTodayCount: dueToday.length,
+      dueThisWeekCount: dueThisWeek.length,
+      pendingCount: pending.length,
+      mailUnreadTotal: mailPressure?.totalUnread ?? 0,
+      mailProviders: mailPressure?.configuredProviders ?? [],
+      outlookUnread: mailPressure?.outlookUnread ?? null,
+      gmailUnread: mailPressure?.gmailUnread ?? null,
+    },
+  });
+
+  if (fragmentation.fragmentedDates.length > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.secretary-context',
+      signalType: 'calendar_fragmentation',
+      meshPriority: 2,
+      priority: 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        dates: fragmentation.fragmentedDates,
+        fragmentedDayCount: fragmentation.fragmentedDates.length,
+        maxEventsInDay: fragmentation.maxEventsInDay,
+      },
+    });
+  }
+
+  if (criticalMeetings.criticalEventCount > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.secretary-context',
+      signalType: 'meeting_criticality',
+      meshPriority: 2,
+      priority: 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        criticalEventCount: criticalMeetings.criticalEventCount,
+        dates: criticalMeetings.dates,
+        examples: criticalMeetings.examples,
+      },
+    });
+  }
+
+  if (deadlinePressure.level !== 'low') {
+    derivedSignals.push({
+      sourceAgent: 'mesh.secretary-context',
+      signalType: 'deadline_pressure',
+      meshPriority: deadlinePressure.level === 'high' ? 1 : 2,
+      priority: deadlinePressure.level === 'high' ? 'urgent' : 'normal',
+      expiresAt: endOfDayIso(window.start),
+      payload: deadlinePressure,
+    });
+  }
+
+  if (portability.fixedCount > 0 || portability.portableCount > 0) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.secretary-context',
+      signalType: 'task_portability',
+      meshPriority: 3,
+      priority: 'background',
+      expiresAt: endOfDayIso(window.start),
+      payload: portability,
+    });
+  }
+
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    events,
+    focusBlock,
+    dueToday,
+    dueThisWeek,
+    overdue,
+    pending,
+    writableCalendar,
+    mailPressure,
+    derivedSignals,
+  };
+}
+
+export async function readFinanceMeshContext(opts: {
+  userId: number;
+  weekStart?: string;
+}): Promise<FinanceMeshContext> {
+  if (!isValidTenantUserId(opts.userId)) {
+    reportInvalidMeshScope('read_finance_mesh_context', opts.userId, opts.weekStart);
+    return emptyFinanceMeshContext(opts);
+  }
+
+  const window = resolveWeekWindow(opts.weekStart);
+  const month = window.start.toFormat('yyyy-MM');
+  const year = window.start.year;
+  const monthlySummary = safely(() => getMonthlySummary(opts.userId, month), {
+    month,
+    totalIncome: 0,
+    totalExpenses: 0,
+    totalDeductions: 0,
+    netIncome: 0,
+    transactionCount: 0,
+  });
+  const taxEvents = safely(() => getTaxEvents(opts.userId, { year, limit: 24 }), []);
+  const annualSummary = safely(() => getAnnualTaxSummary(opts.userId, year), {
+    year,
+    totalGrossIncome: 0,
+    totalDeductions: 0,
+    totalInssDue: 0,
+    totalTaxDue: 0,
+    totalPaid: 0,
+    totalPending: 0,
+    effectiveAnnualRate: 0,
+    monthsPaid: 0,
+    monthsPending: 0,
+    months: [],
+  });
+  const subscription = safely(() => getSubscriptionStatus(opts.userId), {
+    plan: 'free',
+    period: 'monthly',
+    status: 'inactive',
+    provider: 'none',
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+    isActive: false,
+    isPro: false,
+  });
+
+  const remainingRatio = monthlySummary.totalIncome > 0
+    ? Math.max((monthlySummary.totalIncome - monthlySummary.totalExpenses) / monthlySummary.totalIncome, 0)
+    : 0;
+  const nearestPending = taxEvents.find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
+  const renewalDueSoon = subscription.currentPeriodEnd
+    ? DateTime.fromISO(subscription.currentPeriodEnd).diffNow('days').days <= 10
+    : false;
+  const budgetConstraints = deriveBudgetConstraints(remainingRatio, {
+    renewalDueSoon,
+    hasPendingTax: Boolean(nearestPending),
+  });
+  const derivedSignals: MeshSignalDraft[] = [
+    {
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'budget_remaining',
+      meshPriority: remainingRatio <= 0.25 ? 2 : 3,
+      priority: remainingRatio <= 0.25 ? 'urgent' : 'normal',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        month,
+        remainingRatio: roundTo(remainingRatio, 2),
+        totalIncome: monthlySummary.totalIncome,
+        totalExpenses: monthlySummary.totalExpenses,
+        totalDeductions: monthlySummary.totalDeductions,
+        budgetMode: budgetConstraints.budgetMode,
+        groceryMode: budgetConstraints.groceryMode,
+        trainingSpendMode: budgetConstraints.trainingSpendMode,
+        contentSpendMode: budgetConstraints.contentSpendMode,
+        supplementMode: budgetConstraints.supplementMode,
+        subscriptionMode: budgetConstraints.subscriptionMode,
+      },
+    },
+  ];
+
+  if (nearestPending) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'tax_deadline',
+      meshPriority: 1,
+      priority: 'urgent',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        month: nearestPending.month,
+        amountDue: nearestPending.tax_due,
+        reminderDate: taxReminderDate(nearestPending.month),
+      },
+    });
+  }
+
+  if (renewalDueSoon && subscription.currentPeriodEnd) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'subscription_renewal_due',
+      meshPriority: 4,
+      priority: 'background',
+      expiresAt: subscription.currentPeriodEnd,
+      payload: {
+        plan: subscription.plan,
+        status: subscription.status,
+        currentPeriodEnd: subscription.currentPeriodEnd,
+      },
+    });
+  }
+
+  if (monthlySummary.totalIncome > 0 && monthlySummary.totalExpenses > monthlySummary.totalIncome * 0.85) {
+    derivedSignals.push({
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'expense_anomaly',
+      meshPriority: 4,
+      priority: 'background',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        month,
+        totalIncome: monthlySummary.totalIncome,
+        totalExpenses: monthlySummary.totalExpenses,
+        ratio: roundTo(monthlySummary.totalExpenses / monthlySummary.totalIncome, 2),
+      },
+    });
+  }
+
+  return {
+    userId: opts.userId,
+    weekStart: window.weekStart,
+    weekEnd: window.weekEnd,
+    month,
+    monthlySummary,
+    taxEvents,
+    annualSummary,
+    subscription,
+    derivedSignals,
+  };
+}
+
+interface WeekWindow {
+  start: DateTime;
+  end: DateTime;
+  weekStart: string;
+  weekEnd: string;
+}
+
+interface ActivePlanWeekMatch {
+  plan: TrainingPlan;
+  week: TrainingWeek | null;
+}
+
+function deriveBudgetConstraints(
+  remainingRatio: number,
+  opts: { renewalDueSoon: boolean; hasPendingTax: boolean },
+): {
+  budgetMode: 'tight' | 'controlled' | 'normal';
+  groceryMode: 'essentials_only' | 'cost_aware' | 'normal';
+  trainingSpendMode: 'maintenance_only' | 'selective' | 'normal';
+  contentSpendMode: 'lean' | 'selective' | 'normal';
+  supplementMode: 'essentials_only' | 'pause_new' | 'normal';
+  subscriptionMode: 'review_now' | 'confirm_value' | 'stable';
+} {
+  if (remainingRatio <= 0.15) {
+    return {
+      budgetMode: 'tight',
+      groceryMode: 'essentials_only',
+      trainingSpendMode: 'maintenance_only',
+      contentSpendMode: 'lean',
+      supplementMode: 'essentials_only',
+      subscriptionMode: opts.renewalDueSoon || opts.hasPendingTax ? 'review_now' : 'confirm_value',
+    };
+  }
+
+  if (remainingRatio <= 0.3) {
+    return {
+      budgetMode: 'controlled',
+      groceryMode: 'cost_aware',
+      trainingSpendMode: 'selective',
+      contentSpendMode: 'selective',
+      supplementMode: 'pause_new',
+      subscriptionMode: opts.renewalDueSoon ? 'review_now' : 'confirm_value',
+    };
+  }
+
+  return {
+    budgetMode: 'normal',
+    groceryMode: 'normal',
+    trainingSpendMode: 'normal',
+    contentSpendMode: 'normal',
+    supplementMode: 'normal',
+    subscriptionMode: opts.renewalDueSoon ? 'confirm_value' : 'stable',
+  };
+}
+
+function resolveWeekWindow(weekStart?: string): WeekWindow {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const base = weekStart
+    ? DateTime.fromISO(weekStart, { zone }).startOf('day')
+    : DateTime.now().setZone(zone).startOf('week');
+  const start = (base.isValid ? base : DateTime.now().setZone(zone)).startOf('week');
+  const end = start.plus({ days: 6 }).endOf('day');
+  return {
+    start,
+    end,
+    weekStart: start.toISODate()!,
+    weekEnd: start.plus({ days: 6 }).toISODate()!,
+  };
+}
+
+function weekIsoDates(start: DateTime): string[] {
+  return Array.from({ length: 7 }, (_, index) => start.plus({ days: index }).toISODate()!);
+}
+
+function findActivePlanForWeek(userId: number, targetDate: DateTime): ActivePlanWeekMatch | null {
+  const plans = getActivePlans(userId);
+  for (const plan of plans) {
+    const week = resolveTrainingWeekForDate(plan, targetDate);
+    if (week) {
+      return { plan, week };
+    }
+  }
+  if (plans[0]) {
+    return { plan: plans[0], week: resolveTrainingWeekForDate(plans[0], targetDate) };
+  }
+  return null;
+}
+
+function resolveTrainingWeekForDate(plan: TrainingPlan, targetDate: DateTime): TrainingWeek | null {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const planStart = DateTime.fromISO(plan.start_date, { zone }).startOf('day');
+  const diffDays = Math.floor(targetDate.startOf('day').diff(planStart, 'days').days);
+  if (diffDays < 0) return null;
+  const weekNumber = Math.floor(diffDays / 7) + 1;
+  const weeks = getWeeksForPlan(plan.id);
+  return weeks.find((week) => week.week_number === weekNumber) ?? null;
+}
+
+function sessionDateForWeek(session: TrainingSession, weekStart: DateTime): string {
+  const normalized = session.day_of_week.trim().toLowerCase();
+  const weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const offset = weekdays.indexOf(normalized);
+  return offset >= 0 ? weekStart.plus({ days: offset }).toISODate()! : weekStart.toISODate()!;
+}
+
+function inferTrainingLoad(session: TrainingSession): 'hard' | 'moderate' | 'light' {
+  const title = `${session.title} ${session.session_type} ${session.intensity_text ?? ''}`.toLowerCase();
+  if (/\b(interval|tempo|threshold|ftp|race|track|hill|long run|long ride|vo2)\b/.test(title)) {
+    return 'hard';
+  }
+  if (/\b(strength|brick|endurance|steady|build|moderate)\b/.test(title)) {
+    return 'moderate';
+  }
+  return 'light';
+}
+
+function deriveSessionImmovability(
+  entry: { session: TrainingSession; date: string; load: 'hard' | 'moderate' | 'light' },
+): { level: 'high' | 'medium'; reason: string } | null {
+  if (entry.load === 'hard') {
+    return {
+      level: 'high',
+      reason: 'Quality or high-cost session that should stay protected in the week.',
+    };
+  }
+  if (entry.load === 'moderate') {
+    return {
+      level: 'medium',
+      reason: 'Planned progression session that is movable only with care.',
+    };
+  }
+  return null;
+}
+
+function deriveFuelingRequirements(
+  entry: { session: TrainingSession; date: string; load: 'hard' | 'moderate' | 'light' },
+): {
+  supportLevel: 'elevated' | 'steady';
+  carbFocus: 'high' | 'moderate';
+  hydrationFocus: 'elevated' | 'steady';
+  proteinRecovery: boolean;
+  timing: string;
+} | null {
+  if (entry.load === 'hard') {
+    return {
+      supportLevel: 'elevated',
+      carbFocus: 'high',
+      hydrationFocus: 'elevated',
+      proteinRecovery: true,
+      timing: 'Protect both pre-session and post-session fueling on this day.',
+    };
+  }
+  if (entry.load === 'moderate') {
+    return {
+      supportLevel: 'steady',
+      carbFocus: 'moderate',
+      hydrationFocus: 'steady',
+      proteinRecovery: true,
+      timing: 'Keep the day fed consistently, especially after the session.',
+    };
+  }
+  return null;
+}
+
+function deriveTrainingContentCaptureOpportunity(opts: {
+  nextSession: { session: TrainingSession; date: string; load: 'hard' | 'moderate' | 'light' };
+  adherenceRate: number | null;
+  recoveryState: 'critical' | 'strained' | 'primed' | 'stable';
+  activeWeekFocus: string | null;
+}): {
+  angle: 'coach_adjustment' | 'progress_checkpoint' | 'block_focus';
+  reason: string;
+  meshPriority: MeshPriority;
+  priority: SignalPriority;
+} | null {
+  const adherenceRate = typeof opts.adherenceRate === 'number' ? opts.adherenceRate : null;
+
+  if ((opts.recoveryState === 'critical' || opts.recoveryState === 'strained') && opts.nextSession.load !== 'light') {
+    return {
+      angle: 'coach_adjustment',
+      reason: 'Recovery is under pressure, so the next key session shows how the coach is adapting the week instead of forcing the original prescription.',
+      meshPriority: 2,
+      priority: 'normal',
+    };
+  }
+
+  if (adherenceRate != null && adherenceRate >= 90 && opts.nextSession.load === 'hard') {
+    return {
+      angle: 'progress_checkpoint',
+      reason: 'Adherence is high and the next hard session is a strong progress checkpoint worth explaining or capturing.',
+      meshPriority: 3,
+      priority: 'normal',
+    };
+  }
+
+  if (opts.activeWeekFocus && opts.nextSession.load !== 'light') {
+    return {
+      angle: 'block_focus',
+      reason: `The current ${String(opts.activeWeekFocus).toLowerCase()} block is anchored by this session, which makes it a useful coaching story moment.`,
+      meshPriority: 4,
+      priority: 'background',
+    };
+  }
+
+  return null;
+}
+
+function nextScheduledSessionForWindow(
+  scheduledSessions: Array<{ session: TrainingSession; date: string; load: 'hard' | 'moderate' | 'light' }>,
+): { session: TrainingSession; date: string; load: 'hard' | 'moderate' | 'light' } | null {
+  const today = DateTime.now().setZone(config.app.timezone || 'Europe/Lisbon').toISODate()!;
+  return scheduledSessions
+    .slice()
+    .sort((lhs, rhs) => lhs.date.localeCompare(rhs.date))
+    .find((entry) => entry.date >= today)
+    ?? scheduledSessions
+      .slice()
+      .sort((lhs, rhs) => lhs.date.localeCompare(rhs.date))[0]
+    ?? null;
+}
+
+function summarizeBusyDates(events: UnifiedCalendarEvent[]): string[] {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    const date = String(event.start).slice(0, 10);
+    counts.set(date, (counts.get(date) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, count]) => count >= 3)
+    .map(([date]) => date)
+    .sort();
+}
+
+function extractTravelDates(events: UnifiedCalendarEvent[]): string[] {
+  const regex = /\b(flight|airport|hotel|travel|trip|voo|aeroporto|hotel|viagem)\b/i;
+  return uniqueStrings(events
+    .filter((event) => regex.test(String(event.summary ?? '')))
+    .map((event) => String(event.start).slice(0, 10)));
+}
+
+function summarizeCalendarFragmentation(events: UnifiedCalendarEvent[]): {
+  fragmentedDates: string[];
+  maxEventsInDay: number;
+} {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    const date = String(event.start).slice(0, 10);
+    counts.set(date, (counts.get(date) ?? 0) + 1);
+  }
+  const entries = [...counts.entries()];
+  return {
+    fragmentedDates: entries
+      .filter(([, count]) => count >= 4)
+      .map(([date]) => date)
+      .sort(),
+    maxEventsInDay: entries.reduce((max, [, count]) => Math.max(max, count), 0),
+  };
+}
+
+function summarizeMeetingCriticality(events: UnifiedCalendarEvent[]): {
+  criticalEventCount: number;
+  dates: string[];
+  examples: string[];
+} {
+  const regex = /\b(client|cliente|interview|entrevista|doctor|m[eé]dico|meeting|reuni[aã]o|call|sponsor|patroc[ií]nio|filming|shoot|flight|voo|deadline)\b/i;
+  const critical = events.filter((event) => regex.test(String(event.summary ?? '')));
+  return {
+    criticalEventCount: critical.length,
+    dates: uniqueStrings(critical.map((event) => String(event.start).slice(0, 10))),
+    examples: critical
+      .slice(0, 3)
+      .map((event) => String(event.summary ?? '').trim())
+      .filter(Boolean),
+  };
+}
+
+function summarizeTaskPortability(tasks: NormalizedTask[]): {
+  fixedCount: number;
+  portableCount: number;
+  portableRatio: number;
+} {
+  const fixedCount = tasks.filter((task) => Boolean(task.dueDate)).length;
+  const portableCount = Math.max(0, tasks.length - fixedCount);
+  const portableRatio = tasks.length > 0 ? roundTo(portableCount / tasks.length, 2) : 0;
+  return { fixedCount, portableCount, portableRatio };
+}
+
+function summarizeDeadlinePressure(opts: {
+  overdueCount: number;
+  dueTodayCount: number;
+  dueThisWeekCount: number;
+  pendingCount: number;
+  mailUnreadTotal: number;
+}): {
+  level: 'low' | 'elevated' | 'high';
+  overdueCount: number;
+  dueTodayCount: number;
+  dueThisWeekCount: number;
+  pendingCount: number;
+  mailUnreadTotal: number;
+} {
+  const level = opts.overdueCount > 0
+    || opts.dueTodayCount >= 3
+    || opts.mailUnreadTotal >= 20
+    ? 'high'
+    : opts.dueTodayCount > 0 || opts.dueThisWeekCount >= 4 || opts.mailUnreadTotal >= 8
+      ? 'elevated'
+      : 'low';
+  return {
+    level,
+    overdueCount: opts.overdueCount,
+    dueTodayCount: opts.dueTodayCount,
+    dueThisWeekCount: opts.dueThisWeekCount,
+    pendingCount: opts.pendingCount,
+    mailUnreadTotal: opts.mailUnreadTotal,
+  };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function endOfDayIso(date: DateTime): string {
+  return date.endOf('day').toUTC().toISO()!;
+}
+
+function roundTo(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function taxReminderDate(month: string): string {
+  const parsed = DateTime.fromFormat(month, 'yyyy-MM', { zone: 'UTC' });
+  if (!parsed.isValid) return `${month}-28`;
+  return parsed.endOf('month').toISODate()!;
+}
+
+function safely<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
 }

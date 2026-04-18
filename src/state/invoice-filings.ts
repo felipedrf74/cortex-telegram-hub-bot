@@ -18,7 +18,7 @@ export function recordFiling(data: {
   compressed_size_bytes?: number | null;
   status?: 'filed' | 'failed' | 'duplicate';
   error_message?: string | null;
-  user_id?: number;
+  user_id: number;
 }): InvoiceFiling {
   const db = getDb();
   const stmt = db.prepare(`
@@ -42,7 +42,7 @@ export function recordFiling(data: {
     data.compressed_size_bytes ?? null,
     data.status ?? 'filed',
     data.error_message ?? null,
-    data.user_id ?? 0,
+    data.user_id,
   );
   return db.prepare('SELECT * FROM invoice_filings WHERE id = ?')
     .get(result.lastInsertRowid) as InvoiceFiling;
@@ -52,14 +52,14 @@ export function recordFiling(data: {
  * Check if an invoice has already been filed for a given vendor + invoice number.
  * Only considers successfully filed invoices (status = 'filed').
  */
-export function isDuplicate(vendor: string, invoiceNumber: string | null, userId?: number): boolean {
+export function isDuplicate(vendor: string, invoiceNumber: string | null, userId: number): boolean {
   if (!invoiceNumber) return false;
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM invoice_filings
     WHERE vendor = ? AND invoice_number = ? AND status = 'filed'
-      ${userId != null ? 'AND user_id = ?' : ''}
-  `).get(...(userId != null ? [vendor, invoiceNumber, userId] : [vendor, invoiceNumber])) as { count: number };
+      AND user_id = ?
+  `).get(vendor, invoiceNumber, userId) as { count: number };
   return row.count > 0;
 }
 
@@ -67,18 +67,18 @@ export function isDuplicate(vendor: string, invoiceNumber: string | null, userId
  * Check if an email message has already been processed (by source_ref = messageId).
  * This catches duplicates even when invoice_number is missing/null.
  */
-export function isEmailAlreadyFiled(messageId: string, userId?: number): boolean {
+export function isEmailAlreadyFiled(messageId: string, userId: number): boolean {
   const db = getDb();
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM invoice_filings
     WHERE source = 'email' AND source_ref = ? AND status = 'filed'
-      ${userId != null ? 'AND user_id = ?' : ''}
-  `).get(...(userId != null ? [messageId, userId] : [messageId])) as { count: number };
+      AND user_id = ?
+  `).get(messageId, userId) as { count: number };
   return row.count > 0;
 }
 
 /** Get all filings for a specific year/month (for reporting). */
-export function getFilingsForMonth(year: number, month: number): InvoiceFiling[] {
+export function getFilingsForMonth(year: number, month: number, userId: number): InvoiceFiling[] {
   const db = getDb();
   const monthStr = month.toString().padStart(2, '0');
   const startDate = `${year}-${monthStr}-01`;
@@ -88,9 +88,9 @@ export function getFilingsForMonth(year: number, month: number): InvoiceFiling[]
 
   return db.prepare(`
     SELECT * FROM invoice_filings
-    WHERE document_date >= ? AND document_date < ?
+    WHERE document_date >= ? AND document_date < ? AND user_id = ?
     ORDER BY document_date ASC, vendor ASC
-  `).all(startDate, endDate) as InvoiceFiling[];
+  `).all(startDate, endDate, userId) as InvoiceFiling[];
 }
 
 /**
@@ -98,7 +98,7 @@ export function getFilingsForMonth(year: number, month: number): InvoiceFiling[]
  * Used by the /amazon --force flag to re-collect invoices after a bad run.
  * Returns the number of records deleted.
  */
-export function deleteAmazonFilings(year: number, month: number): number {
+export function deleteAmazonFilings(year: number, month: number, userId: number): number {
   const db = getDb();
   const monthStr = month.toString().padStart(2, '0');
   const startDate = `${year}-${monthStr}-01`;
@@ -110,8 +110,9 @@ export function deleteAmazonFilings(year: number, month: number): number {
     DELETE FROM invoice_filings
     WHERE vendor = 'Amazon.es'
       AND source = 'amazon'
+      AND user_id = ?
       AND document_date >= ? AND document_date < ?
-  `).run(startDate, endDate);
+  `).run(userId, startDate, endDate);
 
   return result.changes;
 }
@@ -120,7 +121,7 @@ export function deleteAmazonFilings(year: number, month: number): number {
  * Delete all Uber filings for a specific year/month.
  * Used by the /uber --force flag to re-collect invoices after a bad run.
  */
-export function deleteUberFilings(year: number, month: number): number {
+export function deleteUberFilings(year: number, month: number, userId: number): number {
   const db = getDb();
   const monthStr = month.toString().padStart(2, '0');
   const startDate = `${year}-${monthStr}-01`;
@@ -132,23 +133,18 @@ export function deleteUberFilings(year: number, month: number): number {
     DELETE FROM invoice_filings
     WHERE vendor = 'Uber'
       AND source = 'uber'
+      AND user_id = ?
       AND document_date >= ? AND document_date < ?
-  `).run(startDate, endDate);
+  `).run(userId, startDate, endDate);
 
   return result.changes;
 }
 
 /** Get recent filings for the /invoices-log display. */
-export function getRecentFilings(limit: number = 20, userId?: number): InvoiceFiling[] {
+export function getRecentFilings(userId: number, limit: number = 20): InvoiceFiling[] {
   const db = getDb();
-  if (userId != null) {
-    return db.prepare(`
-      SELECT * FROM invoice_filings WHERE user_id = ?
-      ORDER BY created_at DESC LIMIT ?
-    `).all(userId, limit) as InvoiceFiling[];
-  }
   return db.prepare(`
-    SELECT * FROM invoice_filings
+    SELECT * FROM invoice_filings WHERE user_id = ?
     ORDER BY created_at DESC LIMIT ?
-  `).all(limit) as InvoiceFiling[];
+  `).all(userId, limit) as InvoiceFiling[];
 }

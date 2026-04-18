@@ -58,6 +58,8 @@ describe('analyzeIntent', () => {
     expect(analyzeIntent('show my tasks').taskWrite).toBe(false);
     expect(analyzeIntent('create a new task').taskWrite).toBe(true);
     expect(analyzeIntent('marcar tarefa como concluída').taskWrite).toBe(true);
+    expect(analyzeIntent('cria uma tarefa para amanhã às 15h de ligar ao João').taskWrite).toBe(true);
+    expect(analyzeIntent('adiciona uma tarefa de prioridade alta').taskWrite).toBe(true);
   });
 
   it('detects calendar intent', () => {
@@ -70,6 +72,8 @@ describe('analyzeIntent', () => {
     expect(analyzeIntent('show my calendar').calendarWrite).toBe(false);
     expect(analyzeIntent('create a meeting tomorrow at 3pm').calendarWrite).toBe(true);
     expect(analyzeIntent('cancelar reunião de quinta').calendarWrite).toBe(true);
+    expect(analyzeIntent('marca uma reunião amanhã às 14h com a Ana').calendarWrite).toBe(true);
+    expect(analyzeIntent('remove da minha agenda a reunião de revisão com a Ana').calendarWrite).toBe(true);
   });
 
   it('detects email intent', () => {
@@ -135,6 +139,20 @@ describe('getToolPacksForMessage', () => {
     expect(packs).toContain('task_write');
     expect(packs).toContain('memory');
     expect(packs).not.toContain('email');
+  });
+
+  it('"cria uma tarefa para amanhã às 15h" → task_read + task_write + memory', () => {
+    const packs = getToolPacksForMessage('cria uma tarefa para amanhã às 15h de ligar ao João');
+    expect(packs).toContain('task_read');
+    expect(packs).toContain('task_write');
+    expect(packs).toContain('memory');
+  });
+
+  it('"marca uma reunião amanhã às 14h" → calendar_read + calendar_write + memory', () => {
+    const packs = getToolPacksForMessage('marca uma reunião amanhã às 14h com a Ana para revisão do design');
+    expect(packs).toContain('calendar_read');
+    expect(packs).toContain('calendar_write');
+    expect(packs).toContain('memory');
   });
 
   it('"send email to John about meeting" → email + calendar_read + memory', () => {

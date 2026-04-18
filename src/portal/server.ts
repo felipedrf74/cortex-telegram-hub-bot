@@ -45,15 +45,12 @@ import { isOutlookMailConfigured } from '../services/outlook-mail';
 import { isOutlookTodoConfigured } from '../services/microsoft-todo';
 import { getPendingCount as getInvoiceQueuePending } from '../services/invoice-queue';
 import { sendDailyBriefing } from '../services/scheduler';
-import { generateCoachBriefing } from '../services/garmin-coach';
-import { runContentDiscovery } from '../services/content-discovery';
 import {
   getAllChannels as getRefChannels,
   removeChannel as removeRefChannel,
   getAllKnowledge,
 } from '../state/content-references';
 import { addAndAnalyzeChannel, synthesizeKnowledge as reSynthesizeKnowledge } from '../services/channel-learner';
-import { escapeHtml, splitMessage } from '../utils/telegram-formatter';
 import {
   getActiveSignalCount, getSignalLog, getAgentStats, dismissSignal, writeSignal,
 } from '../services/intelligence-bus';
@@ -77,6 +74,8 @@ import {
   replayEvent, expireSubscriptions,
   type WebhookProvider,
 } from '../services/webhook-registry';
+import { dispatchCoachReports, dispatchContentReports } from '../services/manual-report-triggers';
+import { getOwnerBootstrapTarget } from '../services/user-service';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -184,6 +183,25 @@ interface SnapshotResponse {
 
 let cachedSnapshot: { data: SnapshotResponse; at: number } | null = null;
 const CACHE_TTL_MS = 3_000;
+
+export function getPortalTrainingStatsUserId(): number | null {
+  return getOwnerBootstrapTarget()?.tenantId ?? null;
+}
+
+export function getPortalUsageMeteringUserIds(): number[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT id FROM users WHERE status = 'active'"
+    ).all() as { id: number }[];
+    if (rows.length > 0) return rows.map((row) => row.id);
+  } catch {
+    // users table may not exist yet
+  }
+
+  const ownerTarget = getOwnerBootstrapTarget();
+  return ownerTarget ? [ownerTarget.tenantId] : [];
+}
 
 // ─── Rate Limiter (per-action, 30s cooldown) ────────────────────────
 
@@ -752,7 +770,7 @@ function buildSnapshot(): SnapshotResponse {
   let trainingPlans: { activePlans: number; totalCompletedSessions: number; currentWeekAdherence: number; currentPlanName: string | null } | null = null;
   try {
     const { getPlanStats } = require('../services/training-plans');
-    const userId = config.telegram.allowedUserIds[0];
+    const userId = getPortalTrainingStatsUserId();
     if (userId) {
       trainingPlans = getPlanStats(userId);
     }
@@ -772,8 +790,8 @@ function buildSnapshot(): SnapshotResponse {
       apiCalls: global.apiCalls,
       costUsd: global.costUsd,
     };
-    // Per-user breakdown for allowed users
-    for (const uid of config.telegram.allowedUserIds) {
+    // Per-user breakdown for active canonical tenants
+    for (const uid of getPortalUsageMeteringUserIds()) {
       const u = getDailyUsage(uid);
       if (u.apiCalls > 0) {
         usageMetering.byUser.push({
@@ -866,7 +884,7 @@ function buildAdapterStatus(): SnapshotResponse['adapters'] {
 
 // ─── Quick Actions ──────────────────────────────────────────────────
 
-async function handleAction(
+export async function handleAction(
   name: string,
   bot: Bot,
 ): Promise<{ ok: boolean; message: string }> {
@@ -889,40 +907,31 @@ async function handleAction(
     // 3. Trigger coach report
     case 'trigger-coach': {
       if (!isGarminConfigured()) return { ok: false, message: 'Garmin not configured' };
-      const result = await generateCoachBriefing();
-      const chunks = splitMessage(result.message);
-      for (const userId of config.telegram.allowedUserIds) {
-        for (const chunk of chunks) {
-          await bot.api.sendMessage(userId, chunk, { parse_mode: 'HTML' });
-        }
-      }
+      await dispatchCoachReports(async (telegramId, message, parseMode) => {
+        await bot.api.sendMessage(telegramId, message, {
+          parse_mode: parseMode ?? 'HTML',
+        });
+      });
       pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual coach report sent' });
       return { ok: true, message: 'Coach report sent to Telegram' };
     }
 
     // 4. Trigger content discovery
     case 'trigger-content': {
-      const discovery = await runContentDiscovery();
-      let msg = `🎬 <b>Daily Content Ideas Ready</b>\n\n`;
-      if (discovery.ideas.length > 0) {
-        for (let i = 0; i < discovery.ideas.length; i++) {
-          msg += `${i + 1}. ${escapeHtml(discovery.ideas[i])}\n`;
-        }
-      } else {
-        msg += `Ideas generated but couldn't parse titles — check the file.\n`;
-      }
-      msg += `\n📁 <code>${escapeHtml(discovery.filePath)}</code>`;
-      msg += `\n🔍 ${discovery.searchCount} web searches used`;
-      for (const userId of config.telegram.allowedUserIds) {
-        await bot.api.sendMessage(userId, msg, { parse_mode: 'HTML' });
-      }
+      await dispatchContentReports(async (telegramId, message, parseMode) => {
+        await bot.api.sendMessage(telegramId, message, {
+          parse_mode: parseMode ?? 'HTML',
+        });
+      });
       pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Manual content discovery sent' });
-      return { ok: true, message: `Content discovery complete — ${discovery.ideas.length} ideas` };
+      return { ok: true, message: 'Content discovery sent to Telegram' };
     }
 
     // 5. Clear conversation history
     case 'clear-history': {
-      clearAllConversations(0); // Clears default/owner user's conversations
+      const ownerTarget = getOwnerBootstrapTarget();
+      if (!ownerTarget) return { ok: false, message: 'Owner bootstrap target unavailable' };
+      clearAllConversations(ownerTarget.tenantId);
       pushEvent({ ts: new Date().toISOString(), type: 'job', summary: 'Conversation history cleared' });
       return { ok: true, message: 'All conversation history cleared' };
     }
@@ -1130,6 +1139,62 @@ export function createPortalServer(bot?: any): http.Server {
     logger.warn({ err }, 'Waitlist router failed to mount (non-fatal)');
   }
 
+  // ── iOS API (mounted before the global JSON parser) ──────────────────
+  if (config.ios?.enabled) {
+    // Initialize SQLite-backed cache store (survives restarts)
+    try {
+      const { initCacheStore, clearExpired } = require('../services/cache-store');
+      initCacheStore();
+      setInterval(clearExpired, 60 * 60 * 1000);
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize cache store');
+    }
+
+    const { createApiRouter } = require('../api/router');
+    // Receipt uploads send base64-encoded images, so the iOS surface needs
+    // a larger JSON cap than the rest of the portal.
+    app.use('/api/v1', express.json({ limit: '8mb' }), createApiRouter());
+    logger.info('iOS API enabled on /api/v1');
+
+    // Warm ALL caches on startup so first app open is instant
+    try {
+      const { warmTaskCache } = require('../api/routes/tasks');
+      const { warmDashboardCache } = require('../api/routes/dashboard');
+      const ownerTarget = getOwnerBootstrapTarget();
+      const userId = ownerTarget?.tenantId ?? null;
+
+      // Stagger startup warming: dashboard first (slowest), then tasks
+      if (userId) {
+        setTimeout(() => warmDashboardCache(userId).catch(() => {}), 3000);
+        // Periodic refresh: dashboard every 3 min, tasks every 2 min
+        setInterval(() => warmDashboardCache(userId).catch(() => {}), 3 * 60 * 1000);
+      }
+      setTimeout(() => warmTaskCache().catch(() => {}), 5000);
+      setInterval(() => warmTaskCache().catch(() => {}), 2 * 60 * 1000);
+    } catch (err) {
+      logger.debug({ err }, 'Cache warming setup failed (non-critical)');
+    }
+
+    // Ensure ios_devices table exists
+    try {
+      const db = getDb();
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ios_devices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          device_id TEXT NOT NULL UNIQUE,
+          device_name TEXT,
+          push_token TEXT,
+          refresh_token TEXT NOT NULL,
+          last_active_at TEXT DEFAULT (datetime('now')),
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+      `);
+    } catch (err) {
+      logger.error({ err }, 'Failed to create ios_devices table');
+    }
+  }
+
   app.use(express.json());
 
   // ── AI provider routing (must initialize BEFORE any AI call) ─────────
@@ -1172,58 +1237,6 @@ export function createPortalServer(bot?: any): http.Server {
     logger.error({ err }, 'Failed to initialize AI provider routing — falling back to direct Anthropic on every call');
   }
 
-  // ── iOS API (mounted first — separate JWT auth, not portal token) ────
-  if (config.ios?.enabled) {
-    // Initialize SQLite-backed cache store (survives restarts)
-    try {
-      const { initCacheStore, clearExpired } = require('../services/cache-store');
-      initCacheStore();
-      setInterval(clearExpired, 60 * 60 * 1000);
-    } catch (err) {
-      logger.error({ err }, 'Failed to initialize cache store');
-    }
-
-    const { createApiRouter } = require('../api/router');
-    app.use('/api/v1', createApiRouter());
-    logger.info('iOS API enabled on /api/v1');
-
-    // Warm ALL caches on startup so first app open is instant
-    try {
-      const { warmTaskCache } = require('../api/routes/tasks');
-      const { warmDashboardCache } = require('../api/routes/dashboard');
-      const userId = config.telegram.allowedUserIds[0];
-
-      // Stagger startup warming: dashboard first (slowest), then tasks
-      setTimeout(() => warmDashboardCache(userId).catch(() => {}), 3000);
-      setTimeout(() => warmTaskCache().catch(() => {}), 5000);
-
-      // Periodic refresh: dashboard every 3 min, tasks every 2 min
-      setInterval(() => warmDashboardCache(userId).catch(() => {}), 3 * 60 * 1000);
-      setInterval(() => warmTaskCache().catch(() => {}), 2 * 60 * 1000);
-    } catch (err) {
-      logger.debug({ err }, 'Cache warming setup failed (non-critical)');
-    }
-
-    // Ensure ios_devices table exists
-    try {
-      const db = getDb();
-      db.exec(`
-        CREATE TABLE IF NOT EXISTS ios_devices (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          device_id TEXT NOT NULL UNIQUE,
-          device_name TEXT,
-          push_token TEXT,
-          refresh_token TEXT NOT NULL,
-          last_active_at TEXT DEFAULT (datetime('now')),
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-    } catch (err) {
-      logger.error({ err }, 'Failed to create ios_devices table');
-    }
-  }
-
   // ── Health check endpoint (no auth — for uptime monitors) ──────
   // ── OAuth Callback Routes (no auth — public redirect targets) ──────
 
@@ -1238,6 +1251,44 @@ export function createPortalServer(bot?: any): http.Server {
       const { exchangeCode } = require('../services/oauth-flow');
       const { storeTokens } = require('../services/oauth-store');
       const { isIOSState, parseIOSState, consumeNonce } = require('../api/routes/oauth-initiate');
+      const {
+        isIOSGoogleAuthState,
+        parseIOSGoogleAuthState,
+        consumeGoogleAuthPendingSession,
+        storeGoogleAuthCompletion,
+      } = require('../services/google-auth-session-store');
+      const { exchangeGoogleCodeForIdentity, resolveGoogleIdentityUser } = require('../services/google-sign-in');
+      const { createAuthSessionAndRegisterDevice } = require('../services/ios-auth-session');
+
+      const redirectBase = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+
+      if (isIOSGoogleAuthState(state)) {
+        const parsed = parseIOSGoogleAuthState(state);
+        if (!parsed) {
+          res.redirect(`me.nexushub.app://auth/google?status=error&message=${encodeURIComponent('Invalid Google sign-in state')}`);
+          return;
+        }
+
+        const pending = consumeGoogleAuthPendingSession(parsed.nonce);
+        if (!pending) {
+          res.redirect(`me.nexushub.app://auth/google?status=error&message=${encodeURIComponent('Google sign-in session expired')}`);
+          return;
+        }
+
+        const payload = await exchangeGoogleCodeForIdentity(code, `${redirectBase}/oauth/google/callback`);
+        const user = resolveGoogleIdentityUser(payload);
+        const authPayload = createAuthSessionAndRegisterDevice({
+          userId: user.id,
+          deviceId: pending.deviceId,
+          deviceName: pending.deviceName,
+          pushToken: null,
+          user,
+          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+        });
+        const authCode = storeGoogleAuthCompletion(authPayload);
+        res.redirect(`me.nexushub.app://auth/google?status=success&authCode=${encodeURIComponent(authCode)}`);
+        return;
+      }
 
       // Detect iOS-origin flow (state = "ios:{userId}:{nonce}")
       let userId: number;
@@ -1245,10 +1296,25 @@ export function createPortalServer(bot?: any): http.Server {
 
       if (isIOS) {
         const parsed = parseIOSState(state);
-        if (!parsed) { res.status(400).send('Invalid state'); return; }
+        if (!parsed) {
+          res.redirect(`me.nexushub.app://oauth/google?status=error&message=${encodeURIComponent('Invalid OAuth state')}`);
+          return;
+        }
         const nonceData = consumeNonce(parsed.nonce);
-        if (!nonceData || nonceData.userId !== parsed.userId) {
-          res.status(403).send('Invalid or expired nonce');
+        if (!nonceData || nonceData.userId !== parsed.userId || nonceData.provider !== 'google') {
+          logger.warn(
+            {
+              flow: 'oauth_callback_nonce_mismatch',
+              provider: 'google',
+              parsedUserId: parsed.userId,
+              noncePrefix: parsed.nonce.slice(0, 8),
+              nonceFound: Boolean(nonceData),
+              nonceUserId: nonceData?.userId,
+              nonceProvider: nonceData?.provider,
+            },
+            'Google iOS OAuth callback rejected due to missing or mismatched nonce session',
+          );
+          res.redirect(`me.nexushub.app://oauth/google?status=error&message=${encodeURIComponent('Expired or invalid OAuth session')}`);
           return;
         }
         userId = parsed.userId;
@@ -1282,7 +1348,9 @@ export function createPortalServer(bot?: any): http.Server {
       }
     } catch (err) {
       logger.error({ err }, 'Google OAuth callback failed');
-      if (state.startsWith('ios:')) {
+      if (state.startsWith('ios-auth:')) {
+        res.redirect(`me.nexushub.app://auth/google?status=error&message=${encodeURIComponent('Google sign-in failed')}`);
+      } else if (state.startsWith('ios:')) {
         res.redirect(`me.nexushub.app://oauth/google?status=error&message=${encodeURIComponent('Connection failed')}`);
       } else {
         res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect google in Telegram.</p></body></html>');
@@ -1307,10 +1375,25 @@ export function createPortalServer(bot?: any): http.Server {
 
       if (isIOS) {
         const parsed = parseIOSState(state);
-        if (!parsed) { res.status(400).send('Invalid state'); return; }
+        if (!parsed) {
+          res.redirect(`me.nexushub.app://oauth/outlook?status=error&message=${encodeURIComponent('Invalid OAuth state')}`);
+          return;
+        }
         const nonceData = consumeNonce(parsed.nonce);
-        if (!nonceData || nonceData.userId !== parsed.userId) {
-          res.status(403).send('Invalid or expired nonce');
+        if (!nonceData || nonceData.userId !== parsed.userId || nonceData.provider !== 'outlook') {
+          logger.warn(
+            {
+              flow: 'oauth_callback_nonce_mismatch',
+              provider: 'outlook',
+              parsedUserId: parsed.userId,
+              noncePrefix: parsed.nonce.slice(0, 8),
+              nonceFound: Boolean(nonceData),
+              nonceUserId: nonceData?.userId,
+              nonceProvider: nonceData?.provider,
+            },
+            'Outlook iOS OAuth callback rejected due to missing or mismatched nonce session',
+          );
+          res.redirect(`me.nexushub.app://oauth/outlook?status=error&message=${encodeURIComponent('Expired or invalid OAuth session')}`);
           return;
         }
         userId = parsed.userId;
@@ -1364,22 +1447,49 @@ export function createPortalServer(bot?: any): http.Server {
       const { storeTokens } = require('../services/oauth-store');
       const { getUserLanguage } = require('../services/user-service');
       const { t } = require('../utils/i18n');
-      const userId = parseInt(state, 10);
+      const { isIOSState, parseIOSState, consumeNonce } = require('../api/routes/oauth-initiate');
+
+      let userId: number;
+      let isIOS = false;
+      if (isIOSState(state)) {
+        isIOS = true;
+        const parsed = parseIOSState(state);
+        if (!parsed) {
+          res.redirect(`me.nexushub.app://oauth/strava?status=error&message=${encodeURIComponent('Invalid OAuth state')}`);
+          return;
+        }
+        const nonceData = consumeNonce(parsed.nonce);
+        if (!nonceData || nonceData.userId !== parsed.userId || nonceData.provider !== 'strava') {
+          res.redirect(`me.nexushub.app://oauth/strava?status=error&message=${encodeURIComponent('Expired or invalid OAuth session')}`);
+          return;
+        }
+        userId = parsed.userId;
+      } else {
+        userId = parseInt(state, 10);
+      }
       const tokens = await exchangeCode('strava', code, userId);
       storeTokens(userId, 'strava', tokens);
 
-      try {
-        const lang = getUserLanguage(userId);
-        const botRef = getBotRef();
-        if (botRef) {
-          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Strava' }));
-        }
-      } catch { /* notification is best-effort */ }
+      if (isIOS) {
+        res.redirect('me.nexushub.app://oauth/strava?status=success');
+      } else {
+        try {
+          const lang = getUserLanguage(userId);
+          const botRef = getBotRef();
+          if (botRef) {
+            await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Strava' }));
+          }
+        } catch { /* notification is best-effort */ }
 
-      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Strava account linked. You can close this window and return to Telegram.</p></body></html>');
+        res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Strava account linked. You can close this window and return to Telegram.</p></body></html>');
+      }
     } catch (err) {
       logger.error({ err }, 'Strava OAuth callback failed');
-      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect strava in Telegram.</p></body></html>');
+      if (state.startsWith('ios:')) {
+        res.redirect(`me.nexushub.app://oauth/strava?status=error&message=${encodeURIComponent('Connection failed')}`);
+      } else {
+        res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect strava in Telegram.</p></body></html>');
+      }
     }
   });
 
@@ -1397,22 +1507,48 @@ export function createPortalServer(bot?: any): http.Server {
       const { storeTokens } = require('../services/oauth-store');
       const { getUserLanguage } = require('../services/user-service');
       const { t } = require('../utils/i18n');
-      const userId = parseInt(state, 10);
+      const { isIOSState, parseIOSState, consumeNonce } = require('../api/routes/oauth-initiate');
+
+      let userId: number;
+      let isIOS = false;
+      if (isIOSState(state)) {
+        isIOS = true;
+        const parsed = parseIOSState(state);
+        if (!parsed) {
+          res.redirect(`me.nexushub.app://oauth/whoop?status=error&message=${encodeURIComponent('Invalid OAuth state')}`);
+          return;
+        }
+        const nonceData = consumeNonce(parsed.nonce);
+        if (!nonceData || nonceData.userId !== parsed.userId || nonceData.provider !== 'whoop') {
+          res.redirect(`me.nexushub.app://oauth/whoop?status=error&message=${encodeURIComponent('Expired or invalid OAuth session')}`);
+          return;
+        }
+        userId = parsed.userId;
+      } else {
+        userId = parseInt(state, 10);
+      }
       const tokens = await exchangeCode('whoop', code, userId);
       storeTokens(userId, 'whoop', tokens);
 
-      try {
-        const lang = getUserLanguage(userId);
-        const botRef = getBotRef();
-        if (botRef) {
-          await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Whoop' }));
-        }
-      } catch { /* notification is best-effort */ }
-
-      res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Whoop account linked. You can close this window and return to Telegram.</p></body></html>');
+      if (isIOS) {
+        res.redirect('me.nexushub.app://oauth/whoop?status=success');
+      } else {
+        try {
+          const lang = getUserLanguage(userId);
+          const botRef = getBotRef();
+          if (botRef) {
+            await botRef.api.sendMessage(userId, t('oauth_connected', lang, { provider: 'Whoop' }));
+          }
+        } catch { /* notification is best-effort */ }
+        res.send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>✅ Connected!</h1><p>Whoop account linked. You can close this window and return to Telegram.</p></body></html>');
+      }
     } catch (err) {
       logger.error({ err }, 'Whoop OAuth callback failed');
-      res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect whoop in Telegram.</p></body></html>');
+      if (state.startsWith('ios:')) {
+        res.redirect(`me.nexushub.app://oauth/whoop?status=error&message=${encodeURIComponent('Connection failed')}`);
+      } else {
+        res.status(500).send('<html><body style="font-family:system-ui;text-align:center;padding:60px"><h1>❌ Connection Failed</h1><p>Please try again with /connect whoop in Telegram.</p></body></html>');
+      }
     }
   });
 
@@ -1954,14 +2090,16 @@ export function createPortalServer(bot?: any): http.Server {
       // both subject and actor since the portal token holder is the owner.
       try {
         const { logAudit } = require('../services/audit-trail');
-        const ownerId = config.telegram.allowedUserIds[0] ?? 0;
-        logAudit({
-          userId: ownerId,
-          actorId: ownerId,
-          action: 'access',
-          resource: `portal.action.${name}`,
-          ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
-        });
+        const ownerTarget = getOwnerBootstrapTarget();
+        if (ownerTarget) {
+          logAudit({
+            userId: ownerTarget.tenantId,
+            actorId: ownerTarget.tenantId,
+            action: 'access',
+            resource: `portal.action.${name}`,
+            ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+          });
+        }
       } catch { /* audit-trail not available — non-critical */ }
 
       res.json(result);

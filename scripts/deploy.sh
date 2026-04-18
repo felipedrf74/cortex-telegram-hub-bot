@@ -133,6 +133,7 @@ echo "📤 Syncing files to server..."
 if command -v rsync &>/dev/null; then
   rsync -avz --delete \
     --exclude='.env' \
+    --exclude='.db.sqlite' \
     --exclude='data/' \
     --exclude='logs/' \
     --exclude='node_modules/' \
@@ -170,6 +171,13 @@ echo "📥 Installing dependencies..."
 ssh "$SERVER" "cd $REMOTE_DIR && npm ci --production 2>&1 | tail -1"
 ssh "$SERVER" "cd $REMOTE_DIR/content-engine && source .venv/bin/activate && pip install -q -r requirements.txt 2>&1 | tail -3"
 echo "   ✅ Dependencies updated"
+
+# ── 5a. Owner bootstrap preflight (strict) ───────────
+# Production must not restart into an ambiguous owner/bootstrap state.
+echo ""
+echo "🧭 Verifying owner bootstrap on server..."
+ssh "$SERVER" "cd $REMOTE_DIR && node dist/tools/owner-bootstrap-preflight.js --strict"
+echo "   ✅ Owner bootstrap preflight passed"
 
 # ── 5b. Rebuild native modules for the Node version PM2 spawns child processes with ──
 # IMPORTANT: PM2 daemon runs under Linuxbrew Node (25.x) but the bot child

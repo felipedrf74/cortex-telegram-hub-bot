@@ -29,11 +29,18 @@ import {
 import { handleTaskExtraction } from '../photo';
 import { enqueue, isHtmlParseError } from '../shared-state';
 import { downloadTelegramFile } from '../telegram-file';
+import { resolveCanonicalUserId } from '../../services/user-service';
 
 export function registerFinanceCommands(bot: Bot): void {
   // /invoices [YYYY-MM] — Manual trigger for monthly invoice collection
   bot.command('invoices', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const userId = resolveCanonicalUserId(ctx.from!.id);
+      if (!userId) {
+        await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
       if (!isInvoiceFilingConfigured()) {
         await ctx.reply('\u26A0\uFE0F Arquivamento de faturas n\u00E3o configurado.');
         return;
@@ -61,7 +68,7 @@ export function registerFinanceCommands(bot: Bot): void {
       await ctx.reply(`\u{1F4CA} A recolher faturas de <b>${monthLabel}</b>...`, { parse_mode: 'HTML' });
 
       try {
-        const result = await collectMonthlyInvoices(undefined, year, month);
+        const result = await collectMonthlyInvoices(userId, year, month);
         const notification = formatCollectionNotification(result);
 
         for (const chunk of splitMessage(notification)) {
@@ -82,6 +89,12 @@ export function registerFinanceCommands(bot: Bot): void {
   // /addfatura <name> | <sender> — Register a new invoice vendor
   bot.command('addfatura', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const userId = resolveCanonicalUserId(ctx.from!.id);
+      if (!userId) {
+        await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
       const arg = ctx.match?.trim();
       if (!arg || !arg.includes('|')) {
         await ctx.reply(
@@ -100,7 +113,7 @@ export function registerFinanceCommands(bot: Bot): void {
       }
 
       try {
-        const vendor = addVendor(namePart, senderPart);
+        const vendor = addVendor(namePart, senderPart, userId);
         await ctx.reply(
           `\u2705 <b>${escapeHtml(vendor.name)}</b> adicionado.\n` +
           `\u{1F4E7} Emails de <code>${escapeHtml(vendor.sender_pattern)}</code> ser\u00E3o recolhidos no pr\u00F3ximo m\u00EAs.`,
@@ -116,13 +129,19 @@ export function registerFinanceCommands(bot: Bot): void {
   // /rmfatura <name> — Remove/disable a custom vendor
   bot.command('rmfatura', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const userId = resolveCanonicalUserId(ctx.from!.id);
+      if (!userId) {
+        await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
       const name = ctx.match?.trim();
       if (!name) {
         await ctx.reply('\u{1F4DD} <b>Uso:</b> <code>/rmfatura Nome</code>', { parse_mode: 'HTML' });
         return;
       }
 
-      const removed = removeVendorByName(name);
+      const removed = removeVendorByName(name, userId);
       if (removed) {
         await ctx.reply(`\u{1F5D1} <b>${escapeHtml(name)}</b> desativado. N\u00E3o ser\u00E1 recolhido nos pr\u00F3ximos meses.`, { parse_mode: 'HTML' });
       } else {
@@ -134,8 +153,14 @@ export function registerFinanceCommands(bot: Bot): void {
   // /faturas — List all configured vendors (builtin + custom)
   bot.command('faturas', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const userId = resolveCanonicalUserId(ctx.from!.id);
+      if (!userId) {
+        await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
       const builtins = getBuiltinVendors();
-      const customs = getCustomVendors();
+      const customs = getCustomVendors(userId);
 
       let msg = `\u{1F4CB} <b>Fornecedores de Faturas</b>\n\n`;
       msg += `<b>\u{1F4CC} Fixos:</b>\n`;
@@ -160,6 +185,12 @@ export function registerFinanceCommands(bot: Bot): void {
   // /amazon [YYYY-MM] [--force] — Manual trigger for Amazon.es invoice collection (with 2FA support)
   bot.command('amazon', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const userId = resolveCanonicalUserId(ctx.from!.id);
+      if (!userId) {
+        await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
       if (!isAmazonConfigured()) {
         await ctx.reply(
           '\u26A0\uFE0F Amazon n\u00E3o configurado.\n' +
@@ -194,7 +225,7 @@ export function registerFinanceCommands(bot: Bot): void {
 
       // If --force, delete stale filing records for this month first
       if (force) {
-        const deleted = deleteAmazonFilings(year, month);
+        const deleted = deleteAmazonFilings(year, month, userId);
         if (deleted > 0) {
           await ctx.reply(
             `\u{1F5D1} <b>--force</b>: ${deleted} registo(s) anterior(es) removido(s) para ${monthLabel}.`,
@@ -216,7 +247,7 @@ export function registerFinanceCommands(bot: Bot): void {
         };
         const waitForReply = (timeoutMs: number) => registerAmazonReplyWaiter(chatId, timeoutMs);
 
-        const result = await collectAmazonInvoices(year, month, sendMessage, sendScreenshot, waitForReply);
+        const result = await collectAmazonInvoices(userId, year, month, sendMessage, sendScreenshot, waitForReply);
         const notification = formatAmazonNotification(result);
 
         for (const chunk of splitMessage(notification)) {
@@ -237,6 +268,12 @@ export function registerFinanceCommands(bot: Bot): void {
   // /uber [YYYY-MM] [--force] — Manual Uber invoice collection (rides + eats, with 2FA support)
   bot.command('uber', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
+      const userId = resolveCanonicalUserId(ctx.from!.id);
+      if (!userId) {
+        await ctx.reply('⚠️ Não foi possível associar este comando a uma conta Nexus.');
+        return;
+      }
+
       if (!isUberConfigured()) {
         await ctx.reply(
           '\u26A0\uFE0F Uber n\u00E3o configurado.\n' +
@@ -269,7 +306,7 @@ export function registerFinanceCommands(bot: Bot): void {
       const monthLabel = `${PT_MONTHS[month]}-${year}`;
 
       if (force) {
-        const deleted = deleteUberFilings(year, month);
+        const deleted = deleteUberFilings(year, month, userId);
         if (deleted > 0) {
           await ctx.reply(
             `\u{1F5D1} <b>--force</b>: ${deleted} registo(s) anterior(es) removido(s) para ${monthLabel}.`,
@@ -290,7 +327,7 @@ export function registerFinanceCommands(bot: Bot): void {
         };
         const waitForReply = (timeoutMs: number) => registerUberReplyWaiter(chatId, timeoutMs);
 
-        const result = await collectUberInvoices(year, month, sendMessage, sendScreenshot, waitForReply);
+        const result = await collectUberInvoices(userId, year, month, sendMessage, sendScreenshot, waitForReply);
         const notification = formatUberNotification(result);
 
         for (const chunk of splitMessage(notification)) {

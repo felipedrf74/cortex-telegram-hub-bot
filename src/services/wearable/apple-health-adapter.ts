@@ -11,6 +11,7 @@
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
 import { scoreSleep } from '../readiness-scorer';
+import { deriveIntradayEnergyReserve } from './energy-reserve';
 import type { WearableAdapter } from './adapter-interface';
 import type {
   WearableProvider,
@@ -39,6 +40,14 @@ const APPLE_TYPE_MAP: Record<string, ActivityType> = {
 
 function mapAppleType(type: string): ActivityType {
   return APPLE_TYPE_MAP[type] ?? 'other';
+}
+
+function parseMetricValue(payload: any, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = payload?.[key];
+    if (typeof value === 'number') return value;
+  }
+  return null;
 }
 
 // ─── Adapter ───────────────────────────────────────────────────────
@@ -71,30 +80,36 @@ export class AppleHealthAdapter implements WearableAdapter {
     try {
       const db = getDb();
       const rows = db.prepare(
-        `SELECT data_json FROM apple_health_data
-         WHERE user_id = ? AND data_type = 'workout' AND date BETWEEN ? AND ?
+        `SELECT data_json, data_type FROM apple_health_data
+         WHERE user_id = ? AND data_type IN ('workout', 'workouts') AND date BETWEEN ? AND ?
          ORDER BY date ASC`
-      ).all(userId, startDate, endDate) as Array<{ data_json: string }>;
+      ).all(userId, startDate, endDate) as Array<{ data_json: string; data_type: string }>;
 
-      return rows.map((row, idx) => {
-        const a = JSON.parse(row.data_json);
-        return {
-          id: `apple-${a.workoutId ?? idx}`,
-          provider: 'apple_health' as WearableProvider,
-          type: mapAppleType(a.workoutActivityType ?? ''),
-          name: a.workoutActivityType?.replace('HKWorkoutActivityType', '') ?? 'Workout',
-          startTime: a.startDate ?? '',
-          endTime: a.endDate ?? null,
-          durationSeconds: a.duration ?? 0,
-          distanceMeters: a.totalDistance ?? null,
-          calories: a.totalEnergyBurned ?? null,
-          avgHeartRate: a.averageHeartRate ?? null,
-          maxHeartRate: a.maxHeartRate ?? null,
-          avgCadence: null,
-          avgSpeedMps: null,
-          elevationGainMeters: a.elevationAscended ?? null,
-          raw: a,
-        };
+      return rows.flatMap((row, rowIndex) => {
+        const parsed = JSON.parse(row.data_json);
+        const workouts = Array.isArray(parsed) ? parsed : [parsed];
+
+        return workouts.map((workout, workoutIndex) => {
+          const workoutType = workout.workoutActivityType ?? workout.activityTypeName ?? workout.activityType ?? '';
+          const durationMinutes = workout.durationMinutes ?? workout.duration ?? 0;
+          return {
+            id: `apple-${workout.workoutId ?? `${rowIndex}-${workoutIndex}`}`,
+            provider: 'apple_health' as WearableProvider,
+            type: mapAppleType(workoutType),
+            name: workoutType.replace('HKWorkoutActivityType', '') || 'Workout',
+            startTime: workout.startDate ?? workout.start ?? '',
+            endTime: workout.endDate ?? workout.end ?? null,
+            durationSeconds: Math.round(durationMinutes * 60),
+            distanceMeters: workout.totalDistance ?? null,
+            calories: workout.totalEnergyBurned ?? null,
+            avgHeartRate: workout.averageHeartRate ?? null,
+            maxHeartRate: workout.maxHeartRate ?? null,
+            avgCadence: null,
+            avgSpeedMps: null,
+            elevationGainMeters: workout.elevationAscended ?? null,
+            raw: workout,
+          };
+        });
       });
     } catch (err) {
       logger.warn({ err, userId }, 'Apple Health activities read failed');
@@ -113,13 +128,22 @@ export class AppleHealthAdapter implements WearableAdapter {
 
       if (!row) return null;
       const s = JSON.parse(row.data_json);
+      const totalSleepSeconds = parseMetricValue(s, 'totalSleepSeconds')
+        ?? ((parseMetricValue(s, 'totalMinutes') ?? 0) * 60);
+      const deepSleepSeconds = parseMetricValue(s, 'deepSleepSeconds')
+        ?? ((parseMetricValue(s, 'deepMinutes') ?? 0) * 60);
+      const remSleepSeconds = parseMetricValue(s, 'remSleepSeconds')
+        ?? ((parseMetricValue(s, 'remMinutes') ?? 0) * 60);
+      const awakeSleepSeconds = parseMetricValue(s, 'awakeSleepSeconds');
+      const lightSleepSeconds = parseMetricValue(s, 'coreSleepSeconds', 'lightSleepSeconds')
+        ?? Math.max(0, totalSleepSeconds - deepSleepSeconds - remSleepSeconds - (awakeSleepSeconds ?? 0));
 
       // Derive sleep score from stage proportions (April 2026)
       let derivedSleepScore: number | null = null;
       try {
-        const totalMin = (s.totalSleepSeconds ?? 0) / 60;
-        const deepMin = (s.deepSleepSeconds ?? 0) / 60;
-        const remMin = (s.remSleepSeconds ?? 0) / 60;
+        const totalMin = totalSleepSeconds / 60;
+        const deepMin = deepSleepSeconds / 60;
+        const remMin = remSleepSeconds / 60;
         if (totalMin > 0) {
           const { deriveAppleHealthSleepScore } = require('../readiness-scorer');
           derivedSleepScore = deriveAppleHealthSleepScore(totalMin, deepMin, remMin);
@@ -129,11 +153,11 @@ export class AppleHealthAdapter implements WearableAdapter {
       return {
         provider: 'apple_health',
         date,
-        totalSleepSeconds: s.totalSleepSeconds ?? null,
-        deepSleepSeconds: s.deepSleepSeconds ?? null,
-        lightSleepSeconds: s.coreSleepSeconds ?? null,
-        remSleepSeconds: s.remSleepSeconds ?? null,
-        awakeSleepSeconds: s.awakeSleepSeconds ?? null,
+        totalSleepSeconds: totalSleepSeconds || null,
+        deepSleepSeconds: deepSleepSeconds || null,
+        lightSleepSeconds: lightSleepSeconds || null,
+        remSleepSeconds: remSleepSeconds || null,
+        awakeSleepSeconds: awakeSleepSeconds,
         sleepScore: derivedSleepScore,
         bedTimeStart: s.startDate ?? null,
         bedTimeEnd: s.endDate ?? null,
@@ -156,7 +180,31 @@ export class AppleHealthAdapter implements WearableAdapter {
 
       const rhrRow = db.prepare(
         `SELECT data_json FROM apple_health_data
-         WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date = ?
+         WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ?
+         ORDER BY created_at DESC LIMIT 1`
+      ).get(userId, date) as { data_json: string } | undefined;
+
+      const summaryRow = db.prepare(
+        `SELECT data_json FROM apple_health_data
+         WHERE user_id = ? AND data_type = 'daily_summary' AND date = ?
+         ORDER BY created_at DESC LIMIT 1`
+      ).get(userId, date) as { data_json: string } | undefined;
+
+      const caloriesRow = db.prepare(
+        `SELECT data_json FROM apple_health_data
+         WHERE user_id = ? AND data_type = 'calories' AND date = ?
+         ORDER BY created_at DESC LIMIT 1`
+      ).get(userId, date) as { data_json: string } | undefined;
+
+      const stepsRow = db.prepare(
+        `SELECT data_json FROM apple_health_data
+         WHERE user_id = ? AND data_type = 'steps' AND date = ?
+         ORDER BY created_at DESC LIMIT 1`
+      ).get(userId, date) as { data_json: string } | undefined;
+
+      const exerciseRow = db.prepare(
+        `SELECT data_json FROM apple_health_data
+         WHERE user_id = ? AND data_type = 'exercise_minutes' AND date = ?
          ORDER BY created_at DESC LIMIT 1`
       ).get(userId, date) as { data_json: string } | undefined;
 
@@ -164,6 +212,10 @@ export class AppleHealthAdapter implements WearableAdapter {
 
       const hrv = hrvRow ? JSON.parse(hrvRow.data_json) : null;
       const rhr = rhrRow ? JSON.parse(rhrRow.data_json) : null;
+      const summary = summaryRow ? JSON.parse(summaryRow.data_json) : null;
+      const calories = caloriesRow ? JSON.parse(caloriesRow.data_json) : null;
+      const steps = stepsRow ? JSON.parse(stepsRow.data_json) : null;
+      const exercise = exerciseRow ? JSON.parse(exerciseRow.data_json) : null;
 
       // ── Derived readiness and body battery (April 2026) ──────────
       // Apple Health has no native readiness or body battery metrics.
@@ -171,13 +223,14 @@ export class AppleHealthAdapter implements WearableAdapter {
       // so Apple Health users see real values, not nulls.
       let readinessScore: number | null = null;
       let bodyBatteryEquiv: number | null = null;
+      let currentEnergyReserve: number | null = null;
+      const hrvMs = parseMetricValue(hrv, 'value', 'sdnn_ms');
+      const restingHeartRate = parseMetricValue(rhr, 'value', 'bpm');
 
       try {
         const {
           scoreHrv, deriveAppleHealthSleepScore, deriveBodyBatteryEquivalent,
         } = require('../readiness-scorer');
-
-        const hrvMs = hrv?.value ?? null;
 
         // HRV baseline (7-day average)
         const hrvHistory = db.prepare(
@@ -185,7 +238,9 @@ export class AppleHealthAdapter implements WearableAdapter {
            WHERE user_id = ? AND data_type = 'hrv' AND date < ? AND date > date(?, '-8 days')
            ORDER BY date DESC LIMIT 7`
         ).all(userId, date, date) as Array<{ data_json: string }>;
-        const hrvValues = hrvHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+        const hrvValues = hrvHistory
+          .map(r => parseMetricValue(JSON.parse(r.data_json), 'value', 'sdnn_ms') ?? 0)
+          .filter((v: number) => v > 0);
         const hrvBaseline = hrvValues.length > 0 ? hrvValues.reduce((a: number, b: number) => a + b) / hrvValues.length : (hrvMs ?? 60);
 
         // Sleep data for today
@@ -196,9 +251,9 @@ export class AppleHealthAdapter implements WearableAdapter {
         ).get(userId, date) as { data_json: string } | undefined;
 
         const sleep = sleepRow ? JSON.parse(sleepRow.data_json) : null;
-        const totalSleepMin = sleep ? (sleep.totalSleepSeconds ?? 0) / 60 : 0;
-        const deepSleepMin = sleep ? (sleep.deepSleepSeconds ?? 0) / 60 : 0;
-        const remSleepMin = sleep ? (sleep.remSleepSeconds ?? 0) / 60 : 0;
+        const totalSleepMin = sleep ? ((parseMetricValue(sleep, 'totalSleepSeconds') ?? ((parseMetricValue(sleep, 'totalMinutes') ?? 0) * 60)) / 60) : 0;
+        const deepSleepMin = sleep ? ((parseMetricValue(sleep, 'deepSleepSeconds') ?? ((parseMetricValue(sleep, 'deepMinutes') ?? 0) * 60)) / 60) : 0;
+        const remSleepMin = sleep ? ((parseMetricValue(sleep, 'remSleepSeconds') ?? ((parseMetricValue(sleep, 'remMinutes') ?? 0) * 60)) / 60) : 0;
 
         const hrvScoreVal = scoreHrv(hrvMs ?? 60, hrvBaseline);
         const sleepScore = totalSleepMin > 0
@@ -208,20 +263,29 @@ export class AppleHealthAdapter implements WearableAdapter {
         // RHR baseline
         const rhrHistory = db.prepare(
           `SELECT data_json FROM apple_health_data
-           WHERE user_id = ? AND data_type = 'resting_heart_rate' AND date < ? AND date > date(?, '-8 days')
+           WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date < ? AND date > date(?, '-8 days')
            ORDER BY date DESC LIMIT 7`
         ).all(userId, date, date) as Array<{ data_json: string }>;
-        const rhrValues = rhrHistory.map(r => JSON.parse(r.data_json)?.value ?? 0).filter((v: number) => v > 0);
+        const rhrValues = rhrHistory
+          .map(r => parseMetricValue(JSON.parse(r.data_json), 'value', 'bpm') ?? 0)
+          .filter((v: number) => v > 0);
         const rhrBaseline = rhrValues.length > 0 ? rhrValues.reduce((a: number, b: number) => a + b) / rhrValues.length : null;
 
         if (sleepScore != null) {
-          bodyBatteryEquiv = deriveBodyBatteryEquivalent(sleepScore, hrvScoreVal, rhr?.value ?? null, rhrBaseline);
+          bodyBatteryEquiv = deriveBodyBatteryEquivalent(sleepScore, hrvScoreVal, restingHeartRate, rhrBaseline);
         }
+
+        currentEnergyReserve = deriveIntradayEnergyReserve({
+          morningPeak: bodyBatteryEquiv,
+          activeCalories: parseMetricValue(summary, 'activeCalories') ?? parseMetricValue(calories, 'kcal'),
+          exerciseMinutes: parseMetricValue(summary, 'exerciseMinutes') ?? parseMetricValue(exercise, 'minutes'),
+          steps: parseMetricValue(summary, 'steps') ?? parseMetricValue(steps, 'count'),
+        }) ?? bodyBatteryEquiv;
 
         // Derive readiness: same 30/30/20/20 weighting
         if (hrvMs != null || sleepScore != null) {
           const { scoreBodyBattery, scoreAcwr } = require('../readiness-scorer');
-          const bbScore = bodyBatteryEquiv != null ? scoreBodyBattery(bodyBatteryEquiv) : 60;
+          const bbScore = currentEnergyReserve != null ? scoreBodyBattery(currentEnergyReserve) : 60;
           readinessScore = Math.round(
             hrvScoreVal * 0.30 +
             (sleepScore != null ? scoreSleep(totalSleepMin / 60, sleepScore) : 60) * 0.30 +
@@ -237,11 +301,11 @@ export class AppleHealthAdapter implements WearableAdapter {
         provider: 'apple_health',
         date,
         readinessScore,
-        hrvMs: hrv?.value ?? null,
-        restingHeartRate: rhr?.value ?? null,
-        bodyBattery: bodyBatteryEquiv,
+        hrvMs,
+        restingHeartRate,
+        bodyBattery: currentEnergyReserve ?? bodyBatteryEquiv,
         recoveryScore: readinessScore, // use readiness as recovery proxy
-        raw: { hrv, rhr },
+        raw: { hrv, rhr, dailySummary: summary },
       };
     } catch (err) {
       logger.warn({ err, userId }, 'Apple Health readiness read failed');
@@ -258,8 +322,30 @@ export class AppleHealthAdapter implements WearableAdapter {
          ORDER BY created_at DESC LIMIT 1`
       ).get(userId, date) as { data_json: string } | undefined;
 
-      if (!row) return null;
-      const d = JSON.parse(row.data_json);
+      let d = row ? JSON.parse(row.data_json) : null;
+      if (!d) {
+        const stepsRow = db.prepare(
+          `SELECT data_json FROM apple_health_data
+           WHERE user_id = ? AND data_type = 'steps' AND date = ?
+           ORDER BY created_at DESC LIMIT 1`
+        ).get(userId, date) as { data_json: string } | undefined;
+        const caloriesRow = db.prepare(
+          `SELECT data_json FROM apple_health_data
+           WHERE user_id = ? AND data_type = 'calories' AND date = ?
+           ORDER BY created_at DESC LIMIT 1`
+        ).get(userId, date) as { data_json: string } | undefined;
+        const rhrRow = db.prepare(
+          `SELECT data_json FROM apple_health_data
+           WHERE user_id = ? AND data_type IN ('resting_heart_rate', 'resting_hr') AND date = ?
+           ORDER BY created_at DESC LIMIT 1`
+        ).get(userId, date) as { data_json: string } | undefined;
+        if (!stepsRow && !caloriesRow && !rhrRow) return null;
+        d = {
+          steps: stepsRow ? parseMetricValue(JSON.parse(stepsRow.data_json), 'count') : null,
+          activeCalories: caloriesRow ? parseMetricValue(JSON.parse(caloriesRow.data_json), 'kcal') : null,
+          restingHeartRate: rhrRow ? parseMetricValue(JSON.parse(rhrRow.data_json), 'value', 'bpm') : null,
+        };
+      }
 
       return {
         provider: 'apple_health',

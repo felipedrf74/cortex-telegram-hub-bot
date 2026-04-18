@@ -22,6 +22,8 @@ import { Client } from '@microsoft/microsoft-graph-client';
 import { PublicClientApplication } from '@azure/msal-node';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { getTokens } from './oauth-store';
+import { getOwnerBootstrapUserRefs } from './user-service';
 
 // ─── All Microsoft Graph scopes needed by the app ────────────────────
 const ALL_SCOPES = [
@@ -33,30 +35,77 @@ const ALL_SCOPES = [
 ];
 
 // ConfidentialClientApplication and PublicClientApplication both have
-// acquireTokenByRefreshToken(), so we type the client as `any` to support both.
-let msalClient: any = null;
+// acquireTokenByRefreshToken(), so we type the clients as `any` to support both.
+let confidentialMsalClient: any = null;
+let publicMsalClient: PublicClientApplication | null = null;
 let graphClient: Client | null = null;
 
-function getMsalClient(): any {
-  if (msalClient) return msalClient;
-
-  // Use ConfidentialClientApplication when client_secret is available
-  // (Web platform apps registered in Azure require the secret for token refresh).
-  // Fall back to PublicClientApplication for backward compatibility with
-  // personal-account-only registrations that don't have a secret.
+function buildAuthConfig(includeSecret: boolean): any {
   const authConfig: any = {
     clientId: config.outlook.clientId,
     authority: `https://login.microsoftonline.com/${config.outlook.tenantId || 'common'}`,
   };
-  if (config.outlook.clientSecret) {
+  if (includeSecret && config.outlook.clientSecret) {
     authConfig.clientSecret = config.outlook.clientSecret;
-    const { ConfidentialClientApplication } = require('@azure/msal-node');
-    msalClient = new ConfidentialClientApplication({ auth: authConfig });
-  } else {
-    msalClient = new PublicClientApplication({ auth: authConfig });
+  }
+  return authConfig;
+}
+
+function getMsalClient(mode: 'auto' | 'confidential' | 'public' = 'auto'): any {
+  if (mode === 'public') {
+    if (!publicMsalClient) {
+      publicMsalClient = new PublicClientApplication({ auth: buildAuthConfig(false) });
+    }
+    return publicMsalClient;
   }
 
-  return msalClient;
+  if (mode === 'confidential') {
+    if (!config.outlook.clientSecret) {
+      return getMsalClient('public');
+    }
+    if (!confidentialMsalClient) {
+      const { ConfidentialClientApplication } = require('@azure/msal-node');
+      confidentialMsalClient = new ConfidentialClientApplication({ auth: buildAuthConfig(true) });
+    }
+    return confidentialMsalClient;
+  }
+
+  if (config.outlook.clientSecret) {
+    return getMsalClient('confidential');
+  }
+
+  return getMsalClient('public');
+}
+
+function isPublicClientRefreshTokenMismatch(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return message.includes('AADSTS90023')
+    || message.includes("Public clients can't send a client secret");
+}
+
+async function acquireAccessTokenFromRefreshToken(refreshToken: string): Promise<string> {
+  const acquire = async (mode: 'auto' | 'confidential' | 'public') => {
+    const result = await getMsalClient(mode).acquireTokenByRefreshToken({
+      refreshToken,
+      scopes: ALL_SCOPES,
+    });
+
+    if (!result?.accessToken) {
+      throw new Error('Failed to acquire Microsoft Graph access token');
+    }
+
+    return result.accessToken;
+  };
+
+  try {
+    return await acquire('auto');
+  } catch (err) {
+    if (config.outlook.clientSecret && isPublicClientRefreshTokenMismatch(err)) {
+      logger.warn('Microsoft refresh token requires public-client MSAL flow; retrying without client secret');
+      return acquire('public');
+    }
+    throw err;
+  }
 }
 
 /**
@@ -64,13 +113,14 @@ function getMsalClient(): any {
  * (encrypted, audited), falls back to `config.outlook.refreshToken`.
  */
 function getOwnerOutlookRefreshToken(): string | null {
-  const ownerId = config.telegram.allowedUserIds[0];
-  if (ownerId) {
+  const ownerRefs = getOwnerBootstrapUserRefs();
+  if (ownerRefs.length > 0) {
     try {
-      const { getTokens } = require('./oauth-store');
-      const tokens = getTokens(ownerId, 'outlook');
-      if (tokens?.refreshToken) {
-        return tokens.refreshToken;
+      for (const ownerRef of ownerRefs) {
+        const tokens = getTokens(ownerRef, 'outlook');
+        if (tokens?.refreshToken) {
+          return tokens.refreshToken;
+        }
       }
     } catch (err) {
       logger.warn({ err }, 'getOwnerOutlookRefreshToken: oauth-store read failed, falling back to env');
@@ -100,42 +150,22 @@ export function getOutlookRefreshTokenForUser(userId: number): string | null {
  * Refreshes via MSAL using the user's stored refresh token.
  */
 export async function getAccessTokenForUser(userId: number): Promise<string> {
-  const msal = getMsalClient();
   const refreshToken = getOutlookRefreshTokenForUser(userId);
   if (!refreshToken) {
     throw new Error(`Outlook not connected for user ${userId}`);
   }
 
-  const result = await msal.acquireTokenByRefreshToken({
-    refreshToken,
-    scopes: ALL_SCOPES,
-  });
-
-  if (!result?.accessToken) {
-    throw new Error(`Failed to acquire Graph token for user ${userId}`);
-  }
-
-  return result.accessToken;
+  return acquireAccessTokenFromRefreshToken(refreshToken);
 }
 
 /** @deprecated Use getAccessTokenForUser(userId) for multi-user. */
 async function getAccessToken(): Promise<string> {
-  const msal = getMsalClient();
   const refreshToken = getOwnerOutlookRefreshToken();
   if (!refreshToken) {
     throw new Error('Outlook refresh token not configured (neither oauth-store nor .env has it)');
   }
 
-  const result = await msal.acquireTokenByRefreshToken({
-    refreshToken,
-    scopes: ALL_SCOPES,
-  });
-
-  if (!result?.accessToken) {
-    throw new Error('Failed to acquire Microsoft Graph access token');
-  }
-
-  return result.accessToken;
+  return acquireAccessTokenFromRefreshToken(refreshToken);
 }
 
 // ─── Per-request user resolution ────────────────────────────────────
@@ -214,7 +244,20 @@ export function isMicrosoftConfigured(): boolean {
  * MSAL client may cache state internally too.
  */
 export function resetMicrosoftClients(): void {
-  msalClient = null;
+  confidentialMsalClient = null;
+  publicMsalClient = null;
   graphClient = null;
   logger.info('Microsoft client caches reset after re-auth');
 }
+
+export const __testing = {
+  acquireAccessTokenFromRefreshToken,
+  isPublicClientRefreshTokenMismatch,
+  setMsalClientsForTests(clients: {
+    confidential?: any | null;
+    public?: PublicClientApplication | null;
+  }) {
+    confidentialMsalClient = clients.confidential ?? null;
+    publicMsalClient = clients.public ?? null;
+  },
+};

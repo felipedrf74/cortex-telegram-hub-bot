@@ -3,7 +3,7 @@
 import { DateTime, WeekdayNumbers } from 'luxon';
 import { config } from '../config';
 
-const tz = config.app.timezone;
+const tz = config?.app?.timezone || 'Europe/Lisbon';
 
 export function now(): DateTime {
   return DateTime.now().setZone(tz);

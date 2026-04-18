@@ -4,6 +4,10 @@ import fs from 'fs';
 import path from 'path';
 import type { Request } from 'express';
 
+async function getTenantScopeModule() {
+  return import('../../src/services/tenant-scope-observability');
+}
+
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
@@ -43,6 +47,7 @@ function mockRes(): MockRes {
 function mockReq(userId: number, body: any): Request {
   return {
     userId,
+    deviceId: 'test-device-id',
     body,
     headers: {},
     header() { return undefined; },
@@ -58,6 +63,73 @@ async function dispatchLanguage(userId: number, language: string): Promise<MockR
   (req as any).originalUrl = '/language';
   (req as any).baseUrl = '';
   (req as any).path = '/language';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+async function dispatchPushToken(userId: number, token: string, deviceId = 'test-device-id'): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, { token });
+  (req as any).deviceId = deviceId;
+  (req as any).method = 'POST';
+  (req as any).url = '/push-token';
+  (req as any).originalUrl = '/push-token';
+  (req as any).baseUrl = '';
+  (req as any).path = '/push-token';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+async function dispatchPushPreferencesGet(userId: number): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, {});
+  (req as any).method = 'GET';
+  (req as any).url = '/push-preferences';
+  (req as any).originalUrl = '/push-preferences';
+  (req as any).baseUrl = '';
+  (req as any).path = '/push-preferences';
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+async function dispatchPushPreferencesSet(userId: number, category: string, enabled: boolean): Promise<MockRes> {
+  const { settingsRoutes } = await import('../../src/api/routes/settings');
+  const router = settingsRoutes();
+  const req = mockReq(userId, { category, enabled });
+  (req as any).method = 'PUT';
+  (req as any).url = '/push-preferences';
+  (req as any).originalUrl = '/push-preferences';
+  (req as any).baseUrl = '';
+  (req as any).path = '/push-preferences';
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -100,6 +172,9 @@ describe('Settings language route', () => {
         testDb.prepare('UPDATE users SET language = ? WHERE id = ?').run(language, userId);
       },
     }));
+    return getTenantScopeModule().then(({ clearTenantScopeAnomaliesForTests }) => {
+      clearTenantScopeAnomaliesForTests();
+    });
   });
 
   it('accepts iOS short english code and stores canonical english', async () => {
@@ -131,5 +206,56 @@ describe('Settings language route', () => {
 
     const row = testDb.prepare('SELECT language FROM users WHERE id = 1').get() as { language: string };
     expect(row.language).toBe('pt-BR');
+  });
+
+  it('upserts the push token even when the ios_devices row is missing', async () => {
+    const res = await dispatchPushToken(1, 'abc123token', 'fresh-device');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+
+    const row = testDb.prepare(
+      'SELECT user_id, device_id, push_token FROM ios_devices WHERE device_id = ?',
+    ).get('fresh-device') as { user_id: number; device_id: string; push_token: string };
+
+    expect(row.user_id).toBe(1);
+    expect(row.push_token).toBe('abc123token');
+  });
+
+  it('fails closed on invalid tenant scope for push preferences read', async () => {
+    const res = await dispatchPushPreferencesGet(0);
+    const { getTenantScopeAnomalies } = await getTenantScopeModule();
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'settings_route_get_push_preferences',
+          reason: 'invalid_user_scope',
+          userId: 0,
+        }),
+      ]),
+    );
+  });
+
+  it('reads and writes push preferences for a valid tenant scope', async () => {
+    const setRes = await dispatchPushPreferencesSet(1, 'coach_briefing', false);
+
+    expect(setRes.statusCode).toBe(200);
+    expect(setRes.body.ok).toBe(true);
+    expect(setRes.body.data).toEqual({ category: 'coach_briefing', enabled: false });
+
+    const getRes = await dispatchPushPreferencesGet(1);
+
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes.body.ok).toBe(true);
+    expect(getRes.body.data.preferences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'coach_briefing', enabled: false }),
+      ]),
+    );
   });
 });

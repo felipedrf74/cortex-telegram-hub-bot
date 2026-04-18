@@ -60,7 +60,7 @@ export async function handleDomainMessage(
                 const created = await createCalendarEvent({
                   title: event.title, start: event.start, end: event.end,
                   description: event.description, categories,
-                });
+                }, undefined, userId);
                 successCount++;
                 createdTitles.push(created.summary);
               } catch (err) {

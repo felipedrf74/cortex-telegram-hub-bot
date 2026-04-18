@@ -13,9 +13,10 @@
  */
 
 import * as msTodo from '../../services/microsoft-todo';
-import { getEvents, isAnyCalendarConfigured } from '../../services/unified-calendar';
-import { isOutlookMailConfigured, getUnreadCount as getOutlookUnread } from '../../services/outlook-mail';
+import { getEvents, hasConnectedCalendarForUser, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActiveReminders } from '../../state/reminders';
+import { getTaskProviderForUser } from '../../services/task-store/task-router';
+import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../../services/unified-mail-pressure';
 import {
   formatMsTodoLists,
   formatMsTodoTasks,
@@ -52,7 +53,18 @@ import {
 // quickly when the user mutates them via the dashboard or task views.
 const PENDING_TASKS_TTL = 60; // seconds
 
-function getPendingTasksCacheKey(): string {
+type FastPathTaskProvider = {
+  getDefaultList: typeof msTodo.getDefaultList;
+  getTasks: typeof msTodo.getTasks;
+  getLists: typeof msTodo.getLists;
+  getAllPendingTasks: typeof msTodo.getAllPendingTasks;
+  getTasksDueInRange: typeof msTodo.getTasksDueInRange;
+};
+
+function getPendingTasksCacheKey(userId?: number): string {
+  if (userId != null) {
+    return `u:${userId}:fastpath:pending-tasks`;
+  }
   try {
     const { getCurrentContext } = require('../../utils/request-context');
     const uid = getCurrentContext()?.userId;
@@ -60,13 +72,26 @@ function getPendingTasksCacheKey(): string {
   } catch { return 'fastpath:pending-tasks'; }
 }
 
-async function getPendingTasksCached(): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
-  const key = getPendingTasksCacheKey();
+function getFastPathTaskProvider(userId?: number): FastPathTaskProvider | null {
+  if (userId != null) {
+    return getTaskProviderForUser(userId);
+  }
+  if (!msTodo.isOutlookTodoConfigured()) {
+    return null;
+  }
+  return msTodo;
+}
+
+async function getPendingTasksCached(
+  taskProvider: FastPathTaskProvider,
+  userId?: number,
+): Promise<msTodo.ServiceResult<msTodo.TodoTask[]>> {
+  const key = getPendingTasksCacheKey(userId);
   const cached = getCached<msTodo.TodoTask[]>(key);
   if (cached) {
     return { success: true, data: cached };
   }
-  const result = await msTodo.getAllPendingTasks();
+  const result = await taskProvider.getAllPendingTasks();
   if (result.success) {
     setCache(key, result.data, PENDING_TASKS_TTL);
   }
@@ -80,8 +105,11 @@ export interface FastPathResult {
 }
 
 function getFastPathLabels(userId?: number): ReturnType<typeof labelsForLanguage> {
+  if (userId == null) {
+    return labelsForLanguage('en-US');
+  }
   try {
-    return labelsForLanguage(getUserLanguage(userId ?? 0));
+    return labelsForLanguage(getUserLanguage(userId));
   } catch (err) {
     logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English labels');
     return labelsForLanguage('en-US');
@@ -118,39 +146,39 @@ export async function tryDeterministicChatCommand(
       case '/tasks':
         // If user passes args, the AI handler should parse it (create task etc.)
         if (args) return null;
-        return await handleTodos(labels);
+        return await handleTodos(labels, userId);
 
       case '/lists':
-        return await handleLists(labels);
+        return await handleLists(labels, userId);
 
       case '/duetoday':
       case '/due_today':
-        return await handleDueToday(labels);
+        return await handleDueToday(labels, userId);
 
       case '/overdue':
-        return await handleOverdue(labels);
+        return await handleOverdue(labels, userId);
 
       case '/dueweek':
       case '/due_week':
-        return await handleDueWeek(labels);
+        return await handleDueWeek(labels, userId);
 
       case '/alltasks':
       case '/all_tasks':
-        return await handleAllTasks(labels);
+        return await handleAllTasks(labels, userId);
 
       case '/todosummary':
       case '/todo_summary':
-        return await handleTodoSummary(labels);
+        return await handleTodoSummary(labels, userId);
 
       case '/day':
       case '/today':
-        return await handleDayOverview(labels);
+        return await handleDayOverview(labels, userId);
 
       case '/week':
-        return await handleWeekOverview(labels);
+        return await handleWeekOverview(labels, userId);
 
       case '/status':
-        return await handleStatus(labels);
+        return await handleStatus(labels, userId);
 
       default:
         return null;
@@ -163,15 +191,16 @@ export async function tryDeterministicChatCommand(
 
 // ── Handlers (mirror the Telegram bot's deterministic command handlers) ──
 
-async function handleTodos(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleTodos(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
-  const defaultList = await msTodo.getDefaultList();
+  const defaultList = await taskProvider.getDefaultList();
   if (!defaultList) {
     return { text: '⚠️ Default list not found. Use /lists to see available lists.', domain: 'secretary' };
   }
 
-  const result = await msTodo.getTasks(defaultList.id, defaultList.displayName, { status: 'notStarted' });
+  const result = await taskProvider.getTasks(defaultList.id, defaultList.displayName, { status: 'notStarted' });
   if (!result.success) {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -183,10 +212,11 @@ async function handleTodos(labels: ReturnType<typeof labelsForLanguage>): Promis
   };
 }
 
-async function handleLists(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleLists(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
-  const result = await msTodo.getLists();
+  const result = await taskProvider.getLists();
   if (!result.success) {
     return { text: `⚠️ Failed to fetch lists: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -198,12 +228,13 @@ async function handleLists(labels: ReturnType<typeof labelsForLanguage>): Promis
   };
 }
 
-async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
   // Use date-portion comparison in the configured timezone to avoid MS Graph
   // timezone ambiguity (their dueDateTime is stored as a naked datetime).
-  const tasksResult = await getPendingTasksCached();
+  const tasksResult = await getPendingTasksCached(taskProvider, userId);
   if (!tasksResult.success) {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(tasksResult.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -231,10 +262,11 @@ async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>): Pro
   };
 }
 
-async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
-  const tasksResult = await getPendingTasksCached();
+  const tasksResult = await getPendingTasksCached(taskProvider, userId);
   if (!tasksResult.success) {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(tasksResult.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -261,10 +293,11 @@ async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>): Prom
   };
 }
 
-async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
-  const result = await msTodo.getTasksDueInRange(startOfWeek(), endOfWeek());
+  const result = await taskProvider.getTasksDueInRange(startOfWeek(), endOfWeek());
   if (!result.success) {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -286,10 +319,11 @@ async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>): Prom
   };
 }
 
-async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
-  const result = await getPendingTasksCached();
+  const result = await getPendingTasksCached(taskProvider, userId);
   if (!result.success) {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -301,10 +335,11 @@ async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>): Pro
   };
 }
 
-async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult | null> {
-  if (!msTodo.isOutlookTodoConfigured()) return null;
+async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (!taskProvider) return null;
 
-  const pendingResult = await getPendingTasksCached();
+  const pendingResult = await getPendingTasksCached(taskProvider, userId);
   if (!pendingResult.success) {
     return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(pendingResult.error || 'unknown error')}`, domain: 'secretary' };
   }
@@ -333,13 +368,13 @@ async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>): 
   };
 }
 
-async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult> {
+async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
   let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
 
   // Calendar events today
-  if (isAnyCalendarConfigured()) {
+  if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
     try {
-      const events = await getEvents(startOfDay(), endOfDay());
+      const events = await getEvents(startOfDay(), endOfDay(), userId);
       if (events.length === 0) {
         msg += 'No events scheduled today.\n';
       } else {
@@ -355,9 +390,10 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>): 
   }
 
   // MS Todo — due today (timezone-aware)
-  if (msTodo.isOutlookTodoConfigured()) {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (taskProvider) {
     try {
-      const pendingResult = await getPendingTasksCached();
+      const pendingResult = await getPendingTasksCached(taskProvider, userId);
       if (pendingResult.success) {
         const todayStr = nowDateInTimezone();
         const dueToday = pendingResult.data.filter((t) => dueDateInTimezone(t.dueDateTime) === todayStr);
@@ -380,13 +416,13 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>): 
   };
 }
 
-async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult> {
+async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
   let msg = `<b>📅 Week Overview</b>\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
-  if (isAnyCalendarConfigured()) {
+  if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
     try {
-      const events = await getEvents(startOfWeek(), endOfWeek());
+      const events = await getEvents(startOfWeek(), endOfWeek(), userId);
       if (events.length === 0) {
         msg += 'No events this week.\n';
       } else {
@@ -407,9 +443,10 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>):
     }
   }
 
-  if (msTodo.isOutlookTodoConfigured()) {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (taskProvider) {
     try {
-      const pendingResult = await getPendingTasksCached();
+      const pendingResult = await getPendingTasksCached(taskProvider, userId);
       if (pendingResult.success && pendingResult.data.length > 0) {
         msg += `\n📋 Pending tasks: ${pendingResult.data.length}\n`;
       }
@@ -425,13 +462,14 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>):
   };
 }
 
-async function handleStatus(labels: ReturnType<typeof labelsForLanguage>): Promise<FastPathResult> {
+async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
   let msg = '<b>📊 Status Overview</b>\n\n';
 
   // Microsoft To Do
-  if (msTodo.isOutlookTodoConfigured()) {
+  const taskProvider = getFastPathTaskProvider(userId);
+  if (taskProvider) {
     try {
-      const pendingResult = await getPendingTasksCached();
+      const pendingResult = await getPendingTasksCached(taskProvider, userId);
       if (pendingResult.success) {
         const highPriority = pendingResult.data.filter((t) => t.importance === 'high');
         msg += `📋 Microsoft To Do: ${pendingResult.data.length} pending tasks\n`;
@@ -447,12 +485,12 @@ async function handleStatus(labels: ReturnType<typeof labelsForLanguage>): Promi
     msg += '📋 Microsoft To Do: not configured\n';
   }
 
-  const reminders = getActiveReminders(0);
+  const reminders = userId != null ? getActiveReminders(userId) : [];
   msg += `⏰ Active reminders: ${reminders.length}\n`;
 
-  if (isAnyCalendarConfigured()) {
+  if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
     try {
-      const events = await getEvents(startOfDay(), endOfDay());
+      const events = await getEvents(startOfDay(), endOfDay(), userId);
       msg += `📅 Events today: ${events.length}\n`;
     } catch (err) {
       logger.warn({ err }, 'fast-path status: calendar fetch failed');
@@ -462,13 +500,17 @@ async function handleStatus(labels: ReturnType<typeof labelsForLanguage>): Promi
     msg += '📅 Calendar: not configured\n';
   }
 
-  if (isOutlookMailConfigured()) {
+  if (userId != null && isAnyMailConfiguredForUser(userId)) {
     try {
-      const unread = await getOutlookUnread();
-      msg += `📧 Outlook unread: ${unread}\n`;
+      const unread = await getUnreadMailSummaryForUser(userId);
+      const providerBreakdown = [
+        unread.outlookUnread != null ? `Outlook ${unread.outlookUnread}` : null,
+        unread.gmailUnread != null ? `Gmail ${unread.gmailUnread}` : null,
+      ].filter(Boolean).join(' | ');
+      msg += `📧 Inbox unread: ${unread.totalUnread}${providerBreakdown ? ` (${providerBreakdown})` : ''}\n`;
     } catch (err) {
-      logger.warn({ err }, 'fast-path status: outlook unread failed');
-      msg += '📧 Outlook: unavailable\n';
+      logger.warn({ err }, 'fast-path status: unified mail unread failed');
+      msg += '📧 Inbox: unavailable\n';
     }
   }
 

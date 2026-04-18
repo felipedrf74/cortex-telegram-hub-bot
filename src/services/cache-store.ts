@@ -184,6 +184,19 @@ export function clearCache(key: string): void {
 }
 
 /**
+ * Delete all cache entries whose keys share a prefix.
+ * Used by mesh-priority invalidation where one high-priority signal
+ * should expire multiple derived planning views at once.
+ */
+export function clearCacheByPrefix(prefix: string): void {
+  try {
+    getDb().prepare('DELETE FROM api_cache WHERE cache_key LIKE ?').run(`${prefix}%`);
+  } catch {
+    // Best-effort
+  }
+}
+
+/**
  * Delete all expired cache entries. Call periodically (e.g., every hour).
  */
 export function clearExpired(): void {

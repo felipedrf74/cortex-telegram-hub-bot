@@ -80,7 +80,7 @@ export function updateAssistantMessage(
     UPDATE messages
     SET
       text = ?,
-      domain = ?,
+      domain = COALESCE(?, domain),
       route_method = COALESCE(?, route_method),
       confidence = COALESCE(?, confidence),
       buttons_json = ?,

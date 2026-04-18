@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import {
   clearGarminSession,
   getGarminSession,
+  hasActiveGarminConnection,
   markGarminConnectionActive,
   markGarminNeedsReauth,
   migrateLegacyGarminTokensToSession,
@@ -29,6 +30,7 @@ import {
   touchGarminConnection,
   upsertGarminSession,
 } from './garmin-session-store';
+import { runWithContext } from '../utils/request-context';
 
 // ─── Suppress garmin-connect SDK 404 noise ───────────────────────────
 // The garmin-connect SDK (HttpClient.js:236-237) calls `console.error(msg)`
@@ -175,11 +177,12 @@ let _mfaPending: MfaPendingState | null = null;
 let _mfaNotifier: ((message: string) => Promise<void>) | null = null;
 
 // ─── SSO cookie persistence (avoids MFA on re-login) ────────────────
-const SSO_COOKIES_FILE = `${config.garmin.tokenPath}/sso_cookies.json`;
+const GARMIN_TOKEN_PATH = config?.garmin?.tokenPath || './data/garmin-tokens';
+const SSO_COOKIES_FILE = `${GARMIN_TOKEN_PATH}/sso_cookies.json`;
 
 function saveSsoCookies(cookieJar: Record<string, string>): void {
   try {
-    const dir = config.garmin.tokenPath;
+    const dir = GARMIN_TOKEN_PATH;
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(SSO_COOKIES_FILE, JSON.stringify(cookieJar, null, 2));
     logger.info('Garmin: SSO cookies saved to disk');
@@ -204,7 +207,7 @@ function loadSsoCookies(): Record<string, string> | null {
 }
 
 // ─── Rate-limit backoff (persisted to disk to survive restarts) ──────
-const RATE_LIMIT_FILE = `${config.garmin.tokenPath}/rate_limit_until.txt`;
+const RATE_LIMIT_FILE = `${GARMIN_TOKEN_PATH}/rate_limit_until.txt`;
 
 function _loadRateLimitedUntil(): number {
   try {
@@ -225,7 +228,7 @@ function isRateLimited(): boolean {
 function setRateLimited(durationMs = 2 * 60 * 60 * 1000): void {
   _rateLimitedUntil = Date.now() + durationMs;
   try {
-    const dir = config.garmin.tokenPath;
+    const dir = GARMIN_TOKEN_PATH;
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(RATE_LIMIT_FILE, String(_rateLimitedUntil));
   } catch { /* best-effort */ }
@@ -579,6 +582,7 @@ async function finishLogin(httpClient: any, ticket: string): Promise<void> {
 
 let _client: InstanceType<typeof GarminConnect> | null = null;
 let _authenticated = false;
+let _activeClientUserId: number | null = null;
 
 /**
  * Silent mode flag — when true, getClient() will NOT trigger MFA
@@ -604,9 +608,96 @@ export function setSilentMode(silent: boolean): void { _silentMode = silent; }
  * cleared so future stale-token recovery can re-trigger it if needed.
  */
 let _clientBootstrapPromise: Promise<InstanceType<typeof GarminConnect>> | null = null;
+let _clientBootstrapUserId: number | null = null;
+
+function createGarminClient(): InstanceType<typeof GarminConnect> {
+  return new GarminConnect({
+    username: config.garmin.email,
+    password: config.garmin.password,
+  });
+}
+
+function adoptAuthenticatedClient(
+  client: InstanceType<typeof GarminConnect>,
+  userId?: number | null,
+): InstanceType<typeof GarminConnect> {
+  _client = client;
+  _authenticated = true;
+  _activeClientUserId = userId ?? null;
+  if (userId) {
+    touchGarminConnection(userId);
+  }
+  return client;
+}
+
+async function hydrateClientFromPersistedSession(
+  userId: number | null,
+  opts: { allowLegacyFile?: boolean } = {},
+): Promise<InstanceType<typeof GarminConnect> | null> {
+  const allowLegacyFile = opts.allowLegacyFile ?? true;
+  const client = createGarminClient();
+  const tokenDir = GARMIN_TOKEN_PATH;
+
+  if (userId) {
+    const dbSession = getGarminSession(userId);
+    if (dbSession?.oauth1TokenJson && dbSession?.oauth2TokenJson) {
+      try {
+        client.loadToken(
+          JSON.parse(dbSession.oauth1TokenJson),
+          JSON.parse(dbSession.oauth2TokenJson),
+        );
+        await client.getUserSettings();
+        logger.info({ userId }, 'Garmin: loaded tokens from garmin_sessions');
+        return adoptAuthenticatedClient(client, userId);
+      } catch (dbErr) {
+        logger.warn({ dbErr, userId }, 'Garmin: garmin_sessions tokens expired or invalid');
+      }
+    }
+
+    if (migrateLegacyGarminTokensToSession(userId)) {
+      const migrated = getGarminSession(userId);
+      if (migrated?.oauth1TokenJson && migrated?.oauth2TokenJson) {
+        try {
+          client.loadToken(
+            JSON.parse(migrated.oauth1TokenJson),
+            JSON.parse(migrated.oauth2TokenJson),
+          );
+          await client.getUserSettings();
+          logger.info({ userId }, 'Garmin: migrated legacy DB token blob into garmin_sessions');
+          return adoptAuthenticatedClient(client, userId);
+        } catch (legacyErr) {
+          logger.warn({ legacyErr, userId }, 'Garmin: migrated legacy DB tokens were invalid');
+        }
+      }
+    }
+  }
+
+  if (allowLegacyFile) {
+    try {
+      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
+        client.loadTokenByFile(tokenDir);
+        await client.getUserSettings();
+        if (userId) {
+          persistTokens(userId);
+          markGarminConnectionActive(userId, config.garmin.email);
+        }
+        logger.info({ userId }, 'Garmin: imported legacy filesystem tokens into garmin_sessions');
+        return adoptAuthenticatedClient(client, userId);
+      }
+    } catch (err) {
+      logger.warn({ err, userId }, 'Garmin: legacy filesystem tokens expired or invalid');
+    }
+  }
+
+  return null;
+}
 
 export function isGarminConfigured(): boolean {
   return !!(config.garmin.email && config.garmin.password);
+}
+
+export function isGarminConfiguredForUser(userId: number): boolean {
+  return isGarminConfigured() && hasActiveGarminConnection(userId);
 }
 
 /**
@@ -628,79 +719,43 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
   const sessionUserId = resolveGarminUserId();
 
   // Fast path — already authenticated
-  if (_client && _authenticated) return _client;
+  if (_client && _authenticated && _activeClientUserId === sessionUserId) {
+    return _client;
+  }
+
+  if (_client && _authenticated && _activeClientUserId !== sessionUserId) {
+    logger.debug(
+      { previousUserId: _activeClientUserId, requestedUserId: sessionUserId },
+      'Garmin: switching authenticated client to another user scope',
+    );
+    _client = null;
+    _authenticated = false;
+    _activeClientUserId = null;
+  }
 
   // Serialized path — if a bootstrap is already in flight, wait for it
   if (_clientBootstrapPromise) {
-    logger.debug('Garmin: bootstrap in progress, awaiting shared promise');
-    return _clientBootstrapPromise;
+    if (_clientBootstrapUserId === sessionUserId) {
+      logger.debug({ userId: sessionUserId }, 'Garmin: bootstrap in progress, awaiting shared promise');
+      return _clientBootstrapPromise;
+    }
+    logger.debug(
+      { activeBootstrapUserId: _clientBootstrapUserId, requestedUserId: sessionUserId },
+      'Garmin: waiting for in-flight bootstrap before switching user scope',
+    );
+    try {
+      await _clientBootstrapPromise;
+    } catch {
+      // ignore — the caller below will attempt a fresh bootstrap in the requested scope
+    }
   }
 
   // Slow path — kick off a single bootstrap that everyone else awaits
+  _clientBootstrapUserId = sessionUserId;
   _clientBootstrapPromise = (async () => {
-    const client = new GarminConnect({
-      username: config.garmin.email,
-      password: config.garmin.password,
-    });
-
-    const tokenDir = config.garmin.tokenPath;
-
-    if (sessionUserId) {
-      const dbSession = getGarminSession(sessionUserId);
-      if (dbSession?.oauth1TokenJson && dbSession?.oauth2TokenJson) {
-        try {
-          client.loadToken(
-            JSON.parse(dbSession.oauth1TokenJson),
-            JSON.parse(dbSession.oauth2TokenJson),
-          );
-          await client.getUserSettings();
-          _client = client;
-          _authenticated = true;
-          touchGarminConnection(sessionUserId);
-          logger.info({ userId: sessionUserId }, 'Garmin: loaded tokens from garmin_sessions');
-          return client;
-        } catch (dbErr) {
-          logger.warn({ dbErr, userId: sessionUserId }, 'Garmin: garmin_sessions tokens expired or invalid');
-        }
-      }
-
-      if (migrateLegacyGarminTokensToSession(sessionUserId)) {
-        const migrated = getGarminSession(sessionUserId);
-        if (migrated?.oauth1TokenJson && migrated?.oauth2TokenJson) {
-          try {
-            client.loadToken(
-              JSON.parse(migrated.oauth1TokenJson),
-              JSON.parse(migrated.oauth2TokenJson),
-            );
-            await client.getUserSettings();
-            _client = client;
-            _authenticated = true;
-            touchGarminConnection(sessionUserId);
-            logger.info({ userId: sessionUserId }, 'Garmin: migrated legacy DB token blob into garmin_sessions');
-            return client;
-          } catch (legacyErr) {
-            logger.warn({ legacyErr, userId: sessionUserId }, 'Garmin: migrated legacy DB tokens were invalid');
-          }
-        }
-      }
-    }
-
-    // One-time legacy import path for old owner token files.
-    try {
-      if (fs.existsSync(`${tokenDir}/oauth1_token.json`) && fs.existsSync(`${tokenDir}/oauth2_token.json`)) {
-        client.loadTokenByFile(tokenDir);
-        await client.getUserSettings();
-        _client = client;
-        _authenticated = true;
-        if (sessionUserId) {
-          persistTokens(sessionUserId);
-          markGarminConnectionActive(sessionUserId, config.garmin.email);
-        }
-        logger.info({ userId: sessionUserId }, 'Garmin: imported legacy filesystem tokens into garmin_sessions');
-        return client;
-      }
-    } catch (err) {
-      logger.warn({ err, userId: sessionUserId }, 'Garmin: legacy filesystem tokens expired or invalid');
+    const hydrated = await hydrateClientFromPersistedSession(sessionUserId, { allowLegacyFile: true });
+    if (hydrated) {
+      return hydrated;
     }
 
     // ── Silent mode gate (April 10 2026) ────────────────────
@@ -723,10 +778,10 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
     // Fresh login — go directly to our MFA-aware flow (avoids the library's
     // own login() which makes an unprotected SSO request that can trigger Cloudflare)
     if (isRateLimited()) throw new Error('Garmin SSO rate-limited — skipping login');
+    const client = createGarminClient();
     try {
       await loginWithMfa(client);
-      _client = client;
-      _authenticated = true;
+      adoptAuthenticatedClient(client, sessionUserId);
       if (sessionUserId) {
         persistTokens(sessionUserId);
         markGarminConnectionActive(sessionUserId, config.garmin.email);
@@ -747,6 +802,7 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
     // resolved value, so concurrent waiters that arrived earlier all
     // see the same resolved client.
     _clientBootstrapPromise = null;
+    _clientBootstrapUserId = null;
   }
 }
 
@@ -775,7 +831,7 @@ function persistTokens(explicitUserId?: number): void {
  */
 async function refreshOAuth2(): Promise<boolean> {
   try {
-    const client = await getClient();
+    const client = await getClient({ silent: true });
     // Access the underlying HttpClient to call refreshOauth2Token directly
     await (client.client as any).refreshOauth2Token();
     persistTokens();
@@ -887,7 +943,7 @@ export async function ensureAuthenticated(
 ): Promise<boolean> {
   if (!isGarminConfigured()) return false;
   try {
-    const client = await getClient();
+    const client = await getClient({ silent: opts.silent });
     await client.getUserSettings();
     logger.info('Garmin: pre-auth check passed');
     return true;
@@ -923,7 +979,7 @@ async function silentAuthRecovery(): Promise<boolean> {
     try {
       // Step 1: OAuth2 token refresh
       try {
-        const client = await getClient();
+        const client = await getClient({ silent: true });
         await (client.client as any).refreshOauth2Token();
         persistTokens();
         await client.getUserSettings();
@@ -935,15 +991,9 @@ async function silentAuthRecovery(): Promise<boolean> {
 
       // Step 2: Reload tokens from the DB session store
       const userId = resolveGarminUserId();
-      const session = userId ? getGarminSession(userId) : null;
-      if (session?.oauth1TokenJson && session?.oauth2TokenJson) {
+      const rehydrated = await hydrateClientFromPersistedSession(userId, { allowLegacyFile: true });
+      if (rehydrated) {
         try {
-          const client = await getClient({ silent: false });
-          client.loadToken(
-            JSON.parse(session.oauth1TokenJson),
-            JSON.parse(session.oauth2TokenJson),
-          );
-          await client.getUserSettings();
           logger.info({ userId }, 'Garmin: silent recovery — DB token reload succeeded');
           return true;
         } catch {
@@ -1003,7 +1053,7 @@ async function serializedAuthRecovery(): Promise<boolean> {
     try {
       // Step 1: Try OAuth2 token refresh
       try {
-        const client = await getClient();
+        const client = await getClient({ silent: true });
         await (client.client as any).refreshOauth2Token();
         persistTokens();
         // Validate with lightweight call
@@ -1016,15 +1066,9 @@ async function serializedAuthRecovery(): Promise<boolean> {
 
       // Step 2: Reload tokens from the DB session store
       const userId = resolveGarminUserId();
-      const session = userId ? getGarminSession(userId) : null;
-      if (session?.oauth1TokenJson && session?.oauth2TokenJson) {
+      const rehydrated = await hydrateClientFromPersistedSession(userId, { allowLegacyFile: true });
+      if (rehydrated) {
         try {
-          const client = await getClient({ silent: false });
-          client.loadToken(
-            JSON.parse(session.oauth1TokenJson),
-            JSON.parse(session.oauth2TokenJson),
-          );
-          await client.getUserSettings();
           logger.info({ userId }, 'Garmin: auth recovered via DB token reload');
           return true;
         } catch {
@@ -1154,6 +1198,10 @@ export async function getBodyBatteryEvents(date: string): Promise<unknown> {
   catch { return null; }
 }
 
+export async function getBodyBatteryEventsForUser(userId: number, date: string): Promise<unknown> {
+  return runWithContext({ source: 'manual', userId }, () => getBodyBatteryEvents(date));
+}
+
 export async function getRhr(date: string): Promise<unknown> {
   try { return await safeGet(URLS.rhr(date)); }
   catch { return null; }
@@ -1164,6 +1212,14 @@ export async function getActivitiesByDate(startDate: string, endDate: string): P
     const result = await safeGet<GarminActivity[]>(URLS.activitiesByDate(startDate, endDate));
     return Array.isArray(result) ? result : [];
   } catch { return []; }
+}
+
+export async function getActivitiesByDateForUser(
+  userId: number,
+  startDate: string,
+  endDate: string,
+): Promise<GarminActivity[]> {
+  return runWithContext({ source: 'manual', userId }, () => getActivitiesByDate(startDate, endDate));
 }
 
 export async function getActivityDetails(activityId: number): Promise<unknown> {

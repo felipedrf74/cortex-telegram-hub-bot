@@ -10,6 +10,7 @@
 import { isConnected } from '../oauth-store';
 import { ensureFreshToken } from './oauth-helper';
 import { logger } from '../../utils/logger';
+import { deriveIntradayEnergyReserve } from './energy-reserve';
 import type { WearableAdapter } from './adapter-interface';
 import type {
   WearableProvider,
@@ -147,22 +148,40 @@ export class WhoopAdapter implements WearableAdapter {
   async getReadiness(userId: number, date: string): Promise<NormalizedReadiness | null> {
     const token = await ensureFreshToken(userId, 'whoop', getWhoopConfig());
 
-    const url = `${WHOOP_API}/recovery?start=${date}T00:00:00.000Z&end=${date}T23:59:59.999Z&limit=1`;
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const recoveryUrl = `${WHOOP_API}/recovery?start=${date}T00:00:00.000Z&end=${date}T23:59:59.999Z&limit=1`;
+    const workoutsUrl = `${WHOOP_API}/activity/workout?start=${date}T00:00:00.000Z&end=${date}T23:59:59.999Z&limit=50`;
+    const [recoveryResponse, workoutsResponse] = await Promise.all([
+      fetch(recoveryUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      fetch(workoutsUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    ]);
 
-    if (!response.ok) {
-      logger.error({ status: response.status }, 'Whoop recovery fetch failed');
+    if (!recoveryResponse.ok) {
+      logger.error({ status: recoveryResponse.status }, 'Whoop recovery fetch failed');
       return null;
     }
 
-    const data = await response.json() as any;
+    const data = await recoveryResponse.json() as any;
     const records: any[] = data.records ?? [];
     if (records.length === 0) return null;
 
     const r = records[0];
     const score = r.score ?? {};
+    const workoutsData = workoutsResponse.ok ? await workoutsResponse.json() as any : null;
+    const workouts: any[] = workoutsData?.records ?? [];
+    const totalStrain = workouts.reduce((sum, workout) => sum + (workout?.score?.strain ?? 0), 0);
+    const totalCalories = workouts.reduce((sum, workout) => {
+      const kilojoule = workout?.score?.kilojoule;
+      return sum + (typeof kilojoule === 'number' ? Math.round(kilojoule / 4.184) : 0);
+    }, 0);
+    const currentEnergyReserve = deriveIntradayEnergyReserve({
+      morningPeak: score.recovery_score ?? null,
+      activeCalories: totalCalories,
+      strain: totalStrain,
+    }) ?? (score.recovery_score != null ? Math.round(score.recovery_score) : null);
 
     return {
       provider: 'whoop',
@@ -170,9 +189,9 @@ export class WhoopAdapter implements WearableAdapter {
       readinessScore: score.recovery_score != null ? Math.round(score.recovery_score) : null,
       hrvMs: score.hrv_rmssd_milli ?? null,
       restingHeartRate: score.resting_heart_rate ?? null,
-      bodyBattery: null,
+      bodyBattery: currentEnergyReserve,
       recoveryScore: score.recovery_score ?? null,
-      raw: r,
+      raw: { recovery: r, workouts: workoutsData },
     };
   }
 

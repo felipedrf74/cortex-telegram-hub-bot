@@ -5,9 +5,13 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getCached, setCache, clearCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { sendSuccess, sendError } from '../response-helpers';
 import * as microsoftTodo from '../../services/microsoft-todo';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
+import { resolveTaskCreationList } from '../../services/task-store/task-list-resolution';
+import { getOwnerBootstrapUser } from '../../services/user-service';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -50,6 +54,15 @@ function getTodo(req?: any) {
 export function taskRoutes(): Router {
   const router = Router();
 
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'tasks_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
+
   /**
    * GET /api/v1/tasks/lists — cached in SQLite with SWR semantics.
    *
@@ -73,11 +86,8 @@ export function taskRoutes(): Router {
             const result = await todo.getLists();
             const listsArray = result?.data || result || [];
             const lists = Array.isArray(listsArray) ? listsArray : [];
-            const formatted = lists.map((l: any) => ({
-              id: l.id,
-              name: l.displayName || l.name,
-              taskCount: -1,
-            }));
+            const countByListId = await buildTaskCountMap(todo, lists);
+            const formatted = formatTaskLists(lists, countByListId);
             setCacheSWR(cacheKey, { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
           });
         }
@@ -89,12 +99,8 @@ export function taskRoutes(): Router {
       const result = await todo.getLists();
       const listsArray = result?.data || result || [];
       const lists = Array.isArray(listsArray) ? listsArray : [];
-
-      const formatted = lists.map((l: any) => ({
-        id: l.id,
-        name: l.displayName || l.name,
-        taskCount: -1,
-      }));
+      const countByListId = await buildTaskCountMap(todo, lists);
+      const formatted = formatTaskLists(lists, countByListId);
 
       const payload = { lists: formatted };
       setCacheSWR(cacheKey, payload, LISTS_CACHE_TTL, LISTS_SWR_STALE);
@@ -275,14 +281,11 @@ export function taskRoutes(): Router {
       // The MS Todo service's createTask expects (listId, listName, data) as
       // separate args — NOT a single object. We must first resolve the list
       // by name (defaulting to the user's default list when none is given).
-      const targetListName = (listName && String(listName).trim()) || 'Tasks';
-      let list = await todo.findListByName(targetListName);
+      const targetListName = String(listName || '').trim();
+      const list = await resolveTaskCreationList(todo, targetListName);
       if (!list) {
-        // Fall back to the configured default list (matches Telegram bot behavior).
-        list = await todo.getDefaultList();
-      }
-      if (!list) {
-        sendError(res, 'LIST_NOT_FOUND', `List "${targetListName}" not found`, 404);
+        const label = targetListName || 'capture list';
+        sendError(res, 'LIST_NOT_FOUND', `List "${label}" not found`, 404);
         return;
       }
 
@@ -318,6 +321,7 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo(req);
       const { listId, taskId } = req.params;
+      const listName = await resolveTaskListName(todo, listId);
 
       const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
       const updates: Record<string, unknown> = {};
@@ -325,11 +329,14 @@ export function taskRoutes(): Router {
         if (ALLOWED_FIELDS.has(key)) updates[key] = value;
       }
 
-      const result = await todo.updateTask(listId, taskId, updates);
-      const task = result?.data || result;
+      const result = await todo.updateTask(listId, taskId, updates, listName);
+      const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
 
       invalidateTaskCaches(listId, (req as any).userId);
-      sendSuccess(res, { task });
+      sendSuccess(
+        res,
+        { task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }) },
+      );
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to update task', 500);
@@ -341,12 +348,14 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo(req);
       const { listId, taskId } = req.params;
+      const listName = await resolveTaskListName(todo, listId);
 
-      const result = await todo.completeTask(listId, taskId);
-      const task = result?.data || result;
+      const result = await todo.completeTask(listId, taskId, listName);
+      const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
+      const normalizedTask = normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName });
 
       invalidateTaskCaches(listId, (req as any).userId);
-      sendSuccess(res, { task, message: `✅ Completed: ${task?.title || 'task'}` });
+      sendSuccess(res, { task: normalizedTask, message: `✅ Completed: ${normalizedTask.title || 'task'}` });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks complete failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to complete task', 500);
@@ -503,6 +512,7 @@ function invalidateTaskCaches(listId?: string, userId?: number): void {
       clearCache(`${p}tasks:${listId}:completed`);
     }
   }
+  invalidatePlanningCaches(userId);
   // Re-warm cache in background after mutation
   setTimeout(() => warmTaskCache().catch(() => {}), 1000);
 }
@@ -513,17 +523,26 @@ function invalidateTaskCaches(listId?: string, userId?: number): void {
  */
 export async function warmTaskCache(): Promise<void> {
   try {
-    const todo = getTodo(); // No req — uses owner's MS To-Do for cache warming
+    const owner = getOwnerBootstrapUser();
+    if (!owner?.id) {
+      logger.debug('Skipping task cache warm — owner bootstrap user unavailable');
+      return;
+    }
+    const todo = getTaskProviderForUser(owner.id);
 
     // Cache list names (fast, single MS Graph call)
     const result = await todo.getLists();
     const listsArray = result?.data || result || [];
     const lists = Array.isArray(listsArray) ? listsArray : [];
-    const formatted = lists.map((l: any) => ({
-      id: l.id,
-      name: l.displayName || l.name,
-      taskCount: -1,
-    }));
+    const pendingResult = await todo.getAllPendingTasks().catch(() => null);
+    const pendingTasks = Array.isArray(pendingResult?.data) ? pendingResult.data : [];
+    const countByListId = pendingTasks.reduce((map: Map<string, number>, task: any) => {
+      const listId = String(task?.listId || '');
+      if (!listId) return map;
+      map.set(listId, (map.get(listId) || 0) + 1);
+      return map;
+    }, new Map<string, number>());
+    const formatted = formatTaskLists(lists, countByListId);
     // SWR write — fresh window matches old TTL, stale grace gives the next
     // 30 min of "instant" responses even if the warmer hits a transient error.
     setCacheSWR('task-lists', { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
@@ -532,7 +551,6 @@ export async function warmTaskCache(): Promise<void> {
     // /api/v1/tasks/filtered AND the chat fast-path (/overdue, /duetoday, etc.)
     // so the iOS chat command flow never has to wait for MS Graph.
     try {
-      const pendingResult = await todo.getAllPendingTasks();
       if (pendingResult?.success) {
         // Raw TodoTask[] for the chat-fastpath module
         // System-level warm cache (Telegram bot context, no specific userId)
@@ -577,5 +595,87 @@ export async function warmTaskCache(): Promise<void> {
     logger.debug({ listCount: lists.length }, 'Task cache warmed');
   } catch (err) {
     logger.debug({ err }, 'Task cache warming failed (non-critical)');
+  }
+}
+
+function formatTaskLists(
+  lists: any[],
+  countByListId: Map<string, number>,
+): Array<{ id: string; name: string; taskCount: number }> {
+  return lists.map((l: any) => ({
+    id: l.id,
+    name: l.displayName || l.name,
+    taskCount: countByListId.get(String(l.id)) || 0,
+  }));
+}
+
+async function buildTaskCountMap(todo: any, lists: any[]): Promise<Map<string, number>> {
+  const fromPendingSnapshot = await readTaskCountsFromPendingSnapshot(todo);
+  if (fromPendingSnapshot) return fromPendingSnapshot;
+
+  const countByListId = new Map<string, number>();
+  const perList = await Promise.allSettled(
+    lists.map(async (list: any) => {
+      const listId = String(list.id || '');
+      const listName = list.displayName || list.name || 'Tasks';
+      const tasksResult = await todo.getTasks(listId, listName, { status: 'notStarted' });
+      const tasks = Array.isArray(tasksResult?.data) ? tasksResult.data : [];
+      return { listId, count: tasks.length };
+    }),
+  );
+
+  for (const result of perList) {
+    if (result.status !== 'fulfilled') continue;
+    countByListId.set(result.value.listId, result.value.count);
+  }
+
+  return countByListId;
+}
+
+async function readTaskCountsFromPendingSnapshot(todo: any): Promise<Map<string, number> | null> {
+  if (typeof todo?.getAllPendingTasks !== 'function') return null;
+
+  try {
+    const pendingResult = await todo.getAllPendingTasks();
+    const pendingTasks = Array.isArray(pendingResult?.data) ? pendingResult.data : null;
+    if (!pendingTasks) return null;
+
+    return pendingTasks.reduce((map: Map<string, number>, task: any) => {
+      const listId = String(task?.listId || '');
+      if (!listId) return map;
+      map.set(listId, (map.get(listId) || 0) + 1);
+      return map;
+    }, new Map<string, number>());
+  } catch {
+    return null;
+  }
+}
+
+async function resolveTaskListName(todo: any, listId: string): Promise<string> {
+  try {
+    const listsResult = await todo.getLists();
+    const lists = Array.isArray(listsResult?.data) ? listsResult.data : [];
+    const match = lists.find((list: any) => String(list.id) === String(listId));
+    return match?.displayName || match?.name || 'Tasks';
+  } catch {
+    return 'Tasks';
+  }
+}
+
+async function resolveMutatedTask(
+  todo: any,
+  listId: string,
+  taskId: string,
+  listName: string,
+  candidate: any,
+): Promise<any> {
+  if (candidate?.title && (candidate?.listId || candidate?.listName)) return candidate;
+
+  try {
+    const refreshed = await todo.getTasks(listId, listName);
+    const tasks = Array.isArray(refreshed?.data) ? refreshed.data : [];
+    return tasks.find((task: any) => String(task.id) === String(taskId)) || candidate;
+  } catch {
+    return candidate;
   }
 }

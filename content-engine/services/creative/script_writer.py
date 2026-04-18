@@ -17,8 +17,16 @@ from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.script")
 
-SYSTEM_PROMPT = f"""You are The Operator's AI scriptwriter. Felipe Dominguez — "The Operator" — builds AI bots, trains for triathlon, eats only steak, and has opinions about everything.
-You write natural, conversational scripts as if Felipe is talking to camera — never robotic.
+SHORT_FORM_WORD_TARGETS = {
+    15: (30, 45),
+    30: (65, 85),
+    45: (95, 120),
+    60: (125, 150),
+}
+
+SYSTEM_PROMPT = f"""You are the creator's AI scriptwriter.
+Use the creator configuration below as the canonical source of identity, worldview, audience, language defaults, and production style.
+Write natural, conversational scripts as if Felipe is talking to camera — never robotic, never generic.
 
 {get_profile()}
 
@@ -168,6 +176,47 @@ def _normalize_render_mode(render_mode: str | None) -> str:
     return "chat" if normalized == "chat" else "structured"
 
 
+def _target_duration_seconds(req: ScriptRequest) -> int:
+    if req.target_duration_seconds:
+        return int(req.target_duration_seconds)
+    format_name = (req.format or "").strip().lower()
+    if format_name in {"short", "reel"} or req.max_duration_minutes <= 1:
+        return max(15, min(int(req.max_duration_minutes * 60), 60))
+    return max(60, int(req.max_duration_minutes * 60))
+
+
+def _is_short_form(req: ScriptRequest) -> bool:
+    format_name = (req.format or "").strip().lower()
+    return format_name in {"short", "reel"} or _target_duration_seconds(req) <= 60
+
+
+def _short_form_word_range(target_seconds: int) -> tuple[int, int]:
+    return SHORT_FORM_WORD_TARGETS.get(target_seconds, SHORT_FORM_WORD_TARGETS[60])
+
+
+def _format_timestamp(total_seconds: int) -> str:
+    minutes, seconds = divmod(max(total_seconds, 0), 60)
+    return f"{minutes}:{seconds:02d}"
+
+
+def _estimated_duration(req: ScriptRequest) -> str:
+    target_seconds = _target_duration_seconds(req)
+    if _is_short_form(req):
+        return _format_timestamp(target_seconds)
+    youtube_presets = {
+        480: "8:00",
+        600: "10:00",
+        900: "15:00",
+    }
+    return youtube_presets.get(target_seconds, _format_timestamp(target_seconds))
+
+
+def _fallback_timestamps(req: ScriptRequest) -> list[str]:
+    target_seconds = _target_duration_seconds(req)
+    fractions = [0.0, 0.22, 0.48, 0.72, 0.92] if _is_short_form(req) else [0.0, 0.1, 0.35, 0.65, 0.9]
+    return [_format_timestamp(round(target_seconds * fraction)) for fraction in fractions]
+
+
 def _language_guidance(language: str) -> tuple[str, str]:
     if language == "en-US":
         return (
@@ -198,18 +247,40 @@ def _language_guidance(language: str) -> tuple[str, str]:
 
 
 def _format_guidance(req: ScriptRequest) -> str:
-    format_name = (req.format or "").strip().lower()
-    if format_name in {"short", "reel"} or req.max_duration_minutes <= 1:
+    target_seconds = _target_duration_seconds(req)
+    if _is_short_form(req):
+        min_words, max_words = _short_form_word_range(target_seconds)
         return "\n".join([
             "- This is a SHORT-FORM script.",
-            "- Keep the spoken script under 130 words.",
+            f"- Hit the {target_seconds}-second runtime cleanly; do not drift toward a 60-second generic short.",
+            f"- Keep the spoken script around {min_words}-{max_words} words.",
             "- Use at most 4 spoken beats after the hook.",
+            "- Timestamp the script so the final beat lands near the requested short duration.",
             "- Do NOT add a separate 'Visuals:' section or any preamble before the script.",
             "- Use inline [SHOW ON SCREEN: ...] markers inside the script instead of standalone visual notes.",
         ])
+    if target_seconds >= 900:
+        pacing = [
+            "- This is a 15-minute YouTube script.",
+            "- Use 9-12 timestamped beats so the arc can breathe without filler.",
+            "- Bring the CTA in near the 14-minute mark and close close to 15:00.",
+        ]
+    elif target_seconds >= 600:
+        pacing = [
+            "- This is a 10-minute YouTube script.",
+            "- Use 7-9 timestamped beats with clear transitions and one real midpoint turn.",
+            "- Bring the CTA in near the 9-minute mark and close close to 10:00.",
+        ]
+    else:
+        pacing = [
+            "- This is an 8-minute YouTube script.",
+            "- Use 6-8 timestamped beats and stay disciplined; every section must earn its minute.",
+            "- Bring the CTA in near the 7-minute mark and close close to 8:00.",
+        ]
     return "\n".join([
-        "- This is a LONG-FORM script.",
+        *pacing,
         "- Stay tight and high-signal; do not pad with generic filler.",
+        "- Timestamp the body so the ending lands close to the requested duration preset.",
         "- Use [SHOW ON SCREEN: ...] markers inline instead of adding standalone setup sections.",
     ])
 
@@ -225,8 +296,9 @@ def _render_mode_guidance(req: ScriptRequest, render_mode: str) -> str:
             "- Keep the body conversational and punchy, not like a production template.",
             "- Put the standalone CTA in metadata; if the script itself ends with a CTA, make it sound natural rather than labeled.",
         ]
-        if (req.format or "").strip().lower() in {"short", "reel"} or req.max_duration_minutes <= 1:
-            rules.append("- For short-form chat scripts, aim for roughly 55-95 spoken words.")
+        if _is_short_form(req):
+            min_words, max_words = _short_form_word_range(_target_duration_seconds(req))
+            rules.append(f"- For short-form chat scripts, aim for roughly {min_words}-{max_words} spoken words.")
         return "\n".join(rules)
 
     return "\n".join([
@@ -235,40 +307,90 @@ def _render_mode_guidance(req: ScriptRequest, render_mode: str) -> str:
     ])
 
 
+def _topic_context_block(req: ScriptRequest) -> str:
+    context = getattr(req, "topic_context", None) or {}
+    if not isinstance(context, dict):
+        return ""
+
+    lines: list[str] = []
+    if context.get("hook_idea"):
+        lines.append(f"- Hook idea already chosen upstream: {context['hook_idea']}")
+    if context.get("why_now"):
+        lines.append(f"- Why this matters now: {context['why_now']}")
+    if context.get("angle_tag"):
+        lines.append(f"- Chosen angle tag: {context['angle_tag']}")
+    if context.get("source_job"):
+        lines.append(f"- Source pipeline/job: {context['source_job']}")
+    if context.get("topic_feedback_id") or context.get("pipeline_id") or context.get("idea_id"):
+        lines.append(
+            "- Treat this as first-party product context coming from an approved topic or pipeline decision, not just an ad-hoc prompt."
+        )
+
+    if not lines:
+        return ""
+    return "\nFIRST-PARTY TOPIC CONTEXT:\n" + "\n".join(lines)
+
+
 def _fallback_titles(topic: str, language: str) -> list[str]:
+    subject = _normalize_fallback_topic(topic)
     if language == "en-US":
         return [
-            f"The recovery protocol after hard intervals",
-            f"What to do right after brutal intervals",
-            f"Why recovery decides your next hard session",
+            f"What nobody tells you about {subject}",
+            f"How I would approach {subject} solo",
+            f"{subject}: the operator breakdown",
         ]
     if language == "pt-PT":
         return [
-            f"O protocolo de recuperação depois de intervalos duros",
-            f"O que fazer logo após intervalos pesados",
-            f"Porque a recuperação decide o teu próximo treino",
+            f"O que ninguém te diz sobre {subject}",
+            f"Como eu abordaria {subject} sozinho",
+            f"{subject}: a leitura do Operator",
         ]
     return [
-        f"O protocolo de recuperação depois de intervalos fortes",
-        f"O que fazer logo depois de intervalos pesados",
-        f"Por que a recuperação decide seu próximo treino",
+        f"O que ninguém te conta sobre {subject}",
+        f"Como eu abordaria {subject} sozinho",
+        f"{subject}: o breakdown do Operator",
     ]
 
 
 def _fallback_caption(topic: str, language: str) -> str:
+    subject = _normalize_fallback_topic(topic)
     if language == "en-US":
-        return f"Hard intervals are only worth it if recovery is handled right. Save this for your next hard session."
+        return f"If you're working on {subject}, speed only helps when the product logic stays clear. Save this before your next build sprint."
     if language == "pt-PT":
-        return f"Intervalos duros só valem a pena se a recuperação estiver bem feita. Guarda isto para o teu próximo treino."
-    return f"Intervalos fortes só valem a pena se a recuperação estiver bem feita. Salva isto para o seu próximo treino."
+        return f"Se estás a trabalhar em {subject}, a velocidade só ajuda quando a lógica do produto está clara. Guarda isto antes do próximo sprint."
+    return f"Se você está trabalhando em {subject}, velocidade só ajuda quando a lógica do produto está clara. Salva isso antes do próximo sprint."
 
 
 def _fallback_cta(language: str) -> str:
     if language == "en-US":
-        return "Save this and send it to the training partner who always skips recovery."
+        return "Save this and send it to the builder who's trying to do everything at once."
     if language == "pt-PT":
-        return "Guarda isto e envia ao parceiro de treino que salta sempre a recuperação."
-    return "Salva isto e manda para o parceiro de treino que sempre pula a recuperação."
+        return "Guarda isto e envia a quem está a tentar construir tudo ao mesmo tempo."
+    return "Salva isso e manda para quem está tentando construir tudo ao mesmo tempo."
+
+
+def _normalize_fallback_topic(topic: str) -> str:
+    subject = re.sub(r"\s+", " ", (topic or "").strip())
+    patterns = [
+        r"^(?:create|write|generate)\s+(?:a\s+)?(?:script|video script|youtube script|short script|reel script)\s+(?:about|on)\s+",
+        r"^(?:cria|crie|escreve|escreva|gera|gere)\s+(?:um\s+)?(?:roteiro|script)\s+(?:sobre|para)\s+",
+        r"^(?:topic|tema)\s*:\s*",
+    ]
+    for pattern in patterns:
+        subject = re.sub(pattern, "", subject, flags=re.IGNORECASE)
+    return subject.strip(" .!?") or "this topic"
+
+
+def _fallback_hashtags(topic: str) -> list[str]:
+    normalized = _normalize_fallback_topic(topic).lower()
+    topic_tokens = re.findall(r"[a-zA-Z0-9]+", normalized)
+    derived = [f"#{token}" for token in topic_tokens[:2] if len(token) > 3]
+    base = ["#theoperator", "#buildinpublic", "#product", "#systems"]
+    merged: list[str] = []
+    for tag in derived + base:
+        if tag not in merged:
+            merged.append(tag)
+    return merged[:5]
 
 
 def _is_usable_key_point(point: str) -> bool:
@@ -306,76 +428,78 @@ def _build_degraded_script_response(
     warnings: list[str],
 ) -> ScriptResponse:
     topic = req.topic.strip()
+    subject = _normalize_fallback_topic(topic)
     render_mode = _normalize_render_mode(getattr(req, "render_mode", None))
     key_points = _pick_key_points(briefs)
     cta = _fallback_cta(language)
     cta_line = cta if render_mode == "chat" else f"CTA: {cta}"
+    timestamps = _fallback_timestamps(req)
 
     if language == "en-US":
-        hook = "Most athletes finish hard intervals and immediately waste the adaptation window."
+        hook = f"If you're trying to {subject.lower()}, the trap is thinking speed replaces judgment."
         beats = [
-            key_points[0] if len(key_points) > 0 else "Spend a few minutes cooling down instead of stopping abruptly.",
-            key_points[1] if len(key_points) > 1 else "Rehydrate with fluids and electrolytes before the crash hits.",
-            key_points[2] if len(key_points) > 2 else "Get protein and carbs in quickly so tomorrow's session is not compromised.",
+            key_points[0] if len(key_points) > 0 else "Start by naming the one painful problem this product solves for a real person.",
+            key_points[1] if len(key_points) > 1 else "Use vibe coding to compress execution, not to skip decisions about scope, UX, or trust.",
+            key_points[2] if len(key_points) > 2 else "Ship the smallest loop that proves people want the outcome enough to return, share, or pay.",
         ]
         if render_mode == "chat":
             script = "\n\n".join([
-                "**Hard intervals done?** Recovery starts immediately, not tomorrow.",
-                f"First, cool down on purpose. {beats[0]} Then rehydrate properly. {beats[1]}",
-                f"Finally, get protein and carbs in early. {beats[2]} Recovery is part of the session, not an optional extra.",
+                f"**{subject}** sounds fast when AI is helping, but the real bottleneck is still judgment.",
+                f"First, get painfully clear on the problem. {beats[0]} Then keep the build loop tight. {beats[1]}",
+                f"Finally, only keep what proves demand. {beats[2]} Speed matters, but clarity is what stops you from shipping noise.",
                 cta,
             ])
         else:
             script = "\n".join([
-                "[0:00] **Hard intervals done?** Recovery starts immediately, not tomorrow. [SHOW ON SCREEN: \"Recovery = training\"]",
-                f"[0:05] First: cool down on purpose. {beats[0]}",
-                f"[0:11] Second: fluids and electrolytes. {beats[1]}",
-                f"[0:17] Third: protein plus carbs. {beats[2]} [SHOW ON SCREEN: \"Recovery = training\"]",
-                f"[0:24] {cta_line}",
+                f"[{timestamps[0]}] **{subject}** sounds fast when AI is helping, but the real bottleneck is still judgment. [SHOW ON SCREEN: \"Speed without clarity = noise\"]",
+                f"[{timestamps[1]}] First: define the painful problem. {beats[0]}",
+                f"[{timestamps[2]}] Second: keep the build loop tight. {beats[1]}",
+                f"[{timestamps[3]}] Third: keep only what proves demand. {beats[2]} [SHOW ON SCREEN: \"Ship the smallest proof\"]",
+                f"[{timestamps[-1]}] {cta_line}",
             ])
     elif language == "pt-PT":
-        hook = "A maioria das pessoas acaba os intervalos duros e desperdiça logo a janela de recuperação."
+        hook = f"Se estás a tentar {subject.lower()}, o erro é achar que velocidade substitui critério."
         beats = [
-            key_points[0] if len(key_points) > 0 else "Faz alguns minutos de desaceleração em vez de parar de forma brusca.",
-            key_points[1] if len(key_points) > 1 else "Repõe líquidos e eletrólitos antes da quebra aparecer.",
-            key_points[2] if len(key_points) > 2 else "Mete proteína e hidratos cedo para não comprometer o treino de amanhã.",
+            key_points[0] if len(key_points) > 0 else "Começa por definir o problema doloroso que o produto resolve para uma pessoa concreta.",
+            key_points[1] if len(key_points) > 1 else "Usa vibe coding para acelerar execução, não para saltar decisões de escopo, UX ou confiança.",
+            key_points[2] if len(key_points) > 2 else "Lança o circuito mínimo que prova que alguém quer o resultado ao ponto de voltar, partilhar ou pagar.",
         ]
         if render_mode == "chat":
             script = "\n\n".join([
-                "**Acabaste os intervalos duros?** A recuperação começa agora, não amanhã.",
-                f"Primeiro, desacelera de propósito. {beats[0]} Depois repõe líquidos e eletrólitos. {beats[1]}",
-                f"Por fim, mete proteína e hidratos cedo. {beats[2]} A recuperação também faz parte do treino.",
+                f"**{subject}** parece rápido com IA, mas o verdadeiro bloqueio continua a ser critério.",
+                f"Primeiro, clarifica o problema. {beats[0]} Depois mantém o ciclo de build apertado. {beats[1]}",
+                f"Por fim, fica só com o que prova procura real. {beats[2]} Velocidade ajuda, mas clareza é o que impede que publiques ruído.",
                 cta,
             ])
         else:
             script = "\n".join([
-                "[0:00] **Terminaste intervalos duros?** A recuperação começa agora, não amanhã. [SHOW ON SCREEN: \"Recuperação = treino\"]",
-                f"[0:05] Primeiro: desacelera de propósito. {beats[0]}",
-                f"[0:11] Segundo: líquidos e eletrólitos. {beats[1]}",
-                f"[0:17] Terceiro: proteína e hidratos cedo. {beats[2]} [SHOW ON SCREEN: \"Recuperação = treino\"]",
-                f"[0:24] {cta_line}",
+                f"[{timestamps[0]}] **{subject}** parece rápido com IA, mas o verdadeiro bloqueio continua a ser critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
+                f"[{timestamps[1]}] Primeiro: define o problema real. {beats[0]}",
+                f"[{timestamps[2]}] Segundo: mantém o ciclo de build apertado. {beats[1]}",
+                f"[{timestamps[3]}] Terceiro: guarda só o que prova procura. {beats[2]} [SHOW ON SCREEN: \"Lança a menor prova possível\"]",
+                f"[{timestamps[-1]}] {cta_line}",
             ])
     else:
-        hook = "A maioria das pessoas termina intervalos fortes e desperdiça a janela de recuperação."
+        hook = f"Se você está tentando {subject.lower()}, o erro é achar que velocidade substitui critério."
         beats = [
-            key_points[0] if len(key_points) > 0 else "Faça alguns minutos de desaquecimento em vez de parar de uma vez.",
-            key_points[1] if len(key_points) > 1 else "Reponha líquidos e eletrólitos antes da queda de energia bater.",
-            key_points[2] if len(key_points) > 2 else "Coloque proteína e carboidrato cedo para não comprometer o treino de amanhã.",
+            key_points[0] if len(key_points) > 0 else "Comece definindo o problema doloroso que o produto resolve para uma pessoa real.",
+            key_points[1] if len(key_points) > 1 else "Use vibe coding para acelerar execução, não para pular decisões de escopo, UX ou confiança.",
+            key_points[2] if len(key_points) > 2 else "Lance o menor loop que prova que alguém quer o resultado a ponto de voltar, compartilhar ou pagar.",
         ]
         if render_mode == "chat":
             script = "\n\n".join([
-                "**Terminou os intervalos fortes?** A recuperação começa agora, não amanhã.",
-                f"Primeiro, desacelere de propósito. {beats[0]} Depois reponha líquidos e eletrólitos. {beats[1]}",
-                f"Por fim, coloque proteína e carboidrato cedo. {beats[2]} Recuperação também é treino.",
+                f"**{subject}** parece rápido com IA, mas o gargalo real continua sendo critério.",
+                f"Primeiro, esclareça o problema. {beats[0]} Depois mantenha o ciclo de build enxuto. {beats[1]}",
+                f"Por fim, fique só com o que prova demanda real. {beats[2]} Velocidade ajuda, mas clareza é o que impede você de publicar ruído.",
                 cta,
             ])
         else:
             script = "\n".join([
-                "[0:00] **Terminou os intervalos fortes?** A recuperação começa agora, não amanhã. [SHOW ON SCREEN: \"Recuperação = treino\"]",
-                f"[0:05] Primeiro: desacelere de propósito. {beats[0]}",
-                f"[0:11] Segundo: líquidos e eletrólitos. {beats[1]}",
-                f"[0:17] Terceiro: proteína e carboidrato cedo. {beats[2]} [SHOW ON SCREEN: \"Recuperação = treino\"]",
-                f"[0:24] {cta_line}",
+                f"[{timestamps[0]}] **{subject}** parece rápido com IA, mas o gargalo real continua sendo critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
+                f"[{timestamps[1]}] Primeiro: defina o problema real. {beats[0]}",
+                f"[{timestamps[2]}] Segundo: mantenha o ciclo de build enxuto. {beats[1]}",
+                f"[{timestamps[3]}] Terceiro: guarde só o que prova demanda. {beats[2]} [SHOW ON SCREEN: \"Lance a menor prova possível\"]",
+                f"[{timestamps[-1]}] {cta_line}",
             ])
 
     warnings.append("AI generation was unavailable; returned a templated degraded script grounded in the available research.")
@@ -388,7 +512,7 @@ def _build_degraded_script_response(
         sources_used=sources_used[:5],
         estimated_duration=est_duration,
         duration_ms=duration_ms,
-        hashtags=["#recovery", "#training", "#theoperator", "#performance"],
+        hashtags=_fallback_hashtags(topic),
         caption=_fallback_caption(topic, language),
         cta=cta,
         degraded=True,
@@ -469,11 +593,13 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     start = time.monotonic()
     warnings: list[str] = []
     degraded = False
+    normalized_mode = (getattr(req, "mode", "standard") or "standard").strip().lower()
     normalized_language = _normalize_language(req.language)
     normalized_render_mode = _normalize_render_mode(getattr(req, "render_mode", None))
     language_label, language_rules = _language_guidance(normalized_language)
     format_rules = _format_guidance(req)
     render_mode_rules = _render_mode_guidance(req, normalized_render_mode)
+    topic_context_block = _topic_context_block(req)
     brand_voice_block = ""
     if req.brand_voice and req.brand_voice.strip():
         brand_voice_block = (
@@ -482,7 +608,11 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
         )
 
     # Step 1: Research the topic
-    research = await orchestrator.deep_search(req.topic, max_results=5)
+    if normalized_mode == "quick":
+        research = await orchestrator.quick_search(req.topic, max_results=3)
+        warnings.append("Quick mode used shallow research without deep synthesis.")
+    else:
+        research = await orchestrator.deep_search(req.topic, max_results=5)
     briefs = research.briefs
     if getattr(research, "degraded", False):
         degraded = True
@@ -502,12 +632,7 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
             sources_used.append(src)
 
     # Estimated duration mapping
-    duration_map = {
-        "Short": "0:30-1:00",
-        "Reel": "0:30-1:00",
-        "YouTube": f"{req.max_duration_minutes-2}:00-{req.max_duration_minutes}:00",
-    }
-    est_duration = duration_map.get(req.format, f"{req.max_duration_minutes}:00")
+    est_duration = _estimated_duration(req)
 
     # Build intelligence context from bus signals
     intelligence_block = ""
@@ -581,7 +706,7 @@ FORMAT RULES:
 {format_rules}
 
 RENDER MODE RULES:
-{render_mode_rules}{brand_voice_block}
+{render_mode_rules}{topic_context_block}{brand_voice_block}
 
 VERIFIED RESEARCH FINDINGS (USE ONLY THESE AS FACTUAL BASIS):
 {research_context}{intelligence_block}
@@ -592,6 +717,7 @@ ACCURACY INSTRUCTIONS:
 - Tag your opinions/commentary with [TAKE] so Felipe knows what's fact vs. opinion.
 - If you want to make a claim NOT found in research, mark it [NEEDS VERIFICATION: claim].
 - DO NOT invent statistics, poll numbers, dates, legal outcomes, or people's current status.
+- If FIRST-PARTY TOPIC CONTEXT is present, treat it as the primary editorial direction and use research to sharpen it rather than replacing it with some unrelated pillar.
 {"- At the end, include a FONTES VERIFICADAS section listing sources used." if normalized_render_mode != "chat" else "- Keep source grounding invisible in the spoken body unless a fact truly needs an inline source cue."}
 
 Also provide:

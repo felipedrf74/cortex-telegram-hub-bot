@@ -193,8 +193,9 @@ describe('oauth-store', () => {
       `).run();
 
       migrateOwnerTokens();
-      expect(isConnected(111111, 'google')).toBe(true);
-      const tokens = getTokens(111111, 'google');
+      const owner = testDb.prepare('SELECT id FROM users WHERE telegram_id = 111111').get() as { id: number };
+      expect(isConnected(owner.id, 'google')).toBe(true);
+      const tokens = getTokens(owner.id, 'google');
       expect(tokens!.refreshToken).toBe('grt_test123');
     });
 
@@ -205,7 +206,8 @@ describe('oauth-store', () => {
       `).run();
 
       migrateOwnerTokens();
-      expect(isConnected(111111, 'outlook')).toBe(true);
+      const owner = testDb.prepare('SELECT id FROM users WHERE telegram_id = 111111').get() as { id: number };
+      expect(isConnected(owner.id, 'outlook')).toBe(true);
     });
 
     it('is idempotent — skips if already migrated', () => {
@@ -216,7 +218,30 @@ describe('oauth-store', () => {
 
       migrateOwnerTokens();
       migrateOwnerTokens(); // Second call should not throw
-      expect(getUserConnections(111111)).toHaveLength(2);
+      const owner = testDb.prepare('SELECT id FROM users WHERE telegram_id = 111111').get() as { id: number };
+      expect(getUserConnections(owner.id)).toHaveLength(2);
+    });
+
+    it('does not duplicate owner tokens when a legacy telegram-keyed row already exists', () => {
+      testDb.prepare(`
+        INSERT INTO users (telegram_id, first_name, tier, status, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+        VALUES (111111, 'Owner', 'owner', 'active', 0, 0, 0)
+      `).run();
+
+      storeTokens(111111, 'google', {
+        accessToken: '',
+        refreshToken: 'legacy_grt',
+        tokenType: 'Bearer',
+        expiresAt: null,
+        scopes: [],
+      });
+
+      migrateOwnerTokens();
+
+      const owner = testDb.prepare('SELECT id FROM users WHERE telegram_id = 111111').get() as { id: number };
+      expect(isConnected(111111, 'google')).toBe(true);
+      expect(isConnected(owner.id, 'google')).toBe(false);
+      expect(getTokens(111111, 'google')?.refreshToken).toBe('legacy_grt');
     });
   });
 

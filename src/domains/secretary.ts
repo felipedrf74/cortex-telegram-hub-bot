@@ -5,18 +5,32 @@ import { ensureActiveProvider, getActiveProvider } from '../services/provider-re
 import { callDomain as directCallDomain, continueWithToolResults as directContinueWithToolResults } from '../services/anthropic';
 import { getConversationHistory, addToConversation } from '../state/conversation';
 import { getActiveReminders, getRemindersForToday } from '../state/reminders';
-import { getEvents, isAnyCalendarConfigured } from '../services/unified-calendar';
-import { isOutlookMailConfigured, getUnreadCount } from '../services/outlook-mail';
-import { isOutlookTodoConfigured, getAllPendingTasks } from '../services/microsoft-todo';
+import { getEvents, hasConnectedCalendarForUser } from '../services/unified-calendar';
+import type { TodoTask } from '../services/microsoft-todo';
 import { now, startOfDay, endOfDay, formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getSharedMemorySummary } from '../state/shared-memory';
-import { isGarminConfigured, getActivitiesByDate, getBodyBatteryEvents, GarminActivity } from '../services/garmin';
+import {
+  getActivitiesByDateForUser,
+  getBodyBatteryEventsForUser,
+  isGarminConfiguredForUser,
+  GarminActivity,
+} from '../services/garmin';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import { tryFastpath } from '../services/secretary-fastpath';
 import { analyzeIntent } from '../services/secretary-tools';
 import type { AIToolResultMessage } from '../services/ai-provider';
+import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
+import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
+import {
+  buildSharedDecisionContext,
+  buildSharedDecisionContracts,
+  type SharedDecisionContracts,
+} from '../services/shared-decision-context';
+import { getTaskProviderForUser } from '../services/task-store/task-router';
+import { composeDailyBrief } from '../services/daily-brief-orchestrator';
+import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../services/unified-mail-pressure';
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -55,7 +69,9 @@ export function _resetStateContextCacheForTesting(): void {
  * a "show tasks" cache hit on a follow-up "what's my week" would miss
  * (calendar wasn't loaded the first time) and re-run with calendar.
  */
-async function buildStateContext(message: string = '', userId: number = 0): Promise<string> {
+async function buildStateContext(message: string = '', userId?: number): Promise<string> {
+  const scopedUserId = typeof userId === 'number' ? userId : null;
+  const hasUserScope = scopedUserId !== null;
   // Check which sub-skills are enabled to skip unnecessary API calls
   const tasksEnabled = isSubmoduleEnabled('secretary', 'tasks');
   const calendarEnabled = isSubmoduleEnabled('secretary', 'calendar');
@@ -74,11 +90,24 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
     email: intent.ambiguous || intent.email,
     reminders: intent.ambiguous || intent.reminders || intent.tasks, // reminders are cheap, often paired with tasks
     garmin: intent.ambiguous || intent.garmin,
+    planner: intent.ambiguous || /\b(plan|prioriti[sz]e|priority|first|focus|fit|reschedul|schedule|organi[sz]e|tradeoff|handoff|what should i do|what do i do first|how do i fit)\b/i.test(message),
   };
+  const taskProvider = hasUserScope && needs.tasks && tasksEnabled
+    ? getTaskProviderForUser(scopedUserId)
+    : null;
+  const hasCalendar = hasUserScope && needs.calendar && calendarEnabled
+    ? hasConnectedCalendarForUser(scopedUserId)
+    : false;
+  const hasMail = hasUserScope && needs.email && emailEnabled
+    ? isAnyMailConfiguredForUser(scopedUserId)
+    : false;
+  const hasGarmin = hasUserScope && needs.garmin
+    ? isGarminConfiguredForUser(scopedUserId)
+    : false;
 
   // Cache key = userId + context shape — prevents cross-user leakage
-  const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}`;
-  const cacheKey = `${userId}:${shape}`;
+  const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
+  const cacheKey = `${hasUserScope ? scopedUserId : 'anon'}:${shape}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
@@ -94,30 +123,34 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
   const todayStr = today.toFormat('yyyy-MM-dd');
 
   // Fetch only what `needs` says we need (skip disabled sub-skills + skip unneeded sources)
-  const [todoResult, reminders, calendarResult, unreadResult, garminActivities, garminBodyBattery] = await Promise.all([
-    needs.tasks && tasksEnabled && isOutlookTodoConfigured()
-      ? getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
+  const [todoResult, reminders, calendarResult, unreadMail, garminActivities, garminBodyBattery, plannerBrief, decisionCtx, decisionContracts] = await Promise.all([
+    taskProvider
+      ? taskProvider.getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
       : Promise.resolve(null),
-    needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
-    needs.calendar && calendarEnabled && isAnyCalendarConfigured()
-      // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
-      ? getEvents(startOfDay(), endOfDay(), userId).catch(() => [] as any[])
+    hasUserScope && needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(scopedUserId)) : Promise.resolve([]),
+    hasCalendar && scopedUserId !== null
+      ? getEvents(startOfDay(), endOfDay(), scopedUserId).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
-    needs.email && emailEnabled && isOutlookMailConfigured()
-      ? getUnreadCount().catch(() => null)
+    hasMail && scopedUserId !== null
+      ? getUnreadMailSummaryForUser(scopedUserId).catch(() => null)
       : Promise.resolve(null),
-    needs.garmin && isGarminConfigured()
-      ? getActivitiesByDate(threeDaysAgo, todayStr).catch(() => [] as GarminActivity[])
+    hasGarmin && scopedUserId !== null
+      ? getActivitiesByDateForUser(scopedUserId, threeDaysAgo, todayStr).catch(() => [] as GarminActivity[])
       : Promise.resolve([] as GarminActivity[]),
-    needs.garmin && isGarminConfigured()
-      ? getBodyBatteryEvents(todayStr).catch(() => null)
+    hasGarmin && scopedUserId !== null
+      ? getBodyBatteryEventsForUser(scopedUserId, todayStr).catch(() => null)
       : Promise.resolve(null),
+    hasUserScope && needs.planner
+      ? composeDailyBrief({ userId: scopedUserId }).catch(() => null)
+      : Promise.resolve(null),
+    hasUserScope ? buildSharedDecisionContext(DOMAIN, scopedUserId).catch(() => '') : Promise.resolve(''),
+    hasUserScope ? buildSharedDecisionContracts(DOMAIN, scopedUserId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
   ]);
 
   // Microsoft To Do — compact summary (details available via tools)
   if (todoResult) {
     if (todoResult.success && todoResult.data.length > 0) {
-      const tasks = todoResult.data;
+      const tasks: TodoTask[] = todoResult.data;
       // Date-only comparison in the configured timezone. A task "due April 6"
       // should be treated as due TODAY at any moment on April 6, NOT marked
       // overdue at 00:01 just because the timestamp is < now. This matches
@@ -128,11 +161,11 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
         if (!t.dueDateTime) return null;
         return new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
       };
-      const overdue = tasks.filter((t) => {
+      const overdue = tasks.filter((t: TodoTask) => {
         const d = dueDateStr(t);
         return d !== null && d < todayStr;
       });
-      const dueToday = tasks.filter((t) => dueDateStr(t) === todayStr);
+      const dueToday = tasks.filter((t: TodoTask) => dueDateStr(t) === todayStr);
 
       // Group by list with IDs (so model can skip ms_todo_get_lists)
       const byList = new Map<string, { id: string; count: number }>();
@@ -147,7 +180,7 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
 
       parts.push(`\nTo Do: ${tasks.length} pending, ${overdue.length} overdue, ${dueToday.length} due today.\nLists: ${listSummary}`);
       if (overdue.length > 0) {
-        parts.push(`Overdue: ${overdue.slice(0, 5).map((t) => t.title).join(', ')}`);
+        parts.push(`Overdue: ${overdue.slice(0, 5).map((t: TodoTask) => t.title).join(', ')}`);
       }
     } else if (!todoResult.success) {
       parts.push('\nTo Do: API error');
@@ -161,8 +194,12 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
   if (calendarResult.length > 0) {
     parts.push(`\nCalendar today (${calendarResult.length}): ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${e.summary}`).join(' | ')}`);
   }
-  if (unreadResult !== null) {
-    parts.push(`\nOutlook: ${unreadResult} unread`);
+  if (unreadMail) {
+    const providerDetails = [
+      unreadMail.outlookUnread != null ? `Outlook ${unreadMail.outlookUnread}` : null,
+      unreadMail.gmailUnread != null ? `Gmail ${unreadMail.gmailUnread}` : null,
+    ].filter(Boolean).join(' | ');
+    parts.push(`\nMail: ${unreadMail.totalUnread} unread${providerDetails ? ` (${providerDetails})` : ''}`);
   }
 
   // Garmin training summary (last 3 days)
@@ -223,8 +260,25 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
   }
 
   // Cross-domain shared context — SECURITY FIX: now uses actual userId
-  const sharedCtx = getSharedMemorySummary(userId);
+  const sharedCtx = hasUserScope ? getSharedMemorySummary(scopedUserId) : '';
   if (sharedCtx) parts.push(sharedCtx);
+
+  if (plannerBrief) {
+    const plannerParts: string[] = [];
+    if (plannerBrief.coordination.topPriority) plannerParts.push(`Top priority: ${plannerBrief.coordination.topPriority}`);
+    if (plannerBrief.coordination.executionOrder.length > 0) plannerParts.push(`Execution order: ${plannerBrief.coordination.executionOrder.join(' → ')}`);
+    if (plannerBrief.coordination.watchouts.length > 0) plannerParts.push(`Watchouts: ${plannerBrief.coordination.watchouts.join(' | ')}`);
+    if (plannerBrief.coordination.handoffs.length > 0) plannerParts.push(`Handoffs: ${plannerBrief.coordination.handoffs.join(' | ')}`);
+    if (plannerBrief.day.secretary.tradeoffNote) plannerParts.push(`Tradeoff note: ${plannerBrief.day.secretary.tradeoffNote}`);
+    if (plannerParts.length > 0) {
+      parts.push('\n[PLANNER COORDINATION]');
+      parts.push(...plannerParts.map((entry) => `  ${entry}`));
+    }
+  }
+
+  if (decisionCtx) parts.push(`\n${decisionCtx}`);
+  const contractBlock = renderSharedDecisionContracts(decisionContracts);
+  if (contractBlock) parts.push(`\n${contractBlock}`);
 
   const result = parts.join('\n');
 
@@ -237,22 +291,45 @@ async function buildStateContext(message: string = '', userId: number = 0): Prom
   return result;
 }
 
+function renderSharedDecisionContracts(contracts: SharedDecisionContracts): string {
+  const entries = Object.entries(contracts).filter(([, contract]) => contract);
+  if (entries.length === 0) return '';
+
+  const lines = ['<shared_decision_contracts domain="secretary">'];
+  for (const [peer, contract] of entries) {
+    if (!contract) continue;
+    const details = [
+      contract.nonNegotiables.length > 0 ? `nonNegotiables=${contract.nonNegotiables.join(' | ')}` : null,
+      contract.preferredWindows.length > 0 ? `preferredWindows=${contract.preferredWindows.join(' | ')}` : null,
+      contract.fallbackIfDeferred.length > 0 ? `fallbackIfDeferred=${contract.fallbackIfDeferred.join(' | ')}` : null,
+      contract.budgetMode ? `budgetMode=${contract.budgetMode}` : null,
+      contract.publishDeadline ? `publishDeadline=${contract.publishDeadline}` : null,
+      contract.notes.length > 0 ? `notes=${contract.notes.join(' | ')}` : null,
+    ].filter(Boolean).join('; ');
+    if (details.length > 0) {
+      lines.push(`- ${peer}: ${details}`);
+    }
+  }
+  lines.push('</shared_decision_contracts>');
+  return lines.length > 2 ? lines.join('\n') : '';
+}
+
 export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {
-  const uid = userId ?? 0;
+  const hasUserScope = typeof userId === 'number';
 
   // ── Layer 1: Command Fastpath ──────────────────────────────────
   // Intercept deterministic data-read patterns before any AI call.
   // Identical Telegram-HTML output to the AI path; users can't tell the
   // difference. Errors fall through to the AI path automatically.
   // See src/services/secretary-fastpath.ts for the pattern dictionary.
-  const fastpath = await tryFastpath(uid, message);
-  if (fastpath.matched && fastpath.response) {
+  const fastpath = hasUserScope ? await tryFastpath(userId, message) : { matched: false, response: null };
+  if (fastpath.matched && fastpath.response && hasUserScope) {
     // Record in conversation history so the next AI turn has context
     // about what the user just asked. Tag the assistant message with the
     // pattern id so future debugging can spot fastpath responses in logs.
-    addToConversation(uid, DOMAIN, 'user', message);
+    addToConversation(userId, DOMAIN, 'user', message);
     addToConversation(
-      uid,
+      userId,
       DOMAIN,
       'assistant',
       `[fastpath:${fastpath.patternId}]\n${fastpath.response.text}`,
@@ -260,11 +337,11 @@ export async function handleSecretary(message: string, userId?: number): Promise
     return fastpath.response;
   }
 
-  const history = getConversationHistory(uid, DOMAIN);
+  const history = hasUserScope ? getConversationHistory(userId, DOMAIN) : [];
   // Layer 2: pass the message so buildStateContext can fetch only what
   // the message actually needs (saves ~1,000-2,000 input tokens on
   // intent-typed queries; ambiguous queries fall back to fetching all).
-  const stateContext = await buildStateContext(message, uid);
+  const stateContext = await buildStateContext(message, userId);
 
   // ── Provider routing — TASK-17 Option B fix ────────────────────
   //
@@ -284,16 +361,19 @@ export async function handleSecretary(message: string, userId?: number): Promise
   //     and passed to whichever provider runs)
   //   - Circuit breaker fallback (if Gemini fails, falls back to
   //     Anthropic Haiku — same fallback the chat domains get)
-  const provider = getActiveProvider() || ensureActiveProvider();
-  if (!provider) {
+    const provider = getActiveProvider() || ensureActiveProvider();
+    if (!provider) {
+      if (!canUseDirectAnthropicFallback()) {
+        return buildAIUnavailableResponse(DOMAIN, userId);
+      }
     // Fallback to direct Anthropic — same call signatures the legacy
-    // path used. The Anthropic SDK client is lazy-initialized inside
-    // anthropic.ts so this static import is cheap; the test suites
-    // can mock the imports normally without dynamic-require gotchas.
-    return await handleSecretaryWithDirectAnthropic(
-      uid, message, history, stateContext, directCallDomain, directContinueWithToolResults, uid,
-    );
-  }
+      // path used. The Anthropic SDK client is lazy-initialized inside
+      // anthropic.ts so this static import is cheap; the test suites
+      // can mock the imports normally without dynamic-require gotchas.
+      return await handleSecretaryWithDirectAnthropic(
+        userId, message, history, stateContext, directCallDomain, directContinueWithToolResults, userId,
+      );
+    }
 
   // Provider-agnostic tool loop — same shape as handleSimpleDomain
   // but with secretary's iteration cap (4 instead of 5) and the
@@ -355,16 +435,20 @@ export async function handleSecretary(message: string, userId?: number): Promise
   // This catches the common case where a busy day's briefing exceeds
   // the token budget and gets cut mid-sentence.
   if (result?.stopReason === 'max_tokens' || result?.stopReason === 'length') {
-    logger.warn({ uid, domain: DOMAIN, stopReason: result.stopReason }, 'Secretary response was truncated by max_tokens');
+    logger.warn({ userId, domain: DOMAIN, stopReason: result.stopReason }, 'Secretary response was truncated by max_tokens');
     finalText += '\n\n_⚠️ Response was cut short due to length. Try asking about a specific area (e.g. "just show my tasks" or "just calendar")._';
   }
 
+  finalText = normalizeReplyForUserLanguage(finalText, userId);
+
   // Store conversation — include tool summary so future turns have context
-  addToConversation(uid, DOMAIN, 'user', message);
-  const storedText = toolsUsed.length > 0
-    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
-    : finalText;
-  addToConversation(uid, DOMAIN, 'assistant', storedText);
+  if (hasUserScope) {
+    addToConversation(userId, DOMAIN, 'user', message);
+    const storedText = toolsUsed.length > 0
+      ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+      : finalText;
+    addToConversation(userId, DOMAIN, 'assistant', storedText);
+  }
 
   return { text: finalText, domain: DOMAIN };
 }
@@ -381,13 +465,13 @@ export async function handleSecretary(message: string, userId?: number): Promise
  * broken.
  */
 async function handleSecretaryWithDirectAnthropic(
-  uid: number,
+  uid: number | undefined,
   message: string,
   history: ReturnType<typeof getConversationHistory>,
   stateContext: string,
   callDomain: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
   continueWithToolResults: (...args: any[]) => Promise<{ text: string; toolCalls: any[]; stopReason: string }>,
-  userId: number,
+  userId: number | undefined,
 ): Promise<DomainResponse> {
   let result = await callDomain(DOMAIN, history, message, stateContext, undefined, userId);
   let finalText = result.text;
@@ -427,11 +511,15 @@ async function handleSecretaryWithDirectAnthropic(
     finalText = '⚠️ I processed your request but encountered some issues. Some actions may have completed partially. Please check your task list and try again if needed.';
   }
 
-  addToConversation(uid, DOMAIN, 'user', message);
-  const storedText = toolsUsed.length > 0
-    ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
-    : finalText;
-  addToConversation(uid, DOMAIN, 'assistant', storedText);
+  finalText = normalizeReplyForUserLanguage(finalText, uid);
+
+  if (typeof uid === 'number') {
+    addToConversation(uid, DOMAIN, 'user', message);
+    const storedText = toolsUsed.length > 0
+      ? `[Tools: ${[...new Set(toolsUsed)].join(', ')}]\n${finalText}`
+      : finalText;
+    addToConversation(uid, DOMAIN, 'assistant', storedText);
+  }
 
   return { text: finalText, domain: DOMAIN };
 }

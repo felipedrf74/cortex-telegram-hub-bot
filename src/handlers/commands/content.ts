@@ -24,7 +24,7 @@ import { runContentDiscovery } from '../../services/content-discovery';
 import { saveIdea, getSavedIdeas } from '../../state/saved-ideas';
 import {
   addAndAnalyzeChannel,
-  processAllChannels,
+  processAllChannelScopes,
 } from '../../services/channel-learner';
 import {
   getAllChannels,
@@ -58,6 +58,7 @@ import { handleAutoresearch, handleEvalScore } from '../../commands/autoresearch
 import { splitMessage, escapeHtml } from '../../utils/telegram-formatter';
 import { now } from '../../utils/date-parser';
 import { enqueue, isHtmlParseError } from '../shared-state';
+import { resolveCanonicalUserId } from '../../services/user-service';
 import fs from 'fs';
 import path from 'path';
 
@@ -731,7 +732,8 @@ export function registerContentCommands(bot: Bot): void {
         ctx.replyWithChatAction('typing').catch(() => {});
       }, 4000);
       try {
-        const result = await addAndAnalyzeChannel(url, 'bot');
+        const userId = resolveCanonicalUserId(ctx.from!.id) ?? 0;
+        const result = await addAndAnalyzeChannel(url, 'bot', userId);
         clearInterval(typingInterval);
 
         if (result.analysis.success) {
@@ -761,7 +763,8 @@ export function registerContentCommands(bot: Bot): void {
 
   bot.command('references', async (ctx) => {
     enqueue(ctx.from!.id, async () => {
-      const channels = getAllChannels();
+      const userId = resolveCanonicalUserId(ctx.from!.id) ?? 0;
+      const channels = getAllChannels(userId);
       if (channels.length === 0) {
         await ctx.reply(
           '\u{1F4DA} No reference channels configured.\n\nUse <code>/learnfrom https://www.youtube.com/@Channel</code> to add one.',
@@ -786,7 +789,7 @@ export function registerContentCommands(bot: Bot): void {
         msg += '\n';
       }
 
-      const knowledge = buildKnowledgePromptBlock();
+      const knowledge = buildKnowledgePromptBlock(userId);
       if (knowledge) {
         msg += `\n\u{1F9E0} <b>Active knowledge:</b> ${knowledge.split('\n').filter(l => l.trim()).length} lines injected into content AI`;
       } else {
@@ -805,7 +808,7 @@ export function registerContentCommands(bot: Bot): void {
         ctx.replyWithChatAction('typing').catch(() => {});
       }, 4000);
       try {
-        const result = await processAllChannels(true);
+        const result = await processAllChannelScopes(true);
         clearInterval(typingInterval);
         let msg = `\u{1F504} <b>Re-learning Complete</b>\n\n`;
         msg += `\u2705 Analyzed: ${result.analyzed} channel(s)\n`;

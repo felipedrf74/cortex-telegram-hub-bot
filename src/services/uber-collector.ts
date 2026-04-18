@@ -819,6 +819,7 @@ async function scrapeRides(page: Page, year: number, month: number): Promise<Ube
 // ─── Main Collection Orchestrator ────────────────────────────────────
 
 export async function collectUberInvoices(
+  userId: number,
   year: number,
   month: number,
   sendTelegram?: (text: string) => Promise<void>,
@@ -950,8 +951,8 @@ export async function collectUberInvoices(
     // ── Eats: download invoices from orders list page ──────────────
     if (eatsOrders.length > 0) {
       // Filter to non-duplicate eats orders so we only scroll for orders we actually need
-      const eatsToProcess = eatsOrders.filter(o => !isDuplicate('Uber', o.orderId));
-      const eatsDuplicates = eatsOrders.filter(o => isDuplicate('Uber', o.orderId));
+      const eatsToProcess = eatsOrders.filter(o => !isDuplicate('Uber', o.orderId, userId));
+      const eatsDuplicates = eatsOrders.filter(o => isDuplicate('Uber', o.orderId, userId));
 
       // Record duplicates immediately
       for (const dup of eatsDuplicates) {
@@ -988,6 +989,7 @@ export async function collectUberInvoices(
                 invoice_number: order.orderId, source: 'uber',
                 source_ref: `eats:${order.orderId}`,
                 status: 'failed', error_message: 'No invoice PDF downloaded',
+                user_id: userId,
               });
             } else {
               const filingResult = await filePdf(pdfBuffer, 'Uber', order.date, order.orderId);
@@ -1002,6 +1004,7 @@ export async function collectUberInvoices(
                   remote_path: filingResult.filePath, folder_path: filingResult.folderPath,
                   filename: filingResult.filename, file_size_bytes: pdfBuffer.length,
                   status: 'filed',
+                  user_id: userId,
                 });
               } else {
                 orderResult.error = filingResult.error;
@@ -1012,6 +1015,7 @@ export async function collectUberInvoices(
                   invoice_number: order.orderId, source: 'uber',
                   source_ref: `eats:${order.orderId}`,
                   status: 'failed', error_message: filingResult.error,
+                  user_id: userId,
                 });
               }
             }
@@ -1040,7 +1044,7 @@ export async function collectUberInvoices(
       };
 
       try {
-        if (isDuplicate('Uber', order.orderId)) {
+        if (isDuplicate('Uber', order.orderId, userId)) {
           orderResult.status = 'duplicate';
           result.totalDuplicates++;
           result.orders.push(orderResult);
@@ -1058,6 +1062,7 @@ export async function collectUberInvoices(
             invoice_number: order.orderId, source: 'uber',
             source_ref: `rides:${order.orderId}`,
             status: 'failed', error_message: 'No receipt PDF found',
+            user_id: userId,
           });
           result.orders.push(orderResult);
           continue;
@@ -1075,6 +1080,7 @@ export async function collectUberInvoices(
             remote_path: filingResult.filePath, folder_path: filingResult.folderPath,
             filename: filingResult.filename, file_size_bytes: pdfBuffer.length,
             status: 'filed',
+            user_id: userId,
           });
         } else {
           orderResult.error = filingResult.error;
@@ -1085,6 +1091,7 @@ export async function collectUberInvoices(
             invoice_number: order.orderId, source: 'uber',
             source_ref: `rides:${order.orderId}`,
             status: 'failed', error_message: filingResult.error,
+            user_id: userId,
           });
         }
       } catch (err) {

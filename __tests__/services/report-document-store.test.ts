@@ -45,13 +45,19 @@ import {
   getUnreadReportCount, markReportRead, getAllReports,
   isPushEnabled, getPushPreferences, setPushPreference,
 } from '../../src/services/report-document-store';
+import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 // ═══════════════════════════════════════════════════════════════════
 // 1. Report Creation
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: creation', () => {
-  beforeEach(() => { testDb = new Database(':memory:'); testDb.pragma('journal_mode = WAL'); applyMigrations(testDb); });
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
+  });
   afterEach(() => testDb?.close());
 
   it('storeReport returns a valid ID', () => {
@@ -76,6 +82,33 @@ describe('report-document-store: creation', () => {
     expect(reports[0].documentJson.recommendations).toHaveLength(1);
     expect(reports[0].status).toBe('unread');
     expect(reports[0].sourceJob).toBe('garmin_coach');
+  });
+
+  it('fails closed on invalid tenant scope and records the anomaly', () => {
+    const id = storeReport({
+      userId: 0,
+      type: 'morning_briefing',
+      title: 'Bad scope',
+      documentJson: {},
+    });
+
+    expect(id).toBe(-1);
+    expect(getRecentReports(0)).toEqual([]);
+    const row = testDb.prepare('SELECT COUNT(*) as count FROM report_documents').get() as { count: number };
+    expect(row.count).toBe(0);
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'store_report',
+          reason: 'invalid_user_scope',
+          userId: 0,
+          details: expect.objectContaining({
+            reportType: 'morning_briefing',
+          }),
+        }),
+      ]),
+    );
   });
 });
 
@@ -103,6 +136,19 @@ describe('report-document-store: retrieval', () => {
     expect(getReportById(id, 2)).toBeNull(); // Wrong user
   });
 
+  it('getReportById fails closed for invalid scoped userId instead of falling back to admin mode', () => {
+    const id = storeReport({ userId: 1, type: 'morning_briefing', title: 'Mine', documentJson: {} });
+
+    expect(getReportById(id, 0)).toBeNull();
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      layer: 'delivery',
+      operation: 'get_report_by_id',
+      reason: 'invalid_user_scope',
+      userId: 0,
+      details: { reportId: id },
+    });
+  });
+
   it('getLatestByType returns the report with highest ID (most recent insert)', () => {
     storeReport({ userId: 1, type: 'morning_briefing', title: 'First', documentJson: { order: 1 } });
     const secondId = storeReport({ userId: 1, type: 'morning_briefing', title: 'Second', documentJson: { order: 2 } });
@@ -121,7 +167,12 @@ describe('report-document-store: retrieval', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: read lifecycle', () => {
-  beforeEach(() => { testDb = new Database(':memory:'); testDb.pragma('journal_mode = WAL'); applyMigrations(testDb); });
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
+  });
   afterEach(() => testDb?.close());
 
   it('new reports are unread', () => {
@@ -142,6 +193,19 @@ describe('report-document-store: read lifecycle', () => {
     const id = storeReport({ userId: 1, type: 'morning_briefing', title: 'AM', documentJson: {} });
     expect(markReportRead(id, 2)).toBe(false);
     expect(getUnreadReportCount(1)).toBe(1);
+  });
+
+  it('markReportRead fails closed for invalid tenant scope', () => {
+    const id = storeReport({ userId: 1, type: 'morning_briefing', title: 'AM', documentJson: {} });
+
+    expect(markReportRead(id, 0)).toBe(false);
+    expect(getTenantScopeAnomalies()[0]).toMatchObject({
+      layer: 'delivery',
+      operation: 'mark_report_read',
+      reason: 'invalid_user_scope',
+      userId: 0,
+      details: { reportId: id },
+    });
   });
 });
 
@@ -167,7 +231,12 @@ describe('report-document-store: user scoping', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('report-document-store: push preferences', () => {
-  beforeEach(() => { testDb = new Database(':memory:'); testDb.pragma('journal_mode = WAL'); applyMigrations(testDb); });
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
+  });
   afterEach(() => testDb?.close());
 
   it('isPushEnabled defaults to true when no row', () => {
@@ -197,6 +266,40 @@ describe('report-document-store: push preferences', () => {
     setPushPreference(1, 'morning_briefing', false);
     expect(isPushEnabled(1, 'morning_briefing')).toBe(false);
     expect(isPushEnabled(2, 'morning_briefing')).toBe(true); // Different user
+  });
+
+  it('push preference helpers fail closed on invalid tenant scope', () => {
+    expect(isPushEnabled(0, 'morning_briefing')).toBe(false);
+    expect(getPushPreferences(0).every((pref) => pref.enabled === false)).toBe(true);
+
+    setPushPreference(0, 'coach_briefing', false);
+    const row = testDb.prepare(
+      'SELECT COUNT(*) as count FROM push_preferences WHERE user_id = ?',
+    ).get(0) as { count: number };
+
+    expect(row.count).toBe(0);
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ layer: 'delivery', operation: 'is_push_enabled', userId: 0 }),
+        expect.objectContaining({ layer: 'delivery', operation: 'get_push_preferences', userId: 0 }),
+        expect.objectContaining({ layer: 'delivery', operation: 'set_push_preference', userId: 0 }),
+      ]),
+    );
+  });
+
+  it('self-heals when push_preferences migration was missed', () => {
+    testDb.exec('DROP TABLE IF EXISTS push_preferences');
+
+    expect(isPushEnabled(1, 'morning_briefing')).toBe(true);
+
+    setPushPreference(1, 'coach_briefing', false);
+    const row = testDb.prepare(
+      'SELECT enabled FROM push_preferences WHERE user_id = ? AND category = ?',
+    ).get(1, 'coach_briefing') as { enabled: number };
+
+    expect(row.enabled).toBe(0);
+    const prefs = getPushPreferences(1);
+    expect(prefs.find((pref) => pref.category === 'coach_briefing')?.enabled).toBe(false);
   });
 });
 

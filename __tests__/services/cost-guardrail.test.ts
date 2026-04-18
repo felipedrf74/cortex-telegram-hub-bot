@@ -36,6 +36,7 @@ vi.mock('../../src/services/user-service', () => ({
     return null;
   },
   isOwner: (id: number) => id === 111111,
+  isOwnerUserRef: (id: number) => id === 111111,
 }));
 
 function applyMigrations(db: Database.Database): void {

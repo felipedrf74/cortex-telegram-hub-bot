@@ -21,19 +21,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: vi.fn(),
-  isAnyCalendarConfigured: vi.fn(() => true),
+  hasConnectedCalendarForUser: vi.fn(() => true),
 }));
 
 vi.mock('../../src/services/microsoft-todo', () => ({
   isOutlookTodoConfigured: vi.fn(() => true),
-  getAllPendingTasks: vi.fn(),
-  getDefaultList: vi.fn(),
-  createTask: vi.fn(),
+}));
+
+const mockGetTaskProviderForUser = vi.fn();
+const mockTaskGetAllPendingTasks = vi.fn();
+const mockTaskGetDefaultList = vi.fn();
+const mockTaskCreateTask = vi.fn();
+vi.mock('../../src/services/task-store/task-router', () => ({
+  getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
 vi.mock('../../src/services/outlook-mail', () => ({
-  getUnreadCount: vi.fn(),
-  isOutlookMailConfigured: vi.fn(() => true),
+  getUnreadCountForUser: vi.fn(),
+  isOutlookMailConfiguredForUser: vi.fn(() => true),
+}));
+vi.mock('../../src/services/unified-mail-pressure', () => ({
+  getUnreadMailSummaryForUser: vi.fn(),
+  isAnyMailConfiguredForUser: vi.fn(() => true),
+}));
+vi.mock('../../src/services/daily-brief-orchestrator', () => ({
+  composeDailyBrief: vi.fn(),
 }));
 
 vi.mock('../../src/state/reminders', () => ({
@@ -66,10 +78,10 @@ import {
   resetFastpathMetrics,
 } from '../../src/services/secretary-fastpath';
 import * as calendar from '../../src/services/unified-calendar';
-import * as todo from '../../src/services/microsoft-todo';
-import * as mail from '../../src/services/outlook-mail';
+import * as mailPressure from '../../src/services/unified-mail-pressure';
 import * as reminders from '../../src/state/reminders';
 import * as registry from '../../src/skills/registry';
+import * as dailyBrief from '../../src/services/daily-brief-orchestrator';
 
 const UID = 42;
 
@@ -79,15 +91,41 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetFastpathMetrics();
   // Default everything to "configured + sub-skill enabled"
-  vi.mocked(calendar.isAnyCalendarConfigured).mockReturnValue(true);
-  vi.mocked(todo.isOutlookTodoConfigured).mockReturnValue(true);
-  vi.mocked(mail.isOutlookMailConfigured).mockReturnValue(true);
+  vi.mocked(calendar.hasConnectedCalendarForUser).mockReturnValue(true);
+  vi.mocked(mailPressure.isAnyMailConfiguredForUser).mockReturnValue(true);
   vi.mocked(registry.isSubmoduleEnabled).mockReturnValue(true);
   // Default empty fixtures
   vi.mocked(calendar.getEvents).mockResolvedValue([]);
-  vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
-  vi.mocked(mail.getUnreadCount).mockResolvedValue(0);
+  mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
+  mockTaskGetDefaultList.mockReset();
+  mockTaskCreateTask.mockReset();
+  mockGetTaskProviderForUser.mockReturnValue({
+    getAllPendingTasks: mockTaskGetAllPendingTasks,
+    getDefaultList: mockTaskGetDefaultList,
+    createTask: mockTaskCreateTask,
+  });
+  vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+    configuredProviders: ['outlook'],
+    totalUnread: 0,
+    outlookUnread: 0,
+    gmailUnread: null,
+  });
   vi.mocked(reminders.getRemindersForToday).mockReturnValue([]);
+  vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+    coordination: {
+      topPriority: null,
+      executionOrder: [],
+      watchouts: [],
+      handoffs: [],
+    },
+    day: {
+      secretary: {
+        priorityNote: null,
+        sequence: [],
+        tradeoffNote: null,
+      },
+    },
+  } as any);
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -95,11 +133,12 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('secretary-fastpath / pattern matching', () => {
-  it('exposes 7 registered patterns', () => {
+  it('exposes 8 registered patterns', () => {
     const patterns = getFastpathPatterns();
     expect(patterns).toEqual(
       expect.arrayContaining([
         'day_overview',
+        'daily_priority',
         'week_overview',
         'show_tasks',
         'unread_emails',
@@ -108,7 +147,7 @@ describe('secretary-fastpath / pattern matching', () => {
         'quick_add_task',
       ]),
     );
-    expect(patterns).toHaveLength(7);
+    expect(patterns).toHaveLength(8);
   });
 
   it.each([
@@ -130,6 +169,17 @@ describe('secretary-fastpath / pattern matching', () => {
     ['esta semana', 'week_overview'],
     ['/week', 'week_overview'],
     ['mostra minha semana', 'week_overview'],
+  ])('matches "%s" → %s', async (input, expectedPattern) => {
+    const result = await tryFastpath(UID, input);
+    expect(result.matched).toBe(true);
+    expect(result.patternId).toBe(expectedPattern);
+  });
+
+  it.each([
+    ["what's my priority today?", 'daily_priority'],
+    ['what should i do first today?', 'daily_priority'],
+    ['o que faço primeiro', 'daily_priority'],
+    ['qual a prioridade hoje?', 'daily_priority'],
   ])('matches "%s" → %s', async (input, expectedPattern) => {
     const result = await tryFastpath(UID, input);
     expect(result.matched).toBe(true);
@@ -187,8 +237,8 @@ describe('secretary-fastpath / pattern matching', () => {
     ['nova tarefa: comprar leite', 'quick_add_task'],
     ['adicionar tarefa: revisar PR', 'quick_add_task'],
   ])('matches "%s" → %s', async (input, expectedPattern) => {
-    vi.mocked(todo.getDefaultList).mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
-    vi.mocked(todo.createTask).mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
+    mockTaskGetDefaultList.mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
+    mockTaskCreateTask.mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
     const result = await tryFastpath(UID, input);
     expect(result.matched).toBe(true);
     expect(result.patternId).toBe(expectedPattern);
@@ -197,7 +247,6 @@ describe('secretary-fastpath / pattern matching', () => {
   it.each([
     'plan my week considering my training and content schedule',
     'should I reschedule the meeting with Pedro?',
-    'what should I prioritize today given my deadlines',
     'help me decide between two options for the gym',
     'random freeform question that needs reasoning',
     '',
@@ -249,7 +298,7 @@ describe('secretary-fastpath / day_overview handler', () => {
   it('shows pending tasks count and overdue badge', async () => {
     const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const today = new Date().toISOString();
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [
         { id: 't1', title: 'Pay tax', dueDateTime: yesterday, listName: 'Inbox', listId: 'L1' } as any,
@@ -266,7 +315,12 @@ describe('secretary-fastpath / day_overview handler', () => {
   });
 
   it('includes unread email count when present', async () => {
-    vi.mocked(mail.getUnreadCount).mockResolvedValue(7);
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['outlook', 'gmail'],
+      totalUnread: 7,
+      outlookUnread: 2,
+      gmailUnread: 5,
+    });
     const result = await tryFastpath(UID, "what's my day?");
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('E-MAILS:');
@@ -275,7 +329,7 @@ describe('secretary-fastpath / day_overview handler', () => {
 
   it('handles partial API failures gracefully', async () => {
     vi.mocked(calendar.getEvents).mockRejectedValue(new Error('Calendar API down'));
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [{ id: 't1', title: 'Buy groceries', dueDateTime: null, listName: 'Inbox', listId: 'L1' } as any],
     });
@@ -292,14 +346,14 @@ describe('secretary-fastpath / day_overview handler', () => {
 
 describe('secretary-fastpath / show_tasks handler', () => {
   it('returns "Sem tarefas pendentes" on empty list', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
+    mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     const result = await tryFastpath(UID, 'show my tasks');
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Sem tarefas pendentes');
   });
 
   it('groups tasks by list and shows count', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [
         { id: 't1', title: 'Buy milk', dueDateTime: null, listName: 'Personal', listId: 'L1' } as any,
@@ -317,7 +371,7 @@ describe('secretary-fastpath / show_tasks handler', () => {
   });
 
   it('returns error message on API failure', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: false,
       data: [],
       error: 'Graph API rate limited',
@@ -334,24 +388,61 @@ describe('secretary-fastpath / show_tasks handler', () => {
 
 describe('secretary-fastpath / unread_emails handler', () => {
   it('returns count when > 0', async () => {
-    vi.mocked(mail.getUnreadCount).mockResolvedValue(12);
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['outlook', 'gmail'],
+      totalUnread: 12,
+      outlookUnread: 7,
+      gmailUnread: 5,
+    });
     const result = await tryFastpath(UID, 'unread emails');
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('<b>12</b>');
   });
 
   it('returns "Caixa de entrada limpa" when 0', async () => {
-    vi.mocked(mail.getUnreadCount).mockResolvedValue(0);
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['gmail'],
+      totalUnread: 0,
+      outlookUnread: null,
+      gmailUnread: 0,
+    });
     const result = await tryFastpath(UID, 'unread emails');
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Caixa de entrada limpa');
   });
 
-  it('returns config error when outlook not configured', async () => {
-    vi.mocked(mail.isOutlookMailConfigured).mockReturnValue(false);
+  it('returns config error when no mail provider is configured', async () => {
+    vi.mocked(mailPressure.isAnyMailConfiguredForUser).mockReturnValue(false);
     const result = await tryFastpath(UID, 'unread emails');
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Email não configurado');
+  });
+});
+
+describe('secretary-fastpath / daily_priority handler', () => {
+  it('returns planner coordination for prioritization asks', async () => {
+    vi.mocked(dailyBrief.composeDailyBrief).mockResolvedValue({
+      coordination: {
+        topPriority: 'Protect the long run before content work.',
+        executionOrder: ['Long run', 'Breakfast + recovery', 'Review sponsor draft'],
+        watchouts: ['Inbox pressure is elevated'],
+        handoffs: ['Content should follow training'],
+      },
+      day: {
+        secretary: {
+          priorityNote: 'Protect the long run before content work.',
+          sequence: ['Long run', 'Breakfast + recovery', 'Review sponsor draft'],
+          tradeoffNote: 'Do not trade training for admin drift.',
+        },
+      },
+    } as any);
+
+    const result = await tryFastpath(UID, "what's my priority today?");
+    expect(result.matched).toBe(true);
+    expect(result.response!.text).toContain('PRIORIDADE');
+    expect(result.response!.text).toContain('Protect the long run before content work.');
+    expect(result.response!.text).toContain('1. Long run');
+    expect(result.response!.text).toContain('Inbox pressure is elevated');
   });
 });
 
@@ -402,17 +493,17 @@ describe('secretary-fastpath / set_reminder handler', () => {
 
 describe('secretary-fastpath / quick_add_task handler', () => {
   it('creates task in default list', async () => {
-    vi.mocked(todo.getDefaultList).mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
-    vi.mocked(todo.createTask).mockResolvedValue({ success: true, data: { id: 'T1', title: 'Buy milk' } } as any);
+    mockTaskGetDefaultList.mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
+    mockTaskCreateTask.mockResolvedValue({ success: true, data: { id: 'T1', title: 'Buy milk' } } as any);
     const result = await tryFastpath(UID, 'add task: buy milk');
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Tarefa criada');
     expect(result.response!.text).toContain('buy milk');
-    expect(todo.createTask).toHaveBeenCalledWith('L1', 'Tasks', { title: 'buy milk' });
+    expect(mockTaskCreateTask).toHaveBeenCalledWith('L1', 'Tasks', { title: 'buy milk' });
   });
 
   it('errors gracefully when no default list', async () => {
-    vi.mocked(todo.getDefaultList).mockResolvedValue(null);
+    mockTaskGetDefaultList.mockResolvedValue(null);
     const result = await tryFastpath(UID, 'add task: buy milk');
     expect(result.matched).toBe(true);
     expect(result.response!.text).toContain('Lista padrão');
@@ -430,7 +521,7 @@ describe('secretary-fastpath / sub-skill gating', () => {
     );
     const result = await tryFastpath(UID, 'show my tasks');
     expect(result.matched).toBe(false);
-    expect(todo.getAllPendingTasks).not.toHaveBeenCalled();
+    expect(mockTaskGetAllPendingTasks).not.toHaveBeenCalled();
   });
 
   it('skips week_overview when calendar sub-skill is disabled', async () => {
@@ -448,7 +539,7 @@ describe('secretary-fastpath / sub-skill gating', () => {
 
 describe('secretary-fastpath / graceful degradation', () => {
   it('falls through to AI when handler throws unexpectedly', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockImplementation(() => {
+    mockTaskGetAllPendingTasks.mockImplementation(() => {
       throw new Error('Unexpected sync throw');
     });
     const result = await tryFastpath(UID, 'show my tasks');
@@ -526,7 +617,7 @@ describe('secretary-fastpath / bilingual — EN', () => {
 
   it('day_overview shows English task copy', async () => {
     const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [
         { id: 't1', title: 'Pay tax', dueDateTime: yesterday, listName: 'Inbox', listId: 'L1' } as any,
@@ -540,7 +631,12 @@ describe('secretary-fastpath / bilingual — EN', () => {
   });
 
   it('day_overview shows English email header', async () => {
-    vi.mocked(mail.getUnreadCount).mockResolvedValue(7);
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['gmail'],
+      totalUnread: 7,
+      outlookUnread: null,
+      gmailUnread: 7,
+    });
     const result = await tryFastpath(UID, "what's my day?");
     expect(result.response!.text).toContain('EMAILS:');
     expect(result.response!.text).toContain('7 unread');
@@ -561,7 +657,7 @@ describe('secretary-fastpath / bilingual — EN', () => {
 
   // ── show_tasks ──
   it('show_tasks uses "Pending Tasks" header in English', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [
         { id: 't1', title: 'Buy milk', dueDateTime: null, listName: 'Inbox', listId: 'L1' } as any,
@@ -573,7 +669,7 @@ describe('secretary-fastpath / bilingual — EN', () => {
   });
 
   it('show_tasks returns English empty-state', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
+    mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     const result = await tryFastpath(UID, 'show my tasks');
     expect(result.response!.text).toContain('No pending tasks!');
     expect(result.response!.text).not.toContain('Sem tarefas pendentes');
@@ -581,21 +677,31 @@ describe('secretary-fastpath / bilingual — EN', () => {
 
   // ── unread_emails ──
   it('unread_emails uses English unread line', async () => {
-    vi.mocked(mail.getUnreadCount).mockResolvedValue(3);
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['outlook'],
+      totalUnread: 3,
+      outlookUnread: 3,
+      gmailUnread: null,
+    });
     const result = await tryFastpath(UID, 'unread emails');
     expect(result.response!.text).toContain('<b>3</b> unread emails');
     expect(result.response!.text).not.toContain('e-mails');
   });
 
   it('unread_emails uses English zero-state', async () => {
-    vi.mocked(mail.getUnreadCount).mockResolvedValue(0);
+    vi.mocked(mailPressure.getUnreadMailSummaryForUser).mockResolvedValue({
+      configuredProviders: ['gmail'],
+      totalUnread: 0,
+      outlookUnread: null,
+      gmailUnread: 0,
+    });
     const result = await tryFastpath(UID, 'inbox');
     expect(result.response!.text).toContain('Inbox clean!');
     expect(result.response!.text).not.toContain('Caixa de entrada');
   });
 
   it('unread_emails uses English config-missing line', async () => {
-    vi.mocked(mail.isOutlookMailConfigured).mockReturnValue(false);
+    vi.mocked(mailPressure.isAnyMailConfiguredForUser).mockReturnValue(false);
     const result = await tryFastpath(UID, 'unread emails');
     expect(result.response!.text).toContain('Email not configured');
     expect(result.response!.text).not.toContain('Email não configurado');
@@ -604,7 +710,7 @@ describe('secretary-fastpath / bilingual — EN', () => {
   // ── overdue_tasks ──
   it('overdue_tasks uses "Overdue Task(s)" header in English', async () => {
     const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({
+    mockTaskGetAllPendingTasks.mockResolvedValue({
       success: true,
       data: [
         { id: 't1', title: 'Pay tax', dueDateTime: yesterday, listName: 'Inbox', listId: 'L1' } as any,
@@ -619,7 +725,7 @@ describe('secretary-fastpath / bilingual — EN', () => {
   });
 
   it('overdue_tasks empty state is English', async () => {
-    vi.mocked(todo.getAllPendingTasks).mockResolvedValue({ success: true, data: [] });
+    mockTaskGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     const result = await tryFastpath(UID, 'overdue');
     expect(result.response!.text).toContain('No overdue tasks!');
     expect(result.response!.text).not.toContain('Nenhuma tarefa');
@@ -642,8 +748,8 @@ describe('secretary-fastpath / bilingual — EN', () => {
 
   // ── quick_add_task ──
   it('quick_add_task uses English "Task created" confirmation', async () => {
-    vi.mocked(todo.getDefaultList).mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
-    vi.mocked(todo.createTask).mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
+    mockTaskGetDefaultList.mockResolvedValue({ id: 'L1', displayName: 'Tasks' } as any);
+    mockTaskCreateTask.mockResolvedValue({ success: true, data: { id: 'T1', title: 'x' } } as any);
     const result = await tryFastpath(UID, 'add task: buy milk');
     expect(result.response!.text).toContain('Task created');
     expect(result.response!.text).not.toContain('Tarefa criada');
@@ -673,10 +779,12 @@ describe('secretary-fastpath / language override', () => {
     expect(result.response!.text).toContain('Sem eventos hoje');
   });
 
-  it('no override + no user row → pt-BR (legacy default)', async () => {
+  it('no override + no user row keeps the legacy pt-BR default without leaking scoped data', async () => {
     // userId=0 skips the getUserLanguage call entirely (anonymous)
     const result = await tryFastpath(0, "what's my day?");
-    expect(result.response!.text).toContain('Sem eventos hoje');
+    expect(result.response!.text).toContain('Sem treino planeado hoje');
+    expect(result.response!.text).not.toContain('Sem eventos hoje');
+    expect(result.response!.text).not.toContain('No training planned today');
   });
 });
 

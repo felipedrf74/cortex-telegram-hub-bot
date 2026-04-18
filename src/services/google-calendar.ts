@@ -26,16 +26,17 @@ export function setGoogleCalendarUserId(_userId: number | null): void {
 
 registerGoogleClientReset(() => { calendarClient = null; });
 
-function getCalendar(): calendar_v3.Calendar {
-  // Read userId from AsyncLocalStorage (race-safe, per-request)
-  let contextUserId: number | null = null;
-  try {
-    const { getCurrentContext } = require('../utils/request-context');
-    contextUserId = getCurrentContext()?.userId ?? null;
-  } catch {}
+function getCalendar(userId?: number): calendar_v3.Calendar {
+  let effectiveUserId: number | null = userId ?? null;
+  if (effectiveUserId === null) {
+    try {
+      const { getCurrentContext } = require('../utils/request-context');
+      effectiveUserId = getCurrentContext()?.userId ?? null;
+    } catch {}
+  }
 
-  if (contextUserId !== null) {
-    const oauth2Client = buildGoogleOAuth2ClientForUser(contextUserId);
+  if (effectiveUserId !== null) {
+    const oauth2Client = buildGoogleOAuth2ClientForUser(effectiveUserId);
     return google.calendar({ version: 'v3', auth: oauth2Client });
   }
 
@@ -46,8 +47,8 @@ function getCalendar(): calendar_v3.Calendar {
   return calendarClient;
 }
 
-export function isGoogleCalendarConfigured(): boolean {
-  return isGoogleConfigured();
+export function isGoogleCalendarConfigured(userId?: number): boolean {
+  return isGoogleConfigured(userId);
 }
 
 export interface CalendarEvent {
@@ -60,9 +61,9 @@ export interface CalendarEvent {
   htmlLink?: string;
 }
 
-export async function getEvents(startDate: string, endDate: string): Promise<CalendarEvent[]> {
+export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
   try {
-    const calendar = getCalendar();
+    const calendar = getCalendar(userId);
     const response = await withTimeout(
       calendar.events.list({
         calendarId: 'primary',
@@ -97,9 +98,9 @@ export async function createEvent(data: {
   description?: string;
   attendees?: string[];
   location?: string;
-}): Promise<CalendarEvent> {
+}, userId?: number): Promise<CalendarEvent> {
   try {
-    const calendar = getCalendar();
+    const calendar = getCalendar(userId);
     const attendees = (data.attendees || [])
       .map((email) => email.trim())
       .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
@@ -138,9 +139,9 @@ export async function updateEvent(data: {
   new_start?: string;
   new_end?: string;
   new_title?: string;
-}): Promise<CalendarEvent> {
+}, userId?: number): Promise<CalendarEvent> {
   try {
-    const calendar = getCalendar();
+    const calendar = getCalendar(userId);
     const requestBody: calendar_v3.Schema$Event = {};
 
     if (data.new_title) requestBody.summary = data.new_title;
@@ -169,9 +170,9 @@ export async function updateEvent(data: {
   }
 }
 
-export async function deleteEvent(eventId: string): Promise<void> {
+export async function deleteEvent(eventId: string, userId?: number): Promise<void> {
   try {
-    const calendar = getCalendar();
+    const calendar = getCalendar(userId);
     await withTimeout(
       calendar.events.delete({
         calendarId: 'primary',

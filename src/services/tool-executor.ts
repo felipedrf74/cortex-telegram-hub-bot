@@ -11,6 +11,9 @@ import * as financeTracker from './finance-tracker';
 import * as cookingChef from './cooking-chef';
 import * as trainingSignals from './training-signals';
 import * as onboarding from './onboarding';
+import { getTaskProviderForUser } from './task-store/task-router';
+import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
+import { resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
@@ -85,6 +88,40 @@ function normalizeAttendeeEmails(raw: unknown): string[] | undefined {
   return cleaned.length > 0 ? [...new Set(cleaned)] : undefined;
 }
 
+function coerceUserRef(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    const parsed = parseInt(raw.trim(), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function resolveTenantToolUserId(
+  contextUserId?: number,
+  explicitInputUserId?: unknown,
+): number | null {
+  const candidates = [coerceUserRef(contextUserId), coerceUserRef(explicitInputUserId)];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const canonicalUserId = resolveCanonicalUserId(candidate);
+    if (canonicalUserId) return canonicalUserId;
+  }
+  return null;
+}
+
+function requireTenantToolUserId(
+  toolName: string,
+  contextUserId?: number,
+  explicitInputUserId?: unknown,
+): { ok: true; userId: number } | { ok: false; error: string } {
+  const resolved = resolveTenantToolUserId(contextUserId, explicitInputUserId);
+  if (!resolved) {
+    return { ok: false, error: `${toolName} requires an authenticated user context` };
+  }
+  return { ok: true, userId: resolved };
+}
+
 export async function executeToolCall(
   toolName: string,
   input: Record<string, any>,
@@ -93,51 +130,69 @@ export async function executeToolCall(
   logger.info({ tool: toolName, input }, 'Executing tool call');
 
   try {
-    // Per-user task provider: resolves to MS To-Do, Todoist, or native
-    // adapter based on the user's OAuth connections. Falls back to the
-    // global msTodo singleton for Telegram bot calls (no userId).
-    const getTaskProvider = () => {
-      if (userId) {
-        return require('./task-store/task-router').getTaskProviderForUser(userId);
-      }
-      return msTodo;
+    const getTaskProviderContext = () => {
+      const scope = requireTenantToolUserId(toolName, userId);
+      if (!scope.ok) return scope;
+      return {
+        ok: true as const,
+        userId: scope.userId,
+        provider: getTaskProviderForUser(scope.userId),
+      };
     };
-    // Guard for Telegram-only tools — lazy evaluation to avoid calling
-    // isOutlookTodoConfigured() for non-task tools.
-    const isMsTodoNotConfigured = () => !msTodo.isOutlookTodoConfigured() && !userId;
 
     switch (toolName) {
       // ── Task tools (per-user routed) ──
-      case 'ms_todo_get_lists':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured. Set Outlook credentials and ensure Tasks.ReadWrite permission.' };
-        return await getTaskProvider().getLists();
+      case 'ms_todo_get_lists': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        return await taskCtx.provider.getLists();
+      }
 
-      case 'ms_todo_create_list':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        return await getTaskProvider().createList(input.name);
+      case 'ms_todo_create_list': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        return await taskCtx.provider.createList(input.name);
+      }
 
-      case 'ms_todo_delete_list':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        return await msTodo.deleteList(input.list_id);
+      case 'ms_todo_delete_list': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        if (typeof taskCtx.provider.deleteList !== 'function') {
+          return { error: 'The active task provider does not support deleting lists.' };
+        }
+        return await taskCtx.provider.deleteList(input.list_id);
+      }
 
-      case 'ms_todo_get_tasks':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        return await getTaskProvider().getTasks(input.list_id, input.list_name, {
+      case 'ms_todo_get_tasks': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        return await taskCtx.provider.getTasks(input.list_id, input.list_name, {
           status: input.status,
         });
+      }
 
       case 'ms_todo_create_task': {
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
         // Auto-resolve default list when AI doesn't specify one
         let listId = input.list_id;
         let listName = input.list_name || 'Inbox';
         if (!listId) {
           try {
-            const defaultList = await getTaskProvider().getDefaultList?.();
-            if (defaultList) { listId = defaultList.id; listName = defaultList.displayName; }
+            const resolvedList = await resolveTaskCreationList(taskCtx.provider, input.list_name);
+            if (resolvedList) {
+              listId = resolvedList.id;
+              listName = resolvedList.displayName || resolvedList.name || listName;
+            } else {
+              const defaultList = await resolvePreferredCaptureList(taskCtx.provider);
+              if (defaultList) {
+                listId = defaultList.id;
+                listName = defaultList.displayName || defaultList.name || listName;
+              }
+            }
           } catch { /* use whatever the provider defaults to */ }
         }
-        const createRes = await getTaskProvider().createTask(listId, listName, {
+        const createRes = await taskCtx.provider.createTask(listId, listName, {
           title: input.title,
           body: input.body,
           importance: input.importance,
@@ -150,11 +205,12 @@ export async function executeToolCall(
       }
 
       case 'ms_todo_update_task': {
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot update a task without its ID.' };
         }
-        const updateRes = await getTaskProvider().updateTask(input.list_id, input.task_id, {
+        const updateRes = await taskCtx.provider.updateTask(input.list_id, input.task_id, {
           title: input.title,
           body: input.body,
           importance: input.importance,
@@ -168,64 +224,88 @@ export async function executeToolCall(
       }
 
       case 'ms_todo_complete_task': {
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot complete a task without its ID.' };
         }
-        const completeRes = await getTaskProvider().completeTask(input.list_id, input.task_id, input.list_name);
+        const completeRes = await taskCtx.provider.completeTask(input.list_id, input.task_id, input.list_name);
         return completeRes.success
           ? { success: true, title: completeRes.data?.title || 'done' }
           : { success: false, error: completeRes.error };
       }
 
       case 'ms_todo_uncomplete_task': {
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot uncomplete a task without its ID.' };
         }
-        const uncompleteRes = await msTodo.uncompleteTask(input.list_id, input.task_id, input.list_name);
+        if (typeof taskCtx.provider.uncompleteTask !== 'function') {
+          return { error: 'The active task provider does not support reopening completed tasks.' };
+        }
+        const uncompleteRes = await taskCtx.provider.uncompleteTask(input.list_id, input.task_id, input.list_name);
         return uncompleteRes.success
           ? { success: true, title: uncompleteRes.data?.title || 'reopened' }
           : { success: false, error: uncompleteRes.error };
       }
 
       case 'ms_todo_delete_task': {
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
         if (!input.task_id) {
           return { success: false, error: 'Missing task_id — cannot delete a task without its ID.' };
         }
-        const deleteRes = await getTaskProvider().deleteTask(input.list_id, input.task_id);
+        const deleteRes = await taskCtx.provider.deleteTask(input.list_id, input.task_id);
         return deleteRes.success
           ? { success: true }
           : { success: false, error: deleteRes.error };
       }
 
-      case 'ms_todo_search_tasks':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        return await msTodo.searchTasks(input.query);
-
-      case 'ms_todo_get_due_tasks':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        return await msTodo.getTasksDueInRange(input.start_date, input.end_date);
-
-      case 'ms_todo_move_task':
-        if (isMsTodoNotConfigured()) return { error: 'Microsoft To Do is not configured.' };
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
+      case 'ms_todo_search_tasks': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        if (typeof taskCtx.provider.searchTasks === 'function') {
+          return await taskCtx.provider.searchTasks(input.query);
         }
-        return await msTodo.moveTask(input.list_id, input.task_id, input.target_list_id, input.target_list_name);
+        return { error: 'The active task provider does not support task search.' };
+      }
 
-      case 'ms_todo_get_checklist':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
+      case 'ms_todo_get_due_tasks': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        if (typeof taskCtx.provider.getTasksDueInRange === 'function') {
+          return await taskCtx.provider.getTasksDueInRange(input.start_date, input.end_date);
         }
-        return await msTodo.getChecklistItems(input.list_id, input.task_id);
+        return { error: 'The active task provider does not support due-date range lookups.' };
+      }
 
-      case 'ms_todo_add_checklist_item':
-        if (!msTodo.isOutlookTodoConfigured()) {
-          return { error: 'Microsoft To Do is not configured.' };
+      case 'ms_todo_move_task': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        if (typeof taskCtx.provider.moveTask !== 'function') {
+          return { error: 'The active task provider does not support moving tasks between lists.' };
         }
-        return await msTodo.addChecklistItem(input.list_id, input.task_id, input.title);
+        return await taskCtx.provider.moveTask(input.list_id, input.task_id, input.target_list_id, input.target_list_name);
+      }
+
+      case 'ms_todo_get_checklist': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        if (typeof taskCtx.provider.getChecklistItems !== 'function') {
+          return { error: 'The active task provider does not support checklist items.' };
+        }
+        return await taskCtx.provider.getChecklistItems(input.list_id, input.task_id);
+      }
+
+      case 'ms_todo_add_checklist_item': {
+        const taskCtx = getTaskProviderContext();
+        if (!taskCtx.ok) return { error: taskCtx.error };
+        if (typeof taskCtx.provider.addChecklistItem !== 'function') {
+          return { error: 'The active task provider does not support checklist items.' };
+        }
+        return await taskCtx.provider.addChecklistItem(input.list_id, input.task_id, input.title);
+      }
 
       // ── Calendar tools (unified: Google + Outlook) ──
       case 'get_calendar_events':
@@ -258,7 +338,7 @@ export async function executeToolCall(
           new_start: input.new_start,
           new_end: input.new_end,
           new_title: input.new_title,
-        }, updateSource);
+        }, updateSource, userId);
       }
 
       case 'delete_calendar_event': {
@@ -266,32 +346,41 @@ export async function executeToolCall(
           return { error: 'No calendar is configured.' };
         }
         const deleteSource = input.calendar_source || detectCalendarSource(input.event_id);
-        await unifiedCal.deleteEvent(input.event_id, deleteSource);
+        await unifiedCal.deleteEvent(input.event_id, deleteSource, userId);
         return { success: true, message: 'Event deleted' };
       }
 
       // ── Reminder tools ──
-      case 'set_reminder':
-        return setReminder(userId ?? 0, {
+      case 'set_reminder': {
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        return setReminder(scope.userId, {
           message: input.message,
           remind_at: input.remind_at,
           recurring: input.recurring,
         });
+      }
 
       // ── Note tools ──
-      case 'save_note':
-        return saveNote(userId ?? 0, {
+      case 'save_note': {
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        return saveNote(scope.userId, {
           content: input.content,
           domain: input.domain,
           tags: input.tags,
         });
+      }
 
-      case 'search_notes':
-        return searchNotes(userId ?? 0, {
+      case 'search_notes': {
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        return searchNotes(scope.userId, {
           query: input.query,
           domain: input.domain,
           tag: input.tag,
         });
+      }
 
       // ── Outlook Email tools ──
       case 'search_outlook_emails':
@@ -338,12 +427,16 @@ export async function executeToolCall(
 
       // ── Shared memory tools (cross-domain context) ──
       case 'shared_memory_set': {
-        const entry = setSharedMemory(userId ?? 0, input.key, input.value, 'secretary', input.expires_at);
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const entry = setSharedMemory(scope.userId, input.key, input.value, 'secretary', input.expires_at);
         return { success: true, key: entry.key, value: entry.value };
       }
 
       case 'shared_memory_remove': {
-        const removed = removeSharedMemory(userId ?? 0, input.key);
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const removed = removeSharedMemory(scope.userId, input.key);
         return { success: removed, key: input.key };
       }
 
@@ -407,8 +500,10 @@ export async function executeToolCall(
 
       // ── Training Plan tools ──
       case 'create_training_plan': {
+        const scope = requireTenantToolUserId(toolName, userId, input.user_id);
+        if (!scope.ok) return { error: scope.error };
         const plan = trainingPlans.createPlan({
-          user_id: input.user_id || 0,
+          user_id: scope.userId,
           name: input.name,
           sport: input.sport,
           goal: input.goal,
@@ -449,10 +544,15 @@ export async function executeToolCall(
       }
 
       case 'get_training_plan': {
+        const scope = requireTenantToolUserId(toolName, userId, input.user_id);
+        if (!scope.ok) return { error: scope.error };
         const plan = input.plan_id
           ? trainingPlans.getPlanById(input.plan_id)
-          : trainingPlans.getActivePlan(input.user_id || 0);
+          : trainingPlans.getActivePlan(scope.userId);
         if (!plan) return { error: 'No training plan found' };
+        if (plan.user_id !== scope.userId) {
+          return { error: 'No training plan found for the authenticated user' };
+        }
 
         const currentWeek = trainingPlans.getCurrentWeek(plan.id);
         const weeks = trainingPlans.getWeeksForPlan(plan.id);
@@ -565,45 +665,70 @@ export async function executeToolCall(
 
       // ── Finance tools ──
       case 'finance_add_transaction': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const tx = financeTracker.addTransaction(uid, input.date, input.category, input.amount, {
-          subcategory: input.subcategory, description: input.description,
+          subcategory: input.subcategory,
+          description: input.description,
+          currency: input.currency,
         });
-        return { success: true, id: tx.id, date: tx.date, category: tx.category, amount: tx.amount };
+        return {
+          success: true,
+          id: tx.id,
+          date: tx.date,
+          category: tx.category,
+          amount: tx.amount,
+          currency: tx.currency,
+        };
       }
       case 'finance_get_transactions': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return financeTracker.getTransactions(uid, {
           startDate: input.start_date, endDate: input.end_date,
           category: input.category, limit: input.limit,
         });
       }
       case 'finance_delete_transaction': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
         return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
       }
       case 'finance_monthly_summary': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return financeTracker.getMonthlySummary(uid, input.month);
       }
       case 'finance_calculate_tax': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
         const breakdown = financeTracker.calculateMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
         return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
       }
       case 'finance_get_tax_events': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit });
       }
       case 'finance_mark_tax_paid': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const marked = financeTracker.markTaxPaid(uid, input.month);
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
       case 'finance_annual_summary': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const summary = financeTracker.getAnnualTaxSummary(uid, input.year);
         return {
           year: summary.year,
@@ -621,7 +746,9 @@ export async function executeToolCall(
 
       // ── Cooking tools ──
       case 'cooking_add_recipe': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const recipe = cookingChef.addRecipe(uid, input.title, input.ingredients, {
           instructions: input.instructions, prepTime: input.prep_time_min,
           cookTime: input.cook_time_min, servings: input.servings, tags: input.tags,
@@ -629,34 +756,48 @@ export async function executeToolCall(
         return { success: true, id: recipe.id, title: recipe.title };
       }
       case 'cooking_get_recipes': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return cookingChef.getRecipes(uid, { tags: input.tags, search: input.search, limit: input.limit });
       }
       case 'cooking_delete_recipe': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return cookingChef.deleteRecipe(uid, input.recipe_id) ? { success: true } : { error: 'Recipe not found' };
       }
       case 'cooking_set_meal': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
           recipeId: input.recipe_id, notes: input.notes,
         });
         return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
       }
       case 'cooking_get_meal_plan': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return cookingChef.getMealPlan(uid, input.start_date, input.end_date);
       }
       case 'cooking_delete_meal': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return cookingChef.deleteMealPlan(uid, input.date, input.meal_type) ? { success: true } : { error: 'Meal not found' };
       }
       case 'cooking_generate_shopping_list': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         return cookingChef.generateShoppingList(uid, input.week_start);
       }
       case 'cooking_get_shopping_list': {
-        const uid = userId ?? 0;
+        const scope = requireTenantToolUserId(toolName, userId);
+        if (!scope.ok) return { error: scope.error };
+        const uid = scope.userId;
         const list = cookingChef.getShoppingList(uid, input.week_start);
         return list || { items: [], status: 'not_found' };
       }

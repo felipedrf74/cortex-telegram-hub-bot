@@ -36,9 +36,13 @@ FAST_MODEL = "haiku"
 
 # ── TS backend proxy ────────────────────────────────────────────────
 
-_TS_PORT = os.environ.get("PORT", "8200")
+_TS_BASE = (
+    os.environ.get("NEXUS_BACKEND_BASE_URL")
+    or os.environ.get("TS_BACKEND_BASE_URL")
+    or f"http://localhost:{os.environ.get('NEXUS_BACKEND_PORT') or os.environ.get('TS_BACKEND_PORT') or '8200'}"
+).rstrip("/")
 _INTERNAL_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
-_AI_COMPLETE_URL = f"http://localhost:{_TS_PORT}/api/v1/internal/ai-complete"
+_AI_COMPLETE_URL = f"{_TS_BASE}/api/v1/internal/ai-complete"
 
 
 async def ask_claude(

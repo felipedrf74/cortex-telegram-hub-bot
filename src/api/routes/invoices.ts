@@ -41,9 +41,19 @@ import {
   sendFiscalBundleNow,
 } from '../../services/fiscal-bundle';
 import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-profiles';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function invoicesRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'invoices_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   router.get('/profile', asyncHandler(async (req, res: Response) => {
     try {
@@ -173,7 +183,7 @@ export function invoicesRoutes(): Router {
 
     try {
       const { userId } = req as AuthenticatedRequest;
-      const vendor = addVendor(name.trim(), senderPattern.trim(), subjectPatterns, userId);
+      const vendor = addVendor(name.trim(), senderPattern.trim(), userId, subjectPatterns);
       logger.info({ vendorId: vendor.id, name }, 'iOS invoice vendor added');
       sendSuccess(res, { vendor }, { status: 201 });
     } catch (err: any) {
@@ -195,7 +205,8 @@ export function invoicesRoutes(): Router {
     }
 
     try {
-      const removed = removeVendor(id);
+      const { userId } = req as AuthenticatedRequest;
+      const removed = removeVendor(id, userId);
       if (!removed) {
         sendError(res, 'NOT_FOUND', 'Vendor not found', 404);
         return;

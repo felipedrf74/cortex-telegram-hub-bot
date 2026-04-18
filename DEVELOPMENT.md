@@ -1,5 +1,16 @@
 # Development Best Practices & CI/CD Process
 
+> Status: decommissioned as the live workflow source.
+>
+> Why: this file still describes a branch/CI model that conflicts with the
+> current single-branch, manual promote-to-prod workflow documented elsewhere.
+>
+> Use these instead:
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/CLAUDE.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/DEPLOY.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/STAGING.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/DOCUMENTATION-MAP.md`
+
 > **nexus-hub** — Development workflow, release process, and Claude Code conventions.
 > Owner: Felipe Dominguez | Last updated: 2026-03-10
 

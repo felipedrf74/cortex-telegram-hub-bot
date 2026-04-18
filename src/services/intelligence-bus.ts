@@ -12,6 +12,7 @@
 
 export type SignalPriority = 'urgent' | 'normal' | 'background';
 export type SignalStatus = 'active' | 'consumed' | 'dismissed' | 'expired';
+export type MeshPriority = 1 | 2 | 3 | 4;
 
 export type SignalType =
   // ─── Content mesh signals (GLOBAL — user_id IS NULL) ──────────────
@@ -74,7 +75,35 @@ export type SignalType =
   // balance or (b) pivot the plan to match what the user is
   // actually doing. Published daily via the weekly-activity fetch,
   // with a 48h TTL so it refreshes as new sessions land.
-  | 'plan_drift';
+  | 'plan_drift'
+  // ─── Stage 2 mesh signals ───────────────────────────────────────
+  | 'training_load_forecast'
+  | 'recovery_state'
+  | 'session_prescription'
+  | 'session_immovability'
+  | 'fueling_requirements'
+  | 'rest_day_scheduled'
+  | 'meal_plan_window'
+  | 'fueling_support_status'
+  | 'meal_execution_readiness'
+  | 'fueling_gap_risk'
+  | 'grocery_spend_forecast'
+  | 'batch_cook_day'
+  | 'content_capture_opportunity'
+  | 'shoot_day_locked'
+  | 'publishing_commitment'
+  | 'sponsor_deliverable_due'
+  | 'calendar_busy_blocks'
+  | 'calendar_fragmentation'
+  | 'travel_window'
+  | 'inbox_pressure'
+  | 'meeting_criticality'
+  | 'deadline_pressure'
+  | 'task_portability'
+  | 'budget_remaining'
+  | 'tax_deadline'
+  | 'subscription_renewal_due'
+  | 'expense_anomaly';
 
 export interface AgentSignal {
   id: number;
@@ -96,6 +125,8 @@ export interface AgentSignal {
   pillar_tag: string | null;
   /** How many observations/data points back this signal. (Migration 060) */
   evidence_count: number;
+  /** Stage 2 mesh coordination priority. Optional for backward compatibility. */
+  meshPriority?: MeshPriority;
 }
 
 /** A ranked signal with a computed relevance score. */
@@ -115,6 +146,15 @@ export interface AgentRunRecord {
   duration_ms: number | null;
   error_message: string | null;
   created_at: string;
+}
+
+export interface ScopeAnomalyReport {
+  layer: 'intelligence_bus';
+  operation: 'write_signal' | 'read_signals';
+  reason: 'missing_user_scope' | 'invalid_user_scope' | 'unexpected_user_scope';
+  userId: number | null;
+  signalType?: SignalType;
+  details?: Record<string, unknown>;
 }
 
 // ─── Signal Expiry Defaults (hours) ─────────────────────────────────
@@ -178,6 +218,34 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   // 48h TTL lets the signal persist across a missed fetch while
   // still auto-expiring if the pattern corrects itself.
   plan_drift:                 48,
+  // ─── Stage 2 mesh signals ───────────────────────────────────────
+  training_load_forecast:     48,
+  recovery_state:             24,
+  session_prescription:       48,
+  session_immovability:       48,
+  fueling_requirements:       48,
+  rest_day_scheduled:         7 * 24,
+  meal_plan_window:           7 * 24,
+  fueling_support_status:     48,
+  meal_execution_readiness:   7 * 24,
+  fueling_gap_risk:           48,
+  grocery_spend_forecast:     7 * 24,
+  batch_cook_day:             7 * 24,
+  content_capture_opportunity: 72,
+  shoot_day_locked:           7 * 24,
+  publishing_commitment:      7 * 24,
+  sponsor_deliverable_due:    14 * 24,
+  calendar_busy_blocks:       7 * 24,
+  calendar_fragmentation:     7 * 24,
+  travel_window:              14 * 24,
+  inbox_pressure:             24,
+  meeting_criticality:        48,
+  deadline_pressure:          24,
+  task_portability:           24,
+  budget_remaining:           7 * 24,
+  tax_deadline:               30 * 24,
+  subscription_renewal_due:   30 * 24,
+  expense_anomaly:            7 * 24,
 };
 
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
@@ -192,14 +260,70 @@ interface DbLike {
 
 type DbProvider = () => DbLike;
 let _getDb: DbProvider | null = null;
+type CacheInvalidator = (prefix: string) => void;
+let _invalidateCacheByPrefix: CacheInvalidator | null = null;
+type PlanningInvalidator = (userId?: number) => void;
+let _invalidatePlanningCaches: PlanningInvalidator | null = null;
+let _reportScopeAnomaly: ((report: ScopeAnomalyReport) => void) | null = null;
 
 export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
 }
 
+export function setCacheInvalidator(fn: CacheInvalidator): void {
+  _invalidateCacheByPrefix = fn;
+}
+
+export function setPlanningInvalidator(fn: PlanningInvalidator): void {
+  _invalidatePlanningCaches = fn;
+}
+
+export function setScopeAnomalyReporter(fn: ((report: ScopeAnomalyReport) => void) | null): void {
+  _reportScopeAnomaly = fn;
+}
+
 function db(): DbLike | null {
   if (!_getDb) return null;
   try { return _getDb(); } catch { return null; }
+}
+
+const GLOBAL_SIGNAL_TYPES = new Set<SignalType>([
+  'hook_effectiveness',
+  'pillar_performance',
+  'retention_pattern',
+  'voice_pattern',
+  'voice_phrase_trend',
+  'channel_dna',
+  'book_knowledge',
+  'book_reference_effective',
+  'trending_spike',
+  'competitor_upload',
+  'keyword_rank_change',
+  'keyword_opportunity',
+  'pipeline_bottleneck',
+  'pipeline_capacity',
+  'content_sprint_mode',
+  'reaction_opportunity',
+  'content_published',
+  'learning_digest',
+  'content_formula',
+  'audience_insight',
+]);
+
+function hasValidScopedUserId(userId: number | undefined): userId is number {
+  return typeof userId === 'number' && Number.isFinite(userId) && userId > 0;
+}
+
+function signalRequiresUserScope(signalType: SignalType): boolean {
+  return !GLOBAL_SIGNAL_TYPES.has(signalType);
+}
+
+function reportScopeAnomaly(report: ScopeAnomalyReport): void {
+  try {
+    _reportScopeAnomaly?.(report);
+  } catch {
+    // Observability must never break signal reads/writes.
+  }
 }
 
 // ─── Core Functions ─────────────────────────────────────────────────
@@ -228,32 +352,74 @@ export function writeSignal(signal: {
   pillar_tag?: string;
   /** Number of observations backing this signal. Default 1. */
   evidence_count?: number;
+  meshPriority?: MeshPriority;
 }): number {
   const d = db();
   if (!d) return -1;
   try {
+    const requiresUserScope = signalRequiresUserScope(signal.signal_type);
+    const scopedUserId = hasValidScopedUserId(signal.user_id) ? signal.user_id : undefined;
+
+    if (requiresUserScope && scopedUserId == null) {
+      reportScopeAnomaly({
+        layer: 'intelligence_bus',
+        operation: 'write_signal',
+        reason: signal.user_id == null ? 'missing_user_scope' : 'invalid_user_scope',
+        userId: signal.user_id ?? null,
+        signalType: signal.signal_type,
+        details: {
+          sourceAgent: signal.source_agent,
+        },
+      });
+      return -1;
+    }
+
+    if (!requiresUserScope && signal.user_id != null) {
+      reportScopeAnomaly({
+        layer: 'intelligence_bus',
+        operation: 'write_signal',
+        reason: 'unexpected_user_scope',
+        userId: signal.user_id,
+        signalType: signal.signal_type,
+        details: {
+          sourceAgent: signal.source_agent,
+        },
+      });
+    }
+
     const priority = signal.priority || 'normal';
     const expiryHours = EXPIRY_HOURS[signal.signal_type] || 7 * 24;
     const expires_at = signal.expires_at ||
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
+    const normalizedUserId = requiresUserScope ? scopedUserId! : null;
 
     const result = d.prepare(`
       INSERT INTO agent_signals
         (source_agent, signal_type, payload, priority, expires_at, user_id,
-         confidence, format_tag, pillar_tag, evidence_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       signal.source_agent,
       signal.signal_type,
       JSON.stringify(signal.payload),
       priority,
       expires_at,
-      signal.user_id ?? null,
+      normalizedUserId,
       signal.confidence ?? 0.5,
       signal.format_tag ?? null,
       signal.pillar_tag ?? null,
       signal.evidence_count ?? 1,
+      signal.meshPriority ?? null,
     );
+    const meshPriority = signal.meshPriority ?? null;
+    if (meshPriority === 1) {
+      if (_invalidatePlanningCaches) {
+        _invalidatePlanningCaches(normalizedUserId ?? undefined);
+      } else if (_invalidateCacheByPrefix) {
+        _invalidateCacheByPrefix('plan:week:u:');
+        _invalidateCacheByPrefix('plan:today:u:');
+      }
+    }
     return (result as any).lastInsertRowid ?? -1;
   } catch {
     return -1;
@@ -283,8 +449,21 @@ export function readSignals(
   if (!d) return [];
   try {
     const placeholders = signalTypes.map(() => '?').join(',');
+    const scopedUserId = hasValidScopedUserId(userId) ? userId : undefined;
+    if (userId !== undefined && scopedUserId == null) {
+      reportScopeAnomaly({
+        layer: 'intelligence_bus',
+        operation: 'read_signals',
+        reason: 'invalid_user_scope',
+        userId: userId ?? null,
+        details: {
+          consumer,
+          signalTypes,
+        },
+      });
+    }
     const userScopeClause =
-      userId !== undefined
+      scopedUserId !== undefined
         ? 'AND (user_id IS NULL OR user_id = ?)'
         : 'AND user_id IS NULL';
     // Time-window filter: only return signals created within maxAgeDays
@@ -292,7 +471,7 @@ export function readSignals(
       ? `AND created_at > datetime('now', '-${Math.floor(maxAgeDays)} days')`
       : '';
     const params: any[] = [...signalTypes];
-    if (userId !== undefined) params.push(userId);
+    if (scopedUserId !== undefined) params.push(scopedUserId);
     params.push(limit);
 
     const rows = d.prepare(`
@@ -463,6 +642,7 @@ function parseSignalRow(row: any): AgentSignal {
     format_tag: row.format_tag ?? null,
     pillar_tag: row.pillar_tag ?? null,
     evidence_count: row.evidence_count ?? 1,
+    meshPriority: row.mesh_priority ?? undefined,
   };
 }
 

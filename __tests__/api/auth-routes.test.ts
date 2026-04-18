@@ -41,25 +41,25 @@ function mockRes(): MockRes {
   return res;
 }
 
-function mockReq(body: any): Request {
+function mockReq(body: any, headers: Record<string, string> = {}): Request {
   return {
     body,
     ip: '127.0.0.1',
     socket: { remoteAddress: '127.0.0.1' },
-    headers: {},
-    header() { return undefined; },
+    headers,
+    header(name: string) { return headers[name.toLowerCase()]; },
   } as any;
 }
 
-async function dispatchRegisterInvite(body: any): Promise<MockRes> {
+async function dispatchAuth(path: string, body: any, options: { method?: string; headers?: Record<string, string> } = {}): Promise<MockRes> {
   const { authRoutes } = await import('../../src/api/routes/auth');
   const router = authRoutes();
-  const req = mockReq(body);
-  (req as any).method = 'POST';
-  (req as any).url = '/register';
-  (req as any).originalUrl = '/register';
+  const req = mockReq(body, options.headers);
+  (req as any).method = options.method ?? 'POST';
+  (req as any).url = path;
+  (req as any).originalUrl = path;
   (req as any).baseUrl = '';
-  (req as any).path = '/register';
+  (req as any).path = path;
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -73,6 +73,10 @@ async function dispatchRegisterInvite(body: any): Promise<MockRes> {
   return res;
 }
 
+async function dispatchRegisterInvite(body: any): Promise<MockRes> {
+  return dispatchAuth('/register', body);
+}
+
 describe('Auth invite registration', () => {
   beforeEach(async () => {
     testDb = new Database(':memory:');
@@ -84,6 +88,7 @@ describe('Auth invite registration', () => {
     process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
     process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
     process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
+    process.env.OWNER_TELEGRAM_ID = '991122';
 
     vi.resetModules();
 
@@ -104,7 +109,11 @@ describe('Auth invite registration', () => {
       logAudit: vi.fn(),
     }));
     vi.doMock('../../src/api/auth-middleware', () => ({
-      authMiddleware: (_req: unknown, _res: unknown, next: (err?: unknown) => void) => next(),
+      authMiddleware: (req: any, _res: unknown, next: (err?: unknown) => void) => {
+        req.userId = Number(req.headers?.['x-test-user-id'] ?? 1);
+        req.deviceId = String(req.headers?.['x-test-device-id'] ?? 'test-device');
+        next();
+      },
     }));
   });
 
@@ -160,5 +169,115 @@ describe('Auth invite registration', () => {
     expect(res.statusCode).toBe(201);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.user.id).toBeTypeOf('number');
+  });
+
+  it('resolves the owner invite code through the seeded owner bootstrap user instead of inline route mapping', async () => {
+    const res = await dispatchRegisterInvite({
+      deviceId: 'owner-device-1234',
+      deviceName: 'Owner iPhone',
+      inviteCode: 'LOCALOWNER_TEST',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+
+    const owner = testDb.prepare(
+      'SELECT id, telegram_id, tier, first_name FROM users WHERE id = ?',
+    ).get(res.body.data.user.id) as {
+      id: number;
+      telegram_id: number;
+      tier: string;
+      first_name: string;
+    };
+
+    expect(owner.telegram_id).toBe(991122);
+    expect(owner.tier).toBe('owner');
+    expect(owner.first_name).toBe('Owner');
+  });
+
+  it('starts Google web sign-in with a one-time iOS auth state', async () => {
+    process.env.GOOGLE_CLIENT_ID = 'google-web-client';
+    process.env.GOOGLE_CLIENT_SECRET = 'google-secret';
+
+    const res = await dispatchAuth('/register/google/start', {
+      deviceId: 'ios-device-google-start',
+      deviceName: 'iPhone',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.provider).toBe('google');
+    expect(res.body.data.url).toContain('https://accounts.google.com/o/oauth2/v2/auth?');
+    expect(res.body.data.url).toContain('client_id=google-web-client');
+    expect(res.body.data.url).toContain('state=ios-auth%3A');
+    expect(res.body.data.url).toContain('scope=openid+email+profile');
+  });
+
+  it('finishes Google web sign-in with a stored auth completion payload', async () => {
+    const { storeGoogleAuthCompletion } = await import('../../src/services/google-auth-session-store');
+
+    const authCode = storeGoogleAuthCompletion({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      expiresIn: 604800,
+      user: {
+        id: 77,
+        firstName: 'Jaqueline',
+        lastName: 'Silva',
+        language: 'pt-BR',
+      },
+    });
+
+    const res = await dispatchAuth('/register/google/finish', { authCode });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.accessToken).toBe('access-token');
+    expect(res.body.data.user.firstName).toBe('Jaqueline');
+    expect(res.body.data.user.lastName).toBe('Silva');
+  });
+
+  it('returns the authenticated user profile for session rehydration', async () => {
+    const db = testDb;
+    const result = db.prepare(`
+      INSERT INTO users (
+        email,
+        first_name,
+        last_name,
+        language,
+        auth_provider,
+        daily_cost_limit_usd
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      'felipe@example.com',
+      'Felipe',
+      'Dominguez',
+      'pt-BR',
+      'email',
+      0.05,
+    );
+
+    const userId = Number(result.lastInsertRowid);
+    const res = await dispatchAuth(
+      '/me',
+      undefined,
+      {
+        method: 'GET',
+        headers: {
+          'x-test-user-id': String(userId),
+          authorization: 'Bearer test-token',
+        },
+      },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      id: userId,
+      firstName: 'Felipe',
+      lastName: 'Dominguez',
+      language: 'pt-BR',
+    });
   });
 });

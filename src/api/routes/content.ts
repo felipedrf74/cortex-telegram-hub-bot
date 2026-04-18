@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 
 // ── Generation Mode + Metadata ────────────────────────────────────
 //
@@ -49,6 +50,174 @@ function buildGenerationMeta(opts: {
     researchUsed: opts.researchUsed ?? (opts.mode !== 'quick'),
   };
 }
+
+const YOUTUBE_SCRIPT_PRESET_SECONDS = [480, 600, 900] as const;
+const SHORT_SCRIPT_PRESET_SECONDS = [15, 30, 45, 60] as const;
+
+function parseOptionalPositiveInt(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.round(value);
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return Math.round(parsed);
+  }
+  return null;
+}
+
+function normalizeScriptFormat(value: unknown): 'YouTube' | 'Reel' | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return 'YouTube';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'youtube') return 'YouTube';
+  if (['reel', 'short', 'shorts', 'instagram', 'instagram short', 'instagram shorts'].includes(normalized)) {
+    return 'Reel';
+  }
+  return null;
+}
+
+function resolveScriptDurationPreset(
+  format: 'YouTube' | 'Reel',
+  rawMaxDurationMinutes: unknown,
+  rawTargetDurationSeconds: unknown,
+): { maxDurationMinutes: number; targetDurationSeconds: number } | { error: string } {
+  const parsedTargetDurationSeconds = parseOptionalPositiveInt(rawTargetDurationSeconds);
+  const parsedMaxDurationMinutes = parseOptionalPositiveInt(rawMaxDurationMinutes);
+
+  if (format === 'Reel') {
+    if (parsedTargetDurationSeconds != null) {
+      if (!SHORT_SCRIPT_PRESET_SECONDS.includes(parsedTargetDurationSeconds as (typeof SHORT_SCRIPT_PRESET_SECONDS)[number])) {
+        return { error: 'Reel duration must be one of 15, 30, 45, or 60 seconds' };
+      }
+      return { maxDurationMinutes: 1, targetDurationSeconds: parsedTargetDurationSeconds };
+    }
+    if (parsedMaxDurationMinutes != null && parsedMaxDurationMinutes !== 1) {
+      return { error: 'Reel maxDurationMinutes must stay at 1 minute; use targetDurationSeconds for 15/30/45/60-second presets' };
+    }
+    return { maxDurationMinutes: 1, targetDurationSeconds: 60 };
+  }
+
+  if (parsedTargetDurationSeconds != null) {
+    if (!YOUTUBE_SCRIPT_PRESET_SECONDS.includes(parsedTargetDurationSeconds as (typeof YOUTUBE_SCRIPT_PRESET_SECONDS)[number])) {
+      return { error: 'YouTube duration must be one of 8, 10, or 15 minutes' };
+    }
+    return { maxDurationMinutes: Math.round(parsedTargetDurationSeconds / 60), targetDurationSeconds: parsedTargetDurationSeconds };
+  }
+
+  if (parsedMaxDurationMinutes != null) {
+    if (![8, 10, 15].includes(parsedMaxDurationMinutes)) {
+      return { error: 'YouTube maxDurationMinutes must be one of 8, 10, or 15' };
+    }
+    return { maxDurationMinutes: parsedMaxDurationMinutes, targetDurationSeconds: parsedMaxDurationMinutes * 60 };
+  }
+
+  return { maxDurationMinutes: 8, targetDurationSeconds: 8 * 60 };
+}
+
+function parseOptionalPositiveId(value: unknown): number | null {
+  const parsed = parseOptionalPositiveInt(value);
+  return parsed != null && parsed > 0 ? parsed : null;
+}
+
+function parseOptionalText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveScriptTopicContext(
+  userId: number,
+  raw: Record<string, unknown>,
+): ScriptTopicContext | null {
+  const db = getDb();
+  const context: ScriptTopicContext = {};
+
+  const pipelineId = parseOptionalPositiveId(raw.pipelineId);
+  const topicFeedbackId = parseOptionalPositiveId(raw.topicFeedbackId);
+  const ideaId = parseOptionalPositiveId(raw.ideaId);
+
+  if (pipelineId != null) {
+    try {
+      const row = db.prepare(`
+        SELECT p.id AS pipeline_id,
+               p.user_id AS pipeline_user_id,
+               p.niche AS pipeline_niche,
+               tf.id AS topic_feedback_id,
+               tf.niche AS feedback_niche,
+               tf.hook_idea,
+               tf.why_now,
+               tf.angle_tag,
+               tf.source_job
+        FROM content_pipeline p
+        LEFT JOIN content_topic_feedback tf ON tf.id = p.topic_feedback_id
+        WHERE p.id = ?
+        LIMIT 1
+      `).get(pipelineId) as any;
+
+      if (row && row.pipeline_user_id === userId) {
+        context.pipelineId = row.pipeline_id;
+        context.topicFeedbackId = row.topic_feedback_id ?? context.topicFeedbackId;
+        context.niche = row.feedback_niche || row.pipeline_niche || context.niche;
+        context.hookIdea = row.hook_idea || context.hookIdea;
+        context.whyNow = row.why_now || context.whyNow;
+        context.angleTag = row.angle_tag || context.angleTag;
+        context.sourceJob = row.source_job || context.sourceJob;
+      }
+    } catch {
+      // Older isolated tests may not expose every content_pipeline column yet.
+    }
+  }
+
+  if (topicFeedbackId != null) {
+    const row = db.prepare(`
+      SELECT id, niche, hook_idea, why_now, angle_tag, source_job
+      FROM content_topic_feedback
+      WHERE id = ? AND user_id = ?
+      LIMIT 1
+    `).get(topicFeedbackId, userId) as any;
+
+    if (row) {
+      context.topicFeedbackId = row.id;
+      context.niche = row.niche || context.niche;
+      context.hookIdea = row.hook_idea || context.hookIdea;
+      context.whyNow = row.why_now || context.whyNow;
+      context.angleTag = row.angle_tag || context.angleTag;
+      context.sourceJob = row.source_job || context.sourceJob;
+    }
+  }
+
+  if (ideaId != null) {
+    const row = db.prepare(`
+      SELECT id, niche, hook_idea, why_now, angle_tag, source
+      FROM saved_ideas
+      WHERE id = ? AND user_id = ?
+      LIMIT 1
+    `).get(ideaId, userId) as any;
+
+    if (row) {
+      context.ideaId = row.id;
+      context.niche = row.niche || context.niche;
+      context.hookIdea = row.hook_idea || context.hookIdea;
+      context.whyNow = row.why_now || context.whyNow;
+      context.angleTag = row.angle_tag || context.angleTag;
+      context.sourceJob = row.source || context.sourceJob;
+    }
+  }
+
+  const explicitNiche = parseOptionalText(raw.niche);
+  const explicitHookIdea = parseOptionalText(raw.hookIdea);
+  const explicitWhyNow = parseOptionalText(raw.whyNow);
+  const explicitAngleTag = parseOptionalText(raw.angleTag);
+
+  if (pipelineId != null) context.pipelineId = pipelineId;
+  if (topicFeedbackId != null) context.topicFeedbackId = topicFeedbackId;
+  if (ideaId != null) context.ideaId = ideaId;
+  if (explicitNiche) context.niche = explicitNiche;
+  if (explicitHookIdea) context.hookIdea = explicitHookIdea;
+  if (explicitWhyNow) context.whyNow = explicitWhyNow;
+  if (explicitAngleTag) context.angleTag = explicitAngleTag;
+
+  return Object.values(context).some((value) => value != null && value !== '')
+    ? context
+    : null;
+}
 import {
   addTopic,
   getFilmingRecommendation,
@@ -59,20 +228,70 @@ import {
   CONTENT_TOPIC_STATUSES,
   type ContentTopicStatus,
 } from '../../services/content-scheduler';
+import {
+  getActiveContentPillars,
+  getContentDeskItems,
+  localizeFilmingRecommendation,
+} from '../../services/content-intelligence';
+import {
+  buildRadarTopicSummaries,
+  filterSignalsForRadarPreferences,
+  getContentRadarPreferences,
+  setContentRadarPreferences,
+} from '../../services/content-radar-preferences';
+import { getDb } from '../../services/database';
 import { getJobStatuses } from '../../portal/telemetry';
 import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
 import { readSignals, type AgentSignal } from '../../services/intelligence-bus';
+import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguage } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import type { ScriptTopicContext } from '../../services/content-engine';
+
+const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
+
+function dedupeContentBooks(rows: any[], userId: number): any[] {
+  const deduped = new Map<string, any>();
+  for (const row of rows) {
+    const key = `${row.title}::${row.author}`;
+    const existing = deduped.get(key);
+    const rowIsUser = row.user_id === userId && (row.owner_scope === 'user' || (row.owner_scope == null && row.user_id !== 0));
+    const existingIsUser = existing && existing.user_id === userId
+      && (existing.owner_scope === 'user' || (existing.owner_scope == null && existing.user_id !== 0));
+    if (!existing || (rowIsUser && !existingIsUser)) {
+      deduped.set(key, row);
+    }
+  }
+  return Array.from(deduped.values());
+}
 
 export function contentRoutes(): Router {
   const router = Router();
+
+  function ensureValidContentRouteScope(
+    res: Response,
+    userId: number | undefined,
+    operation: string,
+    details?: Record<string, unknown>,
+  ): userId is number {
+    if (isValidTenantUserId(userId)) return true;
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation,
+      reason: 'invalid_user_scope',
+      userId: typeof userId === 'number' ? userId : null,
+      details,
+    });
+    sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+    return false;
+  }
 
   /** GET /api/v1/content/pipeline */
   router.get('/pipeline', async (req, res: Response) => {
     try {
       const { userId } = req as unknown as AuthenticatedRequest;
-      const db = require('../../services/database').getDb();
+      const db = getDb();
 
       // Per-user content pipeline — each user only sees their own ideas
       const ideas = db.prepare(
@@ -131,7 +350,7 @@ export function contentRoutes(): Router {
   router.get('/ideas', async (req, res: Response) => {
     try {
       const { userId } = req as unknown as AuthenticatedRequest;
-      const db = require('../../services/database').getDb();
+      const db = getDb();
       const ideas = db.prepare(
         'SELECT id, title, score, created_at, stage FROM content_ideas WHERE user_id = ? ORDER BY score DESC, created_at DESC',
       ).all(userId) as any[];
@@ -142,10 +361,11 @@ export function contentRoutes(): Router {
           score: row.score || null, createdAt: row.created_at || null,
           stage: row.stage || 'ideas',
         })),
+        count: ideas.length,
       });
     } catch (err: any) {
       logger.debug({ err }, 'Content ideas query failed');
-      sendSuccess(res, { ideas: [] });
+      sendSuccess(res, { ideas: [], count: 0 });
     }
   });
 
@@ -173,22 +393,44 @@ export function contentRoutes(): Router {
     }
   });
 
+  /** GET /api/v1/content/radar-preferences — creator topics for Reaction Radar */
+  router.get('/radar-preferences', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    sendSuccess(res, getContentRadarPreferences(userId));
+  }));
+
+  /** PUT /api/v1/content/radar-preferences — replace creator topics for Reaction Radar */
+  router.put('/radar-preferences', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const topics = Array.isArray(req.body?.topics) ? req.body.topics : null;
+
+    if (!topics || topics.some((topic: unknown) => typeof topic !== 'string')) {
+      sendError(res, 'BAD_REQUEST', 'topics must be an array of strings', 400);
+      return;
+    }
+
+    sendSuccess(res, setContentRadarPreferences(userId, topics));
+  }));
+
   /** GET /api/v1/content/intelligence — backstage agent summary for iOS */
   router.get('/intelligence', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const language = getUserLanguage(userId);
+    if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_summary')) return;
+    const language = resolveContentLanguage(req, userId);
     const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
     const reactionJob = jobs.get('reaction_radar');
     const performanceJob = jobs.get('performance_agent');
     const autoresearchJob = jobs.get('autoresearch');
 
-    const discoverySignals = readSignals(
+    const allDiscoverySignals = readSignals(
       'ios-content-intelligence',
       ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
       25,
       userId,
       7
     );
+    const radarPreferences = getContentRadarPreferences(userId);
+    const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
     const optimizationSignals = readSignals(
       'ios-content-intelligence',
       ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
@@ -248,19 +490,22 @@ export function contentRoutes(): Router {
   /** GET /api/v1/content/intelligence/detail — deeper backstage view for iOS */
   router.get('/intelligence/detail', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const language = getUserLanguage(userId);
+    if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_detail')) return;
+    const language = resolveContentLanguage(req, userId);
     const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
     const reactionJob = jobs.get('reaction_radar');
     const performanceJob = jobs.get('performance_agent');
     const autoresearchJob = jobs.get('autoresearch');
 
-    const discoverySignals = readSignals(
+    const allDiscoverySignals = readSignals(
       'ios-content-intelligence-detail',
       ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
       6,
       userId,
       7
     );
+    const radarPreferences = getContentRadarPreferences(userId);
+    const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
     const optimizationSignals = readSignals(
       'ios-content-intelligence-detail',
       ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
@@ -278,6 +523,10 @@ export function contentRoutes(): Router {
       voiceEntries.flatMap((entry) => entry.sources).filter((source) => source && source.trim().length > 0)
     ).size;
     const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+    const monitoredPillars = radarPreferences.topics.length > 0
+      ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
+      : getActiveContentPillars(userId);
+    const deskItems = getContentDeskItems(userId, 3);
 
     sendSuccess(res, {
       discovery: {
@@ -286,6 +535,10 @@ export function contentRoutes(): Router {
         activeCount: discoverySignals.length,
         lastRunAt: reactionJob?.lastRunAt ?? null,
         lastStatus: reactionJob?.lastResult ?? 'never',
+        deskReadyCount: deskItems.length,
+        deskItems,
+        preferredTopics: radarPreferences.topics,
+        monitoredPillars,
         recentSignals: discoverySignals.map((signal) => formatSignalDigest(signal, language)),
       },
       script: {
@@ -348,10 +601,26 @@ export function contentRoutes(): Router {
    */
   router.post('/script', async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { topic, niche, format, maxDurationMinutes, mode, language, renderMode } = req.body;
+    const { topic, niche, format, maxDurationMinutes, targetDurationSeconds, mode, language, renderMode } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
       sendError(res, 'VALIDATION', 'topic is required', 400);
+      return;
+    }
+
+    const normalizedFormat = normalizeScriptFormat(format);
+    if (!normalizedFormat) {
+      sendError(res, 'VALIDATION', 'format must be YouTube or Reel', 400);
+      return;
+    }
+
+    const durationPreset = resolveScriptDurationPreset(
+      normalizedFormat,
+      maxDurationMinutes,
+      targetDurationSeconds,
+    );
+    if ('error' in durationPreset) {
+      sendError(res, 'VALIDATION', durationPreset.error, 400);
       return;
     }
 
@@ -383,14 +652,12 @@ export function contentRoutes(): Router {
       // reflects the user's tone, style, and vocabulary preferences.
       let brandVoice: string | null = null;
       try {
-        const db = require('../../services/database').getDb();
-        const row = db.prepare(
-          `SELECT synthesized_text FROM content_knowledge
-           WHERE category = 'brand_voice' AND user_id IN (0, ?)
-           ORDER BY user_id DESC LIMIT 1`
-        ).get(userId);
+        const { getKnowledgeByCategory } = require('../../state/content-references');
+        const row = getKnowledgeByCategory('brand_voice', userId);
         brandVoice = row?.synthesized_text || null;
       } catch { /* non-critical — generate without voice if DB fails */ }
+
+      const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});
 
       let targetLanguage = 'pt-BR';
       try {
@@ -407,13 +674,16 @@ export function contentRoutes(): Router {
       const { getScript } = require('../../services/content-engine');
       const result = await getScript(
         topic.trim(),
-        niche || 'general',
-        maxDurationMinutes || (format === 'Reel' ? 1 : 8),
-        format || 'YouTube',
+        scriptTopicContext?.niche || niche || 'general',
+        durationPreset.maxDurationMinutes,
+        normalizedFormat,
         genMode,
         brandVoice,
         targetLanguage,
         targetRenderMode,
+        userId,
+        durationPreset.targetDurationSeconds,
+        scriptTopicContext,
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = elapsedMs < 500;
@@ -431,7 +701,7 @@ export function contentRoutes(): Router {
           relevanceNote: s.relevance_note,
         })),
         estimatedDuration: result.estimated_duration,
-        format: format || 'YouTube',
+        format: normalizedFormat,
         renderMode: targetRenderMode,
         durationMs: result.duration_ms,
         // Creator-pack fields
@@ -446,7 +716,7 @@ export function contentRoutes(): Router {
           startMs,
           cacheHit,
           provider: 'content-engine',
-          researchUsed: !cacheHit,
+          researchUsed: genMode !== 'quick' && !cacheHit,
         }),
         // Backward compat — keep old fields until iOS migrates
         generationMode: genMode,
@@ -489,6 +759,7 @@ export function contentRoutes(): Router {
       // Strict ownership: only update rows the user owns. Legacy user_id=0
       // rows are readable but not mutable — they're system seed data.
       db.prepare('UPDATE content_ideas SET stage = ? WHERE id = ? AND user_id = ?').run(nextStage, id, userId);
+      invalidatePlanningCaches(userId);
 
       sendSuccess(res, { advanced: true, newStage: nextStage });
     } catch (err: any) {
@@ -550,7 +821,7 @@ export function contentRoutes(): Router {
         Promise.resolve(getUpcomingTopicCount(userId, 14)),
         getFilmingRecommendation(userId, topics),
       ]);
-      const language = getUserLanguage(userId);
+      const language = resolveContentLanguage(req, userId);
 
       sendSuccess(res, {
         topics,
@@ -598,6 +869,7 @@ export function contentRoutes(): Router {
         scheduledDate: scheduledDate ?? null,
         status: status ?? 'planned',
       });
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { topic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
@@ -653,6 +925,7 @@ export function contentRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { topic: updated });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
@@ -680,6 +953,7 @@ export function contentRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { deleted: true, id: topicId });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic delete failed');
@@ -695,9 +969,15 @@ export function contentRoutes(): Router {
   router.get('/books', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     const db = require('../../services/database').getDb();
-    const books = db.prepare(
-      'SELECT id, title, author, core_thesis, extraction_status, personal_notes FROM book_library WHERE user_id IN (0, ?) ORDER BY title ASC'
-    ).all(userId);
+    const rows = db.prepare(
+      `SELECT id, title, author, core_thesis, extraction_status, personal_notes, user_id, owner_scope
+         FROM book_library
+        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
+           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
+        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+                 title ASC`
+    ).all(userId, userId);
+    const books = dedupeContentBooks(rows, userId).map(({ user_id, owner_scope, ...row }) => row);
     sendSuccess(res, { books });
   }));
 
@@ -708,8 +988,8 @@ export function contentRoutes(): Router {
     if (!title || !author) { sendError(res, 'VALIDATION', 'title and author required', 400); return; }
     const db = require('../../services/database').getDb();
     const result = db.prepare(
-      'INSERT OR IGNORE INTO book_library (title, author, extraction_status, user_id) VALUES (?, ?, ?, ?)'
-    ).run(title.trim(), author.trim(), 'pending', userId);
+      'INSERT OR IGNORE INTO book_library (title, author, extraction_status, user_id, owner_scope) VALUES (?, ?, ?, ?, ?)'
+    ).run(title.trim(), author.trim(), 'pending', userId, 'user');
     sendSuccess(res, { id: result.lastInsertRowid, title: title.trim() }, { status: 201 });
   }));
 
@@ -763,20 +1043,15 @@ export function contentRoutes(): Router {
   /** GET /api/v1/content/voice-dna — user's voice DNA entries */
   router.get('/voice-dna', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const db = require('../../services/database').getDb();
-    const entries = db.prepare(
-      `SELECT
-         id,
-         category,
-         category as label,
-         synthesized_text as payload,
-         source_channels,
-         version,
-         updated_at
-       FROM content_knowledge
-       WHERE user_id IN (0, ?)
-       ORDER BY user_id DESC, category ASC`
-    ).all(userId);
+    const entries = getVoiceDna(undefined, userId).map((entry) => ({
+      id: entry.id,
+      category: entry.category,
+      label: entry.label,
+      payload: entry.text,
+      source_channels: JSON.stringify(entry.sources),
+      version: entry.version,
+      updated_at: entry.updatedAt,
+    }));
     sendSuccess(res, { entries });
   }));
 
@@ -792,10 +1067,11 @@ export function contentRoutes(): Router {
       return;
     }
     db.prepare(`
-      INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, version)
-      VALUES (?, ?, '[]', ?, 1)
+      INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, owner_scope, version)
+      VALUES (?, ?, '[]', ?, 'user', 1)
       ON CONFLICT(user_id, category) DO UPDATE SET
         synthesized_text = excluded.synthesized_text,
+        owner_scope = excluded.owner_scope,
         updated_at = datetime('now'),
         version = content_knowledge.version + 1
     `).run(category, normalizedPayload, userId);
@@ -1032,11 +1308,27 @@ export function contentRoutes(): Router {
    * Replaces the Python content-engine feedback.json file.
    *
    * Body: { pipelineId?, videoUrl?, views, retentionPct, likes?,
-   *         comments?, subsGained?, hookUsed?, notes? }
+   *         comments?, subsGained?, hookUsed?, selectedTitle?,
+   *         finalCaption?, finalCta?, finalScriptVariant?, publishedHashtags?, notes? }
    */
   router.post('/performance', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
-    const { pipelineId, videoUrl, views, retentionPct, likes, comments, subsGained, hookUsed, notes } = req.body;
+    const {
+      pipelineId,
+      videoUrl,
+      views,
+      retentionPct,
+      likes,
+      comments,
+      subsGained,
+      hookUsed,
+      selectedTitle,
+      finalCaption,
+      finalCta,
+      finalScriptVariant,
+      publishedHashtags,
+      notes,
+    } = req.body;
 
     if (views === undefined || retentionPct === undefined) {
       sendError(res, 'VALIDATION', 'views and retentionPct are required', 400);
@@ -1046,7 +1338,8 @@ export function contentRoutes(): Router {
     const { logPerformanceFeedback } = require('../../services/content-learning-store');
     const id = logPerformanceFeedback({
       pipelineId, videoUrl, views, retentionPct,
-      likes, comments, subsGained, hookUsed, notes,
+      likes, comments, subsGained, hookUsed, selectedTitle,
+      finalCaption, finalCta, finalScriptVariant, publishedHashtags, notes,
       userId,
     });
 
@@ -1192,6 +1485,12 @@ function summarizeOptimizationStatus(
   return 'warming_up';
 }
 
+function resolveContentLanguage(req: Pick<AuthenticatedRequest, 'header'>, userId: number): Lang {
+  const headerLanguage = normalizeLangHeader(req.header?.('x-language'));
+  if (headerLanguage) return headerLanguage;
+  return getUserLanguage(userId);
+}
+
 function formatSignalDigest(signal: AgentSignal, language: Lang): {
   id: number;
   type: string;
@@ -1220,7 +1519,7 @@ function buildSignalTitle(signal: AgentSignal, language: Lang): string {
     signal.payload.summary,
   );
   if (titleLike) {
-    return language.startsWith('pt') ? localizeSignalTitle(titleLike, signal.signal_type, language) : titleLike;
+    return localizeSignalTitle(titleLike, signal.signal_type, language);
   }
 
   const fallbackTitles: Record<string, { en: string; pt: string }> = {
@@ -1245,7 +1544,7 @@ function buildSignalSummary(signal: AgentSignal, language: Lang): string {
     signal.payload.note,
   );
   if (summary) {
-    return language.startsWith('pt') ? localizeSignalSummary(summary, signal.signal_type, signal.payload, language) : summary;
+    return localizeSignalSummary(summary, signal.signal_type, signal.payload, language);
   }
 
   switch (signal.signal_type) {
@@ -1285,20 +1584,60 @@ function buildSignalSummary(signal: AgentSignal, language: Lang): string {
 }
 
 function localizeSignalTitle(title: string, signalType: string, language: Lang): string {
-  if (!language.startsWith('pt')) return title;
   const trimmed = title.trim();
+  if (!language.startsWith('pt')) {
+    const englishMap: Record<string, string> = {
+      'Performance dos hooks': 'Hook performance',
+      'Performance do pilar': 'Pillar performance',
+      'Aprendizagem semanal': 'Weekly learning',
+      'Formato vencedor': 'Winning format',
+      'Janela de reação': 'Reaction opportunity',
+      'Subida de tendência': 'Trending spike',
+      'Movimento da concorrência': 'Competitor move',
+      'Treino': 'Training',
+      'Recuperação': 'Recovery',
+    };
+    if (/^(training|fitness)$/i.test(trimmed)) {
+      return signalType === 'content_formula' ? 'Winning format' : 'Training';
+    }
+    return englishMap[trimmed] ?? trimmed;
+  }
   switch (signalType) {
     case 'pillar_performance':
-      return /^training$/i.test(trimmed) ? 'Treino' : trimmed;
+      return /^(training|fitness)$/i.test(trimmed) ? 'Treino' : trimmed;
+    case 'content_formula':
+      return /^fitness$/i.test(trimmed) ? 'Formato vencedor' : trimmed;
     default:
       return trimmed;
   }
 }
 
 function localizeSignalSummary(summary: string, signalType: string, payload: Record<string, any>, language: Lang): string {
-  if (!language.startsWith('pt')) return summary;
   const trimmed = summary.trim();
   if (trimmed.length === 0) return trimmed;
+
+  if (!language.startsWith('pt')) {
+    switch (signalType) {
+      case 'reaction_opportunity':
+        return trimmed.replace(/^Janela de reação ativa:\s*/i, 'Reaction window: ');
+      case 'trending_spike':
+        return trimmed.replace(/^Sinal de tendência:\s*/i, 'Trending signal: ');
+      case 'competitor_upload':
+        return trimmed.replace(/^Movimento recente da concorrência:\s*/i, 'Competitor move: ');
+      case 'hook_effectiveness':
+        return trimmed.replace(/^Lição de hook:\s*/i, 'Hook learning: ');
+      case 'pillar_performance':
+        return trimmed
+          .replace(/^Performance de\s+/i, 'Performance for ')
+          .replace(/^Performance do\s+/i, 'Performance for ');
+      case 'learning_digest':
+        return trimmed.replace(/^Aprendizagem recente:\s*/i, 'Recent learning: ');
+      case 'content_formula':
+        return trimmed.replace(/^Formato a repetir:\s*/i, 'Repeatable format: ');
+      default:
+        return trimmed;
+    }
+  }
 
   switch (signalType) {
     case 'reaction_opportunity':
@@ -1379,85 +1718,4 @@ function truncateText(value: string, maxLength: number): string {
   const trimmed = value.trim();
   if (trimmed.length <= maxLength) return trimmed;
   return `${trimmed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function localizeFilmingRecommendation<T extends {
-  reason: string;
-  reasons: string[];
-  calendarReservationMessage?: string | null;
-} | null>(
-  recommendation: T,
-  language: Lang,
-): T {
-  if (!recommendation || !language.startsWith('pt')) {
-    return recommendation;
-  }
-
-  const localizedReasons = recommendation.reasons.map(localizeFilmingRecommendationText);
-  return {
-    ...recommendation,
-    reason: localizeFilmingRecommendationText(recommendation.reason),
-    reasons: localizedReasons,
-    calendarReservationMessage: recommendation.calendarReservationMessage
-      ? localizeFilmingRecommendationText(recommendation.calendarReservationMessage)
-      : recommendation.calendarReservationMessage,
-  };
-}
-
-function localizeFilmingRecommendationText(text: string): string {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return trimmed;
-
-  const numericPattern = /(\d+)\/100/g;
-
-  switch (trimmed) {
-    case 'No hard training is scheduled today.':
-      return 'Hoje não há treino duro planeado.';
-    case 'No hard training is planned for this day.':
-      return 'Não há treino duro planeado para este dia.';
-    case 'There is a hard training session planned, so filming would compete with your best energy.':
-      return 'Há um treino duro planeado, por isso filmar iria competir com a tua melhor energia.';
-    case 'Training is planned, but it looks manageable around a filming block.':
-      return 'Há treino planeado, mas parece compatível com um bloco de filmagem.';
-    case 'Only light training is planned, so it should be easier to film well.':
-      return 'Só há treino leve planeado, por isso deve ser mais fácil filmar bem.';
-    case 'Your calendar is clear, so you have room to film without collisions.':
-      return 'O teu calendário está livre, por isso tens espaço para filmar sem conflitos.';
-    case 'Your calendar is busy that day, so filming would likely fragment or run late.':
-      return 'O teu calendário está carregado nesse dia, por isso filmar iria fragmentar-se ou atrasar-se.';
-    case 'You have a few calendar commitments, but there is still some room to film.':
-      return 'Tens alguns compromissos no calendário, mas ainda há margem para filmar.';
-    case 'The calendar looks light, which is good for a focused filming block.':
-      return 'O calendário parece leve, o que é bom para um bloco de filmagem focado.';
-    case 'You already have a content deadline on this date.':
-      return 'Já tens um prazo de conteúdo nesta data.';
-    case 'Giving yourself one more recovery day should improve filming quality.':
-      return 'Dar a ti próprio mais um dia de recuperação deve melhorar a qualidade da filmagem.';
-    case 'Recent recovery signals suggest protecting today rather than stacking filming on top.':
-      return 'Os sinais recentes de recuperação sugerem proteger o dia de hoje em vez de acumular filmagem por cima.';
-    case 'This gives your current recovery dip a little more room to settle.':
-      return 'Isto dá mais espaço para a tua quebra atual de recuperação estabilizar.';
-    case 'Connect Google Calendar or Outlook in Settings to reserve this filming block.':
-      return 'Liga o Google Calendar ou o Outlook nas Definições para reservar este bloco de filmagem.';
-    case 'This day has the cleanest mix of energy and calendar space for filming.':
-      return 'Este dia tem a melhor combinação de energia e espaço no calendário para filmar.';
-    default:
-      break;
-  }
-
-  if (trimmed.startsWith("Today's readiness is only ")) {
-    return trimmed.replace(
-      /^Today's readiness is only (\d+)\/100, so filming tomorrow or later is safer\.$/,
-      'A prontidão de hoje é só $1/100, por isso é mais seguro filmar amanhã ou mais tarde.',
-    );
-  }
-
-  if (trimmed.startsWith('Readiness looks solid at ')) {
-    return trimmed.replace(
-      /^Readiness looks solid at (\d+)\/100, which supports a focused filming block\.$/,
-      'A prontidão está sólida em $1/100, o que ajuda um bloco de filmagem focado.',
-    );
-  }
-
-  return trimmed.replace(numericPattern, '$1/100');
 }

@@ -82,6 +82,12 @@ vi.mock('../../src/config', () => ({
     get portal() {
       return { token: portalTokenValue };
     },
+    app: {
+      timezone: 'Europe/Lisbon',
+    },
+    garmin: {
+      tokenPath: '/tmp',
+    },
   },
 }));
 

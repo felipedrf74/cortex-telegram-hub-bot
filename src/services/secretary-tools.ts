@@ -116,10 +116,10 @@ const RE = {
   // Use \w* suffixes for stems that have many inflected forms (training,
   // trains, trainer, ...). The leading \b still anchors the match to a
   // word start so "constraint" won't trigger "train".
-  tasks: /\b(tasks?|todos?|tarefas?|pendentes?|overdue|atrasad[ao]s?|done|complet\w*|lists?|criar|adds?|nova|novas|editar|mover|deletar|apagar|marcar|priorit\w*)\b/i,
-  taskWrite: /\b(create|adds?|done|complet\w*|edits?|update|delete|moves?|criar|nova|novas|editar|mover|deletar|apagar|marcar|finaliz\w*)\b/i,
+  tasks: /\b(tasks?|todos?|tarefas?|pendentes?|overdue|atrasad[ao]s?|done|complet\w*|lists?|cria\w*|cri\w*|adds?|adicion\w*|nova|novas|editar|edita\w*|mover|move\w*|delet\w*|apaga\w*|remove\w*|marc\w*|priorit\w*)\b/i,
+  taskWrite: /\b(create|adds?|done|complet\w*|edits?|update|delete|moves?|cria\w*|cri\w*|adicion\w*|nova|novas|edita\w*|move\w*|delet\w*|apaga\w*|remove\w*|marc\w*|finaliz\w*)\b/i,
   calendar: /\b(calendars?|events?|meetings?|agenda|schedules?|reuni[aã]o|reuni[oõ]es|eventos?|dia|day|week|semana|today|hoje|amanh[aã]|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo|marcar)\b/i,
-  calendarWrite: /\b(create|schedules?|moves?|cancel|reschedule|marcar|agendar|cancelar|remarcar)\b/i,
+  calendarWrite: /\b(create|schedules?|moves?|cancel|reschedule|cria\w*|cri\w*|marc\w*|agenda\w*|cancela\w*|remarca\w*|remove\w*|apaga\w*|delet\w*)\b/i,
   email: /\b(emails?|e-mails?|mail|inbox|unread|sends?|reply|replies|n[aã]o lid[oa]s?|enviar|responder|caixa de entrada)\b/i,
   reminders: /\b(reminds?|reminder|reminders|lembr\w*|aviso|avisos|alarmes?)\b/i,
   notes: /\b(notes?|notas?|anota\w*|anotations?|memos?)\b/i,

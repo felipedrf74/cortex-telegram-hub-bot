@@ -15,8 +15,10 @@ export interface SkillManifest {
   description?: string;
   author?: string;
   domain?: string;
+  manifestVersion?: number;
   dependencies?: string[];              // names of skills this skill requires
   submodules?: SubmoduleDeclaration[];
+  subSkills?: SubmoduleDeclaration[];
   requiredApiKeys?: string[];
   config?: Record<string, unknown>;
 }

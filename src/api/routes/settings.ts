@@ -8,6 +8,9 @@ import { sendSuccess, sendError } from '../response-helpers';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { setUserLanguage } from '../../services/user-service';
+import { getDb } from '../../services/database';
+import { getPushPreferences, setPushPreference } from '../../services/report-document-store';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' | null {
   if (typeof language !== 'string') return null;
@@ -19,6 +22,24 @@ function normalizeLanguageInput(language: unknown): 'pt-BR' | 'pt-PT' | 'en-US' 
 
 export function settingsRoutes(): Router {
   const router = Router();
+
+  function ensureValidSettingsUserScope(
+    res: Response,
+    userId: number | undefined,
+    operation: string,
+    details?: Record<string, unknown>,
+  ): userId is number {
+    if (isValidTenantUserId(userId)) return true;
+    recordTenantScopeAnomaly({
+      layer: 'delivery',
+      operation,
+      reason: 'invalid_user_scope',
+      userId: typeof userId === 'number' ? userId : null,
+      details,
+    });
+    sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+    return false;
+  }
 
   /** GET /api/v1/settings/status */
   router.get('/status', async (_req, res: Response) => {
@@ -51,6 +72,7 @@ export function settingsRoutes(): Router {
   router.get('/connections', async (req, res: Response) => {
     // Redirect to the per-user connections endpoint
     const { userId } = req as any;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_connections')) return;
     try {
       const { isConnected, getConnectedProviders } = require('../../services/oauth-store');
       const providers = getConnectedProviders?.(userId) || [];
@@ -95,6 +117,7 @@ export function settingsRoutes(): Router {
   /** POST /api/v1/settings/language */
   router.post('/language', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_language')) return;
     const { language } = req.body;
     const normalizedLanguage = normalizeLanguageInput(language);
 
@@ -115,13 +138,36 @@ export function settingsRoutes(): Router {
   /** POST /api/v1/settings/push-token */
   router.post('/push-token', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_push_token')) return;
     const deviceId = (req as AuthenticatedRequest).deviceId;
     const { token } = req.body;
 
     try {
-      const db = require('../../services/database').getDb();
-      db.prepare('UPDATE ios_devices SET push_token = ? WHERE user_id = ? AND device_id = ?')
-        .run(token, userId, deviceId);
+      if (typeof token !== 'string' || token.trim().length === 0) {
+        sendError(res, 'VALIDATION', 'token is required', 400);
+        return;
+      }
+      const db = getDb();
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ios_devices (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          device_id TEXT NOT NULL UNIQUE,
+          device_name TEXT,
+          push_token TEXT,
+          refresh_token TEXT NOT NULL,
+          last_active_at TEXT DEFAULT (datetime('now')),
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+      `);
+      db.prepare(`
+        INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token, last_active_at)
+        VALUES (?, ?, NULL, ?, '', datetime('now'))
+        ON CONFLICT(device_id) DO UPDATE SET
+          user_id = excluded.user_id,
+          push_token = excluded.push_token,
+          last_active_at = datetime('now')
+      `).run(userId, deviceId, token.trim());
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS push-token update failed');
@@ -132,6 +178,7 @@ export function settingsRoutes(): Router {
   /** POST /api/v1/settings/export — GDPR data export (Article 15: right of access) */
   router.post('/export', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_export')) return;
     try {
       const db = require('../../services/database').getDb();
 
@@ -197,7 +244,7 @@ export function settingsRoutes(): Router {
       userData.exportedAt = new Date().toISOString();
       userData.userId = userId;
       userData._systemNotes = {
-        sharedSeedData: 'Tables content_ref_channels, book_library, content_knowledge, and content_learned_patterns may contain system-owned rows (user_id=0) that serve as shared reference data (e.g., default books, seed channels). These rows are not user-generated and are excluded from this export.',
+        sharedSeedData: 'Tables content_ref_channels, book_library, content_knowledge, and content_learned_patterns may contain explicit system-owned rows (owner_scope=system) that serve as shared reference data (e.g., default books, seed channels). These rows are not user-generated and are excluded from this export.',
       };
 
       sendSuccess(res, userData);
@@ -210,6 +257,7 @@ export function settingsRoutes(): Router {
   /** DELETE /api/v1/settings/account — GDPR account deletion */
   router.delete('/account', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidSettingsUserScope(res, userId, 'settings_route_delete_account')) return;
     try {
       const db = require('../../services/database').getDb();
 
@@ -273,7 +321,7 @@ export function settingsRoutes(): Router {
   router.get('/push-preferences', async (req, res: Response) => {
     try {
       const { userId } = req as unknown as AuthenticatedRequest;
-      const { getPushPreferences } = require('../../services/report-document-store');
+      if (!ensureValidSettingsUserScope(res, userId, 'settings_route_get_push_preferences')) return;
       const prefs = getPushPreferences(userId);
       sendSuccess(res, { preferences: prefs });
     } catch (err: any) {
@@ -291,6 +339,7 @@ export function settingsRoutes(): Router {
   const pushPrefHandler = async (req: any, res: Response) => {
     try {
       const { userId } = req as unknown as AuthenticatedRequest;
+      if (!ensureValidSettingsUserScope(res, userId, 'settings_route_set_push_preferences')) return;
       const { category, enabled } = req.body || {};
 
       if (!category || typeof enabled !== 'boolean') {
@@ -298,7 +347,6 @@ export function settingsRoutes(): Router {
         return;
       }
 
-      const { setPushPreference } = require('../../services/report-document-store');
       setPushPreference(userId, category, enabled);
       sendSuccess(res, { category, enabled });
     } catch (err: any) {

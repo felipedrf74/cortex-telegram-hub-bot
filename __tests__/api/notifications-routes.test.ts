@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
 
 const mockGetNotifications = vi.fn();
 const mockGetUnreadCount = vi.fn();
 const mockGetRecentReports = vi.fn();
 const mockGetUnreadReportCount = vi.fn();
 const mockIsConnected = vi.fn();
-const mockGetUnreadEmails = vi.fn();
-const mockReadOutlookEmail = vi.fn();
-const mockSearchEmails = vi.fn();
-const mockReadGmailEmail = vi.fn();
+const mockGetUnreadEmailsForUser = vi.fn();
+const mockReadOutlookEmailForUser = vi.fn();
+const mockSearchEmailsForUser = vi.fn();
+const mockCountEmailsForUser = vi.fn();
+const mockReadGmailEmailForUser = vi.fn();
 const mockGetOutlookEvents = vi.fn();
 const mockGetGoogleEvents = vi.fn();
 const mockResolveTaskProvider = vi.fn();
@@ -30,13 +32,14 @@ vi.mock('../../src/services/oauth-store', () => ({
 }));
 
 vi.mock('../../src/services/outlook-mail', () => ({
-  getUnreadEmails: (...args: unknown[]) => mockGetUnreadEmails(...args),
-  readEmail: (...args: unknown[]) => mockReadOutlookEmail(...args),
+  getUnreadEmailsForUser: (...args: unknown[]) => mockGetUnreadEmailsForUser(...args),
+  readEmailForUser: (...args: unknown[]) => mockReadOutlookEmailForUser(...args),
 }));
 
 vi.mock('../../src/services/google-gmail', () => ({
-  searchEmails: (...args: unknown[]) => mockSearchEmails(...args),
-  readEmail: (...args: unknown[]) => mockReadGmailEmail(...args),
+  searchEmailsForUser: (...args: unknown[]) => mockSearchEmailsForUser(...args),
+  countEmailsForUser: (...args: unknown[]) => mockCountEmailsForUser(...args),
+  readEmailForUser: (...args: unknown[]) => mockReadGmailEmailForUser(...args),
 }));
 
 vi.mock('../../src/services/outlook-calendar', () => ({
@@ -90,7 +93,7 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(method: string, path: string, query: Record<string, any> = {}): Request {
+function mockReq(method: string, path: string, query: Record<string, any> = {}, userId = 7): Request {
   return {
     method,
     url: path,
@@ -100,13 +103,13 @@ function mockReq(method: string, path: string, query: Record<string, any> = {}):
     query,
     params: {},
     headers: {},
-    userId: 7,
+    userId,
   } as any;
 }
 
-async function dispatch(method: string, path: string, query: Record<string, any> = {}): Promise<MockRes> {
+async function dispatch(method: string, path: string, query: Record<string, any> = {}, userId = 7): Promise<MockRes> {
   const router = notificationRoutes();
-  const req = mockReq(method, path, query);
+  const req = mockReq(method, path, query, userId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -127,24 +130,27 @@ describe('Notification inbox routes', () => {
     mockGetRecentReports.mockReset();
     mockGetUnreadReportCount.mockReset();
     mockIsConnected.mockReset();
-    mockGetUnreadEmails.mockReset();
-    mockReadOutlookEmail.mockReset();
-    mockSearchEmails.mockReset();
-    mockReadGmailEmail.mockReset();
+    mockGetUnreadEmailsForUser.mockReset();
+    mockReadOutlookEmailForUser.mockReset();
+    mockSearchEmailsForUser.mockReset();
+    mockCountEmailsForUser.mockReset();
+    mockReadGmailEmailForUser.mockReset();
     mockGetOutlookEvents.mockReset();
     mockGetGoogleEvents.mockReset();
     mockResolveTaskProvider.mockReset();
     mockGetAllPendingTasks.mockReset();
+    clearTenantScopeAnomaliesForTests();
 
     mockGetNotifications.mockReturnValue([]);
     mockGetUnreadCount.mockReturnValue(0);
     mockGetRecentReports.mockReturnValue([]);
     mockGetUnreadReportCount.mockReturnValue(0);
     mockIsConnected.mockReturnValue(false);
-    mockGetUnreadEmails.mockResolvedValue({ count: 0, emails: [] });
-    mockReadOutlookEmail.mockResolvedValue(null);
-    mockSearchEmails.mockResolvedValue([]);
-    mockReadGmailEmail.mockResolvedValue(null);
+    mockGetUnreadEmailsForUser.mockResolvedValue({ count: 0, emails: [] });
+    mockReadOutlookEmailForUser.mockResolvedValue(null);
+    mockSearchEmailsForUser.mockResolvedValue([]);
+    mockCountEmailsForUser.mockResolvedValue(0);
+    mockReadGmailEmailForUser.mockResolvedValue(null);
     mockGetOutlookEvents.mockResolvedValue([]);
     mockGetGoogleEvents.mockResolvedValue([]);
     mockResolveTaskProvider.mockReturnValue('ms_todo');
@@ -179,7 +185,7 @@ describe('Notification inbox routes', () => {
     ]);
     mockGetUnreadReportCount.mockReturnValue(1);
     mockIsConnected.mockImplementation((_userId: number, provider: string) => provider === 'outlook');
-    mockGetUnreadEmails.mockResolvedValue({
+    mockGetUnreadEmailsForUser.mockResolvedValue({
       count: 2,
       emails: [
         {
@@ -226,10 +232,11 @@ describe('Notification inbox routes', () => {
     expect(res.body.data.items.map((item: any) => item.kind)).toEqual(
       expect.arrayContaining(['task', 'email', 'report', 'notification']),
     );
+    expect(mockGetUnreadEmailsForUser).toHaveBeenCalledWith(7, expect.any(Number));
   });
 
   it('returns read-only email detail for the unified inbox', async () => {
-    mockReadOutlookEmail.mockResolvedValue({
+    mockReadOutlookEmailForUser.mockResolvedValue({
       subject: 'Board notes',
       from: 'board@example.com',
       to: 'felipe@nexushub.me',
@@ -248,6 +255,7 @@ describe('Notification inbox routes', () => {
       subject: 'Board notes',
       from: 'board@example.com',
     });
+    expect(mockReadOutlookEmailForUser).toHaveBeenCalledWith(7, 'msg-123');
   });
 
   it('rejects malformed inbox email detail requests', async () => {
@@ -255,5 +263,56 @@ describe('Notification inbox routes', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body.error.code).toBe('INVALID_INBOX_EMAIL_REQUEST');
+  });
+
+  it('returns unified unread count for the home badge', async () => {
+    mockIsConnected.mockImplementation((_userId: number, provider: string) =>
+      provider === 'google'
+    );
+    mockGetUnreadCount.mockReturnValue(2);
+    mockGetUnreadReportCount.mockReturnValue(1);
+    mockCountEmailsForUser.mockResolvedValue(4);
+
+    const res = await dispatch('GET', '/unread-count');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.unreadCount).toBe(7);
+    expect(mockCountEmailsForUser).toHaveBeenCalledWith(7, 'in:inbox is:unread newer_than:14d');
+  });
+
+  it('uses the authenticated user for Google Calendar inbox events', async () => {
+    mockIsConnected.mockImplementation((_userId: number, provider: string) =>
+      provider === 'google'
+    );
+
+    await dispatch('GET', '/inbox', { limit: '10' });
+
+    expect(mockGetGoogleEvents).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      7,
+    );
+  });
+
+  it('fails closed on invalid tenant scope before loading inbox state', async () => {
+    const res = await dispatch('GET', '/inbox', { limit: '10' }, 0);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockGetNotifications).not.toHaveBeenCalled();
+    expect(mockGetRecentReports).not.toHaveBeenCalled();
+    expect(mockGetAllPendingTasks).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'notifications_route_inbox',
+          reason: 'invalid_user_scope',
+          userId: 0,
+        }),
+      ]),
+    );
   });
 });

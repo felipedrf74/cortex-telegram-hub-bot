@@ -59,12 +59,19 @@ export function getDailyContext(userId: number): string {
  * Called from task-service after every create / complete / delete so the
  * AI never sees stale "5 tasks pending" when the user just completed two.
  */
-export function invalidateContextCache(userId: number): void {
+export function invalidateContextCache(userId?: number): void {
   try {
     const db = getDb();
+    if (typeof userId === 'number' && Number.isFinite(userId)) {
+      db.prepare(
+        'DELETE FROM daily_context_cache WHERE user_id = ? AND date = ?',
+      ).run(userId, todayString());
+      return;
+    }
+
     db.prepare(
-      'DELETE FROM daily_context_cache WHERE user_id = ? AND date = ?',
-    ).run(userId, todayString());
+      'DELETE FROM daily_context_cache WHERE date = ?',
+    ).run(todayString());
   } catch (err) {
     logger.debug({ err, userId }, 'invalidateContextCache failed');
   }
@@ -132,11 +139,11 @@ export async function buildDailyContext(userId: number): Promise<string> {
   try {
     // Lazy require to avoid circular imports — unified-calendar pulls in
     // outlook + google + auth, which transitively imports a lot.
-    const { getEvents, isAnyCalendarConfigured } = require('./unified-calendar');
-    if (isAnyCalendarConfigured()) {
+    const { getEvents, hasConnectedCalendarForUser } = require('./unified-calendar');
+    if (hasConnectedCalendarForUser(userId)) {
       const start = now().startOf('day').toISO();
       const end = now().endOf('day').toISO();
-      const events = await getEvents(start, end);
+      const events = await getEvents(start, end, userId);
       if (Array.isArray(events) && events.length > 0) {
         const top = events.slice(0, 6).map((e: any) => {
           const t = e.start?.dateTime || e.start;

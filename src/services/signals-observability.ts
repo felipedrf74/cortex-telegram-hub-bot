@@ -20,6 +20,7 @@
 
 import { readTrainingContextAll } from './training-signals';
 import { readSignals, type SignalType, type AgentSignal, type SignalPriority } from './intelligence-bus';
+import { getDb } from './database';
 
 // ─── Response shapes ────────────────────────────────────────────────
 
@@ -231,6 +232,84 @@ function formatSignal(raw: AgentSignal): FormattedSignal {
   };
 }
 
+function readLatestSleepFactors(userId: number): { durationHours: number; score: number } | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT factors
+      FROM readiness_scores
+      WHERE user_id = ?
+      ORDER BY date DESC
+      LIMIT 1
+    `).get(userId) as { factors?: string } | undefined;
+
+    if (!row?.factors) return null;
+    const parsed = JSON.parse(row.factors);
+    const sleep = parsed?.sleep;
+    if (!sleep || typeof sleep !== 'object') return null;
+
+    const durationHours = typeof sleep.durationHours === 'number' ? sleep.durationHours : 0;
+    const score = typeof sleep.score === 'number'
+      ? sleep.score
+      : typeof sleep.qualityScore === 'number'
+        ? sleep.qualityScore
+        : 0;
+
+    if (durationHours <= 0 && score <= 0) return null;
+    return { durationHours, score };
+  } catch {
+    return null;
+  }
+}
+
+function applyLatestSleepContext(
+  userId: number,
+  flags: SignalFlags,
+  signals: FormattedSignal[],
+): { flags: SignalFlags; signals: FormattedSignal[] } {
+  const latestSleep = readLatestSleepFactors(userId);
+  if (!latestSleep) {
+    return { flags, signals };
+  }
+
+  const latestLowSleep = latestSleep.score < 50 || latestSleep.durationHours < 6;
+  const nextSignals = [...signals];
+  const lowSleepIndex = nextSignals.findIndex((signal) => signal.type === 'low_sleep');
+
+  if (latestLowSleep) {
+    const synthetic: FormattedSignal = {
+      id: lowSleepIndex >= 0 ? nextSignals[lowSleepIndex].id : -1,
+      type: 'low_sleep',
+      title: TYPE_META.low_sleep?.title ?? 'Low sleep',
+      summary: TYPE_META.low_sleep?.summarize({
+        score: Math.round(latestSleep.score),
+        total_hours: latestSleep.durationHours,
+      }) ?? `score ${Math.round(latestSleep.score)} (${latestSleep.durationHours.toFixed(1)}h) — coach will downgrade today's intensity.`,
+      priority: 'urgent',
+      source: lowSleepIndex >= 0 ? nextSignals[lowSleepIndex].source : 'wearable.current',
+      createdAt: lowSleepIndex >= 0 ? nextSignals[lowSleepIndex].createdAt : new Date().toISOString(),
+      expiresAt: lowSleepIndex >= 0 ? nextSignals[lowSleepIndex].expiresAt : new Date(Date.now() + 24 * 3_600_000).toISOString(),
+      payload: {
+        score: Math.round(latestSleep.score),
+        total_hours: latestSleep.durationHours,
+      },
+    };
+
+    if (lowSleepIndex >= 0) {
+      nextSignals[lowSleepIndex] = synthetic;
+    } else {
+      nextSignals.unshift(synthetic);
+    }
+  } else if (lowSleepIndex >= 0) {
+    nextSignals.splice(lowSleepIndex, 1);
+  }
+
+  return {
+    flags: { ...flags, lowSleep: latestLowSleep },
+    signals: nextSignals,
+  };
+}
+
 const PRIORITY_RANK: Record<SignalPriority, number> = {
   urgent: 0,
   normal: 1,
@@ -331,7 +410,14 @@ export function buildActiveSignalsResponse(userId: number): ActiveSignalsRespons
     return b.created_at.localeCompare(a.created_at);
   });
 
-  const signals = sorted.map(formatSignal);
+  const baseSignals = sorted.map(formatSignal);
+  const normalized = applyLatestSleepContext(userId, ctx.flags, baseSignals);
+  const signals = normalized.signals
+    .sort((a, b) => {
+      const p = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+      if (p !== 0) return p;
+      return b.createdAt.localeCompare(a.createdAt);
+    });
   const urgent = signals.filter((s) => s.priority === 'urgent').length;
 
   return {
@@ -345,7 +431,7 @@ export function buildActiveSignalsResponse(userId: number): ActiveSignalsRespons
     // source of the coach-side boolean state. Keeping it there means
     // the observability UI and the coach's behavior can never drift
     // on "is the user low-sleep right now".
-    flags: ctx.flags,
+    flags: normalized.flags,
     signals,
   };
 }

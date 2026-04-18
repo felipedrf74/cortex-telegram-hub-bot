@@ -5,6 +5,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
+import type { AgentSignal } from './intelligence-bus';
 
 export { maybeSaveToFile, saveContentAsDocx } from './content-file-saver';
 
@@ -96,6 +97,17 @@ export interface ScriptResponse {
   cta?: string;
   degraded?: boolean;
   warnings?: string[];
+}
+
+export interface ScriptTopicContext {
+  ideaId?: number | null;
+  pipelineId?: number | null;
+  topicFeedbackId?: number | null;
+  niche?: string | null;
+  hookIdea?: string | null;
+  whyNow?: string | null;
+  angleTag?: string | null;
+  sourceJob?: string | null;
 }
 
 export interface TitlesResponse {
@@ -338,26 +350,119 @@ function hashBrandVoice(brandVoice?: string | null): string {
   return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 12);
 }
 
+function hashScriptContext(context?: ScriptTopicContext | null): string {
+  if (!context) return 'default';
+  const normalized = {
+    ideaId: context.ideaId ?? null,
+    pipelineId: context.pipelineId ?? null,
+    topicFeedbackId: context.topicFeedbackId ?? null,
+    niche: context.niche?.trim().toLowerCase() || null,
+    hookIdea: context.hookIdea?.trim().toLowerCase() || null,
+    whyNow: context.whyNow?.trim().toLowerCase() || null,
+    angleTag: context.angleTag?.trim().toLowerCase() || null,
+    sourceJob: context.sourceJob?.trim().toLowerCase() || null,
+  };
+  if (Object.values(normalized).every((value) => value == null)) return 'default';
+  return crypto.createHash('sha1').update(JSON.stringify(normalized)).digest('hex').slice(0, 12);
+}
+
+function tokenizeContentText(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9à-ÿ]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4);
+}
+
+function collectSignalPayloadText(payload: unknown): string {
+  if (payload == null) return '';
+  if (typeof payload === 'string' || typeof payload === 'number' || typeof payload === 'boolean') {
+    return String(payload);
+  }
+  if (Array.isArray(payload)) {
+    return payload.map((item) => collectSignalPayloadText(item)).join(' ');
+  }
+  if (typeof payload === 'object') {
+    return Object.values(payload as Record<string, unknown>)
+      .map((item) => collectSignalPayloadText(item))
+      .join(' ');
+  }
+  return '';
+}
+
+const SIGNAL_TYPE_RELEVANCE_WEIGHT: Partial<Record<string, number>> = {
+  hook_effectiveness: 1.4,
+  voice_pattern: 1.25,
+  voice_phrase_trend: 1.15,
+  keyword_rank_change: 1.1,
+  pillar_performance: 1.0,
+  retention_pattern: 0.95,
+  channel_dna: 0.9,
+  book_knowledge: 0.85,
+};
+
+function rankScriptSignals(
+  signals: AgentSignal[],
+  topic: string,
+  niche: string,
+  scriptContext?: ScriptTopicContext | null,
+): AgentSignal[] {
+  const keywordSet = new Set([
+    ...tokenizeContentText(topic),
+    ...tokenizeContentText(niche),
+    ...tokenizeContentText(scriptContext?.hookIdea || ''),
+    ...tokenizeContentText(scriptContext?.whyNow || ''),
+    ...tokenizeContentText(scriptContext?.angleTag || ''),
+  ]);
+
+  if (keywordSet.size === 0) return signals;
+
+  return [...signals]
+    .map((signal, index) => {
+      const haystack = `${signal.signal_type} ${collectSignalPayloadText(signal.payload)}`.toLowerCase();
+      let topicalMatches = 0;
+      for (const keyword of keywordSet) {
+        if (haystack.includes(keyword)) topicalMatches++;
+      }
+
+      const topicalScore = Math.min(topicalMatches, 5) * 0.45;
+      const typeScore = SIGNAL_TYPE_RELEVANCE_WEIGHT[signal.signal_type] ?? 0.7;
+      const freshnessScore = Math.max(0, 1 - index / Math.max(1, signals.length)) * 0.35;
+      return {
+        signal,
+        score: topicalScore + typeScore + freshnessScore,
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.signal);
+}
+
 export function buildScriptCacheKey(
   topic: string,
   niche = 'general',
   maxDuration = 8,
   format = 'YouTube',
+  targetDurationSeconds?: number | null,
   mode: ScriptGenerationMode = 'standard',
   brandVoice?: string | null,
   language?: string | null,
   renderMode: ScriptRenderMode = 'structured',
+  userId?: number,
+  scriptContext?: ScriptTopicContext | null,
 ): string {
   return [
-    'script-v3',
+    'script-v4',
     topic.toLowerCase().trim(),
     niche,
     format,
     `duration:${maxDuration}`,
+    `target:${targetDurationSeconds ?? maxDuration * 60}`,
     `mode:${mode}`,
     `lang:${normalizeScriptLanguage(language)}`,
     `voice:${hashBrandVoice(brandVoice)}`,
     `render:${normalizeScriptRenderMode(renderMode)}`,
+    `ctx:${hashScriptContext(scriptContext)}`,
+    `scope:${userId ?? 'global'}`,
   ].join(':');
 }
 
@@ -367,6 +472,9 @@ export async function getScript(
   brandVoice?: string | null,
   language = 'pt-BR',
   renderMode: ScriptRenderMode = 'structured',
+  userId?: number,
+  targetDurationSeconds?: number | null,
+  scriptContext?: ScriptTopicContext | null,
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
   const normalizedLanguage = normalizeScriptLanguage(language);
@@ -376,10 +484,13 @@ export async function getScript(
     niche,
     maxDuration,
     format,
+    targetDurationSeconds,
     mode,
     brandVoice,
     normalizedLanguage,
     normalizedRenderMode,
+    userId,
+    scriptContext,
   );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
@@ -407,13 +518,15 @@ export async function getScript(
       // FIX: signalDays is a time window, not a count limit.
       // readSignals(consumer, types, limit, userId, maxAgeDays)
       // CONT-M1: null-coalesce in case readSignals returns null/undefined
-      const raw = readSignals('script-engine', [...signalTypes], 100, undefined, cfg.signalDays) || [];
-      contextSignals = raw.map(s => ({
+      const raw = readSignals('script-engine', [...signalTypes], 100, userId, cfg.signalDays) || [];
+      const ranked = rankScriptSignals(raw, topic, niche, scriptContext);
+      const signalLimit = mode === 'deep' ? 10 : 6;
+      contextSignals = ranked.slice(0, signalLimit).map(s => ({
         type: s.signal_type,
         source: s.source_agent,
         payload: s.payload,
       }));
-      logger.info({ signalCount: contextSignals.length, mode, signalDays: cfg.signalDays }, 'Injecting bus signals');
+      logger.info({ signalCount: contextSignals.length, rawSignalCount: raw.length, mode, signalDays: cfg.signalDays }, 'Injecting ranked bus signals');
     } catch {
       // Bus unavailable — generate without signals (backward compatible)
     }
@@ -426,6 +539,8 @@ export async function getScript(
       language: normalizedLanguage,
       render_mode: normalizedRenderMode,
       max_duration_minutes: maxDuration,
+      target_duration_seconds: targetDurationSeconds ?? undefined,
+      topic_context: scriptContext ?? undefined,
       context_signals: contextSignals.length > 0 ? contextSignals : undefined,
       // CONT-M4: pass user's brand voice to Python script writer so the
       // generated script reflects the user's tone, vocabulary, and style.

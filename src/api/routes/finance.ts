@@ -28,6 +28,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { getDb } from '../../services/database';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { config } from '../../config';
 import {
   addTransaction,
@@ -42,9 +43,19 @@ import {
 } from '../../services/finance-tracker';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function financeRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'finance_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   // ── Transactions ───────────────────────────────────────────────────
 
@@ -99,6 +110,7 @@ export function financeRoutes(): Router {
         currency,
         receiptRef,
       });
+      invalidatePlanningCaches(userId);
       logger.info({ userId, txId: tx.id, category, amount }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
     } catch (err: any) {
@@ -185,6 +197,7 @@ export function financeRoutes(): Router {
         'SELECT * FROM finance_transactions WHERE id = ?'
       ).get(txId) as any;
 
+      invalidatePlanningCaches(userId);
       logger.info({ userId, txId }, 'iOS finance transaction updated');
       sendSuccess(res, { transaction: updated });
     } catch (err: any) {
@@ -211,6 +224,7 @@ export function financeRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;
       }
+      invalidatePlanningCaches(userId);
       sendSuccess(res, { deleted: true, id: txId });
     } catch (err: any) {
       logger.error({ err, userId, txId }, 'iOS finance transaction delete failed');
@@ -323,6 +337,7 @@ export function financeRoutes(): Router {
 
     try {
       const event = calculateAndStoreTax(userId, month);
+      invalidatePlanningCaches(userId);
       logger.info({ userId, month, taxDue: event.tax_due }, 'iOS tax event calculated');
       sendSuccess(res, { event });
     } catch (err: any) {
@@ -358,6 +373,7 @@ export function financeRoutes(): Router {
         sendError(res, 'INTERNAL', 'Tax event updated but could not be reloaded', 500);
         return;
       }
+      invalidatePlanningCaches(userId);
 
       logger.info({ userId, month }, 'iOS tax event marked paid');
       sendSuccess(res, { updated: true, event });
@@ -415,31 +431,48 @@ export function financeRoutes(): Router {
   router.post('/parse-receipt', asyncHandler(async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
     const { imageBase64, mimeType, ocrHint } = req.body;
+    const normalizedOcrHint = typeof ocrHint === 'string' && ocrHint.trim().length > 0
+      ? ocrHint.trim()
+      : undefined;
+    const ocrFallback = normalizedOcrHint
+      ? parseReceiptFromOcrHint(normalizedOcrHint, userId)
+      : null;
+    const visionUnavailable = !config.anthropic.apiKey && !config.gemini.apiKey && !config.openai.apiKey;
 
     // ── Validation ────────────────────────────────────────────
-    if (!imageBase64 || typeof imageBase64 !== 'string') {
+    if ((!imageBase64 || typeof imageBase64 !== 'string') && !(visionUnavailable && normalizedOcrHint)) {
       sendError(res, 'BAD_REQUEST', 'imageBase64 is required and must be a string');
       return;
     }
-    if (!mimeType || typeof mimeType !== 'string') {
+    if ((!mimeType || typeof mimeType !== 'string') && !(visionUnavailable && normalizedOcrHint)) {
       sendError(res, 'BAD_REQUEST', 'mimeType is required (e.g. "image/jpeg")');
       return;
     }
-    if (!['image/jpeg', 'image/jpg', 'image/png', 'image/heic'].includes(mimeType.toLowerCase())) {
+    if (mimeType && !['image/jpeg', 'image/jpg', 'image/png', 'image/heic'].includes(mimeType.toLowerCase())) {
       sendError(res, 'BAD_REQUEST', 'mimeType must be image/jpeg, image/png, or image/heic');
       return;
     }
 
     // Reject oversized bodies early. Base64 is ~33% larger than raw bytes,
     // so the 6MB cap = ~4.5MB original image.
-    const approxBytes = (imageBase64.length * 3) / 4;
+    const approxBytes = typeof imageBase64 === 'string' ? (imageBase64.length * 3) / 4 : 0;
     if (approxBytes > 6 * 1024 * 1024) {
       sendError(res, 'PAYLOAD_TOO_LARGE', 'Image exceeds 6MB. Compress before uploading.', 413);
       return;
     }
 
     // ── Provider availability ─────────────────────────────────
-    if (!config.anthropic.apiKey && !config.gemini.apiKey && !config.openai.apiKey) {
+    if (visionUnavailable) {
+      if (ocrFallback) {
+        sendSuccess(res, {
+          parsed: ocrFallback.parsed,
+          verificationNote: ocrFallback.verificationNote,
+          tokensUsed: 0,
+          model: 'ocr_hint_fallback',
+        });
+        return;
+      }
+
       sendError(
         res,
         'VISION_NOT_CONFIGURED',
@@ -474,7 +507,7 @@ export function financeRoutes(): Router {
       const { analysis, provider } = await analyzeInvoiceImage(
         imageBase64,
         normalizeMimeType(mimeType),
-        typeof ocrHint === 'string' ? ocrHint : undefined,
+        normalizedOcrHint,
       );
 
       const result = {
@@ -488,23 +521,36 @@ export function financeRoutes(): Router {
         confidence: clampReceiptConfidence(analysis),
       };
 
-      const verificationNote = typeof analysis.validationNote === 'string' && analysis.validationNote.trim().length > 0
-        ? analysis.validationNote.trim()
-        : null;
+      const mergedResult = mergeReceiptParseResult(result, ocrFallback?.parsed);
+      const verificationNote = buildReceiptVerificationNote(
+        typeof analysis.validationNote === 'string' ? analysis.validationNote : null,
+        result,
+        mergedResult,
+        ocrFallback?.verificationNote ?? null,
+      );
 
       logger.info(
-        { userId, merchant: result.merchant, amount: result.amount, confidence: result.confidence, provider },
+        { userId, merchant: mergedResult.merchant, amount: mergedResult.amount, confidence: mergedResult.confidence, provider },
         'iOS receipt parsed',
       );
 
       sendSuccess(res, {
-        parsed: result,
+        parsed: mergedResult,
         verificationNote,
         tokensUsed: 0,
         model: provider,
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS parse-receipt: vision pipeline failed');
+      if (ocrFallback) {
+        sendSuccess(res, {
+          parsed: ocrFallback.parsed,
+          verificationNote: ocrFallback.verificationNote,
+          tokensUsed: 0,
+          model: 'ocr_hint_fallback_after_ai_error',
+        });
+        return;
+      }
       sendError(res, 'INTERNAL', err?.message || 'Receipt parsing failed', 500);
     }
   }));
@@ -521,23 +567,36 @@ function normalizeMimeType(mimeType: string): 'image/jpeg' | 'image/png' | 'imag
 
 function parseInvoiceAmount(rawAmount: string | null | undefined): number | null {
   if (!rawAmount) return null;
-  const digits = rawAmount.replace(/[^0-9,.-]/g, '').trim();
-  if (!digits) return null;
+  const matches = rawAmount.match(/(?<!\d)(?:\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+(?:[.,]\d{2})?)(?!\d)/g);
+  if (!matches || matches.length === 0) return null;
 
-  const hasComma = digits.includes(',');
-  const hasDot = digits.includes('.');
+  for (const candidate of matches.slice().reverse()) {
+    const hasComma = candidate.includes(',');
+    const hasDot = candidate.includes('.');
 
-  let normalized = digits;
-  if (hasComma && hasDot) {
-    normalized = digits.lastIndexOf(',') > digits.lastIndexOf('.')
-      ? digits.replace(/\./g, '').replace(',', '.')
-      : digits.replace(/,/g, '');
-  } else if (hasComma) {
-    normalized = digits.replace(',', '.');
+    let normalized = candidate;
+    if (hasComma && hasDot) {
+      normalized = candidate.lastIndexOf(',') > candidate.lastIndexOf('.')
+        ? candidate.replace(/\./g, '').replace(',', '.')
+        : candidate.replace(/,/g, '');
+    } else if (hasComma) {
+      normalized = candidate.replace(',', '.');
+    }
+
+    const parsed = Number.parseFloat(normalized);
+    if (Number.isFinite(parsed) && isPlausibleReceiptAmount(parsed, candidate)) {
+      return Math.abs(parsed);
+    }
   }
 
-  const parsed = Number.parseFloat(normalized);
-  return Number.isFinite(parsed) ? Math.abs(parsed) : null;
+  return null;
+}
+
+function isPlausibleReceiptAmount(value: number, rawMatch: string): boolean {
+  if (value <= 0) return false;
+  if (value > 10_000) return false;
+  if (rawMatch.includes('.') || rawMatch.includes(',')) return true;
+  return value <= 500;
 }
 
 function inferCurrencyCode(rawAmount: string | null | undefined): string | null {
@@ -573,6 +632,71 @@ function clampReceiptConfidence(analysis: { confidence: number; vendor: string |
   return confidence;
 }
 
+type ParsedReceiptResult = {
+  merchant: string | null;
+  date: string | null;
+  amount: number | null;
+  currency: string;
+  category: string | null;
+  confidence: number;
+};
+
+function mergeReceiptParseResult(
+  primary: ParsedReceiptResult,
+  fallback?: ParsedReceiptResult | null,
+): ParsedReceiptResult {
+  if (!fallback) return primary;
+
+  const mergedMerchant = primary.merchant?.trim()
+    ? primary.merchant.trim()
+    : fallback.merchant;
+  const mergedDate = primary.date ?? fallback.date;
+  const mergedAmount = primary.amount != null && primary.amount > 0
+    ? primary.amount
+    : fallback.amount;
+  const mergedCurrency = mergedAmount === fallback.amount && fallback.amount != null
+    ? fallback.currency
+    : primary.currency || fallback.currency;
+  const mergedCategory = primary.category ?? fallback.category;
+  const mergedConfidence = Math.max(primary.confidence, fallback.confidence);
+
+  return {
+    merchant: mergedMerchant,
+    date: mergedDate,
+    amount: mergedAmount,
+    currency: mergedCurrency,
+    category: mergedCategory,
+    confidence: mergedConfidence,
+  };
+}
+
+function buildReceiptVerificationNote(
+  providerNote: string | null,
+  primary: ParsedReceiptResult,
+  merged: ParsedReceiptResult,
+  fallbackNote: string | null,
+): string | null {
+  const notes: string[] = [];
+  if (providerNote && providerNote.trim().length > 0) {
+    notes.push(providerNote.trim());
+  }
+
+  const usedOcrBackfill = primary.merchant !== merged.merchant
+    || primary.date !== merged.date
+    || primary.amount !== merged.amount
+    || primary.currency !== merged.currency
+    || primary.category !== merged.category;
+
+  if (usedOcrBackfill) {
+    notes.push('Filled missing receipt fields using on-device OCR.');
+  } else if (!providerNote && fallbackNote && merged.confidence <= 0.45) {
+    notes.push(fallbackNote);
+  }
+
+  if (notes.length === 0) return null;
+  return Array.from(new Set(notes)).join(' ');
+}
+
 function defaultCurrencyForTimezone(userId: number): string {
   try {
     const { getUserById } = require('../../services/user-service');
@@ -583,4 +707,202 @@ function defaultCurrencyForTimezone(userId: number): string {
     if (tz.includes('London')) return 'GBP';
   } catch {}
   return 'EUR';
+}
+
+function parseReceiptFromOcrHint(ocrHint: string, userId: number): {
+  parsed: {
+    merchant: string | null;
+    date: string | null;
+    amount: number | null;
+    currency: string;
+    category: string | null;
+    confidence: number;
+  };
+  verificationNote: string;
+} {
+  const lines = ocrHint
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const merchant = extractMerchantFromOcrLines(lines);
+  const amountLine = extractAmountLineFromOcrLines(lines);
+  const amount = amountLine ? parseInvoiceAmount(amountLine) : null;
+  const currency = inferCurrencyFromOcrLines(lines, amountLine, userId);
+  const date = extractReceiptDateFromOcrLines(lines);
+
+  let confidence = 0.38;
+  if (merchant) confidence += 0.16;
+  if (date) confidence += 0.14;
+  if (amount != null) confidence += 0.20;
+
+  return {
+    parsed: {
+      merchant,
+      date,
+      amount,
+      currency,
+      category: guessReceiptCategory(merchant),
+      confidence: Math.min(0.88, confidence),
+    },
+    verificationNote: 'AI receipt vision unavailable. Parsed from on-device OCR only.',
+  };
+}
+
+function extractMerchantFromOcrLines(lines: string[]): string | null {
+  const legalEntityIndex = lines.findIndex((line) => isLikelyLegalEntityLine(line));
+  if (legalEntityIndex > 0) {
+    const previous = lines[legalEntityIndex - 1];
+    if (isLikelyBrandLine(previous)) {
+      return cleanMerchantLine(previous);
+    }
+  }
+
+  const candidate = lines.find((line) => {
+    if (isLikelyMerchantNoiseLine(line)) return false;
+    if (looksLikeReceiptDate(line)) return false;
+    return line.length >= 3 && line.length <= 60;
+  });
+
+  return candidate ? cleanMerchantLine(candidate) : null;
+}
+
+function cleanMerchantLine(line: string): string {
+  const withoutStoreCode = line.replace(/^\d+\s+/, '').trim();
+  return withoutStoreCode
+    .toLowerCase()
+    .split(/\s+/)
+    .map((part) => {
+      if (part.length <= 3 && part === part.toUpperCase()) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(' ');
+}
+
+function extractAmountLineFromOcrLines(lines: string[]): string | null {
+  const labeledTotal = lines.find((line, index) => {
+    const lower = line.toLowerCase();
+    if (!/\btotal\b/.test(lower)) return false;
+    if (parseInvoiceAmount(line) != null) return true;
+    return index + 1 < lines.length
+      && looksLikeAmountLine(lines[index + 1] || '')
+      && parseInvoiceAmount(lines[index + 1] || '') != null;
+  });
+  if (labeledTotal) {
+    const ownAmount = parseInvoiceAmount(labeledTotal);
+    if (ownAmount != null) return labeledTotal;
+    const idx = lines.indexOf(labeledTotal);
+    const nearby = bestAmountLineNearTotal(lines, idx);
+    if (nearby) return nearby;
+    const next = lines[idx + 1] || '';
+    return looksLikeAmountLine(next) ? next : labeledTotal;
+  }
+
+  const numericCandidates = lines
+    .map((line) => ({ line, amount: parseInvoiceAmount(line) }))
+    .filter((entry): entry is { line: string; amount: number } => {
+      return entry.amount != null && isLikelyAmountCandidateLine(entry.line);
+    });
+
+  if (numericCandidates.length === 0) return null;
+  numericCandidates.sort((lhs, rhs) => rhs.amount - lhs.amount);
+  return numericCandidates[0]?.line ?? null;
+}
+
+function bestAmountLineNearTotal(lines: string[], totalIndex: number, lookahead: number = 20): string | null {
+  const candidates = lines
+    .slice(totalIndex + 1, totalIndex + 1 + lookahead)
+    .filter((line) => looksLikeAmountLine(line))
+    .map((line) => ({ line, amount: parseInvoiceAmount(line) }))
+    .filter((entry): entry is { line: string; amount: number } => entry.amount != null);
+
+  if (candidates.length === 0) return null;
+  candidates.sort((lhs, rhs) => rhs.amount - lhs.amount);
+  return candidates[0]?.line ?? null;
+}
+
+function looksLikeAmountLine(text: string): boolean {
+  const upper = text.toUpperCase();
+  return upper.includes('€')
+    || upper.includes('$')
+    || upper.includes('EUR')
+    || upper.includes('BRL')
+    || upper.includes('R$')
+    || upper.includes(',')
+    || upper.includes('.')
+    || isLikelyEuroOcrGlyph(text);
+}
+
+function isLikelyAmountCandidateLine(line: string): boolean {
+  const lower = line.toLowerCase();
+  if (/\b(total|subtotal|taxa|iva|base)\b/.test(lower)) return true;
+  if (looksLikeReceiptDate(line)) return false;
+
+  const letters = (line.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+  if (letters === 0) return true;
+
+  return /€|\$|r\$|\be\b|\beur\b|\busd\b|\bbrl\b|\bgbp\b/i.test(line);
+}
+
+function inferCurrencyFromOcrLines(lines: string[], amountLine: string | null, userId: number): string {
+  const combined = [amountLine, ...lines].filter(Boolean).join(' ');
+  const explicitCurrency = inferCurrencyCode(combined);
+  if (explicitCurrency) return explicitCurrency;
+  if (isLikelyEuroOcrGlyph(combined)) return 'EUR';
+  return defaultCurrencyForTimezone(userId);
+}
+
+function extractReceiptDateFromOcrLines(lines: string[]): string | null {
+  for (const line of lines) {
+    const iso = line.match(/\b(\d{4})[-/.](\d{2})[-/.](\d{2})\b/);
+    if (iso) {
+      return `${iso[1]}-${iso[2]}-${iso[3]}`;
+    }
+
+    const local = line.match(/\b(\d{2})[-/.](\d{2})[-/.](\d{2,4})\b/);
+    if (local) {
+      const year = local[3].length === 2 ? `20${local[3]}` : local[3];
+      return `${year}-${local[2]}-${local[1]}`;
+    }
+  }
+
+  return null;
+}
+
+function isLikelyLegalEntityLine(line: string): boolean {
+  return /\b(lda|unip|ltda|llc|inc|s\.a\.?|sa)\b/i.test(line);
+}
+
+function isLikelyBrandLine(line: string): boolean {
+  if (isLikelyLegalEntityLine(line)) return false;
+  if (isLikelyMerchantNoiseLine(line)) return false;
+  const letters = (line.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+  const digits = (line.match(/\d/g) || []).length;
+  return letters >= 6 && digits <= 2;
+}
+
+function isLikelyMerchantNoiseLine(line: string): boolean {
+  const lower = line.toLowerCase();
+  return lower.includes('@')
+    || lower.includes('tel')
+    || lower.includes('rua ')
+    || lower.includes('avenida')
+    || lower.includes('nif')
+    || lower.includes('contrib')
+    || lower.includes('registo')
+    || lower.includes('capital social')
+    || lower.includes('consultas')
+    || lower.includes('obrigado')
+    || lower.includes('atcud')
+    || lower.includes('certificado')
+    || lower.includes('copyright');
+}
+
+function looksLikeReceiptDate(line: string): boolean {
+  return /\b\d{4}[-/.]\d{2}[-/.]\d{2}\b/.test(line)
+    || /\b\d{2}[-/.]\d{2}[-/.]\d{2,4}\b/.test(line);
+}
+
+function isLikelyEuroOcrGlyph(text: string): boolean {
+  return /(^|[\s:])e\s*\d+(?:[.,]\d{2})?(\s|$)/i.test(text);
 }

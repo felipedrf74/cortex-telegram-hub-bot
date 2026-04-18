@@ -133,7 +133,7 @@ describe('skill-config routing', () => {
       const routes = getKeywordRoutes();
       const triathlon = routes.find(r => r.domain === 'triathlon')!;
       expect(triathlon.pattern.test('my workout was hard')).toBe(true);
-      expect(triathlon.pattern.test('how much protein')).toBe(true);
+      expect(triathlon.pattern.test('how much protein')).toBe(false);
       expect(triathlon.pattern.test('squat form')).toBe(true);
     });
 

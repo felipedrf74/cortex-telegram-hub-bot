@@ -178,6 +178,10 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
     }
     if (updates.dueDate !== undefined) { sets.push('due_date_time = ?'); params.push(updates.dueDate || null); }
     if (updates.tags !== undefined) { sets.push('tags = ?'); params.push(JSON.stringify(updates.tags)); }
+    if (updates.projectId !== undefined) {
+      sets.push('list_id = ?');
+      params.push(updates.projectId);
+    }
 
     if (sets.length === 0) return;
 

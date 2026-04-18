@@ -14,9 +14,9 @@
  *
  * Caller-facing API of google-calendar / google-drive / google-gmail does
  * NOT change — they still expose `getEvents()` etc with no userId. The
- * bridge resolves the owner identity internally from
- * `config.telegram.allowedUserIds[0]` (same identity that
- * `migrateOwnerTokens()` uses to populate the per-user store at boot).
+ * bridge resolves the owner identity through user-service bootstrap helpers
+ * so owner-bound legacy token rows can be read without leaking raw Telegram
+ * config access into every integration module.
  *
  * Cache invalidation: each google-* service caches its high-level client
  * (calendar / drive / gmail). The OAuth callback handler in oauth-flow
@@ -29,6 +29,8 @@ import { google } from 'googleapis';
 import type { OAuth2Client } from 'google-auth-library';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { getTokens } from './oauth-store';
+import { getOwnerBootstrapUserRefs } from './user-service';
 
 // ─── Token resolution ───────────────────────────────────────────────
 
@@ -40,14 +42,14 @@ import { logger } from '../utils/logger';
  * Returns null if neither source has a token.
  */
 export function getOwnerGoogleRefreshToken(): string | null {
-  const ownerId = config.telegram.allowedUserIds[0];
-  if (ownerId) {
+  const ownerRefs = getOwnerBootstrapUserRefs();
+  if (ownerRefs.length > 0) {
     try {
-      // Lazy require to avoid a cycle (oauth-store → database → ...).
-      const { getTokens } = require('./oauth-store');
-      const tokens = getTokens(ownerId, 'google');
-      if (tokens?.refreshToken) {
-        return tokens.refreshToken;
+      for (const ownerRef of ownerRefs) {
+        const tokens = getTokens(ownerRef, 'google');
+        if (tokens?.refreshToken) {
+          return tokens.refreshToken;
+        }
       }
     } catch (err) {
       logger.warn({ err }, 'getOwnerGoogleRefreshToken: oauth-store read failed, falling back to env');
@@ -82,7 +84,6 @@ export function buildGoogleOAuth2Client(): OAuth2Client {
  */
 export function getGoogleRefreshTokenForUser(userId: number): string | null {
   try {
-    const { getTokens } = require('./oauth-store');
     const tokens = getTokens(userId, 'google');
     return tokens?.refreshToken ?? null;
   } catch {
@@ -108,8 +109,14 @@ export function buildGoogleOAuth2ClientForUser(userId: number): OAuth2Client {
  * Returns true if we have everything needed to make Google API calls.
  * Used by `/connections` and the portal status check.
  */
-export function isGoogleConfigured(): boolean {
-  return !!(config.google.clientId && config.google.clientSecret && getOwnerGoogleRefreshToken());
+export function isGoogleConfigured(userId?: number): boolean {
+  if (!config.google.clientId || !config.google.clientSecret) {
+    return false;
+  }
+  if (userId !== undefined) {
+    return !!getGoogleRefreshTokenForUser(userId);
+  }
+  return !!getOwnerGoogleRefreshToken();
 }
 
 // ─── Cache invalidation hub ─────────────────────────────────────────

@@ -16,16 +16,30 @@ export function isAnyCalendarConfigured(): boolean {
   return googleCal.isGoogleCalendarConfigured() || outlookCal.isOutlookCalendarConfigured();
 }
 
+function resolveScopedUserId(userId?: number): number | null {
+  if (userId != null) return userId;
+  try {
+    const { getCurrentContext } = require('../utils/request-context');
+    return getCurrentContext()?.userId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function hasConnectedCalendarForUser(userId?: number): boolean {
+  const scopedUserId = resolveScopedUserId(userId);
+  if (scopedUserId == null) {
+    return isAnyCalendarConfigured();
+  }
+  return googleCal.isGoogleCalendarConfigured(scopedUserId)
+    || outlookCal.isOutlookCalendarConfigured(scopedUserId);
+}
+
 export function hasWritableCalendarForUser(userId?: number): boolean {
-  if (userId) {
-    try {
-      const { isConnected } = require('./oauth-store');
-      if (isConnected(userId, 'outlook') || isConnected(userId, 'google')) {
-        return true;
-      }
-    } catch {
-      // Fall back to the global owner-configured providers below.
-    }
+  const scopedUserId = resolveScopedUserId(userId);
+  if (scopedUserId != null) {
+    return googleCal.isGoogleCalendarConfigured(scopedUserId)
+      || outlookCal.isOutlookCalendarConfigured(scopedUserId);
   }
   return isAnyCalendarConfigured();
 }
@@ -38,14 +52,15 @@ export function getConfiguredSources(): CalendarSource[] {
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<UnifiedCalendarEvent[]> {
+  const scopedUserId = resolveScopedUserId(userId);
   const events: UnifiedCalendarEvent[] = [];
 
   // Fetch from both in parallel
   const promises: Promise<void>[] = [];
 
-  if (googleCal.isGoogleCalendarConfigured()) {
+  if (googleCal.isGoogleCalendarConfigured(scopedUserId ?? undefined)) {
     promises.push(
-      googleCal.getEvents(startDate, endDate)
+      googleCal.getEvents(startDate, endDate, scopedUserId ?? undefined)
         .then((gEvents) => {
           for (const e of gEvents) {
             events.push({ ...e, source: 'google' });
@@ -59,9 +74,9 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
 
   // CHAT-M2: pass userId to isOutlookCalendarConfigured() so per-user
   // OAuth tokens (from iOS) are checked, not just the global owner token.
-  if (outlookCal.isOutlookCalendarConfigured(userId)) {
+  if (outlookCal.isOutlookCalendarConfigured(scopedUserId ?? undefined)) {
     promises.push(
-      outlookCal.getEvents(startDate, endDate, userId)
+      outlookCal.getEvents(startDate, endDate, scopedUserId ?? undefined)
         .then((oEvents) => {
           for (const e of oEvents) {
             events.push({ ...e, source: 'outlook' });
@@ -101,55 +116,56 @@ export async function createEvent(
   target?: CalendarSource,
   userId?: number,
 ): Promise<UnifiedCalendarEvent> {
+  const scopedUserId = resolveScopedUserId(userId);
   // Per-user source resolution: check which provider the requesting
   // user has OAuth tokens for. Falls back to global config for the
   // Telegram codepath where userId isn't passed.
   let source = target;
   if (!source) {
-    if (userId) {
-      try {
-        const { isConnected } = require('./oauth-store');
-        if (isConnected(userId, 'outlook')) source = 'outlook';
-        else if (isConnected(userId, 'google')) source = 'google';
-      } catch { /* oauth-store not available */ }
+    if (scopedUserId != null) {
+      if (outlookCal.isOutlookCalendarConfigured(scopedUserId)) source = 'outlook';
+      else if (googleCal.isGoogleCalendarConfigured(scopedUserId)) source = 'google';
     }
     // Fall back to global config check (owner / Telegram codepath)
     if (!source) {
-      source = outlookCal.isOutlookCalendarConfigured() ? 'outlook' : 'google';
+      if (scopedUserId == null) {
+        source = outlookCal.isOutlookCalendarConfigured() ? 'outlook' : 'google';
+      }
     }
   }
 
-  if (!source || !hasWritableCalendarForUser(userId)) {
+  if (!source || !hasWritableCalendarForUser(scopedUserId ?? undefined)) {
     throw new Error('No calendar provider is connected');
   }
 
   if (source === 'outlook') {
-    const event = await outlookCal.createEvent(data);
+    const event = await outlookCal.createEvent(data, scopedUserId ?? undefined);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.createEvent(data);
+    const event = await googleCal.createEvent(data, scopedUserId ?? undefined);
     return { ...event, source: 'google' };
   }
 }
 
 export async function updateEvent(
   data: { event_id: string; new_start?: string; new_end?: string; new_title?: string },
-  source: CalendarSource
+  source: CalendarSource,
+  userId?: number,
 ): Promise<UnifiedCalendarEvent> {
   if (source === 'outlook') {
-    const event = await outlookCal.updateEvent(data);
+    const event = await outlookCal.updateEvent(data, userId);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.updateEvent(data);
+    const event = await googleCal.updateEvent(data, userId);
     return { ...event, source: 'google' };
   }
 }
 
-export async function deleteEvent(eventId: string, source: CalendarSource): Promise<void> {
+export async function deleteEvent(eventId: string, source: CalendarSource, userId?: number): Promise<void> {
   if (source === 'outlook') {
-    await outlookCal.deleteEvent(eventId);
+    await outlookCal.deleteEvent(eventId, userId);
   } else {
-    await googleCal.deleteEvent(eventId);
+    await googleCal.deleteEvent(eventId, userId);
   }
 }
 

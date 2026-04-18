@@ -1,6 +1,15 @@
 # Nexus Hub — Technical & Functional Documentation
 
-> **Version:** 4.14+ | **Platform:** Node.js + TypeScript + Python + Swift/SwiftUI | **AI:** Gemini 2.5 Flash (primary) / Claude Sonnet (fallback) | **Database:** SQLite
+> Status: maintained as a high-level orientation document, not the canonical
+> runtime or deploy source of truth.
+>
+> For live operational truth, use:
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/CLAUDE.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/DEPLOY.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/STAGING.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/DOCUMENTATION-MAP.md`
+
+> **Runtime baseline:** 4.14.49+ | **Platform:** Node.js + TypeScript + Python + Swift/SwiftUI | **AI:** Gemini 2.5 Flash (primary) / Claude Sonnet (fallback) | **Database:** SQLite
 
 ## Product Architecture
 

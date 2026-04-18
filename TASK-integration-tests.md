@@ -1,5 +1,15 @@
 # TASK-integration-tests.md — Implementation Spec for Claude Code
 
+> Status: decommissioned historical implementation spec.
+>
+> This file is not a live source of truth. It was a point-in-time execution
+> brief for a Claude Code task.
+>
+> Use the current code, tests, and canonical docs instead:
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/CLAUDE.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/DOCUMENTATION.md`
+> - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/DOCUMENTATION-MAP.md`
+
 > **Branch:** `feature/telegram-adapter` (same branch as adapter work)  
 > **Commit message:** `test(integration): add scenario-specific E2E tests — calendar, finance, cooking, ambiguous, tool loop`  
 > **After implementation:** run `npx vitest run && npx tsc --noEmit`, commit.

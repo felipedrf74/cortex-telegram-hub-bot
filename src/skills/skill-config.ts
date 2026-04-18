@@ -76,8 +76,8 @@ const SECRETARY_SKILL: SkillDefinition = {
     keywordRoute: /\b(tasks?|to-?dos?|remind(?:ers?)?|(?:my\s+)?calendar|schedule|meetings?|appointments?|(?:my\s+)?emails?|inbox|overdue|due\s+(?:today|tomorrow|this\s+week)|planning|digest|unread|mark\s+(?:as\s+)?(?:done|complete)|pending|priority|deadline|tarefas?|lembretes?|agend(?:a|ar)|reuni[oõ]es?|compromissos?|e-?mails?|caixa\s+de\s+entrada|atrasad[ao]s?|pra\s+hoje|pendentes?|prioridade|prazo)\b/i,
     classificationHint: {
       label: 'secretary',
-      description: 'scheduling, calendar, appointments, to-do lists, reminders, email, time management, weekly planning, daily overview, general life coordination, invoices, general requests',
-      examples: ['what meetings do I have?', 'remind me at 3pm', 'check my email'],
+      description: 'scheduling, calendar, appointments, to-do lists, reminders, email, time management, weekly planning, daily overview, operational follow-through for finance/content asks, invoices, general life coordination',
+      examples: ['what meetings do I have?', 'remind me to pay DARF tomorrow', 'schedule a filming block for Thursday'],
     },
   },
   subSkills: [
@@ -152,13 +152,13 @@ const TRIATHLON_SKILL: SkillDefinition = {
     patternRoutes: [
       /^\/(train|gym|run|bike|cycle|cycling|swim|checkin|meal|macros|deload|pain|running|recovery)\b/i,
     ],
-    keywordRoute: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|swim(?:ming)?\s+(?:plan|set)?|pool|open\s+water|sets?\s*[x×]\s*\d|protein|carnivore|training(?:\s+plan)?|macros|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery\s+day|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|freestyle|backstroke|breaststroke|butterfly|CSS|pace\s+per\s+100m?|treino|corrida|pedal(?:ada)?|nat[aã]o|piscina|muscula[çc][aã]o|prote[ií]na|dieta\s+carn[ií]vora|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|s[eé]ries?\s*[x×]\s*\d|academia)\b/i,
+    keywordRoute: /\b(workout|gym(?:\s+session)?|running\s+plan|cycling\s+plan|swim(?:ming)?\s+(?:plan|set)?|pool|open\s+water|sets?\s*[x×]\s*\d|training(?:\s+plan)?|deload|squat|deadlift|bench\s+press|heart\s+rate|RPE|RIR|tempo\s+run|intervals?|FTP|soreness|recovery\s+day|muscle|hypertrophy|endurance|coach\s*(?:report|briefing|rec)|lower\s+body|upper\s+body|freestyle|backstroke|breaststroke|butterfly|CSS|pace\s+per\s+100m?|treino|corrida|pedal(?:ada)?|nat[aã]o|piscina|muscula[çc][aã]o|agachamento|supino|levantamento\s+terra|frequ[eê]ncia\s+card[ií]aca|dor\s+muscular|recupera[çc][aã]o|s[eé]ries?\s*[x×]\s*\d|academia)\b/i,
     classificationHint: {
       label: 'triathlon',
-      description: 'gym workouts, running, cycling, swimming, training plans, nutrition, carnivore diet, recovery, soreness, performance, body composition, supplements, electrolytes',
+      description: 'gym workouts, running, cycling, swimming, training plans, recovery, fatigue, performance, body composition, macro targets, supplements, electrolytes, coaching decisions',
       examples: [
         'plan my workout',
-        'how much protein should I eat?',
+        'set my protein target for this block',
         'running intervals tomorrow',
         'swim set for today',
         'FTP test this week',
@@ -421,11 +421,11 @@ const COOKING_SKILL: SkillDefinition = {
     patternRoutes: [
       /^\/(cook|recipe|meal|mealplan|shopping|ingredients?)\b/i,
     ],
-    keywordRoute: /\b(recipes?|cooking|meal\s+(?:plan|prep)|shopping\s+list|ingredients?|cozinhar|receitas?|refei[çc][aã]o|lista\s+de\s+compras|cardápio|preparo)\b/i,
+    keywordRoute: /\b(recipes?|cooking|meal\s+(?:plan|prep|ideas?)|shopping\s+list|ingredients?|cozinhar|receitas?|refei[çc][aã]o|lista\s+de\s+compras|cardápio|preparo|plano\s+alimentar|alimenta[çc][aã]o\s+p[oó]s-?treino)\b/i,
     classificationHint: {
       label: 'cooking',
-      description: 'recipes, meal planning, cooking, shopping lists, ingredient search, meal prep',
-      examples: ['find me a recipe with chicken', 'plan my meals for the week', 'generate shopping list'],
+      description: 'recipes, meal planning, cooking, shopping lists, ingredient search, meal prep, menus, snacks, food execution around training',
+      examples: ['find me a recipe with chicken', 'plan my meals for the week', 'what should I eat before a hard workout?'],
     },
   },
   subSkills: [

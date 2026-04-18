@@ -55,6 +55,40 @@ export function addToConversation(userId: number, domain: DomainName, role: 'use
   writeTx(userId, domain, role, content);
 }
 
+export function syncLastAssistantConversationMessage(userId: number, domain: DomainName, content: string): void {
+  const db = getDb();
+  const syncTx = db.transaction((u: number, d: DomainName, c: string) => {
+    const lastRow = db.prepare(`
+      SELECT id, role FROM conversations
+      WHERE user_id = ? AND domain = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(u, d) as { id: number; role: 'user' | 'assistant' } | undefined;
+
+    if (lastRow?.role === 'assistant') {
+      db.prepare(`
+        UPDATE conversations
+        SET content = ?
+        WHERE id = ?
+      `).run(c, lastRow.id);
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO conversations (user_id, domain, role, content) VALUES (?, ?, 'assistant', ?)
+    `).run(u, d, c);
+
+    const maxKeep = (HISTORY_LIMITS[d] ?? 8) * 2;
+    db.prepare(`
+      DELETE FROM conversations WHERE user_id = ? AND domain = ? AND id NOT IN (
+        SELECT id FROM conversations WHERE user_id = ? AND domain = ? ORDER BY created_at DESC LIMIT ?
+      )
+    `).run(u, d, u, d, maxKeep);
+  });
+
+  syncTx(userId, domain, content);
+}
+
 /**
  * Get the last assistant message for a domain (if it was the most recent message).
  * Returns null if the last message was from the user (conversation already answered).

@@ -2,10 +2,11 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import { config } from '../config';
 import { getCurrentContext } from '../utils/request-context';
-import { getUserById, getUserByTelegramId } from './user-service';
+import { getOwnerBootstrapUser, getUserById, getUserByTelegramId } from './user-service';
 import { createAndPushNotification } from './content-notification-store';
+import { clearCache, clearCacheByPrefix } from './cache-store';
+import { invalidatePlanningCaches } from './plan-cache-invalidator';
 
 export interface GarminSessionRecord {
   userId: number;
@@ -42,11 +43,8 @@ export function resolveGarminUserId(explicitUserId?: number): number | null {
     return candidate;
   }
 
-  const ownerTelegramId = config.telegram.allowedUserIds[0];
-  if (!ownerTelegramId) return null;
-
-  const owner = getUserByTelegramId(ownerTelegramId);
-  return owner?.id ?? ownerTelegramId;
+  const owner = getOwnerBootstrapUser();
+  return owner?.id ?? null;
 }
 
 export function getGarminSession(userId: number): GarminSessionRecord | null {
@@ -75,6 +73,29 @@ export function getGarminSession(userId: number): GarminSessionRecord | null {
   };
 }
 
+export function hasActiveGarminConnection(userId: number): boolean {
+  const tokenRow = getDb().prepare(`
+    SELECT status
+    FROM garmin_user_tokens
+    WHERE user_id = ?
+  `).get(userId) as { status?: string | null } | undefined;
+
+  if (tokenRow?.status === 'active') {
+    return true;
+  }
+
+  if (tokenRow?.status === 'needs_reauth' || tokenRow?.status === 'mfa_pending') {
+    return false;
+  }
+
+  return getDb().prepare(`
+    SELECT 1
+    FROM garmin_sessions
+    WHERE user_id = ?
+    LIMIT 1
+  `).get(userId) != null;
+}
+
 export function getLegacyGarminTokenBlob(userId: number): LegacyTokenBlob | null {
   const row = getDb().prepare(`
     SELECT tokens_json
@@ -89,6 +110,14 @@ export function getLegacyGarminTokenBlob(userId: number): LegacyTokenBlob | null
     oauth1: parsed.oauth1 ?? null,
     oauth2: parsed.oauth2 ?? null,
   };
+}
+
+function invalidateGarminDerivedCaches(userId: number): void {
+  clearCache(`readiness:${userId}`);
+  clearCache(`dashboard-readiness:${userId}`);
+  clearCache(`training-summary:${userId}`);
+  clearCacheByPrefix(`dashboard:${userId}:`);
+  invalidatePlanningCaches(userId);
 }
 
 export function upsertGarminSession(
@@ -132,6 +161,7 @@ export function markGarminConnectionActive(userId: number, garminEmail?: string 
       last_used = datetime('now'),
       updated_at = datetime('now')
   `).run(userId, garminEmail ?? null);
+  invalidateGarminDerivedCaches(userId);
 }
 
 export function touchGarminConnection(userId: number): void {
@@ -150,6 +180,7 @@ export async function markGarminNeedsReauth(userId: number, reason: string): Pro
       status = 'needs_reauth',
       updated_at = datetime('now')
   `).run(userId);
+  invalidateGarminDerivedCaches(userId);
 
   try {
     await createAndPushNotification({
@@ -172,4 +203,5 @@ export async function markGarminNeedsReauth(userId: number, reason: string): Pro
 export function clearGarminSession(userId: number): void {
   getDb().prepare('DELETE FROM garmin_sessions WHERE user_id = ?').run(userId);
   getDb().prepare('DELETE FROM garmin_user_tokens WHERE user_id = ?').run(userId);
+  invalidateGarminDerivedCaches(userId);
 }

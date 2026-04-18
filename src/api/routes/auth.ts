@@ -9,12 +9,16 @@ import { getDb } from '../../services/database';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { authMiddleware as verifyJwt } from '../auth-middleware';
+import type { AuthenticatedRequest } from '../auth-middleware';
 import { logAudit } from '../../services/audit-trail';
-import { getStoredDailyCostLimitUsdForTier } from '../../services/plan-quotas';
 import {
-  getUserByAppleId, getUserByGoogleId, getUserByEmail, getUserById,
-  createAppleUser, createGoogleUser, createEmailUser,
+  getUserByAppleId, getUserByEmail, getUserById,
+  createAppleUser, createEmailUser,
+  resolveIosInviteRegistrationTarget,
 } from '../../services/user-service';
+import { createAuthSessionAndRegisterDevice, grantBetaSandboxAccess } from '../../services/ios-auth-session';
+import { createGoogleAuthPendingSession, consumeGoogleAuthCompletion } from '../../services/google-auth-session-store';
+import { resolveGoogleIdentityUser, verifyGoogleIdentityToken } from '../../services/google-sign-in';
 
 // Apple JWKS cache
 let appleJwksCache: { keys: any[]; fetchedAt: number } | null = null;
@@ -37,96 +41,18 @@ async function getAppleJwks(): Promise<any[]> {
 function issueTokensAndRegisterDevice(
   req: Request, res: Response, userId: number,
   deviceId: string, deviceName: string | null,
-  pushToken: string | null, user: { first_name?: string | null; language?: string },
+  pushToken: string | null, user: { first_name?: string | null; last_name?: string | null; language?: string },
 ): void {
-  const accessToken = jwt.sign(
-    { userId, deviceId },
-    config.ios.jwtSecret,
-    { expiresIn: '7d' as any },
-  );
-  const refreshToken = crypto.randomBytes(64).toString('hex');
-
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(device_id) DO UPDATE SET
-      user_id = excluded.user_id,
-      device_name = excluded.device_name,
-      push_token = excluded.push_token,
-      refresh_token = excluded.refresh_token,
-      last_active_at = datetime('now')
-  `).run(userId, deviceId, deviceName, pushToken, refreshToken);
-
-  // Check founders list: if the user's email is in the founders table,
-  // grant them a permanent subscription with the assigned plan.
-  // Otherwise, no subscription is created — the paywall is active.
-  try {
-    const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
-    if (userRow?.email) {
-      const { getFounderPlan, syncFounderSubscription } = require('../../services/founders');
-      const founderPlan = getFounderPlan(userRow.email);
-      if (founderPlan) {
-        syncFounderSubscription(userRow.email, founderPlan);
-        logger.info({ userId, email: userRow.email, plan: founderPlan }, 'Founder subscription granted on registration');
-      }
-    }
-  } catch { /* founders table may not exist yet */ }
-
-  logAudit({
-    userId, actorId: userId, action: 'access', resource: 'auth.register',
-    details: { deviceId, deviceName },
+  const payload = createAuthSessionAndRegisterDevice({
+    userId,
+    deviceId,
+    deviceName,
+    pushToken,
+    user,
     ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
   });
 
-  sendSuccess(res, {
-    accessToken, refreshToken, expiresIn: 604800,
-    user: { id: userId, firstName: user.first_name || 'User', language: user.language || 'en' },
-  }, { status: 201 });
-}
-
-function grantBetaSandboxAccess(userId: number): void {
-  const db = getDb();
-  const periodStart = new Date().toISOString();
-  const periodEnd = new Date(Date.now() + (365 * 24 * 60 * 60 * 1000)).toISOString();
-
-  db.prepare(`
-    UPDATE users
-    SET tier = 'max',
-        status = 'active',
-        auth_provider = 'invite_code',
-        daily_cost_limit_usd = CASE
-          WHEN daily_cost_limit_usd < ? THEN ?
-          ELSE daily_cost_limit_usd
-        END
-    WHERE id = ?
-  `).run(
-    getStoredDailyCostLimitUsdForTier('max'),
-    getStoredDailyCostLimitUsdForTier('max'),
-    userId,
-  );
-
-  db.prepare(`
-    INSERT INTO subscriptions (
-      user_id,
-      plan,
-      period,
-      status,
-      provider,
-      current_period_start,
-      current_period_end,
-      updated_at
-    )
-    VALUES (?, 'max', 'yearly', 'trialing', 'none', ?, ?, datetime('now'))
-    ON CONFLICT(user_id) DO UPDATE SET
-      plan = excluded.plan,
-      period = excluded.period,
-      status = excluded.status,
-      provider = excluded.provider,
-      current_period_start = excluded.current_period_start,
-      current_period_end = excluded.current_period_end,
-      updated_at = datetime('now')
-  `).run(userId, periodStart, periodEnd);
+  sendSuccess(res, payload, { status: 201 });
 }
 
 export function authRoutes(): Router {
@@ -144,117 +70,32 @@ export function authRoutes(): Router {
       return;
     }
 
-    const normalizedInviteCode = String(inviteCode).trim().toLowerCase();
-
-    // ── Invite code → user mapping ──────────────────────────────────
-    //
-    // Two-tier system:
-    //   • OWNER code (IOS_OWNER_CODE env) → maps to the real owner's
-    //     Telegram user ID with full data (calendar, tasks, etc.)
-    //   • BETA code (IOS_INVITE_CODE env) → maps to a sandboxed demo
-    //     user ID with NO linked integrations, so Apple reviewers and
-    //     beta testers never see the owner's personal data.
-    //
-    // The demo user ID is a synthetic constant (1000000001) that has
-    // no OAuth tokens, no Telegram account, and no personal data.
-
-    const ownerCode = (config.ios.ownerCode || '').trim().toLowerCase();
-    const betaCode = (config.ios.inviteCode || '').trim().toLowerCase();
-
-    let userId: number;
-
-    if (ownerCode && normalizedInviteCode == ownerCode) {
-      // Owner: resolve users.id from their Telegram ID.
-      const ownerTelegramId = config.telegram.allowedUserIds[0];
-      if (!ownerTelegramId) {
-        sendError(res, 'NO_USER', 'No users configured', 500);
-        return;
-      }
-      const { getUserByTelegramId: findByTgId } = require('../../services/user-service');
-      const ownerUser = findByTgId(ownerTelegramId);
-      userId = ownerUser?.id ?? ownerTelegramId;
-    } else if (betaCode && normalizedInviteCode == betaCode) {
-      // Beta/reviewer: create a unique sandbox user per device.
-      // Each deviceId gets its own users.id — no shared DEMO_USER_ID.
-      // This ensures strict per-tester isolation.
-      const db = getDb();
-      const existingDevice = db.prepare(
-        'SELECT user_id FROM ios_devices WHERE device_id = ?'
-      ).get(deviceId) as { user_id: number } | undefined;
-
-      if (existingDevice) {
-        userId = existingDevice.user_id;
-      } else {
-        // Create a new sandbox user for this device
-        const result = db.prepare(
-          "INSERT INTO users (first_name, auth_provider, status) VALUES (?, 'invite_code', 'active')"
-        ).run(`Beta-${deviceId.slice(0, 8)}`);
-        userId = result.lastInsertRowid as number;
-        logger.info({ userId, deviceId: deviceId.slice(0, 8) }, 'Created sandbox user for beta tester');
-      }
-
-      // Beta/reviewer users must be able to exercise the full AI surface.
-      // Provision them with a local Max-tier subscription so app review and
-      // closed-beta QA do not hit the paywall immediately after sign-in.
-      grantBetaSandboxAccess(userId);
-    } else {
+    const inviteTarget = resolveIosInviteRegistrationTarget(inviteCode, deviceId);
+    if (inviteTarget.kind === 'invalid') {
       sendError(res, 'INVALID_INVITE', 'Invalid invite code', 403);
       return;
     }
+    if (inviteTarget.kind === 'owner_unavailable') {
+      sendError(res, 'NO_USER', 'No users configured', 500);
+      return;
+    }
 
-    // Generate tokens
-    const accessToken = jwt.sign(
-      { userId, deviceId },
-      config.ios.jwtSecret,
-      { expiresIn: '7d' as any },
+    if (inviteTarget.kind === 'sandbox') {
+      // Beta/reviewer users must be able to exercise the full AI surface.
+      // Provision them with a local Max-tier subscription so app review and
+      // closed-beta QA do not hit the paywall immediately after sign-in.
+      grantBetaSandboxAccess(inviteTarget.user.id);
+    }
+
+    issueTokensAndRegisterDevice(
+      req,
+      res,
+      inviteTarget.user.id,
+      deviceId,
+      deviceName || null,
+      pushToken || null,
+      inviteTarget.user,
     );
-    const refreshToken = crypto.randomBytes(64).toString('hex');
-
-    // Store device registration
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO ios_devices (user_id, device_id, device_name, push_token, refresh_token)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(device_id) DO UPDATE SET
-        device_name = excluded.device_name,
-        push_token = excluded.push_token,
-        refresh_token = excluded.refresh_token,
-        last_active_at = datetime('now')
-    `).run(userId, deviceId, deviceName || null, pushToken || null, refreshToken);
-
-    logger.info({ userId, deviceId, deviceName }, 'iOS device registered');
-
-    // Audit P0-10: device registration is a sensitive credential-issuance event.
-    // Logged so the user can later see "this device joined my account on date X
-    // from IP Y" via /api/v1/audit-trail/me.
-    logAudit({
-      userId,
-      actorId: userId,
-      action: 'access',
-      resource: 'auth.register',
-      details: { deviceId, deviceName: deviceName || null },
-      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
-    });
-
-    // Pull user info from user-service
-    let firstName = 'User';
-    let language = 'pt-BR';
-    try {
-      const { getUserLanguage, getUserDisplayName } = require('../../services/user-service');
-      firstName = getUserDisplayName?.(userId) || 'User';
-      language = getUserLanguage?.(userId) || 'pt-BR';
-    } catch { /* user-service may not have these exports */ }
-
-    sendSuccess(res, {
-      accessToken,
-      refreshToken,
-      expiresIn: 604800,
-      user: {
-        id: userId,
-        firstName,
-        language,
-      },
-    }, { status: 201 });
   }));
 
   /**
@@ -304,6 +145,22 @@ export function authRoutes(): Router {
     sendSuccess(res, { accessToken, refreshToken: newRefreshToken, expiresIn: 604800 });
   }));
 
+  router.get('/me', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
+    const userId = (req as AuthenticatedRequest).userId;
+    const user = getUserById(userId);
+    if (!user) {
+      sendError(res, 'UNAUTHORIZED', 'User not found', 401);
+      return;
+    }
+
+    sendSuccess(res, {
+      id: user.id,
+      firstName: user.first_name || 'User',
+      lastName: user.last_name || undefined,
+      language: user.language || 'en',
+    });
+  }));
+
   // ── Sign in with Apple ─────────────────────────────────────────────
   router.post('/register/apple', asyncHandler(async (req: Request, res: Response) => {
     const { identityToken, deviceId, deviceName, firstName, lastName } = req.body;
@@ -346,6 +203,53 @@ export function authRoutes(): Router {
     }
   }));
 
+  // ── Google sign-in start/finish (web OAuth via backend callback) ─────
+
+  router.post('/register/google/start', asyncHandler(async (req: Request, res: Response) => {
+    const { deviceId, deviceName } = req.body;
+    if (!deviceId) {
+      sendError(res, 'BAD_REQUEST', 'deviceId is required');
+      return;
+    }
+    if (!config.google.clientId || !config.google.clientSecret) {
+      sendError(res, 'NOT_CONFIGURED', 'Google sign-in is not configured', 503);
+      return;
+    }
+
+    const nonce = createGoogleAuthPendingSession(deviceId, deviceName || null);
+    const redirectBase = process.env.OAUTH_REDIRECT_BASE || 'https://nexushub.me';
+    const params = new URLSearchParams({
+      client_id: config.google.clientId,
+      redirect_uri: `${redirectBase}/oauth/google/callback`,
+      response_type: 'code',
+      scope: 'openid email profile',
+      access_type: 'offline',
+      prompt: 'select_account',
+      state: `ios-auth:${nonce}`,
+    });
+
+    sendSuccess(res, {
+      url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+      provider: 'google',
+    });
+  }));
+
+  router.post('/register/google/finish', asyncHandler(async (req: Request, res: Response) => {
+    const { authCode } = req.body;
+    if (!authCode) {
+      sendError(res, 'BAD_REQUEST', 'authCode is required');
+      return;
+    }
+
+    const payload = consumeGoogleAuthCompletion(authCode);
+    if (!payload) {
+      sendError(res, 'INVALID_AUTH_CODE', 'Google sign-in session expired. Please try again.', 401);
+      return;
+    }
+
+    sendSuccess(res, payload, { status: 201 });
+  }));
+
   // ── Sign in with Google (PKCE) ────────────────────────────────────
   //
   // Supports two flows for backward compatibility:
@@ -365,12 +269,12 @@ export function authRoutes(): Router {
       let payload: any;
 
       if (code && codeVerifier && redirectURI) {
-        // ── PKCE flow: exchange authorization code for tokens ──────
-        // iOS native apps are "public clients" — Google does NOT require
-        // a client_secret for iOS client IDs. Sending the web client_secret
-        // with the iOS client_id causes "invalid_client" errors.
-        // Only include client_secret when using the web client ID.
         const exchangeClientId = config.google.iosClientId || config.google.clientId;
+        if (!exchangeClientId) {
+          sendError(res, 'NOT_CONFIGURED', 'Google sign-in is not configured', 503);
+          return;
+        }
+
         const isIosClient = config.google.iosClientId && exchangeClientId === config.google.iosClientId;
         const tokenParams: Record<string, string> = {
           code,
@@ -379,7 +283,6 @@ export function authRoutes(): Router {
           grant_type: 'authorization_code',
           code_verifier: codeVerifier,
         };
-        // Web clients need the secret; iOS native clients must NOT send it
         if (!isIosClient && config.google.clientSecret) {
           tokenParams.client_secret = config.google.clientSecret;
         }
@@ -397,73 +300,22 @@ export function authRoutes(): Router {
           return;
         }
 
-        const tokens = await tokenRes.json() as any;
-        const googleIdToken = tokens.id_token;
-
-        if (!googleIdToken) {
+        const tokens = await tokenRes.json() as { id_token?: string };
+        if (!tokens.id_token) {
           sendError(res, 'INVALID_TOKEN', 'No id_token in Google response', 401);
           return;
         }
 
-        // Verify the id_token
-        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleIdToken)}`);
-        if (!verifyRes.ok) {
-          sendError(res, 'INVALID_TOKEN', 'Google id_token verification failed', 401);
-          return;
-        }
-        payload = await verifyRes.json() as any;
+        payload = await verifyGoogleIdentityToken(tokens.id_token);
 
       } else if (idToken) {
-        // ── Legacy implicit flow (backward compat) ────────────────
-        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
-        if (!verifyRes.ok) {
-          sendError(res, 'INVALID_TOKEN', 'Google token verification failed', 401);
-          return;
-        }
-        payload = await verifyRes.json() as any;
+        payload = await verifyGoogleIdentityToken(idToken);
 
       } else {
         sendError(res, 'BAD_REQUEST', 'Either code+codeVerifier+redirectURI (PKCE) or idToken (legacy) is required');
         return;
       }
-
-      // Validate issuer
-      if (!['accounts.google.com', 'https://accounts.google.com'].includes(payload.iss)) {
-        sendError(res, 'INVALID_TOKEN', 'Invalid token issuer', 401);
-        return;
-      }
-
-      // Validate audience — must be our web OR iOS client ID
-      const validAuds = [config.google.clientId, config.google.iosClientId].filter(Boolean);
-      if (validAuds.length > 0 && !validAuds.includes(payload.aud)) {
-        sendError(res, 'INVALID_TOKEN', 'Token not issued for this application', 401);
-        return;
-      }
-
-      const googleUserId = payload.sub;
-      const email = payload.email;
-      const name = payload.name;
-      const picture = payload.picture;
-
-      // Find or create user — check by Google ID first, then by email.
-      // An existing user (created via setup script, invite code, or Apple)
-      // may have the same email but no google_user_id yet. Link their
-      // Google ID instead of creating a duplicate that violates UNIQUE(email).
-      let user = getUserByGoogleId(googleUserId);
-      if (!user && email) {
-        const { getUserByEmail } = require('../../services/user-service');
-        user = getUserByEmail(email);
-        if (user) {
-          // Link Google ID to existing account
-          const db = getDb();
-          db.prepare('UPDATE users SET google_user_id = ?, avatar_url = COALESCE(avatar_url, ?), email_verified = 1 WHERE id = ?')
-            .run(googleUserId, picture || null, user.id);
-          logger.info({ userId: user.id, googleUserId, email }, 'Linked Google ID to existing user');
-        }
-      }
-      if (!user) {
-        user = createGoogleUser(googleUserId, { email, name, picture });
-      }
+      const user = resolveGoogleIdentityUser(payload);
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {

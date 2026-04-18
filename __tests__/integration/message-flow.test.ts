@@ -299,22 +299,13 @@ describe('Integration: Claude classifier → domain handler', () => {
       lastAssistantMessage: 'Your upper body session is ready: bench press 4x8, rows 4x10...',
     };
 
-    // "move it to Wednesday" has no keyword match → goes to classifier (with context)
+    // "move it to Wednesday" is now treated as a context-preserving follow-up
+    // for triathlon instead of being forced back through the classifier.
     const route = await routeMessage('move it to Wednesday', activeContext);
-    expect(route.method).toBe('classifier');
+    expect(route.method).toBe('context');
     expect(route.domain).toBe('triathlon');
-    expect(route.confidence).toBe(0.92);
-
-    // Verify classifyMessage was called with context.
-    // April 9 2026: third arg is the new optional `userId` — undefined
-    // here because this integration test doesn't exercise the
-    // per-user attribution path. Routes that DO attribute (iOS chat,
-    // future Telegram handlers) pass the real userId through.
-    expect(mockClassifyMessage).toHaveBeenCalledWith(
-      'move it to Wednesday',
-      activeContext,
-      undefined,
-    );
+    expect(route.confidence).toBe(0.98);
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 
   it('active context: short follow-up phrasing prefers context over broad keyword shortcuts', async () => {
@@ -367,16 +358,16 @@ describe('Integration: Domain handler with tool calls', () => {
       stopReason: 'end_turn',
     });
 
-    const response = await handleSimpleDomain('secretary', 'what are my tasks?');
+    const response = await handleSimpleDomain('secretary', 'what are my tasks?', 5, 42);
 
     expect(response.text).toBe('You have 1 pending task: Buy groceries (high priority).');
     expect(response.domain).toBe('secretary');
-    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', { domain: 'secretary' }, undefined);
+    expect(mockExecuteToolCall).toHaveBeenCalledWith('list_todos', { domain: 'secretary' }, 42);
     expect(mockContinueWithToolResults).toHaveBeenCalledTimes(1);
 
     // Verify conversation stored with tool annotation
     expect(mockAddToConversation).toHaveBeenCalledWith(
-      expect.any(Number), 'secretary', 'assistant',
+      42, 'secretary', 'assistant',
       expect.stringContaining('[Tools: list_todos]'),
     );
   });
@@ -643,7 +634,7 @@ describe('Integration: Conversation history management', () => {
       stopReason: 'end_turn',
     });
 
-    await handleSimpleDomain('secretary', 'add task: test');
+    await handleSimpleDomain('secretary', 'add task: test', 5, 42);
 
     // Assistant message should have tool annotation
     const assistantCall = mockAddToConversation.mock.calls.find(
@@ -672,7 +663,7 @@ describe('Integration: Conversation history management', () => {
       stopReason: 'end_turn',
     });
 
-    await handleSimpleDomain('secretary', 'check tasks');
+    await handleSimpleDomain('secretary', 'check tasks', 5, 42);
 
     const assistantCall = mockAddToConversation.mock.calls.find(
       (c) => c[2] === 'assistant'
@@ -828,7 +819,7 @@ describe('Integration: Classification tier priority', () => {
     expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 
-  it('active context: recovery follow-ups prefer triathlon context over secretary keyword shortcuts', async () => {
+  it('active context: recovery follow-ups stay in triathlon via the free keyword path', async () => {
     mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.9 });
 
     const activeContext = {
@@ -837,15 +828,13 @@ describe('Integration: Classification tier priority', () => {
     };
 
     // "recovery ... for tomorrow" is still about the active training discussion,
-    // even though the word "tasks" appears in the message.
+    // even though the word "tasks" appears in the message. The current routing
+    // now keeps this on the free keyword path because triathlon-specific
+    // recovery vocabulary is stronger than the broad secretary noun.
     const route = await routeMessage('what about my recovery tasks for tomorrow?', activeContext);
-    expect(route.method).toBe('classifier');
+    expect(route.method).toBe('keyword');
     expect(route.domain).toBe('triathlon');
-    expect(mockClassifyMessage).toHaveBeenCalledWith(
-      'what about my recovery tasks for tomorrow?',
-      activeContext,
-      undefined,
-    );
+    expect(mockClassifyMessage).not.toHaveBeenCalled();
   });
 
   it('Claude classifier is the last resort for non-matching messages', async () => {
@@ -1173,7 +1162,7 @@ describe('Scenario: Tool execution loop returns human text, never raw JSON', () 
       stopReason: 'end_turn',
     });
 
-    await handleSimpleDomain('secretary', 'tasks?');
+    await handleSimpleDomain('secretary', 'tasks?', 5, 42);
 
     // Stored assistant message must be the human text, not JSON
     const assistantCall = mockAddToConversation.mock.calls.find(

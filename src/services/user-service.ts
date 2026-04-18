@@ -50,12 +50,114 @@ export interface InviteCode {
   created_at: string;
 }
 
+export interface UserTarget {
+  tenantId: number;
+  telegramId: number;
+}
+
+export type IosInviteResolution =
+  | { kind: 'owner'; user: User }
+  | { kind: 'sandbox'; user: User }
+  | { kind: 'owner_unavailable' }
+  | { kind: 'invalid' };
+
 // ─── User CRUD ──────────────────────────────────────────────────────
 
 export function getUserByTelegramId(telegramId: number): User | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegramId) as User | undefined;
   return row ?? null;
+}
+
+function getPersistedOwnerBootstrapTelegramId(): number | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT telegram_id
+      FROM users
+      WHERE tier = 'owner' AND telegram_id IS NOT NULL
+      ORDER BY id ASC
+      LIMIT 1
+    `).get() as { telegram_id: number | null } | undefined;
+    return row?.telegram_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function getConfiguredOwnerBootstrapTelegramId(): number | null {
+  const envOwnerTelegramId = parseInt(process.env.OWNER_TELEGRAM_ID || '', 10);
+  return Number.isFinite(envOwnerTelegramId) && envOwnerTelegramId > 0
+    ? envOwnerTelegramId
+    : null;
+}
+
+export function getOwnerBootstrapTelegramId(): number | null {
+  const envOwnerTelegramId = getConfiguredOwnerBootstrapTelegramId();
+  if (envOwnerTelegramId) {
+    return envOwnerTelegramId;
+  }
+  const persistedOwnerTelegramId = getPersistedOwnerBootstrapTelegramId();
+  if (persistedOwnerTelegramId) {
+    return persistedOwnerTelegramId;
+  }
+  return null;
+}
+
+function isStrictOwnerBootstrapRuntime(): boolean {
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+    return false;
+  }
+  return process.env.NODE_ENV === 'production' && !config.isStaging;
+}
+
+export function assertOwnerBootstrapReadyForRuntime(): void {
+  const configuredOwnerTelegramId = getConfiguredOwnerBootstrapTelegramId();
+  const persistedOwnerTelegramId = getPersistedOwnerBootstrapTelegramId();
+
+  if (
+    configuredOwnerTelegramId
+    && persistedOwnerTelegramId
+    && configuredOwnerTelegramId !== persistedOwnerTelegramId
+  ) {
+    const err = new Error(
+      `Owner bootstrap mismatch: OWNER_TELEGRAM_ID=${configuredOwnerTelegramId} but persisted owner telegram_id=${persistedOwnerTelegramId}. Align bootstrap configuration before starting Nexus Hub.`,
+    );
+    if (isStrictOwnerBootstrapRuntime()) {
+      throw err;
+    }
+    logger.warn(
+      {
+        configuredOwnerTelegramId,
+        persistedOwnerTelegramId,
+      },
+      err.message,
+    );
+    return;
+  }
+
+  if (configuredOwnerTelegramId || persistedOwnerTelegramId) {
+    return;
+  }
+
+  const err = new Error(
+    'Owner bootstrap unavailable. Set OWNER_TELEGRAM_ID or persist an owner-tier user row before starting Nexus Hub.',
+  );
+  if (isStrictOwnerBootstrapRuntime()) {
+    throw err;
+  }
+  logger.warn(err.message);
+}
+
+/**
+ * Narrow Telegram-era bootstrap bypass to the single configured owner
+ * bootstrap identity. This is intentionally stricter than isOwnerUserRef():
+ * it is for pre-registration / pre-database ingress only, not for generic
+ * owner-tier checks once a user record already exists.
+ */
+export function isOwnerBootstrapTelegramId(telegramId: number): boolean {
+  const ownerTelegramId = getOwnerBootstrapTelegramId();
+  return ownerTelegramId != null && telegramId === ownerTelegramId;
 }
 
 export function getOrCreateUser(telegramId: number, profile: {
@@ -106,6 +208,117 @@ function getUserByAnyIdentifier(userRef: number): User | null {
   // the canonical users.id in JWTs. Resolve both so shared helpers like
   // getUserLanguage() behave consistently across platforms.
   return getUserByTelegramId(userRef) ?? getUserById(userRef);
+}
+
+/**
+ * Resolve any known user reference to the canonical users.id tenant key.
+ * Accepts either users.id or telegram_id and always returns users.id.
+ */
+export function resolveCanonicalUserId(userRef: number): number | null {
+  const user = getUserByAnyIdentifier(userRef);
+  return user?.id ?? null;
+}
+
+export function getOwnerBootstrapUser(): User | null {
+  const ownerTelegramId = getOwnerBootstrapTelegramId();
+  if (!ownerTelegramId) return null;
+  seedOwnerUser();
+  return getUserByTelegramId(ownerTelegramId);
+}
+
+/**
+ * Resolve the canonical owner bootstrap target used by legacy admin and cron
+ * bridges. This keeps fallback behavior explicit: one owner bootstrap user,
+ * not an open-ended fanout over every allowed Telegram id in config.
+ */
+export function getOwnerBootstrapTarget(): UserTarget | null {
+  const owner = getOwnerBootstrapUser();
+  if (owner?.id && owner.telegram_id) {
+    return {
+      tenantId: owner.id,
+      telegramId: owner.telegram_id,
+    };
+  }
+
+  const ownerTelegramId = owner?.telegram_id ?? getOwnerBootstrapTelegramId();
+  if (!ownerTelegramId) return null;
+
+  const tenantId = resolveCanonicalUserId(ownerTelegramId);
+  if (!tenantId) return null;
+
+  return {
+    tenantId,
+    telegramId: ownerTelegramId,
+  };
+}
+
+/**
+ * Owner bootstrap references in priority order.
+ *
+ * During the legacy Telegram era, some owner-bound records were keyed by the
+ * raw Telegram id. Newer app-facing code should prefer the canonical users.id.
+ * Returning both lets legacy owner bridges read old rows while new boot-time
+ * migrations can converge on the canonical tenant key.
+ */
+export function getOwnerBootstrapUserRefs(): number[] {
+  const refs: number[] = [];
+  const owner = getOwnerBootstrapUser();
+  if (owner?.id && !refs.includes(owner.id)) {
+    refs.push(owner.id);
+  }
+
+  const ownerTelegramId = owner?.telegram_id ?? getOwnerBootstrapTelegramId();
+  if (ownerTelegramId && !refs.includes(ownerTelegramId)) {
+    refs.push(ownerTelegramId);
+  }
+
+  return refs;
+}
+
+export function getOrCreateInviteSandboxUser(deviceId: string): User {
+  const db = getDb();
+  const existingDevice = db.prepare(
+    'SELECT user_id FROM ios_devices WHERE device_id = ?',
+  ).get(deviceId) as { user_id: number } | undefined;
+
+  if (existingDevice) {
+    const existingUser = getUserById(existingDevice.user_id);
+    if (existingUser) return existingUser;
+  }
+
+  const result = db.prepare(
+    "INSERT INTO users (first_name, auth_provider, status) VALUES (?, 'invite_code', 'active')",
+  ).run(`Beta-${deviceId.slice(0, 8)}`);
+  const userId = result.lastInsertRowid as number;
+  logger.info({ userId, deviceId: deviceId.slice(0, 8) }, 'Created sandbox user for beta tester');
+  return getUserById(userId)!;
+}
+
+export function resolveIosInviteRegistrationTarget(inviteCode: string, deviceId: string): IosInviteResolution {
+  const normalizedInviteCode = String(inviteCode).trim().toLowerCase();
+  const ownerCode = (config.ios.ownerCode || '').trim().toLowerCase();
+  const betaCode = (config.ios.inviteCode || '').trim().toLowerCase();
+
+  if (ownerCode && normalizedInviteCode === ownerCode) {
+    const user = getOwnerBootstrapUser();
+    return user ? { kind: 'owner', user } : { kind: 'owner_unavailable' };
+  }
+
+  if (betaCode && normalizedInviteCode === betaCode) {
+    return { kind: 'sandbox', user: getOrCreateInviteSandboxUser(deviceId) };
+  }
+
+  return { kind: 'invalid' };
+}
+
+export function isOwnerUserRef(userRef: number): boolean {
+  const user = getUserByAnyIdentifier(userRef);
+  if (user?.tier === 'owner') return true;
+
+  const ownerTelegramId = getOwnerBootstrapTelegramId();
+  if (!ownerTelegramId) return false;
+  if (userRef === ownerTelegramId) return true;
+  return user?.telegram_id === ownerTelegramId;
 }
 
 export function sanitizeDisplayName(value: string | null | undefined): string {
@@ -222,8 +435,7 @@ export function isUserAuthorized(telegramId: number): boolean {
 }
 
 export function isOwner(telegramId: number): boolean {
-  const user = getUserByTelegramId(telegramId);
-  return !!user && user.tier === 'owner';
+  return isOwnerUserRef(telegramId);
 }
 
 export function touchUser(telegramId: number): void {
@@ -365,7 +577,8 @@ export function deleteInviteCode(code: string): boolean {
 // ─── Owner Seeding ──────────────────────────────────────────────────
 
 /**
- * Auto-create the owner user from TELEGRAM_ALLOWED_USER_IDS[0] or OWNER_TELEGRAM_ID.
+ * Auto-create or upgrade the owner user from explicit OWNER_TELEGRAM_ID when
+ * no persisted owner record already exists.
  * Call once at startup. Safe to call multiple times (idempotent).
  */
 export function seedOwnerUser(): void {
@@ -391,23 +604,73 @@ export function seedOwnerUser(): void {
       )
     `);
 
-    const ownerTelegramId = parseInt(process.env.OWNER_TELEGRAM_ID || '', 10)
-      || config.telegram.allowedUserIds[0];
+    const configuredOwnerTelegramId = getConfiguredOwnerBootstrapTelegramId();
 
-    if (!ownerTelegramId) {
-      logger.warn('No owner Telegram ID found — skipping owner seed');
+    const persistedOwner = db.prepare(`
+      SELECT telegram_id
+      FROM users
+      WHERE tier = 'owner' AND telegram_id IS NOT NULL
+      ORDER BY id ASC
+      LIMIT 1
+    `).get() as { telegram_id: number | null } | undefined;
+
+    if (persistedOwner?.telegram_id) {
+      if (
+        configuredOwnerTelegramId
+        && persistedOwner.telegram_id !== configuredOwnerTelegramId
+      ) {
+        logger.warn(
+          {
+            configuredOwnerTelegramId,
+            persistedOwnerTelegramId: persistedOwner.telegram_id,
+          },
+          'OWNER_TELEGRAM_ID does not match the persisted owner row; keeping the existing owner record unchanged',
+        );
+      }
       return;
     }
 
-    const existing = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(ownerTelegramId);
-    if (existing) return; // Already seeded
+    if (!configuredOwnerTelegramId) {
+      logger.warn('No explicit OWNER_TELEGRAM_ID found — skipping owner seed');
+      return;
+    }
+
+    const existing = db.prepare(`
+      SELECT *
+      FROM users
+      WHERE telegram_id = ?
+      LIMIT 1
+    `).get(configuredOwnerTelegramId) as User | undefined;
+
+    if (existing) {
+      if (
+        existing.tier !== 'owner'
+        || existing.status !== 'active'
+        || existing.daily_message_limit !== 0
+        || existing.daily_token_limit !== 0
+        || existing.daily_cost_limit_usd !== 0
+      ) {
+        db.prepare(`
+          UPDATE users
+          SET first_name = COALESCE(first_name, 'Owner'),
+              tier = 'owner',
+              status = 'active',
+              daily_message_limit = 0,
+              daily_token_limit = 0,
+              daily_cost_limit_usd = 0
+          WHERE telegram_id = ?
+        `).run(configuredOwnerTelegramId);
+        logger.info({ telegramId: configuredOwnerTelegramId }, 'Existing user upgraded to owner bootstrap user');
+      }
+      return;
+    }
 
     db.prepare(`
       INSERT INTO users (telegram_id, first_name, language, tier, status, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
       VALUES (?, 'Owner', 'pt-BR', 'owner', 'active', 0, 0, 0)
-    `).run(ownerTelegramId);
+    `).run(configuredOwnerTelegramId);
 
-    logger.info({ telegramId: ownerTelegramId }, 'Owner user seeded');
+    logger.info({ telegramId: configuredOwnerTelegramId }, 'Owner user seeded');
   } catch (err) {
     logger.warn({ err }, 'Failed to seed owner user');
   }

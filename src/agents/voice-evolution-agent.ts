@@ -18,6 +18,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from '../services/gemini-provider';
+import { getOwnerBootstrapTarget } from '../services/user-service';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -106,15 +107,19 @@ export async function runVoiceEvolutionAgent(): Promise<void> {
 
     try {
       const { getRecentScripts } = await import('../services/content-learning-store');
-      // userId 0 = owner (pre-multi-tenant scripts)
-      const dbScripts = getRecentScripts(0, 30, 10);
-      for (const s of dbScripts) {
-        scripts.push({
-          topic: s.topic,
-          text: s.scriptText.slice(0, 3000),
-        });
+      const ownerTarget = getOwnerBootstrapTarget();
+      if (ownerTarget?.tenantId) {
+        const dbScripts = getRecentScripts(ownerTarget.tenantId, 30, 10);
+        for (const s of dbScripts) {
+          scripts.push({
+            topic: s.topic,
+            text: s.scriptText.slice(0, 3000),
+          });
+        }
+        logger.info({ count: dbScripts.length, userId: ownerTarget.tenantId }, 'Voice agent: loaded scripts from DB');
+      } else {
+        logger.warn('Voice agent: owner bootstrap target unavailable, skipping DB script load');
       }
-      logger.info({ count: dbScripts.length }, 'Voice agent: loaded scripts from DB');
     } catch {
       logger.warn('Voice agent: content_scripts table not available, using file fallback');
     }

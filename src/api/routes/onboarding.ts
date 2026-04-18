@@ -14,6 +14,7 @@ import {
   getMissingProfileFields,
   startOrResume,
 } from '../../services/onboarding';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // ─── Phase 3 Slice C — Profile detail helpers ────────────────────
 //
@@ -113,6 +114,15 @@ function buildAthleteProfileDetail(userId: number) {
 
 export function onboardingRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'onboarding_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /** GET /api/v1/onboarding/pending */
   router.get('/pending', async (req, res: Response) => {

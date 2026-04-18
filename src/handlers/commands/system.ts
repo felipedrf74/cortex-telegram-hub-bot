@@ -8,7 +8,6 @@
  */
 
 import { Bot, InlineKeyboard, InputFile } from 'grammy';
-import { config } from '../../config';
 import { storeCallback, getCallback } from '../../utils/callback-store';
 import { DomainName } from '../../domains/types';
 import * as onboarding from '../../services/onboarding';
@@ -22,6 +21,7 @@ import { logAudit } from '../../services/audit-trail';
 import { logger } from '../../utils/logger';
 import fs from 'fs';
 import path from 'path';
+import { isOwnerBootstrapTelegramId } from '../../services/user-service';
 
 export function registerSystemCommands(bot: Bot): void {
   // ── /start ──
@@ -62,8 +62,9 @@ export function registerSystemCommands(bot: Bot): void {
 
     // Check if registration is allowed
     if (!registrationOpen && !inviteCode) {
-      // Also allow if they're in the legacy whitelist
-      if (!config.telegram.allowedUserIds.includes(userId)) {
+      // Only the explicit owner bootstrap Telegram id bypasses invite
+      // registration here; broader legacy whitelist fallback is no longer used.
+      if (!isOwnerBootstrapTelegramId(userId)) {
         const lang = detectLanguageFromTelegram(ctx.from?.language_code);
         await ctx.reply(t('need_invite', lang));
         return;

@@ -59,6 +59,11 @@ interface FocusCandidate {
   calendarLoad: CalendarLoad;
 }
 
+interface DatedFocusCandidate extends FocusCandidate {
+  date: string;
+  offset: number;
+}
+
 export async function getFocusBlockRecommendation(
   userId: number,
   opts?: {
@@ -155,7 +160,11 @@ export async function getFocusBlockRecommendation(
     return lhs.start.toMillis() - rhs.start.toMillis();
   });
 
-  const best = candidates[0];
+  const best = selectRecommendedCandidate(candidates, {
+    startDate,
+    now,
+    prefersSingleDay: Boolean(preferredDate?.isValid),
+  });
   const dataSources = [hadCalendarData, hadReadinessData, hadTrainingData].filter(Boolean).length;
   const confidence: FocusBlockRecommendation['confidence'] =
     dataSources >= 3 ? 'high' : dataSources === 2 ? 'medium' : 'low';
@@ -188,6 +197,51 @@ export async function getFocusBlockRecommendation(
   );
 
   return recommendation;
+}
+
+function selectRecommendedCandidate(
+  candidates: FocusCandidate[],
+  opts: {
+    startDate: DateTime;
+    now: DateTime;
+    prefersSingleDay: boolean;
+  },
+): FocusCandidate {
+  if (opts.prefersSingleDay || candidates.length === 1) {
+    return candidates[0];
+  }
+
+  const bestByDay = buildBestCandidatesByDay(candidates, opts.startDate);
+  const actionable = bestByDay.find((candidate) => isActionableFocusDayCandidate(candidate, opts.now));
+  return actionable ?? candidates[0];
+}
+
+function buildBestCandidatesByDay(
+  candidates: FocusCandidate[],
+  startDate: DateTime,
+): DatedFocusCandidate[] {
+  const bestByDay = new Map<string, DatedFocusCandidate>();
+
+  for (const candidate of candidates) {
+    const date = candidate.start.toISODate()!;
+    if (bestByDay.has(date)) continue;
+    bestByDay.set(date, {
+      ...candidate,
+      date,
+      offset: Math.max(0, Math.floor(candidate.start.startOf('day').diff(startDate.startOf('day'), 'days').days)),
+    });
+  }
+
+  return Array.from(bestByDay.values()).sort((lhs, rhs) => lhs.start.toMillis() - rhs.start.toMillis());
+}
+
+function isActionableFocusDayCandidate(candidate: DatedFocusCandidate, now: DateTime): boolean {
+  if (candidate.score < 18) return false;
+  if (candidate.calendarLoad === 'busy') return false;
+  if (candidate.trainingLoad === 'hard') return false;
+  if (candidate.offset === 0 && candidate.readinessScore != null && candidate.readinessScore < 55) return false;
+  if (candidate.offset === 0 && candidate.start < now.plus({ minutes: 45 })) return false;
+  return true;
 }
 
 function buildTrainingSchedule(

@@ -177,7 +177,6 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'lower body day',
       'upper body focus',
       'coach report please',
-      'I need a carnivore meal plan',
       'endurance is improving',
       'how is my recovery today?',
       'what does my readiness look like?',
@@ -193,6 +192,7 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
     const triathlonPtBr = [
       'como foi meu treino',
       'qual corrida amanhã?',
+      'como está o meu plano da semana?',
       'vou fazer pedalada',
       'musculação pesada hoje',
       'quanta proteína preciso?',
@@ -218,6 +218,7 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'make a reel about this',
       'thumbnail design concept',
       'write a video script',
+      'help me script an intro about training consistency',
       'content strategy for Q2',
       'good caption for this post',
       'how many subscribers did I get?',
@@ -229,6 +230,11 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'hashtag research for my post',
       'write a script about tariffs',
       'I need title ideas for this video',
+      'what content is already ready on my desk?',
+      'what should i publish next?',
+      'what performed best?',
+      'what are we learning this week?',
+      'how should i schedule filming around my week?',
     ];
 
     it.each(contentMessages)('"%s" → content', (msg) => {
@@ -259,8 +265,12 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'what are my tasks for today?',
       'add this to my to-do list',
       'set a reminder for 3pm',
+      'remind me to pay DARF tomorrow',
+      'add a task to send the invoices to my accountant on Friday morning',
       'what\'s on my calendar?',
       'schedule a meeting tomorrow',
+      'schedule a filming block for thursday at 3pm',
+      'move the recording block to friday morning',
       'any appointments this week?',
       'check my emails',
       'how many unread in my inbox',
@@ -270,6 +280,11 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'pending items',
       'high priority tasks',
       'deadline is friday',
+      'delete the task to review the training deck',
+      'schedule a focus block for tomorrow morning',
+      'send this invoice to my accountant on Friday morning',
+      'schedule time to review my subscriptions next week',
+      'schedule the sponsor post for friday morning',
     ];
 
     it.each(secretaryMessages)('"%s" → secretary', (msg) => {
@@ -282,6 +297,13 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'save this receipt',
       'archive this invoice',
       'what merchant was this?',
+      'what bills are still missing this month?',
+      'what subscriptions renew soon?',
+      "what's my budget remaining this month?",
+      'what tax is due next?',
+      'what should i send to my accountant?',
+      'how much did i spend this month?',
+      'what invoices did i file this month?',
     ];
 
     it.each(financeMessages)('"%s" → finance', (msg) => {
@@ -293,6 +315,7 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
     const secretaryPtBr = [
       'quais são minhas tarefas?',
       'cria um lembrete',
+      'me lembra de pagar o darf amanhã',
       'minha agenda de amanhã',
       'reuniões da semana',
       'compromissos de hoje',
@@ -303,6 +326,13 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       'pendentes no trabalho',
       'prioridade alta',
       'qual o prazo?',
+      'apaga a tarefa de ligar para a Amanda',
+      'cria uma tarefa para amanhã às 15h de ligar para a Amanda',
+      'agenda um bloco de gravação para quinta às 15h',
+      'move o bloco de edição para sexta de manhã',
+      'envia esta fatura ao meu contabilista na sexta de manhã',
+      'agenda tempo para rever as minhas assinaturas na próxima semana',
+      'agenda a publicação patrocinada para sexta de manhã',
     ];
 
     it.each(secretaryPtBr)('"%s" → secretary', (msg) => {
@@ -326,6 +356,55 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
     it('explicit script-writing intents beat training-topic keywords', () => {
       expect(keywordMatch('Write a short script about recovery after hard intervals')).toBe('content');
       expect(keywordMatch('Escreve um roteiro curto sobre recuperação após intervalos fortes')).toBe('content');
+    });
+
+    it('creator planning prompts stay in content even with training vocabulary', () => {
+      expect(keywordMatch('me dá 3 ideias de conteúdo para um vídeo sobre recuperação depois do treino')).toBe('content');
+      expect(keywordMatch('me dá 3 títulos melhores para um vídeo sobre dieta carnívora e performance')).toBe('content');
+      expect(keywordMatch('me ajuda a planejar uma gravação em um dia que eu esteja com mais energia')).toBe('content');
+      expect(keywordMatch('me dá feedback neste roteiro: treino, dieta, sono e consistência')).toBe('content');
+      expect(keywordMatch('give me 3 content ideas for a video about recovery after training')).toBe('content');
+      expect(keywordMatch('give me 3 better titles for a video about carnivore diet and performance')).toBe('content');
+      expect(keywordMatch('organize my content ideas by priority')).toBe('content');
+    });
+  });
+
+  describe('Specificity: cooking wins over triathlon', () => {
+    it('meal prompts stay in cooking even with training context', () => {
+      expect(keywordMatch('I need a carnivore meal plan')).toBe('cooking');
+      expect(keywordMatch('give me 3 quick carnivore breakfast ideas')).toBe('cooking');
+      expect(keywordMatch('give me 3 macro-friendly dinner ideas')).toBe('cooking');
+      expect(keywordMatch('me passa um café da manhã rico em proteína para amanhã')).toBe('cooking');
+      expect(keywordMatch('me passa um plano alimentar rico em proteína para esta semana')).toBe('cooking');
+      expect(keywordMatch('o que eu devo comer antes de um treino forte amanhã cedo?')).toBe('cooking');
+      expect(keywordMatch('me dá uma ideia de almoço prático para recuperação')).toBe('cooking');
+      expect(keywordMatch('cria uma lista de compras para 3 almoços ricos em proteína')).toBe('cooking');
+      expect(keywordMatch('quero um snack para recuperação depois do treino')).toBe('cooking');
+      expect(keywordMatch('what should I eat before a hard workout tomorrow morning?')).toBe('cooking');
+      expect(keywordMatch('how should i fuel after a long ride?')).toBe('cooking');
+      expect(keywordMatch('how should I fuel on travel days?')).toBe('cooking');
+      expect(keywordMatch('cria 3 ideias de snacks para antes do treino')).toBe('cooking');
+      expect(keywordMatch('adapt my meals for a lighter recovery day')).toBe('cooking');
+      expect(keywordMatch('build me a Monday to Sunday menu focused on performance')).toBe('cooking');
+    });
+  });
+
+  describe('Specificity: training coaching wins over generic nutrition nouns', () => {
+    it('coaching-style macro and supplement targets stay in triathlon', () => {
+      expect(keywordMatch('how much protein should I eat?')).toBe('triathlon');
+      expect(keywordMatch('help me set my macros for a cut while keeping strength')).toBe('triathlon');
+      expect(keywordMatch('review my supplements for marathon prep')).toBe('triathlon');
+      expect(keywordMatch('qual deve ser minha meta de proteína diária nesta fase?')).toBe('triathlon');
+      expect(keywordMatch('ajusta meus macros para ganhar massa sem piorar a corrida')).toBe('triathlon');
+      expect(keywordMatch('dieta carnívora funciona para o meu treino atual?')).toBe('triathlon');
+    });
+  });
+
+  describe('Specificity: finance wins over cooking', () => {
+    it('expense bookkeeping prompts stay in finance even with meal words', () => {
+      expect(keywordMatch('cria uma despesa manual de 28 euros para almoço de hoje')).toBe('finance');
+      expect(keywordMatch('categoriza esta despesa de jantar de ontem')).toBe('finance');
+      expect(keywordMatch('analisa este recibo de almoço e diz a categoria certa')).toBe('finance');
     });
   });
 
@@ -404,11 +483,11 @@ describe('classifyWithClaude — Tier 3 AI Classification', () => {
     expect(mockClassifyMessage).toHaveBeenCalledWith('hello there', undefined, undefined);
   });
 
-  it('handles low confidence (falls back to secretary in classifyMessage)', async () => {
-    mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.3 });
+  it('keeps the classifier-selected domain on low confidence when no active context exists', async () => {
+    mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.3 });
 
     const result = await classifyWithClaude('something ambiguous');
-    expect(result.domain).toBe('secretary');
+    expect(result.domain).toBe('content');
     expect(result.confidence).toBe(0.3);
   });
 
@@ -515,8 +594,8 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.88 });
       const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Your 5K time was great!' };
 
-      // "move it to wednesday" has no strong keyword match → goes to classifier
-      const result = await routeMessage('move it to wednesday', context);
+      // This follow-up has no strong domain refinements, so it still pays for classifier help.
+      const result = await routeMessage('what do you think?', context);
       expect(result.domain).toBe('triathlon');
       expect(result.method).toBe('classifier');
       expect(result.confidence).toBe(0.88);
@@ -543,6 +622,86 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
 
+    it('explicit cooking intent still wins over active triathlon context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.91 });
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Tomorrow is your hard workout day.' };
+
+      const result = await routeMessage('what should I eat before a hard workout tomorrow morning?', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('cooking');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('explicit content planning intent still wins over active triathlon context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.91 });
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Your intervals are set for Wednesday.' };
+
+      const result = await routeMessage('organize my content ideas by priority', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('explicit finance bookkeeping intent still wins over active cooking context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'cooking', confidence: 0.88 });
+      const context = { domain: 'cooking' as const, lastAssistantMessage: 'Here is your dinner idea.' };
+
+      const result = await routeMessage('categorize this dinner expense from yesterday', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('finance');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('strong secretary reminder intent overrides active finance context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'finance', confidence: 0.89 });
+      const context = { domain: 'finance' as const, lastAssistantMessage: 'Your DARF is due next week.' };
+
+      const result = await routeMessage('remind me to pay DARF tomorrow', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('strong secretary finance follow-through intent overrides active finance context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'finance', confidence: 0.89 });
+      const context = { domain: 'finance' as const, lastAssistantMessage: 'You still need to send one invoice to your accountant.' };
+
+      const result = await routeMessage('send this invoice to my accountant on Friday morning', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('strong secretary scheduling intent overrides active content context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.91 });
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Thursday looks good for filming.' };
+
+      const result = await routeMessage('schedule a filming block for Thursday at 3pm', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('strong secretary publishing scheduling intent overrides active content context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.91 });
+      const context = { domain: 'content' as const, lastAssistantMessage: 'This sponsor post should go out this week.' };
+
+      const result = await routeMessage('schedule the sponsor post for friday morning', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('portuguese secretary scheduling intent also overrides active content context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'content', confidence: 0.91 });
+      const context = { domain: 'content' as const, lastAssistantMessage: 'Quinta parece boa para gravar.' };
+
+      const result = await routeMessage('agenda um bloco de gravação para quinta às 15h', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
     it('portuguese content rewrite follow-up stays in content without asking secretary-style clarifications', async () => {
       mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.95 });
       const context = { domain: 'content' as const, lastAssistantMessage: 'Aqui está o teu roteiro.' };
@@ -560,6 +719,46 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       const result = await routeMessage('rewrite this in Portuguese and make it shorter', context);
       expect(result.method).toBe('context');
       expect(result.domain).toBe('content');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('finance categorization follow-up stays in active finance context without paying for classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.94 });
+      const context = { domain: 'finance' as const, lastAssistantMessage: 'I found a receipt from your hosting bill.' };
+
+      const result = await routeMessage('categorize this as software', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('finance');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('portuguese finance reclassification follow-up also stays in active finance context', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.94 });
+      const context = { domain: 'finance' as const, lastAssistantMessage: 'Esse recibo parece despesa de viagem.' };
+
+      const result = await routeMessage('marca isso como software da empresa', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('finance');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('secretary sequencing follow-ups stay in secretary context without invoking the classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'triathlon', confidence: 0.91 });
+      const context = { domain: 'secretary' as const, lastAssistantMessage: 'Your top priority is the filming blocker at 14:00.' };
+
+      const result = await routeMessage('what should I do first today?', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('secretary');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('triathlon workout refinements stay in triathlon context without invoking the classifier', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
+      const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Tomorrow is your interval session.' };
+
+      const result = await routeMessage('make it easier and move it to tomorrow afternoon', context);
+      expect(result.method).toBe('context');
+      expect(result.domain).toBe('triathlon');
       expect(mockClassifyMessage).not.toHaveBeenCalled();
     });
   });

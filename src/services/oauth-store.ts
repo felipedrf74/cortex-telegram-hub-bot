@@ -21,6 +21,7 @@ import { config } from '../config';
 import { logger } from '../utils/logger';
 import { encryptValue, decryptValue } from '../utils/encryption';
 import { LRUMap } from '../utils/lru-map';
+import { getOwnerBootstrapUserRefs } from './user-service';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -397,13 +398,13 @@ export function updateAccessToken(userId: number, provider: OAuthProvider, acces
  */
 export function migrateOwnerTokens(): void {
   try {
-    const ownerTelegramId = parseInt(process.env.OWNER_TELEGRAM_ID || '', 10)
-      || config.telegram.allowedUserIds[0];
-    if (!ownerTelegramId) return;
+    const ownerRefs = getOwnerBootstrapUserRefs();
+    const primaryOwnerRef = ownerRefs[0];
+    if (!primaryOwnerRef) return;
 
     // Migrate Google tokens
-    if (config.google.refreshToken && !isConnected(ownerTelegramId, 'google')) {
-      storeTokens(ownerTelegramId, 'google', {
+    if (config.google.refreshToken && !ownerRefs.some((ref) => isConnected(ref, 'google'))) {
+      storeTokens(primaryOwnerRef, 'google', {
         accessToken: '',
         refreshToken: config.google.refreshToken,
         tokenType: 'Bearer',
@@ -414,8 +415,8 @@ export function migrateOwnerTokens(): void {
     }
 
     // Migrate Outlook tokens
-    if (config.outlook.refreshToken && !isConnected(ownerTelegramId, 'outlook')) {
-      storeTokens(ownerTelegramId, 'outlook', {
+    if (config.outlook.refreshToken && !ownerRefs.some((ref) => isConnected(ref, 'outlook'))) {
+      storeTokens(primaryOwnerRef, 'outlook', {
         accessToken: '',
         refreshToken: config.outlook.refreshToken,
         tokenType: 'Bearer',

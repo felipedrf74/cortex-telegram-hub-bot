@@ -19,9 +19,19 @@ import type { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError } from '../response-helpers';
 import { buildActiveSignalsResponse } from '../../services/signals-observability';
 import { logger } from '../../utils/logger';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function signalsRoutes(): Router {
   const router = Router();
+
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'signals_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
 
   /**
    * GET /api/v1/signals/active

@@ -11,14 +11,25 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { storeCallback, getCallback } from '../utils/callback-store';
 import { logger } from '../utils/logger';
-import * as msTodo from '../services/microsoft-todo';
 import { createEvent as createCalendarEvent } from '../services/unified-calendar';
 import { classifyAndExtractImage } from '../services/anthropic';
-import { escapeHtml } from '../utils/telegram-formatter';
+import { escapeHtml, formatMsTodoTasks } from '../utils/telegram-formatter';
 import { pendingEdits, isHtmlParseError } from './shared-state';
-import { buildTaskListKeyboard } from './commands/secretary-helpers';
+import {
+  buildTaskListKeyboard,
+  getTelegramTaskScope,
+} from './commands/secretary-helpers';
 import { handleTaskExtraction } from './photo';
 import { downloadTelegramFile } from './telegram-file';
+
+async function requireTelegramTaskScopeForCallback(ctx: any) {
+  const taskScope = getTelegramTaskScope(ctx);
+  if (!taskScope) {
+    await ctx.editMessageText('⚠️ Task provider unavailable for this user.');
+    return null;
+  }
+  return taskScope;
+}
 
 /**
  * Register callback query handlers for ToDo actions and calendar events.
@@ -53,13 +64,14 @@ export function registerCallbackQueries(bot: Bot): void {
     switch (action) {
       case 'ls': {
         // List selected — show tasks
+        const taskScope = await requireTelegramTaskScopeForCallback(ctx);
+        if (!taskScope) break;
         await ctx.editMessageText('Loading tasks...', { parse_mode: 'HTML' });
-        const result = await msTodo.getTasks(cbData.listId, cbData.listName, { status: 'notStarted' });
+        const result = await taskScope.provider.getTasks(cbData.listId, cbData.listName, { status: 'notStarted' });
         if (!result.success) {
           await ctx.editMessageText(`⚠️ Failed to fetch tasks: ${result.error}`);
           return;
         }
-        const { formatMsTodoTasks } = require('../utils/telegram-formatter');
         const msg = formatMsTodoTasks(result.data, cbData.listName);
         const keyboard = buildTaskListKeyboard(result.data, cbData.listId);
         await ctx.editMessageText(msg, {
@@ -71,7 +83,9 @@ export function registerCallbackQueries(bot: Bot): void {
 
       case 'tc': {
         // Complete task
-        const result = await msTodo.completeTask(cbData.listId, cbData.taskId);
+        const taskScope = await requireTelegramTaskScopeForCallback(ctx);
+        if (!taskScope) break;
+        const result = await taskScope.provider.completeTask(cbData.listId, cbData.taskId);
         if (result.success) {
           await ctx.editMessageText(
             `✅ Completed: "<b>${escapeHtml(cbData.title)}</b>" [${escapeHtml(cbData.listName)}]`,
@@ -150,15 +164,17 @@ export function registerCallbackQueries(bot: Bot): void {
 
       case 'dy': {
         // Confirm delete
+        const taskScope = await requireTelegramTaskScopeForCallback(ctx);
+        if (!taskScope) break;
         if (cbData.type === 'list') {
-          const result = await msTodo.deleteList(cbData.listId);
+          const result = await taskScope.provider.deleteList(cbData.listId);
           if (result.success) {
             await ctx.editMessageText(`🗑 List "<b>${escapeHtml(cbData.listName)}</b>" deleted.`, { parse_mode: 'HTML' });
           } else {
             await ctx.editMessageText(`⚠️ Failed to delete list: ${result.error}`);
           }
         } else {
-          const result = await msTodo.deleteTask(cbData.listId, cbData.taskId);
+          const result = await taskScope.provider.deleteTask(cbData.listId, cbData.taskId);
           if (result.success) {
             await ctx.editMessageText(`🗑 Task "<b>${escapeHtml(cbData.title)}</b>" deleted.`, { parse_mode: 'HTML' });
           } else {
@@ -171,7 +187,9 @@ export function registerCallbackQueries(bot: Bot): void {
       case 'ep': {
         // Set priority from inline keyboard
         const level = cbData.level;
-        const result = await msTodo.updateTask(cbData.listId, cbData.taskId, { importance: level });
+        const taskScope = await requireTelegramTaskScopeForCallback(ctx);
+        if (!taskScope) break;
+        const result = await taskScope.provider.updateTask(cbData.listId, cbData.taskId, { importance: level });
         if (result.success) {
           await ctx.editMessageText(
             `⚡ Priority set to <b>${level}</b> for "${escapeHtml(cbData.title)}"`,
@@ -214,13 +232,14 @@ export function registerCallbackQueries(bot: Bot): void {
 
       for (const event of events) {
         try {
+          const userId = ctx.from?.id;
           const created = await createCalendarEvent({
             title: event.title,
             start: event.start,
             end: event.end,
             description: event.description,
             categories,
-          });
+          }, undefined, userId);
           successCount++;
           createdTitles.push(created.summary);
         } catch (err) {

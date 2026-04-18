@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const mockGetAllVendorsMerged = vi.fn();
 const mockCollectMonthlyInvoices = vi.fn();
@@ -69,6 +73,7 @@ function mockRes(): MockRes {
 function mockReq(
   method: string,
   path: string,
+  userId = 12,
   body?: any,
 ): Request {
   return {
@@ -81,17 +86,19 @@ function mockReq(
     params: {},
     headers: {},
     body,
-    userId: 12,
+    userId,
   } as any;
 }
 
 async function dispatch(
   method: string,
   path: string,
+  userIdOrBody?: any,
   body?: any,
 ): Promise<MockRes> {
   const router = invoicesRoutes();
-  const req = mockReq(method, path, body);
+  const hasExplicitUser = typeof userIdOrBody === 'number';
+  const req = mockReq(method, path, hasExplicitUser ? userIdOrBody : 12, hasExplicitUser ? body : userIdOrBody);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -107,6 +114,7 @@ async function dispatch(
 
 describe('Invoices API routes', () => {
   beforeEach(() => {
+    clearTenantScopeAnomaliesForTests();
     mockGetAllVendorsMerged.mockReset();
     mockCollectMonthlyInvoices.mockReset();
     mockAddVendor.mockReset();
@@ -142,6 +150,23 @@ describe('Invoices API routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.destinationEmail).toBe('felipe@nexushub.me');
     expect(mockGetFiscalCollectionSummary).toHaveBeenCalledWith(12);
+  });
+
+  it('fails closed on invalid tenant scope before loading the fiscal profile', async () => {
+    const res = await dispatch('GET', '/profile', 0);
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockGetFiscalCollectionSummary).not.toHaveBeenCalledWith(0);
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'invoices_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
   });
 
   it('validates profile updates before touching the state layer', async () => {

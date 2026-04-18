@@ -3,6 +3,10 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request, Response } from 'express';
+import {
+  clearTenantScopeAnomaliesForTests,
+  getTenantScopeAnomalies,
+} from '../../src/services/tenant-scope-observability';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -95,6 +99,7 @@ describe('Onboarding questionnaire start flow', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
   });
 
   afterEach(() => {
@@ -113,6 +118,22 @@ describe('Onboarding questionnaire start flow', () => {
     const session = getActiveSession(1401, 'fitness');
     expect(session).not.toBeNull();
     expect(session?.current_step).toBe(0);
+  });
+
+  it('fails closed on invalid tenant scope before starting onboarding', async () => {
+    const res = await dispatch('POST', '/fitness/start', 0);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'onboarding_route',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
   });
 
   it('GET /:questionnaireId implicitly starts the session so the first answer works for fresh users', async () => {

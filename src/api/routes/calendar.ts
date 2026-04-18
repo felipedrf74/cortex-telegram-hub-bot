@@ -20,13 +20,18 @@ import { config } from '../../config';
 import {
   getEvents,
   createEvent,
+  updateEvent,
+  deleteEvent,
   isAnyCalendarConfigured,
+  hasConnectedCalendarForUser,
   hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
-import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { getCached, setCache, clearCache, clearCacheByPrefix } from '../../services/cache-store';
+import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
+import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
@@ -34,19 +39,28 @@ const RANGE_TTL = 60;  // 1 min for arbitrary ranges
 export function calendarRoutes(): Router {
   const router = Router();
 
+  router.use((req, res, next) => {
+    const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidTenantRouteScope(res as Response, userId, 'calendar_route', {
+      method: req.method,
+      path: req.path,
+    })) return;
+    next();
+  });
+
   /**
    * GET /api/v1/calendar/events?start=ISO&end=ISO
    * Returns events between start and end across all configured calendars.
    * Defaults to today if start/end omitted.
    */
   router.get('/events', asyncHandler(async (req, res: Response) => {
-    if (!isAnyCalendarConfigured()) {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!hasConnectedCalendarForUser(userId)) {
       sendSuccess(res, { events: [] });
       return;
     }
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
-    const userId = (req as any).userId;
     const cacheKey = userId ? `u:${userId}:calendar:events:${start}:${end}` : `calendar:events:${start}:${end}`;
 
     const cached = getCached<any[]>(cacheKey);
@@ -159,9 +173,7 @@ export function calendarRoutes(): Router {
         userId,
       );
 
-      // Invalidate today's cache so the dashboard re-fetches on next poll.
-      // Range caches expire via TTL (60s), so we don't need to loop them.
-      clearCache(`calendar:today:${todayDateString()}`);
+      invalidateCalendarCaches(userId);
 
       logger.info(
         { userId: (req as AuthenticatedRequest).userId, eventId: event.id, source: event.source, title: event.summary },
@@ -176,16 +188,136 @@ export function calendarRoutes(): Router {
   }));
 
   /**
+   * PATCH /api/v1/calendar/events/:eventId
+   *
+   * Token-zero event update for secretary-style calendar mutation
+   * from the iOS dashboard. Keeps the route thin and delegates to
+   * unified-calendar so provider logic stays shared.
+   */
+  router.patch('/events/:eventId', asyncHandler(async (req, res: Response) => {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!hasWritableCalendarForUser(userId)) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
+      return;
+    }
+
+    const eventId = String(req.params.eventId || '').trim();
+    if (!eventId) {
+      sendError(res, 'VALIDATION', 'eventId is required', 400);
+      return;
+    }
+
+    const body = req.body as {
+      title?: string;
+      start?: string;
+      end?: string;
+      source?: string;
+    };
+
+    const source = parseCalendarSource(body.source);
+    if (!source) {
+      sendError(res, 'VALIDATION', 'source must be google or outlook', 400);
+      return;
+    }
+
+    const hasTitle = typeof body.title === 'string';
+    const hasStart = typeof body.start === 'string';
+    const hasEnd = typeof body.end === 'string';
+    if (!hasTitle && !hasStart && !hasEnd) {
+      sendError(res, 'VALIDATION', 'at least one of title, start, or end is required', 400);
+      return;
+    }
+
+    const trimmedTitle = typeof body.title === 'string' ? body.title.trim() : undefined;
+    if (hasTitle && !trimmedTitle) {
+      sendError(res, 'VALIDATION', 'title must not be empty', 400);
+      return;
+    }
+
+    const parsedStart = body.start ? new Date(body.start) : null;
+    const parsedEnd = body.end ? new Date(body.end) : null;
+    if (body.start && (!parsedStart || Number.isNaN(parsedStart.getTime()))) {
+      sendError(res, 'VALIDATION', 'start must be a valid ISO 8601 timestamp', 400);
+      return;
+    }
+    if (body.end && (!parsedEnd || Number.isNaN(parsedEnd.getTime()))) {
+      sendError(res, 'VALIDATION', 'end must be a valid ISO 8601 timestamp', 400);
+      return;
+    }
+    if (parsedStart && parsedEnd && parsedEnd.getTime() <= parsedStart.getTime()) {
+      sendError(res, 'VALIDATION', 'end must be after start', 400);
+      return;
+    }
+
+    try {
+      const event = await updateEvent(
+        {
+          event_id: eventId,
+          new_title: trimmedTitle,
+          new_start: parsedStart?.toISOString(),
+          new_end: parsedEnd?.toISOString(),
+        },
+        source,
+        userId,
+      );
+
+      invalidateCalendarCaches(userId);
+
+      logger.info({ userId, eventId, source }, 'iOS calendar event updated');
+      sendSuccess(res, { event: formatEvent(event) });
+    } catch (err: any) {
+      logger.error({ err, eventId, source }, 'iOS calendar event update failed');
+      sendError(res, 'CALENDAR_UPDATE_FAILED', err?.message || 'Failed to update event', 500);
+    }
+  }));
+
+  /**
+   * DELETE /api/v1/calendar/events/:eventId?source=google|outlook
+   *
+   * Removes an event directly from the connected calendar provider
+   * without involving the AI pipeline.
+   */
+  router.delete('/events/:eventId', asyncHandler(async (req, res: Response) => {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!hasWritableCalendarForUser(userId)) {
+      sendError(res, 'CALENDAR_NOT_CONFIGURED', 'No calendar provider is connected', 400);
+      return;
+    }
+
+    const eventId = String(req.params.eventId || '').trim();
+    if (!eventId) {
+      sendError(res, 'VALIDATION', 'eventId is required', 400);
+      return;
+    }
+
+    const source = parseCalendarSource(req.query.source as string | undefined);
+    if (!source) {
+      sendError(res, 'VALIDATION', 'source must be google or outlook', 400);
+      return;
+    }
+
+    try {
+      await deleteEvent(eventId, source, userId);
+      invalidateCalendarCaches(userId);
+      logger.info({ userId, eventId, source }, 'iOS calendar event deleted');
+      sendSuccess(res, { deleted: true, eventId, source });
+    } catch (err: any) {
+      logger.error({ err, eventId, source }, 'iOS calendar event delete failed');
+      sendError(res, 'CALENDAR_DELETE_FAILED', err?.message || 'Failed to delete event', 500);
+    }
+  }));
+
+  /**
    * GET /api/v1/calendar/today
    * Shortcut for today's events in the configured timezone.
    */
   router.get('/today', asyncHandler(async (req, res: Response) => {
-    if (!isAnyCalendarConfigured()) {
+    const userId = (req as AuthenticatedRequest).userId;
+    if (!hasConnectedCalendarForUser(userId)) {
       sendSuccess(res, { events: [], date: todayDateString() });
       return;
     }
 
-    const userId = (req as any).userId;
     const cacheKey = userId ? `u:${userId}:calendar:today:${todayDateString()}` : `calendar:today:${todayDateString()}`;
     const cached = getCached<any[]>(cacheKey);
     if (cached) {
@@ -255,6 +387,22 @@ function formatEvent(e: any) {
     categories: Array.isArray(e.categories) ? e.categories : null,
     isAllDay: !!e.isAllDay,
   };
+}
+
+function parseCalendarSource(value?: string): CalendarSource | null {
+  if (value === 'google' || value === 'outlook') {
+    return value;
+  }
+  return null;
+}
+
+function invalidateCalendarCaches(userId?: number): void {
+  if (userId != null) {
+    clearCacheByPrefix(`u:${userId}:calendar:`);
+  }
+  clearCacheByPrefix('calendar:');
+  clearCache(`calendar:today:${todayDateString()}`);
+  invalidatePlanningCaches(userId);
 }
 
 function parseRange(startQ?: string, endQ?: string): { start: string; end: string } {

@@ -23,6 +23,7 @@ import {
   type BillingPlan,
   type UsageLevel,
 } from './plan-quotas';
+import { isOwnerUserRef } from './user-service';
 
 // ── Telegram Alert Callback ──────────────────────────────────────
 
@@ -102,8 +103,7 @@ function resolvePlanFromSubscriptionState(userId: number): BillingPlan {
     return 'beta';
   }
 
-  const ownerTelegramIds = config.telegram.allowedUserIds || [];
-  let isOwner = ownerTelegramIds.includes(userId);
+  let isOwner = isOwnerUserRef(userId);
   let userTier: string | null = null;
 
   if (!isOwner) {
@@ -112,9 +112,6 @@ function resolvePlanFromSubscriptionState(userId: number): BillingPlan {
         'SELECT telegram_id, tier FROM users WHERE id = ?'
       ).get(userId) as { telegram_id: number | null; tier: string | null } | undefined;
       userTier = user?.tier ?? null;
-      if (user?.telegram_id && ownerTelegramIds.includes(user.telegram_id)) {
-        isOwner = true;
-      }
       if (user?.tier === 'owner') {
         isOwner = true;
       }

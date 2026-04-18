@@ -6,12 +6,21 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { getRuntimeStatus } from '../../services/runtime-status';
-import { getCached, setCache } from '../../services/cache-store';
+import { getCached, setCache, getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { apiSuccess, sendError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguage } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
+import {
+  getEvents as getGoogleCalendarEvents,
+  isGoogleCalendarConfigured,
+} from '../../services/google-calendar';
+import {
+  getEvents as getOutlookCalendarEvents,
+  isOutlookCalendarConfigured,
+} from '../../services/outlook-calendar';
 import type { Lang } from '../../utils/i18n';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
 
@@ -19,6 +28,37 @@ interface DashboardSectionHealth {
   status: DashboardSectionStatus;
   warningCodes: string[];
   warnings: string[];
+}
+
+const DASHBOARD_CACHE_TTL = 60;
+const DASHBOARD_SWR_STALE = 300;
+const DASHBOARD_READINESS_CACHE_TTL = 60;
+const swrInFlight = new Set<string>();
+
+function ensureValidDashboardRouteScope(
+  res: Response,
+  userId: number | undefined,
+  operation: string,
+  details?: Record<string, unknown>,
+): userId is number {
+  if (isValidTenantUserId(userId)) return true;
+  recordTenantScopeAnomaly({
+    layer: 'delivery',
+    operation,
+    reason: 'invalid_user_scope',
+    userId: typeof userId === 'number' ? userId : null,
+    details,
+  });
+  sendError(res, 'UNAUTHORIZED', 'Invalid authenticated user scope', 401);
+  return false;
+}
+
+function swrRefresh(key: string, fn: () => Promise<void>): void {
+  if (swrInFlight.has(key)) return;
+  swrInFlight.add(key);
+  fn()
+    .catch((err) => logger.debug({ err, key }, 'Dashboard SWR background refresh failed'))
+    .finally(() => swrInFlight.delete(key));
 }
 
 export function dashboardRoutes(): Router {
@@ -32,16 +72,17 @@ export function dashboardRoutes(): Router {
    */
   router.get('/', async (req: Request, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!ensureValidDashboardRouteScope(res, userId, 'dashboard_route_root')) return;
     const language = resolveDashboardLanguage(req, userId);
 
     try {
-      // Check SQLite cache first (survives restarts, instant response)
       const dashboardCacheKey = dashboardCacheKeyFor(userId, language);
-      const cachedDashboard = getCached<any>(dashboardCacheKey);
-      if (cachedDashboard) {
+      const swr = getCachedSWR<any>(dashboardCacheKey);
+
+      if (swr) {
         // The ETag is computed over the wrapped envelope, so iOS clients
         // get a stable hash that includes the timestamp/cached flags.
-        const envelope = apiSuccess(cachedDashboard, { cached: true });
+        const envelope = apiSuccess(swr.value, { cached: true });
         const envelopeJson = JSON.stringify({ ...envelope, timestamp: undefined }); // hash is content-only
         const etag = `"${crypto.createHash('md5').update(envelopeJson).digest('hex')}"`;
         if (req.headers['if-none-match'] === etag) {
@@ -51,102 +92,18 @@ export function dashboardRoutes(): Router {
         res.setHeader('ETag', etag);
         res.setHeader('Cache-Control', 'private, max-age=30');
         res.json(envelope);
+
+        if (!swr.fresh) {
+          swrRefresh(dashboardCacheKey, async () => {
+            const dashboard = await buildDashboardPayload(userId, language);
+            setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
+          });
+        }
         return;
       }
 
-      // Cache miss — fetch all data in parallel
-      const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-        fetchCalendar(userId),
-        fetchTasks(userId),
-        fetchTraining(userId),
-        fetchContent(userId),
-      ]);
-
-      const calendar = calendarResult.status === 'fulfilled'
-        ? calendarResult.value
-        : buildUnavailableSection(
-          { today: [], upcoming: [] },
-          ['CALENDAR_UNAVAILABLE'],
-          ['Calendar data is unavailable right now.'],
-        );
-      const tasks = tasksResult.status === 'fulfilled'
-        ? tasksResult.value
-        : buildUnavailableSection(
-          { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
-          ['TASKS_UNAVAILABLE'],
-          ['Task data is unavailable right now.'],
-        );
-      const training = trainingResult.status === 'fulfilled'
-        ? trainingResult.value
-        : {
-          todaySession: null,
-          weeklyAdherence: null,
-          readinessScore: null,
-          bodyBattery: null,
-          status: 'unavailable' as const,
-          readinessStatus: 'unavailable' as const,
-          bodyBatteryStatus: 'unavailable' as const,
-          warningCodes: ['READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE'],
-          warnings: ['Training recovery data is unavailable right now.'],
-        };
-      const content = contentResult.status === 'fulfilled'
-        ? contentResult.value
-        : buildUnavailableSection(
-          { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
-          ['CONTENT_UNAVAILABLE'],
-          ['Content pipeline is unavailable right now.'],
-        );
-
-      // Time-aware greeting with per-user display name
-      const now = new Date();
-      const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
-      const greeting = localizeGreeting(hour, language);
-
-      // Look up the user's first name — falls back to empty string
-      // so the greeting is "Good afternoon" instead of "Good afternoon, undefined"
-      let displayName = '';
-      try {
-        const { getPreferredDisplayName } = require('../../services/user-service');
-        displayName = getPreferredDisplayName(userId);
-      } catch { /* user-service not available */ }
-
-      const startTime = (global as any).__startTime;
-      const uptimeMs = startTime ? Date.now() - startTime : 0;
-      const uptimeStr = uptimeMs > 86400000
-        ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
-        : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
-
-      const runtime = getRuntimeStatus();
-      const quota = getDailyQuotaStatus(userId);
-
-      const dashboard = {
-        greeting: displayName ? `${greeting}, ${displayName}` : greeting,
-        date: now.toISOString().slice(0, 10),
-        dayOfWeek: localizedWeekday(now, language),
-        calendar,
-        tasks,
-        training,
-        content,
-        quota: {
-          used_usd: quota.usedUsd,
-          limit_usd: quota.limitUsd,
-          remaining_usd: quota.remainingUsd,
-          plan: quota.plan,
-          resetAt: quota.resetAt,
-        },
-        system: {
-          version: getAppVersion(),
-          uptime: uptimeStr,
-          serviceStatus: runtime.serviceStatus,
-          botStatus: runtime.botStatus,
-          databaseStatus: runtime.databaseStatus,
-          lastMessageAt: runtime.lastMessageAt,
-        },
-      };
-
-      // Cache the raw dashboard data (unwrapped) so warmDashboardCache and
-      // the cache hit path can both use it without double-wrapping.
-      setCache(dashboardCacheKey, dashboard, 180);
+      const dashboard = await buildDashboardPayload(userId, language);
+      setCacheSWR(dashboardCacheKey, dashboard, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
 
       const envelope = apiSuccess(dashboard);
       // ETag support — skip full response if nothing changed
@@ -196,75 +153,11 @@ function extractTitle(e: any): string {
 export async function warmDashboardCache(userId: number): Promise<void> {
   const language = getUserLanguage(userId);
   const cacheKey = dashboardCacheKeyFor(userId, language);
-  if (getCached(cacheKey)) return; // Already cached
+  if (getCachedSWR(cacheKey)?.fresh) return; // Already warm enough
 
   try {
-    const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
-      fetchCalendar(userId), fetchTasks(userId), fetchTraining(userId), fetchContent(userId),
-    ]);
-
-    const now = new Date();
-    const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
-    const greeting = localizeGreeting(hour, language);
-
-    let warmDisplayName = '';
-    try {
-      const { getPreferredDisplayName } = require('../../services/user-service');
-      warmDisplayName = getPreferredDisplayName(userId);
-    } catch { /* */ }
-
-    const response = {
-      greeting: warmDisplayName ? `${greeting}, ${warmDisplayName}` : greeting,
-      date: now.toISOString().slice(0, 10),
-      dayOfWeek: localizedWeekday(now, language),
-      calendar: calendarResult.status === 'fulfilled'
-        ? calendarResult.value
-        : buildUnavailableSection(
-          { today: [], upcoming: [] },
-          ['CALENDAR_UNAVAILABLE'],
-          ['Calendar data is unavailable right now.'],
-        ),
-      tasks: tasksResult.status === 'fulfilled'
-        ? tasksResult.value
-        : buildUnavailableSection(
-          { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
-          ['TASKS_UNAVAILABLE'],
-          ['Task data is unavailable right now.'],
-        ),
-      training: trainingResult.status === 'fulfilled'
-        ? trainingResult.value
-        : {
-          todaySession: null,
-          weeklyAdherence: null,
-          readinessScore: null,
-          bodyBattery: null,
-          status: 'unavailable' as const,
-          readinessStatus: 'unavailable' as const,
-          bodyBatteryStatus: 'unavailable' as const,
-          warningCodes: ['READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE'],
-          warnings: ['Training recovery data is unavailable right now.'],
-        },
-      content: contentResult.status === 'fulfilled'
-        ? contentResult.value
-        : buildUnavailableSection(
-          { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
-          ['CONTENT_UNAVAILABLE'],
-          ['Content pipeline is unavailable right now.'],
-        ),
-      quota: (() => {
-        const quota = getDailyQuotaStatus(userId);
-        return {
-          used_usd: quota.usedUsd,
-          limit_usd: quota.limitUsd,
-          remaining_usd: quota.remainingUsd,
-          plan: quota.plan,
-          resetAt: quota.resetAt,
-        };
-      })(),
-      system: { version: getAppVersion(), uptime: '0h 0m', serviceStatus: 'online', lastMessageAt: null },
-    };
-
-    setCache(cacheKey, response, 180);
+    const response = await buildDashboardPayload(userId, language);
+    setCacheSWR(cacheKey, response, DASHBOARD_CACHE_TTL, DASHBOARD_SWR_STALE);
     logger.debug('Dashboard cache warmed');
   } catch (err) {
     logger.debug({ err }, 'Dashboard cache warming failed (non-critical)');
@@ -273,6 +166,10 @@ export async function warmDashboardCache(userId: number): Promise<void> {
 
 function dashboardCacheKeyFor(userId: number, language: Lang): string {
   return `dashboard:${userId}:${language}`;
+}
+
+function dashboardReadinessCacheKeyFor(userId: number): string {
+  return `dashboard-readiness:${userId}`;
 }
 
 function resolveDashboardLanguage(req: Request, userId: number): Lang {
@@ -302,6 +199,94 @@ function localizedWeekday(date: Date, language: Lang): string {
   return weekday.charAt(0).toUpperCase() + weekday.slice(1);
 }
 
+async function buildDashboardPayload(userId: number, language: Lang) {
+  const [calendarResult, tasksResult, trainingResult, contentResult] = await Promise.allSettled([
+    fetchCalendar(userId),
+    fetchTasks(userId),
+    fetchTraining(userId),
+    fetchContent(userId),
+  ]);
+
+  const calendar = calendarResult.status === 'fulfilled'
+    ? calendarResult.value
+    : buildUnavailableSection(
+      { today: [], upcoming: [] },
+      ['CALENDAR_UNAVAILABLE'],
+      ['Calendar data is unavailable right now.'],
+    );
+  const tasks = tasksResult.status === 'fulfilled'
+    ? tasksResult.value
+    : buildUnavailableSection(
+      { overdue: 0, dueToday: 0, totalPending: 0, topTasks: [] },
+      ['TASKS_UNAVAILABLE'],
+      ['Task data is unavailable right now.'],
+    );
+  const training = trainingResult.status === 'fulfilled'
+    ? trainingResult.value
+    : {
+      todaySession: null,
+      weeklyAdherence: null,
+      readinessScore: null,
+      bodyBattery: null,
+      status: 'unavailable' as const,
+      readinessStatus: 'unavailable' as const,
+      bodyBatteryStatus: 'unavailable' as const,
+      warningCodes: ['READINESS_UNAVAILABLE', 'BODY_BATTERY_UNAVAILABLE'],
+      warnings: ['Training recovery data is unavailable right now.'],
+    };
+  const content = contentResult.status === 'fulfilled'
+    ? contentResult.value
+    : buildUnavailableSection(
+      { pipelineCount: { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 }, nextDeadline: null },
+      ['CONTENT_UNAVAILABLE'],
+      ['Content pipeline is unavailable right now.'],
+    );
+
+  const now = new Date();
+  const hour = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: config.app.timezone }), 10);
+  const greeting = localizeGreeting(hour, language);
+
+  let displayName = '';
+  try {
+    const { getPreferredDisplayName } = require('../../services/user-service');
+    displayName = getPreferredDisplayName(userId);
+  } catch { /* user-service not available */ }
+
+  const startTime = (global as any).__startTime;
+  const uptimeMs = startTime ? Date.now() - startTime : 0;
+  const uptimeStr = uptimeMs > 86400000
+    ? `${Math.floor(uptimeMs / 86400000)}d ${Math.floor((uptimeMs % 86400000) / 3600000)}h`
+    : `${Math.floor(uptimeMs / 3600000)}h ${Math.floor((uptimeMs % 3600000) / 60000)}m`;
+
+  const runtime = getRuntimeStatus();
+  const quota = getDailyQuotaStatus(userId);
+
+  return {
+    greeting: displayName ? `${greeting}, ${displayName}` : greeting,
+    date: now.toISOString().slice(0, 10),
+    dayOfWeek: localizedWeekday(now, language),
+    calendar,
+    tasks,
+    training,
+    content,
+    quota: {
+      used_usd: quota.usedUsd,
+      limit_usd: quota.limitUsd,
+      remaining_usd: quota.remainingUsd,
+      plan: quota.plan,
+      resetAt: quota.resetAt,
+    },
+    system: {
+      version: getAppVersion(),
+      uptime: uptimeStr,
+      serviceStatus: runtime.serviceStatus,
+      botStatus: runtime.botStatus,
+      databaseStatus: runtime.databaseStatus,
+      lastMessageAt: runtime.lastMessageAt,
+    },
+  };
+}
+
 /** Read version from package.json (works with PM2, not just npm start) */
 function getAppVersion(): string {
   try {
@@ -314,13 +299,18 @@ function getAppVersion(): string {
 
 function normalizeBodyBattery(bb: any): number | null {
   if (bb === null || bb === undefined) return null;
-  if (typeof bb === 'number') return Math.round(bb);
+  if (typeof bb === 'number') {
+    const rounded = Math.round(bb);
+    return rounded > 0 ? rounded : null;
+  }
   if (typeof bb === 'object') {
     const val = bb.current !== undefined ? bb.current
       : bb.charged !== undefined ? bb.charged
       : bb.score !== undefined ? bb.score
       : null;
-    return val !== null && val !== undefined ? Math.round(Number(val)) : null;
+    if (val === null || val === undefined) return null;
+    const rounded = Math.round(Number(val));
+    return Number.isFinite(rounded) && rounded > 0 ? rounded : null;
   }
   return null;
 }
@@ -357,32 +347,31 @@ async function fetchCalendarForUser(userId?: number) {
   const warningCodes: string[] = [];
   const warnings: string[] = [];
 
-  const googleCalendar = require('../../services/google-calendar');
-  if (googleCalendar.isGoogleCalendarConfigured()) {
+  const googleConfigured = isGoogleCalendarConfigured(userId);
+  if (googleConfigured) {
     fetchers.push({
       provider: 'google',
       run: async () => {
-        const events = await googleCalendar.getEvents(start, end);
+        const events = await getGoogleCalendarEvents(start, end, userId);
         return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'google')) : [];
       },
     });
-  } else {
-    warningCodes.push('GOOGLE_CALENDAR_UNAVAILABLE');
-    warnings.push('Google Calendar is unavailable right now.');
   }
 
-  const outlookCalendar = require('../../services/outlook-calendar');
-  if (outlookCalendar.isOutlookCalendarConfigured(userId)) {
+  const outlookConfigured = isOutlookCalendarConfigured(userId);
+  if (outlookConfigured) {
     fetchers.push({
       provider: 'outlook',
       run: async () => {
-        const events = await outlookCalendar.getEvents(start, end, userId);
+        const events = await getOutlookCalendarEvents(start, end, userId);
         return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'outlook')) : [];
       },
     });
-  } else {
-    warningCodes.push('OUTLOOK_CALENDAR_UNAVAILABLE');
-    warnings.push('Outlook Calendar is unavailable right now.');
+  }
+
+  if (!googleConfigured && !outlookConfigured) {
+    warningCodes.push('CALENDAR_UNAVAILABLE');
+    warnings.push('Calendar data is unavailable right now.');
   }
 
   const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
@@ -490,7 +479,9 @@ async function fetchTraining(userId: number) {
 
   // Provider-agnostic readiness: calculateReadiness() handles Garmin → Apple Health → neutral
   // fallback internally. No need for the dashboard to branch by provider.
-  const cachedReadiness = getCached<{ score: number; bodyBattery: number | null }>(`readiness:${userId}`);
+  const cachedReadiness = getCached<{ score: number; bodyBattery: number | null }>(
+    dashboardReadinessCacheKeyFor(userId),
+  );
   if (cachedReadiness) {
     if (isSyntheticNeutralCachedReadiness(cachedReadiness)) {
       readinessScore = null;
@@ -546,7 +537,11 @@ async function fetchTraining(userId: number) {
         }
       }
 
-      setCache(`readiness:${userId}`, { score: readinessScore, bodyBattery }, 1800);
+      setCache(
+        dashboardReadinessCacheKeyFor(userId),
+        { score: readinessScore, bodyBattery },
+        DASHBOARD_READINESS_CACHE_TTL,
+      );
     } catch {
       readinessStatus = 'unavailable';
       bodyBatteryStatus = 'unavailable';
@@ -610,9 +605,7 @@ async function fetchTraining(userId: number) {
 async function fetchContent(userId?: number) {
   try {
     const db = require('../../services/database').getDb();
-    const counts = userId
-      ? db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' AND user_id = ? GROUP BY stage`).all(userId) as { stage: string; count: number }[]
-      : db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' GROUP BY stage`).all() as { stage: string; count: number }[];
+    const counts = queryContentPipelineCounts(db, userId);
 
     const pipelineCount = { ideas: 0, scripted: 0, filmed: 0, editing: 0, published: 0 };
     for (const row of counts) {
@@ -632,6 +625,27 @@ async function fetchContent(userId?: number) {
       ['CONTENT_UNAVAILABLE'],
       ['Content pipeline is unavailable right now.'],
     );
+  }
+}
+
+export function queryContentPipelineCounts(db: any, userId?: number): { stage: string; count: number }[] {
+  try {
+    return userId
+      ? db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' AND user_id = ? GROUP BY stage`).all(userId) as { stage: string; count: number }[]
+      : db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE status != 'archived' GROUP BY stage`).all() as { stage: string; count: number }[];
+  } catch (error: any) {
+    const message = String(error?.message || '').toLowerCase();
+    const missingStatusColumn = message.includes('no such column') && message.includes('status');
+    const missingContentIdeasTable = message.includes('no such table') && message.includes('content_ideas');
+    if (missingContentIdeasTable) {
+      return [];
+    }
+    if (!missingStatusColumn) {
+      throw error;
+    }
+    return userId
+      ? db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas WHERE user_id = ? GROUP BY stage`).all(userId) as { stage: string; count: number }[]
+      : db.prepare(`SELECT stage, COUNT(*) as count FROM content_ideas GROUP BY stage`).all() as { stage: string; count: number }[];
   }
 }
 
