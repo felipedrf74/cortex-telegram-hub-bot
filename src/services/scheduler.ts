@@ -720,36 +720,26 @@ export function startScheduler(bot?: any): void {
   }), { timezone: tz });
 
   // ── Daily briefing (configurable time) ─────────────────────────────
+  //
+  // sendDailyBriefing internally calls storeAndPushReport, which stores
+  // the durable report AND sends a push whose payload carries the
+  // routable `reportId`. iOS uses that id to deep-link into the
+  // briefing detail on notification tap. A prior terse push was sent
+  // here as a second notification — that path emitted a duplicate
+  // without reportId, so the tap landed on Home instead of the
+  // briefing. Removed to leave a single, deep-linkable push per run.
   cron.schedule(dailyCron, wrapJob('daily_briefing', async () => {
     if (!config.todo.digestEnabled) return;
     await sendDailyBriefing(bot);
-    // sendDailyBriefing sends rich HTML via Telegram. Pair with a terse push
-    // per active user — the full briefing stays in the app, push is the nudge.
-    for (const target of getActiveUserTargets()) {
-      await sendPushNotification(target.tenantId, {
-        title: 'Good morning',
-        body: 'Your daily briefing is ready',
-        sound: 'default',
-        threadId: 'daily_briefing',
-        category: 'BRIEFING',
-        data: { type: 'daily_briefing' },
-      });
-    }
   }), { timezone: tz });
 
   // ── Weekly review (Friday 17:00) ───────────────────────────────────
+  //
+  // Same shape as daily_briefing: sendWeeklyReview already pushes via
+  // storeAndPushReport with the reportId. The duplicate terse push
+  // that used to live here has been removed.
   cron.schedule('0 17 * * 5', wrapJob('weekly_review', async () => {
     await sendWeeklyReview(bot);
-    for (const target of getActiveUserTargets()) {
-      await sendPushNotification(target.tenantId, {
-        title: 'Weekly review',
-        body: 'Your week in review is ready',
-        sound: 'default',
-        threadId: 'weekly_review',
-        category: 'BRIEFING',
-        data: { type: 'weekly_review' },
-      });
-    }
   }), { timezone: tz });
 
   // ── Shared list task notifications (every 5 min) ───────────────────
