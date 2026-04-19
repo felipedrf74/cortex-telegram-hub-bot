@@ -114,10 +114,26 @@ export function buildWeekPlan(athlete: AthleteState, weekStart: string): WeeklyP
 
 export function buildDayPlan(athlete: AthleteState, weeklyPlan: WeeklyPlan, dayOfWeek: Session['dayOfWeek']): DailyRecommendation {
   const session = weeklyPlan.sessions.find((item) => item.dayOfWeek === dayOfWeek) ?? null;
-  const guardrailResults = weeklyPlan.guardrailResults.filter((result) => result.ruleId === 'readiness' || result.ruleId.includes('schedule'));
+  // Preserve ALL guardrails that fired during plan generation so downstream
+  // consumers can surface every adjustment reason, not only readiness /
+  // schedule. Volume-growth and deload guardrails are just as explanatory
+  // for "why is today what it is" — the prior filter silently dropped them.
+  const guardrailResults = [...weeklyPlan.guardrailResults];
   const alternatives = session
     ? weeklyPlan.sessions.filter((item) => item.dayOfWeek === dayOfWeek && item.id !== session.id).slice(0, 2)
     : [];
+
+  // Build a rationale list that enumerates every adjusted guardrail so
+  // downstream UIs can render "why today changed" without re-querying the
+  // LLM briefing. Adjusted guardrails get prefixed with ✳ so renderers
+  // can style them distinctly from generic plan notes.
+  const adjustedGuardrailMessages = weeklyPlan.guardrailResults
+    .filter((result) => result.adjusted && typeof result.message === 'string' && result.message.trim().length > 0)
+    .map((result) => `✳ ${result.message}`);
+
+  const baseRationale = session
+    ? `Today's primary prescription is ${session.title} because it fits the ${weeklyPlan.phase} phase.`
+    : 'No primary session is scheduled for today.';
 
   return {
     date: `${weeklyPlan.weekStart}:${dayOfWeek}`,
@@ -125,9 +141,8 @@ export function buildDayPlan(athlete: AthleteState, weeklyPlan: WeeklyPlan, dayO
     session,
     alternatives,
     rationale: [
-      session
-        ? `Today's primary prescription is ${session.title} because it fits the ${weeklyPlan.phase} phase.`
-        : 'No primary session is scheduled for today.',
+      baseRationale,
+      ...adjustedGuardrailMessages,
       ...weeklyPlan.notes,
     ],
     guardrailResults,

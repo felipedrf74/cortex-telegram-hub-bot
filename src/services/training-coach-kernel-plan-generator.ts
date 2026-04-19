@@ -10,13 +10,37 @@ import type {
   EquipmentAccess,
   Goals,
   RaceEvent,
+  ReadinessLevel,
+  ReadinessSnapshot,
   Session,
   Sport,
   TrainingHistory,
   WeeklyPlan,
 } from './coach-kernel/types';
 import { DAY_ORDER } from './coach-kernel/utils';
+import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
+
+/** Current readiness measurements used to seed the planner's
+ *  `AthleteState.readiness`. When provided the generator uses these real
+ *  values (from `calculateReadiness`) instead of a hardcoded yellow/orange
+ *  heuristic — that lets readiness-aware guardrails (e.g. volume progression
+ *  cap on low HRV) fire with actual data at plan-generation time. */
+export interface CoachKernelReadinessInput {
+  /** 0..100 composite score from `calculateReadiness`. */
+  score: number;
+  /** Hours slept last night if known — the readiness-scorer exposes this
+   *  via `factors.sleep.durationHours`. Leave undefined to keep the
+   *  planner's default. */
+  sleepHours?: number;
+  /** HRV trend classification from the scorer (maps from 'up'/'stable'/
+   *  'down' → 'high'/'normal'/'low'). */
+  hrvStatus?: 'low' | 'normal' | 'high';
+  /** Body-battery / energy-reserve 0..100. */
+  energyReserve?: number;
+  /** One-line reasoning from the scorer, surfaced as a planner note. */
+  reasoning?: string | null;
+}
 
 export interface CoachKernelTrainingPlanInput {
   userId: number;
@@ -33,6 +57,10 @@ export interface CoachKernelTrainingPlanInput {
   fitnessProfile?: Record<string, any> | null;
   gymProfile?: Record<string, any> | null;
   runProfile?: Record<string, any> | null;
+  /** Optional real readiness snapshot. When omitted the generator falls
+   *  back to a neutral yellow seed (70) so existing callers that don't
+   *  pass readiness remain functional. */
+  currentReadiness?: CoachKernelReadinessInput | null;
 }
 
 const DAY_NAME_MAP: Record<DayOfWeek, string> = {
@@ -104,6 +132,11 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     };
 
     const weeklyPlan = buildWeekPlan(weekAthlete, weekStart);
+    // Retain the raw WeeklyPlan (for guardrail reasoning) AND the
+    // AthleteState that produced it (so the home-view route can re-run
+    // `adjustForFatigue` with today's live readiness). The legacy
+    // converter below discards both fields.
+    recordWeeklyPlan(weeklyPlan, weekAthlete);
     rollingAthlete = rollAthleteStateForward(weekAthlete, weeklyPlan);
     return convertWeeklyPlanToLegacyWeek(weeklyPlan, weekNumber);
   });
@@ -175,22 +208,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       lastDeloadWeekIndex: undefined,
     },
     recentSessions: [],
-    readiness: {
-      capturedAt: new Date().toISOString(),
-      level: constraints.some((constraint) => constraint.type === 'injury' && constraint.severity === 'high') ? 'orange' : 'yellow',
-      score: constraints.some((constraint) => constraint.type === 'injury' && constraint.severity === 'high') ? 58 : 70,
-      painFlags: constraints
-        .filter((constraint) => constraint.type === 'injury')
-        .map((constraint) => ({
-          area: constraint.description,
-          severity: constraint.severity === 'high' ? 'moderate' : 'low',
-          impact: [constraint.sport as Sport | 'strength'].filter(Boolean),
-        })),
-      notes: compact([
-        constraints.some((constraint) => constraint.type === 'injury') ? 'Injury-aware progression enabled.' : null,
-        typeof input.notes === 'string' && input.notes.trim().length > 0 ? input.notes.trim() : null,
-      ]),
-    },
+    readiness: buildReadinessSnapshot(input, constraints),
     compliance: {
       trailing14DayCompliance: 0.82,
       bySport: {},
@@ -198,6 +216,77 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       consecutiveMisses: 0,
     },
   };
+}
+
+/**
+ * Build the `AthleteState.readiness` snapshot from the generator input.
+ *
+ * Priority order:
+ *   1. If `input.currentReadiness` is provided, map the score → ReadinessLevel
+ *      and use the real sleep/HRV/energy numbers from `calculateReadiness`.
+ *   2. Otherwise fall back to a constraint-derived yellow/orange seed so
+ *      existing callers (tests, older routes) keep working.
+ *
+ * Pain flags always come from the user's declared constraints — readiness
+ * data from wearables doesn't know about pre-existing injuries.
+ */
+function buildReadinessSnapshot(input: CoachKernelTrainingPlanInput, constraints: Constraint[]): ReadinessSnapshot {
+  const hasHighInjury = constraints.some((constraint) => constraint.type === 'injury' && constraint.severity === 'high');
+  const painFlags: ReadinessSnapshot['painFlags'] = constraints
+    .filter((constraint) => constraint.type === 'injury')
+    .map((constraint) => ({
+      area: constraint.description,
+      severity: constraint.severity === 'high' ? 'moderate' : 'low',
+      impact: [constraint.sport as Sport | 'strength'].filter(Boolean),
+    }));
+
+  const notes = compact([
+    hasHighInjury ? 'Injury-aware progression enabled.' : null,
+    typeof input.notes === 'string' && input.notes.trim().length > 0 ? input.notes.trim() : null,
+    typeof input.currentReadiness?.reasoning === 'string' && input.currentReadiness.reasoning.trim().length > 0
+      ? `Readiness: ${input.currentReadiness.reasoning.trim()}`
+      : null,
+  ]);
+
+  if (input.currentReadiness && typeof input.currentReadiness.score === 'number') {
+    const score = clampReadinessScore(input.currentReadiness.score);
+    return {
+      capturedAt: new Date().toISOString(),
+      level: scoreToReadinessLevel(score, hasHighInjury),
+      score,
+      sleepHours: input.currentReadiness.sleepHours,
+      hrvStatus: input.currentReadiness.hrvStatus,
+      energyReserve: input.currentReadiness.energyReserve,
+      painFlags,
+      notes,
+    };
+  }
+
+  // Neutral fallback — preserves prior behavior for callers that can't
+  // supply readiness yet.
+  return {
+    capturedAt: new Date().toISOString(),
+    level: hasHighInjury ? 'orange' : 'yellow',
+    score: hasHighInjury ? 58 : 70,
+    painFlags,
+    notes,
+  };
+}
+
+function clampReadinessScore(score: number): number {
+  if (!Number.isFinite(score)) return 70;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+/** Map a composite readiness score (0..100) onto the planner's discrete
+ *  level. High-severity injuries can't return green regardless of score —
+ *  the planner treats them as a ceiling. */
+function scoreToReadinessLevel(score: number, hasHighInjury: boolean): ReadinessLevel {
+  if (hasHighInjury && score > 65) return 'orange';
+  if (score >= 80) return 'green';
+  if (score >= 60) return 'yellow';
+  if (score >= 40) return 'orange';
+  return 'red';
 }
 
 function resolvePrimaryFocus(objective: string, sessionsPerWeek: number, strengthSessionsPerWeek: number): CoachingDiscipline {

@@ -76,13 +76,18 @@ describe('coach-kernel tools', () => {
   it('saves plans and generates a daily brief for LLM presentation', () => {
     const plan = buildWeekPlan(sampleMarathonAthlete, '2026-05-11');
     const store = new InMemoryCoachPlanStore();
-    savePlan(plan, store);
+    // savePlan now persists WeeklyPlan + AthleteState together so the
+    // home-view route can re-run fatigue adjustments later. The stored
+    // entry exposes `.plan` for downstream code that only cares about
+    // the WeeklyPlan.
+    savePlan(plan, sampleMarathonAthlete, store);
     const stored = store.get(sampleMarathonAthlete.profile.athleteId, '2026-05-11');
     const load = computeTrainingLoad(plan.sessions);
     const brief = generateDailyBrief(sampleMarathonAthlete, plan, 'tuesday');
     const calendarEvents = syncCalendar(plan);
 
-    expect(stored?.weekStart).toBe('2026-05-11');
+    expect(stored?.plan.weekStart).toBe('2026-05-11');
+    expect(stored?.athleteState.profile.athleteId).toBe(sampleMarathonAthlete.profile.athleteId);
     expect(load.totalLoad).toBeGreaterThan(0);
     expect(brief.length).toBeGreaterThan(20);
     expect(calendarEvents.length).toBeGreaterThan(0);

@@ -62,6 +62,27 @@ export interface TrainingHeroMetric {
   icon: string;
 }
 
+/** A compact description of a prescribed training session.
+ *
+ *  Used as the before/after pair on the hero so the UI can render
+ *  "You were scheduled for Long Run (90 min), now it's a Tempo Run
+ *  (45 min) because your readiness dropped" without re-deriving from
+ *  the LLM briefing. When the original and the adapted are identical
+ *  the renderer should hide the "was X, now Y" affordance. */
+export interface TrainingPrescriptionSummary {
+  /** Localized title — e.g. "Corrida tempo" in pt-BR, "Tempo Run" in en-US. */
+  title: string;
+  /** Short one-line detail — intended to complement the title (e.g.
+   *  "45 min · zona 4" or "Maintenance strength · 60 min"). May be
+   *  empty when the planner didn't emit enough info. */
+  detail: string;
+  /** Minutes, if known. */
+  durationMinutes: number | null;
+  /** Raw sessionType enum from the kernel (e.g. 'threshold_run'). Useful
+   *  for client-side icon selection and analytics bucketing. */
+  sessionType: string | null;
+}
+
 export interface TodayRecommendationCardModel {
   state: TrainingDayStateKind;
   eyebrow: string;
@@ -75,6 +96,13 @@ export interface TodayRecommendationCardModel {
   primaryAction: TrainingHeroActionModel;
   secondaryAction: TrainingHeroActionModel | null;
   supportingMetrics: TrainingHeroMetric[];
+  /** What the weekly plan originally prescribed for today. Null when we
+   *  don't have a stored plan to compare against. */
+  originalPrescription: TrainingPrescriptionSummary | null;
+  /** What the coach adapted today into after re-running guardrails with
+   *  live readiness. Null when there is no session today. Equal to
+   *  `originalPrescription` when no adaptation happened. */
+  adaptedPrescription: TrainingPrescriptionSummary | null;
 }
 
 export interface TrainingReasoningMetric {
@@ -119,6 +147,12 @@ export interface WeekProtectionModel {
   changedFrom: string | null;
   changedTo: string | null;
   impactLines: string[];
+  /** Deterministic adjustments authored by the coach kernel (not the LLM).
+   *  Each line is pre-formatted as "ruleId: message" and represents a
+   *  guardrail that actually fired during plan generation. When present
+   *  these are the authoritative "what changed" — the LLM briefing is an
+   *  enrichment, not the source of truth. */
+  kernelAdjustments: string[];
   primaryAction: TrainingHeroActionModel;
   secondaryAction: TrainingHeroActionModel | null;
 }
@@ -145,6 +179,36 @@ export interface TrainingEmptyStateModel {
   action: TrainingHeroActionModel;
 }
 
+/** Adherence-focused coaching card. Fires when the user is drifting
+ *  from their plan (adherence < 60% over the trailing week) but has an
+ *  active plan to drift from. The copy is intentionally supportive
+ *  rather than punitive — the product stance is "coach, not auditor". */
+export interface LowAdherenceCoachingCardModel {
+  /** Short eyebrow label — "Esta semana" / "This week". */
+  eyebrow: string;
+  title: string;
+  summary: string;
+  /** One-line actionable tip derived from the current adherence rate. */
+  tip: string;
+  /** Raw adherence percent (0-100) so the UI can render a gauge
+   *  without re-parsing the label. */
+  adherencePercent: number;
+  primaryAction: TrainingHeroActionModel;
+}
+
+/** Structured confidence bucket for the entire Training Home read.
+ *
+ *  Until now the contract only exposed a localized label string
+ *  ("Alta confiança" / "High confidence"). That's fine for presentation
+ *  but can't be consumed programmatically by the client — analytics
+ *  buckets, trust banner decisions, and automated regression tests all
+ *  need a stable machine-readable value.
+ *
+ *  The localized `hero.confidenceLabel` / `reasoning.confidenceLabel`
+ *  remain for display. This enum is the source of truth — the label is
+ *  derived from it. */
+export type TrainingHomeConfidenceLevel = 'high' | 'medium' | 'low';
+
 export interface TrainingHomeViewState {
   meta: ScreenContractMeta;
   hero: TodayRecommendationCardModel;
@@ -153,6 +217,11 @@ export interface TrainingHomeViewState {
   weekProtection: WeekProtectionModel | null;
   weekJourney: WeekJourneyModel | null;
   emptyState: TrainingEmptyStateModel | null;
+  /** Machine-readable confidence bucket — see TrainingHomeConfidenceLevel. */
+  confidence: TrainingHomeConfidenceLevel;
+  /** Shown when the user's weekly adherence is materially below target
+   *  and we have a plan to coach against. Null when not applicable. */
+  lowAdherenceCard: LowAdherenceCoachingCardModel | null;
 }
 
 export interface ReadinessFactorsInput {
@@ -229,6 +298,17 @@ export interface TrainingSignalInput {
   payload?: Record<string, any> | null;
 }
 
+/** Deterministic guardrail output from the coach-kernel planner-engine.
+ *  `message` is a human-readable reason (e.g. "threshold_run → recovery_run
+ *  because readiness is critically low"). The view-state surfaces ONLY
+ *  guardrails that adjusted the plan (not `pass` results). */
+export interface KernelGuardrailInput {
+  ruleId: string;
+  status: 'pass' | 'warn' | 'block';
+  message: string;
+  adjusted?: boolean;
+}
+
 export interface TrainingHomeViewStateInput {
   todaySession: TrainingSessionInput | null;
   readiness: ReadinessInput | null;
@@ -239,6 +319,19 @@ export interface TrainingHomeViewStateInput {
   tomorrowSession: WeekSessionInput | null;
   hasActivePlan: boolean;
   isGarminStale: boolean;
+  /** Optional kernel guardrail results from the deterministic planner.
+   *  When provided these drive the "what changed" story in
+   *  WeekProtectionModel instead of relying on LLM briefing parsing. */
+  kernelGuardrails?: KernelGuardrailInput[];
+  /** What the stored weekly plan originally prescribed for today — used
+   *  together with `todayAdaptedPrescription` to render the before/after
+   *  affordance on the hero. Both are optional so callers can opt in
+   *  incrementally. */
+  todayOriginalPrescription?: TrainingPrescriptionSummary | null;
+  /** What today was adapted into after re-running guardrails with live
+   *  readiness. When equal to `todayOriginalPrescription` the UI should
+   *  collapse the before/after into a single line. */
+  todayAdaptedPrescription?: TrainingPrescriptionSummary | null;
   meta?: ScreenContractMeta | null;
 }
 
@@ -255,7 +348,8 @@ export function buildTrainingHomeViewState(
 ): TrainingHomeViewState {
   const adjustmentSummary = resolveAdjustmentSummary(input, language);
   const state = classify({ ...input, adjustmentSummary });
-  const confidence = confidenceLabel({ ...input, adjustmentSummary }, language);
+  const confidenceLevel = computeConfidenceLevel({ ...input, adjustmentSummary });
+  const confidence = labelForConfidence(confidenceLevel, language);
 
   return {
     meta: input.meta ?? inferTrainingContractMeta(input),
@@ -265,6 +359,8 @@ export function buildTrainingHomeViewState(
     weekProtection: buildWeekProtection(state, input, language),
     weekJourney: buildWeekJourney(state, input, language),
     emptyState: buildEmptyState(state, input, language),
+    confidence: confidenceLevel,
+    lowAdherenceCard: buildLowAdherenceCard(state, input, language),
   };
 }
 
@@ -287,6 +383,12 @@ function classify(input: TrainingHomeViewStateInput & { adjustmentSummary: Train
   if (!hasMeaningfulReadiness(input.readiness) && input.signals.length === 0 && !input.coachBriefing) {
     return 'insufficientData';
   }
+  // Stale-Garmin (with or without a cached readiness) already funnels
+  // through hasLowConfidenceState below → 'lowConfidence'. That IS the
+  // intended degraded state for "we have a plan but the wearable data
+  // the decision rests on is out of date" — see tests below. The
+  // contract meta still carries the COACH_STALE reason code so the
+  // client can render a trust banner.
   if (hasLowConfidenceState(input)) return 'lowConfidence';
 
   switch (input.adjustmentSummary?.tone) {
@@ -332,6 +434,8 @@ function buildHero(
     primaryAction: primaryAction(state, language),
     secondaryAction: secondaryAction(state, language, input),
     supportingMetrics: heroMetrics(input.todaySession, language),
+    originalPrescription: input.todayOriginalPrescription ?? null,
+    adaptedPrescription: input.todayAdaptedPrescription ?? null,
   };
 }
 
@@ -563,12 +667,22 @@ function buildWeekProtection(
     );
   }
 
+  // Collect deterministic kernel adjustments: every guardrail that
+  // actually adjusted the plan. These are authoritative "what changed"
+  // descriptions — independent of whether the LLM briefing happens to
+  // be fresh. Cap at 5 so a noisy guardrail storm doesn't flood the UI.
+  const kernelAdjustments = (input.kernelGuardrails ?? [])
+    .filter((g) => g.adjusted && typeof g.message === 'string' && g.message.trim().length > 0)
+    .slice(0, 5)
+    .map((g) => `${g.ruleId}: ${g.message}`);
+
   return {
     title: tPT(language, 'O que isto protege', 'O que isto protege', 'What this protects'),
     summary,
     changedFrom: actionable?.originalTitle ? localizedSessionType(actionable.originalTitle, language) : null,
     changedTo: actionable?.newTitle ? localizedSessionType(actionable.newTitle, language) : null,
     impactLines: impacts,
+    kernelAdjustments,
     primaryAction: {
       id: 'week-protection-open-plan',
       title: tPT(language, 'Ver plano da semana', 'Ver plano da semana', 'See week plan'),
@@ -719,6 +833,98 @@ function buildEmptyState(
   }
 
   return null;
+}
+
+/**
+ * Builds a supportive coaching card when weekly adherence drifts below
+ * 60% and the user has an active plan to drift from. Suppressed in
+ * bootstrap states (noPlan / insufficientData) where adherence is
+ * meaningless, and on completed days where the card would just be
+ * demoralizing retrospect.
+ *
+ * The three tip tiers below are a product-stance choice:
+ *   - 40-59%: "We're drifting, let's salvage the week."
+ *   - 20-39%: "Missed most sessions — reset, don't shame."
+ *   -  0-19%: "Fresh start. One session this week is a win."
+ */
+function buildLowAdherenceCard(
+  state: TrainingDayStateKind,
+  input: TrainingHomeViewStateInput,
+  language: Lang,
+): LowAdherenceCoachingCardModel | null {
+  if (!input.hasActivePlan) return null;
+  if (state === 'noPlan' || state === 'insufficientData' || state === 'completed') return null;
+  if (!Number.isFinite(input.weeklyAdherence) || input.weeklyAdherence >= 0.6) return null;
+
+  const percent = Math.max(0, Math.min(100, Math.round(input.weeklyAdherence * 100)));
+  const eyebrow = tPT(language, 'Esta semana', 'Esta semana', 'This week');
+  const title = tPT(
+    language,
+    'A tua aderência escorregou — vamos recuperar o ritmo',
+    'A sua aderência escorregou — vamos recuperar o ritmo',
+    'Your adherence slipped — let\'s get the rhythm back',
+  );
+
+  let summary: string;
+  let tip: string;
+
+  if (percent >= 40) {
+    summary = tPT(
+      language,
+      `Fizeste cerca de ${percent}% do que estava planeado. A semana ainda é salvável.`,
+      `Você fez cerca de ${percent}% do que estava planejado. A semana ainda é salvável.`,
+      `You finished about ${percent}% of what was planned. The week is still recoverable.`,
+    );
+    tip = tPT(
+      language,
+      'Escolhe UMA sessão-chave ainda esta semana — o coach ajusta o resto à volta.',
+      'Escolha UMA sessão-chave ainda esta semana — o coach ajusta o resto em torno dela.',
+      'Pick ONE key session still this week — the coach will adapt the rest around it.',
+    );
+  } else if (percent >= 20) {
+    summary = tPT(
+      language,
+      `A execução ficou em ${percent}%. O plano precisa de um reset sem drama.`,
+      `A execução ficou em ${percent}%. O plano precisa de um reset sem drama.`,
+      `Execution landed at ${percent}%. The plan needs a low-drama reset.`,
+    );
+    tip = tPT(
+      language,
+      'Marca uma sessão fácil nos próximos 2 dias. Menos volume, mais regularidade.',
+      'Agende uma sessão fácil nos próximos 2 dias. Menos volume, mais regularidade.',
+      'Schedule an easy session in the next 2 days. Less volume, more regularity.',
+    );
+  } else {
+    summary = tPT(
+      language,
+      `Quase zero execução esta semana. Sem julgamento — bora reiniciar pequeno.`,
+      `Quase zero execução esta semana. Sem julgamento — vamos reiniciar pequeno.`,
+      `Almost no execution this week. No judgement — let's restart small.`,
+    );
+    tip = tPT(
+      language,
+      'Uma sessão curta antes da próxima segunda já conta como vitória — foca só nisso.',
+      'Uma sessão curta antes da próxima segunda já conta como vitória — foque só nisso.',
+      'A single short session before next Monday already counts as a win — focus on just that.',
+    );
+  }
+
+  return {
+    eyebrow,
+    title,
+    summary,
+    tip,
+    adherencePercent: percent,
+    primaryAction: {
+      id: 'low-adherence-open-week',
+      title: tPT(language, 'Ver semana', 'Ver semana', 'Open week plan'),
+      subtitle: tPT(language, 'Reorganizar com o coach', 'Reorganizar com o coach', 'Reorganize with the coach'),
+      icon: 'calendar.badge.clock',
+      tint: 'accent',
+      target: 'openWeekPlan',
+      priority: 'primary',
+    },
+  };
 }
 
 function sessionHeadline(session: TrainingSessionInput | null, state: TrainingDayStateKind, language: Lang): string {
@@ -1019,20 +1225,37 @@ function reasoningSignals(
   }));
 }
 
-function confidenceLabel(
+/**
+ * Compute the structured confidence bucket for the current read.
+ *
+ * Rules (pinned by unit tests):
+ *   - Stale wearable data or a degraded coach briefing forces 'low' —
+ *     even if we have plenty of signal, the client needs to know the
+ *     read is untrustworthy.
+ *   - Meaningful readiness + at least one cross-skill signal ⇒ 'high'.
+ *   - Any one of readiness / signals / a live coach briefing ⇒ 'medium'.
+ *   - Otherwise 'low' (cold start, no wearable, no briefing).
+ */
+function computeConfidenceLevel(
   input: TrainingHomeViewStateInput & { adjustmentSummary: TrainingTodayAdjustmentSummary | null },
-  language: Lang,
-): string {
-  if (input.isGarminStale || input.coachBriefing?.degraded === true) {
+): TrainingHomeConfidenceLevel {
+  if (input.isGarminStale || input.coachBriefing?.degraded === true) return 'low';
+  if (hasMeaningfulReadiness(input.readiness) && input.signals.length > 0) return 'high';
+  if (hasMeaningfulReadiness(input.readiness) || input.signals.length > 0 || input.coachBriefing) return 'medium';
+  return 'low';
+}
+
+/** Localize the confidence bucket for display. */
+function labelForConfidence(level: TrainingHomeConfidenceLevel, language: Lang): string {
+  switch (level) {
+  case 'high':
+    return tPT(language, 'Alta confiança', 'Alta confiança', 'High confidence');
+  case 'medium':
+    return tPT(language, 'Confiança média', 'Confiança média', 'Medium confidence');
+  case 'low':
+  default:
     return tPT(language, 'Baixa confiança', 'Baixa confiança', 'Low confidence');
   }
-  if (hasMeaningfulReadiness(input.readiness) && input.signals.length > 0) {
-    return tPT(language, 'Alta confiança', 'Alta confiança', 'High confidence');
-  }
-  if (hasMeaningfulReadiness(input.readiness) || input.signals.length > 0 || input.coachBriefing) {
-    return tPT(language, 'Confiança média', 'Confiança média', 'Medium confidence');
-  }
-  return tPT(language, 'Baixa confiança', 'Baixa confiança', 'Low confidence');
 }
 
 function resolveAdjustmentSummary(

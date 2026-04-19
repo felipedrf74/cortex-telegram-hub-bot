@@ -23,9 +23,12 @@ import type { CoachRecommendation } from '../../services/garmin-coach';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { buildActiveSignalsResponse } from '../../services/signals-observability';
-import { buildTrainingHomeViewState, type CoachRecommendationInput } from '../../services/training-home-view-state';
+import { buildTrainingHomeViewState, type CoachRecommendationInput, type KernelGuardrailInput, type TrainingPrescriptionSummary } from '../../services/training-home-view-state';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
-import { buildCoachKernelTrainingPlan } from '../../services/training-coach-kernel-plan-generator';
+import { buildCoachKernelTrainingPlan, type CoachKernelReadinessInput } from '../../services/training-coach-kernel-plan-generator';
+import { getStoredPlanCoveringDate } from '../../services/coach-plan-registry';
+import { adjustForFatigue } from '../../services/coach-kernel/planner-engine';
+import type { AthleteState, ReadinessLevel, ReadinessSnapshot, Session } from '../../services/coach-kernel/types';
 
 // Cache TTLs (seconds)
 const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
@@ -349,6 +352,146 @@ function getCoachBriefingSnapshot(userId: number) {
   return payload;
 }
 
+/** Result of consulting the deterministic plan registry at home-view
+ *  time. All fields are optional because a cold-start server (no plan
+ *  generated yet) simply has nothing to contribute. */
+interface KernelTodayContext {
+  kernelGuardrails?: KernelGuardrailInput[];
+  originalPrescription: TrainingPrescriptionSummary | null;
+  adaptedPrescription: TrainingPrescriptionSummary | null;
+}
+
+/**
+ * Consults the stored WeeklyPlan for today's date and resolves three
+ * pieces of information the view-state builder needs:
+ *   1. Guardrail reasoning for the WeekProtection card.
+ *   2. What the stored plan originally prescribed for today.
+ *   3. What the coach adapted today into after re-running guardrails
+ *      with live readiness.
+ *
+ * When today's readiness is orange/red we run `adjustForFatigue` against
+ * the patched AthleteState so the before/after pair reflects today's
+ * actual recovery — not the day the plan was generated. Green/yellow
+ * reads skip the re-run and the two prescriptions are identical.
+ */
+function resolveKernelTodayContext(
+  userId: number,
+  liveReadiness: { score: number; factors?: any } | null,
+): KernelTodayContext {
+  const today = new Date().toISOString().slice(0, 10);
+  const stored = getStoredPlanCoveringDate(userId, today);
+  if (!stored) return { originalPrescription: null, adaptedPrescription: null };
+
+  const todayDow = dayOfWeekForDate(today);
+  const originalSession = stored.plan.sessions.find((session) => session.dayOfWeek === todayDow) ?? null;
+
+  // Decide whether today's readiness warrants a re-adjustment. Green and
+  // yellow are no-ops inside `adjustForFatigue`, so we skip the work.
+  const liveLevel = classifyLiveReadinessLevel(liveReadiness?.score);
+  const needsReadjust = liveLevel === 'orange' || liveLevel === 'red';
+
+  const effectivePlan = needsReadjust
+    ? readjustForTodayFatigue(stored.athleteState, stored.plan, liveReadiness, liveLevel)
+    : stored.plan;
+  const adaptedSession = effectivePlan.sessions.find((session) => session.dayOfWeek === todayDow) ?? null;
+
+  return {
+    kernelGuardrails: effectivePlan.guardrailResults.map((result) => ({
+      ruleId: result.ruleId,
+      status: result.status,
+      message: result.message,
+      adjusted: result.adjusted,
+    })),
+    originalPrescription: toPrescriptionSummary(originalSession),
+    adaptedPrescription: toPrescriptionSummary(adaptedSession),
+  };
+}
+
+function dayOfWeekForDate(isoDate: string): Session['dayOfWeek'] {
+  const dow = new Date(`${isoDate}T00:00:00.000Z`).getUTCDay(); // 0=Sunday
+  const mapping: Record<number, Session['dayOfWeek']> = {
+    0: 'sunday',
+    1: 'monday',
+    2: 'tuesday',
+    3: 'wednesday',
+    4: 'thursday',
+    5: 'friday',
+    6: 'saturday',
+  };
+  return mapping[dow] ?? 'monday';
+}
+
+function toPrescriptionSummary(session: Session | null): TrainingPrescriptionSummary | null {
+  if (!session) return null;
+  const detailParts: string[] = [];
+  if (typeof session.durationMinutes === 'number') detailParts.push(`${session.durationMinutes} min`);
+  if (session.intensityZone) detailParts.push(String(session.intensityZone));
+  return {
+    title: session.title,
+    detail: detailParts.join(' · '),
+    durationMinutes: typeof session.durationMinutes === 'number' ? session.durationMinutes : null,
+    sessionType: session.sessionType,
+  };
+}
+
+/**
+ * Patch the stored AthleteState with today's live readiness snapshot
+ * and re-run the deterministic fatigue adjustment. Keeps the planner
+ * pure (no hidden state) — the caller always provides the exact
+ * readiness snapshot to evaluate against.
+ */
+function readjustForTodayFatigue(
+  storedAthlete: AthleteState,
+  storedPlan: import('../../services/coach-kernel/types').WeeklyPlan,
+  liveReadiness: { score: number; factors?: any } | null,
+  liveLevel: ReadinessLevel,
+): import('../../services/coach-kernel/types').WeeklyPlan {
+  if (!liveReadiness) return storedPlan;
+
+  const patchedReadiness: ReadinessSnapshot = {
+    ...storedAthlete.readiness,
+    capturedAt: new Date().toISOString(),
+    score: clampReadinessScoreForRoute(liveReadiness.score),
+    level: liveLevel,
+    hrvStatus: mapHrvTrendToStatus(liveReadiness.factors?.hrvStatus),
+    energyReserve: typeof liveReadiness.factors?.bodyBattery === 'number'
+      ? liveReadiness.factors.bodyBattery
+      : storedAthlete.readiness.energyReserve,
+  };
+
+  const patchedAthlete: AthleteState = {
+    ...storedAthlete,
+    readiness: patchedReadiness,
+  };
+
+  try {
+    return adjustForFatigue(patchedAthlete, storedPlan);
+  } catch (err) {
+    logger.debug({ err, athleteId: storedAthlete.profile.athleteId }, 'adjustForFatigue re-run failed — falling back to stored guardrails');
+    return storedPlan;
+  }
+}
+
+function classifyLiveReadinessLevel(score: number | undefined): ReadinessLevel {
+  if (!score || !Number.isFinite(score)) return 'yellow';
+  if (score >= 80) return 'green';
+  if (score >= 60) return 'yellow';
+  if (score >= 40) return 'orange';
+  return 'red';
+}
+
+function clampReadinessScoreForRoute(score: number): number {
+  if (!Number.isFinite(score)) return 70;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function mapHrvTrendToStatus(raw: unknown): ReadinessSnapshot['hrvStatus'] {
+  if (raw === 'up' || raw === 'high') return 'high';
+  if (raw === 'down' || raw === 'low') return 'low';
+  if (raw === 'stable' || raw === 'normal') return 'normal';
+  return undefined;
+}
+
 async function buildTrainingHomePayload(userId: number, language: Lang) {
   const [todayResult, weekResult, readinessResult, signalResult] = await Promise.allSettled([
     getTodaySession(userId),
@@ -381,6 +524,20 @@ async function buildTrainingHomePayload(userId: number, language: Lang) {
   ];
   const tomorrowDayName = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
   const tomorrowSession = (week.sessions || []).find((session: any) => String(session.day || '').toLowerCase() === tomorrowDayName) || null;
+  // Pull guardrail reasoning AND the before/after today prescription
+  // from the last stored WeeklyPlan that covers today. When missing
+  // (cold start / no plan generated yet) the helper returns a neutral
+  // context with all optional fields blank — the view-state falls back
+  // to its empty kernelAdjustments array and null prescription pair.
+  //
+  // When today's live readiness is orange/red we also re-run the
+  // deterministic `adjustForFatigue` so both the guardrail story AND
+  // the adapted prescription reflect today's recovery, not the day the
+  // plan was originally generated.
+  const kernelContext = resolveKernelTodayContext(
+    userId,
+    readinessResult.status === 'fulfilled' ? readinessResult.value : null,
+  );
   return buildTrainingHomeViewState({
     todaySession: today.session ?? null,
     readiness,
@@ -391,6 +548,9 @@ async function buildTrainingHomePayload(userId: number, language: Lang) {
     tomorrowSession,
     hasActivePlan: !!(today.plan || week.plan),
     isGarminStale: coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true,
+    kernelGuardrails: kernelContext.kernelGuardrails,
+    todayOriginalPrescription: kernelContext.originalPrescription,
+    todayAdaptedPrescription: kernelContext.adaptedPrescription,
     meta: buildScreenContractMeta({
       source: 'server',
       isFallback: reasonCodes.length > 0,
@@ -1049,6 +1209,12 @@ export function trainingRoutes(): Router {
       const normalizedPreferredCardioTime = normalizePreferredTime(preferredCardioTime, normalizedPreferredTime);
       const normalizedPreferredStrengthTime = normalizePreferredTime(preferredStrengthTime, normalizedPreferredTime);
 
+      // Fetch current readiness so the planner seeds its AthleteState with
+      // real HRV / sleep / body-battery instead of a hardcoded yellow (70).
+      // Missing-wearable users degrade gracefully to the neutral fallback
+      // inside the generator.
+      const currentReadiness = await fetchCurrentReadinessForPlan(userId);
+
       let usedFallbackTemplate = false;
       let planData: any;
       try {
@@ -1068,6 +1234,7 @@ export function trainingRoutes(): Router {
             fitnessProfile,
             gymProfile,
             runProfile,
+            currentReadiness,
           }), coordination),
           equipmentAdaptation,
         );
@@ -1876,6 +2043,46 @@ async function getReadiness(userId: number) {
   const result = { score, factors, recommendation, reasonCode };
   setCache(cacheKey, result, READINESS_TTL);
   return result;
+}
+
+/**
+ * Fetches readiness for plan generation, reshaping the internal
+ * `ReadinessResult` into the shape the coach-kernel generator expects.
+ *
+ * Returns null when the scorer has no data (missing wearable, error) so
+ * the generator falls back to its neutral yellow-70 seed and we don't
+ * poison `AthleteState.readiness` with zeros.
+ */
+async function fetchCurrentReadinessForPlan(userId: number): Promise<CoachKernelReadinessInput | null> {
+  try {
+    // Lazy-required to avoid pulling the readiness-scorer graph at module
+    // load time during tests.
+    const { calculateReadiness } = require('../../services/readiness-scorer');
+    const readiness = await calculateReadiness(userId);
+    if (!readiness || typeof readiness.score !== 'number' || readiness.score <= 0) return null;
+
+    const hrvTrend = readiness.factors?.hrv?.trend;
+    const hrvStatus: CoachKernelReadinessInput['hrvStatus'] | undefined =
+      hrvTrend === 'up' ? 'high' : hrvTrend === 'down' ? 'low' : hrvTrend === 'stable' ? 'normal' : undefined;
+
+    const sleepHours = typeof readiness.factors?.sleep?.durationHours === 'number' && readiness.factors.sleep.durationHours > 0
+      ? readiness.factors.sleep.durationHours
+      : undefined;
+    const energyReserve = typeof readiness.factors?.bodyBattery?.current === 'number'
+      ? readiness.factors.bodyBattery.current
+      : undefined;
+
+    return {
+      score: readiness.score,
+      sleepHours,
+      hrvStatus,
+      energyReserve,
+      reasoning: typeof readiness.reasoning === 'string' ? readiness.reasoning : null,
+    };
+  } catch (err) {
+    logger.debug({ err, userId }, 'fetchCurrentReadinessForPlan failed — plan generator will use neutral fallback');
+    return null;
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

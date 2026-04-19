@@ -179,8 +179,8 @@ export function scoreCompliance(weeklyPlan: WeeklyPlan, recentSessions: RecentSe
   };
 }
 
-export function savePlan(plan: WeeklyPlan, store: CoachPlanStore = defaultCoachPlanStore): WeeklyPlan {
-  return store.save(plan);
+export function savePlan(plan: WeeklyPlan, athleteState: AthleteState, store: CoachPlanStore = defaultCoachPlanStore): WeeklyPlan {
+  return store.save({ plan, athleteState }).plan;
 }
 
 export function generateDailyBrief(state: AthleteState, weeklyPlan: WeeklyPlan, dayOfWeek: Session['dayOfWeek']): string {

@@ -1,21 +1,31 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { WeeklyPlan } from '../types';
+import type { AthleteState, WeeklyPlan } from '../types';
+
+/** A persisted plan carries both the deterministic WeeklyPlan and the
+ *  AthleteState snapshot that produced it. The AthleteState is kept so
+ *  the home-view route can re-run `adjustForFatigue` against *today's*
+ *  readiness — without it we can only show guardrails frozen at
+ *  plan-generation time. */
+export interface StoredCoachPlan {
+  plan: WeeklyPlan;
+  athleteState: AthleteState;
+}
 
 export interface CoachPlanStore {
-  save(plan: WeeklyPlan): WeeklyPlan;
-  get(athleteId: number, weekStart: string): WeeklyPlan | null;
+  save(entry: StoredCoachPlan): StoredCoachPlan;
+  get(athleteId: number, weekStart: string): StoredCoachPlan | null;
 }
 
 export class InMemoryCoachPlanStore implements CoachPlanStore {
-  private readonly store = new Map<string, WeeklyPlan>();
+  private readonly store = new Map<string, StoredCoachPlan>();
 
-  save(plan: WeeklyPlan): WeeklyPlan {
-    this.store.set(`${plan.athleteId}:${plan.weekStart}`, plan);
-    return plan;
+  save(entry: StoredCoachPlan): StoredCoachPlan {
+    this.store.set(`${entry.plan.athleteId}:${entry.plan.weekStart}`, entry);
+    return entry;
   }
 
-  get(athleteId: number, weekStart: string): WeeklyPlan | null {
+  get(athleteId: number, weekStart: string): StoredCoachPlan | null {
     return this.store.get(`${athleteId}:${weekStart}`) ?? null;
   }
 }
