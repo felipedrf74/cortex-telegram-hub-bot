@@ -15,6 +15,7 @@ export interface CoordinatedTrainingSession {
   durationMinutes: number;
   description?: string;
   exercises?: any[];
+  preferredStartTime?: string | null;
 }
 
 export interface CoordinatedTrainingWeek {

@@ -1,0 +1,45 @@
+[
+  {
+    "id": "ride_endurance",
+    "sport": "cycling",
+    "sessionType": "endurance_ride",
+    "title": "Endurance Ride",
+    "phaseTags": ["base", "build", "peak", "maintenance", "deload", "taper"],
+    "goalTags": ["cycling", "triathlon", "hybrid"],
+    "durationOptionsMinutes": [60, 90, 120, 180],
+    "primaryZone": "aerobic",
+    "fatigueCost": "high",
+    "keySession": true,
+    "instructions": ["Ride smooth and keep fueling consistent.", "Stay aerobic unless the plan explicitly asks for progression."],
+    "constraints": ["one_long_ride_per_week"]
+  },
+  {
+    "id": "ride_recovery",
+    "sport": "cycling",
+    "sessionType": "recovery_ride",
+    "title": "Recovery Ride",
+    "phaseTags": ["base", "build", "peak", "taper", "deload"],
+    "goalTags": ["cycling", "triathlon", "hybrid"],
+    "durationOptionsMinutes": [35, 45, 60],
+    "primaryZone": "recovery",
+    "fatigueCost": "low",
+    "keySession": false,
+    "instructions": ["Spin easily and keep the ride mechanically clean.", "This should leave you fresher than when you started."],
+    "constraints": ["good_after_hard_run"]
+  },
+  {
+    "id": "ride_threshold",
+    "sport": "cycling",
+    "sessionType": "threshold_ride",
+    "title": "Threshold Ride",
+    "phaseTags": ["build", "peak"],
+    "goalTags": ["cycling", "triathlon"],
+    "durationOptionsMinutes": [45, 60, 75],
+    "primaryZone": "threshold",
+    "fatigueCost": "high",
+    "keySession": true,
+    "instructions": ["Ride steady at threshold and do not burn matches early.", "Keep the next day mechanically easy."],
+    "constraints": ["max_two_hard_endurance_sessions_week"]
+  }
+]
+

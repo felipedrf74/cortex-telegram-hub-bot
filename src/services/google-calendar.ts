@@ -59,6 +59,8 @@ export interface CalendarEvent {
   description?: string;
   location?: string;
   htmlLink?: string;
+  categories?: string[];
+  color?: string;
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {

@@ -148,6 +148,30 @@ describe('Calendar API — mutation routes', () => {
     expect(mockGetEvents).not.toHaveBeenCalled();
   });
 
+  it('returns event colors when the unified calendar provides them', async () => {
+    mockGetEvents.mockResolvedValue([
+      {
+        id: 'evt-1',
+        summary: 'Content block',
+        start: '2026-04-19T16:00:00.000Z',
+        end: '2026-04-19T16:30:00.000Z',
+        source: 'outlook',
+        categories: ['Content'],
+        color: '#8E44AD',
+      },
+    ]);
+
+    const res = await dispatch('GET', '/events');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.events[0]).toMatchObject({
+      id: 'evt-1',
+      source: 'outlook',
+      color: '#8E44AD',
+    });
+  });
+
   it('fails closed on invalid tenant scope before loading events', async () => {
     const res = await dispatch('GET', '/events', undefined, 0);
 

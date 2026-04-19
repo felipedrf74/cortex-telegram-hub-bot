@@ -1,0 +1,59 @@
+[
+  {
+    "id": "swim_technique",
+    "sport": "swimming",
+    "sessionType": "technique_swim",
+    "title": "Technique Swim",
+    "phaseTags": ["base", "build", "peak", "maintenance", "deload", "taper"],
+    "goalTags": ["swimming", "triathlon"],
+    "durationOptionsMinutes": [30, 40, 45],
+    "primaryZone": "recovery",
+    "fatigueCost": "low",
+    "keySession": false,
+    "instructions": ["Prioritize skill and feel for the water.", "Limit fatigue so the swim can coexist with harder run and bike work."],
+    "constraints": ["good_on_high_load_weeks"]
+  },
+  {
+    "id": "swim_threshold",
+    "sport": "swimming",
+    "sessionType": "threshold_swim",
+    "title": "Threshold Swim",
+    "phaseTags": ["build", "peak"],
+    "goalTags": ["swimming", "triathlon"],
+    "durationOptionsMinutes": [45, 55, 65],
+    "primaryZone": "threshold",
+    "fatigueCost": "medium",
+    "keySession": true,
+    "instructions": ["Build controlled threshold repeatability in the pool.", "Keep form non-negotiable under fatigue."],
+    "constraints": ["no_more_than_two_swim_keys_per_week"]
+  },
+  {
+    "id": "swim_aerobic",
+    "sport": "swimming",
+    "sessionType": "aerobic_swim",
+    "title": "Aerobic Swim",
+    "phaseTags": ["base", "build", "peak"],
+    "goalTags": ["swimming", "triathlon"],
+    "durationOptionsMinutes": [40, 50, 60],
+    "primaryZone": "aerobic",
+    "fatigueCost": "medium",
+    "keySession": false,
+    "instructions": ["Use this session to accumulate efficient aerobic volume.", "Keep turns and stroke count consistent."],
+    "constraints": ["fits_between_run_and_bike_load"]
+  },
+  {
+    "id": "swim_recovery",
+    "sport": "swimming",
+    "sessionType": "recovery_swim",
+    "title": "Recovery Swim",
+    "phaseTags": ["deload", "taper", "maintenance"],
+    "goalTags": ["swimming", "triathlon"],
+    "durationOptionsMinutes": [25, 35, 40],
+    "primaryZone": "recovery",
+    "fatigueCost": "low",
+    "keySession": false,
+    "instructions": ["Keep the swim regenerative and relaxed.", "Exit the pool fresher than you entered."],
+    "constraints": ["ideal_for_low_readiness_days"]
+  }
+]
+

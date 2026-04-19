@@ -1,0 +1,26 @@
+{
+  "volumeGrowthCapsPct": {
+    "running": 8,
+    "cycling": 12,
+    "swimming": 15,
+    "strength": 10
+  },
+  "maxHardSessionsPerWeek": {
+    "running": 2,
+    "cycling": 2,
+    "swimming": 2
+  },
+  "marathon": {
+    "maxLongRunRatioPct": 35,
+    "minimumEasyDaysAfterLongRun": 1
+  },
+  "hybrid": {
+    "maxLowerBodyStrengthDuringRaceBlock": 2,
+    "minimumEffectiveDoseStrength": 1
+  },
+  "triathlon": {
+    "maxBricksPerWeek": 1,
+    "minimumSwimSessions": 2
+  }
+}
+

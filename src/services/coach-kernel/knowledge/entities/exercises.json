@@ -1,0 +1,67 @@
+[
+  {
+    "id": "front_squat",
+    "name": "Front Squat",
+    "movementPattern": "squat",
+    "equipment": ["barbell", "rack"],
+    "fatigueCost": "high",
+    "substitutions": ["goblet_squat", "split_squat"]
+  },
+  {
+    "id": "romanian_deadlift",
+    "name": "Romanian Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["barbell", "dumbbells"],
+    "fatigueCost": "high",
+    "substitutions": ["single_leg_rdl", "hip_hinge_band"]
+  },
+  {
+    "id": "pull_up",
+    "name": "Pull-Up",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "medium",
+    "substitutions": ["lat_pulldown", "ring_row"]
+  },
+  {
+    "id": "bench_press",
+    "name": "Bench Press",
+    "movementPattern": "push",
+    "equipment": ["barbell", "bench"],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up", "dumbbell_bench_press"]
+  },
+  {
+    "id": "split_squat",
+    "name": "Split Squat",
+    "movementPattern": "single_leg",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["step_up", "lunging_iso_hold"]
+  },
+  {
+    "id": "dead_bug",
+    "name": "Dead Bug",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["hollow_hold", "bear_crawl"]
+  },
+  {
+    "id": "farmer_carry",
+    "name": "Farmer Carry",
+    "movementPattern": "carry",
+    "equipment": ["dumbbells", "kettlebells"],
+    "fatigueCost": "medium",
+    "substitutions": ["suitcase_carry", "sandbag_hold"]
+  },
+  {
+    "id": "hip_airplane",
+    "name": "Hip Airplane",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "cossack_squat"]
+  }
+]
+

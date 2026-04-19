@@ -158,6 +158,8 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   const start = startOfDay.toISOString();
   const end = endOfDay.toISOString();
   const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+  const outlookConnected = isConnected(userId, 'outlook');
+  const googleConnected = isConnected(userId, 'google');
 
   const fetchers: Array<{
     key: string;
@@ -267,7 +269,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     },
   ];
 
-  if (isConnected(userId, 'outlook')) {
+  if (outlookConnected) {
     fetchers.push(
       {
         key: 'outlook-email',
@@ -334,7 +336,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     );
   }
 
-  if (isConnected(userId, 'google')) {
+  if (googleConnected) {
     fetchers.push(
       {
         key: 'gmail',
@@ -404,6 +406,12 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  if (!outlookConnected && !googleConnected) {
+    warningCodes.push('MAIL_INTEGRATION_MISSING');
+    warnings.push('No mail integration is connected yet.');
+    warningCodes.push('CALENDAR_INTEGRATION_MISSING');
+    warnings.push('No calendar integration is connected yet.');
+  }
   const items: UnifiedInboxItem[] = [];
   let totalUnread = 0;
   let successCount = 0;
@@ -445,6 +453,8 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
   warningCodes: string[];
   warnings: string[];
 }> {
+  const outlookConnected = isConnected(userId, 'outlook');
+  const googleConnected = isConnected(userId, 'google');
   const fetchers: Array<{
     warningCode: string;
     warning: string;
@@ -462,7 +472,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
     },
   ];
 
-  if (isConnected(userId, 'outlook')) {
+  if (outlookConnected) {
     fetchers.push({
       warningCode: 'OUTLOOK_MAIL_UNAVAILABLE',
       warning: 'Outlook mail is temporarily unavailable.',
@@ -473,7 +483,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
     });
   }
 
-  if (isConnected(userId, 'google')) {
+  if (googleConnected) {
     fetchers.push({
       warningCode: 'GMAIL_UNAVAILABLE',
       warning: 'Gmail is temporarily unavailable.',
@@ -484,6 +494,12 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
   const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
+  if (!outlookConnected && !googleConnected) {
+    warningCodes.push('MAIL_INTEGRATION_MISSING');
+    warnings.push('No mail integration is connected yet.');
+    warningCodes.push('CALENDAR_INTEGRATION_MISSING');
+    warnings.push('No calendar integration is connected yet.');
+  }
   let unreadCount = 0;
 
   results.forEach((result, index) => {

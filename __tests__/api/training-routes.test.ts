@@ -19,9 +19,12 @@ const mockCreatePlan = vi.fn();
 const mockCreateWeek = vi.fn();
 const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
+const mockMarkSessionSkipped = vi.fn();
 const mockGetProfile = vi.fn();
 const mockGetMissingProfileFields = vi.fn();
-const mockCompleteOneShotWithFallback = vi.fn();
+const mockGetQuestionnaire = vi.fn();
+const mockBuildCoachKernelTrainingPlan = vi.fn();
+const mockCalculateReadiness = vi.fn();
 const mockBuildSharedDecisionContext = vi.fn();
 const mockInvalidateSharedDecisionContextCache = vi.fn();
 const mockReadTrainingMeshContext = vi.fn();
@@ -31,6 +34,7 @@ const mockReadContentMeshContext = vi.fn();
 const mockReadSecretaryMeshContext = vi.fn();
 const mockSetLastCoachState = vi.fn();
 const mockLoggerError = vi.fn();
+const mockBuildActiveSignalsResponse = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -69,15 +73,21 @@ vi.mock('../../src/services/training-plans', () => ({
   createWeek: (...args: unknown[]) => mockCreateWeek(...args),
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
+  markSessionSkipped: (...args: unknown[]) => mockMarkSessionSkipped(...args),
 }));
 
 vi.mock('../../src/services/onboarding', () => ({
   getProfile: (...args: unknown[]) => mockGetProfile(...args),
   getMissingProfileFields: (...args: unknown[]) => mockGetMissingProfileFields(...args),
+  getQuestionnaire: (...args: unknown[]) => mockGetQuestionnaire(...args),
 }));
 
-vi.mock('../../src/services/gemini-provider', () => ({
-  completeOneShotWithFallback: (...args: unknown[]) => mockCompleteOneShotWithFallback(...args),
+vi.mock('../../src/services/training-coach-kernel-plan-generator', () => ({
+  buildCoachKernelTrainingPlan: (...args: unknown[]) => mockBuildCoachKernelTrainingPlan(...args),
+}));
+
+vi.mock('../../src/services/readiness-scorer', () => ({
+  calculateReadiness: (...args: unknown[]) => mockCalculateReadiness(...args),
 }));
 
 vi.mock('../../src/services/shared-decision-context', () => ({
@@ -95,6 +105,17 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
 
 vi.mock('../../src/domains/domain-handler', () => ({
   setLastCoachState: (...args: unknown[]) => mockSetLastCoachState(...args),
+}));
+
+vi.mock('../../src/services/signals-observability', () => ({
+  buildActiveSignalsResponse: (...args: unknown[]) => mockBuildActiveSignalsResponse(...args),
+}));
+
+// The route's resolveTrainingLanguage calls getUserLanguage when no
+// x-language header is present. Mocking here keeps the test from
+// hitting the real database resolver (which is unmocked in this file).
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: vi.fn(() => 'pt-BR'),
 }));
 
 vi.mock('../../src/services/cost-guardrail', () => ({
@@ -136,6 +157,31 @@ function mockRes(): MockRes {
     end() { return r; },
   };
   return r;
+}
+
+function makeKernelPlan(weeks?: Array<Record<string, any>>) {
+  return {
+    planName: 'Coach Kernel Plan',
+    sport: 'running',
+    periodization: 'block',
+    weeks: weeks ?? [
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Tuesday',
+            sessionType: 'run',
+            title: 'Easy Run',
+            durationMinutes: 45,
+            description: 'Easy aerobic run.',
+            exercises: [],
+          },
+        ],
+      },
+    ],
+  };
 }
 
 function mockReq(
@@ -205,9 +251,12 @@ describe('Training API routes', () => {
     mockCreateWeek.mockReset();
     mockCreateSession.mockReset();
     mockLinkSessionToCalendar.mockReset();
+    mockMarkSessionSkipped.mockReset();
     mockGetProfile.mockReset();
     mockGetMissingProfileFields.mockReset();
-    mockCompleteOneShotWithFallback.mockReset();
+    mockGetQuestionnaire.mockReset();
+    mockBuildCoachKernelTrainingPlan.mockReset();
+    mockCalculateReadiness.mockReset();
     mockBuildSharedDecisionContext.mockReset();
     mockInvalidateSharedDecisionContextCache.mockReset();
     mockReadTrainingMeshContext.mockReset();
@@ -216,6 +265,7 @@ describe('Training API routes', () => {
     mockReadContentMeshContext.mockReset();
     mockReadSecretaryMeshContext.mockReset();
     mockLoggerError.mockReset();
+    mockBuildActiveSignalsResponse.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
@@ -231,9 +281,27 @@ describe('Training API routes', () => {
     let sessionCounter = 0;
     mockCreateSession.mockImplementation(() => ({ id: 2000 + (++sessionCounter) }));
     mockLinkSessionToCalendar.mockReturnValue(undefined);
+    mockMarkSessionSkipped.mockReturnValue(true);
     mockGetProfile.mockReturnValue(null);
     mockGetMissingProfileFields.mockReturnValue([]);
-    mockCompleteOneShotWithFallback.mockResolvedValue({ text: '{}' });
+    mockGetQuestionnaire.mockImplementation((id: string) => ({
+      id,
+      title: id,
+      description: '',
+      steps: [],
+    }));
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan());
+    mockCalculateReadiness.mockResolvedValue({
+      score: 74,
+      factors: {
+        hrv: { trend: 'stable' },
+        sleep: { score: 76, qualityScore: 76 },
+        bodyBattery: { current: 68 },
+        trainingLoad: { acwr: 0.92 },
+      },
+      recommendation: 'reduce_10pct',
+      reasoning: 'Metrics look acceptable but not peak — moderate effort recommended.',
+    });
     mockBuildSharedDecisionContext.mockResolvedValue('<shared_decision_context domain="triathlon">training spend mode is selective</shared_decision_context>');
     mockReadTrainingMeshContext.mockResolvedValue({ derivedSignals: [] });
     mockReadCookingMeshContext.mockResolvedValue({ derivedSignals: [] });
@@ -241,6 +309,24 @@ describe('Training API routes', () => {
     mockReadContentMeshContext.mockResolvedValue({ filmingRecommendation: null, derivedSignals: [] });
     mockReadSecretaryMeshContext.mockResolvedValue({ focusBlock: null, derivedSignals: [] });
     mockSetLastCoachState.mockReset();
+    mockBuildActiveSignalsResponse.mockReturnValue({
+      userId: 12,
+      timestamp: '2026-04-19T00:00:00.000Z',
+      counts: { total: 0, urgent: 0 },
+      flags: {
+        lowSleep: false,
+        lowHrv: false,
+        lowReadiness: false,
+        highLegLoad: false,
+        highShoulderLoad: false,
+        raceThisWeek: false,
+        lowAdherence: false,
+        highAdherence: false,
+        planDrift: false,
+        otherSportRpeToday: 0,
+      },
+      signals: [],
+    });
     clearTenantScopeAnomaliesForTests();
     mockIsUserOverDailyCap.mockReturnValue({
       over: false,
@@ -268,6 +354,151 @@ describe('Training API routes', () => {
     expect(res.body.data.cachedOnlyMiss).toBe(true);
     expect(res.body.data.briefing).toBe('');
     expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('returns render-ready training home state without triggering a fresh coach generation', async () => {
+    mockGetActivePlan.mockReturnValue({
+      id: 44,
+      name: 'Maratona',
+      start_date: '2026-04-13',
+      periodization: 'build',
+    });
+    mockGetCurrentWeek.mockReturnValue({ id: 78, week_number: 1, focus: 'build' });
+    mockGetSessionsForWeek.mockReturnValue([
+      {
+        id: 321,
+        day_of_week: 'Sunday',
+        session_type: 'run',
+        title: 'Long Run',
+        duration_minutes: 90,
+        status: 'planned',
+      },
+      {
+        id: 322,
+        day_of_week: 'Monday',
+        session_type: 'recovery',
+        title: 'Recovery',
+        duration_minutes: 35,
+        status: 'planned',
+      },
+    ]);
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'coach-briefing:12') {
+        return {
+          briefing: 'Cached coach briefing',
+          recommendations: [],
+          degraded: false,
+          cachedOnlyMiss: false,
+        };
+      }
+      return null;
+    });
+    mockBuildActiveSignalsResponse.mockReturnValue({
+      userId: 12,
+      timestamp: '2026-04-19T00:00:00.000Z',
+      counts: { total: 1, urgent: 1 },
+      flags: {
+        lowSleep: true,
+        lowHrv: false,
+        lowReadiness: false,
+        highLegLoad: false,
+        highShoulderLoad: false,
+        raceThisWeek: false,
+        lowAdherence: false,
+        highAdherence: false,
+        planDrift: false,
+        otherSportRpeToday: 0,
+      },
+      signals: [
+        {
+          id: 99,
+          type: 'low_sleep',
+          title: 'Low sleep',
+          summary: 'score 55 — coach will downgrade today',
+          priority: 'urgent',
+          source: 'garmin.sync',
+          createdAt: '2026-04-18T22:00:00.000Z',
+          expiresAt: '2026-04-19T22:00:00.000Z',
+          payload: { score: 55, total_hours: 5.8 },
+        },
+      ],
+    });
+
+    const res = await dispatch('GET', '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.hero.state).toBe('recovery');
+    expect(res.body.data.hero.primaryAction.target).toBe('completeSession');
+    expect(res.body.data.reasoning.signals[0].title).toBeTruthy();
+    expect(mockGenerateCoachBriefing).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty week when there is no active plan even if calendar still has training-looking events', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetEvents.mockResolvedValue([
+      {
+        id: 'evt-training',
+        subject: '🏃 Easy Run — 30 min Zone 2',
+        start: '2026-04-20T07:00:00.000Z',
+        end: '2026-04-20T07:30:00.000Z',
+      },
+    ]);
+
+    const res = await dispatch('GET', '/week');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.plan).toBeNull();
+    expect(res.body.data.sessions).toEqual([]);
+    expect(res.body.data.totalCount).toBe(0);
+  });
+
+  it('classifies training home as no-plan when only a standalone calendar workout exists', async () => {
+    mockGetActivePlan.mockReturnValue(null);
+    mockGetEvents.mockResolvedValue([
+      {
+        id: 'evt-training',
+        subject: '🧘 Rest Day — Mobility + Recovery (NO TRAINING)',
+        start: '2026-04-19T08:00:00.000Z',
+        end: '2026-04-19T08:30:00.000Z',
+      },
+    ]);
+
+    const res = await dispatch('GET', '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.hero.state).toBe('noPlan');
+    expect(res.body.data.hero.primaryAction.target).toBe('createPlan');
+    expect(res.body.data.weekJourney).toBeNull();
+    expect(res.body.data.weekProtection).toBeNull();
+    expect(res.body.data.emptyState?.action.target).toBe('createPlan');
+  });
+
+  it('surfaces wearable integration gaps honestly in the training home contract', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'readiness:12') {
+        return {
+          score: 60,
+          factors: {
+            sleepScore: 60,
+            hrvStatus: 'stable',
+            bodyBattery: 0,
+          },
+          recommendation: 'Decent recovery. Train at moderate intensity.',
+          reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+        };
+      }
+      return null;
+    });
+
+    const res = await dispatch('GET', '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.meta.isPartial).toBe(true);
+    expect(res.body.data.meta.reasonCodes).toContain('WEARABLE_INTEGRATION_MISSING');
   });
 
   it('localizes the cardio progression validation error for Portuguese requests', async () => {
@@ -440,7 +671,124 @@ describe('Training API routes', () => {
     });
   });
 
-  it('injects cross-skill coaching coordination into the training-plan prompt', async () => {
+  it('requires the running questionnaire before generating a marathon plan', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
+      return null;
+    });
+    mockGetQuestionnaire.mockImplementation((id: string) => {
+      if (id === 'triathlon-running') {
+        return {
+          id,
+          title: 'Running Profile',
+          description: 'Running onboarding',
+          steps: [],
+        };
+      }
+      return {
+        id,
+        title: id,
+        description: '',
+        steps: [],
+      };
+    });
+    mockGetMissingProfileFields.mockImplementation((_userId: number, questionnaireId: string) => {
+      if (questionnaireId === 'triathlon-running') {
+        return [
+          { key: 'target_race', prompt: 'What is your next target race?' },
+          { key: 'target_race_date', prompt: 'Target race date' },
+        ];
+      }
+      return [];
+    });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Porto Marathon November 2026',
+      preferredTime: '07:00',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.needsProfile).toBe(true);
+    expect(res.body.data.requiredQuestionnaireId).toBe('triathlon-running');
+    expect(res.body.data.requiredQuestionnaireTitle).toContain('Running');
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('schedules same-day run and gym sessions at separate preferred times', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-running') return { target_race: 'Marathon' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
+          {
+            dayOfWeek: 'Monday',
+            sessionType: 'run',
+            title: 'Base Run',
+            durationMinutes: 50,
+            description: 'Morning aerobic run.',
+            exercises: [],
+          },
+          {
+            dayOfWeek: 'Monday',
+            sessionType: 'gym',
+            title: 'Runner Strength',
+            durationMinutes: 40,
+            description: 'Lunch strength session.',
+            exercises: [],
+          },
+        ],
+      },
+    ]));
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Marathon build',
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      sessionsPerWeek: 6,
+      strengthSessionsPerWeek: 2,
+    });
+
+    expect(res.statusCode).toBe(201);
+    const createdEvents = mockCreateEvent.mock.calls.map((call) => call[0]);
+    const runEvent = createdEvents.find((event) => String(event.title).includes('Base Run'));
+    const gymEvent = createdEvents.find((event) => String(event.title).includes('Runner Strength'));
+
+    expect(runEvent).toBeTruthy();
+    expect(gymEvent).toBeTruthy();
+
+    const runStart = new Date(String(runEvent.start));
+    const gymStart = new Date(String(gymEvent.start));
+    expect(runStart.toDateString()).toBe(gymStart.toDateString());
+    expect(runStart.getTime()).toBeLessThan(gymStart.getTime());
+    expect((gymStart.getTime() - runStart.getTime()) / 60000).toBeGreaterThanOrEqual(300);
+  });
+
+  it('marks a session as skipped and returns updated weekly adherence', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44 });
+    mockGetCurrentWeek.mockReturnValue({ id: 78 });
+    mockGetSessionsForWeek.mockReturnValue([
+      { id: 321, day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }), status: 'pending' },
+    ]);
+    mockGetWeeklyAdherence.mockReturnValue({ adherenceRate: 40 });
+
+    const res = await dispatch('POST', '/skip', {}, { sessionId: 'today' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.skipped).toBe(true);
+    expect(res.body.data.weeklyAdherence).toBe(0.4);
+    expect(mockMarkSessionSkipped).toHaveBeenCalledWith(321);
+  });
+
+  it('applies cross-skill coaching coordination before training sessions are stored', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') {
         return { experienceLevel: 'Beginner (< 1 year)', available_equipment: 'Full gym', injuries: 'left knee irritation' };
@@ -489,38 +837,31 @@ describe('Training API routes', () => {
         { signalType: 'inbox_pressure', payload: { overdueCount: 3, dueTodayCount: 1, dueThisWeekCount: 4, pendingCount: 11 } },
       ],
     });
-    mockCompleteOneShotWithFallback.mockResolvedValue({
-      text: JSON.stringify({
-        planName: 'Lisbon Marathon Plan',
-        sport: 'running',
-        periodization: 'undulating',
-        weeks: [
+    mockBuildCoachKernelTrainingPlan.mockReturnValue(makeKernelPlan([
+      {
+        weekNumber: 1,
+        focus: 'base',
+        intensityPct: 70,
+        sessions: [
           {
-            weekNumber: 1,
-            focus: 'base',
-            intensityPct: 70,
-            sessions: [
-              {
-                dayOfWeek: 'tuesday',
-                sessionType: 'run',
-                title: 'Tempo Run',
-                durationMinutes: 50,
-                description: 'Threshold work.',
-                exercises: [],
-              },
-              {
-                dayOfWeek: 'saturday',
-                sessionType: 'run',
-                title: 'Long Run',
-                durationMinutes: 90,
-                description: 'Long aerobic session.',
-                exercises: [],
-              },
-            ],
+            dayOfWeek: 'Friday',
+            sessionType: 'run',
+            title: 'Threshold Run',
+            durationMinutes: 50,
+            description: 'Threshold work.',
+            exercises: [],
+          },
+          {
+            dayOfWeek: 'Saturday',
+            sessionType: 'run',
+            title: 'Long Run',
+            durationMinutes: 90,
+            description: 'Long aerobic session.',
+            exercises: [],
           },
         ],
-      }),
-    });
+      },
+    ]));
 
     const res = await dispatch('POST', '/plan/generate', {}, {
       objective: 'Lisbon Marathon October 2026',
@@ -530,25 +871,32 @@ describe('Training API routes', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(mockCompleteOneShotWithFallback).toHaveBeenCalledTimes(1);
-    const planPrompt = mockCompleteOneShotWithFallback.mock.calls[0][1];
-    expect(planPrompt).toContain('CROSS-SKILL SHARED CONTEXT');
-    expect(planPrompt).toContain('COACHING COORDINATION RULES');
-    expect(planPrompt).toContain('EQUIPMENT AND SUBSTITUTION RULES');
-    expect(planPrompt).toContain('Start week 1 conservatively');
-    expect(planPrompt).toContain('Cap truly hard sessions at 1 per week');
-    expect(planPrompt).toContain('Treat the athlete like a beginner');
-    expect(planPrompt).toContain('Keep week-to-week intensity jumps within 4 points');
-    expect(planPrompt).toContain('Anchor the longest session on Sunday');
-    expect(planPrompt).toContain('Keep Saturday lower-fatigue');
-    expect(planPrompt).toContain('Avoid recommending new paid equipment');
-    expect(planPrompt).toContain('Avoid back-to-back impact-heavy run days');
-    expect(planPrompt).toContain('Keep lower-body strength at least one easier day away');
-    expect(planPrompt).toContain('Travel is currently flagged on Sunday');
-    expect(planPrompt).toContain('Bias toward modular sub-60-minute sessions');
-    expect(planPrompt).toContain('Keep Friday lighter when possible');
-    expect(planPrompt).toContain('Full gym access is available');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledTimes(1);
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
+      objective: 'Lisbon Marathon October 2026',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+    }));
     expect(mockGetEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 12);
+
+    const storedSessions = mockCreateSession.mock.calls.map((call) => ({
+      day: String(call[0]?.day_of_week || '').toLowerCase(),
+      type: call[0]?.session_type,
+      title: call[0]?.title,
+    }));
+    expect(storedSessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        day: 'friday',
+        type: 'run',
+        title: 'Aerobic Support / Recovery',
+      }),
+      expect.objectContaining({
+        day: 'sunday',
+        type: 'run',
+        title: 'Long Run',
+      }),
+    ]));
   });
 
   it('adapts gym exercises to the available equipment before sessions are stored', async () => {
@@ -566,32 +914,30 @@ describe('Training API routes', () => {
     mockReadFinanceMeshContext.mockResolvedValue({ derivedSignals: [] });
     mockReadContentMeshContext.mockResolvedValue({ filmingRecommendation: null, derivedSignals: [] });
     mockReadSecretaryMeshContext.mockResolvedValue({ focusBlock: null, derivedSignals: [] });
-    mockCompleteOneShotWithFallback.mockResolvedValue({
-      text: JSON.stringify({
-        planName: 'Gym Plan',
-        sport: 'gym',
-        periodization: 'undulating',
-        weeks: [
-          {
-            weekNumber: 1,
-            focus: 'strength',
-            intensityPct: 70,
-            sessions: [
-              {
-                dayOfWeek: 'monday',
-                sessionType: 'gym',
-                title: 'Strength Session',
-                durationMinutes: 55,
-                description: 'Strength work.',
-                exercises: [
-                  { name: 'Bench Press', sets: 4, reps: 8, rpe: '7-8', restSec: 90 },
-                  { name: 'Leg Press', sets: 3, reps: 10, rpe: '7', restSec: 90 },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      planName: 'Gym Plan',
+      sport: 'gym',
+      periodization: 'block',
+      weeks: [
+        {
+          weekNumber: 1,
+          focus: 'strength',
+          intensityPct: 70,
+          sessions: [
+            {
+              dayOfWeek: 'Monday',
+              sessionType: 'gym',
+              title: 'Strength Session',
+              durationMinutes: 55,
+              description: 'Strength work.',
+              exercises: [
+                { name: 'Bench Press', sets: 4, reps: 8, rpe: '7-8', restSec: 90 },
+                { name: 'Leg Press', sets: 3, reps: 10, rpe: '7', restSec: 90 },
+              ],
+            },
+          ],
+        },
+      ],
     });
 
     const res = await dispatch('POST', '/plan/generate', {}, {
@@ -602,9 +948,7 @@ describe('Training API routes', () => {
     });
 
     expect(res.statusCode).toBe(201);
-    const planPrompt = mockCompleteOneShotWithFallback.mock.calls[0][1];
-    expect(planPrompt).toContain('EQUIPMENT AND SUBSTITUTION RULES');
-    expect(planPrompt).toContain('dumbbells, bench, kettlebells, and simple accessories only');
+    expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledTimes(1);
 
     const gymCreateInput = mockCreateSession.mock.calls.find((call) => call[0]?.session_type === 'gym')?.[0];
     expect(gymCreateInput).toBeTruthy();
@@ -612,6 +956,30 @@ describe('Training API routes', () => {
       expect.objectContaining({ name: 'DB Floor Press' }),
       expect.objectContaining({ name: 'Goblet Squat' }),
     ]);
+  });
+
+  it('falls back to the deterministic template when the coach kernel generation fails', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockImplementation(() => {
+      throw new Error('kernel unavailable');
+    });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'General running consistency block',
+      preferredTime: '07:00',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 1,
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.fallbackTemplateUsed).toBe(true);
+    expect(res.body.data.message).toContain('reliable fallback template');
+    expect(mockCreatePlan).toHaveBeenCalled();
+    expect(mockCreateSession).toHaveBeenCalled();
   });
 
   it('ignores generic routine walk events when resolving today training from calendar', async () => {

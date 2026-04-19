@@ -68,7 +68,16 @@ describe('focus-planner', () => {
       },
     });
     mockReadScheduledTrainingSessions.mockReturnValue([]);
-    mockGetWeeksForPlan.mockReturnValue([{ id: 701, week_number: 1 }]);
+    // Cover week 1 AND week 2 so tests that run on Sunday — where
+    // Luxon's startOf('week') = Monday means "tomorrow" lands in the
+    // following ISO week — still resolve a matching week for the
+    // scheduled session. Without this, focus-planner's weekForDate
+    // returns null for any day outside week 1 and the test sees
+    // fallbackTrainingSummary.load === 'rest' instead of 'moderate'.
+    mockGetWeeksForPlan.mockReturnValue([
+      { id: 701, week_number: 1 },
+      { id: 702, week_number: 2 },
+    ]);
   });
 
   it('prefers the next actionable day over a slightly cleaner later day', async () => {
@@ -82,7 +91,13 @@ describe('focus-planner', () => {
         id: 81,
         user_id: 7,
         start_date: today.startOf('week').toISODate(),
-        duration_weeks: 1,
+        // Span two weeks so "tomorrow" is always inside the plan
+        // window regardless of what day the test runs. A 1-week plan
+        // plus Luxon's Monday-based startOf('week') means that when
+        // today is Sunday, tomorrow is Monday of week 2 and falls out
+        // of a duration_weeks=1 plan — weekForDate returns null and
+        // the session never gets summarized.
+        duration_weeks: 2,
         status: 'active',
       },
     ]);

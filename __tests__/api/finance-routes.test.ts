@@ -161,6 +161,21 @@ describe('Finance API — tax routes', () => {
     expect(res.body.data.summary.totalPending).toBe(res.body.data.summary.totalTaxDue);
   });
 
+  it('returns preferredCurrency with monthly summary for dashboard consumers', async () => {
+    const user = getOrCreateUser(22011, { username: 'finance-currency' });
+
+    addTransaction(user.id, '2024-04-02', 'income', 3200, { currency: 'EUR' });
+    addTransaction(user.id, '2024-04-05', 'expense', 187, { currency: 'EUR' });
+    addTransaction(user.id, '2024-04-08', 'expense', 40, { currency: 'BRL' });
+
+    const res = await dispatch('GET', '/monthly-summary?month=2024-04', user.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.summary.month).toBe('2024-04');
+    expect(res.body.data.preferredCurrency).toBe('EUR');
+  });
+
   it('fails closed on invalid tenant scope before loading transactions', async () => {
     const res = await dispatch('GET', '/transactions', 0);
 

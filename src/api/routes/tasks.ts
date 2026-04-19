@@ -265,6 +265,24 @@ export function taskRoutes(): Router {
     }
   });
 
+  /** GET /api/v1/tasks/:listId/:taskId — full task detail for drill-down/edit flows */
+  router.get('/:listId/:taskId', async (req, res: Response) => {
+    try {
+      const { listId, taskId } = req.params;
+      const todo = getTodo(req);
+      const listName = await resolveTaskListName(todo, listId);
+      const task = await resolveTaskDetail(todo, listId, taskId, listName);
+
+      sendSuccess(
+        res,
+        { task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }) },
+      );
+    } catch (err: any) {
+      logger.error({ err }, 'iOS task detail failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch task detail', 500);
+    }
+  });
+
   /** POST /api/v1/tasks — create a new task */
   router.post('/', async (req, res: Response) => {
     try {
@@ -373,6 +391,13 @@ export function taskRoutes(): Router {
         return;
       }
 
+      if (resolveTaskProvider((req as any).userId) !== 'ms_todo') {
+        sendError(res, 'UNSUPPORTED', 'Checklist items are not supported by the active task provider', 400);
+        return;
+      }
+
+      const listName = await resolveTaskListName(getTodo(req), listId);
+
       // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
       const { getGraphClient } = require('../../services/microsoft-auth');
       const client = getGraphClient(req);
@@ -380,10 +405,61 @@ export function taskRoutes(): Router {
         .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
         .patch({ isChecked });
 
-      sendSuccess(res, { item: result });
+      invalidateTaskCaches(listId, (req as any).userId);
+      const task = await resolveTaskDetail(getTodo(req), listId, taskId, listName, { id: taskId, listId, listName });
+
+      sendSuccess(res, {
+        item: {
+          id: result?.id || itemId,
+          displayName: result?.displayName || '',
+          isChecked: result?.isChecked ?? isChecked,
+        },
+        task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }),
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS checklist toggle failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to toggle checklist item', 500);
+    }
+  });
+
+  /** POST /api/v1/tasks/:listId/:taskId/checklist — add a checklist item */
+  router.post('/:listId/:taskId/checklist', async (req, res: Response) => {
+    try {
+      const { listId, taskId } = req.params;
+      const displayName = String(req.body?.displayName || '').trim();
+
+      if (!displayName) {
+        sendError(res, 'VALIDATION', 'displayName is required', 400);
+        return;
+      }
+
+      const todo = getTodo(req);
+      if (typeof todo.addChecklistItem !== 'function') {
+        sendError(res, 'UNSUPPORTED', 'Checklist items are not supported by the active task provider', 400);
+        return;
+      }
+
+      const listName = await resolveTaskListName(todo, listId);
+      const created = await todo.addChecklistItem(listId, taskId, displayName);
+      if (!created?.success || !created.data) {
+        sendError(res, 'INTERNAL', created?.error || 'Failed to add checklist item', 500);
+        return;
+      }
+
+      invalidateTaskCaches(listId, (req as any).userId);
+      const task = await resolveTaskDetail(todo, listId, taskId, listName, { id: taskId, listId, listName });
+
+      sendSuccess(
+        res,
+        {
+          item: created.data,
+          task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }),
+        },
+        { status: 201 },
+      );
+    } catch (err: any) {
+      logger.error({ err }, 'iOS checklist add failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to add checklist item', 500);
     }
   });
 
@@ -678,4 +754,23 @@ async function resolveMutatedTask(
   } catch {
     return candidate;
   }
+}
+
+async function resolveTaskDetail(
+  todo: any,
+  listId: string,
+  taskId: string,
+  listName: string,
+  candidate?: any,
+): Promise<any> {
+  if (typeof todo?.getTask === 'function') {
+    try {
+      const result = await todo.getTask(listId, taskId, listName);
+      if (result?.success && result.data) return result.data;
+    } catch {
+      // Fall back to list-fetch resolution below.
+    }
+  }
+
+  return resolveMutatedTask(todo, listId, taskId, listName, candidate || { id: taskId, listId, listName });
 }

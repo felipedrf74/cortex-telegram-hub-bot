@@ -35,6 +35,7 @@ import {
   getTransactions,
   deleteTransaction,
   getMonthlySummary,
+  getPreferredCurrencyForUser,
   getTaxEvents,
   getAnnualTaxSummary,
   calculateAndStoreTax,
@@ -256,13 +257,14 @@ export function financeRoutes(): Router {
 
     try {
       const summary = getMonthlySummary(userId, month);
+      const preferredCurrency = getPreferredCurrencyForUser(userId);
 
       // Precompute the tax breakdown so the iOS KPI card can show it
       // without a second round-trip. Uses the same IRPF + INSS logic
       // the backend persists via calculateAndStoreTax.
       const taxBreakdown = calculateMonthlyTax(summary.totalIncome, summary.totalDeductions);
 
-      sendSuccess(res, { summary, tax: taxBreakdown });
+      sendSuccess(res, { summary, tax: taxBreakdown, preferredCurrency });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance monthly-summary failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to fetch monthly summary', 500);

@@ -27,7 +27,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
-import { getActiveContentPillars, getContentDeskItems } from '../../src/services/content-intelligence';
+import { getActiveContentPillars, getContentDeskItems, localizeFilmingRecommendation } from '../../src/services/content-intelligence';
 
 describe('content-intelligence', () => {
   beforeEach(() => {
@@ -65,5 +65,23 @@ describe('content-intelligence', () => {
         }),
       ]),
     );
+  });
+
+  it('localizes filming recommendation copy to pt-BR instead of pt-PT wording', () => {
+    const localized = localizeFilmingRecommendation(
+      {
+        reason: 'Only light training is planned, so it should be easier to film well.',
+        reasons: [
+          'Only light training is planned, so it should be easier to film well.',
+          'The calendar looks light, which is good for a focused filming block.',
+        ],
+        calendarReservationMessage: 'Connect Google Calendar or Outlook in Settings to reserve this filming block.',
+      },
+      'pt-BR',
+    );
+
+    expect(localized?.reason).toBe('Só há treino leve planejado, por isso deve ser mais fácil filmar bem.');
+    expect(localized?.reasons).toContain('O calendário parece leve, o que é bom para um bloco de filmagem focado.');
+    expect(localized?.calendarReservationMessage).toBe('Conecte o Google Calendar ou o Outlook nas Configurações para reservar este bloco de filmagem.');
   });
 });

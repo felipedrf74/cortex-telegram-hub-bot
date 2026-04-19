@@ -385,6 +385,7 @@ function formatEvent(e: any) {
     location: e.location || null,
     source: e.source || null,
     categories: Array.isArray(e.categories) ? e.categories : null,
+    color: typeof e.color === 'string' ? e.color : null,
     isAllDay: !!e.isAllDay,
   };
 }

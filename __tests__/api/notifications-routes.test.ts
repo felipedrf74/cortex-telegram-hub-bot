@@ -235,6 +235,36 @@ describe('Notification inbox routes', () => {
     expect(mockGetUnreadEmailsForUser).toHaveBeenCalledWith(7, expect.any(Number));
   });
 
+  it('surfaces missing mail and calendar integrations honestly when neither provider is connected', async () => {
+    mockGetNotifications.mockReturnValue([
+      {
+        id: 9,
+        type: 'script_ready',
+        title: 'Script ready',
+        body: 'Your weekly package is ready.',
+        status: 'unread',
+        createdAt: '2026-04-13T11:00:00Z',
+        data: {},
+      },
+    ]);
+    mockGetUnreadCount.mockReturnValue(1);
+    mockGetRecentReports.mockReturnValue([]);
+    mockGetUnreadReportCount.mockReturnValue(0);
+    mockGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
+
+    const res = await dispatch('GET', '/inbox', { limit: '10' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).toBe('degraded');
+    expect(res.body.data.warningCodes).toEqual(
+      expect.arrayContaining(['MAIL_INTEGRATION_MISSING', 'CALENDAR_INTEGRATION_MISSING']),
+    );
+    expect(res.body.data.warningCodes).not.toEqual(
+      expect.arrayContaining(['OUTLOOK_MAIL_UNAVAILABLE', 'GMAIL_UNAVAILABLE', 'OUTLOOK_CALENDAR_UNAVAILABLE', 'GOOGLE_CALENDAR_UNAVAILABLE']),
+    );
+  });
+
   it('returns read-only email detail for the unified inbox', async () => {
     mockReadOutlookEmailForUser.mockResolvedValue({
       subject: 'Board notes',
@@ -279,6 +309,20 @@ describe('Notification inbox routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.unreadCount).toBe(7);
     expect(mockCountEmailsForUser).toHaveBeenCalledWith(7, 'in:inbox is:unread newer_than:14d');
+  });
+
+  it('keeps unread count honest about missing mail integrations when no provider is connected', async () => {
+    mockGetUnreadCount.mockReturnValue(2);
+    mockGetUnreadReportCount.mockReturnValue(1);
+
+    const res = await dispatch('GET', '/unread-count');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.unreadCount).toBe(3);
+    expect(res.body.data.warningCodes).toEqual(
+      expect.arrayContaining(['MAIL_INTEGRATION_MISSING', 'CALENDAR_INTEGRATION_MISSING']),
+    );
   });
 
   it('uses the authenticated user for Google Calendar inbox events', async () => {

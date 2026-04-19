@@ -6,6 +6,7 @@ import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
+import { buildScreenContractMeta } from '../../services/screen-contract-meta';
 
 // ── Generation Mode + Metadata ────────────────────────────────────
 //
@@ -258,6 +259,7 @@ import { readSignals, type AgentSignal } from '../../services/intelligence-bus';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguage } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
+import { buildContentHomeViewState } from '../../services/content-home-view-state';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import type { ScriptTopicContext } from '../../services/content-engine';
 
@@ -380,6 +382,140 @@ export function contentRoutes(): Router {
       sendSuccess(res, { ideas: [], count: 0 });
     }
   });
+
+  /** GET /api/v1/content/home — render-ready landing view state for iOS */
+  router.get('/home', asyncHandler(async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidContentRouteScope(res, userId, 'content_route_home')) return;
+
+    const db = getDb();
+    const language = resolveContentLanguage(req, userId);
+
+    let pipeline = null as null | {
+      stages: {
+        ideas: Array<{ title: string }>;
+        scripted: Array<{ title: string }>;
+        filmed: Array<{ title: string }>;
+        editing: Array<{ title: string }>;
+        published: Array<{ title: string }>;
+      };
+    };
+    let ideas: Array<{ title: string }> = [];
+    let topics = [] as Array<{ status: 'planned' | 'drafting' | 'ready' | 'published' | 'cancelled'; scheduledDate: string | null }>;
+    let lastLoadError: string | null = null;
+    const reasonCodes: string[] = [];
+
+    try {
+      pipeline = readContentHomePipeline(db, userId);
+    } catch (err: any) {
+      logger.debug({ err, userId }, 'content/home pipeline digest failed');
+      lastLoadError = err?.message || 'pipeline_unavailable';
+      reasonCodes.push('PIPELINE_UNAVAILABLE');
+    }
+
+    try {
+      ideas = readContentHomeIdeas(db, userId);
+    } catch (err: any) {
+      logger.debug({ err, userId }, 'content/home ideas digest failed');
+      lastLoadError = lastLoadError ?? (err?.message || 'ideas_unavailable');
+      reasonCodes.push('IDEAS_UNAVAILABLE');
+    }
+
+    try {
+      topics = getTopics(userId, {
+        includeTerminal: false,
+        limit: 100,
+      }).map((topic) => ({
+        status: topic.status,
+        scheduledDate: topic.scheduled_date ?? null,
+      }));
+    } catch (err: any) {
+      logger.debug({ err, userId }, 'content/home topics digest failed');
+      lastLoadError = lastLoadError ?? (err?.message || 'topics_unavailable');
+      reasonCodes.push('TOPICS_UNAVAILABLE');
+    }
+
+    const allDiscoverySignals = readSignals(
+      'ios-content-home',
+      ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
+      6,
+      userId,
+      7,
+    );
+    const radarPreferences = getContentRadarPreferences(userId);
+    const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
+    const optimizationSignals = readSignals(
+      'ios-content-home',
+      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
+      6,
+      userId,
+      14,
+    );
+    const monitoredPillars = radarPreferences.topics.length > 0
+      ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
+      : getActiveContentPillars(userId);
+    const deskItems = getContentDeskItems(userId, 3);
+    const voiceEntries = getVoiceDna(undefined, userId);
+    const knowledgeStats = getKnowledgeStats(undefined, userId);
+    const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
+
+    sendSuccess(res, buildContentHomeViewState({
+      pipeline,
+      ideas,
+      topics,
+      discovery: {
+        activeCount: discoverySignals.length,
+        deskReadyCount: deskItems.length,
+        deskItems: deskItems.map((item) => ({
+          title: item.title,
+          body: item.body,
+        })),
+        monitoredPillars: monitoredPillars.map((pillar) => ({
+          name: pillar.name,
+        })),
+      },
+      script: {
+        voicePatternCount: voiceEntries.length,
+        hasBrandVoice: voiceEntries.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary')
+          || knowledgeStats.categories.some((entry) => entry.category === 'brand_voice' || entry.category === 'voice_summary'),
+      },
+      optimization: {
+        activeInsightCount: optimizationSignals.length,
+        recentSignals: optimizationSignals.map((signal) => ({
+          title: buildSignalTitle(signal, language),
+          summary: buildSignalSummary(signal, language),
+        })),
+      },
+      filmingRecommendation: filmingRecommendation
+        ? {
+            date: filmingRecommendation.date,
+            confidence: filmingRecommendation.confidence,
+            localizedReason: filmingRecommendation.reason,
+            localizedConfidenceLabel: language.startsWith('pt')
+              ? filmingRecommendation.confidence === 'high'
+                ? 'Alta confiança'
+                : filmingRecommendation.confidence === 'medium'
+                  ? 'Confiança média'
+                  : 'Baixa confiança'
+              : filmingRecommendation.confidence === 'high'
+                ? 'High confidence'
+                : filmingRecommendation.confidence === 'medium'
+                  ? 'Medium confidence'
+                  : 'Low confidence',
+          }
+        : null,
+      hasAttemptedLoad: true,
+      lastLoadError,
+      meta: buildScreenContractMeta({
+        source: 'server',
+        isFallback: reasonCodes.length > 0,
+        isPartial: reasonCodes.length > 0,
+        isStale: false,
+        generatedAt: new Date().toISOString(),
+        reasonCodes,
+      }),
+    }, language));
+  }));
 
   /** POST /api/v1/content/discover — trigger content discovery */
   router.post('/discover', async (req, res: Response) => {
@@ -1478,6 +1614,51 @@ export function contentRoutes(): Router {
   return router;
 }
 
+function readContentHomePipeline(db: ReturnType<typeof getDb>, userId: number): {
+  stages: {
+    ideas: Array<{ title: string }>;
+    scripted: Array<{ title: string }>;
+    filmed: Array<{ title: string }>;
+    editing: Array<{ title: string }>;
+    published: Array<{ title: string }>;
+  };
+} {
+  const readStage = (stage: 'ideas' | 'scripted' | 'filmed' | 'editing' | 'published') => (
+    db.prepare(
+      `SELECT title
+         FROM content_ideas
+        WHERE stage = ? AND user_id = ?
+        ORDER BY COALESCE(score, 0) DESC, created_at DESC
+        LIMIT 20`,
+    ).all(stage, userId) as Array<{ title: string }>
+  ).map((row) => ({ title: row.title }));
+
+  return {
+    stages: {
+      ideas: readStage('ideas'),
+      scripted: readStage('scripted'),
+      filmed: readStage('filmed'),
+      editing: readStage('editing'),
+      published: readStage('published'),
+    },
+  };
+}
+
+function readContentHomeIdeas(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+): Array<{ title: string }> {
+  return (
+    db.prepare(`
+      SELECT title
+      FROM content_ideas
+      WHERE user_id = ?
+      ORDER BY COALESCE(score, 0) DESC, created_at DESC
+      LIMIT 30
+    `).all(userId) as Array<{ title: string }>
+  ).map((row) => ({ title: row.title }));
+}
+
 function summarizeContentJobStatus(
   lastResult: 'success' | 'failed' | 'running' | 'never' | undefined,
   signalCount: number,
@@ -1500,8 +1681,13 @@ function summarizeOptimizationStatus(
 }
 
 function resolveContentLanguage(req: Pick<AuthenticatedRequest, 'header'>, userId: number): Lang {
-  const headerLanguage = normalizeLangHeader(req.header?.('x-language'));
-  if (headerLanguage) return headerLanguage;
+  // `normalizeLangHeader` always returns a value ('pt-BR' default) for
+  // backwards-compat with callers that want a string no matter what.
+  // That means checking its return is NEVER falsy and would silently
+  // override the user's stored preference on every request that didn't
+  // send an x-language header. Check the raw header for presence first.
+  const rawHeader = req.header?.('x-language');
+  if (rawHeader) return normalizeLangHeader(rawHeader);
   return getUserLanguage(userId);
 }
 
@@ -1563,38 +1749,68 @@ function buildSignalSummary(signal: AgentSignal, language: Lang): string {
 
   switch (signal.signal_type) {
     case 'reaction_opportunity':
-      return language.startsWith('pt')
-        ? 'Há uma janela curta para reagir com velocidade e contexto.'
-        : 'There is a short reaction window worth moving on quickly.';
+      return localizePortugueseVariant(
+        language,
+        'Há uma janela curta para reagir com velocidade e contexto.',
+        'Há uma janela curta para reagir com velocidade e contexto.',
+        'There is a short reaction window worth moving on quickly.',
+      );
     case 'trending_spike':
-      return language.startsWith('pt')
-        ? 'O tema está a ganhar velocidade e merece atenção.'
-        : 'This topic is accelerating and deserves attention.';
+      return localizePortugueseVariant(
+        language,
+        'O tema está a ganhar velocidade e merece atenção.',
+        'O tema está ganhando velocidade e merece atenção.',
+        'This topic is accelerating and deserves attention.',
+      );
     case 'competitor_upload':
-      return language.startsWith('pt')
-        ? 'Um canal comparável publicou agora, o que pode abrir espaço para resposta.'
-        : 'A comparable channel just published, which may open a response angle.';
+      return localizePortugueseVariant(
+        language,
+        'Um canal comparável publicou agora, o que pode abrir espaço para resposta.',
+        'Um canal comparável publicou agora, o que pode abrir espaço para resposta.',
+        'A comparable channel just published, which may open a response angle.',
+      );
     case 'hook_effectiveness':
-      return language.startsWith('pt')
-        ? 'Há um padrão recente sobre o que está a segurar melhor a audiência.'
-        : 'There is a recent pattern in what is holding attention better.';
+      return localizePortugueseVariant(
+        language,
+        'Há um padrão recente sobre o que está a segurar melhor a audiência.',
+        'Há um padrão recente sobre o que está segurando melhor a audiência.',
+        'There is a recent pattern in what is holding attention better.',
+      );
     case 'pillar_performance':
-      return language.startsWith('pt')
-        ? 'Um dos teus pilares está a ganhar mais tração do que os restantes.'
-        : 'One of your pillars is outperforming the rest right now.';
+      return localizePortugueseVariant(
+        language,
+        'Um dos teus pilares está a ganhar mais tração do que os restantes.',
+        'Um dos seus pilares está ganhando mais tração do que os demais.',
+        'One of your pillars is outperforming the rest right now.',
+      );
     case 'learning_digest':
-      return language.startsWith('pt')
-        ? 'Há uma síntese recente do que está a funcionar e do que precisa de ajuste.'
-        : 'There is a recent summary of what is working and what needs adjustment.';
+      return localizePortugueseVariant(
+        language,
+        'Há uma síntese recente do que está a funcionar e do que precisa de ajuste.',
+        'Há uma síntese recente do que está funcionando e do que precisa de ajuste.',
+        'There is a recent summary of what is working and what needs adjustment.',
+      );
     case 'content_formula':
-      return language.startsWith('pt')
-        ? 'Um formato repetível está a emergir nos teus resultados recentes.'
-        : 'A repeatable format is emerging from recent results.';
+      return localizePortugueseVariant(
+        language,
+        'Um formato repetível está a emergir nos teus resultados recentes.',
+        'Um formato repetível está surgindo nos seus resultados recentes.',
+        'A repeatable format is emerging from recent results.',
+      );
     default:
-      return language.startsWith('pt')
-        ? 'Sinal recente do teu sistema de conteúdo.'
-        : 'Recent signal from your content system.';
+      return localizePortugueseVariant(
+        language,
+        'Sinal recente do teu sistema de conteúdo.',
+        'Sinal recente do seu sistema de conteúdo.',
+        'Recent signal from your content system.',
+      );
   }
+}
+
+function localizePortugueseVariant(language: Lang, portugal: string, brazil: string, english: string): string {
+  if (language === 'pt-BR') return brazil;
+  if (language.startsWith('pt')) return portugal;
+  return english;
 }
 
 function localizeSignalTitle(title: string, signalType: string, language: Lang): string {

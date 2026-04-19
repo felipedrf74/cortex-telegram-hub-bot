@@ -36,6 +36,7 @@ const mockGetDailyQuotaStatus = vi.fn(() => ({
   remainingUsd: 0.08,
   resetAt: '2026-04-15T00:00:00.000Z',
 }));
+const mockComposeDailyBrief = vi.fn();
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
   setCache: (...args: unknown[]) => mockSetCache(...args),
@@ -68,6 +69,10 @@ vi.mock('../../src/services/outlook-calendar', () => ({
 
 vi.mock('../../src/services/cost-guardrail', () => ({
   getDailyQuotaStatus: (...args: unknown[]) => mockGetDailyQuotaStatus(...args),
+}));
+
+vi.mock('../../src/services/daily-brief-orchestrator', () => ({
+  composeDailyBrief: (...args: unknown[]) => mockComposeDailyBrief(...args),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -115,26 +120,26 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, headers: Record<string, string> = {}): Request {
+function mockReq(userId: number, path = '/', headers: Record<string, string> = {}): Request {
   return {
     userId,
     headers,
+    method: 'GET',
+    url: path,
+    originalUrl: path,
+    baseUrl: '',
+    path,
+    query: {},
+    params: {},
     header(name: string) {
       return headers[name.toLowerCase()] ?? headers[name];
     },
   } as any;
 }
 
-async function dispatch(userId = 4, headers: Record<string, string> = {}): Promise<MockRes> {
+async function dispatch(userId = 4, headers: Record<string, string> = {}, path = '/'): Promise<MockRes> {
   const router = dashboardRoutes();
-  const req = mockReq(userId, headers);
-  (req as any).method = 'GET';
-  (req as any).url = '/';
-  (req as any).originalUrl = '/';
-  (req as any).baseUrl = '';
-  (req as any).path = '/';
-  (req as any).query = {};
-  (req as any).params = {};
+  const req = mockReq(userId, path, headers);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -179,6 +184,52 @@ describe('Dashboard API route', () => {
       lastMessageAt: null,
     });
     mockDashboardDbAll.mockReturnValue([]);
+    mockComposeDailyBrief.mockResolvedValue({
+      creativeCopy: {
+        headline: 'Hoje protegemos recuperação para sustentar consistência.',
+        note: 'Treino e agenda foram coordenados para reduzir atrito.',
+      },
+      day: {
+        headline: 'Hoje protegemos recuperação',
+        training: {
+          title: 'Corrida base',
+          durationMinutes: 45,
+          reason: 'A recuperação caiu, então o treino ficou mais leve.',
+        },
+        meals: [
+          {
+            title: 'Bowl de recuperação',
+            note: 'Hoje · almoço',
+          },
+        ],
+        content: {
+          title: 'Janela de gravação na sexta',
+          note: 'Só há treino leve planeado, por isso deve ser mais fácil filmar bem.',
+          status: 'scheduled',
+        },
+        secretary: {
+          focusBlock: null,
+          pendingTasks: 2,
+          overdueTasks: 0,
+          busy: false,
+          travel: false,
+          tradeoffNote: 'Hoje vale preservar margem para sustentar a sessão-chave.',
+          sequence: [],
+        },
+        finance: {
+          budgetNote: '€ 239 gastos',
+          taxNote: '€ 88 líquido',
+          subscriptionNote: null,
+        },
+      },
+      coordination: {
+        topPriority: 'Proteger recuperação',
+        executionOrder: [],
+        watchouts: [],
+        handoffs: [],
+      },
+      conflicts: [],
+    });
   });
 
   it('returns explicit unavailable states instead of silent dashboard zeroes', async () => {
@@ -186,7 +237,7 @@ describe('Dashboard API route', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.calendar.status).toBe('unavailable');
-    expect(res.body.data.calendar.warningCodes).toEqual(['CALENDAR_UNAVAILABLE']);
+    expect(res.body.data.calendar.warningCodes).toEqual(['CALENDAR_INTEGRATION_MISSING']);
     expect(res.body.data.tasks.status).toBe('unavailable');
     expect(res.body.data.training.status).toBe('unavailable');
     expect(res.body.data.training.readinessStatus).toBe('unavailable');
@@ -199,6 +250,30 @@ describe('Dashboard API route', () => {
       remaining_usd: 0.08,
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
+    });
+  });
+
+  it('passes calendar event colors through the dashboard payload', async () => {
+    mockOutlookCalendarConfigured.mockReturnValue(true);
+    mockOutlookCalendarEvents.mockResolvedValue([
+      {
+        id: 'evt-1',
+        summary: 'Content block',
+        start: '2026-04-19T16:00:00.000Z',
+        end: '2026-04-19T16:30:00.000Z',
+        categories: ['Content'],
+        color: '#8E44AD',
+      },
+    ]);
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.calendar.today[0]).toMatchObject({
+      id: 'evt-1',
+      source: 'outlook',
+      color: '#8E44AD',
     });
   });
 
@@ -274,6 +349,56 @@ describe('Dashboard API route', () => {
     expect(mockSetCacheSWR).toHaveBeenCalled();
   });
 
+  it('returns a render-ready home contract', async () => {
+    mockOutlookCalendarConfigured.mockReturnValue(true);
+    mockOutlookCalendarEvents.mockResolvedValue([
+      {
+        id: 'evt-1',
+        subject: 'Long Conditioning Session (60min)',
+        start: { dateTime: '2026-04-18T10:00:00.000Z' },
+        end: { dateTime: '2026-04-18T11:00:00.000Z' },
+      },
+    ]);
+
+    const res = await dispatch(4, {}, '/home');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.hero.state).toBe('recoveryProtected');
+    expect(res.body.data.hero.primaryAction.target).toBe('training');
+    expect(Array.isArray(res.body.data.insights)).toBe(true);
+    expect(res.body.data.metrics).toHaveLength(4);
+    expect(res.body.data.secretaryPreview.items[0]?.title).toBe('Sessão longa de condicionamento (60min)');
+    expect(res.body.data.coordinatedDecision.summary).toBe('Hoje protegemos recuperação para sustentar consistência.');
+    expect(res.body.data.coordinatedDecision.stateLabel).toBe('Protege consistência');
+    expect(res.body.data.coordinatedDecision.confidenceText).toBe('Confiança alta');
+    expect(res.body.data.coordinatedDecision.protectedLater).toBeTruthy();
+    expect(res.body.data.skillQueue[0]?.domain).toBe('training');
+    expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
+  });
+
+  it('surfaces missing wearable integration honestly in dashboard and home meta', async () => {
+    mockGetCached.mockImplementation((key: string) => {
+      if (key === 'dashboard-readiness:4') {
+        return {
+          score: 60,
+          bodyBattery: 0,
+          reasonCode: 'WEARABLE_INTEGRATION_MISSING',
+        };
+      }
+      return null;
+    });
+
+    const dashboardRes = await dispatch(4);
+    expect(dashboardRes.statusCode).toBe(200);
+    expect(dashboardRes.body.data.training.warningCodes).toContain('WEARABLE_INTEGRATION_MISSING');
+    expect(dashboardRes.body.data.training.warningCodes).toContain('BODY_BATTERY_UNAVAILABLE');
+
+    const homeRes = await dispatch(4, {}, '/home');
+    expect(homeRes.statusCode).toBe(200);
+    expect(homeRes.body.data.meta.reasonCodes).toContain('WEARABLE_INTEGRATION_MISSING');
+  });
+
   it('does not flag Google Calendar as unavailable when the current user has Google connected', async () => {
     mockGoogleCalendarConfigured.mockImplementation((userId?: number) => userId === 4);
     mockGoogleCalendarEvents.mockResolvedValue([]);
@@ -285,6 +410,21 @@ describe('Dashboard API route', () => {
     expect(res.body.data.calendar.warningCodes).not.toContain('GOOGLE_CALENDAR_UNAVAILABLE');
     expect(mockGoogleCalendarConfigured).toHaveBeenCalledWith(4);
     expect(mockGoogleCalendarEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 4);
+  });
+
+  it('surfaces missing calendar integration honestly when no calendar is connected', async () => {
+    mockGoogleCalendarConfigured.mockReturnValue(false);
+    mockOutlookCalendarConfigured.mockReturnValue(false);
+
+    const dashboardRes = await dispatch(4);
+    expect(dashboardRes.statusCode).toBe(200);
+    expect(dashboardRes.body.data.calendar.warningCodes).toContain('CALENDAR_INTEGRATION_MISSING');
+    expect(dashboardRes.body.data.calendar.warningCodes).not.toContain('CALENDAR_UNAVAILABLE');
+
+    const homeRes = await dispatch(4, {}, '/home');
+    expect(homeRes.statusCode).toBe(200);
+    expect(homeRes.body.data.meta.reasonCodes).toContain('CALENDAR_INTEGRATION_MISSING');
+    expect(homeRes.body.data.meta.reasonCodes).not.toContain('CALENDAR_UNAVAILABLE');
   });
 
   it('localizes greeting and weekday when x-language is Portuguese', async () => {

@@ -415,6 +415,26 @@ export async function getTasks(
   }
 }
 
+export async function getTask(
+  listId: string,
+  taskId: string,
+  listName: string
+): Promise<ServiceResult<TodoTask>> {
+  try {
+    const client = getGraphClient();
+    const response = await withRetry(() =>
+      client.api(`/me/todo/lists/${listId}/tasks/${taskId}`)
+        .query({ $expand: 'checklistItems' })
+        .get()
+    );
+
+    return { success: true, data: parseTask(response, listId, listName) };
+  } catch (err) {
+    logger.error({ err, listId, taskId }, 'Failed to fetch To Do task detail');
+    return { success: false, data: null as any, error: (err as Error).message };
+  }
+}
+
 export async function createTask(
   listId: string,
   listName: string,

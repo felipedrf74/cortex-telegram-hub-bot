@@ -33,6 +33,7 @@ const mockIsUserOverDailyCap = vi.fn(() => ({
 const mockGetLastAssistantMessage = vi.fn(() => null);
 const mockAddToConversation = vi.fn();
 const mockSyncLastAssistantConversationMessage = vi.fn();
+const mockClearAllConversations = vi.fn();
 const mockCompleteOneShotWithFallback = vi.fn();
 const mockHandleSecretary = vi.fn(async () => ({ text: 'Scheduled.', domain: 'secretary' as const }));
 const mockGetScript = vi.fn();
@@ -166,6 +167,7 @@ vi.mock('../../src/state/conversation', () => ({
   getLastAssistantMessage: (...args: unknown[]) => mockGetLastAssistantMessage(...args),
   addToConversation: (...args: unknown[]) => mockAddToConversation(...args),
   syncLastAssistantConversationMessage: (...args: unknown[]) => mockSyncLastAssistantConversationMessage(...args),
+  clearAllConversations: (...args: unknown[]) => mockClearAllConversations(...args),
 }));
 
 vi.mock('../../src/domains/secretary', () => ({
@@ -306,7 +308,7 @@ function mockReq(userId: number, body?: any, headers: Record<string, string> = {
 }
 
 async function dispatch(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   url: string,
   userId: number,
   body?: any,
@@ -360,6 +362,7 @@ describe('Chat API routes', () => {
     mockGetLastAssistantMessage.mockReset();
     mockAddToConversation.mockReset();
     mockSyncLastAssistantConversationMessage.mockReset();
+    mockClearAllConversations.mockReset();
     mockCompleteOneShotWithFallback.mockReset();
     mockHandleSecretary.mockReset();
     mockGetScript.mockReset();
@@ -613,6 +616,31 @@ describe('Chat API routes', () => {
       routeMethod: 'classifier',
       confidence: 0.93,
     });
+  });
+
+  it('clears persisted chat history for the authenticated user only', async () => {
+    testDb.prepare(`
+      INSERT INTO messages (user_id, message_uuid, role, text, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(7001, 'msg-1', 'assistant', 'Hello again', '2026-04-19T20:00:00.000Z');
+    testDb.prepare(`
+      INSERT INTO messages (user_id, message_uuid, role, text, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(7002, 'msg-2', 'assistant', 'Other user', '2026-04-19T20:00:00.000Z');
+
+    const clearRes = await dispatch('DELETE', '/history', 7001);
+
+    const remainingRows = testDb.prepare(
+      'SELECT user_id, message_uuid FROM messages ORDER BY user_id ASC'
+    ).all() as Array<{ user_id: number; message_uuid: string }>;
+
+    expect(clearRes.statusCode, JSON.stringify(clearRes.body)).toBe(200);
+    expect(clearRes.body.ok).toBe(true);
+    expect(clearRes.body.data.cleared).toBe(true);
+    expect(mockClearAllConversations).toHaveBeenCalledWith(7001);
+    expect(remainingRows).toEqual([
+      { user_id: 7002, message_uuid: 'msg-2' },
+    ]);
   });
 
   it('persists attachment-driven replies and marks them as attachment routes', async () => {

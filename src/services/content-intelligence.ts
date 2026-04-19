@@ -111,13 +111,13 @@ export function localizeFilmingRecommendation<T extends {
     return recommendation;
   }
 
-  const localizedReasons = recommendation.reasons.map(localizeFilmingRecommendationText);
+  const localizedReasons = recommendation.reasons.map((reason) => localizeFilmingRecommendationText(reason, language));
   return {
     ...recommendation,
-    reason: localizeFilmingRecommendationText(recommendation.reason),
+    reason: localizeFilmingRecommendationText(recommendation.reason, language),
     reasons: localizedReasons,
     calendarReservationMessage: recommendation.calendarReservationMessage
-      ? localizeFilmingRecommendationText(recommendation.calendarReservationMessage)
+      ? localizeFilmingRecommendationText(recommendation.calendarReservationMessage, language)
       : recommendation.calendarReservationMessage,
   };
 }
@@ -132,7 +132,7 @@ function safeJsonArray(raw: string | null | undefined): string[] {
   }
 }
 
-function localizeFilmingRecommendationText(text: string): string {
+function localizeFilmingRecommendationText(text: string, language: Lang): string {
   const trimmed = text.trim();
   if (trimmed.length === 0) return trimmed;
 
@@ -140,35 +140,35 @@ function localizeFilmingRecommendationText(text: string): string {
 
   switch (trimmed) {
     case 'No hard training is scheduled today.':
-      return 'Hoje não há treino duro planeado.';
+      return localizePTVariant(language, 'Hoje não há treino duro planeado.', 'Hoje não há treino pesado planejado.');
     case 'No hard training is planned for this day.':
-      return 'Não há treino duro planeado para este dia.';
+      return localizePTVariant(language, 'Não há treino duro planeado para este dia.', 'Não há treino pesado planejado para este dia.');
     case 'There is a hard training session planned, so filming would compete with your best energy.':
-      return 'Há um treino duro planeado, por isso filmar iria competir com a tua melhor energia.';
+      return localizePTVariant(language, 'Há um treino duro planeado, por isso filmar iria competir com a tua melhor energia.', 'Há um treino pesado planejado, por isso filmar competiria com a sua melhor energia.');
     case 'Training is planned, but it looks manageable around a filming block.':
-      return 'Há treino planeado, mas parece compatível com um bloco de filmagem.';
+      return localizePTVariant(language, 'Há treino planeado, mas parece compatível com um bloco de filmagem.', 'Há treino planejado, mas parece compatível com um bloco de filmagem.');
     case 'Only light training is planned, so it should be easier to film well.':
-      return 'Só há treino leve planeado, por isso deve ser mais fácil filmar bem.';
+      return localizePTVariant(language, 'Só há treino leve planeado, por isso deve ser mais fácil filmar bem.', 'Só há treino leve planejado, por isso deve ser mais fácil filmar bem.');
     case 'Your calendar is clear, so you have room to film without collisions.':
-      return 'O teu calendário está livre, por isso tens espaço para filmar sem conflitos.';
+      return localizePTVariant(language, 'O teu calendário está livre, por isso tens espaço para filmar sem conflitos.', 'O seu calendário está livre, por isso tem espaço para filmar sem conflitos.');
     case 'Your calendar is busy that day, so filming would likely fragment or run late.':
-      return 'O teu calendário está carregado nesse dia, por isso filmar iria fragmentar-se ou atrasar-se.';
+      return localizePTVariant(language, 'O teu calendário está carregado nesse dia, por isso filmar iria fragmentar-se ou atrasar-se.', 'O seu calendário está cheio nesse dia, por isso filmar provavelmente iria fragmentar ou atrasar.');
     case 'You have a few calendar commitments, but there is still some room to film.':
-      return 'Tens alguns compromissos no calendário, mas ainda há margem para filmar.';
+      return localizePTVariant(language, 'Tens alguns compromissos no calendário, mas ainda há margem para filmar.', 'Você tem alguns compromissos no calendário, mas ainda há margem para filmar.');
     case 'The calendar looks light, which is good for a focused filming block.':
-      return 'O calendário parece leve, o que é bom para um bloco de filmagem focado.';
+      return localizePTVariant(language, 'O calendário parece leve, o que é bom para um bloco de filmagem focado.', 'O calendário parece leve, o que é bom para um bloco de filmagem focado.');
     case 'You already have a content deadline on this date.':
-      return 'Já tens um prazo de conteúdo nesta data.';
+      return localizePTVariant(language, 'Já tens um prazo de conteúdo nesta data.', 'Você já tem um prazo de conteúdo nesta data.');
     case 'Giving yourself one more recovery day should improve filming quality.':
-      return 'Dar a ti próprio mais um dia de recuperação deve melhorar a qualidade da filmagem.';
+      return localizePTVariant(language, 'Dar a ti próprio mais um dia de recuperação deve melhorar a qualidade da filmagem.', 'Dar a si mesmo mais um dia de recuperação deve melhorar a qualidade da filmagem.');
     case 'Recent recovery signals suggest protecting today rather than stacking filming on top.':
-      return 'Os sinais recentes de recuperação sugerem proteger o dia de hoje em vez de acumular filmagem por cima.';
+      return localizePTVariant(language, 'Os sinais recentes de recuperação sugerem proteger o dia de hoje em vez de acumular filmagem por cima.', 'Os sinais recentes de recuperação sugerem proteger o dia de hoje em vez de acumular filmagem por cima.');
     case 'This gives your current recovery dip a little more room to settle.':
-      return 'Isto dá mais espaço para a tua quebra atual de recuperação estabilizar.';
+      return localizePTVariant(language, 'Isto dá mais espaço para a tua quebra atual de recuperação estabilizar.', 'Isto dá mais espaço para a sua queda atual de recuperação estabilizar.');
     case 'Connect Google Calendar or Outlook in Settings to reserve this filming block.':
-      return 'Liga o Google Calendar ou o Outlook nas Definições para reservar este bloco de filmagem.';
+      return localizePTVariant(language, 'Liga o Google Calendar ou o Outlook nas Definições para reservar este bloco de filmagem.', 'Conecte o Google Calendar ou o Outlook nas Configurações para reservar este bloco de filmagem.');
     case 'This day has the cleanest mix of energy and calendar space for filming.':
-      return 'Este dia tem a melhor combinação de energia e espaço no calendário para filmar.';
+      return localizePTVariant(language, 'Este dia tem a melhor combinação de energia e espaço no calendário para filmar.', 'Este dia tem a melhor combinação de energia e espaço no calendário para filmar.');
     default:
       break;
   }
@@ -188,4 +188,8 @@ function localizeFilmingRecommendationText(text: string): string {
   }
 
   return trimmed.replace(numericPattern, '$1/100');
+}
+
+function localizePTVariant(language: Lang, portugal: string, brazil: string): string {
+  return language === 'pt-BR' ? brazil : portugal;
 }

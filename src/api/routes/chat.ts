@@ -8,13 +8,14 @@ import { logger } from '../../utils/logger';
 import { pushEvent } from '../../portal/telemetry';
 import { getCached, setCache } from '../../services/cache-store';
 import { tryDeterministicChatCommand } from './chat-fastpath';
-import { listChatMessages, storeChatMessage, updateAssistantMessage } from '../../services/chat-history-store';
+import { clearChatHistory, listChatMessages, storeChatMessage, updateAssistantMessage } from '../../services/chat-history-store';
 import { classifyAndExtractImage, type ImageClassificationResult } from '../../services/anthropic';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguage, setUserLanguage, getUserById, getUserByTelegramId } from '../../services/user-service';
 import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import {
   addToConversation,
+  clearAllConversations,
   getLastAssistantMessage,
   syncLastAssistantConversationMessage,
 } from '../../state/conversation';
@@ -2408,6 +2409,28 @@ export function chatRoutes(): Router {
     } catch (err: any) {
       logger.debug({ err }, 'iOS chat history query failed');
       res.json({ messages: [], cursor: null, hasMore: false });
+    }
+  });
+
+  /**
+   * DELETE /api/v1/chat/history
+   * Clears persisted chat history and per-domain conversation context.
+   */
+  router.delete('/history', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+
+    if (!ensureValidChatRouteScope(res, userId, 'chat_route_clear_history')) {
+      return;
+    }
+
+    try {
+      clearChatHistory(userId);
+      clearAllConversations(userId);
+      lastActiveDomain.delete(userId);
+      res.json({ ok: true, data: { cleared: true } });
+    } catch (err: any) {
+      logger.error({ err, userId, platform: 'ios' }, 'iOS chat history clear failed');
+      sendError(res, 'CHAT_HISTORY_CLEAR_FAILED', err?.message || 'Failed to clear chat history', 500);
     }
   });
 

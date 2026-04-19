@@ -38,12 +38,14 @@ export interface ReadinessFactors {
 }
 
 export type ReadinessRecommendation = 'full_intensity' | 'reduce_10pct' | 'reduce_25pct' | 'active_recovery' | 'rest_day';
+export type ReadinessReasonCode = 'WEARABLE_INTEGRATION_MISSING';
 
 export interface ReadinessResult {
   score: number;
   factors: ReadinessFactors;
   recommendation: ReadinessRecommendation;
   reasoning: string;
+  reasonCode?: ReadinessReasonCode;
 }
 
 function providerDisplayName(provider: NormalizedReadiness['provider']): string {
@@ -454,6 +456,7 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
       factors: neutralFactors,
       recommendation: 'full_intensity',
       reasoning: 'No wearable connected — using default readiness. Connect Garmin or Apple Health for personalized adjustments.',
+      reasonCode: 'WEARABLE_INTEGRATION_MISSING',
     };
   }
 

@@ -140,12 +140,14 @@ describe('Task routes sync provider metadata', () => {
   const providerApi = {
     getLists: vi.fn(),
     getTasks: vi.fn(),
+    getTask: vi.fn(),
     getAllPendingTasks: vi.fn(),
     findListByName: vi.fn(),
     getDefaultList: vi.fn(),
     createTask: vi.fn(),
     updateTask: vi.fn(),
     completeTask: vi.fn(),
+    addChecklistItem: vi.fn(),
   };
 
   beforeEach(() => {
@@ -166,6 +168,22 @@ describe('Task routes sync provider metadata', () => {
       ],
     });
     providerApi.getTasks.mockResolvedValue({ success: true, data: [] });
+    providerApi.getTask.mockResolvedValue({
+      success: true,
+      data: {
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        body: 'Sort the onboarding notes',
+        importance: 'normal',
+        status: 'notStarted',
+        listId: 'list-1',
+        listName: 'Tasks',
+        checklistItems: [
+          { id: 'step-1', displayName: 'Open notes', isChecked: false },
+        ],
+        createdDateTime: '2026-04-17T08:00:00Z',
+      },
+    });
     providerApi.getAllPendingTasks.mockResolvedValue({ success: true, data: [] });
     providerApi.findListByName.mockResolvedValue({ id: 'list-1', displayName: 'Tasks' });
     providerApi.getDefaultList.mockResolvedValue({ id: 'list-1', displayName: 'Tasks' });
@@ -186,6 +204,10 @@ describe('Task routes sync provider metadata', () => {
     providerApi.completeTask.mockResolvedValue({
       success: true,
       data: { id: 'task-1', status: 'completed' },
+    });
+    providerApi.addChecklistItem.mockResolvedValue({
+      success: true,
+      data: { id: 'step-2', displayName: 'Archive receipts', isChecked: false },
     });
   });
 
@@ -342,6 +364,71 @@ describe('Task routes sync provider metadata', () => {
       { id: 'list-1', name: 'Tasks', taskCount: 2 },
       { id: 'list-2', name: 'Work', taskCount: 1 },
     ]);
+  });
+
+  it('returns full task detail with checklist items for the task drill-down flow', async () => {
+    const res = await dispatch('GET', '/list-1/task-1', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.getTask).toHaveBeenCalledWith('list-1', 'task-1', 'Tasks');
+    expect(res.body.data.task).toEqual(
+      expect.objectContaining({
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        listId: 'list-1',
+        listName: 'Tasks',
+        syncProvider: 'ms_todo',
+        checklistItems: [
+          expect.objectContaining({
+            id: 'step-1',
+            displayName: 'Open notes',
+            isChecked: false,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('creates a checklist item and returns refreshed task detail', async () => {
+    providerApi.getTask.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        body: 'Sort the onboarding notes',
+        importance: 'normal',
+        status: 'notStarted',
+        listId: 'list-1',
+        listName: 'Tasks',
+        checklistItems: [
+          { id: 'step-1', displayName: 'Open notes', isChecked: false },
+          { id: 'step-2', displayName: 'Archive receipts', isChecked: false },
+        ],
+        createdDateTime: '2026-04-17T08:00:00Z',
+      },
+    });
+
+    const res = await dispatch('POST', '/list-1/task-1/checklist', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+      body: { displayName: 'Archive receipts' },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(providerApi.addChecklistItem).toHaveBeenCalledWith('list-1', 'task-1', 'Archive receipts');
+    expect(res.body.data.item).toEqual(
+      expect.objectContaining({
+        id: 'step-2',
+        displayName: 'Archive receipts',
+        isChecked: false,
+      }),
+    );
+    expect(res.body.data.task.checklistItems).toEqual([
+      expect.objectContaining({ id: 'step-1' }),
+      expect.objectContaining({ id: 'step-2' }),
+    ]);
+    expect(mockClearCache).toHaveBeenCalledWith('u:12:tasks:list-1:all');
   });
 
   it('normalizes update responses when the provider only returns a partial task payload', async () => {

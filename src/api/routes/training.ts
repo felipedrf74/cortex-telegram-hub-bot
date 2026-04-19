@@ -6,14 +6,13 @@ import { logger } from '../../utils/logger';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguage } from '../../services/user-service';
 import type { Lang } from '../../utils/i18n';
-import { getCached, setCache, clearCache } from '../../services/cache-store';
+import { getCached, setCache, clearCache, clearCacheByPrefix } from '../../services/cache-store';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { getLatestByType } from '../../services/report-document-store';
 import { setLastCoachState } from '../../domains/domain-handler';
 import * as onboarding from '../../services/onboarding';
 import * as trainingPlans from '../../services/training-plans';
 import { readContentMeshContext, readCookingMeshContext, readFinanceMeshContext, readSecretaryMeshContext, readTrainingMeshContext } from '../../services/cross-agent-learning';
-import { completeOneShotWithFallback } from '../../services/gemini-provider';
 import { buildSharedDecisionContext } from '../../services/shared-decision-context';
 import { adaptTrainingPlanToAvailableEquipment, buildTrainingEquipmentAdaptation } from '../../services/training-plan-equipment-adaptation';
 import { createEvent, getEvents } from '../../services/unified-calendar';
@@ -23,22 +22,209 @@ import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/co
 import type { CoachRecommendation } from '../../services/garmin-coach';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { buildActiveSignalsResponse } from '../../services/signals-observability';
+import { buildTrainingHomeViewState, type CoachRecommendationInput } from '../../services/training-home-view-state';
+import { buildScreenContractMeta } from '../../services/screen-contract-meta';
+import { buildCoachKernelTrainingPlan } from '../../services/training-coach-kernel-plan-generator';
 
 // Cache TTLs (seconds)
 const COACH_TTL = 6 * 3600;    // 6 hours — Garmin data changes once/day
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
 const SUMMARY_TTL = 5 * 60;    // 5 minutes
+const HOME_TTL = 5 * 60;
 
 function resolveTrainingLanguage(req: Pick<AuthenticatedRequest, 'header'>, userId: number): Lang {
-  const headerLanguage = normalizeLangHeader(req.header?.('x-language'));
-  if (headerLanguage) return headerLanguage;
+  // `normalizeLangHeader` always returns a value ('pt-BR' default) so a
+  // truthy check would never fall back to the user's stored preference.
+  // Check the raw header for presence before normalizing so the DB
+  // language wins when the client didn't send x-language.
+  const rawHeader = req.header?.('x-language');
+  if (rawHeader) return normalizeLangHeader(rawHeader);
   return getUserLanguage(userId);
+}
+
+function invalidateTrainingScreenCaches(userId: number) {
+  clearCache(`coach-briefing:${userId}`);
+  clearCache(`training-summary:${userId}`);
+  clearCache(`readiness:${userId}`);
+  clearCache(`dashboard-readiness:${userId}`);
+  clearCacheByPrefix(`training-home:${userId}:`);
+  invalidatePlanningCaches(userId);
 }
 
 function invalidCardioSportMessage(language: Lang): string {
   if (language === 'pt-BR') return 'o parâmetro sport deve ser "running" ou "cycling"';
   if (language.startsWith('pt')) return 'o parâmetro sport tem de ser "running" ou "cycling"';
   return 'sport query param must be "running" or "cycling"';
+}
+
+type BusyWindow = {
+  startMs: number;
+  endMs: number;
+  title: string;
+};
+
+type ObjectiveProfileRequirement = {
+  questionnaireId: string;
+  title: string;
+  missingFields: unknown[];
+  message: string;
+};
+
+function objectiveNeedsRunningProfile(objective: string): boolean {
+  return /(marathon|meia maratona|half marathon|10k|5k|corrida|running|run|trail|ultra)/i.test(objective);
+}
+
+function objectiveNeedsGymProfile(objective: string): boolean {
+  return /(hipertrofia|hypertrophy|muscle|strength|gym|massa|bodybuilding|força|muscula)/i.test(objective);
+}
+
+function resolveObjectiveProfileRequirement(
+  objective: string,
+  userId: number,
+): ObjectiveProfileRequirement | null {
+  const lowerObjective = objective.trim();
+  const maybeRequirement = (questionnaireId: string, message: string): ObjectiveProfileRequirement | null => {
+    const missingFields = onboarding.getMissingProfileFields?.(userId, questionnaireId) || [];
+    if (!Array.isArray(missingFields) || missingFields.length === 0) return null;
+    const questionnaire = onboarding.getQuestionnaire?.(questionnaireId);
+    return {
+      questionnaireId,
+      title: questionnaire?.title ?? questionnaireId,
+      missingFields,
+      message,
+    };
+  };
+
+  if (objectiveNeedsRunningProfile(lowerObjective)) {
+    return maybeRequirement(
+      'triathlon-running',
+      'Complete your running profile first so the plan can ask about race date, target event, current mileage, and workout preferences.',
+    );
+  }
+
+  if (objectiveNeedsGymProfile(lowerObjective)) {
+    return maybeRequirement(
+      'triathlon-gym',
+      'Complete your strength profile first so the plan can tailor exercise selection, equipment, and gym progression.',
+    );
+  }
+
+  return null;
+}
+
+function normalizePreferredTime(raw: unknown, fallback: string): string {
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim();
+  return /^\d{2}:\d{2}$/.test(trimmed) ? trimmed : fallback;
+}
+
+function canonicalTrainingDay(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  const mapping: Record<string, string> = {
+    monday: 'Monday',
+    tuesday: 'Tuesday',
+    wednesday: 'Wednesday',
+    thursday: 'Thursday',
+    friday: 'Friday',
+    saturday: 'Saturday',
+    sunday: 'Sunday',
+  };
+  return mapping[normalized] ?? value.trim();
+}
+
+function buildBusyWindows(events: any[]): BusyWindow[] {
+  return (events || []).flatMap((event: any) => {
+    const startRaw = event.start?.dateTime || event.startDateTime || event.start;
+    const endRaw = event.end?.dateTime || event.endDateTime || event.end;
+    const start = new Date(startRaw || '');
+    const end = new Date(endRaw || '');
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return [];
+    return [{
+      startMs: start.getTime(),
+      endMs: end.getTime(),
+      title: event.subject || event.summary || event.title || '',
+    }];
+  }).sort((a, b) => a.startMs - b.startMs);
+}
+
+function preferredTimeForSessionType(
+  sessionType: string,
+  fallbackPreferredTime: string,
+  preferredCardioTime: string,
+  preferredStrengthTime: string,
+): string {
+  switch ((sessionType || '').toLowerCase()) {
+    case 'gym':
+      return preferredStrengthTime;
+    case 'run':
+    case 'ride':
+    case 'swim':
+      return preferredCardioTime;
+    default:
+      return fallbackPreferredTime;
+  }
+}
+
+function minutesFromTimeString(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return Math.max(0, Math.min(23 * 60 + 59, (hours || 0) * 60 + (minutes || 0)));
+}
+
+function timeStringFromMinutes(totalMinutes: number): string {
+  const clamped = Math.max(5 * 60, Math.min(21 * 60, totalMinutes));
+  const hours = Math.floor(clamped / 60);
+  const minutes = clamped % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function candidateTimesForPreferredTime(preferredTime: string): string[] {
+  const baseMinutes = minutesFromTimeString(preferredTime);
+  const offsets = [0, -60, 60, -90, 90, 120, -120, 150, -150];
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+
+  for (const offset of offsets) {
+    const candidate = timeStringFromMinutes(baseMinutes + offset);
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      candidates.push(candidate);
+    }
+  }
+
+  return candidates;
+}
+
+function overlapsRange(startMs: number, endMs: number, windows: BusyWindow[]): boolean {
+  return windows.some((window) => startMs < window.endMs && endMs > window.startMs);
+}
+
+function scheduleSessionWindow(
+  sessionDate: Date,
+  durationMinutes: number,
+  preferredTime: string,
+  busyWindows: BusyWindow[],
+  scheduledWindows: BusyWindow[],
+): { start: Date; end: Date } {
+  const candidates = candidateTimesForPreferredTime(preferredTime);
+
+  for (const candidate of candidates) {
+    const [hours, minutes] = candidate.split(':').map(Number);
+    const start = new Date(sessionDate);
+    start.setHours(hours, minutes, 0, 0);
+    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+    if (!overlapsRange(start.getTime(), end.getTime(), busyWindows) && !overlapsRange(start.getTime(), end.getTime(), scheduledWindows)) {
+      return { start, end };
+    }
+  }
+
+  const [fallbackHours, fallbackMinutes] = preferredTime.split(':').map(Number);
+  const fallbackStart = new Date(sessionDate);
+  fallbackStart.setHours(fallbackHours || 12, fallbackMinutes || 0, 0, 0);
+  return {
+    start: fallbackStart,
+    end: new Date(fallbackStart.getTime() + durationMinutes * 60 * 1000),
+  };
 }
 
 function normalizeCoachRecommendation(rec: Record<string, any>) {
@@ -138,8 +324,117 @@ function syncCoachStateForUser(userId: number, payload: Record<string, any>) {
   };
 }
 
+function getCoachBriefingSnapshot(userId: number) {
+  const cacheKey = `coach-briefing:${userId}`;
+  const cached = getCached<Record<string, any>>(cacheKey);
+  if (cached) {
+    return syncCoachStateForUser(userId, cached) as {
+      briefing: string;
+      recommendations: CoachRecommendationInput[];
+      degraded?: boolean;
+      cachedOnlyMiss?: boolean;
+    };
+  }
+
+  const restored = restoreCoachBriefingFromLatestReport(userId);
+  if (!restored) return null;
+
+  const payload = syncCoachStateForUser(userId, restored) as {
+    briefing: string;
+    recommendations: CoachRecommendationInput[];
+    degraded?: boolean;
+    cachedOnlyMiss?: boolean;
+  };
+  setCache(cacheKey, payload, COACH_TTL);
+  return payload;
+}
+
+async function buildTrainingHomePayload(userId: number, language: Lang) {
+  const [todayResult, weekResult, readinessResult, signalResult] = await Promise.allSettled([
+    getTodaySession(userId),
+    getWeekPlan(userId),
+    getReadiness(userId),
+    Promise.resolve(buildActiveSignalsResponse(userId)),
+  ]);
+
+  const today = todayResult.status === 'fulfilled' ? todayResult.value : { session: null, plan: null };
+  const week = weekResult.status === 'fulfilled'
+    ? weekResult.value
+    : { plan: null, sessions: [], adherence: 0, weekNumber: 0, completedCount: 0, totalCount: 0 };
+  const readiness = readinessResult.status === 'fulfilled'
+    ? readinessResult.value
+    : { score: 0, factors: {}, recommendation: null };
+  const activeSignals = signalResult.status === 'fulfilled'
+    ? signalResult.value
+    : { signals: [] };
+
+  const coachBriefing = getCoachBriefingSnapshot(userId);
+  const reasonCodes = [
+    ...(todayResult.status === 'rejected' ? ['TODAY_UNAVAILABLE'] : []),
+    ...(weekResult.status === 'rejected' ? ['WEEK_UNAVAILABLE'] : []),
+    ...(readinessResult.status === 'rejected' ? ['READINESS_UNAVAILABLE'] : []),
+    ...(readinessResult.status === 'fulfilled' && typeof readinessResult.value?.reasonCode === 'string'
+      ? [readinessResult.value.reasonCode]
+      : []),
+    ...(signalResult.status === 'rejected' ? ['SIGNALS_UNAVAILABLE'] : []),
+    ...(coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true ? ['COACH_STALE'] : []),
+  ];
+  const tomorrowDayName = new Date(Date.now() + 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+  const tomorrowSession = (week.sessions || []).find((session: any) => String(session.day || '').toLowerCase() === tomorrowDayName) || null;
+  return buildTrainingHomeViewState({
+    todaySession: today.session ?? null,
+    readiness,
+    coachBriefing,
+    signals: activeSignals.signals || [],
+    weekSessions: week.sessions || [],
+    weeklyAdherence: typeof week.adherence === 'number' ? week.adherence : 0,
+    tomorrowSession,
+    hasActivePlan: !!(today.plan || week.plan),
+    isGarminStale: coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true,
+    meta: buildScreenContractMeta({
+      source: 'server',
+      isFallback: reasonCodes.length > 0,
+      isPartial: todayResult.status === 'rejected'
+        || weekResult.status === 'rejected'
+        || readinessResult.status === 'rejected'
+        || (readinessResult.status === 'fulfilled' && typeof readinessResult.value?.reasonCode === 'string')
+        || signalResult.status === 'rejected',
+      isStale: coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true,
+      generatedAt: new Date().toISOString(),
+      reasonCodes,
+    }),
+  }, language);
+}
+
 export function trainingRoutes(): Router {
   const router = Router();
+
+  /**
+   * GET /api/v1/training/home
+   * Render-ready training home state. Pure deterministic composition:
+   * today + week + readiness + active signals + cached coach snapshot.
+   * Never triggers a fresh AI coach run.
+   */
+  router.get('/home', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
+    const cacheKey = `training-home:${userId}:${language}`;
+
+    const cached = getCached(cacheKey);
+    if (cached) {
+      sendSuccess(res, cached, { cached: true });
+      return;
+    }
+
+    try {
+      const payload = await buildTrainingHomePayload(userId, language);
+      setCache(cacheKey, payload, HOME_TTL);
+      sendSuccess(res, payload);
+    } catch (err: any) {
+      logger.error({ err, userId }, 'iOS training/home failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to build training home state', 500);
+    }
+  });
 
   /**
    * GET /api/v1/training/summary
@@ -363,16 +658,78 @@ export function trainingRoutes(): Router {
       }
 
       // Invalidate caches since training status changed
-      clearCache(`coach-briefing:${userId}`);
-      clearCache(`training-summary:${userId}`);
-      clearCache(`readiness:${userId}`);
-      clearCache(`dashboard-readiness:${userId}`);
-      invalidatePlanningCaches(userId);
+      invalidateTrainingScreenCaches(userId);
 
       sendSuccess(res, { completed: true, weeklyAdherence: adherenceRate });
     } catch (err: any) {
       logger.error({ err }, 'iOS training/complete failed');
       sendError(res, 'INTERNAL', err?.message || 'Failed to complete session', 500);
+    }
+  });
+
+  /**
+   * POST /api/v1/training/skip
+   *
+   * Marks today's session (or an explicit numeric session id) as skipped so
+   * adherence and coaching context can reflect the miss instead of pretending
+   * the planned session still happened.
+   */
+  router.post('/skip', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const { sessionId } = req.body;
+
+    try {
+      let rowId: number | null = null;
+      if (sessionId && sessionId !== 'today' && !isNaN(Number(sessionId))) {
+        rowId = Number(sessionId);
+      } else {
+        const plan = trainingPlans.getActivePlan(userId);
+        if (plan) {
+          const week = trainingPlans.getCurrentWeek(plan.id);
+          if (week) {
+            const sessions = trainingPlans.getSessionsForWeek(week.id);
+            const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+            const todaySession = sessions?.find(
+              (s: any) => s.day_of_week === todayName && s.status !== 'completed' && s.status !== 'skipped',
+            );
+            if (todaySession) rowId = todaySession.id;
+          }
+        }
+      }
+
+      if (rowId === null) {
+        sendSuccess(res, {
+          skipped: true,
+          weeklyAdherence: null,
+          noActiveSession: true,
+        });
+        return;
+      }
+
+      trainingPlans.markSessionSkipped(rowId);
+
+      let adherenceRate: number | null = null;
+      try {
+        const plan = trainingPlans.getActivePlan(userId);
+        if (plan) {
+          const week = trainingPlans.getCurrentWeek(plan.id);
+          if (week) {
+            const adh = trainingPlans.getWeeklyAdherence(plan.id, week.id);
+            adherenceRate = typeof adh?.adherenceRate === 'number'
+              ? adh.adherenceRate / 100
+              : null;
+          }
+        }
+      } catch (err) {
+        logger.debug({ err }, 'Skip adherence calc failed (non-critical)');
+      }
+
+      invalidateTrainingScreenCaches(userId);
+
+      sendSuccess(res, { skipped: true, weeklyAdherence: adherenceRate });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS training/skip failed');
+      sendError(res, 'INTERNAL', err?.message || 'Failed to skip session', 500);
     }
   });
 
@@ -387,11 +744,7 @@ export function trainingRoutes(): Router {
       // otherwise the next read serves the pre-apply brief and the user
       // sees the same recommendation they just accepted. Mirrors the
       // cache-clear set used by /training/complete above.
-      clearCache(`coach-briefing:${userId}`);
-      clearCache(`training-summary:${userId}`);
-      clearCache(`readiness:${userId}`);
-      clearCache(`dashboard-readiness:${userId}`);
-      invalidatePlanningCaches(userId);
+      invalidateTrainingScreenCaches(userId);
       sendSuccess(res, {
         applied: applied?.count || 0,
         message: `Calendar updated with ${applied?.count || 0} recommendation(s).`,
@@ -575,6 +928,8 @@ export function trainingRoutes(): Router {
       objective,
       durationWeeks = 4,
       preferredTime = '12:00',
+      preferredCardioTime,
+      preferredStrengthTime,
       sessionsPerWeek = 5,
       strengthSessionsPerWeek = 2,
       longWorkoutDay,
@@ -613,30 +968,33 @@ export function trainingRoutes(): Router {
         return;
       }
 
+      const objectiveRequirement = resolveObjectiveProfileRequirement(objective, userId);
+      if (objectiveRequirement) {
+        sendSuccess(res, {
+          needsProfile: true,
+          requiredQuestionnaireId: objectiveRequirement.questionnaireId,
+          requiredQuestionnaireTitle: objectiveRequirement.title,
+          message: objectiveRequirement.message,
+          missingFields: objectiveRequirement.missingFields,
+        });
+        return;
+      }
+
       // ── Step 2: Get calendar free slots for next N weeks ────────
       const now = new Date();
       const endDate = new Date(now.getTime() + durationWeeks * 7 * 24 * 60 * 60 * 1000);
       const startStr = now.toISOString().slice(0, 10);
       const endStr = endDate.toISOString().slice(0, 10);
 
-      let busySlots: string[] = [];
+      let busyWindows: BusyWindow[] = [];
       try {
         const events = await getEvents(startStr, endStr, userId);
-        busySlots = (events || []).map((e: any) => {
-          const start = e.start || e.startDateTime || '';
-          const title = e.subject || e.summary || e.title || '';
-          return `${start}: ${title}`;
-        }).slice(0, 50); // Cap to avoid context overflow
+        busyWindows = buildBusyWindows(events || []);
       } catch {
         // Calendar unavailable — plan without schedule constraints
       }
 
       // ── Step 3: One AI call → structured plan JSON ─────────────
-      const profileSummary = [
-        fitnessProfile ? `Fitness: ${JSON.stringify(fitnessProfile)}` : '',
-        gymProfile ? `Gym: ${JSON.stringify(gymProfile)}` : '',
-        runProfile ? `Running: ${JSON.stringify(runProfile)}` : '',
-      ].filter(Boolean).join('\n');
       const equipmentAdaptation = buildTrainingEquipmentAdaptation({
         fitnessProfile,
         gymProfile,
@@ -687,107 +1045,43 @@ export function trainingRoutes(): Router {
       }
 
       const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-      const calendarSummary = summarizeBusyCalendar(busySlots);
-
-      const planPrompt = `You are a sports coach creating a ${durationWeeks}-week training plan.
-
-ATHLETE PROFILE:
-${profileSummary}
-
-OBJECTIVE: ${objective}
-TARGET SESSIONS PER WEEK: ${Math.max(3, Math.min(7, Number(sessionsPerWeek) || 5))}
-TARGET STRENGTH SESSIONS PER WEEK: ${Math.max(0, Math.min(4, Number(strengthSessionsPerWeek) || 0))}
-PREFERRED LONG WORKOUT DAY: ${typeof longWorkoutDay === 'string' && longWorkoutDay.trim() ? longWorkoutDay.trim() : 'weekend'}
-SPECIAL NOTES / CONSTRAINTS:
-${typeof notes === 'string' && notes.trim() ? notes.trim() : 'None provided.'}
-
-BUSY CALENDAR SLOTS (avoid these times):
-${busySlots.length > 0 ? busySlots.join('\n') : 'No calendar data — schedule freely.'}
-
-CALENDAR SUMMARY:
-${calendarSummary}
-
-PREFERRED TRAINING TIME: ${preferredTime}
-
-START DATE: ${startStr}
-
-CROSS-SKILL SHARED CONTEXT:
-${sharedDecisionContext || 'No additional shared context available.'}
-
-COACHING COORDINATION RULES:
-${coordination.promptBlock}
-
-EQUIPMENT AND SUBSTITUTION RULES:
-${equipmentAdaptation.promptBlock}
-
-RULES:
-- Plan ${durationWeeks} weeks of training.
-- Week ${durationWeeks} should be a DELOAD week (lower volume/intensity).
-- Use the athlete profile to tailor volume, exercise selection, and progression.
-- Respect busy calendar windows and place training at practical times around them.
-- Keep hard sessions away from obviously overloaded work blocks when possible.
-- Match the requested weekly volume and strength-session count as closely as possible.
-- If the objective implies hybrid or triathlon prep, balance endurance, strength, and skill work instead of repeating generic sessions.
-- Each session needs: day_of_week, session_type (gym/run/ride/swim/rest), title, duration_minutes, exercises as a list.
-- For gym sessions: include exercise name, sets, reps, RPE, rest_sec.
-- For cardio: include type, distance_km or duration, pace/zone, notes.
-- Respect the athlete's equipment, experience level, and injury history.
-- Place sessions on days that DON'T conflict with busy calendar slots.
-- Maximum 6 training days per week. At least 1 rest day.
-- Include warm-up and cool-down notes in the description.
-- Follow the coaching coordination rules above even if that means starting more conservatively or keeping one creator-work day lighter.
-
-Return ONLY valid JSON in this exact shape:
-{
-  "planName": "string",
-  "sport": "hybrid|running|cycling|swimming|gym",
-  "periodization": "linear|undulating|block",
-  "weeks": [
-    {
-      "weekNumber": 1,
-      "focus": "base|strength|hypertrophy|endurance|speed|deload",
-      "intensityPct": 70,
-      "sessions": [
-        {
-          "dayOfWeek": "monday",
-          "sessionType": "gym|run|ride|swim|rest",
-          "title": "Upper Body A — Hypertrophy",
-          "durationMinutes": 65,
-          "description": "Full warm-up + exercises description for calendar body",
-          "exercises": [
-            { "name": "Incline DB Press", "sets": 4, "reps": 10, "rpe": "7-8", "restSec": 90 }
-          ]
-        }
-      ]
-    }
-  ]
-}`;
+      const normalizedPreferredTime = normalizePreferredTime(preferredTime, '12:00');
+      const normalizedPreferredCardioTime = normalizePreferredTime(preferredCardioTime, normalizedPreferredTime);
+      const normalizedPreferredStrengthTime = normalizePreferredTime(preferredStrengthTime, normalizedPreferredTime);
 
       let usedFallbackTemplate = false;
       let planData: any;
       try {
-        const { text: rawPlan } = await completeOneShotWithFallback(
-          'You are a structured training plan generator. Return ONLY valid JSON, no markdown.',
-          planPrompt,
-          'training_plan_generation',
-          async () => {
-            const { callDomain } = require('../../services/anthropic');
-            const result = await callDomain('triathlon', [], planPrompt, '', 4096, userId);
-            return result.text;
-          },
-          { maxTokens: 4096, temperature: 0.3, userId },
-        );
         planData = adaptTrainingPlanToAvailableEquipment(
-          applyTrainingPlanCoordination(parseTrainingPlanJson(rawPlan), coordination),
+          applyTrainingPlanCoordination(buildCoachKernelTrainingPlan({
+            userId,
+            objective,
+            durationWeeks,
+            startDate: startStr,
+            sessionsPerWeek: Math.max(3, Math.min(7, Number(sessionsPerWeek) || 5)),
+            strengthSessionsPerWeek: Math.max(0, Math.min(4, Number(strengthSessionsPerWeek) || 0)),
+            preferredTime: normalizedPreferredTime,
+            preferredCardioTime: normalizedPreferredCardioTime,
+            preferredStrengthTime: normalizedPreferredStrengthTime,
+            longWorkoutDay: typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null,
+            notes: typeof notes === 'string' ? notes.trim() : null,
+            fitnessProfile,
+            gymProfile,
+            runProfile,
+          }), coordination),
           equipmentAdaptation,
         );
       } catch (err: any) {
         logger.warn(
           { err, userId, objective },
-          'AI training plan generation unavailable — using deterministic fallback template',
+          'Coach-kernel training plan generation unavailable — using deterministic fallback template',
         );
         planData = adaptTrainingPlanToAvailableEquipment(
-          applyTrainingPlanCoordination(buildDeterministicTrainingPlan(objective, durationWeeks), coordination),
+          applyTrainingPlanCoordination(buildDeterministicTrainingPlan(objective, durationWeeks, {
+            sessionsPerWeek: Math.max(3, Math.min(7, Number(sessionsPerWeek) || 5)),
+            strengthSessionsPerWeek: Math.max(0, Math.min(4, Number(strengthSessionsPerWeek) || 0)),
+            longWorkoutDay: typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null,
+          }), coordination),
           equipmentAdaptation,
         );
         usedFallbackTemplate = true;
@@ -804,7 +1098,9 @@ Return ONLY valid JSON in this exact shape:
         start_date: startStr,
         end_date: endStr,
         preferences_json: JSON.stringify({
-          preferredTime,
+          preferredTime: normalizedPreferredTime,
+          preferredCardioTime: normalizedPreferredCardioTime,
+          preferredStrengthTime: normalizedPreferredStrengthTime,
           sessionsPerWeek,
           strengthSessionsPerWeek,
           longWorkoutDay: longWorkoutDay || null,
@@ -814,6 +1110,7 @@ Return ONLY valid JSON in this exact shape:
 
       let totalSessions = 0;
       const calendarEvents: any[] = [];
+      const scheduledWindows: BusyWindow[] = [];
 
       for (const weekData of (planData.weeks || [])) {
         const week = trainingPlans.createWeek({
@@ -841,9 +1138,29 @@ Return ONLY valid JSON in this exact shape:
           const sessionDate = new Date(weekStart);
           sessionDate.setDate(sessionDate.getDate() + daysUntil);
 
-          const [prefH, prefM] = preferredTime.split(':').map(Number);
-          sessionDate.setHours(prefH || 12, prefM || 0, 0, 0);
-          const sessionEnd = new Date(sessionDate.getTime() + (sess.durationMinutes || 60) * 60 * 1000);
+          const resolvedPreferredTime = typeof sess.preferredStartTime === 'string' && /^\d{2}:\d{2}$/.test(sess.preferredStartTime)
+            ? sess.preferredStartTime
+            : preferredTimeForSessionType(
+            sess.sessionType,
+            normalizedPreferredTime,
+            normalizedPreferredCardioTime,
+            normalizedPreferredStrengthTime,
+          );
+          const durationMinutes = sess.durationMinutes || 60;
+          const scheduledWindow = scheduleSessionWindow(
+            sessionDate,
+            durationMinutes,
+            resolvedPreferredTime,
+            busyWindows,
+            scheduledWindows,
+          );
+          const sessionStart = scheduledWindow.start;
+          const sessionEnd = scheduledWindow.end;
+          scheduledWindows.push({
+            startMs: sessionStart.getTime(),
+            endMs: sessionEnd.getTime(),
+            title: sess.title,
+          });
 
           // Build calendar body with exercise details
           let calBody = `${planData.planName || objective}\n\n`;
@@ -871,7 +1188,7 @@ Return ONLY valid JSON in this exact shape:
             title: sess.title,
             description: sess.description || '',
             exercises_json: JSON.stringify(sess.exercises || []),
-            duration_minutes: sess.durationMinutes || 60,
+            duration_minutes: durationMinutes,
             intensity_text: `RPE ${weekData.intensityPct || 70}%`,
           });
 
@@ -883,8 +1200,8 @@ Return ONLY valid JSON in this exact shape:
 
           calendarEvents.push({
             sessionId: session.id,
-            title: `${emoji} ${sess.title} (${sess.durationMinutes || 60}min)`,
-            start: sessionDate.toISOString(),
+            title: `${emoji} ${sess.title} (${durationMinutes}min)`,
+            start: sessionStart.toISOString(),
             end: sessionEnd.toISOString(),
             description: calBody,
           });
@@ -917,7 +1234,7 @@ Return ONLY valid JSON in this exact shape:
         userId, planId: plan.id, totalSessions, eventsCreated,
         objective, durationWeeks,
       }, 'Training plan generated and scheduled');
-      invalidatePlanningCaches(userId);
+      invalidateTrainingScreenCaches(userId);
 
       sendSuccess(res, {
         planId: plan.id,
@@ -927,6 +1244,8 @@ Return ONLY valid JSON in this exact shape:
         durationWeeks,
         totalSessions,
         eventsCreated,
+        preferredCardioTime: normalizedPreferredCardioTime,
+        preferredStrengthTime: normalizedPreferredStrengthTime,
         weeks: (planData.weeks || []).map((w: any) => ({
           weekNumber: w.weekNumber,
           focus: w.focus,
@@ -991,11 +1310,7 @@ Return ONLY valid JSON in this exact shape:
 
       tp.updatePlanStatus(plan.id, 'cancelled');
 
-      clearCache(`training-summary:${userId}`);
-      clearCache(`coach-briefing:${userId}`);
-      clearCache(`readiness:${userId}`);
-      clearCache(`dashboard-readiness:${userId}`);
-      invalidatePlanningCaches(userId);
+      invalidateTrainingScreenCaches(userId);
 
       sendSuccess(res, {
         cancelled: true,
@@ -1041,6 +1356,7 @@ async function getTodaySession(userId: number) {
           session = {
             id: rawSession.id != null ? String(rawSession.id) : null,
             type: rawSession.title || humanizeSessionType(rawSession.session_type),
+            sessionType: rawSession.session_type || null,
             time: rawSession.calendar_event_id ? calendarLookup.get(rawSession.calendar_event_id)?.time ?? null : null,
             duration: rawSession.duration_minutes || null,
             status: normalizeTrainingStatus(rawSession.status),
@@ -1074,6 +1390,7 @@ async function getTodaySession(userId: number) {
           type: isStrength(activityType)
             ? `Strength: ${activity.activityName || 'Gym Session'}`
             : activity.activityName || 'Workout',
+          sessionType: isStrength(activityType) ? 'gym' : 'run',
           time: null,
           duration: activity.duration ? Math.round(activity.duration / 60) : null,
           status: 'completed',
@@ -1090,6 +1407,7 @@ async function getTodaySession(userId: number) {
     session: session ? {
       id: session.id ? String(session.id) : null,
       type: session.type || session.name || 'Workout',
+      sessionType: session.sessionType || null,
       time: session.time || null, duration: session.duration || null,
       status: session.status || 'planned', notes: session.notes || null,
       exercises: session.exercises || null,
@@ -1102,12 +1420,18 @@ async function getWeekPlan(userId: number) {
   let weekNumber = 0;
   let sessions: any[] = [];
   let adherence = 0;
+  let planSummary: { name: string; weekNumber: number; phase: string | null } | null = null;
 
   try {
     const plan = trainingPlans.getActivePlan(userId);
     if (plan) {
       const currentWeek = trainingPlans.getCurrentWeek(plan.id);
       weekNumber = currentWeek?.week_number || 1;
+      planSummary = {
+        name: plan.name,
+        weekNumber,
+        phase: currentWeek?.focus || plan.periodization || null,
+      };
       const weekSessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
         const range = currentWeekDateRange(plan.start_date, weekNumber);
@@ -1134,7 +1458,7 @@ async function getWeekPlan(userId: number) {
     }
   } catch {}
 
-  if (sessions.length === 0) {
+  if (planSummary && sessions.length === 0) {
     sessions = await buildWeekFromCalendar(userId);
     const completed = sessions.filter(s => s.status === 'completed').length;
     const total = sessions.filter(s => s.status !== 'rest').length;
@@ -1142,6 +1466,7 @@ async function getWeekPlan(userId: number) {
   }
 
   return {
+    plan: planSummary,
     weekNumber,
     sessions,
     adherence: typeof adherence === 'number' ? adherence : 0,
@@ -1150,25 +1475,12 @@ async function getWeekPlan(userId: number) {
   };
 }
 
-function parseTrainingPlanJson(rawPlan: string): any {
-  let cleaned = rawPlan.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (jsonMatch) cleaned = jsonMatch[0];
-
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const braceStart = rawPlan.indexOf('{');
-    const braceEnd = rawPlan.lastIndexOf('}');
-    if (braceStart >= 0 && braceEnd > braceStart) {
-      return JSON.parse(rawPlan.slice(braceStart, braceEnd + 1));
-    }
-    throw new Error('No JSON object found');
-  }
-}
-
-function buildDeterministicTrainingPlan(objective: string, durationWeeks: number) {
-  const template = inferTrainingTemplate(objective.toLowerCase());
+function buildDeterministicTrainingPlan(
+  objective: string,
+  durationWeeks: number,
+  options: { sessionsPerWeek?: number; strengthSessionsPerWeek?: number; longWorkoutDay?: string | null } = {},
+) {
+  const template = inferTrainingTemplate(objective.toLowerCase(), options);
   const weeks = Array.from({ length: durationWeeks }, (_, index) => {
     const weekNumber = index + 1;
     const isDeload = weekNumber === durationWeeks;
@@ -1197,14 +1509,20 @@ function buildDeterministicTrainingPlan(objective: string, durationWeeks: number
   });
 
   return {
-    planName: `${objective.trim()} — 4 Week Plan`,
+    planName: `${objective.trim()} — ${durationWeeks} Week Plan`,
     sport: template.sport,
     periodization: 'undulating',
     weeks,
   };
 }
 
-function inferTrainingTemplate(lowerObjective: string) {
+function inferTrainingTemplate(
+  lowerObjective: string,
+  options: { sessionsPerWeek?: number; strengthSessionsPerWeek?: number; longWorkoutDay?: string | null } = {},
+) {
+  const targetSessionsPerWeek = Math.max(3, Math.min(7, options.sessionsPerWeek || 5));
+  const targetStrengthSessions = Math.max(0, Math.min(4, options.strengthSessionsPerWeek || 0));
+
   if (/(triathlon|triatlo|70\.3|ironman|half ironman)/i.test(lowerObjective)) {
     return {
       sport: 'hybrid',
@@ -1266,40 +1584,11 @@ function inferTrainingTemplate(lowerObjective: string) {
     return {
       sport: 'running',
       focuses: ['base', 'endurance', 'speed'],
-      sessions: [
-        {
-          dayOfWeek: 'tuesday',
-          sessionType: 'run',
-          title: 'Intervals / Speed Session',
-          durationMinutes: 50,
-          description: 'Warm-up, structured intervals, and cooldown with relaxed strides.',
-          exercises: [],
-        },
-        {
-          dayOfWeek: 'thursday',
-          sessionType: 'run',
-          title: 'Tempo Run',
-          durationMinutes: 55,
-          description: 'Controlled threshold work to build pace durability.',
-          exercises: [],
-        },
-        {
-          dayOfWeek: 'saturday',
-          sessionType: 'run',
-          title: 'Long Run',
-          durationMinutes: 80,
-          description: 'Aerobic long run at conversational effort.',
-          exercises: [],
-        },
-        {
-          dayOfWeek: 'sunday',
-          sessionType: 'gym',
-          title: 'Strength + Mobility',
-          durationMinutes: 40,
-          description: 'Runner-focused strength, calf durability, and hip stability.',
-          exercises: runnerStrengthExercises(),
-        },
-      ],
+      sessions: buildRunnerFallbackSessions(
+        targetSessionsPerWeek,
+        targetStrengthSessions,
+        options.longWorkoutDay ?? null,
+      ),
     };
   }
 
@@ -1384,6 +1673,112 @@ function inferTrainingTemplate(lowerObjective: string) {
   };
 }
 
+function buildRunnerFallbackSessions(
+  sessionsPerWeek: number,
+  strengthSessionsPerWeek: number,
+  longWorkoutDay: string | null,
+) {
+  const canonicalLongDay = canonicalTrainingDay(longWorkoutDay?.trim() || 'Saturday').toLowerCase();
+  const runTemplates = [
+    {
+      dayOfWeek: 'monday',
+      sessionType: 'run',
+      title: 'Recovery Run',
+      durationMinutes: 40,
+      description: 'Easy aerobic run with relaxed mechanics and a short cooldown.',
+      exercises: [],
+    },
+    {
+      dayOfWeek: 'tuesday',
+      sessionType: 'run',
+      title: 'Threshold Session',
+      durationMinutes: 55,
+      description: 'Warm-up, controlled threshold work, and cooldown to build marathon durability.',
+      exercises: [],
+    },
+    {
+      dayOfWeek: 'wednesday',
+      sessionType: 'run',
+      title: 'Base Run',
+      durationMinutes: 45,
+      description: 'Steady zone 2 run to reinforce aerobic consistency.',
+      exercises: [],
+    },
+    {
+      dayOfWeek: 'thursday',
+      sessionType: 'run',
+      title: 'Intervals / Economy',
+      durationMinutes: 50,
+      description: 'Quality run with faster segments, full warm-up, and relaxed cooldown.',
+      exercises: [],
+    },
+    {
+      dayOfWeek: 'friday',
+      sessionType: 'run',
+      title: 'Easy Shakeout',
+      durationMinutes: 35,
+      description: 'Short easy run focused on rhythm and low fatigue.',
+      exercises: [],
+    },
+    {
+      dayOfWeek: canonicalLongDay,
+      sessionType: 'run',
+      title: 'Long Run',
+      durationMinutes: 85,
+      description: 'Aerobic long run at conversational effort with fueling practice.',
+      exercises: [],
+    },
+    {
+      dayOfWeek: canonicalLongDay === 'sunday' ? 'saturday' : 'sunday',
+      sessionType: 'run',
+      title: 'Base + Strides',
+      durationMinutes: 50,
+      description: 'Easy aerobic run finished with relaxed strides and mobility.',
+      exercises: [],
+    },
+  ];
+
+  const strengthTemplates = [
+    {
+      dayOfWeek: 'monday',
+      sessionType: 'gym',
+      title: 'Runner Strength A',
+      durationMinutes: 40,
+      description: 'Runner-supportive strength focused on hips, posterior chain, and trunk stability.',
+      exercises: runnerStrengthExercises(),
+    },
+    {
+      dayOfWeek: 'wednesday',
+      sessionType: 'gym',
+      title: 'Runner Strength B',
+      durationMinutes: 40,
+      description: 'Single-leg strength, calf durability, and controlled trunk work.',
+      exercises: runnerStrengthExercises(),
+    },
+    {
+      dayOfWeek: 'friday',
+      sessionType: 'gym',
+      title: 'Runner Strength C',
+      durationMinutes: 35,
+      description: 'Short lower-load durability lift that keeps the legs fresh for key run work.',
+      exercises: runnerStrengthExercises(),
+    },
+    {
+      dayOfWeek: 'sunday',
+      sessionType: 'gym',
+      title: 'Mobility + Strength Support',
+      durationMinutes: 30,
+      description: 'Short support lift with mobility and tissue resilience work.',
+      exercises: runnerStrengthExercises(),
+    },
+  ];
+
+  return [
+    ...runTemplates.slice(0, Math.max(1, Math.min(runTemplates.length, sessionsPerWeek))),
+    ...strengthTemplates.slice(0, Math.max(0, Math.min(strengthTemplates.length, strengthSessionsPerWeek))),
+  ];
+}
+
 function baseStrengthExercises() {
   return [
     { name: 'Goblet Squat', sets: 4, reps: 8, rpe: '7', restSec: 90 },
@@ -1457,6 +1852,7 @@ async function getReadiness(userId: number) {
   let score = 0;
   let factors: any = {};
   let recommendation: string | null = null;
+  let reasonCode: string | null = null;
 
   try {
     const { calculateReadiness } = require('../../services/readiness-scorer');
@@ -1474,9 +1870,10 @@ async function getReadiness(userId: number) {
     };
     const rawRec = readiness?.recommendation || '';
     recommendation = humanizeRecommendation(rawRec, score);
+    reasonCode = typeof readiness?.reasonCode === 'string' ? readiness.reasonCode : null;
   } catch {}
 
-  const result = { score, factors, recommendation };
+  const result = { score, factors, recommendation, reasonCode };
   setCache(cacheKey, result, READINESS_TTL);
   return result;
 }
@@ -1597,14 +1994,6 @@ async function buildWeekFromCalendar(userId: number): Promise<any[]> {
     return sessions;
   } catch {}
   return [];
-}
-
-function summarizeBusyCalendar(busySlots: string[]): string {
-  if (busySlots.length === 0) return 'No calendar conflicts detected.';
-  return busySlots
-    .slice(0, 12)
-    .map((slot, index) => `${index + 1}. ${slot}`)
-    .join('\n');
 }
 
 function currentWeekDateRange(planStartIso: string, weekNumber: number) {

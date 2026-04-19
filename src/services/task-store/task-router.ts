@@ -107,6 +107,27 @@ function createNativeWrapper(userId: number) {
       };
     },
 
+    async getTask(listId: string, taskId: string, listName?: string) {
+      const result = await nativeAdapter.getTasks(userId, { projectId: listId });
+      const task = result.tasks.find((candidate) => {
+        const externalId = candidate.externalId || String(candidate.id);
+        return String(externalId) === String(taskId);
+      });
+
+      if (!task) {
+        return {
+          success: false,
+          data: null,
+          error: 'Task not found',
+        };
+      }
+
+      return {
+        success: true,
+        data: taskToMsTodoShape(task, listId, listName || task.projectName || ''),
+      };
+    },
+
     async getAllPendingTasks() {
       const result = await nativeAdapter.getTasks(userId);
       const pending = result.tasks.filter(t => t.status !== 'completed');

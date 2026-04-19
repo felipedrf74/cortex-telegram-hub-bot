@@ -139,3 +139,8 @@ export function listChatMessages(userId: number, limit: number, before?: string)
     hasMore,
   };
 }
+
+export function clearChatHistory(userId: number): void {
+  const db = getDb();
+  db.prepare('DELETE FROM messages WHERE user_id = ?').run(userId);
+}

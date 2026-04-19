@@ -42,27 +42,63 @@ const PRESET_COLOR_MAP: Record<string, string> = {
   preset24: 'darkCranberry',
 };
 
+const PRESET_HEX_MAP: Record<string, string> = {
+  preset0: '#E74C3C',
+  preset1: '#F39C12',
+  preset2: '#8E5C42',
+  preset3: '#F4D03F',
+  preset4: '#27AE60',
+  preset5: '#16A085',
+  preset6: '#7D8A2E',
+  preset7: '#3498DB',
+  preset8: '#8E44AD',
+  preset9: '#C0396B',
+  preset10: '#5D6D7E',
+  preset11: '#34495E',
+  preset12: '#95A5A6',
+  preset13: '#566573',
+  preset14: '#2C3E50',
+  preset15: '#922B21',
+  preset16: '#AF601A',
+  preset17: '#6E2C00',
+  preset18: '#B7950B',
+  preset19: '#1E8449',
+  preset20: '#117A65',
+  preset21: '#7D6608',
+  preset22: '#1F618D',
+  preset23: '#5B2C6F',
+  preset24: '#7B1E5A',
+};
+
 interface MasterCategory {
   displayName: string;
   color: string; // e.g. "preset7"
 }
 
-let masterCategoriesCache: MasterCategory[] | null = null;
+const masterCategoriesCache = new Map<string, MasterCategory[]>();
+
+function masterCategoryCacheKey(userId?: number): string {
+  return userId != null ? `user:${userId}` : 'owner';
+}
 
 /**
  * Fetches the user's Outlook master categories (cached after first call).
  */
-export async function getMasterCategories(): Promise<MasterCategory[]> {
-  if (masterCategoriesCache) return masterCategoriesCache;
+export async function getMasterCategories(userId?: number): Promise<MasterCategory[]> {
+  const cacheKey = masterCategoryCacheKey(userId);
+  const cached = masterCategoriesCache.get(cacheKey);
+  if (cached) return cached;
 
   try {
-    const client = getGraphClient();
+    const client = userId
+      ? getGraphClientForUser(userId)
+      : getGraphClient();
     const response = await client.api('/me/outlook/masterCategories').get();
     const cats: MasterCategory[] = (response.value || []).map((c: any) => ({
       displayName: c.displayName,
       color: c.color,
     }));
-    masterCategoriesCache = cats;
+    masterCategoriesCache.set(cacheKey, cats);
     logger.info(
       { categories: cats.map((c) => `${c.displayName} (${PRESET_COLOR_MAP[c.color] || c.color})`) },
       'Loaded Outlook master categories'
@@ -103,6 +139,31 @@ export async function getCategoryNameForColor(color: 'blue' | 'green' | 'red'): 
   return fallbackMap[color];
 }
 
+function resolveOutlookEventColor(
+  categories: string[] | undefined,
+  masterCategories: MasterCategory[],
+): string | undefined {
+  const firstCategory = categories?.find((value) => typeof value === 'string' && value.trim().length > 0)?.trim();
+  if (!firstCategory) return undefined;
+
+  const exactMatch = masterCategories.find((category) => category.displayName === firstCategory);
+  if (exactMatch) {
+    return PRESET_HEX_MAP[exactMatch.color];
+  }
+
+  const normalized = firstCategory.toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  const fuzzyMatch = masterCategories.find((category) =>
+    category.displayName.toLowerCase().replace(/\s+/g, ' ').trim() === normalized
+  );
+  if (fuzzyMatch) {
+    return PRESET_HEX_MAP[fuzzyMatch.color];
+  }
+
+  return undefined;
+}
+
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
   try {
     // CHAT-M2: use per-user Graph client when userId is available (iOS path).
@@ -117,10 +178,12 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         endDateTime: new Date(endDate).toISOString(),
         $orderby: 'start/dateTime',
         $top: 50,
-        $select: 'id,subject,start,end,bodyPreview,location,webLink',
+        $select: 'id,subject,start,end,bodyPreview,location,webLink,categories',
       })
       .header('Prefer', `outlook.timezone="${config.app.timezone}"`)
       .get();
+
+    const masterCategories = await getMasterCategories(userId);
 
     return (response.value || []).map((event: any) => ({
       id: event.id || '',
@@ -130,6 +193,11 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
       description: event.bodyPreview || undefined,
       location: event.location?.displayName || undefined,
       htmlLink: event.webLink || undefined,
+      categories: Array.isArray(event.categories) ? event.categories : undefined,
+      color: resolveOutlookEventColor(
+        Array.isArray(event.categories) ? event.categories : undefined,
+        masterCategories
+      ),
     }));
   } catch (err) {
     logger.error({ err }, 'Failed to fetch Outlook calendar events');

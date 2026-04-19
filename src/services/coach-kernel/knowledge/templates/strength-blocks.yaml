@@ -1,0 +1,33 @@
+[
+  {
+    "id": "strength_max",
+    "sport": "strength",
+    "sessionType": "strength_max",
+    "title": "Strength Session",
+    "phaseTags": ["base", "build", "maintenance"],
+    "goalTags": ["strength", "hybrid", "marathon", "triathlon"],
+    "durationOptionsMinutes": [45, 55, 60],
+    "primaryZone": "aerobic",
+    "fatigueCost": "high",
+    "keySession": false,
+    "instructions": ["Prioritize heavy compound lifts with technical quality.", "Do not place this too close to key endurance work."],
+    "constraints": ["avoid_same_day_key_run", "avoid_post_long_run"],
+    "defaultExercises": ["front_squat", "romanian_deadlift", "pull_up", "bench_press", "dead_bug"]
+  },
+  {
+    "id": "strength_maintenance",
+    "sport": "strength",
+    "sessionType": "strength_maintenance",
+    "title": "Strength Maintenance",
+    "phaseTags": ["peak", "taper", "maintenance", "deload"],
+    "goalTags": ["strength", "hybrid", "marathon", "triathlon"],
+    "durationOptionsMinutes": [30, 40, 45],
+    "primaryZone": "aerobic",
+    "fatigueCost": "medium",
+    "keySession": false,
+    "instructions": ["Use minimum effective dose strength to preserve tissue resilience.", "Leave at least 2-3 reps in reserve."],
+    "constraints": ["race_block_friendly"],
+    "defaultExercises": ["split_squat", "bench_press", "pull_up", "dead_bug", "hip_airplane"]
+  }
+]
+
