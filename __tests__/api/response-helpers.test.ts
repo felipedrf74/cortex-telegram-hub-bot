@@ -127,7 +127,13 @@ describe('asyncHandler', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
   });
 
-  it('catches a thrown error and emits a 500 envelope', async () => {
+  it('catches a thrown error and emits a 500 envelope with a client-safe message', async () => {
+    // Hardening audit 2026-04-20: asyncHandler previously leaked
+    // `err.message` verbatim to the client. That's a mild
+    // info-disclosure issue and makes the 500 shape depend on the
+    // underlying exception string. The wrapper now records the real
+    // cause via errorMonitor (captured separately in its own test
+    // suite) and returns a stable client-safe message.
     const res = mockResponse();
     const handler = asyncHandler(async () => {
       throw new Error('boom');
@@ -137,7 +143,7 @@ describe('asyncHandler', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         ok: false,
-        error: expect.objectContaining({ code: 'INTERNAL', message: 'boom' }),
+        error: expect.objectContaining({ code: 'INTERNAL', message: 'Internal server error' }),
       }),
     );
   });

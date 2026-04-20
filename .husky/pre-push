@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────
+# Committed pre-push hook (hardening audit 2026-04-20).
+#
+# Matches the behavior previously written imperatively into
+# .git/hooks/pre-push by scripts/setup-hooks.sh. Now lives in version
+# control so every clone runs the same gates.
+# ─────────────────────────────────────────────────────
+set -e
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+echo "🔍 Pre-push: Verifying $BRANCH..."
+
+echo "   📝 Type check..."
+npx tsc --noEmit
+echo "   ✅ Types OK"
+
+echo "   🧪 Running tests..."
+npx vitest run --reporter=dot
+echo "   ✅ Tests passed"
+
+if [ "$BRANCH" = "main" ]; then
+  echo "   🔨 Build verification (pushing to main)..."
+  npm run build > /dev/null
+  echo "   ✅ Build OK"
+fi
+
+echo "✅ All checks passed — pushing"

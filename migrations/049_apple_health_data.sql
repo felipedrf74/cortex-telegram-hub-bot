@@ -1,3 +1,30 @@
+-- ⚠️ SCHEMA DRIFT WARNING (2026-04-20 hardening audit):
+--
+-- This migration defines a table `apple_health_data` that is ALSO
+-- defined with a DIFFERENT schema in migrations/035_apple_health_data.sql.
+-- Because both use `CREATE TABLE IF NOT EXISTS`, the one applied FIRST
+-- wins. Migration runner sort order is alphabetical by filename, so 035
+-- always runs before 049 on a fresh DB — meaning this file's schema is
+-- effectively DEAD on any deployment that started from scratch after
+-- 2026 (prod included).
+--
+-- Drifted columns:
+--   035 has `source_name` + `created_at`        (prod schema)
+--   049 has `source`      + `synced_at`         (never applied)
+-- Drifted uniqueness:
+--   035 UNIQUE(user_id, data_type, date, source_name)
+--   049 UNIQUE(user_id, date, data_type)
+--
+-- `src/api/routes/health-data.ts:73-95` reflects on PRAGMA table_info
+-- at runtime and picks whichever column exists — so production is not
+-- broken, but the cost of this kludge is a forever "which schema are
+-- we actually on?" drag.
+--
+-- DO NOT rename or delete this file — it's already recorded in the
+-- `_migrations` table on every environment. If you need to add columns,
+-- create a NEW migration (e.g. 060_apple_health_data_columns.sql) that
+-- uses ALTER TABLE and targets the 035 shape.
+--
 -- Apple Health data sync table — receives daily health snapshots from the
 -- iOS app via POST /api/v1/health-data/sync. The AppleHealthAdapter
 -- (src/services/wearable/apple-health-adapter.ts) already queries this

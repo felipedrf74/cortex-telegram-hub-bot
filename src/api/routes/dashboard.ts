@@ -1329,13 +1329,29 @@ async function fetchTraining(userId: number) {
     }
   }
 
-  // Get today's training — first try training plans, then calendar fallback
+  // Get today's training — first try training plans, then calendar fallback.
+  //
+  // Bug fix (hardening audit 2026-04-20): the prior implementation called
+  // `getSessionsForWeek(userId)` but that function's signature is
+  // `getSessionsForWeek(weekId: number)` — it queries `training_sessions`
+  // by `week_id` with no user scope. Passing `userId` meant we fetched
+  // rows from whatever `week` row happened to have `id === userId`, which
+  // in practice returned an empty array (silently defeating the primary
+  // path and forcing the calendar fallback on every dashboard hit) and,
+  // in the edge case of a userId↔weekId collision, would leak sessions
+  // from another user's plan. Resolve the current week via the active
+  // plan and derive "today" from `day_of_week` against the user's local
+  // weekday.
   let todaySession: any = null;
   try {
-    const { getActivePlan, getSessionsForWeek } = require('../../services/training-plans');
+    const { getActivePlan, getCurrentWeek, getSessionsForWeek } = require('../../services/training-plans');
     const plan = getActivePlan(userId);
-    const sessions = plan ? getSessionsForWeek(userId) : null;
-    todaySession = sessions?.find((s: any) => s.isToday) || null;
+    const currentWeek = plan ? getCurrentWeek(plan.id) : null;
+    const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      const todayDow = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+      todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
+    }
   } catch {}
 
   // Calendar fallback

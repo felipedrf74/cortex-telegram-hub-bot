@@ -75,8 +75,18 @@ export function createApiRouter(): Router {
     });
   });
 
-  // Public routes (no JWT required)
-  router.use('/auth', authRoutes());
+  // Public routes (no JWT required).
+  //
+  // Hardening audit 2026-04-20: `/auth/register` and `/auth/refresh`
+  // previously had NO rate limit at all — the `rateLimitMiddleware`
+  // below only kicks in on authenticated routes (it runs AFTER
+  // `authMiddleware` populates `req.userId`). The invite code
+  // `BETA2026` was brute-forceable and /auth/refresh was a DoS vector.
+  // Mount the limiter HERE so `/auth/*` gets the IP-bucket fallback
+  // the limiter implements for userId-less requests. Legitimate
+  // register/refresh traffic is well under 30 req/min/IP; credential
+  // stuffing is capped.
+  router.use('/auth', rateLimitMiddleware, authRoutes());
 
   // Internal service-to-service routes — Python content-engine reports
   // usage here. Authenticated by shared secret, not JWT.
