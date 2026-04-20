@@ -1804,10 +1804,26 @@ export function createPortalServer(bot?: any): http.Server {
       return next();
     }
     if (!portalToken) {
-      // No token configured — only allow from localhost/private IPs.
-      // Blocks access from tunnels (ngrok, cloudflared) and public networks.
+      // No token configured — only allow from true loopback + RFC-1918
+      // home-LAN prefix (192.168.0.0/16). This deliberately EXCLUDES
+      // 10.0.0.0/8 because:
+      //   - Docker's default bridge allocates 172.17.0.0/16 but some
+      //     custom networks overlap 10.x — a sidecar on the same host
+      //     could reach the portal without a token.
+      //   - Cloud VPCs routinely live in 10.0.0.0/8; if this process
+      //     is ever moved to a managed host the bypass becomes a
+      //     public backdoor.
+      //   - Tailscale uses the CGNAT 100.64.0.0/10 block, NOT 10.x,
+      //     so Felipe's Tailscale access still flows through the
+      //     token path as intended.
+      // Hardening-audit fix 2026-04-20.
       const ip = req.ip || req.socket.remoteAddress || '';
-      const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.');
+      const isLocal =
+        ip === '127.0.0.1' ||
+        ip === '::1' ||
+        ip === '::ffff:127.0.0.1' ||
+        ip.startsWith('192.168.') ||
+        ip.startsWith('::ffff:192.168.');
       if (isLocal) return next();
       // Not localhost + no token = reject
       res.status(401).json({ error: 'PORTAL_TOKEN not set. Set it in .env for non-local access.' });

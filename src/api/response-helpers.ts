@@ -20,6 +20,9 @@
  */
 
 import type { Response } from 'express';
+import { logger } from '../utils/logger';
+import { captureError } from '../services/error-monitor';
+import { getCurrentRequestId } from '../utils/request-context';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -159,15 +162,58 @@ export function sendError(
  * standardized 500 response. Eliminates the boilerplate try/catch in
  * every route, while still letting routes throw with a specific code/status
  * via `sendError(res, ...)` followed by `return`.
+ *
+ * Hardening-audit fix (2026-04-20): previously this wrapper silently
+ * swallowed every unhandled route throw — no Sentry, no errorMonitor,
+ * no log — and leaked `err.message` to the client. Route-level
+ * failures were invisible outside raw 500 metrics. The wrapper now:
+ *   - captures the error via `errorMonitor` so it persists to
+ *     `error_log` + reaches Sentry + Telegram alert
+ *   - logs with the current request context so `reqId` correlates
+ *   - emits a stable client-safe `INTERNAL` message while preserving
+ *     the real cause in telemetry
+ *
+ * Any route that wants to surface a specific status/code to the client
+ * should still use `sendError(res, ...)` and `return` — only truly
+ * unexpected throws land here.
  */
 export function asyncHandler<T extends (req: any, res: Response) => Promise<void>>(handler: T) {
   return async (req: any, res: Response): Promise<void> => {
     try {
       await handler(req, res);
     } catch (err: any) {
+      // Record in error_log + Sentry + Telegram before responding. We
+      // intentionally swallow errors from `captureError` itself to avoid
+      // an observability bug blocking a normal error response.
+      try {
+        const reqId = getCurrentRequestId();
+        const userId = (req as { userId?: number | null } | undefined)?.userId ?? null;
+        const route = (req as { method?: string; originalUrl?: string; path?: string } | undefined);
+        const method = typeof route?.method === 'string' ? route.method : undefined;
+        const url = typeof route?.originalUrl === 'string'
+          ? route.originalUrl
+          : (typeof route?.path === 'string' ? route.path : undefined);
+        captureError({
+          level: 'error',
+          source: 'api',
+          message: err?.message || 'Unhandled route exception',
+          stack: typeof err?.stack === 'string' ? err.stack : undefined,
+          context: {
+            reqId,
+            userId,
+            method,
+            url,
+          },
+        });
+      } catch (captureErr) {
+        logger.warn({ err: captureErr }, 'asyncHandler: failed to record error via errorMonitor');
+      }
+
       // Avoid double-send if the handler already responded (e.g. via sendError)
       if (res.headersSent) return;
-      res.status(500).json(apiError('INTERNAL', err?.message || 'Internal server error'));
+      // Return a stable client-safe message. The real error details live
+      // in error_log + Sentry keyed by reqId; do not leak err.message.
+      res.status(500).json(apiError('INTERNAL', 'Internal server error'));
     }
   };
 }

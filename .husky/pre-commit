@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────
+# Committed pre-commit hook (hardening audit 2026-04-20).
+#
+# Activate once per clone:
+#   git config core.hooksPath .husky
+# (This file is then used directly — no husky npm dep required.)
+#
+# Runs typecheck + full vitest so a broken tree can't commit. Matches
+# what `scripts/setup-hooks.sh` used to imperatively write into
+# `.git/hooks/pre-commit`, but lives in version control so every
+# clone gets the same gates — no drift between Felipe's Mac and any
+# future contributor / CI-paired dev environment.
+# ─────────────────────────────────────────────────────
+set -e
+
+echo "🔍 Pre-commit: Type checking..."
+npx tsc --noEmit
+echo "✅ Type check passed"
+
+echo "🧪 Pre-commit: Running tests..."
+npx vitest run --reporter=dot
+echo "✅ Tests passed"
