@@ -233,7 +233,17 @@ async function dispatch(
 }
 
 describe('Training API routes', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Hardening audit 2026-04-20: reset the new calendar-lookup
+    // coalescing cache between tests so a prior test's mocked
+    // `getEvents` response doesn't leak into the next (the cache has
+    // a 2s TTL — fast enough to bleed across vitest's sequential
+    // tests).
+    const trainingMod: any = await import('../../src/api/routes/training');
+    if (typeof trainingMod._resetCalendarLookupCoalesceForTests === 'function') {
+      trainingMod._resetCalendarLookupCoalesceForTests();
+    }
+
     mockGetCached.mockReset();
     mockSetCache.mockReset();
     mockClearCache.mockReset();
