@@ -501,14 +501,18 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
   // "what's my week", "show my week", "/week", "esta semana", "minha semana"
   {
     id: 'daily_priority',
-    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia)[\s?!.]*$/i,
+    pattern: /^(?:what(?:'s| is)? my priority(?: today)?|what should i do first(?: today)?|prioriti[sz]e my day|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia)[\s?!.]*$/i,
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
-      const brief = await composeDailyBrief({ userId: _userId });
-      const topPriority = brief.coordination.topPriority ?? brief.day.secretary.priorityNote;
-      const executionOrder = brief.coordination.executionOrder.length > 0
-        ? brief.coordination.executionOrder
+      const brief = await composeDailyBrief({ userId: _userId, language: lang });
+      const coordination = brief.coordination;
+      const topPriority = coordination?.nextBestAction?.title
+        ?? coordination?.topPriority
+        ?? brief.day.secretary.priorityNote;
+      const executionOrder = coordination?.executionOrder?.length
+        ? coordination.executionOrder
         : brief.day.secretary.sequence.slice(0, 4);
+      const blockerLine = coordination?.blockers?.[0]?.summary ?? null;
 
       if (!topPriority && executionOrder.length === 0) {
         return { text: c.inboxClean, domain: SECRETARY };
@@ -516,16 +520,22 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
 
       const lines = [`🎯 <b>${c.priorityHeader}</b>`];
       if (topPriority) lines.push(`• ${escapeHtml(topPriority)}`);
+      if (coordination?.nextBestAction?.summary) {
+        lines.push(escapeHtml(coordination.nextBestAction.summary));
+      }
       if (executionOrder.length > 0) {
         lines.push('');
         lines.push(...executionOrder.map((step, index) => `${index + 1}. ${escapeHtml(step)}`));
       }
-      if (brief.coordination.watchouts.length > 0) {
+      if (blockerLine) {
         lines.push('');
-        lines.push(`⚠️ ${escapeHtml(brief.coordination.watchouts.join(' | '))}`);
+        lines.push(`⚠️ ${escapeHtml(blockerLine)}`);
+      } else if ((coordination?.watchouts?.length ?? 0) > 0) {
+        lines.push('');
+        lines.push(`⚠️ ${escapeHtml(coordination!.watchouts.join(' | '))}`);
       }
-      if (brief.coordination.handoffs.length > 0) {
-        lines.push(`↔️ ${escapeHtml(brief.coordination.handoffs.join(' | '))}`);
+      if ((coordination?.handoffs?.length ?? 0) > 0) {
+        lines.push(`↔️ ${escapeHtml(coordination!.handoffs.join(' | '))}`);
       }
       return { text: lines.join('\n').trim(), domain: SECRETARY };
     },

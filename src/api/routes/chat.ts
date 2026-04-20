@@ -2275,7 +2275,7 @@ export function chatRoutes(): Router {
               editOriginal = true;
               break;
             }
-            responseText = formatMsTodoTasks(result.data, cbData.listName);
+            responseText = formatMsTodoTasks(result.data, cbData.listName, language);
             newButtons = buildTaskActionButtons(result.data, labels);
             editOriginal = true;
           }

@@ -97,6 +97,36 @@ function portugueseSignalCount(message: string): number {
   return portuguesePatterns.reduce((total, pattern) => total + ((lower.match(pattern) || []).length), 0);
 }
 
+function regionalPortugueseSignalCounts(message: string): { ptBR: number; ptPT: number } {
+  const lower = message
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  const ptBRPatterns = [
+    /\b(voce|voces)\b/g,
+    /\bcelular\b/g,
+    /\btela\b/g,
+    /\bonibus\b/g,
+    /\bgeladeira\b/g,
+    /\bcafe da manha\b/g,
+  ];
+
+  const ptPTPatterns = [
+    /\btu\b/g,
+    /\bpodes\b/g,
+    /\btelemovel\b/g,
+    /\becr[aã]\b/g,
+    /\bfixe\b/g,
+    /\bpequeno-almoco\b/g,
+    /\bcontigo\b/g,
+  ];
+
+  const ptBR = ptBRPatterns.reduce((total, pattern) => total + ((lower.match(pattern) || []).length), 0);
+  const ptPT = ptPTPatterns.reduce((total, pattern) => total + ((lower.match(pattern) || []).length), 0);
+  return { ptBR, ptPT };
+}
+
 function isLikelyEnglishMessage(message?: string | null): boolean {
   if (!message) return false;
   const lower = message.trim().toLowerCase();
@@ -110,6 +140,34 @@ function isLikelyEnglishMessage(message?: string | null): boolean {
   return englishScore >= 2 && portugueseScore === 0;
 }
 
+function resolvePortugueseVariantFromMessage(
+  fallback: 'pt-BR' | 'pt-PT' | 'en-US',
+  message?: string | null,
+): 'pt-BR' | 'pt-PT' | null {
+  if (!message) return null;
+
+  const lower = message.trim().toLowerCase();
+  if (!lower) return null;
+
+  const englishScore = englishSignalCount(lower);
+  const portugueseScore = portugueseSignalCount(lower);
+  const regionalSignals = regionalPortugueseSignalCounts(lower);
+  if (englishScore > 0) {
+    return null;
+  }
+  if (portugueseScore < 2 && regionalSignals.ptBR === 0 && regionalSignals.ptPT === 0) {
+    return null;
+  }
+  if (regionalSignals.ptPT > regionalSignals.ptBR) {
+    return 'pt-PT';
+  }
+  if (regionalSignals.ptBR > regionalSignals.ptPT) {
+    return 'pt-BR';
+  }
+
+  return fallback === 'pt-PT' ? 'pt-PT' : 'pt-BR';
+}
+
 export function resolveReplyLanguage(language: string, message?: string): 'pt-BR' | 'pt-PT' | 'en-US' {
   const fallback = normalizeReplyLanguage(language);
   const lower = message?.trim().toLowerCase() || '';
@@ -118,6 +176,8 @@ export function resolveReplyLanguage(language: string, message?: string): 'pt-BR
   if (/(?:\bpt-pt\b|portugu[eê]s europeu|portugu[eê]s de portugal|portuguese from portugal|european portuguese)/i.test(lower)) return 'pt-PT';
   if (/(?:\bpt-br\b|portugu[eê]s brasileiro|brazilian portuguese)/i.test(lower)) return 'pt-BR';
   if (isLikelyEnglishMessage(lower)) return 'en-US';
+  const portugueseVariant = resolvePortugueseVariantFromMessage(fallback, lower);
+  if (portugueseVariant) return portugueseVariant;
   return fallback;
 }
 

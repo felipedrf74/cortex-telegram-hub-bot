@@ -53,6 +53,32 @@ const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
   'gpt-4o-mini':  { in: 0.15, out: 0.60 },
 };
 
+type OpenAINonStreamingParams = OpenAI.ChatCompletionCreateParamsNonStreaming & {
+  max_completion_tokens?: number;
+};
+
+type OpenAIStreamingParams = OpenAI.ChatCompletionCreateParamsStreaming & {
+  max_completion_tokens?: number;
+};
+
+function usesCompletionTokenCap(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized.startsWith('gpt-5')
+    || normalized.startsWith('o1')
+    || normalized.startsWith('o3')
+    || normalized.startsWith('o4');
+}
+
+function withTokenLimit<T extends { model: string }>(
+  params: T,
+  maxTokens: number,
+): T & { max_tokens?: number; max_completion_tokens?: number } {
+  if (usesCompletionTokenCap(params.model)) {
+    return { ...params, max_completion_tokens: maxTokens };
+  }
+  return { ...params, max_tokens: maxTokens };
+}
+
 // ─── Token tracking ─────────────────────────────────────────────────
 
 /**
@@ -69,7 +95,7 @@ const OPENAI_COST_PER_MTK: Record<string, { in: number; out: number }> = {
  */
 async function trackedCompletion(
   client: OpenAI,
-  params: OpenAI.ChatCompletionCreateParamsNonStreaming,
+  params: OpenAINonStreamingParams,
   category: string,
   userId: number = 0,
 ): Promise<OpenAI.ChatCompletion> {
@@ -157,15 +183,14 @@ export async function completeOneShot(
   const response = await withRetry(() =>
     trackedCompletion(
       getClient(),
-      {
+      withTokenLimit({
         model,
-        max_tokens: maxTokens,
         temperature,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-      },
+      }, maxTokens),
       category,
       options?.userId ?? 0,
     ),
@@ -208,9 +233,8 @@ export async function completeVisionOneShot(
   const response = await withRetry(() =>
     trackedCompletion(
       getClient(),
-      {
+      withTokenLimit({
         model,
-        max_tokens: maxTokens,
         temperature,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -222,7 +246,7 @@ export async function completeVisionOneShot(
             ],
           },
         ],
-      },
+      }, maxTokens),
       category,
       options?.userId ?? 0,
     ),
@@ -325,14 +349,13 @@ ${message}`;
       }
 
       const response = await withRetry(() =>
-        trackedCompletion(getClient(), {
+        trackedCompletion(getClient(), withTokenLimit({
           model: config.openai.classifierModel,
-          max_tokens: 100,
           messages: [
             { role: 'system', content: getClassifierSystemPrompt() },
             { role: 'user', content: userContent },
           ],
-        }, 'openai_classify')
+        }, 100), 'openai_classify')
       );
 
       let text = response.choices[0]?.message?.content || '';
@@ -374,12 +397,11 @@ ${message}`;
     ];
 
     const response = await withRetry(() =>
-      trackedCompletion(getClient(), {
+      trackedCompletion(getClient(), withTokenLimit({
         model: routing.model,
-        max_tokens: maxTokensOverride || routing.maxTokens,
         messages,
         ...(useTools ? { tools: toOpenAITools() } : {}),
-      }, `openai_domain_${domain}`)
+      }, maxTokensOverride || routing.maxTokens), `openai_domain_${domain}`)
     );
 
     const choice = response.choices[0];
@@ -444,12 +466,11 @@ ${message}`;
     }
 
     const response = await withRetry(() =>
-      trackedCompletion(getClient(), {
+      trackedCompletion(getClient(), withTokenLimit({
         model: routing.model,
-        max_tokens: routing.maxTokens,
         messages,
         ...(useTools ? { tools: toOpenAITools() } : {}),
-      }, 'openai_tool_continuation')
+      }, routing.maxTokens), 'openai_tool_continuation')
     );
 
     const choice = response.choices[0];
@@ -488,13 +509,12 @@ ${message}`;
 
     const start = Date.now();
     const stream = await withRetry(() =>
-      getClient().chat.completions.create({
+      getClient().chat.completions.create(withTokenLimit({
         model: routing.model,
-        max_tokens: routing.maxTokens,
         messages,
         stream: true,
         stream_options: { include_usage: true },
-      })
+      }, routing.maxTokens) as OpenAIStreamingParams)
     );
 
     let fullText = '';

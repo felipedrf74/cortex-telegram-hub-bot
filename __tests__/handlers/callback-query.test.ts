@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetCallback = vi.fn();
+const mockFormatMsTodoTasks = vi.fn((_tasks: unknown[], _listName: string, _language?: string) => '<b>Tasks</b>\nScoped task');
+const mockGetUserLanguage = vi.fn(() => 'en-US');
 vi.mock('../../src/utils/callback-store', () => ({
   storeCallback: vi.fn(() => 'cb-ref'),
   getCallback: (...args: unknown[]) => mockGetCallback(...args),
@@ -22,7 +24,11 @@ vi.mock('../../src/utils/logger', () => ({
 
 vi.mock('../../src/utils/telegram-formatter', () => ({
   escapeHtml: vi.fn((value: string) => value),
-  formatMsTodoTasks: vi.fn((_tasks: unknown[], _listName: string) => '<b>Tasks</b>\nScoped task'),
+  formatMsTodoTasks: (...args: unknown[]) => mockFormatMsTodoTasks(...args),
+}));
+
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -76,6 +82,7 @@ function makeCtx(data = 'td:ls:ref', telegramId = 42) {
 describe('callback query tenant routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetUserLanguage.mockReturnValue('en-US');
     mockGetCallback.mockReturnValue({
       listId: 'list-1',
       listName: 'Tasks',
@@ -109,6 +116,19 @@ describe('callback query tenant routing', () => {
     const scope = mockGetTelegramTaskScope.mock.results[0]?.value;
     expect(scope.provider.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'notStarted' });
     expect(ctx.editMessageText).toHaveBeenLastCalledWith(expect.stringContaining('Scoped task'), expect.any(Object));
+  });
+
+  it('passes the active user language into list callback formatting', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-PT');
+    const handler = getTodoHandler();
+
+    await handler(makeCtx('td:ls:ref'));
+
+    expect(mockFormatMsTodoTasks).toHaveBeenCalledWith(
+      [{ id: 'task-1', title: 'Scoped task', listId: 'list-1', listName: 'Tasks' }],
+      'Tasks',
+      'pt-PT',
+    );
   });
 
   it('routes complete, delete, and priority callbacks through the scoped provider', async () => {

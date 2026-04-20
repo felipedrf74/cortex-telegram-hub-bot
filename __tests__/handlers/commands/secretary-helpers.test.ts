@@ -10,6 +10,7 @@ vi.mock('../../../src/services/task-store/task-router', () => ({
 const mockResolveCanonicalUserId = vi.fn();
 vi.mock('../../../src/services/user-service', () => ({
   resolveCanonicalUserId: (...args: unknown[]) => mockResolveCanonicalUserId(...args),
+  getUserLanguage: vi.fn(() => 'en'),
 }));
 
 vi.mock('../../../src/services/microsoft-todo', () => ({

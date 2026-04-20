@@ -4,6 +4,7 @@ import { DateTime } from 'luxon';
 import { config } from '../config';
 import { getCached, setCache } from './cache-store';
 import { composeWeeklyPlan, type WeeklyPlanDay, type WeeklyPlanResponse } from './weekly-plan-orchestrator';
+import { buildSecretaryCoordination, type SecretaryCoordinationModel } from './secretary-orchestrator';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 
 export interface DailyBriefResponse {
@@ -15,26 +16,32 @@ export interface DailyBriefResponse {
   conflicts: WeeklyPlanResponse['conflicts'];
   creativeCopy: WeeklyPlanResponse['creativeCopy'];
   day: WeeklyPlanDay;
-  coordination: {
-    topPriority: string | null;
-    executionOrder: string[];
-    watchouts: string[];
-    handoffs: string[];
-  };
+  coordination: SecretaryCoordinationModel;
 }
 
-function buildEmptyDailyBriefDay(date: string): WeeklyPlanDay {
+function buildEmptyDailyBriefDay(date: string, language?: string): WeeklyPlanDay {
+  const localizedWeekday = localizedDailyBriefWeekday(date, language);
   return {
     date,
-    weekday: DateTime.fromISO(date, { zone: config.app.timezone || 'Europe/Lisbon' }).toFormat('cccc'),
-    headline: 'Daily brief unavailable because tenant scope is invalid for this request.',
+    weekday: localizedWeekday,
+    headline: localizeDailyBriefFallback(
+      language,
+      'O briefing diário está indisponível porque o contexto desta conta não é válido para este pedido.',
+      'O briefing diário está indisponível porque o contexto desta conta não é válido para este pedido.',
+      'Daily brief unavailable because tenant scope is invalid for this request.',
+    ),
     training: {
-      title: 'Brief unavailable',
+      title: localizeDailyBriefFallback(language, 'Briefing indisponível', 'Briefing indisponível', 'Brief unavailable'),
       type: 'gated',
       status: 'gated',
       durationMinutes: null,
       intensity: null,
-      reason: 'Tenant scope is invalid, so the daily brief skipped user-owned planning reads.',
+      reason: localizeDailyBriefFallback(
+        language,
+        'O contexto da conta não é válido, por isso o briefing diário ignorou leituras de planeamento do utilizador.',
+        'O contexto da conta não é válido, por isso o briefing diário ignorou leituras de planeamento do utilizador.',
+        'Tenant scope is invalid, so the daily brief skipped user-owned planning reads.',
+      ),
       decisions: [],
     },
     meals: [],
@@ -54,7 +61,7 @@ function buildEmptyDailyBriefDay(date: string): WeeklyPlanDay {
   };
 }
 
-function buildEmptyDailyBriefResponse(opts: { userId: number; date?: string }): DailyBriefResponse {
+function buildEmptyDailyBriefResponse(opts: { userId: number; date?: string; language?: string }): DailyBriefResponse {
   const targetDate = resolveTargetDate(opts.date);
   return {
     date: targetDate,
@@ -67,12 +74,56 @@ function buildEmptyDailyBriefResponse(opts: { userId: number; date?: string }): 
       headline: '',
       note: '',
     },
-    day: buildEmptyDailyBriefDay(targetDate),
+    day: buildEmptyDailyBriefDay(targetDate, opts.language),
     coordination: {
       topPriority: null,
       executionOrder: [],
       watchouts: [],
       handoffs: [],
+      confidence: 'low',
+      dayOrchestration: {
+        posture: 'stable_day',
+        title: localizeDailyBriefFallback(
+          opts.language,
+          'Orquestração diária indisponível.',
+          'Orquestração diária indisponível.',
+          'Daily orchestration unavailable.',
+        ),
+        summary: localizeDailyBriefFallback(
+          opts.language,
+          'Não foi possível montar uma postura de agenda fiável para este pedido.',
+          'Não foi possível montar uma postura de agenda fiável para este pedido.',
+          'No reliable scheduling posture could be built for this request.',
+        ),
+        confidence: 'low',
+        mainThing: null,
+        reasons: [],
+        affectedSkills: ['secretary'],
+      },
+      weekOrchestration: {
+        posture: 'stable',
+        title: localizeDailyBriefFallback(
+          opts.language,
+          'Orquestração semanal indisponível.',
+          'Orquestração semanal indisponível.',
+          'Weekly orchestration unavailable.',
+        ),
+        summary: localizeDailyBriefFallback(
+          opts.language,
+          'Não foi possível montar uma postura semanal fiável para este pedido.',
+          'Não foi possível montar uma postura semanal fiável para este pedido.',
+          'No reliable weekly posture could be built for this request.',
+        ),
+        confidence: 'low',
+        reasons: [],
+        affectedSkills: ['secretary'],
+      },
+      nextBestAction: null,
+      blockers: [],
+      suggestedMoves: [],
+      protectedBlocks: [],
+      risks: [],
+      crossSkillImpacts: [],
     },
   };
 }
@@ -80,6 +131,7 @@ function buildEmptyDailyBriefResponse(opts: { userId: number; date?: string }): 
 export async function composeDailyBrief(opts: {
   userId: number;
   date?: string;
+  language?: string;
   forceRefresh?: boolean;
 }): Promise<DailyBriefResponse> {
   if (!isValidTenantUserId(opts.userId)) {
@@ -96,7 +148,8 @@ export async function composeDailyBrief(opts: {
   }
 
   const targetDate = resolveTargetDate(opts.date);
-  const cacheKey = `plan:today:u:${opts.userId}:${targetDate}`;
+  const languageBucket = resolveLanguageBucket(opts.language);
+  const cacheKey = `plan:today:u:${opts.userId}:${targetDate}:${languageBucket}`;
   if (!opts.forceRefresh) {
     const cached = getCached<DailyBriefResponse>(cacheKey);
     if (cached) {
@@ -120,44 +173,65 @@ export async function composeDailyBrief(opts: {
     conflicts: weekPlan.conflicts.filter((conflict) => conflict.date === targetDate),
     creativeCopy: weekPlan.creativeCopy,
     day,
-    coordination: buildDailyCoordination(day, weekPlan.conflicts.filter((conflict) => conflict.date === targetDate)),
+    coordination: buildDailyCoordination({
+      date: targetDate,
+      day,
+      weekPlan,
+      conflicts: weekPlan.conflicts.filter((conflict) => conflict.date === targetDate),
+      language: opts.language,
+    }),
   };
 
   setCache(cacheKey, response, 1800);
   return response;
 }
 
-function buildDailyCoordination(
-  day: WeeklyPlanDay,
-  conflicts: WeeklyPlanResponse['conflicts'],
-): DailyBriefResponse['coordination'] {
-  const topPriority = day.secretary.priorityNote ?? day.training.reason ?? null;
-  const executionOrder = day.secretary.sequence.slice(0, 5);
-  const watchouts = compact([
-    day.training.status === 'adjusted' ? day.training.reason : null,
-    day.secretary.tradeoffNote,
-    conflicts[0]?.message ?? null,
-    day.finance?.budgetNote && /budget/i.test(day.finance.budgetNote) ? day.finance.budgetNote : null,
-    day.content?.status === 'blocked' ? day.content.note : null,
-  ]);
-
-  const handoffs = compact([
-    day.meals.some((meal) => meal.title === 'Fueling coverage missing')
-      ? 'Training depends on meal coverage landing before the key session.'
-      : null,
-    day.content?.status === 'scheduled' && day.training.status !== 'rest'
-      ? 'Content should follow the protected training and fueling commitments instead of displacing them.'
-      : null,
-    day.content?.status === 'scheduled' && day.finance?.budgetNote
-      ? 'Keep the content execution path aligned with the current finance constraints for the week.'
-      : null,
-  ]);
+function buildDailyCoordination(opts: {
+  date: string;
+  day: WeeklyPlanDay;
+  weekPlan: WeeklyPlanResponse;
+  conflicts: WeeklyPlanResponse['conflicts'];
+  language?: string;
+}): DailyBriefResponse['coordination'] {
+  const coordination = buildSecretaryCoordination({
+    date: opts.date,
+    day: opts.day,
+    weekPlan: {
+      days: opts.weekPlan.days,
+      conflicts: opts.weekPlan.conflicts,
+      variant: opts.weekPlan.variant,
+    },
+    conflicts: opts.conflicts,
+    language: opts.language,
+  });
 
   return {
-    topPriority,
-    executionOrder,
-    watchouts,
-    handoffs,
+    ...coordination,
+    executionOrder: coordination.executionOrder.length > 0
+      ? coordination.executionOrder
+      : opts.day.secretary.sequence.slice(0, 5),
+    watchouts: coordination.watchouts.length > 0
+      ? coordination.watchouts
+      : compact([
+        opts.day.training.status === 'adjusted' ? opts.day.training.reason : null,
+        opts.day.secretary.tradeoffNote,
+        opts.conflicts[0]?.message ?? null,
+        opts.day.finance?.budgetNote && /budget/i.test(opts.day.finance.budgetNote) ? opts.day.finance.budgetNote : null,
+        opts.day.content?.status === 'blocked' ? opts.day.content.note : null,
+      ]),
+    handoffs: coordination.handoffs.length > 0
+      ? coordination.handoffs
+      : compact([
+        opts.day.meals.some((meal) => meal.title === 'Fueling coverage missing')
+          ? 'Training depends on meal coverage landing before the key session.'
+          : null,
+        opts.day.content?.status === 'scheduled' && opts.day.training.status !== 'rest'
+          ? 'Content should follow the protected training and fueling commitments instead of displacing them.'
+          : null,
+        opts.day.content?.status === 'scheduled' && opts.day.finance?.budgetNote
+          ? 'Keep the content execution path aligned with the current finance constraints for the week.'
+          : null,
+      ]),
   };
 }
 
@@ -177,4 +251,32 @@ function weekStartForDate(date: string): string {
   const zone = config.app.timezone || 'Europe/Lisbon';
   const parsed = DateTime.fromISO(date, { zone }).startOf('day');
   return (parsed.isValid ? parsed : DateTime.now().setZone(zone)).startOf('week').toISODate()!;
+}
+
+function resolveLanguageBucket(language?: string): string {
+  if (typeof language !== 'string' || language.trim().length === 0) return 'en';
+  const normalized = language.trim().toLowerCase();
+  if (normalized.startsWith('pt-br')) return 'pt-br';
+  if (normalized.startsWith('pt')) return 'pt';
+  return 'en';
+}
+
+function localizeDailyBriefFallback(language: string | undefined, ptPt: string, ptBr: string, en: string): string {
+  const bucket = resolveLanguageBucket(language);
+  if (bucket === 'pt-br') return ptBr;
+  if (bucket === 'pt') return ptPt;
+  return en;
+}
+
+function localizedDailyBriefWeekday(date: string, language?: string): string {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const parsed = DateTime.fromISO(date, { zone }).startOf('day');
+  const locale = resolveLanguageBucket(language) === 'pt-br'
+    ? 'pt-BR'
+    : resolveLanguageBucket(language) === 'pt'
+      ? 'pt-PT'
+      : 'en-US';
+  return (parsed.isValid ? parsed : DateTime.now().setZone(zone))
+    .setLocale(locale)
+    .toFormat('cccc');
 }

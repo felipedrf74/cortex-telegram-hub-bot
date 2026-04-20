@@ -28,7 +28,7 @@ import {
   now, formatTime, formatDateTime, parseNaturalDate,
 } from '../../utils/date-parser';
 import { pendingEdits, type PendingEdit } from '../shared-state';
-import { resolveCanonicalUserId } from '../../services/user-service';
+import { getUserLanguage, resolveCanonicalUserId } from '../../services/user-service';
 
 export type TodoProvider = Pick<typeof msTodo,
   | 'getLists'
@@ -261,7 +261,7 @@ export async function handleTodoSummary(ctx: Context): Promise<void> {
     highPriorityCount: highPriority.length,
     overdueTasks: overdue,
     dueTodayTasks: dueToday,
-  });
+  }, getUserLanguage(ctx.from!.id));
 
   await ctx.reply(msg, { parse_mode: 'HTML' });
 }

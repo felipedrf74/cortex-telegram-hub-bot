@@ -65,7 +65,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      const msg = formatMsTodoLists(result.data);
+      const msg = formatMsTodoLists(result.data, getUserLanguage(ctx.from!.id));
       const keyboard = new InlineKeyboard();
       for (const list of result.data) {
         const ref = storeCallback({ listId: list.id, listName: list.displayName });
@@ -99,7 +99,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      const msg = formatMsTodoTasks(result.data, list.displayName);
+      const msg = formatMsTodoTasks(result.data, list.displayName, getUserLanguage(ctx.from!.id));
       const keyboard = buildTaskListKeyboard(result.data, list.id);
 
       await ctx.reply(msg, {
@@ -143,7 +143,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      await ctx.reply(formatMsTodoTaskCreated(result.data), { parse_mode: 'HTML' });
+      await ctx.reply(formatMsTodoTaskCreated(result.data, getUserLanguage(ctx.from!.id)), { parse_mode: 'HTML' });
     });
   });
 
@@ -465,7 +465,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      const msg = formatAllTasks(result.data);
+      const msg = formatAllTasks(result.data, getUserLanguage(ctx.from!.id));
       const parts = splitMessage(msg);
       for (const part of parts) {
         await ctx.reply(part, { parse_mode: 'HTML' });
@@ -494,7 +494,7 @@ export function registerSecretaryCommands(
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
           return;
         }
-        const msgSpecific = formatCompletedTasks(result.data, list.displayName);
+        const msgSpecific = formatCompletedTasks(result.data, list.displayName, getUserLanguage(ctx.from!.id));
         const partsSpecific = splitMessage(msgSpecific);
         for (const part of partsSpecific) {
           await ctx.reply(part, { parse_mode: 'HTML' });
@@ -508,7 +508,7 @@ export function registerSecretaryCommands(
         await ctx.reply(t('generic_error', getUserLanguage(ctx.from!.id)));
           return;
         }
-        const msgAll = formatCompletedTasks(result.data);
+        const msgAll = formatCompletedTasks(result.data, undefined, getUserLanguage(ctx.from!.id));
         const partsAll = splitMessage(msgAll);
         for (const part of partsAll) {
           await ctx.reply(part, { parse_mode: 'HTML' });
@@ -674,7 +674,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      await ctx.reply(formatChecklistItems(result.data, task.title), { parse_mode: 'HTML' });
+      await ctx.reply(formatChecklistItems(result.data, task.title, getUserLanguage(ctx.from!.id)), { parse_mode: 'HTML' });
     });
   });
 
@@ -709,7 +709,7 @@ export function registerSecretaryCommands(
         return;
       }
 
-      const msg = formatMsTodoTasks(result.data, defaultList.displayName);
+      const msg = formatMsTodoTasks(result.data, defaultList.displayName, getUserLanguage(ctx.from!.id));
       const keyboard = buildTaskListKeyboard(result.data, defaultList.id);
 
       await ctx.reply(msg, {

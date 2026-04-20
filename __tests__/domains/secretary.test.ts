@@ -56,6 +56,9 @@ vi.mock('../../src/services/unified-mail-pressure', () => ({
     gmailUnread: null,
   }),
 }));
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: vi.fn().mockReturnValue('en-US'),
+}));
 
 const mockGetTaskProviderForUser = vi.fn();
 const mockTaskGetAllPendingTasks = vi.fn();
@@ -132,10 +135,12 @@ import {
   buildSharedDecisionContext,
   buildSharedDecisionContracts,
 } from '../../src/services/shared-decision-context';
+import { getUserLanguage } from '../../src/services/user-service';
 
 const mockCallDomain = vi.mocked(callDomain);
 const mockContinue = vi.mocked(continueWithToolResults);
 const mockExecuteTool = vi.mocked(executeToolCall);
+const mockGetUserLanguage = vi.mocked(getUserLanguage);
 
 // ─── Shared setup ────────────────────────────────────────────────────
 
@@ -195,6 +200,7 @@ beforeEach(() => {
     toFormat: vi.fn().mockReturnValue('Monday, March 30 2026, 10:00'),
     minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-03-27') }),
   } as any);
+  mockGetUserLanguage.mockReturnValue('en-US');
 });
 
 afterEach(() => {
@@ -262,6 +268,7 @@ describe('handleSecretary', () => {
   it('returns an honest unavailable response when routing stays unavailable and Anthropic direct fallback is disabled', async () => {
     delete process.env.ANTHROPIC_ENABLED;
     delete process.env.ANTHROPIC_API_KEY;
+    mockGetUserLanguage.mockReturnValue('pt-BR');
 
     const result = await handleSecretary('Organiza o meu dia', 77);
 
@@ -525,6 +532,49 @@ describe('Secretary state context', () => {
     expect(stateCtx).toContain('Top priority: Protect the key session before adding admin.');
     expect(stateCtx).toContain('<shared_decision_contracts domain="secretary">');
     expect(stateCtx).toContain('training: nonNegotiables=Keep the tempo run protected.');
+  });
+
+  it('localizes planner coordination labels in the state context for portuguese users', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-PT');
+    vi.mocked(composeDailyBrief).mockResolvedValue({
+      coordination: {
+        topPriority: 'Protege a sessão-chave antes de empurrar admin.',
+        executionOrder: ['Sessão-chave', 'Cobertura de fueling'],
+        watchouts: ['A manhã já está a partir o foco'],
+        handoffs: ['O conteúdo fica melhor depois do treino'],
+        dayOrchestration: {
+          title: 'Hoje pede proteção do bloco principal.',
+        },
+        weekOrchestration: {
+          title: 'A semana está a proteger consistência.',
+        },
+        nextBestAction: {
+          summary: 'Fecha primeiro o que mantém a semana executável.',
+        },
+        blockers: [{ summary: 'Há pressão de agenda a subir.' }],
+        suggestedMoves: [{ title: 'Agrupa admin numa só janela.' }],
+      },
+      day: {
+        secretary: {
+          priorityNote: null,
+          sequence: [],
+          tradeoffNote: 'Não sacrifiques o treino por admin leve.',
+        },
+      },
+    } as any);
+
+    mockCallDomain.mockResolvedValue({ text: 'OK', toolCalls: [], stopReason: 'end_turn' } as any);
+    await handleSecretary('Como encaixo isto hoje?', 42);
+
+    const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
+    expect(stateCtx).toContain('[COORDENAÇÃO DO PLANNER]');
+    expect(stateCtx).toContain('Prioridade principal: Protege a sessão-chave antes de empurrar admin.');
+    expect(stateCtx).toContain('Postura do dia: Hoje pede proteção do bloco principal.');
+    expect(stateCtx).toContain('Postura da semana: A semana está a proteger consistência.');
+    expect(stateCtx).toContain('Próxima melhor ação: Fecha primeiro o que mantém a semana executável.');
+    expect(stateCtx).toContain('Bloqueios: Há pressão de agenda a subir.');
+    expect(stateCtx).toContain('Movimentos sugeridos: Agrupa admin numa só janela.');
+    expect(stateCtx).toContain('Trade-off: Não sacrifiques o treino por admin leve.');
   });
 
   it('does not persist conversation or run fastpath state reads when no user scope is provided', async () => {

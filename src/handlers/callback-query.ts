@@ -15,6 +15,7 @@ import { createEvent as createCalendarEvent } from '../services/unified-calendar
 import { classifyAndExtractImage } from '../services/anthropic';
 import { escapeHtml, formatMsTodoTasks } from '../utils/telegram-formatter';
 import { pendingEdits, isHtmlParseError } from './shared-state';
+import { getUserLanguage } from '../services/user-service';
 import {
   buildTaskListKeyboard,
   getTelegramTaskScope,
@@ -72,7 +73,11 @@ export function registerCallbackQueries(bot: Bot): void {
           await ctx.editMessageText(`⚠️ Failed to fetch tasks: ${result.error}`);
           return;
         }
-        const msg = formatMsTodoTasks(result.data, cbData.listName);
+        const msg = formatMsTodoTasks(
+          result.data,
+          cbData.listName,
+          ctx.from?.id ? getUserLanguage(ctx.from.id) : 'en-US',
+        );
         const keyboard = buildTaskListKeyboard(result.data, cbData.listId);
         await ctx.editMessageText(msg, {
           parse_mode: 'HTML',

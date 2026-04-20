@@ -101,39 +101,80 @@ describe('daily-brief-orchestrator', () => {
     const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
     const result = await composeDailyBrief({ userId: 12, date: '2026-04-15', forceRefresh: true });
 
-    expect(result.coordination.topPriority).toBe('Protect Track intervals as a high-immovability training block.');
-    expect(result.coordination.executionOrder).toEqual([
-      'Protect the key training window before moving meetings, errands, or filming onto the day.',
-      'Lock meal or shopping coverage before the session so training support is not left to chance.',
-      'Reserve a real publish/delivery slot so content ships deliberately instead of becoming leftover work.',
-    ]);
+    expect(result.coordination.topPriority).toBe('Keep the day light and recoverable.');
+    expect(result.coordination.executionOrder).toEqual(
+      expect.arrayContaining([
+        'Keep the day light and recoverable.',
+        'Batch overdue work into one short block.',
+        'Use 12:00–14:00 to ship.',
+        'Protect the key training window before moving meetings, errands, or filming onto the day.',
+        'Lock meal or shopping coverage before the session so training support is not left to chance.',
+      ]),
+    );
+    expect(result.coordination.dayOrchestration.posture).toBe('recovery_protected_day');
+    expect(result.coordination.weekOrchestration.posture).toBe('consistency');
+    expect(result.coordination.nextBestAction?.kind).toBe('lighten_day');
+    expect(result.coordination.blockers.map((blocker) => blocker.kind)).toEqual(
+      expect.arrayContaining(['task_pressure', 'deadline_collision']),
+    );
     expect(result.coordination.watchouts).toEqual(
       expect.arrayContaining([
-        'Recovery is strained — keep training conservative and easy to absorb.',
-        'Training is the anchor, meals need closing before it, publishing still needs a real slot, and filming should only use whatever bandwidth remains after all three are protected.',
+        'There are 1 overdue tasks, 0 due today, and 0 unread emails in play.',
         'Same-priority conflict on 2026-04-15: publish vs shoot',
       ]),
     );
-    expect(result.coordination.handoffs).toEqual([
-      'Training depends on meal coverage landing before the key session.',
-      'Content should follow the protected training and fueling commitments instead of displacing them.',
-      'Keep the content execution path aligned with the current finance constraints for the week.',
-    ]);
+    expect(result.coordination.handoffs).toEqual(
+      expect.arrayContaining([
+        'Training is pulling the day toward less friction and less load.',
+        'Content has a good window, but it needs shipping, not more prep.',
+        'The aligned meal helps keep training and schedule more executable.',
+      ]),
+    );
   });
 
-  it('fails closed and records an anomaly when tenant scope is invalid', async () => {
+  it('fails closed in Portuguese and records an anomaly when tenant scope is invalid', async () => {
     const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
-    const result = await composeDailyBrief({ userId: 0, date: '2026-04-15', forceRefresh: true });
+    const result = await composeDailyBrief({
+      userId: 0,
+      date: '2026-04-15',
+      language: 'pt-PT',
+      forceRefresh: true,
+    });
 
     expect(result.degraded).toBe(true);
     expect(result.date).toBe('2026-04-15');
     expect(result.day.date).toBe('2026-04-15');
-    expect(result.day.headline).toContain('tenant scope is invalid');
+    expect(result.day.weekday.toLowerCase()).toContain('quarta');
+    expect(result.day.headline).toContain('contexto desta conta não é válido');
     expect(result.coordination).toEqual({
       topPriority: null,
       executionOrder: [],
       watchouts: [],
       handoffs: [],
+      confidence: 'low',
+      dayOrchestration: {
+        posture: 'stable_day',
+        title: 'Orquestração diária indisponível.',
+        summary: 'Não foi possível montar uma postura de agenda fiável para este pedido.',
+        confidence: 'low',
+        mainThing: null,
+        reasons: [],
+        affectedSkills: ['secretary'],
+      },
+      weekOrchestration: {
+        posture: 'stable',
+        title: 'Orquestração semanal indisponível.',
+        summary: 'Não foi possível montar uma postura semanal fiável para este pedido.',
+        confidence: 'low',
+        reasons: [],
+        affectedSkills: ['secretary'],
+      },
+      nextBestAction: null,
+      blockers: [],
+      suggestedMoves: [],
+      protectedBlocks: [],
+      risks: [],
+      crossSkillImpacts: [],
     });
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies()[0]).toMatchObject({
@@ -143,6 +184,22 @@ describe('daily-brief-orchestrator', () => {
       userId: 0,
       details: { date: '2026-04-15' },
     });
+  });
+
+  it('fails closed in English when no Portuguese language bucket is requested', async () => {
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 0,
+      date: '2026-04-15',
+      language: 'en-US',
+      forceRefresh: true,
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.day.weekday).toBe('Wednesday');
+    expect(result.day.headline).toContain('tenant scope is invalid');
+    expect(result.coordination.dayOrchestration.title).toBe('Daily orchestration unavailable.');
+    expect(result.coordination.weekOrchestration.title).toBe('Weekly orchestration unavailable.');
   });
 
   it('returns cached daily briefs without recomputing the weekly plan', async () => {
@@ -160,6 +217,30 @@ describe('daily-brief-orchestrator', () => {
         executionOrder: [],
         watchouts: [],
         handoffs: [],
+        confidence: 'low',
+        dayOrchestration: {
+          posture: 'stable_day',
+          title: 'Daily orchestration unavailable.',
+          summary: 'No reliable scheduling posture could be built for this request.',
+          confidence: 'low',
+          mainThing: null,
+          reasons: [],
+          affectedSkills: ['secretary'],
+        },
+        weekOrchestration: {
+          posture: 'stable',
+          title: 'Weekly orchestration unavailable.',
+          summary: 'No reliable weekly posture could be built for this request.',
+          confidence: 'low',
+          reasons: [],
+          affectedSkills: ['secretary'],
+        },
+        nextBestAction: null,
+        blockers: [],
+        suggestedMoves: [],
+        protectedBlocks: [],
+        risks: [],
+        crossSkillImpacts: [],
       },
     });
 

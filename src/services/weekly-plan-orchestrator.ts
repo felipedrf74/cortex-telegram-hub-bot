@@ -80,6 +80,15 @@ export interface WeeklyPlanSecretaryItem {
   } | null;
   pendingTasks: number;
   overdueTasks: number;
+  tasksDueOnDate?: number;
+  mailUnreadTotal?: number;
+  calendarEventCount?: number;
+  fragmented?: boolean;
+  criticalMeetingCount?: number;
+  movableTaskCount?: number;
+  fixedTaskCount?: number;
+  portableTaskRatio?: number;
+  writableCalendar?: boolean;
   travel: boolean;
   busy: boolean;
   priorityNote: string | null;
@@ -1084,6 +1093,14 @@ function buildSecretaryItem(opts: {
         note: secretary.focusBlock.reason,
       }
     : null;
+  const dateEvents = secretary.events.filter((event) => String(event.start ?? '').slice(0, 10) === date);
+  const criticalMeetingCount = dateEvents.filter((event) => /\b(client|cliente|interview|entrevista|doctor|m[eé]dico|meeting|reuni[aã]o|call|sponsor|patroc[ií]nio|filming|shoot|flight|voo|deadline)\b/i.test(String(event.summary ?? ''))).length;
+  const tasksDueOnDate = secretary.pending.filter((task) => String(task.dueDate ?? '').slice(0, 10) === date).length;
+  const fixedTaskCount = secretary.pending.filter((task) => Boolean(task.dueDate)).length;
+  const movableTaskCount = Math.max(0, secretary.pending.length - fixedTaskCount);
+  const portableTaskRatio = secretary.pending.length > 0
+    ? Math.round((movableTaskCount / secretary.pending.length) * 100) / 100
+    : 0;
 
   const sequence = buildSecretarySequence({
     focusBlock,
@@ -1130,6 +1147,15 @@ function buildSecretaryItem(opts: {
     focusBlock,
     pendingTasks: secretary.pending.length,
     overdueTasks: secretary.overdue.length,
+    tasksDueOnDate,
+    mailUnreadTotal: secretary.mailPressure?.totalUnread ?? 0,
+    calendarEventCount: dateEvents.length,
+    fragmented: dateEvents.length >= 4,
+    criticalMeetingCount,
+    movableTaskCount,
+    fixedTaskCount,
+    portableTaskRatio,
+    writableCalendar: secretary.writableCalendar,
     travel: availabilityDirective?.action === 'travel',
     busy: availabilityDirective?.action === 'busy',
     priorityNote,

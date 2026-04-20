@@ -53,4 +53,16 @@ describe('resolveReplyLanguage', () => {
       resolveReplyLanguage('en-US', 'responde em pt-BR por favor'),
     ).toBe('pt-BR');
   });
+
+  it('switches an english-profile user to Brazilian Portuguese when the current message is clearly pt-BR', () => {
+    expect(
+      resolveReplyLanguage('en-US', 'como conservo cenoura ralada na geladeira por vários dias?'),
+    ).toBe('pt-BR');
+  });
+
+  it('switches an english-profile user to European Portuguese when the current message is clearly pt-PT', () => {
+    expect(
+      resolveReplyLanguage('en-US', 'podes rever a minha agenda no telemóvel e mover a reunião para amanhã?'),
+    ).toBe('pt-PT');
+  });
 });

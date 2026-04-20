@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockEnqueue = vi.fn((_userId: number, fn: () => Promise<void>) => fn());
+const mockFormatMsTodoLists = vi.fn(() => '<b>Lists</b>');
+const mockFormatMsTodoTasks = vi.fn(() => '<b>Tasks</b>');
+const mockFormatMsTodoTaskCreated = vi.fn(() => '<b>Created</b>');
+const mockFormatChecklistItems = vi.fn(() => '<b>Checklist</b>');
+const mockFormatAllTasks = vi.fn(() => '<b>All Tasks</b>');
+const mockFormatCompletedTasks = vi.fn(() => '<b>Completed</b>');
+const mockGetUserLanguage = vi.fn(() => 'en-US');
+
 vi.mock('../../../src/handlers/shared-state', () => ({
   enqueue: (...args: unknown[]) => mockEnqueue(...args as [number, () => Promise<void>]),
 }));
@@ -35,14 +43,14 @@ vi.mock('../../../src/utils/callback-store', () => ({
 }));
 
 vi.mock('../../../src/utils/telegram-formatter', () => ({
-  formatMsTodoLists: vi.fn(() => '<b>Lists</b>'),
-  formatMsTodoTasks: vi.fn(() => '<b>Tasks</b>'),
-  formatMsTodoTaskCreated: vi.fn(() => '<b>Created</b>'),
+  formatMsTodoLists: (...args: unknown[]) => mockFormatMsTodoLists(...args),
+  formatMsTodoTasks: (...args: unknown[]) => mockFormatMsTodoTasks(...args),
+  formatMsTodoTaskCreated: (...args: unknown[]) => mockFormatMsTodoTaskCreated(...args),
   splitMessage: vi.fn((value: string) => [value]),
   escapeHtml: vi.fn((value: string) => value),
-  formatChecklistItems: vi.fn(() => '<b>Checklist</b>'),
-  formatAllTasks: vi.fn(() => '<b>All Tasks</b>'),
-  formatCompletedTasks: vi.fn(() => '<b>Completed</b>'),
+  formatChecklistItems: (...args: unknown[]) => mockFormatChecklistItems(...args),
+  formatAllTasks: (...args: unknown[]) => mockFormatAllTasks(...args),
+  formatCompletedTasks: (...args: unknown[]) => mockFormatCompletedTasks(...args),
 }));
 
 vi.mock('../../../src/utils/date-parser', () => ({
@@ -54,7 +62,7 @@ vi.mock('../../../src/utils/date-parser', () => ({
 }));
 
 vi.mock('../../../src/services/user-service', () => ({
-  getUserLanguage: vi.fn(() => 'en'),
+  getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
 }));
 
 vi.mock('../../../src/utils/i18n', () => ({
@@ -101,6 +109,7 @@ async function flushAsyncWork() {
 describe('secretary command tenant routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetUserLanguage.mockReturnValue('en-US');
     mockGetTelegramTaskScope.mockReturnValue({
       userId: 1042,
       providerType: 'nexus',
@@ -166,6 +175,27 @@ describe('secretary command tenant routing', () => {
     expect(provider.getTasks).toHaveBeenCalledWith('list-1', 'Tasks', { status: 'notStarted' });
     expect(listCtx.reply).toHaveBeenCalledWith(expect.stringContaining('Lists'), expect.any(Object));
     expect(tasksCtx.reply).toHaveBeenCalledWith(expect.stringContaining('Tasks'), expect.any(Object));
+  });
+
+  it('passes the active user language into deterministic task formatters', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-BR');
+    const handlers = createBotHarness();
+    const listCtx = makeCtx();
+    const tasksCtx = makeCtx('Tasks');
+
+    await handlers.get('lists')!(listCtx);
+    await handlers.get('tasks')!(tasksCtx);
+    await flushAsyncWork();
+
+    expect(mockFormatMsTodoLists).toHaveBeenCalledWith(
+      [{ id: 'list-1', displayName: 'Tasks' }],
+      'pt-BR',
+    );
+    expect(mockFormatMsTodoTasks).toHaveBeenCalledWith(
+      [{ id: 'task-1', title: 'Scoped task', listId: 'list-1', listName: 'Tasks' }],
+      'Tasks',
+      'pt-BR',
+    );
   });
 
   it('routes task creation and due reads through the scoped provider', async () => {

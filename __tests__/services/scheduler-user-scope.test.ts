@@ -139,6 +139,7 @@ vi.mock('../../src/utils/request-context', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserById: vi.fn((id: number) => ({ id, telegram_id: id + 1000 })),
   resolveCanonicalUserId: vi.fn((ref: number) => ref + 10),
+  getUserLanguage: vi.fn(() => 'en'),
   getOwnerBootstrapTarget: (...args: unknown[]) => mockGetOwnerBootstrapTarget(...args),
 }));
 vi.mock('../../src/services/task-store/task-router', () => ({

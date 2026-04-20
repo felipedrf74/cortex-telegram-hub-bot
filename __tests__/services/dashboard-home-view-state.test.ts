@@ -173,6 +173,77 @@ describe('dashboard-home-view-state', () => {
     expect(viewState.coordinatedDecision?.primaryAction.target).toBe('dayPlan');
   });
 
+  it('builds a skill-aware coordinated week contract with ranked outcomes', () => {
+    const viewState = buildDashboardHomeViewState(
+      makeInput({
+        orchestrationSummary: {
+          headline: 'Hoje protegemos recuperação para sustentar consistência.',
+          detail: 'A recuperação caiu, por isso treino e cozinha ficaram mais leves.',
+          impacts: [
+            { id: 'training', domain: 'training', detail: 'Treino com menos carga.' },
+            { id: 'cooking', domain: 'cooking', detail: 'Refeição de suporte pronta.' },
+          ],
+        },
+      }),
+      'pt-BR',
+    );
+
+    expect(viewState.coordinatedWeek?.weeklyPosture).toBe('Hoje protegemos recuperação para sustentar consistência.');
+    expect(viewState.coordinatedWeek?.summary).toBe('A recuperação caiu, por isso treino e cozinha ficaram mais leves.');
+    expect(viewState.coordinatedWeek?.stateLabel).toBe('Protege consistência');
+    expect(viewState.coordinatedWeek?.confidenceText).toBe('Confiança alta');
+    expect(viewState.coordinatedWeek?.outcomes).toHaveLength(3);
+    expect(viewState.coordinatedWeek?.outcomes[0]?.skillId).toBe('training');
+    expect(viewState.coordinatedWeek?.outcomes.some((outcome) => outcome.skillId === 'content')).toBe(true);
+    expect(viewState.coordinatedWeek?.primaryAction.target).toBe('dayPlan');
+  });
+
+  it('respects explicit skill availability and degrades to a single-outcome weekly card', () => {
+    const viewState = buildDashboardHomeViewState(
+      makeInput({
+        tasksDue: 0,
+        trainingTitle: null,
+        trainingTime: null,
+        trainingDurationMinutes: null,
+        trainingStatus: 'unavailable',
+        cookingHeadline: 'Planear refeições',
+        cookingSubline: null,
+        financeHeadline: '€ 0 gastos',
+        financeSubline: null,
+        skillAvailability: {
+          availableSkills: ['secretary', 'content'],
+          hiddenSkills: ['training', 'cooking', 'finance'],
+          capabilityFlags: {
+            secretary: true,
+            training: false,
+            cooking: false,
+            content: true,
+            finance: false,
+          },
+        },
+        orchestrationSummary: {
+          headline: 'Esta semana protege a melhor janela criativa.',
+          detail: 'A gravação foi empurrada para sexta para encaixar melhor energia e agenda.',
+          impacts: [
+            { id: 'training', domain: 'training', detail: 'Treino leve hoje.' },
+            { id: 'content', domain: 'content', detail: 'Janela de gravação preservada.' },
+          ],
+        },
+      }),
+      'pt-BR',
+    );
+
+    expect(viewState.coordinatedWeek?.outcomes.map((outcome) => outcome.skillId)).toEqual(['content']);
+    expect(viewState.coordinatedWeek?.outcomes.every((outcome) => (
+      viewState.coordinatedWeek?.skillAvailability.availableSkills.includes(outcome.skillId)
+    ))).toBe(true);
+    expect(viewState.coordinatedWeek?.outcomes[0]?.tint).toBe('content');
+    expect(viewState.coordinatedWeek?.outcomes[0]?.icon).toBe('sparkles');
+    expect(viewState.coordinatedWeek?.fallbackMode).toBe('singleOutcome');
+    expect(viewState.coordinatedWeek?.secondaryAction?.target).toBe('contentRadar');
+    expect(viewState.coordinatedWeek?.skillAvailability.availableSkills).toEqual(['secretary', 'content']);
+  });
+
   it('builds attention insights from warning messages and watchouts', () => {
     const viewState = buildDashboardHomeViewState(
       makeInput({
@@ -191,10 +262,11 @@ describe('dashboard-home-view-state', () => {
     );
 
     expect(viewState.insights).toHaveLength(2);
-    expect(viewState.insights[0]?.target).toBe('connections');
+    expect(viewState.insights[0]?.target).toBe('training');
     expect(viewState.coordinatedDecision?.stateLabel).toBe('Protege consistência');
     expect(viewState.coordinatedDecision?.confidenceText).toBe('Confiança alta');
-    expect(viewState.insights[1]?.title).toBe('Presta atenção');
+    expect(viewState.insights[0]?.title).toBe('Presta atenção');
+    expect(viewState.insights[1]?.target).toBe('connections');
     expect(viewState.coordinatedDecision?.protectedLater).toContain('sessão-chave');
   });
 
@@ -219,6 +291,35 @@ describe('dashboard-home-view-state', () => {
 
     expect(viewState.insights).toHaveLength(1);
     expect(viewState.insights[0]?.summary).toBe(duplicatedMessage);
+  });
+
+  it('uses the executive orchestration fields without repeating the same reasoning across hero and week cards', () => {
+    const viewState = buildDashboardHomeViewState(
+      makeInput({
+        orchestrationSummary: {
+          headline: 'Esta semana protege primeiro a consistência.',
+          detail: 'A carga foi redistribuída para manter a semana executável.',
+          heroHeadline: 'Hoje protege foco antes de carga.',
+          heroDetail: 'Reserva 10:30–12:00 para o bloco principal e empurra o resto para depois de almoço.',
+          insightSummary: 'A manhã está a fragmentar o melhor bloco de execução.',
+          weeklyHeadline: 'Esta semana protege primeiro a consistência.',
+          weeklyDetail: 'Reduzimos a pressão hoje para preservar a sessão forte e a janela de gravação.',
+          protectedLater: 'Isto mantém a sessão-chave de terça e a janela criativa de sexta.',
+          impacts: [
+            { id: 'training', domain: 'training', detail: 'Treino leve hoje.' },
+            { id: 'content', domain: 'content', detail: 'Janela de gravação preservada.' },
+          ],
+          watchouts: ['Não empurres o bloco profundo para o fim do dia.'],
+        },
+      }),
+      'pt-BR',
+    );
+
+    expect(viewState.hero.whyNow).toBe('Reserva 10:30–12:00 para o bloco principal e empurra o resto para depois de almoço.');
+    expect(viewState.insights[0]?.summary).toBe('A manhã está a fragmentar o melhor bloco de execução.');
+    expect(viewState.coordinatedWeek?.weeklyPosture).toBe('Esta semana protege primeiro a consistência.');
+    expect(viewState.coordinatedWeek?.summary).toBe('Reduzimos a pressão hoje para preservar a sessão forte e a janela de gravação.');
+    expect(viewState.coordinatedDecision?.reason).toBe('Reduzimos a pressão hoje para preservar a sessão forte e a janela de gravação.');
   });
 
   it('keeps explicit meta when the route marks the home contract as partial', () => {

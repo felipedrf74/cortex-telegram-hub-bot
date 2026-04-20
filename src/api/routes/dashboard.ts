@@ -9,14 +9,16 @@ import { getRuntimeStatus } from '../../services/runtime-status';
 import { getCached, setCache, getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { apiSuccess, sendError } from '../response-helpers';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
-import { getUserLanguage } from '../../services/user-service';
+import { getUserById, getUserByTelegramId, getUserLanguage } from '../../services/user-service';
 import { getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import {
   buildDashboardHomeViewState,
   type DashboardHomeBuildInput,
   type DashboardHomeOrchestrationSummary,
+  type HomeImpactDomain,
   type SecretaryPreviewItemModel,
+  type SkillAvailabilityModel,
 } from '../../services/dashboard-home-view-state';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
 import {
@@ -29,6 +31,8 @@ import {
 } from '../../services/outlook-calendar';
 import type { Lang } from '../../utils/i18n';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { checkTierAccess } from '../../services/skill-tiers';
+import { isSkillEnabled } from '../../services/user-skill-access';
 
 type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
 
@@ -360,9 +364,10 @@ async function buildDashboardPayload(userId: number, language: Lang) {
 }
 
 async function buildDashboardHomePayload(userId: number, language: Lang) {
+  const skillAvailability = buildHomeSkillAvailability(userId);
   const [dashboardResult, briefResult] = await Promise.allSettled([
     buildDashboardPayload(userId, language),
-    composeDailyBrief({ userId }),
+    composeDailyBrief({ userId, language }),
   ]);
 
   if (dashboardResult.status !== 'fulfilled') {
@@ -389,7 +394,7 @@ async function buildDashboardHomePayload(userId: number, language: Lang) {
     isStale: false,
     generatedAt: new Date().toISOString(),
     reasonCodes,
-  })), language);
+  }), skillAvailability), language);
 }
 
 function buildDashboardHomeInput(
@@ -397,6 +402,7 @@ function buildDashboardHomeInput(
   brief: Awaited<ReturnType<typeof composeDailyBrief>> | null,
   language: Lang,
   meta: DashboardHomeBuildInput['meta'],
+  skillAvailability: SkillAvailabilityModel,
 ): DashboardHomeBuildInput {
   const nextEvent = selectNextEvent(dashboard.calendar?.today ?? []);
   const secretaryItems = buildSecretaryPreviewItems(dashboard.calendar?.today ?? [], language);
@@ -425,6 +431,7 @@ function buildDashboardHomeInput(
     financeHeadline: buildFinanceHeadline(brief, language),
     financeSubline: buildFinanceSubline(brief),
     orchestrationSummary: buildHomeOrchestrationSummary(brief, language),
+    skillAvailability,
     warningMessages: buildDashboardHomeWarningMessages(dashboard, language),
     secretaryItems,
     secretarySummary: buildSecretarySummary({
@@ -436,6 +443,34 @@ function buildDashboardHomeInput(
     }),
     meta,
   };
+}
+
+function buildHomeSkillAvailability(userId: number): SkillAvailabilityModel {
+  const user = getUserById(userId) || getUserByTelegramId(userId);
+  const skills: HomeImpactDomain[] = ['secretary', 'training', 'cooking', 'content', 'finance'];
+  const availableSkills = skills.filter((skill) => hasHomeSkillAccess(userId, user, skill));
+  const hiddenSkills = skills.filter((skill) => !availableSkills.includes(skill));
+
+  return {
+    availableSkills,
+    hiddenSkills,
+    capabilityFlags: {
+      secretary: availableSkills.includes('secretary'),
+      training: availableSkills.includes('training'),
+      cooking: availableSkills.includes('cooking'),
+      content: availableSkills.includes('content'),
+      finance: availableSkills.includes('finance'),
+    },
+  };
+}
+
+function hasHomeSkillAccess(
+  userId: number,
+  user: { id: number; tier: string } | null | undefined,
+  skill: HomeImpactDomain,
+): boolean {
+  const skillId = skill === 'training' ? 'triathlon' : skill;
+  return checkTierAccess(user as any, skillId).allowed && isSkillEnabled(userId, skillId);
 }
 
 /** Read version from package.json (works with PM2, not just npm start) */
@@ -543,55 +578,134 @@ function buildSecretarySummary(opts: {
   );
 }
 
-function buildHomeOrchestrationSummary(
+export function buildHomeOrchestrationSummary(
   brief: Awaited<ReturnType<typeof composeDailyBrief>> | null,
   language: Lang,
 ): DashboardHomeOrchestrationSummary | null {
   if (!brief) return null;
+  const coordination = brief.coordination;
 
-  const impacts: DashboardHomeOrchestrationSummary['impacts'] = compactStrings([
-    secretaryImpact(brief, language),
-    trainingImpact(brief, language),
-    cookingImpact(brief, language),
-    contentImpact(brief, language),
-    financeImpact(brief, language),
-  ]).slice(0, 4);
+  const coordinationImpacts: DashboardHomeOrchestrationSummary['impacts'] = (coordination?.crossSkillImpacts ?? [])
+    .map((impact): DashboardHomeOrchestrationSummary['impacts'][number] => ({
+      id: impact.id,
+      domain: impact.skillId === 'secretary' ? 'secretary' : impact.skillId,
+      detail: impact.summary,
+    }))
+    .slice(0, 4);
+
+  const impacts: DashboardHomeOrchestrationSummary['impacts'] = (
+    coordinationImpacts.length > 0
+      ? coordinationImpacts
+      : compactStrings([
+        secretaryImpact(brief, language),
+        trainingImpact(brief, language),
+        cookingImpact(brief, language),
+        contentImpact(brief, language),
+        financeImpact(brief, language),
+      ])
+  ).slice(0, 4);
 
   if (impacts.length === 0) return null;
 
-  const headline = firstRenderable([
-    brief.creativeCopy.headline,
+  const weeklyHeadline = firstRenderable([
+    coordination?.weekOrchestration?.title ?? null,
+    coordination?.dayOrchestration?.title ?? null,
+    preferredFallbackWeeklyHeadline(brief),
     brief.day.headline,
-    brief.coordination.topPriority,
+    brief.creativeCopy.headline,
+    coordination?.topPriority ?? null,
   ]) ?? localizePT(language, 'O dia já foi coordenado para proteger o que importa agora.', 'The day was already coordinated to protect what matters now.');
 
-  const detail = firstRenderable([
+  const heroHeadline = firstRenderable([
+    coordination?.dayOrchestration?.title ?? null,
+    coordination?.nextBestAction?.title ?? null,
+    coordination?.topPriority ?? null,
+    brief.day.headline,
+    weeklyHeadline,
+  ]);
+
+  const heroDetail = firstRenderable([
+    coordination?.nextBestAction?.summary ?? null,
+    coordination?.blockers?.[0]?.summary ?? null,
+    coordination?.dayOrchestration?.summary ?? null,
     brief.conflicts[0]?.message ?? null,
     brief.day.secretary.tradeoffNote,
+    coordination?.watchouts?.[0] ?? null,
     brief.day.training.reason,
     brief.creativeCopy.note,
-    brief.coordination.watchouts[0] ?? null,
   ]) ?? localizePT(language, 'A coordenação está a alinhar agenda, treino e execução para reduzir atrito.', 'Coordination is aligning schedule, training, and execution to reduce friction.');
 
+  const weeklyDetail = firstRenderable([
+    coordination?.weekOrchestration?.summary ?? null,
+    coordination?.protectedBlocks?.[0]?.summary ?? null,
+    coordination?.handoffs?.[0] ?? null,
+    brief.creativeCopy.note,
+    heroDetail,
+  ]) ?? localizePT(language, 'A coordenação está a alinhar agenda, treino e execução para reduzir atrito.', 'Coordination is aligning schedule, training, and execution to reduce friction.');
+
+  const insightSummary = firstRenderable([
+    coordination?.blockers?.[0]?.summary ?? null,
+    coordination?.protectedBlocks?.[0]?.summary ?? null,
+    coordination?.watchouts?.[0] ?? null,
+    brief.conflicts[0]?.message ?? null,
+  ]);
+
   const protectedLater = firstRenderable([
-    brief.coordination.handoffs[0] ?? null,
+    coordination?.nextBestAction?.whyNow ?? null,
+    coordination?.protectedBlocks?.[0]?.summary ?? null,
+    coordination?.handoffs?.[0] ?? null,
     brief.day.content?.note?.trim() ?? null,
-    brief.coordination.executionOrder[0]
-      ? localizePT(
-          language,
-          `A sequência do dia protege ${brief.coordination.executionOrder[0]}.`,
-          `The day sequence is protecting ${brief.coordination.executionOrder[0]}.`,
-        )
-      : null,
   ]);
 
   return {
-    headline,
-    detail,
+    headline: weeklyHeadline,
+    detail: weeklyDetail,
     protectedLater,
+    heroHeadline,
+    heroDetail,
+    insightSummary,
+    weeklyHeadline,
+    weeklyDetail,
     impacts,
-    watchouts: compactStrings(brief.coordination.watchouts).slice(0, 2),
+    watchouts: compactStrings([
+      ...(coordination?.watchouts ?? []),
+      ...((coordination?.blockers ?? []).map((blocker) => blocker.title)),
+    ]).slice(0, 2),
   };
+}
+
+function preferredFallbackWeeklyHeadline(
+  brief: Awaited<ReturnType<typeof composeDailyBrief>>,
+): string | null {
+  const dayHeadline = brief.day.headline?.trim() ?? '';
+  const creativeHeadline = brief.creativeCopy.headline?.trim() ?? '';
+  const topPriority = brief.coordination.topPriority?.trim() ?? '';
+
+  if (!creativeHeadline) return dayHeadline || topPriority || null;
+  if (!dayHeadline) return creativeHeadline || topPriority || null;
+
+  const dayKey = normalizedHomeCopyKey(dayHeadline);
+  const creativeKey = normalizedHomeCopyKey(creativeHeadline);
+  const priorityKey = normalizedHomeCopyKey(topPriority);
+  const creativeExpandsDay =
+    dayKey.length > 0
+      && creativeKey.startsWith(dayKey)
+      && creativeHeadline.length > dayHeadline.length + 12;
+  const creativeExpandsPriority =
+    priorityKey.length > 0
+      && creativeKey.startsWith(priorityKey)
+      && creativeHeadline.length > topPriority.length + 12;
+
+  return creativeExpandsDay || creativeExpandsPriority ? creativeHeadline : dayHeadline;
+}
+
+function normalizedHomeCopyKey(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function buildDashboardHomeWarningMessages(

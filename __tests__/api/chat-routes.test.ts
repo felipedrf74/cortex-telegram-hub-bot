@@ -858,6 +858,41 @@ describe('Chat API routes', () => {
     ]);
   });
 
+  it('routes free-form Portuguese storage questions to cooking in the iOS chat flow', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'cooking',
+      method: 'keyword',
+      confidence: 0.94,
+      strippedMessage: 'Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias',
+    });
+    const { handleCooking } = await import('../../src/domains/cooking');
+    vi.mocked(handleCooking).mockResolvedValue({
+      text: 'Pode guardar a cenoura ralada num recipiente bem fechado com papel absorvente seco por 3 a 4 dias no frigorífico.',
+      domain: 'cooking',
+    });
+
+    const messageRes = await dispatch(
+      'POST',
+      '/message',
+      7001,
+      {
+        text: 'Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias',
+      },
+      {
+        'x-language': 'pt-BR',
+      },
+    );
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('cooking');
+    expect(messageRes.body.text).toContain('cenoura ralada');
+    expect(mockSetUserLanguage).toHaveBeenCalledWith(7001, 'pt-BR');
+    expect(vi.mocked(handleCooking)).toHaveBeenCalledWith(
+      'Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias',
+      7001,
+    );
+  });
+
   it('applies coach callbacks and clears buttons from the persisted message', async () => {
     mockGetCallback.mockReturnValue({ recommendationIds: ['evt-1'] });
     mockApplyCoachRecommendations.mockResolvedValue({

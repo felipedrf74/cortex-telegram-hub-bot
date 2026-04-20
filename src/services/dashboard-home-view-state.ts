@@ -40,6 +40,20 @@ export type HomeSemanticTint =
 
 export type HomeImpactDomain = 'secretary' | 'training' | 'cooking' | 'content' | 'finance';
 
+export interface SkillCapabilityFlags {
+  secretary: boolean;
+  training: boolean;
+  cooking: boolean;
+  content: boolean;
+  finance: boolean;
+}
+
+export interface SkillAvailabilityModel {
+  availableSkills: HomeImpactDomain[];
+  hiddenSkills: HomeImpactDomain[];
+  capabilityFlags: SkillCapabilityFlags;
+}
+
 export interface HomeActionModel {
   id: string;
   title: string;
@@ -96,6 +110,37 @@ export interface SecretaryPreviewModel {
   primaryAction: HomeActionModel;
 }
 
+export type CoordinatedWeekFallbackMode = 'default' | 'singleOutcome' | 'stableWeek' | 'insightPending';
+export type CoordinatedWeekVisibility = 'visible' | 'hidden';
+
+export interface CoordinatedOutcomeItem {
+  id: string;
+  skillId: HomeImpactDomain;
+  skillLabel: string;
+  icon: string;
+  tint: HomeSemanticTint;
+  decisionTitle: string;
+  impactSummary: string | null;
+  cta: HomeActionModel | null;
+  priority: number;
+}
+
+export interface CoordinatedWeekCardModel {
+  stateLabel: string | null;
+  title: string;
+  weeklyPosture: string;
+  summary: string;
+  confidenceText: string | null;
+  reasonsTitle: string | null;
+  reasons: string[];
+  outcomes: CoordinatedOutcomeItem[];
+  primaryAction: HomeActionModel;
+  secondaryAction: HomeActionModel | null;
+  skillAvailability: SkillAvailabilityModel;
+  visibility: CoordinatedWeekVisibility;
+  fallbackMode: CoordinatedWeekFallbackMode;
+}
+
 export interface CrossSkillImpactModel {
   id: string;
   domain: HomeImpactDomain;
@@ -137,6 +182,7 @@ export interface HomeViewState {
   metrics: QuickMetricModel[];
   quickActions: HomeActionModel[];
   secretaryPreview: SecretaryPreviewModel;
+  coordinatedWeek: CoordinatedWeekCardModel | null;
   coordinatedDecision: CoordinatedDecisionModel | null;
   skillQueue: SkillQueueItemModel[];
 }
@@ -145,6 +191,11 @@ export interface DashboardHomeOrchestrationSummary {
   headline: string;
   detail: string;
   protectedLater: string | null;
+  heroHeadline?: string | null;
+  heroDetail?: string | null;
+  insightSummary?: string | null;
+  weeklyHeadline?: string | null;
+  weeklyDetail?: string | null;
   impacts: Array<{
     id: string;
     domain: HomeImpactDomain;
@@ -174,6 +225,7 @@ export interface DashboardHomeBuildInput {
   financeHeadline: string;
   financeSubline: string | null;
   orchestrationSummary: DashboardHomeOrchestrationSummary | null;
+  skillAvailability?: SkillAvailabilityModel | null;
   warningMessages: string[];
   secretaryItems: SecretaryPreviewItemModel[];
   secretarySummary: string;
@@ -189,6 +241,7 @@ export function buildDashboardHomeViewState(
   const insights = buildInsights(state, input, language);
   const metrics = buildMetrics(input, language);
   const quickActions = buildQuickActions(state, input, language);
+  const coordinatedWeek = buildCoordinatedWeek(state, input, language);
   const secretaryPreview: SecretaryPreviewModel = {
     summary: input.secretarySummary,
     items: input.secretaryItems.slice(0, 3),
@@ -212,6 +265,7 @@ export function buildDashboardHomeViewState(
     metrics,
     quickActions,
     secretaryPreview,
+    coordinatedWeek,
     coordinatedDecision,
     skillQueue,
   };
@@ -240,18 +294,9 @@ function buildInsights(
 ): HomeInsightModel[] {
   const insights: HomeInsightModel[] = [];
 
-  if (input.warningMessages.length > 0) {
-    pushInsightIfDistinct(insights, {
-      id: 'sync-attention',
-      title: localizePT(language, 'Sincronização precisa de atenção', 'Sync needs attention'),
-      summary: input.warningMessages[0]!,
-      icon: 'exclamationmark.circle.fill',
-      tint: 'warning',
-      target: 'connections',
-    });
-  }
-
-  const watchout = input.orchestrationSummary?.watchouts?.[0] ?? null;
+  const watchout = input.orchestrationSummary?.insightSummary
+    ?? input.orchestrationSummary?.watchouts?.[0]
+    ?? null;
   if (watchout) {
     pushInsightIfDistinct(insights, {
       id: 'watchout',
@@ -260,6 +305,17 @@ function buildInsights(
       icon: 'eye.trianglebadge.exclamationmark',
       tint: state === 'highPerformance' ? 'info' : 'warning',
       target: state === 'recoveryProtected' ? 'training' : 'dayPlan',
+    });
+  }
+
+  if (input.warningMessages.length > 0) {
+    pushInsightIfDistinct(insights, {
+      id: 'sync-attention',
+      title: localizePT(language, 'Sincronização precisa de atenção', 'Sync needs attention'),
+      summary: input.warningMessages[0]!,
+      icon: 'exclamationmark.circle.fill',
+      tint: 'warning',
+      target: 'connections',
     });
   }
 
@@ -312,7 +368,14 @@ function classify(input: DashboardHomeBuildInput): HomeDayStateKind {
   const hasTraining = Boolean((input.trainingTitle ?? '').trim());
   const hasEvent = Boolean((input.nextEventTitle ?? '').trim());
   const hasWork = input.tasksDue + input.overdueTasks > 0;
-  const summaryText = [input.orchestrationSummary?.headline, input.orchestrationSummary?.detail]
+  const summaryText = [
+    input.orchestrationSummary?.heroHeadline,
+    input.orchestrationSummary?.heroDetail,
+    input.orchestrationSummary?.weeklyHeadline,
+    input.orchestrationSummary?.weeklyDetail,
+    input.orchestrationSummary?.headline,
+    input.orchestrationSummary?.detail,
+  ]
     .filter((value): value is string => Boolean(value))
     .join(' ')
     .toLowerCase();
@@ -349,6 +412,8 @@ function buildHero(
   const confidenceText = input.orchestrationSummary
     ? localizePT(language, 'Coordenação ativa', 'Active coordination')
     : null;
+  const heroHeadline = input.orchestrationSummary?.heroHeadline ?? input.orchestrationSummary?.headline ?? null;
+  const heroDetail = input.orchestrationSummary?.heroDetail ?? input.orchestrationSummary?.detail ?? null;
 
   let title: string;
   let summary: string;
@@ -364,7 +429,7 @@ function buildHero(
         'Há mais do que uma prioridade legítima a competir. O melhor passo agora é decidir a ordem sem dispersar o dia.',
         'There is more than one legitimate priority competing. The best move now is deciding the order without scattering the day.',
       );
-      whyNow = input.orchestrationSummary?.detail
+      whyNow = heroDetail
         ?? localizePT(language, 'Treino, agenda e execução estão a puxar ao mesmo tempo.', 'Training, schedule, and execution are pulling at the same time.');
       primaryAction = action(
         'hero-primary-plan',
@@ -392,7 +457,7 @@ function buildHero(
         'Há conflito real entre carga, agenda e trabalho. Vamos proteger o que importa sem deixar o dia partir em duas direções.',
         'There is a real conflict between load, schedule, and work. Let’s protect what matters without splitting the day in two directions.',
       );
-      whyNow = input.orchestrationSummary?.detail
+      whyNow = heroDetail
         ?? localizePT(language, 'Os sinais do dia já não suportam empurrar todas as frentes ao mesmo tempo.', 'Today’s signals no longer support pushing every front at once.');
       primaryAction = action(
         'hero-primary-training',
@@ -449,7 +514,7 @@ function buildHero(
         'A coordenação está a proteger consistência e recuperação antes de empurrar carga.',
         'Coordination is protecting consistency and recovery before pushing load.',
       );
-      whyNow = input.orchestrationSummary?.detail
+      whyNow = heroDetail
         ?? localizePT(language, 'Os sinais do dia pedem menos atrito.', 'Today’s signals call for less friction.');
       primaryAction = action(
         'hero-primary-training',
@@ -479,7 +544,7 @@ function buildHero(
       );
       whyNow = input.nextEventTitle
         ? localizePT(language, 'O próximo bloco já está definido e protegido.', 'The next block is already defined and protected.')
-        : input.orchestrationSummary?.detail ?? null;
+        : heroDetail;
       primaryAction = action(
         'hero-primary-train',
         localizePT(language, 'Entrar na sessão', 'Open session'),
@@ -537,7 +602,7 @@ function buildHero(
         'O essencial do dia já está coordenado. Agora é mais sobre execução limpa do que sobre replaneamento.',
         'The core of the day is already coordinated. Now it’s more about clean execution than replanning.',
       );
-      whyNow = input.orchestrationSummary?.headline ?? null;
+      whyNow = heroHeadline;
       primaryAction = action(
         'hero-primary-plan',
         localizePT(language, 'Ver próximo passo', 'See next step'),
@@ -565,7 +630,7 @@ function buildHero(
         'O dia está estável, com margem para cumprir o plano sem pressa nem ruído excessivo.',
         'The day is stable, with enough margin to follow the plan without rush or noise.',
       );
-      whyNow = input.orchestrationSummary?.detail ?? input.nextEventTitle ?? null;
+      whyNow = heroDetail ?? input.nextEventTitle ?? null;
       primaryAction = action(
         'hero-primary-next-step',
         localizePT(language, 'Ver próximo passo', 'See next step'),
@@ -707,6 +772,633 @@ function buildQuickActions(
   return actions.slice(0, 4).map((item, index) => ({ ...item, id: `${item.id}-${index}` }));
 }
 
+const ALL_HOME_SKILLS: HomeImpactDomain[] = ['secretary', 'training', 'cooking', 'content', 'finance'];
+
+interface CoordinatedOutcomeCandidate {
+  skillId: HomeImpactDomain;
+  decisionTitle: string;
+  impactSummary: string | null;
+  priority: number;
+  cta: HomeActionModel | null;
+}
+
+interface CoordinatedOutcomeProvider {
+  skillId: HomeImpactDomain;
+  build: (
+    state: HomeDayStateKind,
+    input: DashboardHomeBuildInput,
+    language: Lang,
+    skillAvailability: SkillAvailabilityModel,
+  ) => CoordinatedOutcomeCandidate | null;
+}
+
+const COORDINATED_OUTCOME_PROVIDERS: CoordinatedOutcomeProvider[] = [
+  {
+    skillId: 'secretary',
+    build: (_state, input, language, skillAvailability) => secretaryOutcomeCandidate(input, language, skillAvailability),
+  },
+  {
+    skillId: 'training',
+    build: (state, input, language, skillAvailability) => trainingOutcomeCandidate(state, input, language, skillAvailability),
+  },
+  {
+    skillId: 'content',
+    build: (_state, input, language, skillAvailability) => contentOutcomeCandidate(input, language, skillAvailability),
+  },
+  {
+    skillId: 'cooking',
+    build: (_state, input, language, skillAvailability) => cookingOutcomeCandidate(input, language, skillAvailability),
+  },
+  {
+    skillId: 'finance',
+    build: (_state, input, language, skillAvailability) => financeOutcomeCandidate(input, language, skillAvailability),
+  },
+];
+
+function buildCoordinatedWeek(
+  state: HomeDayStateKind,
+  input: DashboardHomeBuildInput,
+  language: Lang,
+): CoordinatedWeekCardModel {
+  const skillAvailability = resolveSkillAvailability(input);
+  const outcomes = rankCoordinatedOutcomes(
+    buildCoordinatedOutcomeCandidates(state, input, language, skillAvailability),
+  ).slice(0, 3);
+  const reasons = buildCoordinatedReasons(input, language, skillAvailability, outcomes);
+  const fallbackMode = coordinatedFallbackMode(input, outcomes);
+
+  return {
+    stateLabel: coordinatedStateLabel(state, language),
+    title: localizePT(language, 'Semana coordenada', 'Coordinated week'),
+    weeklyPosture: coordinatedWeeklyPosture(state, input, language, skillAvailability, outcomes),
+    summary: coordinatedWeekSummary(state, input, language, skillAvailability, outcomes, reasons),
+    confidenceText: coordinatedWeekConfidenceText(input, language, outcomes, reasons),
+    reasonsTitle: reasons.length > 0
+      ? localizePT(language, 'Sinais por trás disto', 'Signals behind this')
+      : null,
+    reasons,
+    outcomes,
+    primaryAction: action(
+      'coordination-week-primary',
+      localizePT(language, 'Abrir plano coordenado', 'Open coordinated plan'),
+      null,
+      'square.grid.2x2',
+      'accent',
+      'dayPlan',
+      'primary',
+    ),
+    secondaryAction: coordinatedSecondaryAction(outcomes),
+    skillAvailability,
+    visibility: 'visible',
+    fallbackMode,
+  };
+}
+
+function resolveSkillAvailability(input: DashboardHomeBuildInput): SkillAvailabilityModel {
+  if (input.skillAvailability) {
+    return normalizeSkillAvailability(input.skillAvailability);
+  }
+  return inferSkillAvailability(input);
+}
+
+function normalizeSkillAvailability(skillAvailability: SkillAvailabilityModel): SkillAvailabilityModel {
+  const available = dedupeDomains(skillAvailability.availableSkills);
+  const hidden = dedupeDomains(
+    skillAvailability.hiddenSkills.length > 0
+      ? skillAvailability.hiddenSkills
+      : ALL_HOME_SKILLS.filter((skill) => !available.includes(skill)),
+  );
+
+  return {
+    availableSkills: available,
+    hiddenSkills: hidden,
+    capabilityFlags: {
+      secretary: available.includes('secretary'),
+      training: available.includes('training'),
+      cooking: available.includes('cooking'),
+      content: available.includes('content'),
+      finance: available.includes('finance'),
+    },
+  };
+}
+
+function inferSkillAvailability(input: DashboardHomeBuildInput): SkillAvailabilityModel {
+  const available = new Set<HomeImpactDomain>(['secretary']);
+  for (const impact of input.orchestrationSummary?.impacts ?? []) {
+    available.add(impact.domain);
+  }
+
+  if (meaningfulTrainingHeadline(input.trainingTitle) || input.trainingStatus === 'degraded') {
+    available.add('training');
+  }
+  if (isMeaningfulContentHeadline(input.contentHeadline)) available.add('content');
+  if (isMeaningfulCookingHeadline(input.cookingHeadline)) available.add('cooking');
+  if (isMeaningfulFinanceHeadline(input.financeHeadline, input.financeSubline)) available.add('finance');
+
+  return normalizeSkillAvailability({
+    availableSkills: Array.from(available),
+    hiddenSkills: ALL_HOME_SKILLS.filter((skill) => !available.has(skill)),
+    capabilityFlags: {
+      secretary: available.has('secretary'),
+      training: available.has('training'),
+      cooking: available.has('cooking'),
+      content: available.has('content'),
+      finance: available.has('finance'),
+    },
+  });
+}
+
+function dedupeDomains(domains: HomeImpactDomain[]): HomeImpactDomain[] {
+  return Array.from(new Set(domains.filter((domain): domain is HomeImpactDomain => ALL_HOME_SKILLS.includes(domain))));
+}
+
+function buildCoordinatedOutcomeCandidates(
+  state: HomeDayStateKind,
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+): CoordinatedOutcomeItem[] {
+  const availableSkills = new Set(skillAvailability.availableSkills);
+  const candidates = compactItems(
+    COORDINATED_OUTCOME_PROVIDERS
+      .filter((provider) => availableSkills.has(provider.skillId))
+      .map((provider) => provider.build(state, input, language, skillAvailability)),
+  );
+
+  return candidates.map((candidate) => ({
+    id: candidate.skillId,
+    skillId: candidate.skillId,
+    skillLabel: domainLabel(candidate.skillId, language),
+    icon: coordinatedIcon(candidate.skillId),
+    tint: coordinatedTint(candidate.skillId),
+    decisionTitle: candidate.decisionTitle,
+    impactSummary: candidate.impactSummary,
+    cta: candidate.cta,
+    priority: candidate.priority,
+  }));
+}
+
+function secretaryOutcomeCandidate(
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+): CoordinatedOutcomeCandidate | null {
+  const impact = impactDetail(input.orchestrationSummary, 'secretary');
+  if (input.overdueTasks > 0) {
+    return {
+      skillId: 'secretary',
+      decisionTitle: quantifiedLabel(input.overdueTasks, language, 'tarefa atrasada', 'tarefas atrasadas', 'overdue task', 'overdue tasks'),
+      impactSummary: localizePT(language, 'Resolve o arrasto antes que ele coma o resto da semana.', 'Clear the drag before it eats the rest of the week.'),
+      priority: 94,
+      cta: action('coordination-secretary-tasks', localizePT(language, 'Abrir tarefas', 'Open tasks'), null, 'checkmark.circle', 'accent', 'tasks', 'secondary'),
+    };
+  }
+  if (input.tasksDue > 0) {
+    return {
+      skillId: 'secretary',
+      decisionTitle: quantifiedLabel(input.tasksDue, language, 'tarefa pede atenção', 'tarefas pedem atenção', 'task needs attention', 'tasks need attention'),
+      impactSummary: localizePT(language, 'Fecha pontas soltas sem apertar os próximos dias.', 'Close loose ends without squeezing the next days.'),
+      priority: 78,
+      cta: action('coordination-secretary-tasks', localizePT(language, 'Abrir tarefas', 'Open tasks'), null, 'checkmark.circle', 'accent', 'tasks', 'secondary'),
+    };
+  }
+  if (impact && !/agenda pronta|calendar ready/i.test(impact)) {
+    return {
+      skillId: 'secretary',
+      decisionTitle: normalizeSecretaryDecision(impact, language),
+      impactSummary: localizePT(language, 'Mantém a agenda mais limpa para o resto da semana.', 'Keeps the schedule cleaner for the rest of the week.'),
+      priority: 68,
+      cta: action('coordination-secretary-plan', localizePT(language, 'Abrir agenda', 'Open schedule'), null, 'calendar.badge.clock', 'secretary', 'dayPlan', 'secondary'),
+    };
+  }
+  return null;
+}
+
+function trainingOutcomeCandidate(
+  state: HomeDayStateKind,
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+): CoordinatedOutcomeCandidate | null {
+  const impact = impactDetail(input.orchestrationSummary, 'training');
+  const protectedLater = sanitizeCoordinationText(input.orchestrationSummary?.protectedLater ?? null, skillAvailability);
+  const shouldProtectRecovery =
+    input.trainingStatus === 'degraded'
+    || state === 'recoveryProtected'
+    || /recupera|descanso|leve|deload|light/i.test(impact ?? '');
+
+  if (shouldProtectRecovery) {
+    return {
+      skillId: 'training',
+      decisionTitle: localizePT(language, 'Recuperação protegida hoje', 'Recovery protected today'),
+      impactSummary: protectedLater
+        ?? localizePT(language, 'Protege a próxima sessão forte sem partir a consistência.', 'Protects the next strong session without breaking consistency.'),
+      priority: 100,
+      cta: action('coordination-training', localizePT(language, 'Abrir treino', 'Open training'), null, 'figure.run', 'training', 'training', 'secondary'),
+    };
+  }
+
+  const decisionTitle = firstRenderable([
+    normalizeTrainingDecision(impact, language),
+    meaningfulTrainingHeadline(input.trainingTitle),
+  ]);
+
+  if (!decisionTitle) return null;
+
+  return {
+    skillId: 'training',
+    decisionTitle,
+    impactSummary: protectedLater
+      ?? (input.trainingTime
+        ? localizePT(language, `Sessão alinhada para ${input.trainingTime}.`, `Session aligned for ${input.trainingTime}.`)
+        : localizePT(language, 'Mantém a consistência da semana sem subir a fricção.', 'Keeps weekly consistency without adding friction.')),
+    priority: impact ? 86 : 72,
+    cta: action('coordination-training', localizePT(language, 'Abrir treino', 'Open training'), null, 'figure.run', 'training', 'training', 'secondary'),
+  };
+}
+
+function contentOutcomeCandidate(
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+): CoordinatedOutcomeCandidate | null {
+  const impact = impactDetail(input.orchestrationSummary, 'content');
+  const decisionTitle = firstRenderable([
+    normalizeContentDecision(impact, input.contentSubline, input.contentHeadline, language),
+    meaningfulContentSummary(input.contentSubline),
+    meaningfulContentHeadline(input.contentHeadline),
+  ]);
+
+  if (!decisionTitle) return null;
+
+  return {
+    skillId: 'content',
+    decisionTitle,
+    impactSummary: sanitizeCoordinationText(input.orchestrationSummary?.protectedLater ?? null, skillAvailability)
+      ?? input.contentSubline
+      ?? localizePT(language, 'Melhor encaixe de energia e agenda para avançar.', 'Best schedule and energy fit to move forward.'),
+    priority: /janela|grava|window|film/i.test(`${decisionTitle} ${input.contentSubline ?? ''}`) ? 84 : 70,
+    cta: action('coordination-content', localizePT(language, 'Abrir conteúdo', 'Open content'), null, 'sparkles', 'content', 'contentRadar', 'secondary'),
+  };
+}
+
+function cookingOutcomeCandidate(
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  _skillAvailability: SkillAvailabilityModel,
+): CoordinatedOutcomeCandidate | null {
+  const impact = impactDetail(input.orchestrationSummary, 'cooking');
+  const decisionTitle = firstRenderable([
+    normalizeCookingDecision(impact, input.cookingHeadline, language),
+    meaningfulCookingHeadline(input.cookingHeadline),
+  ]);
+
+  if (!decisionTitle) return null;
+
+  return {
+    skillId: 'cooking',
+    decisionTitle,
+    impactSummary: input.cookingSubline
+      ?? localizePT(language, 'Mantém a execução simples e o custo da semana mais leve.', 'Keeps execution simple and the weekly cost lighter.'),
+    priority: /econ[oó]m|batch|meal prep/i.test(`${decisionTitle} ${input.cookingSubline ?? ''}`) ? 76 : 66,
+    cta: action('coordination-cooking', localizePT(language, 'Abrir refeição', 'Open meal'), null, 'fork.knife', 'cooking', 'cooking', 'secondary'),
+  };
+}
+
+function financeOutcomeCandidate(
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+): CoordinatedOutcomeCandidate | null {
+  const impact = impactDetail(input.orchestrationSummary, 'finance');
+  const decisionTitle = firstRenderable([
+    sanitizeCoordinationText(impact, skillAvailability),
+    meaningfulFinanceHeadline(input.financeHeadline, input.financeSubline),
+  ]);
+
+  if (!decisionTitle) return null;
+
+  return {
+    skillId: 'finance',
+    decisionTitle,
+    impactSummary: input.financeSubline
+      ?? localizePT(language, 'Mantém a pressão financeira visível sem barulho extra.', 'Keeps financial pressure visible without extra noise.'),
+    priority: 62,
+    cta: action('coordination-finance', localizePT(language, 'Abrir finanças', 'Open finances'), null, 'chart.line.uptrend.xyaxis', 'finance', 'finance', 'secondary'),
+  };
+}
+
+function rankCoordinatedOutcomes(outcomes: CoordinatedOutcomeItem[]): CoordinatedOutcomeItem[] {
+  return [...outcomes]
+    .sort((lhs, rhs) => rhs.priority - lhs.priority)
+    .filter((item, index, array) => array.findIndex((candidate) => candidate.skillId === item.skillId) === index);
+}
+
+function coordinatedWeeklyPosture(
+  state: HomeDayStateKind,
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+  outcomes: CoordinatedOutcomeItem[],
+): string {
+  const summaryHeadline = sanitizeCoordinationText(
+    input.orchestrationSummary?.weeklyHeadline
+      ?? input.orchestrationSummary?.headline
+      ?? null,
+    skillAvailability,
+  );
+  if (summaryHeadline) return summaryHeadline;
+
+  switch (state) {
+    case 'recoveryProtected':
+      return localizePT(language, 'Esta semana protege primeiro a consistência.', 'This week protects consistency first.');
+    case 'competingPriorities':
+      return localizePT(language, 'Esta semana define a ordem antes da intensidade.', 'This week sets the order before intensity.');
+    case 'crossSkillConflict':
+      return localizePT(language, 'Esta semana resolve conflito antes de acelerar.', 'This week resolves conflict before pushing.');
+    case 'overloaded':
+      return localizePT(language, 'Esta semana reduz atrito para manter o plano viável.', 'This week reduces friction to keep the plan viable.');
+    case 'highPerformance':
+      return localizePT(language, 'Esta semana aproveita as melhores janelas.', 'This week uses the best windows.');
+    case 'noNextAction':
+      return localizePT(language, 'Esta semana segue estável, sem ajustes fortes.', 'This week stays stable, with no strong adjustments.');
+    case 'planComplete':
+      return localizePT(language, 'Esta semana está alinhada e pronta para seguir.', 'This week is aligned and ready to keep moving.');
+    case 'calm':
+    default:
+      if (outcomes.length === 1) {
+        return localizePT(language, `Esta semana mantém ${outcomes[0]!.skillLabel.toLowerCase()} sob controlo.`, `This week keeps ${outcomes[0]!.skillLabel.toLowerCase()} under control.`);
+      }
+      return localizePT(language, 'Esta semana segue coordenada sem pressão extra.', 'This week stays coordinated without extra pressure.');
+  }
+}
+
+function coordinatedWeekSummary(
+  state: HomeDayStateKind,
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+  outcomes: CoordinatedOutcomeItem[],
+  reasons: string[],
+): string {
+  const detail = sanitizeCoordinationText(
+    input.orchestrationSummary?.weeklyDetail
+      ?? input.orchestrationSummary?.detail
+      ?? null,
+    skillAvailability,
+  );
+  if (detail) return detail;
+  if (reasons[0]) return reasons[0];
+  if (outcomes[0]?.impactSummary) return outcomes[0].impactSummary;
+  if (outcomes.length === 1) {
+    return localizePT(language, 'Este é o ajuste semanal que mais mexe com o teu plano agora.', 'This is the weekly adjustment that matters most right now.');
+  }
+  if (outcomes.length > 1) {
+    return localizePT(language, 'Os próximos ajustes já estão ordenados para proteger a semana sem criar ruído.', 'The next adjustments are already ordered to protect the week without adding noise.');
+  }
+  if (state === 'noNextAction' || state === 'calm' || state === 'planComplete') {
+    return localizePT(language, 'Esta semana está estável. Não foram precisos ajustes coordenados maiores.', 'This week is stable. No major coordinated adjustments were needed.');
+  }
+  return localizePT(language, 'Ainda não há um ajuste multi-skill forte para destacar aqui.', 'There is not yet a strong multi-skill adjustment to highlight here.');
+}
+
+function coordinatedWeekConfidenceText(
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  outcomes: CoordinatedOutcomeItem[],
+  reasons: string[],
+): string | null {
+  if (outcomes.length >= 3 || (outcomes.length >= 2 && reasons.length > 0)) {
+    return localizePT(language, 'Confiança alta', 'High confidence');
+  }
+  if (outcomes.length >= 1 || input.orchestrationSummary) {
+    return localizePT(language, 'Confiança moderada', 'Moderate confidence');
+  }
+  return null;
+}
+
+function coordinatedSecondaryAction(outcomes: CoordinatedOutcomeItem[]): HomeActionModel | null {
+  return outcomes.map((outcome) => outcome.cta).find((cta): cta is HomeActionModel => Boolean(cta && cta.target !== 'dayPlan')) ?? null;
+}
+
+function buildCoordinatedReasons(
+  input: DashboardHomeBuildInput,
+  language: Lang,
+  skillAvailability: SkillAvailabilityModel,
+  outcomes: CoordinatedOutcomeItem[],
+): string[] {
+  const outcomeKeys = new Set(
+    outcomes.flatMap((outcome) => [outcome.decisionTitle, outcome.impactSummary ?? ''].map(normalizedTextKey)),
+  );
+
+  return compactStrings([
+    sanitizeCoordinationText(
+      input.orchestrationSummary?.weeklyDetail
+        ?? input.orchestrationSummary?.detail
+        ?? null,
+      skillAvailability,
+    ),
+    ...(input.orchestrationSummary?.watchouts ?? []).map((reason) => sanitizeCoordinationText(reason, skillAvailability)),
+    sanitizeCoordinationText(input.orchestrationSummary?.protectedLater ?? null, skillAvailability),
+    fallbackReason(input, language),
+  ])
+    .filter((reason, index, array) => {
+      const key = normalizedTextKey(reason);
+      return key.length > 0
+        && !outcomeKeys.has(key)
+        && array.findIndex((candidate) => normalizedTextKey(candidate) === key) === index;
+    })
+    .slice(0, 3);
+}
+
+function fallbackReason(input: DashboardHomeBuildInput, language: Lang): string | null {
+  if ((input.readinessScore ?? 100) < 60 || input.trainingStatus === 'degraded') {
+    return localizePT(language, 'A recuperação caiu e o sistema abriu margem.', 'Recovery dropped and the system opened more room.');
+  }
+  if (input.overdueTasks > 0) {
+    return localizePT(language, 'Há tarefas em atraso a disputar prioridade com a agenda.', 'Overdue tasks are competing with the calendar for priority.');
+  }
+  return null;
+}
+
+function coordinatedFallbackMode(
+  input: DashboardHomeBuildInput,
+  outcomes: CoordinatedOutcomeItem[],
+): CoordinatedWeekFallbackMode {
+  if (outcomes.length >= 2) return 'default';
+  if (outcomes.length === 1) return 'singleOutcome';
+  if (input.orchestrationSummary || (input.warningMessages.length > 0)) return 'insightPending';
+  return 'stableWeek';
+}
+
+function impactDetail(
+  summary: DashboardHomeOrchestrationSummary | null,
+  domain: HomeImpactDomain,
+): string | null {
+  return summary?.impacts.find((impact) => impact.domain === domain)?.detail?.trim() || null;
+}
+
+function sanitizeCoordinationText(
+  text: string | null | undefined,
+  skillAvailability: SkillAvailabilityModel,
+): string | null {
+  const trimmed = text?.trim();
+  if (!trimmed) return null;
+  if (skillAvailability.hiddenSkills.some((skill) => hiddenSkillPattern(skill).test(trimmed))) {
+    return null;
+  }
+  return trimmed;
+}
+
+function hiddenSkillPattern(skill: HomeImpactDomain): RegExp {
+  switch (skill) {
+    case 'training':
+      return /\b(treino|training|corrida|run|bike|ride|swim|workout|recupera[çc][aã]o)\b/i;
+    case 'content':
+      return /\b(conte[uú]do|content|grava[çc][aã]o|roteiro|script|film|post)\b/i;
+    case 'cooking':
+      return /\b(cozinha|meal|refei[çc][aã]o|receita|recipe|batch)\b/i;
+    case 'finance':
+      return /\b(finanç|financial|budget|orçamento|tax|gasto|expense|darf)\b/i;
+    case 'secretary':
+      return /\b(secretaria|agenda|calendar|task|tarefa)\b/i;
+  }
+}
+
+function normalizedTextKey(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function coordinatedIcon(domain: HomeImpactDomain): string {
+  switch (domain) {
+    case 'secretary': return 'calendar.badge.clock';
+    case 'training': return 'figure.run';
+    case 'content': return 'sparkles';
+    case 'cooking': return 'fork.knife';
+    case 'finance': return 'chart.line.uptrend.xyaxis';
+  }
+}
+
+function coordinatedTint(domain: HomeImpactDomain): HomeSemanticTint {
+  switch (domain) {
+    case 'secretary': return 'secretary';
+    case 'training': return 'training';
+    case 'content': return 'content';
+    case 'cooking': return 'cooking';
+    case 'finance': return 'finance';
+  }
+}
+
+function normalizeSecretaryDecision(detail: string, language: Lang): string {
+  if (/foco|focus/i.test(detail)) {
+    return localizePT(language, 'Bloco de foco preservado', 'Focus block preserved');
+  }
+  if (/reajustad|adjusted/i.test(detail)) {
+    return localizePT(language, 'Agenda reajustada hoje', 'Schedule adjusted today');
+  }
+  return detail;
+}
+
+function normalizeTrainingDecision(detail: string | null, language: Lang): string | null {
+  if (!detail) return null;
+  if (/menos carga|leve|recupera|descanso|deload|light/i.test(detail)) {
+    return localizePT(language, 'Recuperação protegida hoje', 'Recovery protected today');
+  }
+  if (/coordinated|alinhado/i.test(detail)) {
+    return localizePT(language, 'Sessão preservada para hoje', 'Session preserved for today');
+  }
+  return detail;
+}
+
+function normalizeContentDecision(
+  detail: string | null,
+  subline: string | null,
+  headline: string,
+  language: Lang,
+): string | null {
+  const candidate = firstRenderable([detail, subline, headline]);
+  if (!candidate) return null;
+  if (/bloco de conte[uú]do|content block/i.test(candidate)) {
+    return localizePT(language, 'Janela de gravação preservada', 'Filming window preserved');
+  }
+  if (/conte[uú]do alinhado|content aligned/i.test(candidate)) {
+    return null;
+  }
+  return candidate;
+}
+
+function normalizeCookingDecision(detail: string | null, headline: string, language: Lang): string | null {
+  const candidate = firstRenderable([detail, headline]);
+  if (!candidate) return null;
+  if (/refei[çc][aã]o alinhada|meal aligned/i.test(candidate)) {
+    return localizePT(language, '1 refeição alinhada para a semana', '1 meal aligned for the week');
+  }
+  return candidate;
+}
+
+function meaningfulTrainingHeadline(title: string | null): string | null {
+  const trimmed = title?.trim();
+  if (!trimmed || /sem sessão|unavailable|indispon/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function meaningfulContentHeadline(headline: string): string | null {
+  const trimmed = headline.trim();
+  if (!trimmed || /nenhuma ideia|no ideas yet|radar ready|sem ideias|conte[uú]do alinhado/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function meaningfulContentSummary(subline: string | null): string | null {
+  const trimmed = subline?.trim();
+  if (!trimmed) return null;
+  return /janela|grava|window|film|public/i.test(trimmed) ? trimmed : null;
+}
+
+function meaningfulCookingHeadline(headline: string): string | null {
+  const trimmed = headline.trim();
+  if (!trimmed || /planear refei|sem refei|meals ready/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function isMeaningfulCookingHeadline(headline: string): boolean {
+  return meaningfulCookingHeadline(headline) != null;
+}
+
+function meaningfulFinanceHeadline(headline: string, subline: string | null): string | null {
+  const trimmed = compactStrings([subline, headline])[0] ?? null;
+  if (!trimmed) return null;
+  if (/^€?\s*0\b/.test(headline.trim()) && !subline?.trim()) return null;
+  if (/sem dados|unavailable|indispon/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function isMeaningfulFinanceHeadline(headline: string, subline: string | null): boolean {
+  return meaningfulFinanceHeadline(headline, subline) != null;
+}
+
+function isMeaningfulContentHeadline(headline: string): boolean {
+  return meaningfulContentHeadline(headline) != null;
+}
+
+function compactItems<T>(items: Array<T | null | undefined>): T[] {
+  return items.filter((item): item is T => item != null);
+}
+
+function compactStrings(values: Array<string | null | undefined>): string[] {
+  return values
+    .map((value) => value?.trim() ?? '')
+    .filter((value): value is string => value.length > 0);
+}
+
+function firstRenderable(values: Array<string | null | undefined>): string | null {
+  return compactStrings(values)[0] ?? null;
+}
+
 function buildDecision(
   state: HomeDayStateKind,
   input: DashboardHomeBuildInput,
@@ -714,14 +1406,15 @@ function buildDecision(
 ): CoordinatedDecisionModel | null {
   const summary = input.orchestrationSummary;
   if (!summary) return null;
+  const decisionSummary = preferredCoordinatedDecisionSummary(summary);
 
   return {
     stateLabel: coordinatedStateLabel(state, language),
     title: localizePT(language, 'Coordenação do dia', 'Daily coordination'),
-    summary: summary.headline,
+    summary: decisionSummary,
     confidenceText: coordinatedConfidenceText(state, summary, language),
     reasonTitle: localizePT(language, 'Porque', 'Why'),
-    reason: summary.detail,
+    reason: summary.weeklyDetail ?? summary.detail,
     protectedTitle: summary.protectedLater
       ? localizePT(language, 'O que isto protege', 'What this protects')
       : null,
@@ -751,6 +1444,23 @@ function buildDecision(
       'secondary',
     ),
   };
+}
+
+function preferredCoordinatedDecisionSummary(summary: DashboardHomeOrchestrationSummary): string {
+  const headline = firstRenderable([summary.weeklyHeadline, summary.headline]);
+  const detail = firstRenderable([summary.weeklyDetail, summary.detail]);
+
+  if (!headline) return detail ?? '';
+  if (!detail) return headline;
+
+  const headlineKey = normalizedTextKey(headline);
+  const detailKey = normalizedTextKey(detail);
+  const detailIsExpandedHeadline =
+    headlineKey.length > 0
+      && detailKey.startsWith(headlineKey)
+      && detail.length > headline.length + 12;
+
+  return detailIsExpandedHeadline ? detail : headline;
 }
 
 function buildSkillQueue(

@@ -116,6 +116,22 @@ function getFastPathLabels(userId?: number): ReturnType<typeof labelsForLanguage
   }
 }
 
+function getFastPathLanguage(userId?: number): string {
+  if (userId == null) {
+    return 'en-US';
+  }
+  try {
+    return getUserLanguage(userId);
+  } catch (err) {
+    logger.debug({ err, userId }, 'fast-path language lookup unavailable, falling back to English copy');
+    return 'en-US';
+  }
+}
+
+function fastPathCopy(userId: number | undefined, pt: string, en: string): string {
+  return getFastPathLanguage(userId).toLowerCase().startsWith('pt') ? pt : en;
+}
+
 /**
  * Try to handle a chat message via the deterministic fast-path.
  *
@@ -194,19 +210,20 @@ export async function tryDeterministicChatCommand(
 async function handleTodos(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   const defaultList = await taskProvider.getDefaultList();
   if (!defaultList) {
-    return { text: '⚠️ Default list not found. Use /lists to see available lists.', domain: 'secretary' };
+    return { text: copy('⚠️ Lista predefinida não encontrada. Usa /lists para ver as listas disponíveis.', '⚠️ Default list not found. Use /lists to see available lists.'), domain: 'secretary' };
   }
 
   const result = await taskProvider.getTasks(defaultList.id, defaultList.displayName, { status: 'notStarted' });
   if (!result.success) {
-    return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   return {
-    text: formatMsTodoTasks(result.data, defaultList.displayName),
+    text: formatMsTodoTasks(result.data, defaultList.displayName, getFastPathLanguage(userId)),
     domain: 'secretary',
     buttons: buildTaskActionButtons(result.data, labels),
   };
@@ -215,14 +232,15 @@ async function handleTodos(labels: ReturnType<typeof labelsForLanguage>, userId?
 async function handleLists(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   const result = await taskProvider.getLists();
   if (!result.success) {
-    return { text: `⚠️ Failed to fetch lists: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter listas', 'Failed to fetch lists')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   return {
-    text: formatMsTodoLists(result.data),
+    text: formatMsTodoLists(result.data, getFastPathLanguage(userId)),
     domain: 'secretary',
     buttons: buildListSelectionButtons(result.data, labels),
   };
@@ -231,12 +249,13 @@ async function handleLists(labels: ReturnType<typeof labelsForLanguage>, userId?
 async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   // Use date-portion comparison in the configured timezone to avoid MS Graph
   // timezone ambiguity (their dueDateTime is stored as a naked datetime).
   const tasksResult = await getPendingTasksCached(taskProvider, userId);
   if (!tasksResult.success) {
-    return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(tasksResult.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(tasksResult.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   const todayStr = nowDateInTimezone();
@@ -246,10 +265,10 @@ async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, user
   });
 
   if (dueToday.length === 0) {
-    return { text: '📅 No tasks due today.', domain: 'secretary' };
+    return { text: copy('📅 Sem tarefas para hoje.', '📅 No tasks due today.'), domain: 'secretary' };
   }
 
-  let msg = `<b>📅 Due Today (${dueToday.length})</b>\n\n`;
+  let msg = `${copy(`<b>📅 Para hoje (${dueToday.length})</b>`, `<b>📅 Due Today (${dueToday.length})</b>`)}\n\n`;
   for (const t of dueToday) {
     const imp = t.importance !== 'normal' ? ` ${t.importance === 'high' ? '🔴' : '🟢'}` : '';
     msg += `⬜${imp} ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
@@ -265,10 +284,11 @@ async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, user
 async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   const tasksResult = await getPendingTasksCached(taskProvider, userId);
   if (!tasksResult.success) {
-    return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(tasksResult.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(tasksResult.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   const todayStr = nowDateInTimezone();
@@ -278,12 +298,12 @@ async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userI
   });
 
   if (overdue.length === 0) {
-    return { text: "✅ No overdue tasks. You're on track!", domain: 'secretary' };
+    return { text: copy('✅ Sem tarefas atrasadas. Está tudo em dia!', "✅ No overdue tasks. You're on track!"), domain: 'secretary' };
   }
 
-  let msg = `<b>⚠️ Overdue Tasks (${overdue.length})</b>\n\n`;
+  let msg = `${copy(`<b>⚠️ Tarefas atrasadas (${overdue.length})</b>`, `<b>⚠️ Overdue Tasks (${overdue.length})</b>`)}\n\n`;
   for (const t of overdue) {
-    msg += `⚠️ ${escapeHtml(t.title)} — was due ${formatDate(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    msg += `⚠️ ${escapeHtml(t.title)} — ${copy('estava prevista para', 'was due')} ${formatDate(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
   }
 
   return {
@@ -296,20 +316,21 @@ async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userI
 async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   const result = await taskProvider.getTasksDueInRange(startOfWeek(), endOfWeek());
   if (!result.success) {
-    return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   if (result.data.length === 0) {
-    return { text: '📅 No tasks due this week.', domain: 'secretary' };
+    return { text: copy('📅 Sem tarefas previstas para esta semana.', '📅 No tasks due this week.'), domain: 'secretary' };
   }
 
-  let msg = `<b>📅 Due This Week (${result.data.length})</b>\n\n`;
+  let msg = `${copy(`<b>📅 Esta semana (${result.data.length})</b>`, `<b>📅 Due This Week (${result.data.length})</b>`)}\n\n`;
   for (const t of result.data) {
     const imp = t.importance !== 'normal' ? ` ${t.importance === 'high' ? '🔴' : '🟢'}` : '';
-    msg += `⬜${imp} ${escapeHtml(t.title)} — due ${formatDateTime(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
+    msg += `⬜${imp} ${escapeHtml(t.title)} — ${copy('vence', 'due')} ${formatDateTime(t.dueDateTime!)} <i>[${escapeHtml(t.listName)}]</i>\n`;
   }
 
   return {
@@ -322,14 +343,15 @@ async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userI
 async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   const result = await getPendingTasksCached(taskProvider, userId);
   if (!result.success) {
-    return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(result.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(result.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   return {
-    text: formatAllTasks(result.data),
+    text: formatAllTasks(result.data, getFastPathLanguage(userId)),
     domain: 'secretary',
     buttons: buildTaskActionButtons(result.data, labels),
   };
@@ -338,10 +360,11 @@ async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, user
 async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
 
   const pendingResult = await getPendingTasksCached(taskProvider, userId);
   if (!pendingResult.success) {
-    return { text: `⚠️ Failed to fetch tasks: ${escapeHtml(pendingResult.error || 'unknown error')}`, domain: 'secretary' };
+    return { text: `⚠️ ${copy('Falha ao obter tarefas', 'Failed to fetch tasks')}: ${escapeHtml(pendingResult.error || copy('erro desconhecido', 'unknown error'))}`, domain: 'secretary' };
   }
 
   const pending = pendingResult.data;
@@ -362,13 +385,14 @@ async function handleTodoSummary(labels: ReturnType<typeof labelsForLanguage>, u
       highPriorityCount: highPriority.length,
       overdueTasks: overdue,
       dueTodayTasks: dueToday,
-    }),
+    }, getFastPathLanguage(userId)),
     domain: 'secretary',
     buttons: buildSecretaryQuickActionButtons(labels),
   };
 }
 
 async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
   let msg = `<b>📅 ${now().toFormat('cccc, LLLL dd yyyy')}</b>\n\n`;
 
   // Calendar events today
@@ -376,7 +400,7 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, u
     try {
       const events = await getEvents(startOfDay(), endOfDay(), userId);
       if (events.length === 0) {
-        msg += 'No events scheduled today.\n';
+        msg += `${copy('Sem eventos agendados para hoje.', 'No events scheduled today.')}\n`;
       } else {
         for (const e of events) {
           const src = (e as any).source === 'outlook' ? ' 📧' : '';
@@ -385,7 +409,7 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, u
       }
     } catch (err) {
       logger.warn({ err }, 'fast-path day overview: calendar fetch failed');
-      msg += 'Calendar unavailable.\n';
+      msg += `${copy('Calendário indisponível.', 'Calendar unavailable.')}\n`;
     }
   }
 
@@ -398,7 +422,7 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, u
         const todayStr = nowDateInTimezone();
         const dueToday = pendingResult.data.filter((t) => dueDateInTimezone(t.dueDateTime) === todayStr);
         if (dueToday.length > 0) {
-          msg += `\n📋 Due today (${dueToday.length}):\n`;
+          msg += `\n${copy(`📋 Para hoje (${dueToday.length}):`, `📋 Due today (${dueToday.length}):`)}\n`;
           for (const t of dueToday) {
             msg += `- ${escapeHtml(t.title)} <i>[${escapeHtml(t.listName)}]</i>\n`;
           }
@@ -417,14 +441,15 @@ async function handleDayOverview(labels: ReturnType<typeof labelsForLanguage>, u
 }
 
 async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
-  let msg = `<b>📅 Week Overview</b>\n`;
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
+  let msg = `${copy('<b>📅 Vista da semana</b>', '<b>📅 Week Overview</b>')}\n`;
   msg += `${now().startOf('week').toFormat('LLL dd')} - ${now().endOf('week').toFormat('LLL dd yyyy')}\n\n`;
 
   if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
     try {
       const events = await getEvents(startOfWeek(), endOfWeek(), userId);
       if (events.length === 0) {
-        msg += 'No events this week.\n';
+        msg += `${copy('Sem eventos esta semana.', 'No events this week.')}\n`;
       } else {
         let currentDay = '';
         for (const e of events) {
@@ -439,7 +464,7 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, 
       }
     } catch (err) {
       logger.warn({ err }, 'fast-path week overview: calendar fetch failed');
-      msg += 'Calendar unavailable.\n';
+      msg += `${copy('Calendário indisponível.', 'Calendar unavailable.')}\n`;
     }
   }
 
@@ -448,7 +473,7 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, 
     try {
       const pendingResult = await getPendingTasksCached(taskProvider, userId);
       if (pendingResult.success && pendingResult.data.length > 0) {
-        msg += `\n📋 Pending tasks: ${pendingResult.data.length}\n`;
+        msg += `\n${copy(`📋 Tarefas pendentes: ${pendingResult.data.length}`, `📋 Pending tasks: ${pendingResult.data.length}`)}\n`;
       }
     } catch (err) {
       logger.warn({ err }, 'fast-path week overview: todo fetch failed');
@@ -463,7 +488,8 @@ async function handleWeekOverview(labels: ReturnType<typeof labelsForLanguage>, 
 }
 
 async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult> {
-  let msg = '<b>📊 Status Overview</b>\n\n';
+  const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
+  let msg = `${copy('<b>📊 Estado geral</b>', '<b>📊 Status Overview</b>')}\n\n`;
 
   // Microsoft To Do
   const taskProvider = getFastPathTaskProvider(userId);
@@ -472,32 +498,32 @@ async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId
       const pendingResult = await getPendingTasksCached(taskProvider, userId);
       if (pendingResult.success) {
         const highPriority = pendingResult.data.filter((t) => t.importance === 'high');
-        msg += `📋 Microsoft To Do: ${pendingResult.data.length} pending tasks\n`;
+        msg += `📋 Microsoft To Do: ${copy(`${pendingResult.data.length} tarefas pendentes`, `${pendingResult.data.length} pending tasks`)}\n`;
         if (highPriority.length > 0) {
-          msg += `🔴 High priority: ${highPriority.length}\n`;
+          msg += `${copy(`🔴 Alta prioridade: ${highPriority.length}`, `🔴 High priority: ${highPriority.length}`)}\n`;
         }
       }
     } catch (err) {
       logger.warn({ err }, 'fast-path status: todo fetch failed');
-      msg += '📋 Microsoft To Do: unavailable\n';
+      msg += `${copy('📋 Microsoft To Do: indisponível', '📋 Microsoft To Do: unavailable')}\n`;
     }
   } else {
-    msg += '📋 Microsoft To Do: not configured\n';
+    msg += `${copy('📋 Microsoft To Do: não configurado', '📋 Microsoft To Do: not configured')}\n`;
   }
 
   const reminders = userId != null ? getActiveReminders(userId) : [];
-  msg += `⏰ Active reminders: ${reminders.length}\n`;
+  msg += `${copy(`⏰ Lembretes ativos: ${reminders.length}`, `⏰ Active reminders: ${reminders.length}`)}\n`;
 
   if (userId != null ? hasConnectedCalendarForUser(userId) : isAnyCalendarConfigured()) {
     try {
       const events = await getEvents(startOfDay(), endOfDay(), userId);
-      msg += `📅 Events today: ${events.length}\n`;
+      msg += `${copy(`📅 Eventos hoje: ${events.length}`, `📅 Events today: ${events.length}`)}\n`;
     } catch (err) {
       logger.warn({ err }, 'fast-path status: calendar fetch failed');
-      msg += '📅 Calendar: unavailable\n';
+      msg += `${copy('📅 Calendário: indisponível', '📅 Calendar: unavailable')}\n`;
     }
   } else {
-    msg += '📅 Calendar: not configured\n';
+    msg += `${copy('📅 Calendário: não configurado', '📅 Calendar: not configured')}\n`;
   }
 
   if (userId != null && isAnyMailConfiguredForUser(userId)) {
@@ -507,10 +533,10 @@ async function handleStatus(labels: ReturnType<typeof labelsForLanguage>, userId
         unread.outlookUnread != null ? `Outlook ${unread.outlookUnread}` : null,
         unread.gmailUnread != null ? `Gmail ${unread.gmailUnread}` : null,
       ].filter(Boolean).join(' | ');
-      msg += `📧 Inbox unread: ${unread.totalUnread}${providerBreakdown ? ` (${providerBreakdown})` : ''}\n`;
+      msg += `${copy(`📧 Inbox por ler: ${unread.totalUnread}`, `📧 Inbox unread: ${unread.totalUnread}`)}${providerBreakdown ? ` (${providerBreakdown})` : ''}\n`;
     } catch (err) {
       logger.warn({ err }, 'fast-path status: unified mail unread failed');
-      msg += '📧 Inbox: unavailable\n';
+      msg += `${copy('📧 Inbox: indisponível', '📧 Inbox: unavailable')}\n`;
     }
   }
 

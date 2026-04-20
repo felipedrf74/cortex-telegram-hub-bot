@@ -173,13 +173,19 @@ async function buildTrainingBusyFallback(language: string, userId: number): Prom
 async function buildSecretaryBusyFallback(language: string, userId: number): Promise<string | null> {
   try {
     const [brief, mailSummary] = await Promise.all([
-      composeDailyBrief({ userId }),
+      composeDailyBrief({ userId, language }),
       getUnreadMailSummaryForUser(userId).catch(() => null),
     ]);
 
-    const topPriority = brief.coordination.topPriority ?? brief.day.secretary.priorityNote;
-    const executionOrder = brief.coordination.executionOrder.slice(0, 3);
-    const watchout = brief.coordination.watchouts[0] ?? brief.day.secretary.tradeoffNote ?? null;
+    const coordination = brief.coordination;
+    const topPriority = coordination?.nextBestAction?.title
+      ?? coordination?.topPriority
+      ?? brief.day.secretary.priorityNote;
+    const executionOrder = coordination?.executionOrder?.slice(0, 3) ?? [];
+    const watchout = coordination?.blockers?.[0]?.summary
+      ?? coordination?.watchouts?.[0]
+      ?? brief.day.secretary.tradeoffNote
+      ?? null;
     const unreadLine = mailSummary && mailSummary.totalUnread > 0
       ? (isEnglish(language)
         ? `Inbox pressure: ${mailSummary.totalUnread} unread email(s).`

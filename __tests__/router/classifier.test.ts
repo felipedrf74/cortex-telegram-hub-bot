@@ -386,6 +386,9 @@ describe('keywordMatch — Tier 2 NL Routing', () => {
       expect(keywordMatch('cria 3 ideias de snacks para antes do treino')).toBe('cooking');
       expect(keywordMatch('adapt my meals for a lighter recovery day')).toBe('cooking');
       expect(keywordMatch('build me a Monday to Sunday menu focused on performance')).toBe('cooking');
+      expect(keywordMatch('como conservo cenoura ralada na geladeira por vários dias?')).toBe('cooking');
+      expect(keywordMatch('Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias')).toBe('cooking');
+      expect(keywordMatch('how do I store grated carrot in the fridge for a few days?')).toBe('cooking');
     });
   });
 
@@ -627,6 +630,26 @@ describe('routeMessage — Three-Tier Routing Integration', () => {
       const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Tomorrow is your hard workout day.' };
 
       const result = await routeMessage('what should I eat before a hard workout tomorrow morning?', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('cooking');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('storage-style cooking questions break out of an active secretary thread', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
+      const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };
+
+      const result = await routeMessage('como conservo cenoura ralada na geladeira por vários dias?', context);
+      expect(result.method).toBe('keyword');
+      expect(result.domain).toBe('cooking');
+      expect(mockClassifyMessage).not.toHaveBeenCalled();
+    });
+
+    it('full polite Portuguese cooking phrasing still breaks out of an active secretary thread', async () => {
+      mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.91 });
+      const context = { domain: 'secretary' as const, lastAssistantMessage: 'Here is your task summary.' };
+
+      const result = await routeMessage('Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias', context);
       expect(result.method).toBe('keyword');
       expect(result.domain).toBe('cooking');
       expect(mockClassifyMessage).not.toHaveBeenCalled();

@@ -38,6 +38,7 @@ import { runVoiceEvolutionAgent } from '../agents/voice-evolution-agent';
 import { expireStaleSignals } from './intelligence-bus';
 import { seedBooksIfEmpty } from '../commands/books';
 import { runAutoresearch, getScheduledTarget } from './autoresearch';
+import { getUserLanguage } from './user-service';
 import { runDatabaseBackup, weeklyRestoreTest } from './backup';
 import { getDb } from './database';
 import { listActiveFiscalCollectionProfiles } from '../state/fiscal-collection-profiles';
@@ -1580,7 +1581,7 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
   };
   for (const target of getActiveUserTargets()) {
     const data = await buildDailyBriefingDataForUser(target.tenantId);
-    const msg = formatDailyBriefing(data);
+    const msg = formatDailyBriefing(data, getUserLanguage(target.tenantId));
     const chunks = splitMessage(msg);
 
     // ── Store durable report + push (April 2026) ────────────────────

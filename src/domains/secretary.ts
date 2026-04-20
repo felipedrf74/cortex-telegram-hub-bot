@@ -31,6 +31,7 @@ import {
 import { getTaskProviderForUser } from '../services/task-store/task-router';
 import { composeDailyBrief } from '../services/daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../services/unified-mail-pressure';
+import { getUserLanguage } from '../services/user-service';
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -72,6 +73,8 @@ export function _resetStateContextCacheForTesting(): void {
 async function buildStateContext(message: string = '', userId?: number): Promise<string> {
   const scopedUserId = typeof userId === 'number' ? userId : null;
   const hasUserScope = scopedUserId !== null;
+  const contextLanguage = resolveSecretaryContextLanguage(scopedUserId);
+  const copy = secretaryStateContextCopy(contextLanguage);
   // Check which sub-skills are enabled to skip unnecessary API calls
   const tasksEnabled = isSubmoduleEnabled('secretary', 'tasks');
   const calendarEnabled = isSubmoduleEnabled('secretary', 'calendar');
@@ -90,7 +93,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
     email: intent.ambiguous || intent.email,
     reminders: intent.ambiguous || intent.reminders || intent.tasks, // reminders are cheap, often paired with tasks
     garmin: intent.ambiguous || intent.garmin,
-    planner: intent.ambiguous || /\b(plan|prioriti[sz]e|priority|first|focus|fit|reschedul|schedule|organi[sz]e|tradeoff|handoff|what should i do|what do i do first|how do i fit)\b/i.test(message),
+    planner: intent.ambiguous || /\b(plan|prioriti[sz]e|priority|first|focus|fit|reschedul|schedule|organi[sz]e|tradeoff|handoff|what should i do|what do i do first|how do i fit|o que faço primeiro|o que devo fazer primeiro|o que devo priorizar(?: hoje)?|o que priorizo(?: hoje)?|qual(?: é| a)? prioridade(?: hoje)?|prioriza o meu dia|priorizar o meu dia|prioriza meu dia|priorizar meu dia|organiza o meu dia|organiza meu dia|como encaixo)\b/i.test(message),
   };
   const taskProvider = hasUserScope && needs.tasks && tasksEnabled
     ? getTaskProviderForUser(scopedUserId)
@@ -107,7 +110,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
 
   // Cache key = userId + context shape — prevents cross-user leakage
   const shape = `${needs.tasks ? 't' : ''}${needs.calendar ? 'c' : ''}${needs.email ? 'e' : ''}${needs.reminders ? 'r' : ''}${needs.garmin ? 'g' : ''}${needs.planner ? 'p' : ''}`;
-  const cacheKey = `${hasUserScope ? scopedUserId : 'anon'}:${shape}`;
+  const cacheKey = `${hasUserScope ? scopedUserId : 'anon'}:${shape}:${contextLanguage}`;
 
   const cached = _stateContextCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
@@ -115,7 +118,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
   }
 
   const parts: string[] = [];
-  parts.push(`Today: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
+  parts.push(`${copy.todayLabel}: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
 
   // Build date range for Garmin: last 3 days
   const today = now();
@@ -141,7 +144,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
       ? getBodyBatteryEventsForUser(scopedUserId, todayStr).catch(() => null)
       : Promise.resolve(null),
     hasUserScope && needs.planner
-      ? composeDailyBrief({ userId: scopedUserId }).catch(() => null)
+      ? composeDailyBrief({ userId: scopedUserId, language: contextLanguage }).catch(() => null)
       : Promise.resolve(null),
     hasUserScope ? buildSharedDecisionContext(DOMAIN, scopedUserId).catch(() => '') : Promise.resolve(''),
     hasUserScope ? buildSharedDecisionContracts(DOMAIN, scopedUserId).catch(() => ({} as SharedDecisionContracts)) : Promise.resolve({} as SharedDecisionContracts),
@@ -178,33 +181,35 @@ async function buildStateContext(message: string = '', userId?: number): Promise
         .map(([name, { id, count }]) => `${name}(${count}) list_id:${id}`)
         .join(' | ');
 
-      parts.push(`\nTo Do: ${tasks.length} pending, ${overdue.length} overdue, ${dueToday.length} due today.\nLists: ${listSummary}`);
+      parts.push(
+        `\n${copy.todoLabel}: ${copy.pendingLabel(tasks.length)}, ${copy.overdueLabel(overdue.length)}, ${copy.dueTodayLabel(dueToday.length)}.\n${copy.listsLabel}: ${listSummary}`,
+      );
       if (overdue.length > 0) {
-        parts.push(`Overdue: ${overdue.slice(0, 5).map((t: TodoTask) => t.title).join(', ')}`);
+        parts.push(`${copy.overdueOnlyLabel}: ${overdue.slice(0, 5).map((t: TodoTask) => t.title).join(', ')}`);
       }
     } else if (!todoResult.success) {
-      parts.push('\nTo Do: API error');
+      parts.push(`\n${copy.todoLabel}: ${copy.apiErrorLabel}`);
     }
   }
 
   // Reminders & calendar — compact
   if (reminders.length > 0) {
-    parts.push(`\nReminders today: ${reminders.map((r) => `${r.message} (${formatDateTime(r.remind_at)})`).join(', ')}`);
+    parts.push(`\n${copy.remindersTodayLabel}: ${reminders.map((r) => `${r.message} (${formatDateTime(r.remind_at)})`).join(', ')}`);
   }
   if (calendarResult.length > 0) {
-    parts.push(`\nCalendar today (${calendarResult.length}): ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${e.summary}`).join(' | ')}`);
+    parts.push(`\n${copy.calendarTodayLabel(calendarResult.length)}: ${calendarResult.map((e) => `${formatDateTime(e.start)}-${formatDateTime(e.end)} ${e.summary}`).join(' | ')}`);
   }
   if (unreadMail) {
     const providerDetails = [
       unreadMail.outlookUnread != null ? `Outlook ${unreadMail.outlookUnread}` : null,
       unreadMail.gmailUnread != null ? `Gmail ${unreadMail.gmailUnread}` : null,
     ].filter(Boolean).join(' | ');
-    parts.push(`\nMail: ${unreadMail.totalUnread} unread${providerDetails ? ` (${providerDetails})` : ''}`);
+    parts.push(`\n${copy.mailLabel}: ${copy.unreadMailLabel(unreadMail.totalUnread)}${providerDetails ? ` (${providerDetails})` : ''}`);
   }
 
   // Garmin training summary (last 3 days)
   if (garminActivities.length > 0 || garminBodyBattery) {
-    parts.push('\n[GARMIN TRAINING SUMMARY]');
+    parts.push(`\n${copy.garminTrainingHeader}`);
 
     if (garminActivities.length > 0) {
       // Group by date
@@ -233,11 +238,11 @@ async function buildStateContext(message: string = '', userId?: number): Promise
       for (let i = 0; i < 3; i++) {
         const d = today.minus({ days: i }).toFormat('yyyy-MM-dd');
         if (!activityDates.has(d)) {
-          parts.push(`  ${d}: No training logged`);
+          parts.push(`  ${d}: ${copy.noTrainingLogged}`);
         }
       }
     } else {
-      parts.push('  No activities in the last 3 days');
+      parts.push(`  ${copy.noActivitiesLast3Days}`);
     }
 
     // Body battery
@@ -248,13 +253,13 @@ async function buildStateContext(message: string = '', userId?: number): Promise
         // Get the latest value
         const latest = events[events.length - 1];
         const val = Array.isArray(latest) ? latest[1] : (latest as Record<string, unknown>)?.bodyBatteryLevel;
-        if (val != null) parts.push(`  Body Battery: ${val}/100`);
+        if (val != null) parts.push(`  ${copy.bodyBatteryLabel}: ${val}/100`);
       }
       // Try charged/drained from daily summary fields
       const charged = bb.bodyBatteryChargedValue ?? bb.totalCharged;
       const drained = bb.bodyBatteryDrainedValue ?? bb.totalDrained;
       if (charged != null || drained != null) {
-        parts.push(`  Charged: ${charged ?? '?'} | Drained: ${drained ?? '?'}`);
+        parts.push(`  ${copy.chargedLabel}: ${charged ?? '?'} | ${copy.drainedLabel}: ${drained ?? '?'}`);
       }
     }
   }
@@ -264,14 +269,20 @@ async function buildStateContext(message: string = '', userId?: number): Promise
   if (sharedCtx) parts.push(sharedCtx);
 
   if (plannerBrief) {
+    const coordination = plannerBrief.coordination;
     const plannerParts: string[] = [];
-    if (plannerBrief.coordination.topPriority) plannerParts.push(`Top priority: ${plannerBrief.coordination.topPriority}`);
-    if (plannerBrief.coordination.executionOrder.length > 0) plannerParts.push(`Execution order: ${plannerBrief.coordination.executionOrder.join(' → ')}`);
-    if (plannerBrief.coordination.watchouts.length > 0) plannerParts.push(`Watchouts: ${plannerBrief.coordination.watchouts.join(' | ')}`);
-    if (plannerBrief.coordination.handoffs.length > 0) plannerParts.push(`Handoffs: ${plannerBrief.coordination.handoffs.join(' | ')}`);
-    if (plannerBrief.day.secretary.tradeoffNote) plannerParts.push(`Tradeoff note: ${plannerBrief.day.secretary.tradeoffNote}`);
+    if (coordination?.topPriority) plannerParts.push(`${copy.plannerTopPriorityLabel}: ${coordination.topPriority}`);
+    if (coordination?.dayOrchestration?.title) plannerParts.push(`${copy.plannerDayPostureLabel}: ${coordination.dayOrchestration.title}`);
+    if (coordination?.weekOrchestration?.title) plannerParts.push(`${copy.plannerWeekPostureLabel}: ${coordination.weekOrchestration.title}`);
+    if (coordination?.nextBestAction?.summary) plannerParts.push(`${copy.plannerNextBestActionLabel}: ${coordination.nextBestAction.summary}`);
+    if ((coordination?.executionOrder?.length ?? 0) > 0) plannerParts.push(`${copy.plannerExecutionOrderLabel}: ${coordination!.executionOrder.join(' → ')}`);
+    if ((coordination?.blockers?.length ?? 0) > 0) plannerParts.push(`${copy.plannerBlockersLabel}: ${coordination!.blockers.map((blocker) => blocker.summary).join(' | ')}`);
+    if ((coordination?.suggestedMoves?.length ?? 0) > 0) plannerParts.push(`${copy.plannerSuggestedMovesLabel}: ${coordination!.suggestedMoves.map((move) => move.title).join(' | ')}`);
+    if ((coordination?.watchouts?.length ?? 0) > 0) plannerParts.push(`${copy.plannerWatchoutsLabel}: ${coordination!.watchouts.join(' | ')}`);
+    if ((coordination?.handoffs?.length ?? 0) > 0) plannerParts.push(`${copy.plannerHandoffsLabel}: ${coordination!.handoffs.join(' | ')}`);
+    if (plannerBrief.day.secretary.tradeoffNote) plannerParts.push(`${copy.plannerTradeoffLabel}: ${plannerBrief.day.secretary.tradeoffNote}`);
     if (plannerParts.length > 0) {
-      parts.push('\n[PLANNER COORDINATION]');
+      parts.push(`\n${copy.plannerCoordinationHeader}`);
       parts.push(...plannerParts.map((entry) => `  ${entry}`));
     }
   }
@@ -312,6 +323,61 @@ function renderSharedDecisionContracts(contracts: SharedDecisionContracts): stri
   }
   lines.push('</shared_decision_contracts>');
   return lines.length > 2 ? lines.join('\n') : '';
+}
+
+function resolveSecretaryContextLanguage(userId: number | null): string {
+  if (typeof userId !== 'number') return 'en-US';
+  try {
+    return getUserLanguage(userId);
+  } catch {
+    return 'en-US';
+  }
+}
+
+function localizeSecretaryContext(language: string, ptPt: string, ptBr: string, en: string): string {
+  const normalized = language.trim().toLowerCase();
+  if (normalized.startsWith('pt-br')) return ptBr;
+  if (normalized.startsWith('pt')) return ptPt;
+  return en;
+}
+
+function secretaryStateContextCopy(language: string) {
+  return {
+    todayLabel: localizeSecretaryContext(language, 'Hoje', 'Hoje', 'Today'),
+    todoLabel: localizeSecretaryContext(language, 'Tarefas', 'Tarefas', 'To Do'),
+    listsLabel: localizeSecretaryContext(language, 'Listas', 'Listas', 'Lists'),
+    overdueOnlyLabel: localizeSecretaryContext(language, 'Atrasadas', 'Atrasadas', 'Overdue'),
+    remindersTodayLabel: localizeSecretaryContext(language, 'Lembretes de hoje', 'Lembretes de hoje', 'Reminders today'),
+    calendarTodayLabel: (count: number) => localizeSecretaryContext(
+      language,
+      `Calendário de hoje (${count})`,
+      `Calendário de hoje (${count})`,
+      `Calendar today (${count})`,
+    ),
+    mailLabel: localizeSecretaryContext(language, 'Email', 'Email', 'Mail'),
+    garminTrainingHeader: localizeSecretaryContext(language, '[RESUMO GARMIN DE TREINO]', '[RESUMO GARMIN DE TREINO]', '[GARMIN TRAINING SUMMARY]'),
+    noTrainingLogged: localizeSecretaryContext(language, 'Sem treino registado', 'Sem treino registrado', 'No training logged'),
+    noActivitiesLast3Days: localizeSecretaryContext(language, 'Sem atividades nos últimos 3 dias', 'Sem atividades nos últimos 3 dias', 'No activities in the last 3 days'),
+    bodyBatteryLabel: localizeSecretaryContext(language, 'Body Battery', 'Body Battery', 'Body Battery'),
+    chargedLabel: localizeSecretaryContext(language, 'Carregado', 'Carregado', 'Charged'),
+    drainedLabel: localizeSecretaryContext(language, 'Gasto', 'Gasto', 'Drained'),
+    apiErrorLabel: localizeSecretaryContext(language, 'erro de API', 'erro de API', 'API error'),
+    plannerCoordinationHeader: localizeSecretaryContext(language, '[COORDENAÇÃO DO PLANNER]', '[COORDENAÇÃO DO PLANNER]', '[PLANNER COORDINATION]'),
+    plannerTopPriorityLabel: localizeSecretaryContext(language, 'Prioridade principal', 'Prioridade principal', 'Top priority'),
+    plannerDayPostureLabel: localizeSecretaryContext(language, 'Postura do dia', 'Postura do dia', 'Day posture'),
+    plannerWeekPostureLabel: localizeSecretaryContext(language, 'Postura da semana', 'Postura da semana', 'Week posture'),
+    plannerNextBestActionLabel: localizeSecretaryContext(language, 'Próxima melhor ação', 'Próxima melhor ação', 'Next best action'),
+    plannerExecutionOrderLabel: localizeSecretaryContext(language, 'Sequência de execução', 'Sequência de execução', 'Execution order'),
+    plannerBlockersLabel: localizeSecretaryContext(language, 'Bloqueios', 'Bloqueios', 'Blockers'),
+    plannerSuggestedMovesLabel: localizeSecretaryContext(language, 'Movimentos sugeridos', 'Movimentos sugeridos', 'Suggested moves'),
+    plannerWatchoutsLabel: localizeSecretaryContext(language, 'Atenções', 'Atenções', 'Watchouts'),
+    plannerHandoffsLabel: localizeSecretaryContext(language, 'Passagens', 'Passagens', 'Handoffs'),
+    plannerTradeoffLabel: localizeSecretaryContext(language, 'Trade-off', 'Trade-off', 'Tradeoff note'),
+    pendingLabel: (count: number) => localizeSecretaryContext(language, `${count} pendentes`, `${count} pendentes`, `${count} pending`),
+    overdueLabel: (count: number) => localizeSecretaryContext(language, `${count} atrasadas`, `${count} atrasadas`, `${count} overdue`),
+    dueTodayLabel: (count: number) => localizeSecretaryContext(language, `${count} para hoje`, `${count} para hoje`, `${count} due today`),
+    unreadMailLabel: (count: number) => localizeSecretaryContext(language, `${count} por ler`, `${count} não lidos`, `${count} unread`),
+  };
 }
 
 export async function handleSecretary(message: string, userId?: number): Promise<DomainResponse> {

@@ -62,8 +62,9 @@ vi.mock('../../src/portal/telemetry', () => ({
 
 // ─── Imports ─────────────────────────────────────────────────────────
 
-import { OpenAIProvider, _sleep } from '../../src/services/openai-provider';
+import { OpenAIProvider, _sleep, completeOneShot } from '../../src/services/openai-provider';
 import { pushEvent } from '../../src/portal/telemetry';
+import { config } from '../../src/config';
 
 const mockPushEvent = vi.mocked(pushEvent);
 
@@ -95,6 +96,10 @@ describe('OpenAIProvider', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    config.openai.model = 'gpt-4o';
+    config.openai.classifierModel = 'gpt-4o-mini';
+    config.openai.maxTokens = 1024;
+    config.openai.secretaryMaxTokens = 2048;
     provider = new OpenAIProvider();
   });
 
@@ -216,6 +221,17 @@ describe('OpenAIProvider', () => {
 
       await provider.callDomain('content', [], 'Full script', '', 4096);
       expect(mockCreate.mock.calls[0][0].max_tokens).toBe(4096);
+    });
+
+    it('uses max_completion_tokens for GPT-5 family models', async () => {
+      config.openai.model = 'gpt-5.4-nano';
+      mockChatResponse('OK');
+
+      await provider.callDomain('secretary', [], 'Check tasks', '');
+
+      const call = mockCreate.mock.calls[0][0];
+      expect(call.max_completion_tokens).toBe(2048);
+      expect(call.max_tokens).toBeUndefined();
     });
 
     // ── Smart model routing ──────────────────────────────────────
@@ -491,6 +507,22 @@ describe('OpenAIProvider', () => {
       const result = await provider.classify('hello');
       expect(result.domain).toBe('secretary');
       expect(result.confidence).toBe(0);
+    });
+  });
+
+  describe('one-shot helpers', () => {
+    it('completeOneShot uses max_completion_tokens for GPT-5 family models', async () => {
+      mockChatResponse('Fallback answer');
+
+      const text = await completeOneShot('system', 'user', 'fallback_test', {
+        model: 'gpt-5.4-nano',
+        maxTokens: 321,
+      });
+
+      expect(text).toBe('Fallback answer');
+      const call = mockCreate.mock.calls[0][0];
+      expect(call.max_completion_tokens).toBe(321);
+      expect(call.max_tokens).toBeUndefined();
     });
   });
 
