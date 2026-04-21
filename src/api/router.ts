@@ -135,20 +135,53 @@ export function createApiRouter(): Router {
         return;
       }
 
-      // Validate bundle ID from the inner transaction
+      // Validate bundle ID from the inner transaction.
+      //
+      // Hardening 2026-04-21: prior code wrapped the inner-payload
+      // parse + bundle-id check in a try/catch that SWALLOWED errors
+      // and fell through to `handleAppleNotification` on failure. An
+      // attacker sending a malformed `signedTransactionInfo` (no
+      // `bundleId` field, or invalid base64) would sail past the
+      // check. Now: if the inner JWS isn't a well-formed 3-part
+      // structure, OR the bundleId is missing, OR the bundleId
+      // doesn't match, we REJECT with 200 (Apple retry policy
+      // compliance). Crypto signature verification is still a known
+      // gap flagged to the security owner.
       const innerParts = signedTransactionInfo.split('.');
-      if (innerParts.length === 3) {
-        try {
-          const innerPayload = JSON.parse(Buffer.from(innerParts[1], 'base64url').toString('utf8'));
-          if (innerPayload.bundleId && innerPayload.bundleId !== 'me.nexushub.app') {
-            require('../utils/logger').logger.warn(
-              { bundleId: innerPayload.bundleId, notificationType },
-              'Apple notification: bundle ID mismatch — rejecting',
-            );
-            res.status(200).json({ handled: false, reason: 'bundle mismatch' });
-            return;
-          }
-        } catch { /* best-effort bundle check */ }
+      if (innerParts.length !== 3) {
+        require('../utils/logger').logger.warn(
+          { notificationType },
+          'Apple notification: malformed inner JWS — rejecting',
+        );
+        res.status(200).json({ handled: false, reason: 'malformed inner JWS' });
+        return;
+      }
+      let innerPayload: any;
+      try {
+        innerPayload = JSON.parse(Buffer.from(innerParts[1], 'base64url').toString('utf8'));
+      } catch {
+        require('../utils/logger').logger.warn(
+          { notificationType },
+          'Apple notification: inner JWS payload not valid JSON — rejecting',
+        );
+        res.status(200).json({ handled: false, reason: 'invalid inner payload' });
+        return;
+      }
+      if (!innerPayload.bundleId) {
+        require('../utils/logger').logger.warn(
+          { notificationType },
+          'Apple notification: missing bundleId in inner payload — rejecting',
+        );
+        res.status(200).json({ handled: false, reason: 'missing bundleId' });
+        return;
+      }
+      if (innerPayload.bundleId !== 'me.nexushub.app') {
+        require('../utils/logger').logger.warn(
+          { bundleId: innerPayload.bundleId, notificationType },
+          'Apple notification: bundle ID mismatch — rejecting',
+        );
+        res.status(200).json({ handled: false, reason: 'bundle mismatch' });
+        return;
       }
 
       const { handleAppleNotification } = require('../services/stripe-service');
@@ -239,17 +272,26 @@ export function createApiRouter(): Router {
   // user's user_id — never returns rows for any other user.
   router.use('/audit-trail', auditTrailRoutes());
 
+  // Hardening 2026-04-21: paid skills now go through a central
+  // `requireEntitlement` middleware that rejects free-tier users
+  // BEFORE they enter the route. Prior code relied on per-route
+  // ad-hoc checks that were missing on content/cooking/finance —
+  // Free users could hit any /content POST and burn AI spend.
+  // The resolver in services/entitlement.ts is the sole source of
+  // truth for "can this user access this skill?".
+  const { requireEntitlement } = require('./entitlement-middleware');
+
   // Content includes both data lookups (pipeline) and one AI generation
   // endpoint (POST /script). Mounting under one router for cohesion.
-  router.use('/content', contentRoutes());
+  router.use('/content', requireEntitlement({ skill: 'content' }), contentRoutes());
 
   // TASK-14 Phase 1 — Cooking / Finance / Invoices routes that expose
   // the existing domain services (cooking-chef, finance-tracker,
   // invoice-collector) to the iOS Skills landing pages. Token-zero
   // CRUD — the AI pipeline is not touched by any route below.
-  router.use('/cooking', cookingRoutes());
-  router.use('/finance', financeRoutes());
-  router.use('/invoices', invoicesRoutes());
+  router.use('/cooking', requireEntitlement({ skill: 'cooking' }), cookingRoutes());
+  router.use('/finance', requireEntitlement({ skill: 'finance' }), financeRoutes());
+  router.use('/invoices', requireEntitlement({ skill: 'finance' }), invoicesRoutes());
 
   // Billing — subscription status (token-zero), Stripe checkout, Apple verify
   router.use('/billing', billingRoutes());

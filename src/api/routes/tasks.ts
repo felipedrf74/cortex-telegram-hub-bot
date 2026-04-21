@@ -73,7 +73,16 @@ export function taskRoutes(): Router {
   router.get('/lists', async (req, res: Response) => {
     try {
       const userId = (req as any).userId;
-      const cacheKey = userId ? `u:${userId}:task-lists` : 'task-lists';
+      // Hardening 2026-04-21: refuse to serve task data without a
+      // bound userId. Prior fallback read from the global key
+      // `'task-lists'` which the warmer populates with the OWNER'S
+      // lists — any route hit where the auth middleware failed to
+      // set userId would then leak owner data to the caller.
+      if (typeof userId !== 'number' || userId <= 0) {
+        sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
+        return;
+      }
+      const cacheKey = `u:${userId}:task-lists`;
       const swr = getCachedSWR<any>(cacheKey);
 
       if (swr) {
@@ -145,7 +154,15 @@ export function taskRoutes(): Router {
   router.get('/filtered', async (req, res: Response) => {
     const filter = (req.query.filter as string) || 'all';
     const userId = (req as any).userId;
-    const cacheKey = userId ? `u:${userId}:tasks-filtered:${filter}` : `tasks-filtered:${filter}`;
+    // Hardening 2026-04-21: same fail-closed posture as /lists.
+    // Do NOT fall back to a global `tasks-filtered:${filter}` key
+    // — the warmer writes owner data to that key and we would
+    // leak it to any caller whose userId didn't resolve.
+    if (typeof userId !== 'number' || userId <= 0) {
+      sendError(res, 'UNAUTHORIZED', 'Authenticated user required', 401);
+      return;
+    }
+    const cacheKey = `u:${userId}:tasks-filtered:${filter}`;
     const syncProvider = resolveTaskProvider(userId);
 
     // Helper for the actual fetch+filter+cache write.
@@ -619,29 +636,34 @@ export async function warmTaskCache(): Promise<void> {
       return map;
     }, new Map<string, number>());
     const formatted = formatTaskLists(lists, countByListId);
-    // SWR write — fresh window matches old TTL, stale grace gives the next
-    // 30 min of "instant" responses even if the warmer hits a transient error.
-    setCacheSWR('task-lists', { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
+    // Hardening 2026-04-21: the warmer previously wrote to GLOBAL keys
+    // (`task-lists`, `fastpath:pending-tasks`, `tasks:${listId}:notStarted`)
+    // containing the OWNER'S data. Any read that fell back to those
+    // keys leaked owner data to non-owner callers. All three write
+    // sites are now scoped to the owner's userId. The iOS route
+    // reads from `u:${userId}:*` and the Telegram fastpath reads via
+    // `getPendingTasksCacheKey(userId)` which already composes the
+    // scoped key when userId is provided.
+    setCacheSWR(`u:${owner.id}:task-lists`, { lists: formatted }, LISTS_CACHE_TTL, LISTS_SWR_STALE);
 
     // Cache the cross-list "all pending tasks" snapshot used by both
     // /api/v1/tasks/filtered AND the chat fast-path (/overdue, /duetoday, etc.)
     // so the iOS chat command flow never has to wait for MS Graph.
     try {
       if (pendingResult?.success) {
-        // Raw TodoTask[] for the chat-fastpath module
-        // System-level warm cache (Telegram bot context, no specific userId)
-        setCache('fastpath:pending-tasks', pendingResult.data, TASKS_CACHE_TTL);
+        setCache(`u:${owner.id}:fastpath:pending-tasks`, pendingResult.data, TASKS_CACHE_TTL);
       }
     } catch {
       // Non-critical — fast-path will fall back to a fresh fetch on miss
     }
 
-    // Cache pending tasks for each list (parallel — all at once)
+    // Cache pending tasks for each list (parallel — all at once).
+    // Owner-scoped per Hardening 2026-04-21.
     await Promise.allSettled(
       lists.map(async (l: any) => {
         const listId = l.id;
         const listName = l.displayName || l.name || 'Tasks';
-        const cacheKey = `tasks:${listId}:notStarted`; // System-level warm (Telegram bot)
+        const cacheKey = `u:${owner.id}:tasks:${listId}:notStarted`;
 
         // Skip if cache is still fresh
         if (getCached(cacheKey)) return;

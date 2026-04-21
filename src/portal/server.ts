@@ -216,6 +216,55 @@ const VALID_ACTIONS = new Set([
 const actionCooldowns = new Map<string, number>();
 const ACTION_COOLDOWN_MS = 30_000;
 
+/**
+ * Lightweight email shape check used by portal admin-mutation routes.
+ * Rejects obviously-malformed strings (no @, no dot, whitespace, etc.)
+ * without pretending to be a full RFC-5322 validator. The server
+ * STILL calls `.toLowerCase().trim()` separately — this helper only
+ * decides "is this plausibly an email we're willing to persist?".
+ *
+ * Added for hardening 2026-04-21 after the portal-scope audit found
+ * `POST /api/founders` accepted any string (e.g. "notanemail", "x@"),
+ * which silently created zombie founder rows that can never match a
+ * real user's email at registration time.
+ */
+/** Safely parse a JSON array stored in a TEXT column. Returns `[]`
+ *  for null/empty/malformed input — the caller treats the result as
+ *  authoritative but defensive. */
+function safeJsonArray(value: string | null | undefined): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Safely parse a JSON object stored in a TEXT column. Returns `{}`
+ *  for null/empty/malformed input. */
+function safeJsonObject(value: string | null | undefined): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function isLikelyEmail(candidate: string): boolean {
+  if (typeof candidate !== 'string') return false;
+  const trimmed = candidate.trim();
+  if (trimmed.length < 3 || trimmed.length > 254) return false;
+  if (/\s/.test(trimmed)) return false;
+  const at = trimmed.indexOf('@');
+  if (at <= 0 || at !== trimmed.lastIndexOf('@')) return false;
+  const domain = trimmed.slice(at + 1);
+  if (!domain.includes('.')) return false;
+  return true;
+}
+
 function isRateLimited(action: string): boolean {
   const last = actionCooldowns.get(action) ?? 0;
   return Date.now() - last < ACTION_COOLDOWN_MS;
@@ -2602,8 +2651,27 @@ export function createPortalServer(bot?: any): http.Server {
     try {
       const db = getDb();
       const userId = Number(req.params.userId);
-      db.prepare('UPDATE users SET tier = ? WHERE id = ?').run(req.body.tier, userId);
-      res.json({ ok: true, message: `Tier set to ${req.body.tier}` });
+      if (!Number.isFinite(userId) || userId <= 0) {
+        res.status(400).json({ ok: false, message: 'invalid userId' });
+        return;
+      }
+      // Hardening 2026-04-21: enum validation. Was: wrote
+      // `req.body.tier` as-is so "Pro" (capital P) vs "pro"
+      // silently broke plan-quotas lookups; passing `null`/`""`
+      // nulled the column.
+      const tier = String(req.body?.tier ?? '').trim().toLowerCase();
+      if (!['free', 'pro', 'max', 'owner'].includes(tier)) {
+        res.status(400).json({ ok: false, message: 'tier must be free, pro, max, or owner' });
+        return;
+      }
+      db.prepare('UPDATE users SET tier = ? WHERE id = ?').run(tier, userId);
+      try {
+        const { logAudit } = require('../services/audit-trail');
+        logAudit({ userId, actorId: 0, action: 'admin_mutation', resource: 'user.tier', details: { tier } });
+      } catch (auditErr) {
+        require('../utils/logger').logger.warn({ err: auditErr }, 'tier update audit log failed');
+      }
+      res.json({ ok: true, message: `Tier set to ${tier}` });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
     }
@@ -2613,10 +2681,43 @@ export function createPortalServer(bot?: any): http.Server {
     try {
       const db = getDb();
       const userId = Number(req.params.userId);
-      const { daily_message_limit, daily_token_limit, daily_cost_limit_usd } = req.body;
-      if (daily_message_limit !== undefined) db.prepare('UPDATE users SET daily_message_limit = ? WHERE id = ?').run(daily_message_limit, userId);
-      if (daily_token_limit !== undefined) db.prepare('UPDATE users SET daily_token_limit = ? WHERE id = ?').run(daily_token_limit, userId);
-      if (daily_cost_limit_usd !== undefined) db.prepare('UPDATE users SET daily_cost_limit_usd = ? WHERE id = ?').run(daily_cost_limit_usd, userId);
+      if (!Number.isFinite(userId) || userId <= 0) {
+        res.status(400).json({ ok: false, message: 'invalid userId' });
+        return;
+      }
+      const { daily_message_limit, daily_token_limit, daily_cost_limit_usd } = req.body ?? {};
+      // Hardening 2026-04-21: range validation. Was: coerced via
+      // raw write; negative numbers or NaN silently persisted and
+      // broke the cost-guardrail math. Reject non-finite values
+      // and negatives.
+      const nonNegNumOrUndef = (value: unknown): number | undefined => {
+        if (value === undefined || value === null) return undefined;
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) return undefined;
+        return n;
+      };
+      const msgLimit = nonNegNumOrUndef(daily_message_limit);
+      const tokenLimit = nonNegNumOrUndef(daily_token_limit);
+      const costLimit = nonNegNumOrUndef(daily_cost_limit_usd);
+      if (msgLimit !== undefined) db.prepare('UPDATE users SET daily_message_limit = ? WHERE id = ?').run(msgLimit, userId);
+      if (tokenLimit !== undefined) db.prepare('UPDATE users SET daily_token_limit = ? WHERE id = ?').run(tokenLimit, userId);
+      if (costLimit !== undefined) db.prepare('UPDATE users SET daily_cost_limit_usd = ? WHERE id = ?').run(costLimit, userId);
+      try {
+        const { logAudit } = require('../services/audit-trail');
+        logAudit({
+          userId,
+          actorId: 0,
+          action: 'admin_mutation',
+          resource: 'user.limits',
+          details: {
+            daily_message_limit: msgLimit,
+            daily_token_limit: tokenLimit,
+            daily_cost_limit_usd: costLimit,
+          },
+        });
+      } catch (auditErr) {
+        require('../utils/logger').logger.warn({ err: auditErr }, 'limits update audit log failed');
+      }
       res.json({ ok: true, message: 'Limits updated' });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });
@@ -2664,6 +2765,117 @@ export function createPortalServer(bot?: any): http.Server {
     }
   });
 
+  // ── Plan Config API (portal-token authed) ──────────────────────────
+  //
+  // Hardening 2026-04-21: per-plan daily caps were previously
+  // hardcoded in `src/services/plan-quotas.ts`. The portal admin had
+  // no way to adjust Free's $0.005/day or Pro's $0.20/day without a
+  // redeploy. These two routes expose the `plan_configs` table
+  // (migration 075) and the in-memory override registry.
+
+  app.get('/api/plans', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const rows = db.prepare(
+        'SELECT plan_id, display_name, daily_cost_usd, daily_token_limit, daily_message_limit, allowed_skills_json, per_skill_caps_json, metadata_json, active, updated_at FROM plan_configs ORDER BY plan_id'
+      ).all() as Array<{
+        plan_id: string;
+        display_name: string;
+        daily_cost_usd: number;
+        daily_token_limit: number | null;
+        daily_message_limit: number | null;
+        allowed_skills_json: string;
+        per_skill_caps_json: string;
+        metadata_json: string;
+        active: number;
+        updated_at: string;
+      }>;
+      res.json({
+        plans: rows.map((r) => ({
+          planId: r.plan_id,
+          displayName: r.display_name,
+          dailyCostUsd: r.daily_cost_usd,
+          dailyTokenLimit: r.daily_token_limit,
+          dailyMessageLimit: r.daily_message_limit,
+          allowedSkills: safeJsonArray(r.allowed_skills_json),
+          perSkillCaps: safeJsonObject(r.per_skill_caps_json),
+          metadata: safeJsonObject(r.metadata_json),
+          active: r.active === 1,
+          updatedAt: r.updated_at,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
+  app.put('/api/plans/:planId', express.json(), (req: Request, res: Response) => {
+    try {
+      const planId = String(req.params.planId || '').trim().toLowerCase();
+      if (!['free', 'pro', 'max', 'owner'].includes(planId)) {
+        res.status(400).json({ ok: false, message: 'planId must be free, pro, max, or owner' });
+        return;
+      }
+      const body = req.body ?? {};
+      const dailyCostUsd = Number(body.dailyCostUsd);
+      if (!Number.isFinite(dailyCostUsd) || dailyCostUsd < 0) {
+        res.status(400).json({ ok: false, message: 'dailyCostUsd must be a non-negative number' });
+        return;
+      }
+      const dailyTokenLimit = body.dailyTokenLimit == null ? null : Number(body.dailyTokenLimit);
+      if (dailyTokenLimit !== null && (!Number.isFinite(dailyTokenLimit) || dailyTokenLimit < 0)) {
+        res.status(400).json({ ok: false, message: 'dailyTokenLimit must be null or a non-negative number' });
+        return;
+      }
+      const dailyMessageLimit = body.dailyMessageLimit == null ? null : Number(body.dailyMessageLimit);
+      if (dailyMessageLimit !== null && (!Number.isFinite(dailyMessageLimit) || dailyMessageLimit < 0)) {
+        res.status(400).json({ ok: false, message: 'dailyMessageLimit must be null or a non-negative number' });
+        return;
+      }
+      const allowedSkills = Array.isArray(body.allowedSkills)
+        ? body.allowedSkills.filter((s: unknown): s is string => typeof s === 'string')
+        : null;
+      const db = getDb();
+      const sets: string[] = ['daily_cost_usd = ?'];
+      const values: unknown[] = [dailyCostUsd];
+      if (dailyTokenLimit !== undefined) { sets.push('daily_token_limit = ?'); values.push(dailyTokenLimit); }
+      if (dailyMessageLimit !== undefined) { sets.push('daily_message_limit = ?'); values.push(dailyMessageLimit); }
+      if (allowedSkills) { sets.push('allowed_skills_json = ?'); values.push(JSON.stringify(allowedSkills)); }
+      sets.push("updated_at = datetime('now')");
+      values.push(planId);
+      db.prepare(`UPDATE plan_configs SET ${sets.join(', ')} WHERE plan_id = ?`).run(...values);
+      // Update the in-memory override registry so the change takes
+      // effect without restart. plan-quotas.ts is the reader.
+      try {
+        const { setPlanDailyCostCapOverride } = require('../services/plan-quotas');
+        setPlanDailyCostCapOverride(planId, dailyCostUsd);
+      } catch (err) {
+        require('../utils/logger').logger.warn({ err, planId }, 'plan-quotas override apply failed');
+      }
+      try {
+        const { logAudit } = require('../services/audit-trail');
+        logAudit({
+          userId: 0,
+          actorId: 0,
+          action: 'admin_mutation',
+          resource: 'plan_config.update',
+          details: {
+            planId,
+            dailyCostUsd,
+            dailyTokenLimit,
+            dailyMessageLimit,
+            allowedSkills: allowedSkills ?? undefined,
+          },
+        });
+      } catch (auditErr) {
+        require('../utils/logger').logger.warn({ err: auditErr }, 'plan config update audit log failed');
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: (err as Error).message });
+    }
+  });
+
   // ── Founders API (portal-token authed) ─────────────────────────────
   //
   // Manage the founders list: emails with permanent Pro/Max access.
@@ -2682,12 +2894,36 @@ export function createPortalServer(bot?: any): http.Server {
   app.post('/api/founders', express.json(), (req: Request, res: Response) => {
     try {
       const { email, plan, note } = req.body;
-      if (!email || !plan || !['pro', 'max'].includes(plan)) {
-        res.status(400).json({ ok: false, message: 'email and plan (pro/max) required' });
+      // Hardening 2026-04-21: tighten admin-mutation validation.
+      // Was: only checked plan enum. Now: also requires a valid email
+      // format so typos don't persist as zombie rows that will never
+      // match a real user at registration time.
+      if (typeof email !== 'string' || !isLikelyEmail(email)) {
+        res.status(400).json({ ok: false, message: 'valid email required' });
         return;
       }
+      if (!plan || !['pro', 'max'].includes(plan)) {
+        res.status(400).json({ ok: false, message: 'plan must be pro or max' });
+        return;
+      }
+      const normalizedEmail = email.trim().toLowerCase();
       const { addFounder } = require('../services/founders');
-      addFounder(email, plan, note);
+      addFounder(normalizedEmail, plan, note);
+      // Audit mutation so the portal's "who granted founder to X?"
+      // question is answerable. userId=0 because the target user row
+      // may not exist yet (founder email → future registrant binding).
+      try {
+        const { logAudit } = require('../services/audit-trail');
+        logAudit({
+          userId: 0,
+          actorId: 0,
+          action: 'admin_mutation',
+          resource: 'founder.add',
+          details: { email: normalizedEmail, plan, note: note ?? null },
+        });
+      } catch (auditErr) {
+        require('../utils/logger').logger.warn({ err: auditErr }, 'founder add audit log failed');
+      }
       const { listFounders } = require('../services/founders');
       res.json({ ok: true, founders: listFounders() });
     } catch (err) {
@@ -2697,8 +2933,25 @@ export function createPortalServer(bot?: any): http.Server {
 
   app.delete('/api/founders/:email', (req: Request, res: Response) => {
     try {
+      const emailParam = decodeURIComponent(String(req.params.email)).trim().toLowerCase();
+      if (!isLikelyEmail(emailParam)) {
+        res.status(400).json({ ok: false, message: 'valid email required' });
+        return;
+      }
       const { removeFounder } = require('../services/founders');
-      const removed = removeFounder(decodeURIComponent(String(req.params.email)));
+      const removed = removeFounder(emailParam);
+      try {
+        const { logAudit } = require('../services/audit-trail');
+        logAudit({
+          userId: 0,
+          actorId: 0,
+          action: 'admin_mutation',
+          resource: 'founder.remove',
+          details: { email: emailParam, removed },
+        });
+      } catch (auditErr) {
+        require('../utils/logger').logger.warn({ err: auditErr }, 'founder remove audit log failed');
+      }
       res.json({ ok: removed });
     } catch (err) {
       res.status(500).json({ ok: false, message: (err as Error).message });

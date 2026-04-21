@@ -10,7 +10,19 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 
-export type AuditAction = 'export' | 'delete' | 'access' | 'encrypt' | 'decrypt';
+export type AuditAction =
+  | 'export'
+  | 'delete'
+  | 'access'
+  | 'encrypt'
+  | 'decrypt'
+  /**
+   * Portal admin mutation — founder grant/revoke, user tier change,
+   * skill override, plan-config edit. Added 2026-04-21 so Felipe (or
+   * any future ops role) has a replayable log of every privileged
+   * admin action that could change a user's entitlement.
+   */
+  | 'admin_mutation';
 
 export interface AuditEntry {
   userId: number;

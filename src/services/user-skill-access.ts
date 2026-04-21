@@ -118,8 +118,15 @@ export function isSkillEnabled(userId: number, skill: string, subSkill?: string)
     }
 
     return true; // Default: enabled
-  } catch {
-    return true; // DB not ready — fail open
+  } catch (err) {
+    // Hardening 2026-04-21: was `return true; // fail open`, which
+    // meant a single DB lock would re-grant access to an admin-
+    // disabled skill. Fail closed instead: on DB error, deny access
+    // and log so operators can correlate with the underlying fault.
+    // Callers that want permissive behavior must make the choice
+    // explicit at the call site.
+    logger.warn({ err, skill }, 'user-skill-access: DB lookup failed — failing closed');
+    return false;
   }
 }
 

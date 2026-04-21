@@ -186,14 +186,15 @@ describe('isUserOverDailyCap', () => {
     testDb?.close();
   });
 
-  it('returns over=true for unsubscribed user even with no spend (no free tier)', () => {
+  it('allows unsubscribed user with zero spend under the Free $0.005 daily cap', () => {
+    // Hardening audit 2026-04-21: Free tier cap was $0.00 (no AI at
+    // all); business rule now sets it to $0.005/day so Secretary
+    // still works for unsubscribed users. A user with $0 spend is
+    // NOT over cap anymore.
     const result = isUserOverDailyCap(12345);
-    // No subscription → $0.00 cap → $0 >= $0 → blocked
-    expect(result.over).toBe(true);
-    expect(result.usageFraction).toBe(1); // 0/0 clamps to 1.0
-    expect(result.usageLevel).toBe('none');
+    expect(result.over).toBe(false);
+    expect(result.capUsd).toBe(0.005);
     expect(result.callsToday).toBe(0);
-    // boostAvailable is always false until the AI Boost IAP product is configured
     expect(result.boostAvailable).toBe(false);
   });
 
@@ -205,8 +206,8 @@ describe('isUserOverDailyCap', () => {
     expect(result.callsToday).toBe(0);
   });
 
-  it('returns over=true when unsubscribed user has ANY spend (cap is $0.00)', () => {
-    // Insert $0.01 of spend for user 42 (no subscription = $0.00 cap)
+  it('returns over=true when unsubscribed user spend exceeds the Free $0.005 cap', () => {
+    // Hardening 2026-04-21: Free cap is $0.005. $0.01 > $0.005 → over.
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
       VALUES ('domain_content', 'gemini-2.5-flash', 42, 1000, 500, 0.01, 100)
@@ -214,30 +215,28 @@ describe('isUserOverDailyCap', () => {
 
     const result = isUserOverDailyCap(42);
     expect(result.over).toBe(true);
-    expect(result.usageFraction).toBe(1); // fraction clamps at 1.0
-    // boostAvailable is always false until the AI Boost IAP product is configured
+    expect(result.usageFraction).toBe(1); // clamped
     expect(result.boostAvailable).toBe(false);
   });
 
   it('isolates users from each other — spend by user 42 does not count against user 99', () => {
-    // User 42 spent $0.50
+    // User 42 spent $0.50 (well over Free's $0.005 cap → over)
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
       VALUES ('domain_content', 'gemini-2.5-flash', 42, 5000, 2000, 0.50, 200)
     `).run();
 
-    // User 99 spent $0.01
+    // User 99 spent $0.001 (under Free's $0.005 cap → NOT over)
     testDb.prepare(`
       INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms)
-      VALUES ('domain_secretary', 'gemini-2.5-flash-lite', 99, 100, 50, 0.01, 50)
+      VALUES ('domain_secretary', 'gemini-2.5-flash-lite', 99, 100, 50, 0.001, 50)
     `).run();
 
-    // Both are unsubscribed ($0 cap) so both are over, but isolated
     const r42 = isUserOverDailyCap(42);
     const r99 = isUserOverDailyCap(99);
     expect(r42.over).toBe(true);
     expect(r42.callsToday).toBe(1);
-    expect(r99.over).toBe(true);
+    expect(r99.over).toBe(false);
     expect(r99.callsToday).toBe(1);
   });
 

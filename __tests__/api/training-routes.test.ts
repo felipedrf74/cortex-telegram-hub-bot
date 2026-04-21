@@ -14,6 +14,11 @@ const mockCreateEvent = vi.fn();
 const mockGetActivePlan = vi.fn();
 const mockGetCurrentWeek = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
+// Hardening 2026-04-21: /training/complete + /skip now verify session
+// ownership via getSessionById + getPlanById before mutating. Tests
+// that exercise those routes need these mocks in place.
+const mockGetSessionById = vi.fn();
+const mockGetPlanById = vi.fn();
 const mockGetWeeklyAdherence = vi.fn();
 const mockCreatePlan = vi.fn();
 const mockCreateWeek = vi.fn();
@@ -68,6 +73,8 @@ vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
+  getSessionById: (...args: unknown[]) => mockGetSessionById(...args),
+  getPlanById: (...args: unknown[]) => mockGetPlanById(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
   createPlan: (...args: unknown[]) => mockCreatePlan(...args),
   createWeek: (...args: unknown[]) => mockCreateWeek(...args),
@@ -256,6 +263,8 @@ describe('Training API routes', () => {
     mockGetActivePlan.mockReset();
     mockGetCurrentWeek.mockReset();
     mockGetSessionsForWeek.mockReset();
+    mockGetSessionById.mockReset();
+    mockGetPlanById.mockReset();
     mockGetWeeklyAdherence.mockReset();
     mockCreatePlan.mockReset();
     mockCreateWeek.mockReset();
@@ -782,11 +791,14 @@ describe('Training API routes', () => {
   });
 
   it('marks a session as skipped and returns updated weekly adherence', async () => {
-    mockGetActivePlan.mockReturnValue({ id: 44 });
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12 });
     mockGetCurrentWeek.mockReturnValue({ id: 78 });
     mockGetSessionsForWeek.mockReturnValue([
-      { id: 321, day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }), status: 'pending' },
+      { id: 321, day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }), status: 'pending', plan_id: 44 },
     ]);
+    // Hardening 2026-04-21: ownership gate reads these.
+    mockGetSessionById.mockReturnValue({ id: 321, plan_id: 44 });
+    mockGetPlanById.mockReturnValue({ id: 44, user_id: 12 });
     mockGetWeeklyAdherence.mockReturnValue({ adherenceRate: 40 });
 
     const res = await dispatch('POST', '/skip', {}, { sessionId: 'today' });
@@ -796,6 +808,33 @@ describe('Training API routes', () => {
     expect(res.body.data.skipped).toBe(true);
     expect(res.body.data.weeklyAdherence).toBe(0.4);
     expect(mockMarkSessionSkipped).toHaveBeenCalledWith(321);
+  });
+
+  it('rejects /skip with 403 when the session id belongs to a different user', async () => {
+    // Hardening 2026-04-21: Alice (userId=12) must not be able to
+    // skip Bob's session by POSTing Bob's session id. Previously
+    // the route called markSessionSkipped(rowId) without any plan
+    // ownership check — this test pins the new enforcement.
+    mockGetSessionById.mockReturnValue({ id: 999, plan_id: 88 });
+    mockGetPlanById.mockReturnValue({ id: 88, user_id: 77 }); // Bob owns plan 88
+
+    const res = await dispatch('POST', '/skip', {}, { sessionId: '999' });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(mockMarkSessionSkipped).not.toHaveBeenCalled();
+  });
+
+  it('rejects /complete with 403 when the session id belongs to a different user', async () => {
+    mockGetSessionById.mockReturnValue({ id: 999, plan_id: 88 });
+    mockGetPlanById.mockReturnValue({ id: 88, user_id: 77 });
+
+    const res = await dispatch('POST', '/complete', {}, { sessionId: '999' });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('FORBIDDEN');
   });
 
   it('applies cross-skill coaching coordination before training sessions are stored', async () => {

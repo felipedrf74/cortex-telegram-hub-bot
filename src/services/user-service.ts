@@ -380,16 +380,23 @@ export function createAppleUser(appleUserId: string, profile: {
   email?: string; firstName?: string; lastName?: string;
 }): User {
   const db = getDb();
+  // Hardening 2026-04-21: new users default to `tier='free'` per
+  // the business rule (users are privileged only if they have an
+  // active Apple sub, Stripe sub, or portal-assigned founder
+  // status). Prior code hardcoded 'pro' which meant every new
+  // registrant implicitly got Pro quotas regardless of payment.
+  // Invite-code flows (grantBetaSandboxAccess) + receipt verify
+  // + founder sync all upgrade afterward.
   db.prepare(`
     INSERT INTO users (apple_user_id, email, first_name, last_name, email_verified,
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-    VALUES (?, ?, ?, ?, 1, 'apple', 'pro', 200, 500000, ?)
+    VALUES (?, ?, ?, ?, 1, 'apple', 'free', 40, 100000, ?)
   `).run(
     appleUserId,
     profile.email?.toLowerCase() || null,
     profile.firstName || null,
     profile.lastName || null,
-    getStoredDailyCostLimitUsdForTier('pro'),
+    getStoredDailyCostLimitUsdForTier('free'),
   );
   logger.info({ appleUserId, email: profile.email }, 'New Apple user registered');
   return getUserByAppleId(appleUserId)!;
@@ -400,17 +407,20 @@ export function createGoogleUser(googleUserId: string, profile: {
 }): User {
   const db = getDb();
   const [firstName, ...rest] = (profile.name || '').split(' ');
+  // Hardening 2026-04-21: default tier='free' — see createAppleUser
+  // note for the full rationale. Downstream flows (founder match by
+  // email, invite-code beta sandbox, Stripe checkout) upgrade.
   db.prepare(`
     INSERT INTO users (google_user_id, email, first_name, last_name, avatar_url, email_verified,
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-    VALUES (?, ?, ?, ?, ?, 1, 'google', 'pro', 200, 500000, ?)
+    VALUES (?, ?, ?, ?, ?, 1, 'google', 'free', 40, 100000, ?)
   `).run(
     googleUserId,
     profile.email.toLowerCase(),
     firstName || null,
     rest.join(' ') || null,
     profile.picture || null,
-    getStoredDailyCostLimitUsdForTier('pro'),
+    getStoredDailyCostLimitUsdForTier('free'),
   );
   logger.info({ googleUserId, email: profile.email }, 'New Google user registered');
   return getUserByGoogleId(googleUserId)!;
@@ -420,11 +430,15 @@ export function createEmailUser(email: string, passwordHash: string, profile: {
   firstName: string;
 }): User {
   const db = getDb();
+  // Hardening 2026-04-21: default tier='free' — see createAppleUser
+  // note for rationale. Email registrants start Free; upgrade paths
+  // (Stripe checkout, invite-code beta, founder email sync) handle
+  // privileged grants explicitly.
   db.prepare(`
     INSERT INTO users (email, password_hash, first_name, email_verified,
       auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
-    VALUES (?, ?, ?, 0, 'email', 'pro', 200, 500000, ?)
-  `).run(email.toLowerCase(), passwordHash, profile.firstName, getStoredDailyCostLimitUsdForTier('pro'));
+    VALUES (?, ?, ?, 0, 'email', 'free', 40, 100000, ?)
+  `).run(email.toLowerCase(), passwordHash, profile.firstName, getStoredDailyCostLimitUsdForTier('free'));
   logger.info({ email }, 'New email user registered');
   return getUserByEmail(email)!;
 }

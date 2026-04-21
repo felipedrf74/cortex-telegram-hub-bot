@@ -1228,14 +1228,24 @@ export function startScheduler(bot?: any): void {
     }
 
     for (const userId of getActiveUserIds()) {
+      // Hardening 2026-04-21: wrap the per-user iteration in a
+      // request context so Garmin's per-user client resolution via
+      // `getCurrentContext()?.userId` actually sees the iterating
+      // user. Without this, `garmin-session-store.resolveGarminUserId`
+      // falls back to `getOwnerBootstrapUser()?.id` — every user's
+      // readiness would be computed from the OWNER'S Garmin data and
+      // then persisted as their own. Pure cross-tenant data poisoning
+      // in a scheduled job. runWithContext scopes the AsyncLocalStorage
+      // so all downstream reads see the correct userId.
+      await runWithContext({ source: 'cron:training_plan_adjust', userId }, async () => {
       const plan = getActivePlan(userId);
-      if (!plan) continue;
+      if (!plan) return;
 
       const currentWeek = getCurrentWeek(plan.id);
-      if (!currentWeek) continue;
+      if (!currentWeek) return;
 
       const stats = getWeeklyAdherence(plan.id, currentWeek.id);
-      if (stats.completedSessions === 0 && stats.skippedSessions === 0) continue; // no data yet
+      if (stats.completedSessions === 0 && stats.skippedSessions === 0) return; // no data yet
 
       // Calculate and persist readiness score (only when Garmin session
       // is confirmed available — prevents cascading 5× raw Garmin calls
@@ -1316,6 +1326,7 @@ export function startScheduler(bot?: any): void {
           logger.error({ err, userId }, 'Failed to send plan renewal notification');
         }
       }
+      }); // runWithContext per-user scope end
     }
   }), { timezone: tz });
 

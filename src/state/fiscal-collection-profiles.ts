@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from '../services/database';
-import { getUserById } from '../services/user-service';
 
 export type FiscalCollectionCadence = 'monthly' | 'twice_monthly';
 
@@ -40,14 +39,13 @@ export function getOrCreateFiscalCollectionProfile(userId: number): FiscalCollec
   if (existing) return existing;
 
   const db = getDb();
-  const user = getUserById(userId);
   db.prepare(`
     INSERT INTO fiscal_collection_profiles (
       user_id, destination_email, cadence, primary_day, secondary_day, enabled
     ) VALUES (?, ?, ?, ?, ?, 1)
   `).run(
     userId,
-    user?.email ?? null,
+    null,
     DEFAULT_CADENCE,
     DEFAULT_PRIMARY_DAY,
     null,

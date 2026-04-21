@@ -783,20 +783,32 @@ export function trainingRoutes(): Router {
         return;
       }
 
+      // Hardening 2026-04-21: enforce session ownership before mutating.
+      // Prior code called markSessionCompleted(rowId) / logCompletion(rowId)
+      // with whatever sessionId the body carried — Alice POSTing
+      // {"sessionId": <Bob's session id>} would mark Bob's session done
+      // and poison his adherence cache. Reject the request if the
+      // session doesn't resolve to a plan owned by the caller.
+      const session = trainingPlans.getSessionById(rowId);
+      if (!session) {
+        sendError(res, 'NOT_FOUND', 'Training session not found', 404);
+        return;
+      }
+      const ownerPlan = trainingPlans.getPlanById(session.plan_id);
+      if (!ownerPlan || ownerPlan.user_id !== userId) {
+        sendError(res, 'FORBIDDEN', 'Training session belongs to another account', 403);
+        return;
+      }
+
       // 2. Mark completed (and log completion if we have RPE/notes)
       let adherenceRate: number | null = null;
       if (notes || rpe != null) {
-        const session = trainingPlans.getSessionById(rowId);
-        if (session) {
-          trainingPlans.logCompletion({
-            session_id: rowId,
-            plan_id: session.plan_id,
-            rpe_overall: rpe ?? null,
-            notes: notes ?? null,
-          });
-        } else {
-          trainingPlans.markSessionCompleted(rowId);
-        }
+        trainingPlans.logCompletion({
+          session_id: rowId,
+          plan_id: session.plan_id,
+          rpe_overall: rpe ?? null,
+          notes: notes ?? null,
+        });
       } else {
         trainingPlans.markSessionCompleted(rowId);
       }
@@ -863,6 +875,20 @@ export function trainingRoutes(): Router {
           weeklyAdherence: null,
           noActiveSession: true,
         });
+        return;
+      }
+
+      // Hardening 2026-04-21: mirror the ownership gate added to
+      // /training/complete. Without this an attacker can skip another
+      // user's session by POSTing their session id.
+      const skipSession = trainingPlans.getSessionById(rowId);
+      if (!skipSession) {
+        sendError(res, 'NOT_FOUND', 'Training session not found', 404);
+        return;
+      }
+      const skipOwnerPlan = trainingPlans.getPlanById(skipSession.plan_id);
+      if (!skipOwnerPlan || skipOwnerPlan.user_id !== userId) {
+        sendError(res, 'FORBIDDEN', 'Training session belongs to another account', 403);
         return;
       }
 

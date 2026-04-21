@@ -57,6 +57,25 @@ async function main(): Promise<void> {
   setScopeAnomalyReporter(recordTenantScopeAnomaly);
   setErrorDbProvider(() => getDb());
 
+  // Hardening 2026-04-21: hydrate the in-memory per-plan cost-cap
+  // overrides from the `plan_configs` DB table (migration 075).
+  // Without this, any admin edits made through the portal's
+  // PUT /api/plans/:planId would be lost on process restart until
+  // the admin re-applies them. Best-effort — if the migration hasn't
+  // run yet (older environment) we silently continue with compiled-in
+  // defaults.
+  try {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT plan_id, daily_cost_usd FROM plan_configs WHERE active = 1')
+      .all() as Array<{ plan_id: string; daily_cost_usd: number }>;
+    const { applyPlanConfigRows } = require('./services/plan-quotas');
+    applyPlanConfigRows(rows);
+    logger.info({ planCount: rows.length }, 'Plan config overrides loaded from DB');
+  } catch (err) {
+    logger.warn({ err }, 'Plan config hydration skipped (plan_configs table may be missing)');
+  }
+
   // Register task provider adapters (TASK-16b).
   // Adapters self-register into the sync engine's in-memory registry; the
   // 15-minute task_sync cron and the webhook router both look them up here.

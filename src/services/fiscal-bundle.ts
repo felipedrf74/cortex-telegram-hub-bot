@@ -5,7 +5,6 @@ import path from 'path';
 import { DateTime } from 'luxon';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { getUserById } from './user-service';
 import {
   getOrCreateFiscalCollectionProfile,
   updateFiscalCollectionProfile,
@@ -265,11 +264,10 @@ export function getFiscalCollectionSummary(userId: number): {
   warnings: string[];
 } {
   const profile = getOrCreateFiscalCollectionProfile(userId);
-  const user = getUserById(userId);
   const providers = fiscalProvidersForUser(userId);
   const rules = getAllVendors(userId);
   const customRuleCount = rules.filter((rule) => !rule.builtin).length;
-  const destinationEmail = profile.destination_email || user?.email || null;
+  const destinationEmail = profile.destination_email || null;
 
   const warnings: string[] = [];
   if (!destinationEmail) warnings.push('DESTINATION_EMAIL_MISSING');
