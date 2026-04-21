@@ -1854,22 +1854,30 @@ export function createPortalServer(bot?: any): http.Server {
   // string?" So the threat model collapses onto "how hard is the
   // string to guess or harvest?"
   //
-  // We refuse to even BIND a portal with a known-weak token. This
-  // sacrifices convenience (hot dev iteration with `token=dev`) for a
-  // hard stop against accidentally shipping a default to prod via a
-  // mis-filled .env file. Admins that need a throwaway token for a
-  // local test can set `PORTAL_TOKEN=` (empty) which triggers the
-  // localhost-only fallback already documented in the middleware below.
+  // We refuse to even BIND a portal with a known-weak token. The floor
+  // is 12 chars: at 72 symbols/char (alnum + a few punct) that's
+  // ~1.9e22 combinations — cryptographically infeasible to brute-force
+  // even against a fast endpoint. Raising the floor to 16 breaks real
+  // existing deployments whose tokens are 15 chars and still plenty
+  // strong (hotfix 2026-04-21 after the initial 16-char threshold
+  // caused a prod crash-loop). The block-list below catches the actual
+  // historical foot-guns — 'changeme', 'admin', 'password' etc.
+  // Admins that need a throwaway token for a local test can set
+  // `PORTAL_TOKEN=` (empty) which triggers the localhost-only fallback
+  // already documented in the middleware below.
   if (portalToken) {
-    const weak = new Set(['changeme', 'admin', 'password', 'nexushub', 'dev', 'test', 'local', '1234', '12345', '123456']);
+    const weak = new Set([
+      'changeme', 'change-me', 'changeme123', 'admin', 'administrator',
+      'password', 'password1', 'passw0rd', 'nexushub', 'nexus-hub',
+      'dev', 'develop', 'development', 'test', 'testing', 'local',
+      '1234', '12345', '123456', '1234567', '12345678', '123456789',
+    ]);
     const looksWeak =
-      portalToken.length < 16 ||
+      portalToken.length < 12 ||
       weak.has(portalToken.toLowerCase()) ||
       /^(.)\1+$/.test(portalToken);                // all-same-char
     if (looksWeak) {
-      const msg = `PORTAL_TOKEN is too weak (length=${portalToken.length}, must be >=16 chars and not a well-known default). Refusing to start the admin portal with a guessable token. Generate a random one: \`openssl rand -hex 32\``;
-      // Prefer the shared logger, but if this fires before the logger
-      // is wired we still want a loud crash — hence the dual path.
+      const msg = `PORTAL_TOKEN is too weak (length=${portalToken.length}, must be >=12 chars and not a well-known default). Refusing to start the admin portal with a guessable token. Generate a random one: \`openssl rand -hex 32\``;
       try {
         require('../utils/logger').logger.fatal({ tokenLength: portalToken.length }, msg);
       } catch { /* logger not ready */ }

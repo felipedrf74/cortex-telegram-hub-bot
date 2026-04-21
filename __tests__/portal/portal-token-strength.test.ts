@@ -29,8 +29,8 @@ describe('portal boot — PORTAL_TOKEN strength gate (M-3)', () => {
     vi.resetModules();
   });
 
-  it('refuses to boot with a token shorter than 16 chars', async () => {
-    process.env.PORTAL_TOKEN = 'short';
+  it('refuses to boot with a token shorter than 12 chars', async () => {
+    process.env.PORTAL_TOKEN = 'short';  // 5 chars — under the 12 floor
     const { createPortalServer } = await import('../../src/portal/server');
     expect(() => createPortalServer(null as any)).toThrow(/too weak/i);
   });
@@ -42,9 +42,9 @@ describe('portal boot — PORTAL_TOKEN strength gate (M-3)', () => {
     expect(() => createPortalServer(null as any)).toThrow(/too weak/i);
   });
 
-  it('refuses to boot with repeated-char tokens (length >=16 but trivial)', async () => {
-    // 16 'a's: length passes but /^(.)\1+$/ catches it.
-    process.env.PORTAL_TOKEN = 'aaaaaaaaaaaaaaaaaaaaaaaa';
+  it('refuses to boot with repeated-char tokens (length >=12 but trivial)', async () => {
+    // 20 'a's: length passes the 12-char floor but /^(.)\1+$/ catches it.
+    process.env.PORTAL_TOKEN = 'aaaaaaaaaaaaaaaaaaaa';
     const { createPortalServer } = await import('../../src/portal/server');
     expect(() => createPortalServer(null as any)).toThrow(/too weak/i);
   });
