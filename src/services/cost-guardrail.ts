@@ -256,6 +256,119 @@ export function isUserOverDailyCap(userId: number): DailyQuotaStatus {
   return getDailyQuotaStatus(userId);
 }
 
+// ── Per-user check+spend mutex ───────────────────────────────────
+//
+// TOCTOU fix (hardening audit follow-up 2026-04-21 pass 2):
+//
+// Before this mutex, concurrent requests from the same user could
+// both pass `isUserOverDailyCap` BEFORE either one wrote its
+// `api_usage` row. Example on Free ($0.005/day) with $0.002/call:
+//
+//   req A: isUserOverDailyCap → over=false (spent=0)
+//   req B: isUserOverDailyCap → over=false (spent=0) ← race!
+//   req A: AI call completes, writes $0.002 (spent=0.002)
+//   req B: AI call completes, writes $0.002 (spent=0.004) ✓
+//   req C: (fresh request)    → over=false (spent=0.004)
+//   req C: writes $0.002 (spent=0.006)  ← exceeds cap $0.005
+//
+// The mutex serializes check+spend PER USER so any pending AI call
+// completes (and writes its usage row) before the next one checks
+// the cap. Across users, execution is still concurrent.
+//
+// Implementation: a Map<userId, Promise> where each new caller
+// chains on the previous tail. Node's single-threaded event loop
+// makes this lock-free; the replace-then-await ordering guarantees
+// no two callers can observe an empty chain concurrently.
+
+const userCostLocks = new Map<number, Promise<unknown>>();
+
+/**
+ * Run `fn` with exclusive per-user ordering against any other
+ * `withUserCostLock(userId, ...)` call. Serialized within a user,
+ * concurrent across users. Safe to nest only if all nested calls use
+ * DIFFERENT userIds — same-user re-entry deadlocks.
+ *
+ * The lock survives `fn` throwing; errors bubble to the caller and
+ * the chain advances to the next waiter.
+ *
+ * Callers should wrap the ENTIRE check+AI-call+record boundary:
+ *
+ *   await withUserCostLock(userId, async () => {
+ *     const cap = isUserOverDailyCap(userId);
+ *     if (cap.over) { return send402(); }
+ *     await callAI();                    // writes api_usage inside
+ *   });
+ */
+export async function withUserCostLock<T>(
+  userId: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    // Invalid userId → no lock (the route will 401 anyway). This is
+    // belt-and-suspenders: we never want a bad userId to queue behind
+    // a real user's request.
+    return fn();
+  }
+  const prior = userCostLocks.get(userId) ?? Promise.resolve();
+  // Swallow prior errors — a previous caller's failure must not chain-
+  // fail the next caller. We care only about ordering, not outcome.
+  const next = prior.catch(() => { /* swallow */ }).then(fn);
+  userCostLocks.set(userId, next);
+  try {
+    return await next;
+  } finally {
+    // Clean up the entry only if no one chained onto us while we ran.
+    if (userCostLocks.get(userId) === next) {
+      userCostLocks.delete(userId);
+    }
+  }
+}
+
+/**
+ * Explicit-release variant for route handlers that would prefer a
+ * try/finally pattern over the callback form. Returns a `release()`
+ * function that MUST be called exactly once (in `finally`) to advance
+ * the chain. Calling it more than once is a no-op; failing to call it
+ * leaves every subsequent same-user request hanging until the process
+ * restarts.
+ *
+ *   const releaseCostLock = await acquireCostLock(userId);
+ *   try {
+ *     const cap = isUserOverDailyCap(userId);
+ *     if (cap.over) return send402();
+ *     await callAI();   // writes api_usage inside the lock window
+ *   } finally {
+ *     releaseCostLock();
+ *   }
+ */
+export async function acquireCostLock(userId: number): Promise<() => void> {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return () => { /* no-op for invalid userId */ };
+  }
+  let releaseGate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const prior = userCostLocks.get(userId) ?? Promise.resolve();
+  const next = prior.catch(() => { /* swallow */ }).then(() => gate);
+  userCostLocks.set(userId, next);
+  // Wait for our turn: the prior caller must release before we proceed.
+  await prior.catch(() => { /* swallow */ });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseGate();
+    // Clean up if no one chained behind us while we held the lock.
+    if (userCostLocks.get(userId) === next) {
+      userCostLocks.delete(userId);
+    }
+  };
+}
+
+/** Test-only: drop every in-flight per-user lock. */
+export function _resetUserCostLocksForTests(): void {
+  userCostLocks.clear();
+}
+
 /**
  * Get daily spend for a specific user (for portal display).
  */

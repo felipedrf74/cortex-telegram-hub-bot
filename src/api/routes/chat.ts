@@ -12,7 +12,7 @@ import { clearChatHistory, listChatMessages, storeChatMessage, updateAssistantMe
 import { classifyAndExtractImage, type ImageClassificationResult } from '../../services/anthropic';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { getUserLanguage, setUserLanguage, getUserById, getUserByTelegramId } from '../../services/user-service';
-import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import {
   addToConversation,
   clearAllConversations,
@@ -1569,6 +1569,14 @@ export function chatRoutes(): Router {
       logger.warn({ err }, 'iOS X-Language header handling failed — continuing with existing preference');
     }
 
+    // ── TOCTOU-safe cost window ─────────────────────────────────
+    // Acquire the per-user cost lock BEFORE the quota check so that
+    // concurrent iOS requests from the same user serialize through
+    // the check → AI → api_usage INSERT boundary. Without this,
+    // two parallel calls could both pass the cap check, both spend,
+    // and together exceed the daily budget. See
+    // `acquireCostLock` docs in services/cost-guardrail.ts.
+    const releaseCostLock = await acquireCostLock(userId);
     try {
       const requestStartedAt = Date.now();
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
@@ -2084,6 +2092,10 @@ export function chatRoutes(): Router {
       res.status(500).json({
         error: { code: 'INTERNAL', message: err.message || 'Failed to process message' },
       });
+    } finally {
+      // Release the per-user cost lock so the next concurrent request
+      // from this user can run its own check → AI → spend cycle.
+      releaseCostLock();
     }
   });
 

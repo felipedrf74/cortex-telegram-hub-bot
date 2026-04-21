@@ -9,7 +9,11 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-import { rateLimitMiddleware, _resetRateLimiterForTests } from '../../src/api/rate-limiter';
+import {
+  rateLimitMiddleware,
+  webhookRateLimitMiddleware,
+  _resetRateLimiterForTests,
+} from '../../src/api/rate-limiter';
 
 function mockReq(opts: { userId?: number; ip?: string } = {}): Request {
   return {
@@ -121,5 +125,79 @@ describe('rate-limiter — two-bucket behavior', () => {
 
     expect(next).toHaveBeenCalledOnce();
     expect((res as any).headers['X-RateLimit-Bucket']).toBe('ip');
+  });
+});
+
+// ── L-1 webhook bucket (2026-04-21 pass 2) ─────────────────────────
+//
+// Apple App Store + Stripe webhooks had no rate limit. A forged-
+// payload flood could CPU-starve the Node event loop BEFORE the
+// cheap signature/bundle-id checks reject it. `webhookRateLimitMiddleware`
+// enforces 120 req/min/IP on those two endpoints.
+describe('webhookRateLimitMiddleware', () => {
+  beforeEach(() => {
+    _resetRateLimiterForTests();
+  });
+
+  it('keys by client IP and tags the response X-RateLimit-Bucket=webhook', () => {
+    const res = mockRes();
+    const next = vi.fn();
+    webhookRateLimitMiddleware(mockReq({ ip: '203.0.113.9' }), res, next as NextFunction);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect((res as any).headers['X-RateLimit-Bucket']).toBe('webhook');
+    expect((res as any).headers['X-RateLimit-Limit']).toBe(120);
+  });
+
+  it('allows comfortable legitimate traffic (60 bursts from Stripe in 1 minute)', () => {
+    const next = vi.fn();
+    for (let i = 0; i < 60; i++) {
+      webhookRateLimitMiddleware(
+        mockReq({ ip: '198.51.100.1' }),
+        mockRes(),
+        next as NextFunction,
+      );
+    }
+    expect(next).toHaveBeenCalledTimes(60);
+  });
+
+  it('rate-limits at 120/min with 429 + Retry-After', () => {
+    const next = vi.fn();
+    for (let i = 0; i < 120; i++) {
+      webhookRateLimitMiddleware(
+        mockReq({ ip: '198.51.100.2' }),
+        mockRes(),
+        next as NextFunction,
+      );
+    }
+    // 121st call must be rejected.
+    const blocked = mockRes();
+    webhookRateLimitMiddleware(
+      mockReq({ ip: '198.51.100.2' }),
+      blocked,
+      next as NextFunction,
+    );
+    expect((blocked as any).statusCode).toBe(429);
+    expect((blocked as any).headers['Retry-After']).toBeDefined();
+  });
+
+  it('keeps separate IPs on independent buckets (no cross-blocking)', () => {
+    const next = vi.fn();
+    for (let i = 0; i < 121; i++) {
+      webhookRateLimitMiddleware(
+        mockReq({ ip: '198.51.100.3' }),
+        mockRes(),
+        next as NextFunction,
+      );
+    }
+    // A DIFFERENT Stripe egress IP must still be welcomed.
+    const fresh = mockRes();
+    webhookRateLimitMiddleware(
+      mockReq({ ip: '203.0.113.77' }),
+      fresh,
+      next as NextFunction,
+    );
+    expect((fresh as any).statusCode).toBe(200);
+    expect((fresh as any).headers['X-RateLimit-Remaining']).toBe(119);
   });
 });

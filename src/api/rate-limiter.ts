@@ -127,10 +127,65 @@ setInterval(() => {
       ipRequestLog.set(ip, inWindow);
     }
   }
+  for (const [ip, timestamps] of webhookRequestLog) {
+    const inWindow = timestamps.filter((ts) => now - ts < WINDOW_MS);
+    if (inWindow.length === 0) {
+      webhookRequestLog.delete(ip);
+    } else {
+      webhookRequestLog.set(ip, inWindow);
+    }
+  }
 }, 5 * 60 * 1000);
+
+// ── Webhook rate limit (L-1 from tenant hardening pass 2026-04-21) ─
+//
+// Apple App Store and Stripe webhooks had no rate-limit. Legitimate
+// Apple + Stripe traffic is infrastructure-driven and low-volume, but
+// a forged payload burst (especially before signature verification
+// would reject it) could flood the handler, CPU-starve the Node
+// event loop, and cascade into iOS API timeouts.
+//
+// We use a SEPARATE bucket with a looser cap than `/auth/*` because:
+//   - Stripe batches renewal events and can send ~dozens/minute on a
+//     busy billing day — 30/min (auth cap) is too tight.
+//   - Webhook signature verification is cheap, so 120/min/IP gives
+//     comfortable headroom without letting a forger spam us.
+// The 120/min cap applies PER client IP. Stripe uses a few egress
+// IPs; Apple sends from its own range. Under Cloudflare Tunnel the IP
+// observed is the tunnel's, so all webhook traffic shares a single
+// bucket — which is exactly what we want: protect the node, not the
+// vendor.
+const webhookRequestLog = new Map<string, number[]>();
+const WEBHOOK_MAX_REQUESTS = 120; // per minute
+
+export function webhookRateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const ip = extractClientIp(req);
+  const now = Date.now();
+  const requests = webhookRequestLog.get(ip) || [];
+  const inWindow = requests.filter((ts) => now - ts < WINDOW_MS);
+  inWindow.push(now);
+  webhookRequestLog.set(ip, inWindow);
+
+  res.setHeader('X-RateLimit-Limit', WEBHOOK_MAX_REQUESTS);
+  res.setHeader('X-RateLimit-Remaining', Math.max(0, WEBHOOK_MAX_REQUESTS - inWindow.length));
+  res.setHeader('X-RateLimit-Reset', Math.ceil((now + WINDOW_MS) / 1000));
+  res.setHeader('X-RateLimit-Bucket', 'webhook');
+
+  if (inWindow.length > WEBHOOK_MAX_REQUESTS) {
+    const retryAfter = Math.ceil(WINDOW_MS / 1000);
+    res.setHeader('Retry-After', retryAfter);
+    res.status(429).json({
+      error: { code: 'RATE_LIMITED', message: 'Too many webhook deliveries from this IP.' },
+    });
+    return;
+  }
+
+  next();
+}
 
 /** Test-only: clear both buckets between test cases. */
 export function _resetRateLimiterForTests(): void {
   userRequestLog.clear();
   ipRequestLog.clear();
+  webhookRequestLog.clear();
 }

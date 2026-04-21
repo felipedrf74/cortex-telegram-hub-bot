@@ -18,7 +18,7 @@ import { adaptTrainingPlanToAvailableEquipment, buildTrainingEquipmentAdaptation
 import { createEvent, getEvents } from '../../services/unified-calendar';
 import { applyTrainingPlanCoordination, buildTrainingPlanCoordination } from '../../services/training-plan-coordination';
 import { sendSuccess, sendError } from '../response-helpers';
-import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import type { CoachRecommendation } from '../../services/garmin-coach';
 import { applyCoachRecommendations, generateCoachBriefing } from '../../services/garmin-coach';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
@@ -1127,8 +1127,12 @@ export function trainingRoutes(): Router {
       return;
     }
 
+    // TOCTOU-safe cost window — serialize check + AI + api_usage row
+    // per user. See acquireCostLock docs in services/cost-guardrail.ts.
+    const releaseCostLock = await acquireCostLock(userId);
     const quota = isUserOverDailyCap(userId);
     if (quota.over) {
+      releaseCostLock();
       sendError(
         res,
         'QUOTA_EXCEEDED',
@@ -1453,6 +1457,8 @@ export function trainingRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, userId }, 'Training plan generation failed');
       sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
+    } finally {
+      releaseCostLock();
     }
   });
 

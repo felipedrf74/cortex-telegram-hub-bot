@@ -43,7 +43,11 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { isOwnerUserRef } from './user-service';
-import { type BillingPlan, getEffectiveDailyCostLimitUsd } from './plan-quotas';
+import {
+  type BillingPlan,
+  getEffectiveDailyCostLimitUsd,
+  getPlanAllowedSkillsOverride,
+} from './plan-quotas';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -81,10 +85,32 @@ export interface UserEntitlement {
  * Skill IDs that Free-tier users are allowed to access. Secretary is
  * the "free tier anchor" — every user, even free, gets a taste. All
  * other skills require plan ≥ pro.
+ *
+ * This is the *compiled-in* rule. The portal admin can override it at
+ * runtime via `plan_configs.allowed_skills_json` (see migration 075).
+ * `freeAllowedSkillsForRuntime` resolves the effective set per request.
  */
 export const FREE_TIER_ALLOWED_SKILLS: ReadonlySet<string> = new Set([
   'secretary',
 ]);
+
+/**
+ * Resolve the effective allowed-skill set for a plan at runtime,
+ * consulting the portal's `plan_configs` override first and falling
+ * back to the compiled-in rule. Only "free" has a compiled-in rule
+ * today — paid plans use the `_UNRESTRICTED` sentinel by design.
+ *
+ * Runtime reads the override via `getPlanAllowedSkillsOverride` so
+ * admin edits via the portal take effect without a restart. If the
+ * override is empty (`[]`) the plan gets NO skills — this is
+ * intentional: admins can "pause" a plan by clearing its allow-list.
+ */
+function resolveAllowedSkillsForPlan(plan: BillingPlan): ReadonlySet<string> {
+  const override = getPlanAllowedSkillsOverride(plan);
+  if (override !== undefined) return override;
+  if (plan === 'free') return FREE_TIER_ALLOWED_SKILLS;
+  return _UNRESTRICTED;
+}
 
 // Rows
 interface SubscriptionRow {
@@ -132,7 +158,7 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
       isFounder: false,
       isOwner: isOwnerUserRef(userId),
       dailyCostCapUsd: getEffectiveDailyCostLimitUsd('owner'),
-      allowedSkills: allSkills(),
+      allowedSkills: resolveAllowedSkillsForPlan('owner'),
       evaluatedAt,
     };
   }
@@ -155,7 +181,7 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
       isFounder: false,
       isOwner: true,
       dailyCostCapUsd: getEffectiveDailyCostLimitUsd('owner'),
-      allowedSkills: allSkills(),
+      allowedSkills: resolveAllowedSkillsForPlan('owner'),
       evaluatedAt,
     };
   }
@@ -192,7 +218,7 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
         isFounder: true,
         isOwner: false,
         dailyCostCapUsd: getEffectiveDailyCostLimitUsd(plan),
-        allowedSkills: allSkills(),
+        allowedSkills: resolveAllowedSkillsForPlan(plan),
         evaluatedAt,
       };
     }
@@ -209,7 +235,7 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
         isFounder: false,
         isOwner: false,
         dailyCostCapUsd: getEffectiveDailyCostLimitUsd(plan),
-        allowedSkills: allSkills(),
+        allowedSkills: resolveAllowedSkillsForPlan(plan),
         evaluatedAt,
       };
     }
@@ -226,7 +252,7 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
         isFounder: false,
         isOwner: false,
         dailyCostCapUsd: getEffectiveDailyCostLimitUsd(plan),
-        allowedSkills: allSkills(),
+        allowedSkills: resolveAllowedSkillsForPlan(plan),
         evaluatedAt,
       };
     }
@@ -245,7 +271,7 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
         isFounder: false,
         isOwner: false,
         dailyCostCapUsd: getEffectiveDailyCostLimitUsd(plan),
-        allowedSkills: allSkills(),
+        allowedSkills: resolveAllowedSkillsForPlan(plan),
         evaluatedAt,
       };
     }
@@ -296,7 +322,10 @@ function freeEntitlement(opts: {
     isFounder: opts.isFounder,
     isOwner: opts.isOwner,
     dailyCostCapUsd: getEffectiveDailyCostLimitUsd('free'),
-    allowedSkills: FREE_TIER_ALLOWED_SKILLS,
+    // Honors portal admin override of Free's allowed-skill list (e.g.
+    // admin could add 'training' to Free temporarily during a promo);
+    // compiled-in rule (Secretary only) applies otherwise.
+    allowedSkills: resolveAllowedSkillsForPlan('free'),
     evaluatedAt: opts.evaluatedAt,
   };
 }
@@ -309,23 +338,10 @@ function normalizePlan(plan: string | null): BillingPlan {
   return 'free';
 }
 
-/**
- * The full skill set granted to paid users. Kept in-memory — the
- * skill-tiers.ts catalog owns per-skill tier requirements; this set
- * is just "anything not free-gated". Pro users hit the catalog for
- * per-skill enforcement.
- */
-function allSkills(): ReadonlySet<string> {
-  // Not a hard-coded list — we intentionally return "unrestricted"
-  // for paid plans. `isSkillAllowedByEntitlement` short-circuits on
-  // the `plan === 'free'` branch; paid plans fall through to the
-  // existing catalog gate in skill-tiers.ts for granular checks.
-  return _UNRESTRICTED;
-}
-
 /** Sentinel set that `.has()` always returns true on. Used to mean
  *  "this entitlement does not impose a skill-level restriction; ask
- *  the skill-tiers catalog for the granular answer". */
+ *  the skill-tiers catalog for the granular answer". Paid plans
+ *  default to this; portal admins can override to a strict list. */
 const _UNRESTRICTED: ReadonlySet<string> = {
   has: () => true,
   [Symbol.iterator]: function* () { /* empty — caller should not iterate */ },

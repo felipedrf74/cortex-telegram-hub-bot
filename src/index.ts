@@ -67,11 +67,17 @@ async function main(): Promise<void> {
   try {
     const db = getDb();
     const rows = db
-      .prepare('SELECT plan_id, daily_cost_usd FROM plan_configs WHERE active = 1')
-      .all() as Array<{ plan_id: string; daily_cost_usd: number }>;
+      .prepare(
+        'SELECT plan_id, daily_cost_usd, allowed_skills_json FROM plan_configs WHERE active = 1',
+      )
+      .all() as Array<{
+        plan_id: string;
+        daily_cost_usd: number;
+        allowed_skills_json: string | null;
+      }>;
     const { applyPlanConfigRows } = require('./services/plan-quotas');
     applyPlanConfigRows(rows);
-    logger.info({ planCount: rows.length }, 'Plan config overrides loaded from DB');
+    logger.info({ planCount: rows.length }, 'Plan config overrides loaded from DB (caps + allowed_skills)');
   } catch (err) {
     logger.warn({ err }, 'Plan config hydration skipped (plan_configs table may be missing)');
   }

@@ -40,15 +40,22 @@ export interface RequireEntitlementOptions {
   /** The skill id being gated (e.g. 'content', 'cooking', 'finance'). */
   skill: string;
   /**
-   * Optional: also require the user's effective plan to be at least
-   * this tier. Defaults to "any paid plan" (pro or max). Owners and
-   * founders always pass regardless of this setting.
+   * Optional additional plan-floor check. By default the allow-list is
+   * the only gate — if the user's entitlement has the skill in its
+   * `allowedSkills` set they pass. Set this when a specific route needs
+   * to enforce Max-only even though the skill is technically allowed on
+   * Pro (currently future-proofing only — no route uses this today).
+   *
+   * 2026-04-21 pass 2: default was 'pro', which meant the middleware
+   * over-denied Free users on routes that happened to use this on a
+   * free skill (e.g. if Secretary ever got gated through it). Now
+   * the allow-list IS the contract; minPlan is an optional extra floor.
    */
-  minPlan?: 'pro' | 'max';
+  minPlan?: 'free' | 'pro' | 'max';
 }
 
 export function requireEntitlement(opts: RequireEntitlementOptions) {
-  const minPlan = opts.minPlan ?? 'pro';
+  const minPlan: 'free' | 'pro' | 'max' = opts.minPlan ?? 'free';
   return function entitlementMiddleware(req: Request, res: Response, next: NextFunction): void {
     const userId = (req as AuthenticatedRequest).userId;
     if (typeof userId !== 'number' || userId <= 0) {

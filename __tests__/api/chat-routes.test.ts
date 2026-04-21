@@ -161,6 +161,10 @@ vi.mock('../../src/services/skill-tiers', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  // M-2 (2026-04-21 pass 2): route handlers wrap their check+AI+spend
+  // in acquireCostLock to serialize concurrent same-user requests.
+  // Tests don't exercise concurrency, so stub with a no-op release.
+  acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
 vi.mock('../../src/state/conversation', () => ({

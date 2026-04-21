@@ -41,6 +41,7 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
+  acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
 vi.mock('../../src/services/invoice-filer', () => ({

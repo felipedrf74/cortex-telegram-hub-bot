@@ -86,6 +86,7 @@ vi.mock('../../src/services/cost-guardrail', () => ({
     resetAt: '2026-04-15T00:00:00.000Z',
   })),
   buildQuotaExceededMessage: vi.fn(() => 'quota exceeded'),
+  acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
 }));
 
 vi.mock('../../src/services/plan-cache-invalidator', () => ({

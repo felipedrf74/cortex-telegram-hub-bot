@@ -25,6 +25,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
+import { webhookRateLimitMiddleware } from '../rate-limiter';
 import type { Bot } from 'grammy';
 
 // Maximum age of a webhook delivery we'll accept. Without a timestamp window,
@@ -104,8 +105,13 @@ export function createWebhookRouter(bot?: Bot): Router {
   // Stripe sends checkout.session.completed, customer.subscription.*,
   // and invoice.payment_failed events here. Must verify the webhook
   // signature against STRIPE_WEBHOOK_SECRET before processing.
+  //
+  // L-1 (2026-04-21, pass 2): wrapped in webhookRateLimitMiddleware.
+  // Stripe traffic is infrastructure-driven and bursty (a renewal
+  // batch can emit ~dozens/min), so the 120/min/IP ceiling is plenty
+  // while still capping a forged-signature flood.
 
-  router.post('/stripe', rawJson, async (req: Request, res: Response) => {
+  router.post('/stripe', webhookRateLimitMiddleware, rawJson, async (req: Request, res: Response) => {
     const rawBody = req.body as Buffer;
     const signature = (req.headers['stripe-signature'] as string) || '';
 

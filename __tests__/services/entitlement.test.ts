@@ -29,7 +29,12 @@ import {
   isSkillAllowedByEntitlement,
   FREE_TIER_ALLOWED_SKILLS,
 } from '../../src/services/entitlement';
-import { FREE_DAILY_COST_CAP_USD, _resetPortalOverridesForTests } from '../../src/services/plan-quotas';
+import {
+  FREE_DAILY_COST_CAP_USD,
+  _resetPortalOverridesForTests,
+  setPlanAllowedSkillsOverride,
+  applyPlanConfigRows,
+} from '../../src/services/plan-quotas';
 
 function mockSubscriptionRow(row: {
   plan: string | null;
@@ -176,15 +181,22 @@ describe('getEffectiveEntitlement', () => {
     expect(ent.dailyCostCapUsd).toBe(FREE_DAILY_COST_CAP_USD);
   });
 
-  it('respects PAYWALL_ENABLED=false as a beta bypass (all users get owner tier)', () => {
+  it('respects PAYWALL_ENABLED=false as a beta bypass (all users get owner tier)', async () => {
     process.env.PAYWALL_ENABLED = 'false';
     // Re-import to pick up the env flip — simplest is a fresh require.
     vi.resetModules();
-    return import('../../src/services/entitlement').then((mod) => {
+    try {
+      const mod = await import('../../src/services/entitlement');
       const ent = mod.getEffectiveEntitlement(99);
       expect(ent.plan).toBe('owner');
       expect(ent.dailyCostCapUsd).toBeGreaterThan(FREE_DAILY_COST_CAP_USD);
-    });
+    } finally {
+      // ALWAYS restore — otherwise the leaked env flips subsequent
+      // test files in the same worker (observed: cost-guardrail.ts
+      // then reports plan='beta' for every user when run after this).
+      delete process.env.PAYWALL_ENABLED;
+      vi.resetModules();
+    }
   });
 });
 
@@ -228,5 +240,97 @@ describe('FREE_TIER_ALLOWED_SKILLS', () => {
     expect(FREE_TIER_ALLOWED_SKILLS.has('secretary')).toBe(true);
     expect(FREE_TIER_ALLOWED_SKILLS.has('content')).toBe(false);
     expect(FREE_TIER_ALLOWED_SKILLS.has('training')).toBe(false);
+  });
+});
+
+// ── M-4: portal allowed-skills override wiring ────────────────────
+//
+// Business rule: the admin should be able to broaden or narrow the
+// Free tier's allow-list at runtime via the portal's PUT /api/plans/:planId
+// endpoint (which persists to `plan_configs.allowed_skills_json` AND
+// calls `setPlanAllowedSkillsOverride`). The runtime gate must read
+// that override on every request.
+describe('portal allowed-skills override (M-4)', () => {
+  beforeEach(() => {
+    _resetPortalOverridesForTests();
+    mockIsOwnerUserRef.mockReturnValue(false);
+    mockNoSubscription();
+  });
+
+  it('free user gets the portal override list when set (wider than compiled-in)', async () => {
+    setPlanAllowedSkillsOverride('free', ['secretary', 'training']);
+
+    const ent = getEffectiveEntitlement(500);
+    expect(ent.plan).toBe('free');
+    expect(isSkillAllowedByEntitlement(ent, 'secretary')).toBe(true);
+    expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(true);   // unlocked by admin
+    expect(isSkillAllowedByEntitlement(ent, 'content')).toBe(false);   // NOT in list
+  });
+
+  it('free user gets EMPTY access when admin clears the list (pause the plan)', async () => {
+    setPlanAllowedSkillsOverride('free', []);
+
+    const ent = getEffectiveEntitlement(501);
+    expect(ent.plan).toBe('free');
+    // Even Secretary is denied when the admin explicitly zeroes the list.
+    expect(isSkillAllowedByEntitlement(ent, 'secretary')).toBe(false);
+    expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(false);
+  });
+
+  it('falls back to compiled-in rule when override cleared (null)', async () => {
+    setPlanAllowedSkillsOverride('free', ['training']);  // wider than default
+    setPlanAllowedSkillsOverride('free', null);           // clear
+
+    const ent = getEffectiveEntitlement(502);
+    expect(isSkillAllowedByEntitlement(ent, 'secretary')).toBe(true);   // compiled-in
+    expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(false);   // no longer granted
+  });
+
+  it('paid plans remain UNRESTRICTED when no override is set', () => {
+    mockSubscriptionRow({ plan: 'pro', status: 'active', provider: 'stripe', current_period_end: null });
+    const ent = getEffectiveEntitlement(503);
+    expect(ent.plan).toBe('pro');
+    for (const skill of ['content', 'cooking', 'finance', 'training', 'secretary']) {
+      expect(isSkillAllowedByEntitlement(ent, skill)).toBe(true);
+    }
+  });
+
+  it('paid plan can be narrowed by admin override', async () => {
+    mockSubscriptionRow({ plan: 'pro', status: 'active', provider: 'stripe', current_period_end: null });
+    setPlanAllowedSkillsOverride('pro', ['secretary', 'training']);  // no content/cooking/finance
+
+    const ent = getEffectiveEntitlement(504);
+    expect(ent.plan).toBe('pro');
+    expect(isSkillAllowedByEntitlement(ent, 'secretary')).toBe(true);
+    expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(true);
+    expect(isSkillAllowedByEntitlement(ent, 'content')).toBe(false);
+    expect(isSkillAllowedByEntitlement(ent, 'finance')).toBe(false);
+  });
+
+  it('applyPlanConfigRows hydrates BOTH cost cap and allowed_skills from DB', async () => {
+    applyPlanConfigRows([
+      { plan_id: 'free', daily_cost_usd: 0.010, allowed_skills_json: '["secretary","training"]' },
+      { plan_id: 'pro',  daily_cost_usd: 0.30,  allowed_skills_json: '["secretary","training","content"]' },
+    ]);
+
+    const entFree = getEffectiveEntitlement(505);
+    expect(entFree.dailyCostCapUsd).toBe(0.010);
+    expect(isSkillAllowedByEntitlement(entFree, 'training')).toBe(true);
+
+    mockSubscriptionRow({ plan: 'pro', status: 'active', provider: 'stripe', current_period_end: null });
+    const entPro = getEffectiveEntitlement(506);
+    expect(entPro.dailyCostCapUsd).toBe(0.30);
+    expect(isSkillAllowedByEntitlement(entPro, 'content')).toBe(true);
+    expect(isSkillAllowedByEntitlement(entPro, 'finance')).toBe(false);  // NOT in override
+  });
+
+  it('malformed allowed_skills_json leaves compiled-in rule intact (fail-safe)', () => {
+    applyPlanConfigRows([
+      { plan_id: 'free', daily_cost_usd: 0.005, allowed_skills_json: 'this is not json' },
+    ]);
+
+    const ent = getEffectiveEntitlement(507);
+    expect(isSkillAllowedByEntitlement(ent, 'secretary')).toBe(true);  // compiled-in rule still applies
+    expect(isSkillAllowedByEntitlement(ent, 'training')).toBe(false);
   });
 });

@@ -46,6 +46,16 @@ const DEFAULT_EFFECTIVE_DAILY_COST_LIMITS: Record<BillingPlan, number> = {
  */
 const portalOverrides: Partial<Record<BillingPlan, number>> = {};
 
+/**
+ * Parallel override for per-plan allowed-skills sets. Populated from
+ * the `plan_configs.allowed_skills_json` column at boot (and again
+ * whenever the portal admin edits a plan). `null` means "no override —
+ * fall back to the compiled-in rule in entitlement.ts". Added
+ * 2026-04-21 as the second pass of the tenant+entitlement hardening;
+ * before this, the portal's allowed_skills_json was decorative.
+ */
+const portalAllowedSkills: Partial<Record<BillingPlan, ReadonlySet<string>>> = {};
+
 const STORED_DAILY_COST_LIMITS: Record<'free' | 'pro' | 'max' | 'owner', number> = {
   free: FREE_DAILY_COST_CAP_USD,
   pro: 0.2,
@@ -94,10 +104,44 @@ export function setPlanDailyCostCapOverride(plan: BillingPlan, capUsd: number | 
   portalOverrides[plan] = capUsd;
 }
 
+/**
+ * Portal admin writes here when mutating the allowed-skill list for a
+ * plan. Pass `null` to clear the override (compiled-in rule applies).
+ * Unknown skill ids are accepted as-is — this registry doesn't know
+ * the catalog; the entitlement resolver asks it "does this set have
+ * that id?" and treats a missing id as denied.
+ */
+export function setPlanAllowedSkillsOverride(plan: BillingPlan, skillIds: Iterable<string> | null): void {
+  if (skillIds === null) {
+    delete portalAllowedSkills[plan];
+    return;
+  }
+  const normalized = new Set<string>();
+  for (const id of skillIds) {
+    if (typeof id === 'string' && id.length > 0) {
+      normalized.add(id.toLowerCase());
+    }
+  }
+  portalAllowedSkills[plan] = normalized;
+}
+
+/**
+ * Read the portal-managed allowed-skill set for a plan. Returns
+ * `undefined` when no override exists (caller should fall back to the
+ * compiled-in rule). Use this instead of `FREE_TIER_ALLOWED_SKILLS`
+ * directly when you want the admin to have final say.
+ */
+export function getPlanAllowedSkillsOverride(plan: BillingPlan): ReadonlySet<string> | undefined {
+  return portalAllowedSkills[plan];
+}
+
 /** Test-only: reset all portal overrides between cases. */
 export function _resetPortalOverridesForTests(): void {
   for (const key of Object.keys(portalOverrides) as BillingPlan[]) {
     delete portalOverrides[key];
+  }
+  for (const key of Object.keys(portalAllowedSkills) as BillingPlan[]) {
+    delete portalAllowedSkills[key];
   }
 }
 
@@ -121,13 +165,39 @@ export function snapshotPlanCaps(): Record<BillingPlan, number> {
  * The DB is queried through a callback (avoid importing `database`
  * here to keep this module cycle-free). The caller passes a row
  * provider; the function mutates the override map.
+ *
+ * `allowed_skills_json` is optional and forward-compatible — older
+ * environments that don't persist it won't populate the allowed-
+ * skills override; those plans fall back to the compiled-in rule in
+ * entitlement.ts. Added 2026-04-21 when the hardening audit wired
+ * the column through to the runtime gate.
  */
-export function applyPlanConfigRows(rows: ReadonlyArray<{ plan_id: string; daily_cost_usd: number }>): void {
+export function applyPlanConfigRows(
+  rows: ReadonlyArray<{
+    plan_id: string;
+    daily_cost_usd: number;
+    allowed_skills_json?: string | null;
+  }>,
+): void {
   for (const row of rows) {
     const plan = row.plan_id as BillingPlan;
     if (!(plan in DEFAULT_EFFECTIVE_DAILY_COST_LIMITS)) continue; // unknown plan name — skip
     if (typeof row.daily_cost_usd === 'number' && Number.isFinite(row.daily_cost_usd)) {
       portalOverrides[plan] = row.daily_cost_usd;
+    }
+    // Best-effort parse of the allowed_skills_json column. A malformed
+    // JSON payload leaves the compiled-in rule intact — we never want
+    // a corrupt portal row to accidentally widen access.
+    if (typeof row.allowed_skills_json === 'string' && row.allowed_skills_json.length > 0) {
+      try {
+        const parsed = JSON.parse(row.allowed_skills_json);
+        if (Array.isArray(parsed)) {
+          setPlanAllowedSkillsOverride(plan, parsed.filter((x) => typeof x === 'string'));
+        }
+      } catch {
+        // Leave override unset → compiled-in rule applies. Logged at
+        // the caller site in index.ts for observability.
+      }
     }
   }
 }

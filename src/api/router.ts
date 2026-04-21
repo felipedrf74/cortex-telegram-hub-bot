@@ -2,7 +2,7 @@
 
 import express, { Router } from 'express';
 import { authMiddleware } from './auth-middleware';
-import { rateLimitMiddleware } from './rate-limiter';
+import { rateLimitMiddleware, webhookRateLimitMiddleware } from './rate-limiter';
 import { requestTimerMiddleware } from './request-timer';
 import { authRoutes } from './routes/auth';
 import { chatRoutes } from './routes/chat';
@@ -103,7 +103,11 @@ export function createApiRouter(): Router {
   // Apple App Store Server Notifications — public (no JWT).
   // Apple sends lifecycle events (renewal, expiry, refund) server-to-server.
   // Must be mounted BEFORE authMiddleware so Apple's POST is accepted.
-  router.post('/billing/apple-notifications', express.json(), (req, res) => {
+  //
+  // L-1 (2026-04-21, pass 2): wrapped in webhookRateLimitMiddleware to
+  // prevent a forged-payload flood from CPU-starving the event loop
+  // BEFORE the cheap bundle-id + JWS validation rejects bad traffic.
+  router.post('/billing/apple-notifications', webhookRateLimitMiddleware, express.json(), (req, res) => {
     try {
       const { signedPayload } = req.body || {};
       if (!signedPayload || typeof signedPayload !== 'string') {

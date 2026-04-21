@@ -42,7 +42,7 @@ import {
   calculateMonthlyTax,
   markTaxPaid,
 } from '../../services/finance-tracker';
-import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { analyzeInvoiceImage } from '../../services/invoice-filer';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
@@ -484,13 +484,17 @@ export function financeRoutes(): Router {
       return;
     }
 
-    // ── Cost cap ──────────────────────────────────────────────
+    // ── Cost cap (TOCTOU-safe) ────────────────────────────────
     // Per-user daily USD cap from cost-guardrail. Rejects before
     // the Gemini call so the user never gets charged past their
     // PER_USER_DAILY_USD_CAP. Since vision calls are cheap
     // (~$0.0001 each), the cap is mostly a stuck-retry-loop guard.
+    // Acquire the per-user lock so concurrent parse-receipt calls
+    // from the same user can't both pass the cap check.
+    const releaseCostLock = await acquireCostLock(userId);
     const cap = isUserOverDailyCap(userId);
     if (cap.over) {
+      releaseCostLock();
       logger.warn(
         { userId, spentUsd: cap.spentUsd, capUsd: cap.capUsd },
         'iOS parse-receipt blocked by daily cost cap',
@@ -554,6 +558,8 @@ export function financeRoutes(): Router {
         return;
       }
       sendError(res, 'INTERNAL', err?.message || 'Receipt parsing failed', 500);
+    } finally {
+      releaseCostLock();
     }
   }));
 

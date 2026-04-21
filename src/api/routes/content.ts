@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
-import { buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
+import { acquireCostLock, buildQuotaExceededMessage, isUserOverDailyCap } from '../../services/cost-guardrail';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
 
@@ -783,8 +783,12 @@ export function contentRoutes(): Router {
       : 'structured';
     const startMs = Date.now();
 
+    // TOCTOU-safe cost window — serialize check + AI + api_usage row
+    // per user. See acquireCostLock docs in services/cost-guardrail.ts.
+    const releaseCostLock = await acquireCostLock(userId);
     const quota = isUserOverDailyCap(userId);
     if (quota.over) {
+      releaseCostLock();
       sendError(
         res,
         'QUOTA_EXCEEDED',
@@ -875,6 +879,8 @@ export function contentRoutes(): Router {
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');
       sendError(res, 'INTERNAL', err?.message || 'Script generation failed', 500);
+    } finally {
+      releaseCostLock();
     }
   });
 
