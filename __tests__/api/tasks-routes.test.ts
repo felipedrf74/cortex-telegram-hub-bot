@@ -520,4 +520,98 @@ describe('Task routes sync provider metadata', () => {
       }),
     );
   });
+
+  // ── Latency fix 2026-04-21: resolveTaskListName SWR cache ─────
+  //
+  // Prior to this pass, every PATCH / complete / checklist mutation
+  // made a fresh `getLists()` MS Graph call just to look up a list's
+  // display name, costing ~150-400ms per mutation. The fix teaches
+  // `resolveTaskListName` to read from the user-scoped SWR cache
+  // `u:${userId}:task-lists` first. These tests pin that behavior.
+  describe('resolveTaskListName latency fix', () => {
+    it('PATCH does NOT call provider.getLists when the SWR cache has the list', async () => {
+      // Warm the SWR cache with the list the PATCH will look up.
+      mockGetCachedSWR.mockImplementation((key: string) => {
+        if (key === 'u:12:task-lists') {
+          return {
+            value: {
+              lists: [
+                { id: 'list-1', name: 'Tasks', displayName: 'Tasks' },
+                { id: 'list-2', name: 'Work', displayName: 'Work' },
+              ],
+            },
+            fresh: true,
+          };
+        }
+        return null;
+      });
+
+      const res = await dispatch('PATCH', '/list-1/task-1', {
+        params: { listId: 'list-1', taskId: 'task-1' },
+        body: { dueDateTime: '2026-04-22T09:00:00Z' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      // The key assertion: getLists was NEVER invoked on the mutation path.
+      // (resolveMutatedTask's fallback getTasks is a separate concern.)
+      expect(providerApi.getLists).not.toHaveBeenCalled();
+      // Provider updateTask WAS called with the cached list name, not 'Tasks' fallback.
+      expect(providerApi.updateTask).toHaveBeenCalledWith(
+        'list-1', 'task-1', expect.objectContaining({ dueDateTime: '2026-04-22T09:00:00Z' }), 'Tasks',
+      );
+    });
+
+    it('POST /complete does NOT call provider.getLists when the SWR cache has the list', async () => {
+      mockGetCachedSWR.mockImplementation((key: string) => {
+        if (key === 'u:12:task-lists') {
+          return {
+            value: { lists: [{ id: 'list-1', name: 'Familia', displayName: 'Familia' }] },
+            fresh: true,
+          };
+        }
+        return null;
+      });
+
+      const res = await dispatch('POST', '/list-1/task-1/complete', {
+        params: { listId: 'list-1', taskId: 'task-1' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(providerApi.getLists).not.toHaveBeenCalled();
+      expect(providerApi.completeTask).toHaveBeenCalledWith('list-1', 'task-1', 'Familia');
+    });
+
+    it('PATCH falls back to provider.getLists on SWR cache miss', async () => {
+      mockGetCachedSWR.mockReturnValue(null); // cold cache
+
+      const res = await dispatch('PATCH', '/list-1/task-1', {
+        params: { listId: 'list-1', taskId: 'task-1' },
+        body: { status: 'completed' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      // Fallback WAS needed — getLists called exactly once.
+      expect(providerApi.getLists).toHaveBeenCalledTimes(1);
+    });
+
+    it('PATCH uses the SWR cache scoped per user — other user\'s cache is ignored', async () => {
+      // User 12's request should NOT see user 99's cached lists.
+      mockGetCachedSWR.mockImplementation((key: string) => {
+        if (key === 'u:99:task-lists') {
+          return { value: { lists: [{ id: 'list-1', name: 'WrongUser' }] }, fresh: true };
+        }
+        return null; // user 12 has no cache → fallback
+      });
+
+      await dispatch('PATCH', '/list-1/task-1', {
+        userId: 12,
+        params: { listId: 'list-1', taskId: 'task-1' },
+        body: { status: 'completed' },
+      });
+
+      // Since user 12's cache is empty, we should have fallen back to
+      // the live getLists() call (not served user 99's cache).
+      expect(providerApi.getLists).toHaveBeenCalledTimes(1);
+    });
+  });
 });

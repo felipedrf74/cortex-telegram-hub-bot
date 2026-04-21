@@ -287,7 +287,7 @@ export function taskRoutes(): Router {
     try {
       const { listId, taskId } = req.params;
       const todo = getTodo(req);
-      const listName = await resolveTaskListName(todo, listId);
+      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
       const task = await resolveTaskDetail(todo, listId, taskId, listName);
 
       sendSuccess(
@@ -356,7 +356,7 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo(req);
       const { listId, taskId } = req.params;
-      const listName = await resolveTaskListName(todo, listId);
+      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
 
       const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
       const updates: Record<string, unknown> = {};
@@ -383,7 +383,7 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo(req);
       const { listId, taskId } = req.params;
-      const listName = await resolveTaskListName(todo, listId);
+      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
 
       const result = await todo.completeTask(listId, taskId, listName);
       const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
@@ -413,7 +413,7 @@ export function taskRoutes(): Router {
         return;
       }
 
-      const listName = await resolveTaskListName(getTodo(req), listId);
+      const listName = await resolveTaskListName(getTodo(req), listId, (req as any).userId);
 
       // MS Graph: PATCH /me/todo/lists/{listId}/tasks/{taskId}/checklistItems/{itemId}
       const { getGraphClient } = require('../../services/microsoft-auth');
@@ -456,7 +456,7 @@ export function taskRoutes(): Router {
         return;
       }
 
-      const listName = await resolveTaskListName(todo, listId);
+      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
       const created = await todo.addChecklistItem(listId, taskId, displayName);
       if (!created?.success || !created.data) {
         sendError(res, 'INTERNAL', created?.error || 'Failed to add checklist item', 500);
@@ -749,7 +749,38 @@ async function readTaskCountsFromPendingSnapshot(todo: any): Promise<Map<string,
   }
 }
 
-async function resolveTaskListName(todo: any, listId: string): Promise<string> {
+/**
+ * Resolve a task list's display name by id.
+ *
+ * Perf fix (2026-04-21 tasks pass): prior implementation ALWAYS made a
+ * live `todo.getLists()` call to MS Graph (~150-400ms). Every mutation
+ * (PATCH / complete / checklist toggle) paid that round trip just to
+ * look up a string. We now read from the user-scoped SWR cache
+ * `u:${userId}:task-lists` first — which the iOS GET /tasks/lists path
+ * warms on every list load and the 15-minute cron keeps fresh. Only on
+ * a cache miss do we fall back to the live call.
+ *
+ * The cache value shape is `{ lists: [{ id, name, ... }] }`, the same
+ * shape GET /tasks/lists returns (see formatTaskLists). The find-by-id
+ * match is a straight string compare. A miss + live fetch is still a
+ * correctness fallback, not a hot path.
+ */
+async function resolveTaskListName(todo: any, listId: string, userId?: number): Promise<string> {
+  // Fast path: user-scoped SWR cache (saves one MS Graph RTT per mutation).
+  if (typeof userId === 'number' && userId > 0) {
+    try {
+      const cached = getCachedSWR<{ lists?: Array<{ id?: string; name?: string; displayName?: string }> }>(
+        `u:${userId}:task-lists`,
+      );
+      const match = cached?.value?.lists?.find((list) => String(list.id) === String(listId));
+      const name = match?.displayName || match?.name;
+      if (name) return name;
+    } catch {
+      // Fall through to live fetch on any cache error.
+    }
+  }
+
+  // Cold path: live fetch (same behavior as before).
   try {
     const listsResult = await todo.getLists();
     const lists = Array.isArray(listsResult?.data) ? listsResult.data : [];
