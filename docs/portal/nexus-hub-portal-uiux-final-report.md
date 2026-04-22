@@ -197,6 +197,8 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `__tests__/api/portal-console-endpoints.test.ts`                          | 12 KB        | 12 regression tests for new endpoints      |
 | `src/portal/invite-accept.html`                                           | 14 KB        | **OI-NAV-203** — invite-acceptance landing page (code-stripping, JWT prompt, 8-state UX) |
 | `__tests__/portal/invite-accept-route.test.ts`                            | 5 KB         | 11 regression tests for the invite-accept HTML + route wiring |
+| `__tests__/api/portal-admin-audit-endpoints.test.ts`                      | 11 KB        | 18 regression tests for **OI-ADM-301** + **OI-ADM-303** endpoints (scope, filters, LIKE-injection, auth, clamp) |
+| `__tests__/portal/admin-console-drawer-audit.test.ts`                     | 4 KB         | 15 structural pins for the tenant drawer + audit viewer HTML/JS |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -208,8 +210,9 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | File                                        | Delta                                                                    |
 |---------------------------------------------|--------------------------------------------------------------------------|
 | `src/api/portal-workspace-router.ts`        | +186 lines: new `GET /workspace/console/home` aggregator.                |
-| `src/api/portal-owner-router.ts`            | +92 lines: new `GET /owner/console/overview` aggregator.                 |
+| `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
+| `src/portal/admin-console.html`             | +~420 lines (OI-ADM-301 + OI-ADM-303): tenant detail drawer (overlay, 4 tabs, parallel fetches, ESC close) + filtered audit viewer (5 filters, pagination, expandable rows, CSV export). Dead legacy `loadSecurity` removed. |
 
 ### 11.3 Routes added
 
@@ -221,6 +224,8 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `GET /invite/accept`                | same            | **OI-NAV-203** — invite-acceptance landing page |
 | `GET /workspace/console/home`       | iOS JWT + tenant | Aggregated User Console home payload        |
 | `GET /owner/console/overview`       | token + admin id| Aggregated Admin Console overview payload   |
+| `GET /owner/tenants/:id/audit`      | token + admin id| **OI-ADM-301** — tenant-scoped audit feed (drawer Audit tab); dot-prefix scoping blocks cross-tenant leaks; `?limit=<=200` |
+| `GET /owner/audit`                  | token + admin id| **OI-ADM-303** — platform-wide audit with filters (`?actor=`, `?action=foo` or `?action=foo.*` prefix, `?from=`, `?to=`, `?q=`, `?limit=<=500`, `?offset=`). LIKE-wildcard escape + 128-char caps on text inputs. |
 
 ### 11.4 Routes unchanged
 
@@ -329,8 +334,8 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 - **OI-DATA-005** Activity feed needs a tenant-scoped audit query helper.
 - **OI-NAV-201** Promote `/admin-console` to `/admin` — explicit post-review gate.
 - ~~**OI-NAV-203** Wire `/invite/accept?code=` landing page so invite links resolve.~~ **DONE 2026-04-22** — `src/portal/invite-accept.html` + `GET /invite/accept`, 11 regression tests.
-- **OI-ADM-301** Tenant detail drill-in drawer in Admin Console.
-- **OI-ADM-303** Admin audit viewer with filters.
+- ~~**OI-ADM-301** Tenant detail drill-in drawer in Admin Console.~~ **DONE 2026-04-22** — 4-tab drawer (Details/Members/Usage/Audit) + new `GET /owner/tenants/:id/audit` endpoint with dot-prefix scoping.
+- ~~**OI-ADM-303** Admin audit viewer with filters.~~ **DONE 2026-04-22** — full filtered viewer with pagination + CSV export; new `GET /owner/audit` endpoint with LIKE-injection defense + length caps.
 
 **P2 (next pass):**
 - OI-DATA-001 Strategy-2 reference-usage tracking.
@@ -346,11 +351,12 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 
 Ranked by impact / effort ratio:
 
-1. ~~**OI-NAV-203 — invite-accept landing page.**~~ **DONE 2026-04-22** on this branch — see §11 and the updated sitemap. The Team → Invite link now resolves end-to-end.
-2. **OI-ADM-301 — tenant detail drawer.** Biggest remaining Admin-Console gap; endpoints exist (`/owner/tenants/:id`, `/owner/tenants/:id/members`), just need wiring. ~3 h.
-3. **OI-ADM-303 — filtered audit viewer.** Platform ops' most-requested capability. Add `?actor=&action=&from=&to=&limit=` to `/owner/audit` (or new `/owner/audit`) and wire the UI. ~4 h.
+1. ~~**OI-NAV-203 — invite-accept landing page.**~~ **DONE 2026-04-22** — the Team → Invite link now resolves end-to-end.
+2. ~~**OI-ADM-301 — tenant detail drawer.**~~ **DONE 2026-04-22** — 4-tab drawer with parallel fetches, ESC-to-close, ARIA wiring.
+3. ~~**OI-ADM-303 — filtered audit viewer.**~~ **DONE 2026-04-22** — full filtered viewer with expandable details + CSV export; server defends against LIKE-wildcard injection.
 4. **OI-USR-404 — onboarding wizard.** Convert the Home setup-progress milestones into an opt-in 3-step walkthrough for first-time tenant admins. ~4 h.
 5. **OI-DATA-002 — tenant-scoped channels.** Enables Reference Center → Channels. Schema + service + route + UI. ~1 day.
+6. **OI-NAV-201 — promote `/admin-console` → `/admin`.** Explicit post-review gate.
 
 After that, OI-NAV-201 (promote `/admin-console` to `/admin`) once the team is confident no bookmarks / monitors break.
 

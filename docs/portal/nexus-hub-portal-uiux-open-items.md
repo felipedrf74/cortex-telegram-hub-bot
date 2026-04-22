@@ -165,11 +165,19 @@ Follow-up items still open:
 
 ## 4 · Admin Console feature gaps
 
-### OI-ADM-301 — Tenant detail drill-in [P1, UX]
+### ~~OI-ADM-301 — Tenant detail drill-in~~ [DONE · 2026-04-22]
 
-**What's missing.** `/admin-console` Tenants tab shows the list but rows are not yet click-through to a detail drawer. The `/owner/tenants/:tenantId` endpoint exists; wiring the drawer is UI-only work.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Sketch.** Drawer with tabs: Details / Members / Usage / Audit. Reuses existing `/owner/tenants/:tenantId/*` endpoints.
+Tenant rows in `/admin-console → Tenants` now click through to a slide-in drawer with 4 tabs: **Details · Members · Usage · Audit**. All four tabs fetch in parallel via `Promise.allSettled` so tab switches are instant. ESC / overlay-click / × button close. `aria-labelledby` wires the header to the dialog for screen readers.
+
+Backend: added `GET /owner/tenants/:tenantId/audit` (tenant-scoped audit feed with LIMIT/OFFSET, dot-prefix scoping so tenant 4 never leaks tenant 42's rows).
+
+Tests: 6 pins in `__tests__/portal/admin-console-drawer-audit.test.ts` + 6 pins in `__tests__/api/portal-admin-audit-endpoints.test.ts` covering scope boundary, pagination, auth, error paths.
+
+Follow-ups still open:
+- **OI-ADM-301a** — tenant suspend/activate action from the Details tab (depends on OI-ADM-302).
+- **OI-ADM-301b** — historical usage slicing in the Usage tab (today we show today-only; a by-day breakdown needs a wider `/owner/usage` endpoint).
 
 ---
 
@@ -181,11 +189,27 @@ Follow-up items still open:
 
 ---
 
-### OI-ADM-303 — Admin audit viewer with filters [P1, UX]
+### ~~OI-ADM-303 — Admin audit viewer with filters~~ [DONE · 2026-04-22]
 
-**What's missing.** Admin Console → Security currently shows the last 10 audit events from /owner/console/overview. A proper filtered viewer (actor, action, date range, tenant) is needed.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Sketch.** `GET /owner/audit?filter=...&limit=100`. Extend `admin-console.html` with the viewer, reuse the drawer pattern.
+Admin Console → Security now hosts a full filtered audit viewer:
+- Filters: **actor** (user id), **action** (exact OR `prefix*` wildcard), **from / to** datetime, **resource** free-text search.
+- Pagination: 100 rows per page, prev/next, total count displayed.
+- Expandable details: click any row to inline-expand the full `details` JSON.
+- CSV export: client-side Blob-and-download over the current filter set.
+
+Backend: added `GET /owner/audit` with query-param filters. Defensive hardening:
+- LIKE-wildcard characters (`%`, `_`) in user input are escaped with `ESCAPE '\\'` — tested with a `tenant_invite.create` regex-style input that would otherwise have matched `tenant.invite.create` (SQLite `_` = single-char wildcard).
+- Length caps on `action` and `q` (128 chars).
+- `limit` clamped to 500.
+- Trailing `*` → LIKE prefix match with escape-aware left side.
+
+Tests: 12 pins in `__tests__/api/portal-admin-audit-endpoints.test.ts` (actor / action / prefix / LIKE-injection × 2 / date range / combined / clamp / bad input / auth) + 9 pins in `__tests__/portal/admin-console-drawer-audit.test.ts` (filter form / pager / CSV / expand / datetime-T-to-space normalization / showPage wiring).
+
+Follow-ups still open:
+- **OI-ADM-303a** — server-side CSV streaming for exports > 500 rows (today the client can only export what's on screen).
+- **OI-ADM-303b** — saved filter presets (e.g. "tenant.* from last 24h") — localStorage-backed initially.
 
 ---
 

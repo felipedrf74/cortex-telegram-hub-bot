@@ -261,6 +261,183 @@ export function createPortalOwnerRouter(): Router {
     ok(res, { tenantId, members: listMembersOfTenant(tenantId) });
   });
 
+  // ── GET /owner/tenants/:tenantId/audit (OI-ADM-301, 2026-04-22) ──
+  //
+  // Tenant-scoped audit feed. Used by the Admin Console's tenant
+  // detail drawer → Audit tab. Returns audit_trail rows whose
+  // `resource` column matches the tenant resource convention
+  // established by the hardening pass
+  //   (writeWorkspaceAudit sets resource = `tenant.<id>` or
+  //    `tenant.<id>.member.<x>` / `tenant.<id>.invite.<x>`).
+  //
+  // Query strategy: WHERE resource = 'tenant.<id>' OR resource LIKE
+  // 'tenant.<id>.%'. The dot-prefix match avoids tenant.<id> matching
+  // tenant.<id>XXX — e.g. tenant=4 must NOT match tenant.42.*.
+  router.get('/tenants/:tenantId/audit', (req: Request, res: Response) => {
+    const tenantId = Number.parseInt(String(req.params.tenantId), 10);
+    if (!Number.isFinite(tenantId) || tenantId <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'tenantId must be a positive integer');
+    }
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      return err(res, 404, 'TENANT_NOT_FOUND', 'No tenant with that id', { tenantId });
+    }
+    const rawLimit = Number.parseInt(String(req.query.limit ?? '50'), 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 50, 1), 200);
+    const rawOffset = Number.parseInt(String(req.query.offset ?? '0'), 10);
+    const offset = Math.max(Number.isFinite(rawOffset) ? rawOffset : 0, 0);
+
+    try {
+      const db = getDb();
+      const exact = `tenant.${tenantId}`;
+      const prefix = `tenant.${tenantId}.%`;
+      const rows = db
+        .prepare(
+          `SELECT id, ts, user_id, actor_id, action, resource, details
+           FROM audit_trail
+           WHERE resource = ? OR resource LIKE ?
+           ORDER BY id DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(exact, prefix, limit, offset) as Array<{
+          id: number; ts: string; user_id: number; actor_id: number;
+          action: string; resource: string; details: string | null;
+        }>;
+      const countRow = db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM audit_trail WHERE resource = ? OR resource LIKE ?`,
+        )
+        .get(exact, prefix) as { c: number } | undefined;
+      const total = countRow?.c ?? 0;
+      ok(res, {
+        tenantId,
+        events: rows.map((r) => ({
+          id: r.id,
+          ts: r.ts,
+          userId: r.user_id,
+          actorId: r.actor_id,
+          action: r.action,
+          resource: r.resource,
+          // Leave details as a raw string; UI parses on demand. This
+          // keeps the payload small when the drawer is closed.
+          details: r.details,
+        })),
+        pagination: { total, limit, offset },
+      });
+    } catch (dbErr) {
+      logger.error({ err: dbErr, tenantId }, 'portal-owner-router: /tenants/:id/audit failed');
+      err(res, 500, 'INTERNAL', 'Failed to load tenant audit');
+    }
+  });
+
+  // ── GET /owner/audit (OI-ADM-303, 2026-04-22) ────────────────────
+  //
+  // Filtered platform-wide audit viewer. Feeds the Admin Console's
+  // Security → Audit page. Query parameters (all optional):
+  //
+  //   actor    — actor_id (integer) — exact match
+  //   action   — action (string) — exact match, OR
+  //              action (string ending in '*') — prefix match
+  //              e.g. ?action=tenant.* matches tenant.member.remove etc.
+  //   from     — ISO-ish timestamp; events with ts >= from
+  //   to       — ISO-ish timestamp; events with ts <= to
+  //   q        — free-text LIKE on resource (contains match)
+  //   limit    — 1..500, default 100
+  //   offset   — pagination
+  //
+  // Response carries `{ events, pagination: { total, limit, offset } }`.
+  router.get('/audit', (req: Request, res: Response) => {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    const actorRaw = String(req.query.actor ?? '').trim();
+    if (actorRaw) {
+      const actor = Number.parseInt(actorRaw, 10);
+      if (!Number.isFinite(actor) || actor < 0) {
+        return err(res, 400, 'BAD_REQUEST', 'actor must be a non-negative integer');
+      }
+      where.push('actor_id = ?'); params.push(actor);
+    }
+
+    const actionRaw = String(req.query.action ?? '').trim();
+    if (actionRaw) {
+      if (actionRaw.length > 128) {
+        return err(res, 400, 'BAD_REQUEST', 'action too long');
+      }
+      if (actionRaw.endsWith('*')) {
+        // Prefix match. Escape `%` and `_` in the remainder so a
+        // user-supplied `action=tenant_%` can't inject wildcards.
+        const prefix = actionRaw.slice(0, -1).replace(/[%_]/g, (c) => '\\' + c);
+        where.push("action LIKE ? ESCAPE '\\'"); params.push(prefix + '%');
+      } else {
+        where.push('action = ?'); params.push(actionRaw);
+      }
+    }
+
+    const from = String(req.query.from ?? '').trim();
+    if (from) { where.push('ts >= ?'); params.push(from); }
+    const to = String(req.query.to ?? '').trim();
+    if (to) { where.push('ts <= ?'); params.push(to); }
+
+    const q = String(req.query.q ?? '').trim();
+    if (q) {
+      if (q.length > 128) {
+        return err(res, 400, 'BAD_REQUEST', 'q too long');
+      }
+      const esc = q.replace(/[%_]/g, (c) => '\\' + c);
+      where.push("resource LIKE ? ESCAPE '\\'"); params.push('%' + esc + '%');
+    }
+
+    const rawLimit = Number.parseInt(String(req.query.limit ?? '100'), 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 100, 1), 500);
+    const rawOffset = Number.parseInt(String(req.query.offset ?? '0'), 10);
+    const offset = Math.max(Number.isFinite(rawOffset) ? rawOffset : 0, 0);
+
+    const whereSql = where.length > 0 ? 'WHERE ' + where.join(' AND ') : '';
+
+    try {
+      const db = getDb();
+      const rows = db
+        .prepare(
+          `SELECT id, ts, user_id, actor_id, action, resource, details
+           FROM audit_trail
+           ${whereSql}
+           ORDER BY id DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...params, limit, offset) as Array<{
+          id: number; ts: string; user_id: number; actor_id: number;
+          action: string; resource: string; details: string | null;
+        }>;
+      const countRow = db
+        .prepare(`SELECT COUNT(*) AS c FROM audit_trail ${whereSql}`)
+        .get(...params) as { c: number } | undefined;
+      const total = countRow?.c ?? 0;
+      ok(res, {
+        events: rows.map((r) => ({
+          id: r.id,
+          ts: r.ts,
+          userId: r.user_id,
+          actorId: r.actor_id,
+          action: r.action,
+          resource: r.resource,
+          details: r.details,
+        })),
+        pagination: { total, limit, offset },
+        appliedFilters: {
+          actor: actorRaw || null,
+          action: actionRaw || null,
+          from: from || null,
+          to: to || null,
+          q: q || null,
+        },
+      });
+    } catch (dbErr) {
+      logger.error({ err: dbErr }, 'portal-owner-router: /audit failed');
+      err(res, 500, 'INTERNAL', 'Failed to load audit');
+    }
+  });
+
   // ── GET /owner/usage ───────────────────────────────────────────
   // Cross-tenant cost + token rollup. Reads from api_usage, which
   // keys by user_id. Since our solo-tenant convention is tenant.id

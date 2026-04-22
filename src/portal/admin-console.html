@@ -521,14 +521,31 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
     <!-- ═ Security ═══════════════════════════════════════════ -->
     <section class="page hidden" data-page="security">
       <h1>Security</h1>
-      <p class="subtitle">Audit trail, access changes, alerts.</p>
+      <p class="subtitle">Platform-wide audit trail with filters. Newest events first.</p>
+
       <div class="panel">
-        <header><h2>Recent audit events (last 10)</h2></header>
-        <div id="securityAudit"></div>
-      </div>
-      <div class="empty-state">
-        <p class="muted small">Full audit with filters (by actor / action / tenant / date range) is tracked in the open-items backlog. For now use <strong>Operations → Legacy Portal → Audit Trail</strong>.</p>
-        <button class="btn ghost" onclick="location.href='/portal'">Full audit →</button>
+        <header>
+          <h2>Audit trail</h2>
+          <div class="row-inline small">
+            <button class="btn ghost small" onclick="exportAuditCsv()">Export CSV</button>
+            <button class="btn ghost small" onclick="loadAudit()">Refresh</button>
+          </div>
+        </header>
+        <div class="body" style="border-bottom: 1px solid var(--border);">
+          <div style="display: grid; grid-template-columns: 140px 1fr 160px 160px 1fr auto; gap: var(--space-3); align-items: end;">
+            <div><label>Actor (user id)</label><input id="fActor" type="number" placeholder="e.g. 42" /></div>
+            <div><label>Action (use * for prefix)</label><input id="fAction" placeholder="tenant.* or platform_admin.grant" /></div>
+            <div><label>From</label><input id="fFrom" type="datetime-local" /></div>
+            <div><label>To</label><input id="fTo" type="datetime-local" /></div>
+            <div><label>Search resource</label><input id="fQ" placeholder="tenant.42 or user.1" /></div>
+            <button class="btn" onclick="auditApplyFilters()">Apply</button>
+          </div>
+          <div id="auditFilterMeta" class="small muted" style="margin-top: var(--space-3);">
+            Apply filters or scroll recent events below.
+          </div>
+        </div>
+        <div id="auditTable"></div>
+        <div id="auditPager" class="row small" style="justify-content: space-between;"></div>
       </div>
     </section>
 
@@ -593,6 +610,122 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
     </section>
   </main>
 </div>
+
+<!-- ─────────────────────────────────────────────────────────────────
+     Tenant detail drawer (OI-ADM-301, 2026-04-22). Slides in from
+     the right when a tenant row is clicked. Closes on ESC, overlay
+     click, or × button.
+     ───────────────────────────────────────────────────────────── -->
+<div id="drawerOverlay" class="drawer-overlay hidden" onclick="closeDrawer()"></div>
+<aside id="drawer" class="drawer hidden" role="dialog" aria-labelledby="drawerTitle">
+  <header class="drawer-head">
+    <div class="grow">
+      <div class="small muted">Tenant detail</div>
+      <h2 id="drawerTitle" class="mono">—</h2>
+    </div>
+    <button class="btn ghost small" onclick="closeDrawer()" aria-label="Close drawer">✕</button>
+  </header>
+  <div class="subtabs" data-subtabs-for="drawer">
+    <button class="active" data-sub="details">Details</button>
+    <button data-sub="members">Members</button>
+    <button data-sub="usage">Usage</button>
+    <button data-sub="audit">Audit</button>
+  </div>
+  <div class="drawer-body">
+    <div data-sub-section="drawer.details" id="drawerDetails"></div>
+    <div data-sub-section="drawer.members" class="hidden" id="drawerMembers"></div>
+    <div data-sub-section="drawer.usage"   class="hidden" id="drawerUsage"></div>
+    <div data-sub-section="drawer.audit"   class="hidden" id="drawerAudit"></div>
+  </div>
+</aside>
+
+<script>
+(function() {
+  // Tiny shared subtab controller used by the drawer + (future)
+  // any page that declares .subtabs[data-subtabs-for]. Scoped so
+  // skill-tab subtabs elsewhere (User Console) stay independent.
+  document.addEventListener('click', (e) => {
+    const sb = e.target.closest('.subtabs button[data-sub]');
+    if (!sb) return;
+    const group = sb.parentElement.getAttribute('data-subtabs-for');
+    const sub = sb.getAttribute('data-sub');
+    sb.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === sb));
+    document.querySelectorAll('[data-sub-section^="' + group + '."]').forEach((s) => {
+      s.classList.toggle('hidden', s.getAttribute('data-sub-section') !== (group + '.' + sub));
+    });
+  });
+})();
+</script>
+
+<style>
+/* Drawer + new subtabs + audit row (scoped additions for OI-ADM-301 + 303) */
+.drawer-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.5);
+  z-index: 50; backdrop-filter: blur(2px);
+}
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(540px, 95vw); z-index: 51;
+  background: var(--bg-secondary); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  box-shadow: -8px 0 24px rgba(0,0,0,.4);
+  animation: slideIn 0.18s ease-out;
+}
+@keyframes slideIn {
+  from { transform: translateX(100%); } to { transform: translateX(0); }
+}
+.drawer-head {
+  padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: var(--space-3);
+  background: var(--bg-secondary);
+}
+.drawer-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.grow { flex: 1; }
+.drawer-body { flex: 1; overflow-y: auto; padding: var(--space-4) var(--space-5); }
+.drawer .subtabs {
+  display: flex; gap: var(--space-1); padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border); overflow-x: auto; background: var(--bg-secondary);
+}
+.drawer .subtabs button {
+  background: transparent; color: var(--text-dim); border: 0;
+  padding: 10px var(--space-3); font-size: 12px; font-weight: 500;
+  border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer;
+  font-family: inherit;
+}
+.drawer .subtabs button:hover { color: var(--text-primary); }
+.drawer .subtabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Audit row: inline-expandable JSON viewer */
+.audit-row {
+  padding: 8px var(--space-5); border-bottom: 1px solid var(--border);
+  font-size: 12px; display: flex; align-items: center; gap: var(--space-3);
+  cursor: pointer;
+}
+.audit-row:hover { background: var(--bg-tertiary); }
+.audit-row .mono { font-size: 11px; }
+.audit-row .act { font-weight: 600; }
+.audit-row .act.tenant { color: var(--accent); }
+.audit-row .act.platform { color: var(--info); }
+.audit-row .expand-caret { color: var(--text-muted); flex-shrink: 0; }
+.audit-details {
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg-tertiary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; white-space: pre-wrap; word-break: break-all;
+  border-bottom: 1px solid var(--border);
+  max-height: 280px; overflow-y: auto;
+}
+.row-inline { display: flex; gap: var(--space-3); align-items: center; }
+
+.kv-row {
+  display: grid; grid-template-columns: 120px 1fr; gap: var(--space-3);
+  padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.kv-row:last-child { border-bottom: none; }
+.kv-row .k { color: var(--text-dim); font-size: 12px; }
+.kv-row .v { font-weight: 500; }
+.kv-row .v.mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+</style>
 
 <script>
 (function() {
@@ -694,7 +827,7 @@ function showPage(id) {
   if (id === 'tenants') loadTenants();
   if (id === 'users') loadPlatformAdmins();
   if (id === 'usage') loadUsage();
-  if (id === 'security') loadSecurity();
+  if (id === 'security') loadAudit();
 }
 document.querySelectorAll('a.nav-item').forEach((a) => {
   a.addEventListener('click', (e) => { e.preventDefault(); showPage(a.getAttribute('data-page')); });
@@ -764,10 +897,11 @@ async function loadTenants() {
       c.innerHTML = '<div class="empty-state"><h3>No tenants yet</h3><p>Tenants are created automatically when users sign up.</p></div>';
       return;
     }
+    // Rows are click-through to the detail drawer (OI-ADM-301).
     c.innerHTML = `<table class="data">
       <thead><tr><th>ID</th><th>Slug</th><th>Name</th><th>Plan</th><th class="right">Members</th><th>Created</th></tr></thead>
       <tbody>${tenants.map((t) => `
-        <tr>
+        <tr style="cursor: pointer;" onclick="openTenantDrawer(${t.id}, '${esc(t.slug)}')">
           <td class="mono muted">#${t.id}</td>
           <td><strong>${esc(t.slug)}</strong></td>
           <td>${esc(t.display_name || '—')}</td>
@@ -780,6 +914,264 @@ async function loadTenants() {
     c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
   }
 }
+
+// ── Tenant detail drawer (OI-ADM-301) ─────────────────────────────
+// One drawer instance, reopened per tenant. When opened we fire 4
+// parallel fetches (details / members / usage / audit) so the tab
+// switches are instant. Each fetch's result lands in its own pane.
+async function openTenantDrawer(tenantId, slug) {
+  document.getElementById('drawerOverlay').classList.remove('hidden');
+  document.getElementById('drawer').classList.remove('hidden');
+  document.getElementById('drawerTitle').textContent = slug + ' · #' + tenantId;
+  // Reset all panes to loading skeletons so a slow network never
+  // leaves stale data from a previously-opened tenant.
+  const skel = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div>';
+  document.getElementById('drawerDetails').innerHTML = skel;
+  document.getElementById('drawerMembers').innerHTML = skel;
+  document.getElementById('drawerUsage').innerHTML = skel;
+  document.getElementById('drawerAudit').innerHTML = skel;
+
+  // Parallelize the four fetches. Graceful degradation: if one
+  // fails the others still render.
+  const jobs = [
+    fetchJson('/owner/tenants/' + tenantId).then((r) => paintDrawerDetails(r.data)).catch((e) => paintDrawerError('drawerDetails', e)),
+    fetchJson('/owner/tenants/' + tenantId + '/members').then((r) => paintDrawerMembers(r.data)).catch((e) => paintDrawerError('drawerMembers', e)),
+    fetchJson('/owner/usage').then((r) => paintDrawerUsage(r.data, tenantId)).catch((e) => paintDrawerError('drawerUsage', e)),
+    fetchJson('/owner/tenants/' + tenantId + '/audit?limit=50').then((r) => paintDrawerAudit(r.data)).catch((e) => paintDrawerError('drawerAudit', e)),
+  ];
+  await Promise.allSettled(jobs);
+}
+window.openTenantDrawer = openTenantDrawer;
+window.closeDrawer = function() {
+  document.getElementById('drawerOverlay').classList.add('hidden');
+  document.getElementById('drawer').classList.add('hidden');
+};
+// ESC closes drawer.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('drawer').classList.contains('hidden')) {
+    window.closeDrawer();
+  }
+});
+
+function paintDrawerError(elId, e) {
+  document.getElementById(elId).innerHTML = `<div class="error-banner">${esc(e.message || 'Failed to load')}</div>`;
+}
+function paintDrawerDetails(d) {
+  const t = d.tenant || {};
+  document.getElementById('drawerDetails').innerHTML = `
+    <div class="kv-row"><span class="k">ID</span><span class="v mono">#${t.id}</span></div>
+    <div class="kv-row"><span class="k">Slug</span><span class="v mono">${esc(t.slug || '—')}</span></div>
+    <div class="kv-row"><span class="k">Display name</span><span class="v">${esc(t.display_name || t.displayName || '—')}</span></div>
+    <div class="kv-row"><span class="k">Plan</span><span class="v"><span class="pill info">${esc(t.plan || 'free')}</span></span></div>
+    <div class="kv-row"><span class="k">Status</span><span class="v"><span class="pill ${t.status === 'suspended' ? 'missing' : t.status === 'archived' ? 'unknown' : 'ready'}">${esc(t.status || 'active')}</span></span></div>
+    <div class="kv-row"><span class="k">Members</span><span class="v mono">${d.memberCount ?? (d.members ? d.members.length : '—')}</span></div>
+    <div class="kv-row"><span class="k">Created</span><span class="v mono">${esc(t.created_at || t.createdAt || '—')}</span></div>
+  `;
+}
+function paintDrawerMembers(d) {
+  const m = d.members || [];
+  if (m.length === 0) {
+    document.getElementById('drawerMembers').innerHTML = '<div class="empty-state small"><p>No members (orphan tenant).</p></div>';
+    return;
+  }
+  document.getElementById('drawerMembers').innerHTML = `<table class="data">
+    <thead><tr><th>User</th><th>Role</th><th>Joined</th></tr></thead>
+    <tbody>${m.map((x) => `
+      <tr>
+        <td><strong>${esc(x.email || ('#' + (x.userId ?? x.user_id)))}</strong></td>
+        <td><span class="pill info">${esc(x.role)}</span></td>
+        <td class="small muted">${esc(x.joinedAt || x.joined_at || '—')}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+function paintDrawerUsage(d, tenantId) {
+  // /owner/usage returns a today-only array grouped by tenantId.
+  // Filter down to the tenant we care about.
+  const all = (d && d.today && d.today.byTenant) || [];
+  const mine = all.filter((x) => x.tenantId === tenantId);
+  if (mine.length === 0) {
+    document.getElementById('drawerUsage').innerHTML = '<div class="empty-state small"><p>No usage today for this tenant.</p><p class="muted">Historical slicing is tracked in open-items.</p></div>';
+    return;
+  }
+  const row = mine[0];
+  document.getElementById('drawerUsage').innerHTML = `
+    <div class="kv-row"><span class="k">Calls (today)</span><span class="v mono">${row.calls}</span></div>
+    <div class="kv-row"><span class="k">Cost (today, USD)</span><span class="v mono">$${(row.costUsd || 0).toFixed(4)}</span></div>
+    <p class="small muted" style="margin-top: var(--space-3);">Historical slicing by day / provider / skill is tracked as OI-DATA future work.</p>
+  `;
+}
+function paintDrawerAudit(d) {
+  const events = d.events || [];
+  if (events.length === 0) {
+    document.getElementById('drawerAudit').innerHTML = '<div class="empty-state small"><p>No audit events for this tenant yet.</p></div>';
+    return;
+  }
+  document.getElementById('drawerAudit').innerHTML = events.map((e) => renderAuditRow(e)).join('');
+  // Wire click-to-expand on each row.
+  document.querySelectorAll('#drawerAudit .audit-row').forEach(attachAuditExpand);
+}
+
+// ── Audit filtered viewer (OI-ADM-303) ────────────────────────────
+const auditState = {
+  limit: 100,
+  offset: 0,
+  total: 0,
+  filters: { actor: '', action: '', from: '', to: '', q: '' },
+  lastRows: [],
+};
+
+function buildAuditQuery() {
+  const p = new URLSearchParams();
+  const f = auditState.filters;
+  if (f.actor)  p.set('actor',  f.actor);
+  if (f.action) p.set('action', f.action);
+  if (f.from)   p.set('from',   f.from.replace('T', ' '));
+  if (f.to)     p.set('to',     f.to.replace('T', ' ') + (f.to.length === 16 ? ':59' : ''));
+  if (f.q)      p.set('q',      f.q);
+  p.set('limit', String(auditState.limit));
+  p.set('offset', String(auditState.offset));
+  return p.toString();
+}
+
+async function loadAudit() {
+  const c = document.getElementById('auditTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div><div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/owner/audit?' + buildAuditQuery());
+    const d = r.data;
+    auditState.total = d.pagination.total || 0;
+    auditState.lastRows = d.events || [];
+    if (auditState.lastRows.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No events match your filters</h3><p>Try widening the date range or clearing a filter.</p></div>';
+    } else {
+      c.innerHTML = auditState.lastRows.map((e) => renderAuditRow(e)).join('');
+      document.querySelectorAll('#auditTable .audit-row').forEach(attachAuditExpand);
+    }
+    paintAuditPager();
+    paintAuditFilterMeta(d);
+  } catch (e) {
+    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+  }
+}
+function paintAuditPager() {
+  const p = document.getElementById('auditPager');
+  const start = auditState.offset + 1;
+  const end = Math.min(auditState.offset + auditState.limit, auditState.total);
+  const canPrev = auditState.offset > 0;
+  const canNext = end < auditState.total;
+  p.innerHTML = `
+    <span class="small muted">Showing ${auditState.total === 0 ? 0 : start}–${end} of ${auditState.total}</span>
+    <div class="row-inline">
+      <button class="btn ghost small" ${canPrev ? '' : 'disabled'} onclick="auditPage(-1)">← Prev</button>
+      <button class="btn ghost small" ${canNext ? '' : 'disabled'} onclick="auditPage(1)">Next →</button>
+    </div>`;
+}
+function paintAuditFilterMeta(d) {
+  const f = d.appliedFilters || {};
+  const parts = [];
+  if (f.actor)  parts.push(`actor=${esc(f.actor)}`);
+  if (f.action) parts.push(`action=${esc(f.action)}`);
+  if (f.from)   parts.push(`from=${esc(f.from)}`);
+  if (f.to)     parts.push(`to=${esc(f.to)}`);
+  if (f.q)      parts.push(`q=${esc(f.q)}`);
+  const meta = document.getElementById('auditFilterMeta');
+  if (parts.length === 0) {
+    meta.innerHTML = '<span class="muted">No filters applied — newest events across the whole platform.</span>';
+  } else {
+    meta.innerHTML = '<span class="muted">Filters: </span>' + parts.map((p) => `<span class="pill info">${p}</span>`).join(' ');
+  }
+}
+window.auditApplyFilters = function() {
+  auditState.filters = {
+    actor:  document.getElementById('fActor').value.trim(),
+    action: document.getElementById('fAction').value.trim(),
+    from:   document.getElementById('fFrom').value,
+    to:     document.getElementById('fTo').value,
+    q:      document.getElementById('fQ').value.trim(),
+  };
+  auditState.offset = 0;
+  loadAudit();
+};
+window.auditPage = function(dir) {
+  auditState.offset = Math.max(0, auditState.offset + dir * auditState.limit);
+  loadAudit();
+};
+window.loadAudit = loadAudit;
+
+// Render a single audit row (used by drawer audit tab AND full audit
+// page). Click expands the details JSON inline; click again collapses.
+function renderAuditRow(e) {
+  const klass = e.action.startsWith('tenant.') ? 'tenant' :
+                e.action.startsWith('platform') ? 'platform' : '';
+  return `<div class="audit-row" data-audit-id="${e.id}">
+    <span class="mono muted" style="min-width: 60px;">#${e.id}</span>
+    <span class="mono muted" style="min-width: 140px;">${esc((e.ts || '').slice(0, 19))}</span>
+    <span class="act ${klass}" style="min-width: 180px;">${esc(e.action)}</span>
+    <span class="mono muted grow" style="overflow: hidden; text-overflow: ellipsis;">${esc(e.resource || '')}</span>
+    <span class="muted small" style="min-width: 80px;">actor #${e.actorId}</span>
+    <span class="expand-caret">▸</span>
+  </div>`;
+}
+function attachAuditExpand(row) {
+  row.addEventListener('click', () => {
+    const id = row.getAttribute('data-audit-id');
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('audit-details')) {
+      // Collapse.
+      next.remove();
+      row.querySelector('.expand-caret').textContent = '▸';
+      return;
+    }
+    // Expand. Source row is in auditState.lastRows OR drawer audit
+    // data. We find by id.
+    const all = [...auditState.lastRows];
+    // Also consider drawer rows — they live in the DOM only.
+    const src = all.find((x) => String(x.id) === id);
+    let detailsText = '(no details)';
+    if (src && src.details) {
+      try { detailsText = JSON.stringify(JSON.parse(src.details), null, 2); }
+      catch { detailsText = src.details; }
+    } else if (!src) {
+      // Drawer row — we don't have lastRows for it. Just grab the
+      // raw cached-by-id from DOM's data-details attribute if set.
+      const cached = row.getAttribute('data-details');
+      if (cached) detailsText = cached;
+      else detailsText = '(load full /owner/audit to inspect details)';
+    }
+    const pre = document.createElement('div');
+    pre.className = 'audit-details';
+    pre.textContent = detailsText;
+    row.after(pre);
+    row.querySelector('.expand-caret').textContent = '▾';
+  });
+}
+
+// CSV export — client-side. Uses currently-loaded auditState.lastRows
+// (respects the active filter set). Large result sets should use
+// "?limit=500" then export; pagination across multi-page exports is
+// tracked as OI follow-up.
+window.exportAuditCsv = function() {
+  const rows = auditState.lastRows;
+  if (rows.length === 0) {
+    alert('No rows to export — load or filter events first.');
+    return;
+  }
+  const header = ['id', 'ts', 'actor_id', 'user_id', 'action', 'resource', 'details'];
+  const escCsv = (v) => {
+    const s = v === null || v === undefined ? '' : String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [header.join(',')];
+  for (const r of rows) {
+    lines.push([r.id, r.ts, r.actorId, r.userId, r.action, r.resource, r.details || ''].map(escCsv).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'nexus-audit-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+};
 async function loadPlatformAdmins() {
   const c = document.getElementById('platformAdminsTable');
   c.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div>';
@@ -824,27 +1216,8 @@ async function loadUsage() {
     c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
   }
 }
-async function loadSecurity() {
-  const c = document.getElementById('securityAudit');
-  c.innerHTML = '<div class="sk-row w-90 skeleton"></div>';
-  try {
-    const r = await fetchJson('/owner/console/overview');
-    const rows = r.data.recentAudit || [];
-    if (rows.length === 0) {
-      c.innerHTML = '<div class="empty-state"><h3>No audit events yet</h3></div>';
-      return;
-    }
-    c.innerHTML = rows.map((x) =>
-      `<div class="row small">
-        <span class="mono muted">#${x.id}</span>
-        <span class="mono muted">${esc(x.ts)}</span>
-        <span><strong>${esc(x.action)}</strong> on <span class="mono">${esc(x.resource)}</span></span>
-        <span class="muted" style="margin-left:auto;">actor #${x.actorId}</span>
-      </div>`).join('');
-  } catch (e) {
-    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
-  }
-}
+// (Legacy loadSecurity removed 2026-04-22: the Security page is now
+// backed by the full /owner/audit filtered viewer — see loadAudit.)
 async function loadFooter() {
   try {
     const r = await fetch('/api/snapshot');
