@@ -112,11 +112,26 @@ Follow-ups still open:
 
 ## 2 · UX polish (no backend needed)
 
-### OI-UX-101 — Global search [P2, UX]
+### ~~OI-UX-101 — Global search~~ [DONE · 2026-04-22 — User Console only]
 
-**What's missing.** The app-bar has a reserved slot for global search, unwired on this branch. Should scope-aware: in Admin Console it searches tenants/users/audit; in User Console it searches references/skills/insights.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Sketch.** Client-side fuzzy search over the already-loaded state (books, links, notes, tenants, audit). Promote to server search when any collection exceeds ~500 rows.
+Spotlight-style global search shipped on the User Console. The Admin Console variant is a follow-up (OI-UX-101a).
+
+What's live:
+- **Trigger**: app-bar button with a platform-aware kbd hint (⌘K on Mac, Ctrl+K elsewhere).
+- **Keyboard**: Cmd/Ctrl+K toggles; ArrowDown/ArrowUp navigate; Enter picks; Esc closes. Focused item scroll-into-view.
+- **Sources**: PAGES_INDEX (16 nav destinations, always available) + `state.books / channels / links / notes / members` + `activityState.lastRows`. Each collection only appears in results if the user visited its tab at least once.
+- **Match**: simple `String.indexOf` substring on title + one secondary field (author / url / body). Hits highlighted with `<mark>`. No regex, no fuzzy library dependency — fast and predictable for workspaces ≤500 items.
+- **Honest empty state**: when the user searches and some collections are empty because a tab wasn't visited, a banner says exactly which tabs to open to widen the search.
+- **Pick action**: routes via the shell's `showPage()`. The user lands on the result's tab; the exact row becomes visible on that page.
+
+Tests: `__tests__/portal/user-console-global-search.test.ts` — 19 structural + behavior pins (markup, Cmd/Ctrl key handling, ArrowUp/Down/Enter/Esc, platform-aware kbd label, 16 pages indexed, substring match no regex/fuzzy, `<mark>` highlight, showPage dispatch, banner when collections are unindexed, plural/singular result count).
+
+Follow-ups still open:
+- **OI-UX-101a** — port the search to Admin Console (different result set: tenants / users / platform admins / audit). Scope: 1–2 hours of wiring; the shell pattern is reusable.
+- **OI-UX-101b** — promote to server-side search when any collection exceeds ~500 rows (today we ship what's loaded; scale is the gate).
+- **OI-UX-101c** — warm pre-fetch on first open (load collections the user hasn't visited yet so the first search is fully indexed). Trade-off: adds latency on open; not worth it until scale forces it.
 
 ---
 

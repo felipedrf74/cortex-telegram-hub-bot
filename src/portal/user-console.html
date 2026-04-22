@@ -367,6 +367,108 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
   display: flex; align-items: center; justify-content: center;
   font-size: 24px; font-weight: 700;
 }
+
+/* ── Global search (OI-UX-101, 2026-04-22) ──────────────────────── */
+.search-trigger {
+  background: var(--bg-tertiary); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 6px 10px 6px 12px; font-size: 12px;
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  cursor: pointer; font-family: inherit; min-width: 220px;
+}
+.search-trigger:hover { border-color: var(--border-hover); color: var(--text-primary); }
+.search-trigger .search-icon { font-size: 13px; }
+.search-trigger .search-label { flex: 1; text-align: left; color: var(--text-dim); }
+.search-trigger .search-kbd {
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 4px; font-size: 11px;
+  color: var(--text-dim);
+}
+.search-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  z-index: 70; backdrop-filter: blur(3px);
+}
+.search-modal {
+  position: fixed; top: 8vh; left: 50%; transform: translateX(-50%);
+  width: min(620px, 92vw); max-height: 72vh;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); z-index: 71;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: wizardIn 0.16s ease-out;
+}
+.search-input-wrap {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: var(--space-3);
+}
+.search-input-wrap .icon { color: var(--text-muted); font-size: 16px; }
+.search-input-wrap input {
+  flex: 1; background: transparent; border: 0; padding: 6px 0;
+  color: var(--text-primary); font-size: 15px; outline: none;
+}
+.search-input-wrap input::placeholder { color: var(--text-muted); }
+.search-input-wrap kbd {
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 4px; font-size: 11px;
+  color: var(--text-dim); font-family: 'JetBrains Mono', monospace;
+}
+.search-results {
+  flex: 1; overflow-y: auto; padding: var(--space-2) 0;
+  min-height: 200px;
+}
+.search-group {
+  padding: var(--space-2) 0;
+}
+.search-group-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-muted); padding: 4px var(--space-4) 2px; font-weight: 600;
+}
+.search-item {
+  padding: 8px var(--space-4); cursor: pointer;
+  display: flex; align-items: center; gap: var(--space-3);
+  font-size: 13px; border-left: 2px solid transparent;
+}
+.search-item:hover { background: var(--bg-tertiary); }
+.search-item.focused {
+  background: var(--accent-subtle);
+  border-left-color: var(--accent);
+  color: var(--text-primary);
+}
+.search-item .kind {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-muted); min-width: 64px;
+}
+.search-item .title { flex: 1; font-weight: 500; }
+.search-item .sub { color: var(--text-dim); font-size: 11px; }
+.search-item mark {
+  background: var(--accent-subtle); color: var(--accent);
+  padding: 0 2px; border-radius: 2px;
+}
+.search-footer {
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted);
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--bg-secondary);
+}
+.search-footer .keys { display: flex; gap: var(--space-3); }
+.search-footer .keys span { display: flex; align-items: center; gap: 4px; }
+.search-footer kbd {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  padding: 1px 5px; border-radius: 3px; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.search-empty {
+  padding: var(--space-6) var(--space-4); text-align: center;
+  color: var(--text-dim); font-size: 13px;
+}
+.search-notice {
+  padding: 8px var(--space-4); margin: 0 var(--space-3) var(--space-2);
+  font-size: 11px; color: var(--text-dim);
+  background: var(--bg-tertiary); border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
 </style>
 </head>
 <body>
@@ -397,6 +499,12 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
     <div class="brand"><span class="dot"></span> Nexus Hub</div>
     <span class="divider">·</span>
     <span class="scope-pill">USER CONSOLE</span>
+    <!-- OI-UX-101: global search trigger (Cmd+K / Ctrl+K) -->
+    <button class="search-trigger" id="searchTrigger" onclick="searchOpen()" title="Search (⌘K)">
+      <span class="search-icon">⌕</span>
+      <span class="search-label">Search</span>
+      <kbd class="search-kbd mono" id="searchKbd">⌘K</kbd>
+    </button>
     <div class="console-switch">
       <button class="switch" onclick="location.href='/admin-console'">↗ Admin Console</button>
       <button class="switch" onclick="location.href='/workspace-ui'">↙ Classic view</button>
@@ -1066,6 +1174,31 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
     <button class="btn ghost" onclick="wizardSkip()" id="wizardSkipBtn">Skip for now</button>
     <button class="btn ghost" onclick="wizardPrev()" id="wizardPrevBtn" style="display: none;">← Back</button>
     <button class="btn primary" onclick="wizardNext()" id="wizardNextBtn">Continue →</button>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────────────
+     Global search modal (OI-UX-101, 2026-04-22). Keyboard-first:
+     Cmd+K / Ctrl+K toggles; arrow keys navigate; Enter picks; Esc
+     closes. Searches what's currently in client state (books,
+     notes, links, channels, team, activity) plus an always-available
+     pages index (nav destinations).
+     ───────────────────────────────────────────────────────────── -->
+<div id="searchOverlay" class="search-overlay hidden" onclick="searchClose()"></div>
+<div id="searchModal" class="search-modal hidden" role="dialog" aria-label="Global search">
+  <div class="search-input-wrap">
+    <span class="icon">⌕</span>
+    <input id="searchInput" type="text" placeholder="Jump to a page, book, note, link, channel, teammate…" autocomplete="off" />
+    <kbd>Esc</kbd>
+  </div>
+  <div id="searchResults" class="search-results"></div>
+  <div class="search-footer">
+    <div class="keys">
+      <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+      <span><kbd>↵</kbd> pick</span>
+      <span><kbd>Esc</kbd> close</span>
+    </div>
+    <span id="searchCountLabel" class="small muted">—</span>
   </div>
 </div>
 
@@ -2256,6 +2389,308 @@ async function wizardSendInvite() {
     return false;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Global search (OI-UX-101)
+// ─────────────────────────────────────────────────────────────────
+// Keyboard-first spotlight-style search. Sources:
+//   - state.books, .notes, .links, .channels (loaded on tab visit)
+//   - state.members, .invites (loaded on Team visit)
+//   - activityState.lastRows (loaded on Activity visit)
+//   - a fixed pages index (always available)
+// If a collection is empty AND the user never visited its tab, the
+// modal shows a subtle banner suggesting where to populate. Keeps
+// the search instant, honest, and avoids a fetch storm on open.
+
+const PAGES_INDEX = [
+  { id: 'home',           label: 'Home',                hint: 'Setup progress, insights, dependencies' },
+  { id: 'insights',       label: 'Insights',            hint: 'Recommendations and setup nudges' },
+  { id: 'dependencies',   label: 'Dependencies',        hint: 'What each skill needs to work well' },
+  { id: 'skill-content',  label: 'Content skill',       hint: 'Content agent, radar, references' },
+  { id: 'skill-secretary',label: 'Secretary skill',     hint: 'Routines, priorities, calendar' },
+  { id: 'skill-training', label: 'Training skill',      hint: 'Goals, equipment, readiness' },
+  { id: 'skill-finance',  label: 'Finance skill',       hint: 'Budget, categories' },
+  { id: 'skill-cooking',  label: 'Cooking skill',       hint: 'Restrictions, meal planning' },
+  { id: 'ref-books',      label: 'Books',               hint: 'Your reading library' },
+  { id: 'ref-channels',   label: 'Channels',            hint: 'Sources your Content skill watches' },
+  { id: 'ref-links',      label: 'Links',               hint: 'Curated URLs' },
+  { id: 'ref-notes',      label: 'Notes',               hint: 'Content ideas and drafts' },
+  { id: 'activity',       label: 'Activity',            hint: 'Tenant audit feed' },
+  { id: 'integrations',   label: 'Integrations',        hint: 'Connected providers' },
+  { id: 'team',           label: 'Team',                hint: 'Members and invites (admin-only)' },
+  { id: 'profile',        label: 'Profile & Preferences', hint: 'Your account settings' },
+];
+
+const searchModalState = {
+  query: '',
+  items: [],       // flattened, in display order, indexed by data-search-idx
+  focusedIdx: 0,
+  open: false,
+};
+
+function searchPlatformKbd() {
+  // Mac uses ⌘K; Windows/Linux use Ctrl+K. Detect and label right.
+  const isMac = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || '');
+  return isMac ? '⌘K' : 'Ctrl+K';
+}
+
+window.searchOpen = function() {
+  if (searchModalState.open) return;
+  searchModalState.open = true;
+  searchModalState.query = '';
+  searchModalState.focusedIdx = 0;
+  document.getElementById('searchOverlay').classList.remove('hidden');
+  document.getElementById('searchModal').classList.remove('hidden');
+  const input = document.getElementById('searchInput');
+  input.value = '';
+  input.focus();
+  searchRender();
+};
+window.searchClose = function() {
+  searchModalState.open = false;
+  document.getElementById('searchOverlay').classList.add('hidden');
+  document.getElementById('searchModal').classList.add('hidden');
+};
+
+// Keyboard bindings:
+//   - Global Cmd+K / Ctrl+K → open/close
+//   - When modal is open: ArrowUp / ArrowDown / Enter / Esc
+document.addEventListener('keydown', (e) => {
+  const isCmdK = (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
+  if (isCmdK) {
+    e.preventDefault();
+    if (searchModalState.open) searchClose();
+    else searchOpen();
+    return;
+  }
+  if (!searchModalState.open) return;
+  if (e.key === 'Escape') { e.preventDefault(); searchClose(); return; }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const items = searchModalState.items;
+    if (items.length === 0) return;
+    searchModalState.focusedIdx = Math.min(searchModalState.focusedIdx + 1, items.length - 1);
+    searchRenderFocus();
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (searchModalState.items.length === 0) return;
+    searchModalState.focusedIdx = Math.max(searchModalState.focusedIdx - 1, 0);
+    searchRenderFocus();
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    searchPick(searchModalState.focusedIdx);
+  }
+});
+
+// Input wiring. Done on load so the listener is always present.
+setTimeout(() => {
+  const input = document.getElementById('searchInput');
+  if (input) input.addEventListener('input', (e) => {
+    searchModalState.query = e.target.value.trim();
+    searchModalState.focusedIdx = 0;
+    searchRender();
+  });
+  // Platform-aware kbd label on the trigger.
+  const kbdEl = document.getElementById('searchKbd');
+  if (kbdEl) kbdEl.textContent = searchPlatformKbd();
+}, 0);
+
+// Substring match with escape for regex meta so user input of "$5"
+// etc. doesn't explode. Returns { matched, highlighted } where
+// `highlighted` has <mark> tags around matched positions.
+function searchMatch(text, query) {
+  if (!query) return { matched: true, highlighted: esc(text || '') };
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  const q = query.toLowerCase();
+  const idx = lower.indexOf(q);
+  if (idx === -1) return { matched: false, highlighted: esc(raw) };
+  const before = raw.slice(0, idx);
+  const hit = raw.slice(idx, idx + q.length);
+  const after = raw.slice(idx + q.length);
+  return { matched: true, highlighted: esc(before) + '<mark>' + esc(hit) + '</mark>' + esc(after) };
+}
+
+// Build the flat result list. Preserves group order and keeps index
+// stable so focus navigation with arrow keys is predictable.
+function searchBuild() {
+  const q = searchModalState.query;
+  const items = [];
+  const pushGroup = (kind, label, arr) => {
+    const matches = arr.filter((it) => it._match);
+    if (matches.length === 0) return;
+    items.push({ isHeader: true, kind, label });
+    for (const it of matches) items.push({ isHeader: false, kind, ...it });
+  };
+
+  // Pages — always indexed. Matches title OR hint.
+  const pages = PAGES_INDEX.map((p) => {
+    const m1 = searchMatch(p.label, q);
+    const m2 = searchMatch(p.hint, q);
+    const matched = !q || m1.matched || m2.matched;
+    return { _match: matched, id: 'page:' + p.id, nav: p.id, title: m1.highlighted, sub: m2.highlighted };
+  });
+  pushGroup('page', 'Pages', pages);
+
+  // Books.
+  if (state.books && state.books.length) {
+    const rows = state.books.map((b) => {
+      const m1 = searchMatch(b.title, q);
+      const m2 = searchMatch(b.author || '', q);
+      return {
+        _match: !q || m1.matched || m2.matched,
+        id: 'book:' + b.id, nav: 'ref-books',
+        title: m1.highlighted,
+        sub: '<span class="sub">' + (m2.highlighted || esc(b.author || '')) + ' &middot; ' + esc(b.status || '') + '</span>',
+      };
+    });
+    pushGroup('book', 'Books · ' + state.books.length, rows);
+  }
+  // Channels.
+  if (state.channels && state.channels.length) {
+    const rows = state.channels.map((c) => {
+      const m1 = searchMatch(c.title, q);
+      const m2 = searchMatch(c.url || c.handle || '', q);
+      return {
+        _match: !q || m1.matched || m2.matched,
+        id: 'channel:' + c.id, nav: 'ref-channels',
+        title: m1.highlighted,
+        sub: '<span class="sub">' + (m2.highlighted || esc(c.url || c.handle || '')) + ' &middot; ' + esc(c.kind || '') + '</span>',
+      };
+    });
+    pushGroup('channel', 'Channels · ' + state.channels.length, rows);
+  }
+  // Links.
+  if (state.links && state.links.length) {
+    const rows = state.links.map((l) => {
+      const m1 = searchMatch(l.title || l.url, q);
+      const m2 = searchMatch(l.url, q);
+      return {
+        _match: !q || m1.matched || m2.matched,
+        id: 'link:' + l.id, nav: 'ref-links',
+        title: m1.highlighted,
+        sub: '<span class="sub mono">' + (m2.highlighted || esc(l.url || '')) + '</span>',
+      };
+    });
+    pushGroup('link', 'Links · ' + state.links.length, rows);
+  }
+  // Notes.
+  if (state.notes && state.notes.length) {
+    const rows = state.notes.map((n) => {
+      const m1 = searchMatch(n.title, q);
+      const m2 = searchMatch((n.body || '').slice(0, 200), q);
+      return {
+        _match: !q || m1.matched || m2.matched,
+        id: 'note:' + n.id, nav: 'ref-notes',
+        title: m1.highlighted,
+        sub: '<span class="sub">' + m2.highlighted + '</span>',
+      };
+    });
+    pushGroup('note', 'Notes · ' + state.notes.length, rows);
+  }
+  // Team members (loaded only after visiting Team).
+  if (state.members && state.members.length) {
+    const rows = state.members.map((m) => {
+      const m1 = searchMatch(m.email || ('#' + m.userId), q);
+      const m2 = searchMatch(m.role || '', q);
+      return {
+        _match: !q || m1.matched || m2.matched,
+        id: 'member:' + (m.userId || m.id), nav: 'team',
+        title: m1.highlighted,
+        sub: '<span class="sub">' + m2.highlighted + '</span>',
+      };
+    });
+    pushGroup('member', 'Teammates · ' + state.members.length, rows);
+  }
+  // Activity events (loaded only after visiting Activity).
+  if (activityState.lastRows && activityState.lastRows.length) {
+    const rows = activityState.lastRows.map((ev) => {
+      const m1 = searchMatch(ev.action, q);
+      const m2 = searchMatch(ev.resource || '', q);
+      return {
+        _match: !q || m1.matched || m2.matched,
+        id: 'activity:' + ev.id, nav: 'activity',
+        title: m1.highlighted,
+        sub: '<span class="sub mono">' + (m2.highlighted || esc(ev.resource || '')) + '</span>',
+      };
+    });
+    pushGroup('event', 'Recent activity · ' + activityState.lastRows.length, rows);
+  }
+
+  return items;
+}
+
+function searchRender() {
+  const container = document.getElementById('searchResults');
+  const items = searchBuild();
+  searchModalState.items = items.filter((x) => !x.isHeader);
+  // Focus reset on each query input.
+  if (searchModalState.focusedIdx >= searchModalState.items.length) {
+    searchModalState.focusedIdx = 0;
+  }
+
+  // Banner: what collections are empty because the tab wasn't visited?
+  const missing = [];
+  if (!state.books.length) missing.push('Books');
+  if (!state.channels.length) missing.push('Channels');
+  if (!state.links.length) missing.push('Links');
+  if (!state.notes.length) missing.push('Notes');
+  if (!state.members.length) missing.push('Team');
+  if (!activityState.lastRows.length) missing.push('Activity');
+  const showNotice = searchModalState.query && missing.length > 0;
+  const notice = showNotice
+    ? `<div class="search-notice">Searching what's loaded so far. Visit a tab to include its items: <strong>${missing.join(', ')}</strong>.</div>`
+    : '';
+
+  if (items.length === 0) {
+    container.innerHTML = notice +
+      '<div class="search-empty">' +
+      (searchModalState.query ? 'No matches for <strong>' + esc(searchModalState.query) + '</strong>. Try a different term, or visit a tab to populate its index.' : 'Start typing to search your workspace.') +
+      '</div>';
+    document.getElementById('searchCountLabel').textContent = searchModalState.query ? '0 results' : 'Start typing…';
+    return;
+  }
+
+  let idx = 0;
+  const html = [notice];
+  for (const it of items) {
+    if (it.isHeader) {
+      html.push(`<div class="search-group-label">${esc(it.label)}</div>`);
+    } else {
+      const focused = idx === searchModalState.focusedIdx ? ' focused' : '';
+      html.push(`
+        <div class="search-item${focused}" data-search-idx="${idx}" onclick="searchPick(${idx})">
+          <span class="kind">${esc(it.kind)}</span>
+          <div class="title">${it.title}${it.sub ? '<br>' + it.sub : ''}</div>
+        </div>`);
+      idx += 1;
+    }
+  }
+  container.innerHTML = html.join('');
+  document.getElementById('searchCountLabel').textContent = searchModalState.items.length + ' result' + (searchModalState.items.length === 1 ? '' : 's');
+}
+function searchRenderFocus() {
+  // Light re-render — just toggle the focused class.
+  const all = document.querySelectorAll('#searchResults .search-item');
+  all.forEach((el) => {
+    const i = Number(el.getAttribute('data-search-idx'));
+    el.classList.toggle('focused', i === searchModalState.focusedIdx);
+    if (i === searchModalState.focusedIdx) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+// Pick a result: navigate to its page. If the result is a specific
+// row (book/channel/etc.), we also pre-load that tab — the user
+// can usually spot the row on the page itself after navigation,
+// since the search hit tells them what to look for.
+window.searchPick = function(idx) {
+  const it = searchModalState.items[idx];
+  if (!it) return;
+  searchClose();
+  if (it.nav) showPage(it.nav);
+};
 
 // Boot
 tryAuth();

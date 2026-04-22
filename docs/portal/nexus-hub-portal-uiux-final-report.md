@@ -207,6 +207,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `__tests__/api/portal-workspace-activity-routes.test.ts`                  | 11 KB        | **OI-DATA-005** — 16 route tests: dot-prefix tenant-scope boundary, tenant_viewer read access, cross-tenant 403, LIKE-injection defense, filters, pagination, cost-privacy, all 4 delete-audits |
 | `__tests__/portal/user-console-activity.test.ts`                          | 4 KB         | 13 structural pins for the Activity page UI (filter form, lazy-load, T→space datetime normalization, pager, row expand) |
 | `__tests__/portal/user-console-profile-editor.test.ts`                    | 5 KB         | **OI-USR-407** — 17 pins: markup, Save/Revert/dirty tracking, diff-only PATCH, empty→null conversion, post-save re-baseline, browser-detect helpers, context-strip refresh |
+| `__tests__/portal/user-console-global-search.test.ts`                     | 6 KB         | **OI-UX-101** — 19 pins: app-bar trigger, Cmd+K/Ctrl+K toggle, Arrow/Enter/Esc keyboard nav, platform-aware kbd label, 16 pages indexed, substring `indexOf` (no regex / fuzzy), `<mark>` highlight, showPage dispatch, collection banner, singular/plural count |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -221,7 +222,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
 | `src/portal/admin-console.html`             | +~420 lines (OI-ADM-301 + OI-ADM-303): tenant detail drawer (overlay, 4 tabs, parallel fetches, ESC close) + filtered audit viewer (5 filters, pagination, expandable rows, CSV export). Dead legacy `loadSecurity` removed. |
-| `src/portal/user-console.html`              | +~340 (OI-USR-404 wizard) + ~150 (OI-DATA-002 channels) + ~160 (OI-DATA-005 activity) + ~155 (OI-USR-407 profile editor): wizard + Channels tab + Activity page + Profile editor with dirty tracking + browser-detect helpers. |
+| `src/portal/user-console.html`              | +~340 (OI-USR-404) + ~150 (OI-DATA-002) + ~160 (OI-DATA-005) + ~155 (OI-USR-407) + ~350 (OI-UX-101): onboarding wizard + Channels tab + Activity page + Profile editor + keyboard-first global search (spotlight modal with pages index + 6 client collections). |
 
 ### 11.3 Routes added
 
@@ -348,6 +349,7 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 - ~~**OI-DATA-002** Channels need tenant-scoping~~ **DONE 2026-04-22** — migration 079 + service + routes + Home integration + Reference Center UI.
 - ~~**OI-DATA-005** Activity feed needs a tenant-scoped audit query helper.~~ **DONE 2026-04-22** — `GET /workspace/activity` + 4 resource-delete audit writes + Activity page UI (filter form, expandable rows, pagination).
 - ~~**OI-USR-407** Profile editor~~ **DONE 2026-04-22** — replaced read-only Profile page with a 6-field editor (firstName / lastName / username / avatarUrl / language / timezone), baseline-vs-current dirty tracking, diff-only PATCH payloads, browser-detect helpers for language + timezone, context-strip refresh after save.
+- ~~**OI-UX-101** Global search (User Console)~~ **DONE 2026-04-22** — ⌘K/Ctrl+K spotlight modal indexing pages + books + channels + links + notes + team + activity with substring highlight, keyboard nav (↑↓↵ Esc), and platform-aware kbd hint (⌘K on Mac, Ctrl+K elsewhere). Admin Console variant tracked as OI-UX-101a.
 - **OI-NAV-201** Promote `/admin-console` to `/admin` — explicit post-review gate.
 - ~~**OI-NAV-203** Wire `/invite/accept?code=` landing page so invite links resolve.~~ **DONE 2026-04-22** — `src/portal/invite-accept.html` + `GET /invite/accept`, 11 regression tests.
 - ~~**OI-ADM-301** Tenant detail drill-in drawer in Admin Console.~~ **DONE 2026-04-22** — 4-tab drawer (Details/Members/Usage/Audit) + new `GET /owner/tenants/:id/audit` endpoint with dot-prefix scoping.
@@ -356,7 +358,7 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 **P2 (next pass):**
 - OI-DATA-001 Strategy-2 reference-usage tracking.
 - OI-DATA-004 Real insight engine wired to intelligence-bus.
-- OI-UX-101 Global search in app bar.
+- ~~OI-UX-101 Global search in app bar.~~ **DONE 2026-04-22** (User Console) — ⌘K/Ctrl+K spotlight-style modal with keyboard nav, substring match + `<mark>` highlight, pages index + 6 client collections. Admin Console variant tracked as OI-UX-101a.
 - ~~OI-USR-404 Onboarding wizard for first-time tenant admins.~~ **DONE 2026-04-22** — 3-step modal with conjunctive auto-open gate and two-tier dismissal.
 
 **P3 (eventual):** dark/light toggle, command palette, bulk actions, keyboard shortcuts.
