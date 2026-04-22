@@ -839,12 +839,36 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
     <!-- ═ Activity ═══════════════════════════════════════════ -->
     <section class="page hidden" data-page="activity">
       <h1>Activity</h1>
-      <p class="subtitle">Recent changes on this workspace. Feeds from the audit trail (tenant-scoped).</p>
-      <div class="empty-state">
-        <div class="icon">⏲</div>
-        <h3>Activity view in progress</h3>
-        <p>The tenant-scoped audit feed is backed by <code>audit_trail</code> rows with <code>user_id = activeTenantId</code>. Filtered viewer is tracked in open-items; the raw feed is accessible from the Admin Console for now.</p>
+      <p class="subtitle">Tenant-scoped events in reverse-chronological order. Covers member / invite changes and resource deletions. Newest first.</p>
+      <div class="panel">
+        <header>
+          <h2>Filters</h2>
+          <button class="btn ghost small" onclick="loadActivity()">Refresh</button>
+        </header>
+        <div class="body">
+          <div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: var(--space-3); align-items: end;">
+            <div><label>Actor (user id)</label><input id="actFActor" type="number" placeholder="e.g. 42" /></div>
+            <div><label>Action (use * for prefix)</label><input id="actFAction" placeholder="tenant.invite.* or tenant.book.delete" /></div>
+            <div><label>From</label><input id="actFFrom" type="datetime-local" /></div>
+            <div><label>To</label><input id="actFTo" type="datetime-local" /></div>
+            <button class="btn" onclick="activityApply()">Apply</button>
+          </div>
+          <div class="small muted" id="actFilterMeta" style="margin-top: var(--space-3);">
+            Newest events across your workspace.
+          </div>
+        </div>
       </div>
+      <div class="panel">
+        <header><h2>Events</h2><span class="meta" id="actPagerMeta">—</span></header>
+        <div id="activityTable"></div>
+        <div id="activityPager" class="row small" style="justify-content: space-between;"></div>
+      </div>
+      <p class="small muted" style="max-width: 640px;">
+        Today the feed covers tenant membership changes, invites, and resource deletions.
+        Resource CREATE / UPDATE events do not yet write audit rows — they'd flood the feed in
+        normal use. Creation is visible in the resource pages themselves; updates land in a
+        future pass (tracked as OI-DATA-005a).
+      </p>
     </section>
 
     <!-- ═ Integrations ═══════════════════════════════════════════ -->
@@ -1094,6 +1118,7 @@ function showPage(id) {
   if (id === 'ref-channels') loadChannels();
   if (id === 'ref-links') loadLinks();
   if (id === 'ref-notes') loadNotes();
+  if (id === 'activity') loadActivity();
   if (id === 'team') loadTeam();
   if (id === 'profile') loadProfile();
   if (id.startsWith('skill-')) paintSkill(id.slice(6));
@@ -1511,6 +1536,169 @@ window.setChannelStatus = async function(id, status) {
     loadChannels(); loadHome();
   } catch (e) { toast(e.message, 'error'); }
 };
+
+// ── Activity feed (OI-DATA-005) ───────────────────────────────────
+// Mirrors the Admin Console's filtered audit viewer but tenant-scoped.
+// Members (including viewer) can read — events describe shared state.
+const activityState = {
+  limit: 100,
+  offset: 0,
+  total: 0,
+  filters: { actor: '', action: '', from: '', to: '' },
+  lastRows: [],
+};
+
+function buildActivityQuery() {
+  const p = new URLSearchParams();
+  const f = activityState.filters;
+  if (f.actor)  p.set('actor',  f.actor);
+  if (f.action) p.set('action', f.action);
+  if (f.from)   p.set('from',   f.from.replace('T', ' '));
+  if (f.to)     p.set('to',     f.to.replace('T', ' ') + (f.to.length === 16 ? ':59' : ''));
+  p.set('limit', String(activityState.limit));
+  p.set('offset', String(activityState.offset));
+  return p.toString();
+}
+
+async function loadActivity() {
+  const c = document.getElementById('activityTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div><div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/workspace/activity?' + buildActivityQuery());
+    const d = r.data;
+    activityState.total = d.pagination.total || 0;
+    activityState.lastRows = d.events || [];
+    if (activityState.lastRows.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>' +
+        (activityState.total === 0
+          ? 'No activity yet'
+          : 'No events match your filters') +
+        '</h3><p>' +
+        (activityState.total === 0
+          ? 'This feed populates as members invite, remove, or delete shared resources. Solo workspaces will see entries once you start inviting teammates or deleting things.'
+          : 'Clear filters or widen the date range.') +
+        '</p></div>';
+    } else {
+      c.innerHTML = activityState.lastRows.map(renderActivityRow).join('');
+      document.querySelectorAll('#activityTable .audit-row').forEach(attachActivityExpand);
+    }
+    paintActivityPager();
+    paintActivityFilterMeta(d);
+  } catch (e) {
+    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+  }
+}
+window.loadActivity = loadActivity;
+
+function paintActivityPager() {
+  const p = document.getElementById('activityPager');
+  const start = activityState.offset + 1;
+  const end = Math.min(activityState.offset + activityState.limit, activityState.total);
+  const canPrev = activityState.offset > 0;
+  const canNext = end < activityState.total;
+  const meta = document.getElementById('actPagerMeta');
+  if (meta) meta.textContent = activityState.total === 0 ? '—' : (start + '–' + end + ' of ' + activityState.total);
+  p.innerHTML = activityState.total === 0 ? '' : `
+    <span class="small muted">Showing ${start}–${end} of ${activityState.total}</span>
+    <div class="row-inline">
+      <button class="btn ghost small" ${canPrev ? '' : 'disabled'} onclick="activityPage(-1)">← Prev</button>
+      <button class="btn ghost small" ${canNext ? '' : 'disabled'} onclick="activityPage(1)">Next →</button>
+    </div>`;
+}
+function paintActivityFilterMeta(d) {
+  const f = d.appliedFilters || {};
+  const parts = [];
+  if (f.actor)  parts.push(`actor=${esc(f.actor)}`);
+  if (f.action) parts.push(`action=${esc(f.action)}`);
+  if (f.from)   parts.push(`from=${esc(f.from)}`);
+  if (f.to)     parts.push(`to=${esc(f.to)}`);
+  const meta = document.getElementById('actFilterMeta');
+  if (parts.length === 0) {
+    meta.innerHTML = '<span class="muted">Newest events across your workspace.</span>';
+  } else {
+    meta.innerHTML = '<span class="muted">Filters: </span>' + parts.map((p) => `<span class="pill info">${p}</span>`).join(' ');
+  }
+}
+window.activityApply = function() {
+  activityState.filters = {
+    actor:  document.getElementById('actFActor').value.trim(),
+    action: document.getElementById('actFAction').value.trim(),
+    from:   document.getElementById('actFFrom').value,
+    to:     document.getElementById('actFTo').value,
+  };
+  activityState.offset = 0;
+  loadActivity();
+};
+window.activityPage = function(dir) {
+  activityState.offset = Math.max(0, activityState.offset + dir * activityState.limit);
+  loadActivity();
+};
+
+function renderActivityRow(e) {
+  // Category pill color: tenant.book.* / tenant.note.* / tenant.link.* /
+  // tenant.channel.* → info; tenant.invite.* / tenant.member.* → accent.
+  const cat = e.action.split('.')[1] || '';
+  const isMember = cat === 'invite' || cat === 'member';
+  // Human summary from details JSON if available.
+  let summary = '';
+  try {
+    const d = JSON.parse(e.details || 'null');
+    if (d) {
+      if (d.title) summary = '"' + d.title + '"';
+      else if (d.email) summary = d.email;
+      else if (d.targetUserId) summary = '#' + d.targetUserId;
+    }
+  } catch { /* ignore malformed details */ }
+  return `<div class="audit-row" data-audit-id="${e.id}">
+    <span class="mono muted" style="min-width: 60px;">#${e.id}</span>
+    <span class="mono muted" style="min-width: 140px;">${esc((e.ts || '').slice(0, 19))}</span>
+    <span class="act ${isMember ? 'tenant' : ''}" style="min-width: 160px;">${esc(e.action)}</span>
+    <span class="muted small grow" style="overflow: hidden; text-overflow: ellipsis;">${esc(summary || '')}</span>
+    <span class="muted small" style="min-width: 80px;">by #${e.actorId}</span>
+    <span class="expand-caret">▸</span>
+  </div>`;
+}
+
+// Click-to-expand audit row. Uses an audit-details div inserted right
+// after the row. Click again to collapse.
+function attachActivityExpand(row) {
+  row.addEventListener('click', () => {
+    const id = row.getAttribute('data-audit-id');
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('audit-details')) {
+      next.remove();
+      row.querySelector('.expand-caret').textContent = '▸';
+      return;
+    }
+    const src = activityState.lastRows.find((x) => String(x.id) === id);
+    let detailsText = '(no details)';
+    if (src && src.details) {
+      try { detailsText = JSON.stringify(JSON.parse(src.details), null, 2); }
+      catch { detailsText = src.details; }
+    }
+    const pre = document.createElement('div');
+    pre.className = 'audit-details';
+    pre.textContent = detailsText;
+    row.after(pre);
+    row.querySelector('.expand-caret').textContent = '▾';
+  });
+}
+
+// ── Shared audit-row styles (lifted from admin-console) ───────────
+// Inject once on boot so we don't duplicate CSS across consoles.
+// Scoped under body so it doesn't leak anywhere.
+(function injectActivityCss() {
+  const css = `
+    .audit-row { padding: 8px var(--space-5); border-bottom: 1px solid var(--border); font-size: 12px; display: flex; align-items: center; gap: var(--space-3); cursor: pointer; }
+    .audit-row:hover { background: var(--bg-tertiary); }
+    .audit-row .act { font-weight: 600; }
+    .audit-row .act.tenant { color: var(--accent); }
+    .audit-row .expand-caret { color: var(--text-muted); flex-shrink: 0; }
+    .audit-details { padding: var(--space-3) var(--space-5); background: var(--bg-tertiary); font-family: 'JetBrains Mono', monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; border-bottom: 1px solid var(--border); max-height: 280px; overflow-y: auto; }`;
+  const tag = document.createElement('style');
+  tag.textContent = css;
+  document.head.appendChild(tag);
+})();
 
 // ── Notes CRUD ────────────────────────────────────────────────────
 async function loadNotes() {

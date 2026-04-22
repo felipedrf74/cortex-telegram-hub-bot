@@ -459,7 +459,21 @@ export function createPortalWorkspaceRouter(): Router {
     const id = Number.parseInt(String(req.params.id), 10);
     if (!Number.isFinite(id) || id <= 0) return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
     try {
+      // OI-DATA-005: capture row before delete so the audit trail
+      // carries title (useful in the Activity feed) — rows are gone
+      // after delete so we can't join back. getBook returns null
+      // on cross-tenant mismatch, which surfaces as NOT_FOUND in
+      // the service delete anyway — no leak.
+      const snap = getBook(ctx.tenantId, id);
       deleteBook(ctx.tenantId, id, { userId: ctx.userId, role: ctx.role });
+      if (snap) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.book.delete',
+          `tenant.${ctx.tenantId}.book.${id}`,
+          { tenantId: ctx.tenantId, bookId: id, title: snap.title, author: snap.author },
+        );
+      }
       ok(res, { deleted: true, id });
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -544,7 +558,16 @@ export function createPortalWorkspaceRouter(): Router {
     const id = Number.parseInt(String(req.params.id), 10);
     if (!Number.isFinite(id) || id <= 0) return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
     try {
+      const snap = getContentNote(ctx.tenantId, id);
       deleteContentNote(ctx.tenantId, id, { userId: ctx.userId, role: ctx.role });
+      if (snap) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.note.delete',
+          `tenant.${ctx.tenantId}.note.${id}`,
+          { tenantId: ctx.tenantId, noteId: id, title: snap.title, kind: snap.kind },
+        );
+      }
       ok(res, { deleted: true, id });
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -628,7 +651,16 @@ export function createPortalWorkspaceRouter(): Router {
     const id = Number.parseInt(String(req.params.id), 10);
     if (!Number.isFinite(id) || id <= 0) return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
     try {
+      const snap = getLink(ctx.tenantId, id);
       deleteLink(ctx.tenantId, id, { userId: ctx.userId, role: ctx.role });
+      if (snap) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.link.delete',
+          `tenant.${ctx.tenantId}.link.${id}`,
+          { tenantId: ctx.tenantId, linkId: id, title: snap.title, url: snap.url },
+        );
+      }
       ok(res, { deleted: true, id });
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -750,7 +782,16 @@ export function createPortalWorkspaceRouter(): Router {
       return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
     }
     try {
+      const snap = getChannel(ctx.tenantId, id);
       deleteChannel(ctx.tenantId, id, { userId: ctx.userId, role: ctx.role });
+      if (snap) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.channel.delete',
+          `tenant.${ctx.tenantId}.channel.${id}`,
+          { tenantId: ctx.tenantId, channelId: id, title: snap.title, kind: snap.kind },
+        );
+      }
       ok(res, { deleted: true, id });
     } catch (e) {
       if (e instanceof ChannelError) return mapChannelError(res, e);
@@ -1099,6 +1140,111 @@ export function createPortalWorkspaceRouter(): Router {
       }
       logger.error({ err: e, code }, 'portal-workspace-router: accept-invite failed');
       err(res, 500, 'INTERNAL', 'Failed to accept invite');
+    }
+  });
+
+  // ── GET /workspace/activity (OI-DATA-005, 2026-04-22) ───────────
+  //
+  // Tenant-scoped audit feed. Backs the User Console → Activity page.
+  // Scopes on the same dot-prefix convention as the Admin Console's
+  // /owner/tenants/:id/audit endpoint (OI-ADM-301):
+  //   WHERE resource = 'tenant.<id>' OR resource LIKE 'tenant.<id>.%'
+  // This is the ONLY way members see cross-member events — they
+  // can't scroll the platform-wide audit (that's owner-only).
+  //
+  // All tenant members, including tenant_viewer, can READ the feed:
+  // the events describe changes to shared tenant state, so visibility
+  // is parallel to the resource tables themselves.
+  //
+  // Query parameters (all optional):
+  //   action  — exact match OR prefix with trailing *
+  //             (e.g. ?action=tenant.invite.* matches all 3 invite
+  //             events; ?action=tenant.book.delete matches exact)
+  //   actor   — actor_id (integer)
+  //   from    — ISO-ish timestamp; events with ts >= from
+  //   to      — events with ts <= to
+  //   limit   — 1..200, default 100
+  //   offset  — pagination
+  //
+  // LIKE-wildcard escape + 128-char length caps on text inputs
+  // mirror the OI-ADM-303 defense.
+  router.get('/activity', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const where: string[] = ['(resource = ? OR resource LIKE ?)'];
+    const params: unknown[] = [`tenant.${ctx.tenantId}`, `tenant.${ctx.tenantId}.%`];
+
+    const actorRaw = String(req.query.actor ?? '').trim();
+    if (actorRaw) {
+      const actor = Number.parseInt(actorRaw, 10);
+      if (!Number.isFinite(actor) || actor < 0) {
+        return err(res, 400, 'BAD_REQUEST', 'actor must be a non-negative integer');
+      }
+      where.push('actor_id = ?'); params.push(actor);
+    }
+
+    const actionRaw = String(req.query.action ?? '').trim();
+    if (actionRaw) {
+      if (actionRaw.length > 128) {
+        return err(res, 400, 'BAD_REQUEST', 'action too long');
+      }
+      if (actionRaw.endsWith('*')) {
+        const prefix = actionRaw.slice(0, -1).replace(/[%_]/g, (c) => '\\' + c);
+        where.push("action LIKE ? ESCAPE '\\'"); params.push(prefix + '%');
+      } else {
+        where.push('action = ?'); params.push(actionRaw);
+      }
+    }
+
+    const from = String(req.query.from ?? '').trim();
+    if (from) { where.push('ts >= ?'); params.push(from); }
+    const to = String(req.query.to ?? '').trim();
+    if (to) { where.push('ts <= ?'); params.push(to); }
+
+    const rawLimit = Number.parseInt(String(req.query.limit ?? '100'), 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 100, 1), 200);
+    const rawOffset = Number.parseInt(String(req.query.offset ?? '0'), 10);
+    const offset = Math.max(Number.isFinite(rawOffset) ? rawOffset : 0, 0);
+
+    try {
+      const db = getDb();
+      const whereSql = 'WHERE ' + where.join(' AND ');
+      const rows = db
+        .prepare(
+          `SELECT id, ts, user_id, actor_id, action, resource, details
+           FROM audit_trail ${whereSql}
+           ORDER BY id DESC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...params, limit, offset) as Array<{
+          id: number; ts: string; user_id: number; actor_id: number;
+          action: string; resource: string; details: string | null;
+        }>;
+      const countRow = db
+        .prepare(`SELECT COUNT(*) AS c FROM audit_trail ${whereSql}`)
+        .get(...params) as { c: number } | undefined;
+      const total = countRow?.c ?? 0;
+      ok(res, {
+        tenantId: ctx.tenantId,
+        events: rows.map((r) => ({
+          id: r.id,
+          ts: r.ts,
+          userId: r.user_id,
+          actorId: r.actor_id,
+          action: r.action,
+          resource: r.resource,
+          details: r.details,
+        })),
+        pagination: { total, limit, offset },
+        appliedFilters: {
+          actor: actorRaw || null,
+          action: actionRaw || null,
+          from: from || null,
+          to: to || null,
+        },
+      });
+    } catch (dbErr) {
+      logger.error({ err: dbErr, tenantId: ctx.tenantId }, 'portal-workspace-router: /activity failed');
+      err(res, 500, 'INTERNAL', 'Failed to load activity');
     }
   });
 

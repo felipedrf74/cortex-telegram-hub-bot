@@ -67,13 +67,28 @@ Follow-ups still open:
 
 ---
 
-### OI-DATA-005 — Audit-trail tenant scope filter [P1, Data]
+### ~~OI-DATA-005 — Audit-trail tenant scope filter~~ [DONE · 2026-04-22]
 
-**What's missing.** The User Console → Activity page can't yet render because `audit_trail` uses `user_id` ambiguously — sometimes it's the actor, sometimes the target tenant. On workspace mutations (fix #2 from the hardening pass) we write both `user_id = tenantId` and `actor_id = acting user`, so the data is there — we just need a stable query helper.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Unblocks.** Tenant-scoped activity feed with filters.
+User Console → Activity now shows a real filtered audit feed. The dual-purpose work:
 
-**Sketch.** New service helper `listAuditForTenant(tenantId, {actor?, action?, from?, to?, limit?})`. Route `GET /workspace/activity`. Keep the raw audit table unchanged.
+1. **New endpoint** — `GET /workspace/activity` with query params `?actor=&action=&from=&to=&limit=<=200&offset=`. Scopes via the same dot-prefix convention as OI-ADM-301 (`resource = 'tenant.<id>'` OR `resource LIKE 'tenant.<id>.%'`). Tenant 4 can never match tenant 42 — boundary test-pinned. Actor, action (exact OR trailing-`*` prefix), date range, pagination. LIKE-wildcard escape + 128-char length cap on text inputs (shared defense pattern with OI-ADM-303).
+
+2. **Resource-delete audit writes** — four new `writeWorkspaceAudit` call sites (book / note / link / channel delete). Each captures the row title BEFORE the delete so the audit carries human-readable detail. Details blob includes `{tenantId, <type>Id, title, ...}`. Create / update are intentionally NOT audited yet — they'd flood the feed in normal use; delete is the high-value/low-noise entry point (flagged as OI-DATA-005a for future extension).
+
+3. **UI wiring** — the Activity page replaces the legacy empty-state with a real filter form + table + pager. Each row expands inline to show the `details` JSON. Reuses the audit-row CSS pattern from admin-console.html (injected client-side to avoid duplicating between two HTML files).
+
+**Access control.** `tenant_viewer` CAN read the feed — the events describe shared tenant state, so visibility mirrors the resource tables themselves (viewer reads books/links/notes; viewer reads audit of deletes). Explicitly pinned.
+
+Tests (29 new, all green):
+- `__tests__/api/portal-workspace-activity-routes.test.ts` (16): empty + populated reads, auth, tenant-scope + dot-prefix boundary (tenant.4 ≠ tenant.42.*), cross-tenant 403, tenant_viewer read access, actor/action/prefix/date-range filters, LIKE-injection defense, length cap, clamp, pagination, cost-privacy, and DELETE-on-each-resource-writes-audit.
+- `__tests__/portal/user-console-activity.test.ts` (13): filter inputs, lazy-load, URLSearchParams query build, datetime T→space normalization, pagination wiring, row expand/collapse, empty-state correct.
+
+Follow-ups still open:
+- **OI-DATA-005a** — write audit rows on resource CREATE + UPDATE (today only DELETE writes). Would require a per-tenant rate limiter or ring buffer to avoid flooding.
+- **OI-DATA-005b** — join audit with the current user row to show actor name/email in the feed (today we show `by #<id>` since audit_trail stores only ids).
+- **OI-DATA-005c** — saved filter presets (localStorage), same pattern as OI-ADM-303b.
 
 ---
 
@@ -248,9 +263,9 @@ Follow-ups still open:
 
 ---
 
-### OI-USR-402 — Activity feed [P1, Data+UX]
+### ~~OI-USR-402 — Activity feed~~ [DONE · 2026-04-22]
 
-**What's missing.** See OI-DATA-005. The page renders an empty state today.
+Closed alongside OI-DATA-005 — the Activity page now renders a real filtered feed backed by `GET /workspace/activity`. See OI-DATA-005 for the full resolution note and OI-DATA-005a/b/c for remaining follow-ups.
 
 ---
 

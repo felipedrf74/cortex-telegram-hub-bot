@@ -204,6 +204,8 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `src/services/tenant-channel-service.ts`                                  | 11 KB        | **OI-DATA-002** — CRUD service mirroring `tenant-resource-service` with added URL protocol whitelist |
 | `__tests__/services/tenant-channel-service.test.ts`                       | 10 KB        | 26 service unit tests (CRUD, isolation, authorship, URL whitelist × 3, enum validation, list filters) |
 | `__tests__/api/portal-workspace-channels-routes.test.ts`                  | 9 KB         | 15 route integration tests (HTTP glue, cross-tenant 404, PATCH null-clear, home integration, cost-privacy invariant) |
+| `__tests__/api/portal-workspace-activity-routes.test.ts`                  | 11 KB        | **OI-DATA-005** — 16 route tests: dot-prefix tenant-scope boundary, tenant_viewer read access, cross-tenant 403, LIKE-injection defense, filters, pagination, cost-privacy, all 4 delete-audits |
+| `__tests__/portal/user-console-activity.test.ts`                          | 4 KB         | 13 structural pins for the Activity page UI (filter form, lazy-load, T→space datetime normalization, pager, row expand) |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -214,11 +216,11 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 
 | File                                        | Delta                                                                    |
 |---------------------------------------------|--------------------------------------------------------------------------|
-| `src/api/portal-workspace-router.ts`        | +186 lines (console/home) + ~145 lines (OI-DATA-002): new `GET /workspace/console/home` aggregator + full `/workspace/channels` CRUD (5 routes) + home payload updated with `counts.channels` and `content.channel.primary` dependency. |
+| `src/api/portal-workspace-router.ts`        | +186 (console/home) + ~145 (OI-DATA-002 channels) + ~120 (OI-DATA-005 activity + 4 resource-delete audit writes): new `GET /workspace/console/home`, full `/workspace/channels` CRUD, `GET /workspace/activity`, audit rows on every resource DELETE. |
 | `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
 | `src/portal/admin-console.html`             | +~420 lines (OI-ADM-301 + OI-ADM-303): tenant detail drawer (overlay, 4 tabs, parallel fetches, ESC close) + filtered audit viewer (5 filters, pagination, expandable rows, CSV export). Dead legacy `loadSecurity` removed. |
-| `src/portal/user-console.html`              | +~340 lines (OI-USR-404) + ~150 lines (OI-DATA-002): onboarding wizard + full Channels tab (form, table, Mute/Remove controls, status filter, search), sidebar badge, Home counts row. |
+| `src/portal/user-console.html`              | +~340 (OI-USR-404 wizard) + ~150 (OI-DATA-002 channels) + ~160 (OI-DATA-005 activity): onboarding wizard + full Channels tab + full Activity page with filter form, expandable rows, pagination. |
 
 ### 11.3 Routes added
 
@@ -237,6 +239,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `POST /workspace/channels`          | iOS JWT + tenant | Create. URL must be `http://` or `https://` — 400 on any other scheme. |
 | `PATCH /workspace/channels/:id`     | iOS JWT + tenant | Update. Supports explicit `null` to clear url/handle/description. Authorship rule enforced. |
 | `DELETE /workspace/channels/:id`    | iOS JWT + tenant | Delete. Authorship rule enforced. Prefer `PATCH { status: "archived" }` for soft-delete. |
+| `GET /workspace/activity`           | iOS JWT + tenant | **OI-DATA-005** — tenant-scoped audit feed. Filters: `?actor=&action=&from=&to=&limit=<=200&offset=`. action supports exact or `prefix*`. LIKE-wildcard escape + 128-char caps. Members including `tenant_viewer` can read. |
 
 ### 11.4 Routes unchanged
 
@@ -342,7 +345,7 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 **P1 (near-term):**
 - **OI-DATA-003** Skill config editor needs `tenant_skill_config` schema before the Configuration tab on each skill page can be real.
 - ~~**OI-DATA-002** Channels need tenant-scoping~~ **DONE 2026-04-22** — migration 079 + service + routes + Home integration + Reference Center UI.
-- **OI-DATA-005** Activity feed needs a tenant-scoped audit query helper.
+- ~~**OI-DATA-005** Activity feed needs a tenant-scoped audit query helper.~~ **DONE 2026-04-22** — `GET /workspace/activity` + 4 resource-delete audit writes + Activity page UI (filter form, expandable rows, pagination).
 - **OI-NAV-201** Promote `/admin-console` to `/admin` — explicit post-review gate.
 - ~~**OI-NAV-203** Wire `/invite/accept?code=` landing page so invite links resolve.~~ **DONE 2026-04-22** — `src/portal/invite-accept.html` + `GET /invite/accept`, 11 regression tests.
 - ~~**OI-ADM-301** Tenant detail drill-in drawer in Admin Console.~~ **DONE 2026-04-22** — 4-tab drawer (Details/Members/Usage/Audit) + new `GET /owner/tenants/:id/audit` endpoint with dot-prefix scoping.
@@ -383,7 +386,7 @@ Each bullet is a deliberate scope cut that, once addressed on the backend side, 
 4. **Intelligence-bus cross-skill signals (OI-DATA-004 / OI-MODEL-503).** Unlocks insights like "your Training recovery is low and your Secretary has 3 scheduled sessions this week — consider dropping one." Today the MVP insights are deterministic; real cross-skill reasoning needs the bus.
 5. **Consolidated integrations read endpoint (OI-DATA-007).** Replaces the empty state on both `/admin-console` → Integrations and `/console` → Integrations with real per-provider status rows (last sync, error count, token expiry).
 6. **`user_dismissed_insights` table (OI-MODEL-502).** Today dismissal would be localStorage-only; a server-side table syncs dismissal across devices and makes the re-surface-on-condition-change semantic correct.
-7. **Tenant-scoped audit query helper (OI-DATA-005).** Unblocks the Activity feed. The data is there; just needs a service wrapper.
+7. ~~**Tenant-scoped audit query helper (OI-DATA-005).**~~ **DONE 2026-04-22** — the Activity feed is live and covers member/invite changes + resource deletes. Follow-ups OI-DATA-005a/b/c track CREATE/UPDATE auditing, actor-name join, and saved filter presets.
 
 ---
 
