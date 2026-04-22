@@ -44,6 +44,7 @@ import { Router, type Request, type Response } from 'express';
 import express from 'express';
 import { logger } from '../utils/logger';
 import {
+  ownerRateLimitMiddleware,
   requireOwnerConsoleToken,
   resolvePlatformAdmin,
   requirePlatformOwner,
@@ -128,6 +129,13 @@ export function createPortalOwnerRouter(): Router {
   // JSON parser scoped to this router so we can mount it even when
   // the outer app hasn't globally parsed JSON yet.
   router.use(express.json({ limit: '1mb' }));
+
+  // Gate 0 (validation pass 2026-04-22): per-IP rate limit. Runs
+  // FIRST so even valid-token traffic is rate-limited, preventing
+  // a leaked token from being used to enumerate admin user ids.
+  // 30 req/min/IP — generous for a human admin clicking around,
+  // tight against scripted enumeration.
+  router.use(ownerRateLimitMiddleware);
 
   // Gate 1 (defense in depth): owner-console token. Runs BEFORE the
   // identity resolver so the platform_admins DB read is gated on
@@ -316,9 +324,28 @@ export function createPortalOwnerRouter(): Router {
 
     try {
       const db = getDb();
-      const userExists = db.prepare('SELECT id FROM users WHERE id = ?').get(userId) as { id: number } | undefined;
-      if (!userExists) {
+      // Validation fix (Phase 2E, 2026-04-22): reject the grant if
+      // the target user is not in `active` status. Prior code only
+      // checked row existence, which meant a suspended/banned user
+      // could be granted platform_admin — and if they were later
+      // reactivated, they'd have admin without a re-review step.
+      // Also guards against granting to a deleted user during the
+      // window between user_service.setUserStatus('deleted') and
+      // the eventual hard DELETE.
+      const userRow = db
+        .prepare('SELECT id, status FROM users WHERE id = ?')
+        .get(userId) as { id: number; status: string | null } | undefined;
+      if (!userRow) {
         return err(res, 404, 'USER_NOT_FOUND', 'No user with that id', { userId });
+      }
+      if (userRow.status && userRow.status !== 'active') {
+        return err(
+          res,
+          400,
+          'USER_NOT_ACTIVE',
+          `Cannot grant platform role to a user whose status is "${userRow.status}". Reactivate the user first.`,
+          { userId, status: userRow.status },
+        );
       }
       db.prepare(
         `INSERT INTO platform_admins (user_id, role, granted_at, granted_by)

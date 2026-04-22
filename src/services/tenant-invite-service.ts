@@ -290,18 +290,35 @@ export function acceptInvite(opts: AcceptInviteOptions): InviteRow {
       acceptedBy: existing.acceptedBy,
     });
   }
-  if (existing.expiresAt && new Date(existing.expiresAt) < new Date()) {
-    // Lazy expiry: mark and throw.
-    try {
-      getDb()
-        .prepare(
-          "UPDATE tenant_invites SET status = 'expired' WHERE id = ? AND status = 'pending'",
-        )
-        .run(existing.id);
-    } catch {
-      // non-fatal; the throw below still runs
+  // Validation pass (2026-04-22): expiry comparison moved from
+  //   `new Date(existing.expiresAt) < new Date()`
+  // to a SQLite-side comparison. Rationale: SQLite's datetime()
+  // returns UTC text without a trailing 'Z' (e.g. '2026-04-22 20:05:10'),
+  // while callers store expires_at as ISO-8601 (e.g.
+  // '2026-04-22T20:05:00.000Z'). JS Date() parses the SQLite form as
+  // LOCAL time in some Node versions, giving a ±timezone offset skew
+  // on the expiry check. Delegating to SQLite fixes that, BUT we must
+  // wrap both sides in datetime() so SQLite normalizes the ISO input
+  // ('T' + 'Z') into its internal 'YYYY-MM-DD HH:MM:SS' format —
+  // otherwise the naive string compare treats 'T' (0x54) > ' ' (0x20)
+  // and the expired check never fires.
+  if (existing.expiresAt) {
+    const row = getDb()
+      .prepare("SELECT datetime('now') >= datetime(?) AS expired")
+      .get(existing.expiresAt) as { expired: number } | undefined;
+    if (row?.expired === 1) {
+      // Lazy expiry: mark and throw.
+      try {
+        getDb()
+          .prepare(
+            "UPDATE tenant_invites SET status = 'expired' WHERE id = ? AND status = 'pending'",
+          )
+          .run(existing.id);
+      } catch {
+        // non-fatal; the throw below still runs
+      }
+      throw new InviteError('EXPIRED', 'Invite has expired');
     }
-    throw new InviteError('EXPIRED', 'Invite has expired');
   }
   if (existing.email.toLowerCase() !== userEmail) {
     throw new InviteError(

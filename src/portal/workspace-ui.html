@@ -66,6 +66,12 @@
   .status-accepted { background: rgba(52,211,153,.15); color: var(--success); }
   .status-revoked  { background: rgba(248,113,113,.15); color: var(--danger); }
   .status-expired  { background: rgba(148,163,184,.15); color: var(--text-dim); }
+  /* Book status badges (validation pass 2026-04-22 — was "pending"
+     for 3 of 4 states, visually useless). Distinct colors now. */
+  .status-want_to_read { background: rgba(96,165,250,.18); color: #60a5fa; }
+  .status-reading      { background: rgba(251,191,36,.18); color: var(--warning); }
+  .status-finished     { background: rgba(52,211,153,.15); color: var(--success); }
+  .status-abandoned    { background: rgba(148,163,184,.15); color: var(--text-dim); }
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
   .kpi {
     background: #0c0d10; border: 1px solid var(--border); border-radius: 8px;
@@ -693,7 +699,7 @@ function renderBookRow(b) {
     <div style="display:flex; justify-content: space-between; align-items: flex-start; gap:.5rem;">
       <div style="flex: 1;">
         <strong>${escape(b.title)}</strong>
-        <span class="role-badge status-${b.status === 'finished' ? 'accepted' : 'pending'}" style="margin-left:.4rem;">${b.status}</span>
+        <span class="role-badge status-${escape(b.status)}" style="margin-left:.4rem;">${b.status}</span>
         ${b.author ? `<div class="tiny">by ${escape(b.author)}</div>` : ''}
         ${tags ? `<div style="margin-top:.3rem;">${tags}</div>` : ''}
         ${b.notes ? `<div class="tiny" style="margin-top:.3rem;">${escape(b.notes)}</div>` : ''}

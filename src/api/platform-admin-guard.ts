@@ -46,6 +46,94 @@ import crypto from 'crypto';
 import { getPlatformRole, type PlatformRole } from '../services/tenant-service';
 import { logger } from '../utils/logger';
 
+// ── /owner/* rate limit (Phase 2E validation fix) ────────────────
+//
+// The Phase-2A token gate + identity gate stopped unauthenticated
+// requests cold, but it left a subtle enumeration vector: if
+// `PORTAL_OWNER_TOKEN` leaks (lost .env, harvested from a backup),
+// an attacker can brute-force `X-Admin-User-Id` by sending thousands
+// of combinations. Each attempt hits the `platform_admins` DB
+// lookup; a valid id returns 200, an invalid id returns 403. Timing
+// differences would reveal the valid ids even with timing-safe
+// token compare.
+//
+// Fix: per-IP sliding window. 30 req/min/IP is generous for
+// legitimate owner-console use (human admin clicking around) and
+// tight enough that enumeration takes impractical time. This runs
+// BEFORE the token check so even valid-token traffic is rate-
+// limited — protects against a leaked token being used to exhaust
+// the database.
+//
+// State is in-process; matches the existing rate-limiter.ts pattern.
+// Under PM2 cluster the buckets are per-worker; documented for
+// Phase 3 horizontal-scale concerns.
+
+const ownerRequestLog = new Map<string, number[]>();
+const OWNER_WINDOW_MS = 60 * 1000;
+const OWNER_MAX_REQUESTS = 30;
+
+function extractClientIp(req: Request): string {
+  return (req.ip as string | undefined) || req.socket?.remoteAddress || 'unknown';
+}
+
+// Periodic cleanup so the Map doesn't grow unbounded across long
+// process lifetimes. Same cadence as the main rate-limiter.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, stamps] of ownerRequestLog) {
+    const inWindow = stamps.filter((ts) => now - ts < OWNER_WINDOW_MS);
+    if (inWindow.length === 0) {
+      ownerRequestLog.delete(ip);
+    } else {
+      ownerRequestLog.set(ip, inWindow);
+    }
+  }
+}, 5 * 60 * 1000);
+
+/** Test-only: drop bucket state between cases. */
+export function _resetOwnerRateLimiterForTests(): void {
+  ownerRequestLog.clear();
+}
+
+export function ownerRateLimitMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const ip = extractClientIp(req);
+  const now = Date.now();
+  const stamps = ownerRequestLog.get(ip) || [];
+  const inWindow = stamps.filter((ts) => now - ts < OWNER_WINDOW_MS);
+  inWindow.push(now);
+  ownerRequestLog.set(ip, inWindow);
+
+  const remaining = Math.max(0, OWNER_MAX_REQUESTS - inWindow.length);
+  res.setHeader('X-RateLimit-Limit', OWNER_MAX_REQUESTS);
+  res.setHeader('X-RateLimit-Remaining', remaining);
+  res.setHeader('X-RateLimit-Reset', Math.ceil((now + OWNER_WINDOW_MS) / 1000));
+  res.setHeader('X-RateLimit-Bucket', 'owner');
+
+  if (inWindow.length > OWNER_MAX_REQUESTS) {
+    const retryAfter = Math.ceil(OWNER_WINDOW_MS / 1000);
+    res.setHeader('Retry-After', retryAfter);
+    logger.warn(
+      { ip, path: req.path, method: req.method, inWindow: inWindow.length },
+      'owner-console: rate limit exceeded — possible enumeration attempt',
+    );
+    res.status(429).json({
+      ok: false,
+      error: {
+        code: 'RATE_LIMITED',
+        message: 'Too many owner-console requests from this IP. Slow down.',
+        retryAfter,
+      },
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+  next();
+}
+
 // ── Request augmentation ──────────────────────────────────────────
 
 export interface PlatformAdminContext {

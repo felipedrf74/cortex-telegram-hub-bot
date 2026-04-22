@@ -73,6 +73,40 @@ import {
 } from '../services/tenant-resource-service';
 import { getDb } from '../services/database';
 
+// ── Audit helper ──────────────────────────────────────────────────
+//
+// Added 2026-04-22 (validation pass) to close an audit-log gap:
+// tenant-level sensitive mutations (removeMember, acceptInvite,
+// revokeInvite) were previously untracked. That meant a tenant
+// admin could kick a member and there was no record of who did it
+// or when — a blind spot for security review.
+//
+// actorId is the user performing the action. For workspace routes
+// this is req.userId (the caller's identity). The audit row is
+// written best-effort; a failure here never blocks the mutation.
+function writeWorkspaceAudit(
+  actorUserId: number,
+  action: string,
+  resource: string,
+  details: Record<string, unknown>,
+): void {
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO audit_trail (user_id, actor_id, action, resource, details, ts)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+    ).run(
+      actorUserId,
+      actorUserId,
+      action,
+      resource,
+      JSON.stringify(details),
+    );
+  } catch (auditErr) {
+    logger.warn({ err: auditErr, action, resource }, 'workspace audit log write failed');
+  }
+}
+
 // ── Response helpers (same shape as /owner/*) ─────────────────────
 
 function ok(res: Response, data: unknown, status = 200): void {
@@ -307,6 +341,21 @@ export function createPortalWorkspaceRouter(): Router {
         userId: ctx.userId,
         role: ctx.role,
       });
+      // Audit log (validation pass 2026-04-22): removed-member is a
+      // sensitive tenant-level action. Actor = caller; target = the
+      // user they kicked. Resource string matches the /owner/*
+      // convention: `tenant.<id>.member.<userId>`.
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.member.remove',
+        `tenant.${ctx.tenantId}.member.${targetUserId}`,
+        {
+          tenantId: ctx.tenantId,
+          targetUserId,
+          formerRole: removed.role,
+          memberSince: removed.joinedAt,
+        },
+      );
       ok(res, {
         removed: {
           tenantId: removed.tenantId,
@@ -784,6 +833,15 @@ export function createPortalWorkspaceRouter(): Router {
         createdBy: ctx.userId,
         expiresAt,
       });
+      // Audit log (validation pass 2026-04-22). Note: we deliberately
+      // do NOT include the invite_code in the audit row — that's the
+      // shared secret. The id + email + role are enough for review.
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.invite.create',
+        `tenant.${ctx.tenantId}.invite.${invite.id}`,
+        { tenantId: ctx.tenantId, inviteId: invite.id, email: invite.email, role: invite.role },
+      );
       // Return the FULL invite including invite_code. The admin UI
       // will typically copy this code to the clipboard and share it
       // through their own channel.
@@ -822,6 +880,12 @@ export function createPortalWorkspaceRouter(): Router {
 
     try {
       const updated = revokeInvite(inviteId, ctx.userId);
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.invite.revoke',
+        `tenant.${ctx.tenantId}.invite.${inviteId}`,
+        { tenantId: ctx.tenantId, inviteId, email: updated.email, role: updated.role },
+      );
       ok(res, { invite: updated });
     } catch (e) {
       if (e instanceof InviteError) {
@@ -887,6 +951,15 @@ export function createPortalWorkspaceRouter(): Router {
         userId,
         userEmail: user?.email || '',
       });
+      // Audit: actor is the invitee who accepted. Target resource is
+      // the tenant they joined. The audit row surfaces on BOTH the
+      // invitee's /workspace/security view and any /owner/audit.
+      writeWorkspaceAudit(
+        userId,
+        'tenant.invite.accept',
+        `tenant.${invite.tenantId}.member.${userId}`,
+        { tenantId: invite.tenantId, inviteId: invite.id, role: invite.role },
+      );
       ok(res, { invite, tenantId: invite.tenantId, role: invite.role });
     } catch (e) {
       if (e instanceof InviteError) {
