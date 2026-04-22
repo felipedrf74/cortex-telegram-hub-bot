@@ -194,6 +194,24 @@ export function createPortalServer(bot?: any): http.Server {
     }
   }
 
+  // ── /workspace-ui — Minimal tenant-workspace HTML demo ──────────────
+  //
+  // Single HTML file served at GET /workspace-ui so the Phase-1 MVP
+  // workspace endpoints can be exercised from a browser. NOT a Phase-3
+  // SPA — that work splits portal.html into owner + workspace apps.
+  // This is a 440-line zero-build demo meant for local review only.
+  app.get('/workspace-ui', (_req: Request, res: Response) => {
+    const htmlPath = path.join(__dirname, 'workspace-ui.html');
+    if (!fs.existsSync(htmlPath)) {
+      res.status(503).send('workspace-ui.html not found in dist/portal (run npm run build)');
+      return;
+    }
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('X-Frame-Options', 'DENY');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
+  });
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see
