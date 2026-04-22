@@ -212,6 +212,24 @@ export function createPortalServer(bot?: any): http.Server {
     res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
   });
 
+  // ── /owner-ui — Minimal owner-console HTML demo ─────────────────────
+  //
+  // Mirrors /workspace-ui: single HTML, zero-build, vanilla JS. Sends
+  // Authorization: Bearer <portal-token> + X-Admin-User-Id so both
+  // gates of the /owner/* router are exercised. Login screen prompts
+  // for BOTH credentials (token + admin user id).
+  app.get('/owner-ui', (_req: Request, res: Response) => {
+    const htmlPath = path.join(__dirname, 'owner-ui.html');
+    if (!fs.existsSync(htmlPath)) {
+      res.status(503).send('owner-ui.html not found in dist/portal (run npm run build)');
+      return;
+    }
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('X-Frame-Options', 'DENY');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
+  });
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see

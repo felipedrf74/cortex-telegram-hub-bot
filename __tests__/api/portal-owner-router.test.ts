@@ -89,11 +89,20 @@ function makeApp(): express.Express {
   return app;
 }
 
+// Shared across all tests in this file. Set in beforeEach via env
+// (`PORTAL_OWNER_TOKEN` or `PORTAL_TOKEN`) — the guard reads at
+// request time so each test can scope its own token.
+const DEFAULT_TOKEN = 'owner-console-token-for-tests-at-least-16-chars';
+
 async function req(
   app: express.Express,
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   urlPath: string,
-  opts: { adminUserId?: number; body?: Record<string, unknown> } = {},
+  opts: {
+    adminUserId?: number;
+    body?: Record<string, unknown>;
+    token?: string | null;  // null = omit; undefined = use DEFAULT_TOKEN
+  } = {},
 ): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
@@ -102,6 +111,10 @@ async function req(
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (opts.adminUserId !== undefined) {
         headers['X-Admin-User-Id'] = String(opts.adminUserId);
+      }
+      const tokenValue = opts.token === undefined ? DEFAULT_TOKEN : opts.token;
+      if (tokenValue !== null) {
+        headers['Authorization'] = 'Bearer ' + tokenValue;
       }
       const body = opts.body ? JSON.stringify(opts.body) : undefined;
 
@@ -135,8 +148,22 @@ describe('/owner/* router integration', () => {
   let app: express.Express;
   let adminUid: number;
   let regularUid: number;
+  const originalOwnerToken = process.env.PORTAL_OWNER_TOKEN;
+  const originalPortalToken = process.env.PORTAL_TOKEN;
+  const originalBypass = process.env.PORTAL_ALLOW_LOCAL_BYPASS;
+
+  afterEach(() => {
+    process.env.PORTAL_OWNER_TOKEN = originalOwnerToken;
+    process.env.PORTAL_TOKEN = originalPortalToken;
+    process.env.PORTAL_ALLOW_LOCAL_BYPASS = originalBypass;
+  });
 
   beforeEach(() => {
+    // Configure owner-console token for tests.
+    process.env.PORTAL_OWNER_TOKEN = DEFAULT_TOKEN;
+    delete process.env.PORTAL_TOKEN;
+    delete process.env.PORTAL_ALLOW_LOCAL_BYPASS;
+
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
@@ -278,5 +305,108 @@ describe('/owner/* router integration', () => {
     expect(r.status).toBe(200);
     expect(r.body.data.today).toHaveProperty('totalUsd');
     expect(Array.isArray(r.body.data.today.byTenant)).toBe(true);
+  });
+
+  // ── Owner-console token gate (Phase-2 hardening) ─────────────
+  //
+  // These pin the requireOwnerConsoleToken middleware that now runs
+  // FIRST on every /owner/* route. Without it, the platform_admins
+  // DB lookup would still happen — giving an enumerator signal on
+  // valid admin user ids. With it, even a correct X-Admin-User-Id
+  // cannot reach the DB without presenting a valid token.
+
+  it('rejects a request with NO token header (401)', async () => {
+    const r = await req(app, 'GET', '/owner/tenants', { adminUserId: adminUid, token: null });
+    expect(r.status).toBe(401);
+    expect(r.body.error.code).toBe('UNAUTHORIZED');
+    expect(r.body.error.message).toMatch(/token/i);
+  });
+
+  it('rejects a request with the WRONG token (401)', async () => {
+    const r = await req(app, 'GET', '/owner/tenants', {
+      adminUserId: adminUid,
+      token: 'wrong-token-that-is-also-at-least-16-chars',
+    });
+    expect(r.status).toBe(401);
+    expect(r.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('rejects with 503 OWNER_CONSOLE_UNCONFIGURED when neither env is set and not loopback-bypass', async () => {
+    delete process.env.PORTAL_OWNER_TOKEN;
+    delete process.env.PORTAL_TOKEN;
+    process.env.PORTAL_ALLOW_LOCAL_BYPASS = 'false';
+    // Even with the right identity header, we refuse to serve.
+    const r = await req(app, 'GET', '/owner/tenants', { adminUserId: adminUid, token: 'anything' });
+    expect(r.status).toBe(503);
+    expect(r.body.error.code).toBe('OWNER_CONSOLE_UNCONFIGURED');
+  });
+
+  it('falls back to PORTAL_TOKEN when PORTAL_OWNER_TOKEN is not set', async () => {
+    delete process.env.PORTAL_OWNER_TOKEN;
+    process.env.PORTAL_TOKEN = 'shared-portal-token-fallback-16+';
+    const r = await req(app, 'GET', '/owner/tenants', {
+      adminUserId: adminUid,
+      token: 'shared-portal-token-fallback-16+',
+    });
+    expect(r.status).toBe(200);
+  });
+
+  it('does NOT fall back to PORTAL_TOKEN when PORTAL_OWNER_TOKEN is set (strict separation)', async () => {
+    process.env.PORTAL_OWNER_TOKEN = 'owner-specific-secret-at-least-16';
+    process.env.PORTAL_TOKEN = 'shared-portal-token-that-should-not-work';
+    // Presenting the SHARED token when the OWNER-specific one is
+    // configured must fail — otherwise the operator's separation
+    // intent is silently undermined.
+    const r = await req(app, 'GET', '/owner/tenants', {
+      adminUserId: adminUid,
+      token: 'shared-portal-token-that-should-not-work',
+    });
+    expect(r.status).toBe(401);
+    // And the correct owner-specific token works.
+    const r2 = await req(app, 'GET', '/owner/tenants', {
+      adminUserId: adminUid,
+      token: 'owner-specific-secret-at-least-16',
+    });
+    expect(r2.status).toBe(200);
+  });
+
+  it('rejects the correct token with a missing X-Admin-User-Id (gate 2 still runs)', async () => {
+    // Token passes (gate 1), but no identity header → gate 2 401s.
+    const r = await req(app, 'GET', '/owner/tenants', { token: DEFAULT_TOKEN });
+    expect(r.status).toBe(401);
+    expect(r.body.error.code).toBe('UNAUTHORIZED');
+    expect(r.body.error.message).toMatch(/X-Admin-User-Id/i);
+  });
+
+  it('accepts the token via X-Portal-Token header (alternate to Authorization: Bearer)', async () => {
+    // This path is used by the inline JS in portal.html which sends
+    // X-Portal-Token. We support both forms for backward compat.
+    return new Promise<void>((resolve, reject) => {
+      const server = app.listen(0, () => {
+        const addr = server.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        const http = require('http');
+        const request = http.request(
+          {
+            host: '127.0.0.1', port, path: '/owner/tenants', method: 'GET',
+            headers: {
+              'X-Portal-Token': DEFAULT_TOKEN,
+              'X-Admin-User-Id': String(adminUid),
+            },
+          },
+          (res: any) => {
+            let data = '';
+            res.on('data', (c: Buffer) => { data += c.toString(); });
+            res.on('end', () => {
+              server.close();
+              expect(res.statusCode).toBe(200);
+              resolve();
+            });
+          },
+        );
+        request.on('error', (e: Error) => { server.close(); reject(e); });
+        request.end();
+      });
+    });
   });
 });

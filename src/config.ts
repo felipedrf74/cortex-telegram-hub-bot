@@ -1,6 +1,14 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import dotenv from 'dotenv';
+// Load .env, but DON'T override env vars under test. Test envs are
+// deterministically set by __tests__/setup.ts + individual test
+// files; letting dotenv override them would re-clobber those values
+// whenever a developer has a local .env lying around. Vitest sets
+// NODE_ENV=test in setup.ts before any config import, so this check
+// is reliable. (2026-04-22 — previously this unconditionally ran
+// with override:true, which silently broke portal-token-strength
+// .test.ts as soon as a .env existed in the worktree root.)
 dotenv.config({
   quiet: true,
   override: process.env.NODE_ENV !== 'test',

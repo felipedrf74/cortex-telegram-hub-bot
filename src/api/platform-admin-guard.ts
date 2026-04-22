@@ -42,6 +42,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { getPlatformRole, type PlatformRole } from '../services/tenant-service';
 import { logger } from '../utils/logger';
 
@@ -79,6 +80,140 @@ function readAdminUserIdClaim(req: Request): number | null {
   const parsed = parseInt(raw.trim(), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return parsed;
+}
+
+// ── Owner-console token gate (defense in depth) ───────────────────
+//
+// Phase 2 hardening (2026-04-22): `/owner/*` now requires a valid
+// owner-console token on top of the platform-admin identity check.
+// This closes the open risk #1 from the Phase-1 final report ("do
+// not expose /owner/* on the public tunnel without a token").
+//
+// Resolution order for the expected token:
+//
+//   1. PORTAL_OWNER_TOKEN   — dedicated owner-console secret. If set,
+//                             this is the ONLY accepted token.
+//   2. PORTAL_TOKEN         — existing shared portal token. Used as
+//                             a fallback so local dev keeps working
+//                             with a single .env variable.
+//   3. neither set          — IF `PORTAL_ALLOW_LOCAL_BYPASS=true`
+//                             AND the request's remote address is
+//                             loopback, the gate is skipped (same
+//                             bypass pattern the /api admin gate uses).
+//                             Otherwise 503 — we refuse to serve
+//                             /owner/* at all without a configured
+//                             secret. Fail-closed.
+//
+// All comparisons use `crypto.timingSafeEqual` to defeat timing
+// side-channels. The token is read from Authorization: Bearer <t>
+// OR from the X-Portal-Token header (the same dual-form the
+// existing admin portal's inline JS speaks).
+
+function readPresentedToken(req: Request): string | null {
+  const auth = req.header('Authorization');
+  if (typeof auth === 'string' && auth.startsWith('Bearer ')) {
+    const raw = auth.slice(7).trim();
+    if (raw.length > 0) return raw;
+  }
+  const header = req.header('X-Portal-Token');
+  if (typeof header === 'string' && header.trim().length > 0) {
+    return header.trim();
+  }
+  // Debug-only query form. Logged distinctly so accidental exposure
+  // in shell history is visible in the audit trail.
+  if (typeof req.query?._ownerToken === 'string' && (req.query._ownerToken as string).length > 0) {
+    return (req.query._ownerToken as string).trim();
+  }
+  return null;
+}
+
+function tokensEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackRequest(req: Request): boolean {
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1'
+  );
+}
+
+/**
+ * First-stage gate on the `/owner/*` router: token presence + match.
+ * Runs BEFORE `resolvePlatformAdmin` so the request never reaches
+ * the identity resolver (and therefore the platform_admins DB read)
+ * without proving token possession first.
+ */
+export function requireOwnerConsoleToken(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const configuredOwner = process.env.PORTAL_OWNER_TOKEN || '';
+  const configuredShared = process.env.PORTAL_TOKEN || '';
+  const bypassAllowed = (process.env.PORTAL_ALLOW_LOCAL_BYPASS || 'false').toLowerCase() === 'true';
+
+  // No secret configured at all.
+  if (!configuredOwner && !configuredShared) {
+    if (bypassAllowed && isLoopbackRequest(req)) {
+      // Local dev convenience. Still logs so this path is observable.
+      logger.info(
+        { path: req.path, method: req.method, remote: req.ip },
+        'platform-admin-guard: owner-console token not set; allowing loopback bypass',
+      );
+      return next();
+    }
+    logger.error(
+      { path: req.path },
+      'platform-admin-guard: refusing /owner/* — neither PORTAL_OWNER_TOKEN nor PORTAL_TOKEN is set',
+    );
+    respond(
+      res,
+      503,
+      'OWNER_CONSOLE_UNCONFIGURED',
+      'Owner console is not configured. Set PORTAL_OWNER_TOKEN (preferred) or PORTAL_TOKEN in .env and restart.',
+    );
+    return;
+  }
+
+  const presented = readPresentedToken(req);
+  if (!presented) {
+    respond(
+      res,
+      401,
+      'UNAUTHORIZED',
+      'Missing owner-console token. Send Authorization: Bearer <token> or X-Portal-Token: <token>.',
+    );
+    return;
+  }
+
+  // PORTAL_OWNER_TOKEN, when set, is the ONLY accepted token. We do
+  // NOT silently fall back to PORTAL_TOKEN if the owner-specific
+  // secret exists — that would defeat the separation the operator
+  // asked for.
+  let ok = false;
+  if (configuredOwner) {
+    ok = tokensEqual(presented, configuredOwner);
+  } else {
+    ok = tokensEqual(presented, configuredShared);
+  }
+
+  if (!ok) {
+    logger.info(
+      { path: req.path, method: req.method },
+      'platform-admin-guard: owner-console token mismatch — rejecting',
+    );
+    respond(res, 401, 'UNAUTHORIZED', 'Invalid owner-console token.');
+    return;
+  }
+  next();
 }
 
 // ── Response helper ────────────────────────────────────────────────

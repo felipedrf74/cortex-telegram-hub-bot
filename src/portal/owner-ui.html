@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexus Hub · Owner Console</title>
+<style>
+  :root {
+    --bg: #0c0d10; --card: #161820; --border: #262932;
+    --text: #e7e9ee; --text-dim: #9ca3af;
+    --accent: #ff7a1f; --danger: #f87171; --success: #34d399;
+    --warning: #fbbf24; --ok: #34d399;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system,BlinkMacSystemFont,'Inter','Segoe UI',system-ui,sans-serif;
+    min-height: 100vh;
+  }
+  a { color: var(--accent); }
+  button {
+    background: var(--accent); color: #0c0d10; border: 0;
+    padding: .55rem .95rem; border-radius: 6px; font-weight: 600;
+    cursor: pointer; font-size: 13px;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+  button.danger { background: var(--danger); color: #0c0d10; }
+  button.small { padding: .35rem .65rem; font-size: 12px; }
+  input, textarea, select {
+    background: #0c0d10; color: var(--text); border: 1px solid var(--border);
+    padding: .55rem .7rem; border-radius: 6px; font-size: 14px; width: 100%;
+  }
+  input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 1.5rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem;
+  }
+  .card h2 { margin: 0 0 .8rem; font-size: 14px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); }
+  header.appbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); background: var(--card);
+  }
+  header .brand { display: flex; align-items: center; gap: .6rem; }
+  header .brand .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--accent); }
+  .chip {
+    display: inline-flex; align-items: center; gap: .5rem; font-size: 12px;
+    padding: .35rem .7rem; background: #0c0d10; border: 1px solid var(--border); border-radius: 999px;
+  }
+  .role-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  }
+  .role-platform_owner { background: rgba(255,122,31,.15); color: var(--accent); }
+  .role-platform_admin { background: rgba(52,211,153,.15); color: var(--ok); }
+  .role-platform_readonly { background: rgba(148,163,184,.15); color: var(--text-dim); }
+  .role-tenant_admin { background: rgba(255,122,31,.15); color: var(--accent); }
+  .role-tenant_member { background: rgba(148,163,184,.15); color: var(--text-dim); }
+  .status-active { background: rgba(52,211,153,.15); color: var(--ok); }
+  .status-suspended { background: rgba(251,191,36,.18); color: var(--warning); }
+  .status-archived { background: rgba(148,163,184,.15); color: var(--text-dim); }
+  .status-trial { background: rgba(255,122,31,.15); color: var(--accent); }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+  .kpi {
+    background: #0c0d10; border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; text-align: left;
+  }
+  .kpi .label { font-size: 11px; color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; }
+  .kpi .value { font-size: 24px; font-weight: 700; margin-top: .3rem; }
+  .kpi .value.accent { color: var(--accent); }
+  .kpi .value.success { color: var(--ok); }
+  table.tenants {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  table.tenants th {
+    text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--text-dim); padding: .5rem .5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  table.tenants td {
+    padding: .7rem .5rem; border-bottom: 1px solid var(--border); vertical-align: middle;
+  }
+  table.tenants tr:hover td { background: rgba(255,122,31,.04); }
+  .login-screen {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 2rem;
+  }
+  .login-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 2rem; width: 100%; max-width: 520px;
+  }
+  .login-card h1 { margin: 0 0 .3rem; font-size: 22px; }
+  .login-card .sub { color: var(--text-dim); font-size: 13px; margin-bottom: 1.5rem; }
+  .banner {
+    padding: .6rem .9rem; border-radius: 6px; margin-bottom: 1rem;
+    border: 1px solid var(--border); background: #0c0d10; font-size: 13px;
+  }
+  .banner.error { border-color: var(--danger); color: var(--danger); }
+  .banner.success { border-color: var(--ok); color: var(--ok); }
+  .banner.info { border-color: var(--accent); color: var(--accent); }
+  .banner.warning { border-color: var(--warning); color: var(--warning); }
+  .tabs { display: flex; gap: .4rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); }
+  .tabs button {
+    background: transparent; color: var(--text-dim); border: 0; border-bottom: 2px solid transparent;
+    padding: .6rem 1rem; font-weight: 500; border-radius: 0; font-size: 13px;
+  }
+  .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .hidden { display: none !important; }
+  .tiny { font-size: 11px; color: var(--text-dim); }
+  .row { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 160px; }
+  pre.resp {
+    background: #0c0d10; border: 1px solid var(--border); border-radius: 6px;
+    padding: .75rem; font-size: 11.5px; overflow-x: auto; white-space: pre-wrap;
+    max-height: 300px; color: var(--text-dim);
+  }
+  code { background: #0c0d10; padding: 1px 6px; border-radius: 4px; font-size: 11.5px; }
+  ul.list { list-style: none; padding: 0; margin: 0; }
+  ul.list li {
+    padding: .7rem .9rem; border-radius: 6px; background: #0c0d10; border: 1px solid var(--border);
+    margin-bottom: .5rem; display: flex; justify-content: space-between; align-items: center;
+  }
+  .drawer {
+    position: fixed; top: 0; right: 0; height: 100vh; width: 480px; max-width: 92vw;
+    background: var(--card); border-left: 1px solid var(--border); padding: 1.5rem; overflow-y: auto;
+    transform: translateX(100%); transition: transform .2s ease;
+    box-shadow: -10px 0 40px rgba(0,0,0,.4);
+    z-index: 50;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; z-index: 49;
+  }
+  .drawer-overlay.open { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div class="login-screen" id="loginScreen">
+  <div class="login-card">
+    <h1>Nexus Owner Console</h1>
+    <div class="sub">
+      Platform-level control plane (cross-tenant). Two credentials required:
+      a portal-admin token + a platform-admin user id. Both are checked
+      server-side by the <code>/owner/*</code> router.
+    </div>
+    <div class="banner info" id="loginHint">
+      Local dev hint: you saw both values printed in the terminal when the server booted.
+    </div>
+    <div id="loginError" class="banner error hidden"></div>
+    <label class="tiny">Portal token (<code>PORTAL_OWNER_TOKEN</code> or <code>PORTAL_TOKEN</code>)</label>
+    <input id="tokenInput" type="password" placeholder="generated at server boot">
+    <div style="height:.7rem"></div>
+    <label class="tiny">Admin user id (must be in <code>platform_admins</code>)</label>
+    <input id="adminIdInput" type="number" placeholder="1" value="1">
+    <div style="height:.7rem"></div>
+    <label class="tiny">
+      <input type="checkbox" id="remember" checked style="width:auto; margin-right:6px;">
+      Remember for this session
+    </label>
+    <div style="margin-top: 1rem;">
+      <button onclick="attemptLogin()">Sign in to owner console</button>
+      <a href="/workspace-ui" style="margin-left: 1rem; font-size: 12px;">Switch to tenant workspace →</a>
+    </div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" class="hidden">
+  <header class="appbar">
+    <div class="brand">
+      <div class="dot"></div>
+      <strong>Owner Console</strong>
+      <span class="tiny" style="margin-left:.5rem;">
+        <a href="/admin" target="_blank">legacy admin</a>
+        &middot;
+        <a href="/workspace-ui" target="_blank">workspace</a>
+      </span>
+    </div>
+    <div style="display:flex; gap:.5rem; align-items:center;">
+      <span class="chip">
+        Signed in as #<span id="adminIdDisplay"></span>
+        <span class="role-badge" id="adminRoleBadge">—</span>
+      </span>
+      <button class="ghost" onclick="signOut()">Sign out</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div id="banner" class="hidden"></div>
+
+    <!-- KPIs -->
+    <div class="card">
+      <h2>Platform snapshot</h2>
+      <div class="kpi-row">
+        <div class="kpi">
+          <div class="label">Tenants</div>
+          <div class="value accent" id="kpiTenants">—</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Today's spend</div>
+          <div class="value" id="kpiSpend">—</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Active top tenant</div>
+          <div class="value success" id="kpiTopTenant" style="font-size:18px;">—</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Platform admins</div>
+          <div class="value" id="kpiAdmins">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="active" data-tab="tenants" onclick="showTab('tenants')">Tenants</button>
+      <button data-tab="usage" onclick="showTab('usage')">Usage</button>
+      <button data-tab="admins" onclick="showTab('admins')">Platform admins</button>
+    </div>
+
+    <!-- Tenants -->
+    <section data-tab-section="tenants">
+      <div class="card">
+        <h2>All tenants</h2>
+        <table class="tenants">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Display name</th>
+              <th>Slug</th>
+              <th>Plan</th>
+              <th>Status</th>
+              <th>Members</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tenantsBody"><tr><td colspan="7" class="tiny">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Usage -->
+    <section data-tab-section="usage" class="hidden">
+      <div class="card">
+        <h2>Cross-tenant spend — today</h2>
+        <ul class="list" id="usageList"><li class="tiny">Loading…</li></ul>
+        <div class="tiny" style="margin-top:.8rem;">
+          Every row is a distinct tenant scope. The solo-tenant convention (migration 076) means <code>tenantId == userId</code> for every current tenant.
+        </div>
+      </div>
+    </section>
+
+    <!-- Platform admins -->
+    <section data-tab-section="admins" class="hidden">
+      <div class="card">
+        <h2>Platform admins</h2>
+        <ul class="list" id="adminsList"><li class="tiny">Loading…</li></ul>
+        <hr style="border:0; border-top: 1px solid var(--border); margin: 1rem 0;">
+        <h2>Grant platform role</h2>
+        <div class="banner warning">Only <code>platform_owner</code> can grant/revoke. Operation is audited with <code>actor_id</code> = your id.</div>
+        <div class="row">
+          <div>
+            <label class="tiny">Target user id</label>
+            <input id="grantUserId" type="number" placeholder="2">
+          </div>
+          <div>
+            <label class="tiny">Role</label>
+            <select id="grantRole">
+              <option value="platform_admin">platform_admin</option>
+              <option value="platform_readonly">platform_readonly</option>
+              <option value="platform_owner">platform_owner</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top: 1rem;">
+          <button onclick="grantAdmin()">Grant</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tenant drawer -->
+  <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+  <aside class="drawer" id="tenantDrawer">
+    <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h2 style="margin:0; font-size: 16px;" id="drawerTitle">Tenant</h2>
+      <button class="ghost small" onclick="closeDrawer()">Close</button>
+    </div>
+    <div id="drawerBody"><div class="tiny">Loading…</div></div>
+  </aside>
+</div>
+
+<script>
+'use strict';
+
+const state = {
+  token: null,
+  adminUserId: null,
+  adminRole: null,
+  tenants: [],
+};
+
+function bootstrap() {
+  const saved = sessionStorage.getItem('nexus_owner_creds');
+  if (saved) {
+    try {
+      const { token, adminUserId } = JSON.parse(saved);
+      state.token = token;
+      state.adminUserId = adminUserId;
+      enterApp();
+    } catch {}
+  }
+}
+
+async function attemptLogin() {
+  const token = document.getElementById('tokenInput').value.trim();
+  const adminId = Number(document.getElementById('adminIdInput').value.trim());
+  if (!token) { showLoginError('Token is required.'); return; }
+  if (!adminId || adminId <= 0) { showLoginError('Admin user id must be positive.'); return; }
+  state.token = token;
+  state.adminUserId = adminId;
+
+  // Probe /owner/platform-admins to validate BOTH token and identity.
+  try {
+    const r = await api('GET', '/owner/platform-admins');
+    if (!r.ok) {
+      showLoginError((r.error?.code || '?') + ' · ' + (r.error?.message || ''));
+      state.token = null; state.adminUserId = null;
+      return;
+    }
+    const me = r.data.admins.find(a => a.userId === adminId);
+    state.adminRole = me?.role || 'platform_admin';
+    if (document.getElementById('remember').checked) {
+      sessionStorage.setItem('nexus_owner_creds', JSON.stringify({ token, adminUserId: adminId }));
+    }
+    enterApp();
+  } catch (e) {
+    showLoginError('Request failed: ' + e.message);
+  }
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById('loginError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function signOut() {
+  sessionStorage.removeItem('nexus_owner_creds');
+  state.token = null; state.adminUserId = null; state.adminRole = null; state.tenants = [];
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('tokenInput').value = '';
+  document.getElementById('loginError').classList.add('hidden');
+}
+
+function enterApp() {
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('adminIdDisplay').textContent = state.adminUserId;
+  refreshAll();
+}
+
+async function refreshAll() {
+  await Promise.all([loadTenants(), loadUsage(), loadAdmins()]);
+}
+
+async function api(method, path, body) {
+  const headers = {
+    'Authorization': 'Bearer ' + state.token,
+    'X-Admin-User-Id': String(state.adminUserId),
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const text = await res.text();
+  let json; try { json = JSON.parse(text); } catch { json = { ok: false, error: { message: text.slice(0, 200) } }; }
+  if (res.status === 401 || res.status === 403) {
+    // Surface token/identity problems clearly — but don't auto-signout
+    // on 403 so the user can see the exact error message.
+    if (res.status === 401) {
+      showBanner('Auth failed (' + (json.error?.code || '') + '). Check token + admin id.', 'error');
+    }
+  }
+  return json;
+}
+
+function showBanner(msg, kind = 'info', ms = 4000) {
+  const el = document.getElementById('banner');
+  el.className = 'banner ' + kind;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  if (ms > 0) setTimeout(() => el.classList.add('hidden'), ms);
+}
+
+// ── Loaders ─────────────────────────────────────────────────
+
+async function loadTenants() {
+  const r = await api('GET', '/owner/tenants?limit=200');
+  if (!r.ok) return;
+  state.tenants = r.data.tenants;
+  document.getElementById('kpiTenants').textContent = r.data.pagination.total;
+  renderTenants();
+}
+
+async function loadUsage() {
+  const r = await api('GET', '/owner/usage');
+  if (!r.ok) return;
+  const today = r.data.today;
+  document.getElementById('kpiSpend').textContent = '$' + Number(today.totalUsd || 0).toFixed(4);
+  const top = (today.byTenant || [])[0];
+  document.getElementById('kpiTopTenant').textContent =
+    top ? ('tenant #' + top.tenantId + ' · $' + top.costUsd.toFixed(4)) : '—';
+  const ul = document.getElementById('usageList');
+  ul.innerHTML = (today.byTenant || []).map(b =>
+    `<li>
+      <div><strong>tenant #${b.tenantId}</strong> <span class="meta">(${b.calls} calls)</span></div>
+      <div><code>$${b.costUsd.toFixed(4)}</code></div>
+    </li>`
+  ).join('') || '<li class="tiny">No spend today.</li>';
+}
+
+async function loadAdmins() {
+  const r = await api('GET', '/owner/platform-admins');
+  if (!r.ok) return;
+  document.getElementById('kpiAdmins').textContent = r.data.admins.length;
+  const me = r.data.admins.find(a => a.userId === state.adminUserId);
+  if (me) {
+    state.adminRole = me.role;
+    const badge = document.getElementById('adminRoleBadge');
+    badge.textContent = me.role;
+    badge.className = 'role-badge role-' + me.role;
+  }
+  document.getElementById('adminsList').innerHTML = r.data.admins.map(a =>
+    `<li>
+      <div>
+        <strong>user #${a.userId}</strong>
+        <span class="role-badge role-${a.role}">${a.role}</span>
+        ${a.userId === state.adminUserId ? '<span class="chip" style="margin-left:.5rem;">you</span>' : ''}
+      </div>
+      <div>
+        ${a.userId !== state.adminUserId ? `<button class="ghost small" onclick="revokeAdmin(${a.userId})">Revoke</button>` : ''}
+      </div>
+    </li>`
+  ).join('');
+}
+
+function renderTenants() {
+  document.getElementById('tenantsBody').innerHTML = state.tenants.map(t => `
+    <tr>
+      <td>#${t.id}</td>
+      <td><strong>${escape(t.displayName)}</strong></td>
+      <td><code>${escape(t.slug)}</code></td>
+      <td><span class="role-badge role-tenant_admin">${t.plan}</span></td>
+      <td><span class="role-badge status-${t.status}">${t.status}</span></td>
+      <td class="tiny" id="tmembers-${t.id}">—</td>
+      <td style="text-align: right;"><button class="ghost small" onclick="openTenant(${t.id})">Open</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" class="tiny">No tenants.</td></tr>';
+  // Lazy-load member counts (one round-trip per tenant — fine at MVP scale).
+  state.tenants.forEach(t => {
+    api('GET', `/owner/tenants/${t.id}/members`).then(r => {
+      const cell = document.getElementById(`tmembers-${t.id}`);
+      if (cell) cell.textContent = r.ok ? r.data.members.length : '?';
+    });
+  });
+}
+
+// ── Tenant drawer ─────────────────────────────────────────────
+
+async function openTenant(id) {
+  document.getElementById('drawerOverlay').classList.add('open');
+  document.getElementById('tenantDrawer').classList.add('open');
+  document.getElementById('drawerTitle').textContent = 'Tenant #' + id;
+  document.getElementById('drawerBody').innerHTML = '<div class="tiny">Loading…</div>';
+
+  const r = await api('GET', '/owner/tenants/' + id);
+  if (!r.ok) {
+    document.getElementById('drawerBody').innerHTML = '<div class="banner error">' + escape(r.error?.message || 'error') + '</div>';
+    return;
+  }
+  const t = r.data.tenant;
+  const members = r.data.members || [];
+  document.getElementById('drawerTitle').textContent = t.displayName;
+  document.getElementById('drawerBody').innerHTML = `
+    <div class="card">
+      <h2>Details</h2>
+      <div class="row">
+        <div><label class="tiny">Slug</label><div><code>${escape(t.slug)}</code></div></div>
+        <div><label class="tiny">Created</label><div class="tiny">${escape((t.createdAt || '').slice(0,10))}</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Lifecycle</h2>
+      <div class="row">
+        <div>
+          <label class="tiny">Status</label>
+          <select id="drawerStatus">
+            ${['active','suspended','archived','trial'].map(s => `<option value="${s}" ${s===t.status?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="tiny">Plan</label>
+          <select id="drawerPlan">
+            ${['free','pro','max','owner','beta'].map(p => `<option value="${p}" ${p===t.plan?'selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:.7rem;">
+        <div>
+          <label class="tiny">Display name</label>
+          <input id="drawerDisplay" value="${escape(t.displayName)}">
+        </div>
+      </div>
+      <div style="margin-top: 1rem;">
+        <button onclick="savetenant(${t.id})">Save changes</button>
+        <span class="tiny" style="margin-left: .8rem;">Writes audit_trail with your actor_id.</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Members (${members.length})</h2>
+      <ul class="list">
+        ${members.map(m => `
+          <li>
+            <div><strong>user #${m.userId}</strong> <span class="role-badge role-${m.role}">${m.role}</span></div>
+            <div class="tiny">joined ${(m.joinedAt || '').slice(0,10)}</div>
+          </li>
+        `).join('') || '<li class="tiny">No members.</li>'}
+      </ul>
+    </div>
+  `;
+}
+
+function closeDrawer() {
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.getElementById('tenantDrawer').classList.remove('open');
+}
+
+async function savetenant(id) {
+  const body = {
+    status: document.getElementById('drawerStatus').value,
+    plan: document.getElementById('drawerPlan').value,
+    displayName: document.getElementById('drawerDisplay').value.trim(),
+  };
+  const r = await api('PATCH', '/owner/tenants/' + id, body);
+  if (!r.ok) {
+    showBanner('Save failed: ' + (r.error?.code || '?') + ' · ' + (r.error?.message || ''), 'error');
+    return;
+  }
+  showBanner(`Tenant #${id} updated. Audit row written with your id.`, 'success');
+  closeDrawer();
+  loadTenants();
+}
+
+// ── Admin grant/revoke ────────────────────────────────────────
+
+async function grantAdmin() {
+  if (state.adminRole !== 'platform_owner') {
+    showBanner('Only platform_owner can grant. You are ' + (state.adminRole || 'unknown') + '.', 'error');
+    return;
+  }
+  const userId = Number(document.getElementById('grantUserId').value.trim());
+  const role = document.getElementById('grantRole').value;
+  if (!userId) { showBanner('User id required', 'error'); return; }
+  const r = await api('POST', '/owner/platform-admins', { userId, role });
+  if (!r.ok) {
+    showBanner('Grant failed: ' + (r.error?.code || '?'), 'error');
+    return;
+  }
+  showBanner(`Granted ${role} to user #${userId}.`, 'success');
+  document.getElementById('grantUserId').value = '';
+  loadAdmins();
+}
+
+async function revokeAdmin(userId) {
+  if (state.adminRole !== 'platform_owner') {
+    showBanner('Only platform_owner can revoke.', 'error');
+    return;
+  }
+  if (!confirm(`Revoke platform role from user #${userId}?`)) return;
+  const r = await api('DELETE', '/owner/platform-admins/' + userId);
+  if (!r.ok) { showBanner('Revoke failed: ' + (r.error?.code || '?'), 'error'); return; }
+  showBanner(`Revoked user #${userId}.`, 'success');
+  loadAdmins();
+}
+
+// ── Tabs ─────────────────────────────────────────────────────
+
+function showTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('[data-tab-section]').forEach(s =>
+    s.classList.toggle('hidden', s.dataset.tabSection !== name));
+}
+
+function escape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+bootstrap();
+</script>
+</body>
+</html>

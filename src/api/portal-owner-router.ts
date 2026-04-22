@@ -44,6 +44,7 @@ import { Router, type Request, type Response } from 'express';
 import express from 'express';
 import { logger } from '../utils/logger';
 import {
+  requireOwnerConsoleToken,
   resolvePlatformAdmin,
   requirePlatformOwner,
   requirePlatformWrite,
@@ -128,7 +129,14 @@ export function createPortalOwnerRouter(): Router {
   // the outer app hasn't globally parsed JSON yet.
   router.use(express.json({ limit: '1mb' }));
 
-  // Every route under /owner/* requires a resolved platform admin.
+  // Gate 1 (defense in depth): owner-console token. Runs BEFORE the
+  // identity resolver so the platform_admins DB read is gated on
+  // token possession. Added 2026-04-22 to close open-risk #1 from
+  // the Phase-1 final report.
+  router.use(requireOwnerConsoleToken);
+
+  // Gate 2: every route under /owner/* requires a resolved platform
+  // admin identity (X-Admin-User-Id → platform_admins row).
   router.use(resolvePlatformAdmin);
 
   // ── GET /owner/tenants ─────────────────────────────────────────
