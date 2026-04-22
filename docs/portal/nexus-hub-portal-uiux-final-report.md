@@ -209,6 +209,11 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `__tests__/portal/user-console-profile-editor.test.ts`                    | 5 KB         | **OI-USR-407** — 17 pins: markup, Save/Revert/dirty tracking, diff-only PATCH, empty→null conversion, post-save re-baseline, browser-detect helpers, context-strip refresh |
 | `__tests__/portal/user-console-global-search.test.ts`                     | 6 KB         | **OI-UX-101** — 19 pins: app-bar trigger, Cmd+K/Ctrl+K toggle, Arrow/Enter/Esc keyboard nav, platform-aware kbd label, 16 pages indexed, substring `indexOf` (no regex / fuzzy), `<mark>` highlight, showPage dispatch, collection banner, singular/plural count |
 | `__tests__/portal/admin-console-global-search.test.ts`                    | 7 KB         | **OI-UX-101a** — 25 pins: trigger copy references admin terms, 11 admin pages indexed, 4 admin result groups (tenants / risk / admins / events), tenant-drawer deep-link (action.type === 'tenant-drawer'), showPage→setTimeout→openTenantDrawer sequence, state caching refactor (loadTenants/loadPlatformAdmins/paintOverview each capture into state.*) |
+| `migrations/080_tenant_skill_config.sql`                                  | 2 KB         | **OI-DATA-003** — `tenant_skill_config` table, one row per (tenant, skill), JSON blob storage |
+| `src/services/tenant-skill-config-service.ts`                             | 10 KB        | **OI-DATA-003** — per-skill validator registry (Content has 6 fields; others empty as v1 scope cut) + read-merges-defaults + diff-patches + isolation |
+| `__tests__/services/tenant-skill-config-service.test.ts`                  | 8 KB         | 24 service unit pins: schema registry, Content round-trip, enum/length/type validators, empty-schema reject, isolation |
+| `__tests__/api/portal-workspace-skill-config-routes.test.ts`              | 8 KB         | 14 route tests: GET for any member incl. tenant_viewer, admin-only PUT, nested+flat body, audit **values-not-leaked**, home dependency auto-heal |
+| `__tests__/portal/user-console-content-config.test.ts`                    | 5 KB         | 20 UI pins: 6 fields, enum options, dirty tracking, diff-only PUT, post-save re-baseline, loadHome refresh, non-admin disable+hide pattern |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -219,11 +224,11 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 
 | File                                        | Delta                                                                    |
 |---------------------------------------------|--------------------------------------------------------------------------|
-| `src/api/portal-workspace-router.ts`        | +186 (console/home) + ~145 (OI-DATA-002 channels) + ~120 (OI-DATA-005 activity + 4 resource-delete audit writes): new `GET /workspace/console/home`, full `/workspace/channels` CRUD, `GET /workspace/activity`, audit rows on every resource DELETE. |
+| `src/api/portal-workspace-router.ts`        | +186 (console/home) + ~145 (OI-DATA-002) + ~120 (OI-DATA-005) + ~95 (OI-DATA-003): added `GET/PUT /workspace/skills/:skillId/config`, audit-log redaction (keysTouched only, never values), new `content.voice.guidelines` dependency wired into the Home evaluator. |
 | `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
 | `src/portal/admin-console.html`             | +~420 (OI-ADM-301 + OI-ADM-303) + ~380 (OI-UX-101a): tenant detail drawer + filtered audit viewer + global spotlight search with tenant-drawer deep-link + state caching refactor (loadTenants/loadPlatformAdmins/paintOverview capture into state.*). |
-| `src/portal/user-console.html`              | +~340 (OI-USR-404) + ~150 (OI-DATA-002) + ~160 (OI-DATA-005) + ~155 (OI-USR-407) + ~350 (OI-UX-101): onboarding wizard + Channels tab + Activity page + Profile editor + keyboard-first global search (spotlight modal with pages index + 6 client collections). |
+| `src/portal/user-console.html`              | +~340 (OI-USR-404) + ~150 (OI-DATA-002) + ~160 (OI-DATA-005) + ~155 (OI-USR-407) + ~350 (OI-UX-101) + ~220 (OI-DATA-003): wizard + Channels + Activity + Profile editor + global search + **Content skill Configuration editor** (6 typed inputs, dirty tracking, non-admin view-only mode). |
 
 ### 11.3 Routes added
 
@@ -243,6 +248,8 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `PATCH /workspace/channels/:id`     | iOS JWT + tenant | Update. Supports explicit `null` to clear url/handle/description. Authorship rule enforced. |
 | `DELETE /workspace/channels/:id`    | iOS JWT + tenant | Delete. Authorship rule enforced. Prefer `PATCH { status: "archived" }` for soft-delete. |
 | `GET /workspace/activity`           | iOS JWT + tenant | **OI-DATA-005** — tenant-scoped audit feed. Filters: `?actor=&action=&from=&to=&limit=<=200&offset=`. action supports exact or `prefix*`. LIKE-wildcard escape + 128-char caps. Members including `tenant_viewer` can read. |
+| `GET /workspace/skills/:skillId/config` | iOS JWT + tenant | **OI-DATA-003** — per-skill config read. Returns stored values merged over schema defaults. Members including `tenant_viewer` can read. Unknown skill → 404. |
+| `PUT /workspace/skills/:skillId/config` | iOS JWT + tenant_admin | **OI-DATA-003** — write per-skill config. Body = `{ config: {...} }` OR flat. Schema-unknown field → 400. Audit row (`tenant.skill_config.update`) carries `keysTouched` only, never values. |
 
 ### 11.4 Routes unchanged
 
@@ -346,7 +353,7 @@ All 12 tests in `__tests__/api/portal-console-endpoints.test.ts` pass:
 Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 
 **P1 (near-term):**
-- **OI-DATA-003** Skill config editor needs `tenant_skill_config` schema before the Configuration tab on each skill page can be real.
+- ~~**OI-DATA-003** Skill config editor needs `tenant_skill_config` schema~~ **DONE 2026-04-22 (Content skill only, v1)** — migration 080 + service with per-skill validator registry + GET/PUT routes + Content Configuration tab as a real editor + new `content.voice.guidelines` dependency on Home. Secretary/Training/Finance/Cooking configs tracked as OI-DATA-003a..d.
 - ~~**OI-DATA-002** Channels need tenant-scoping~~ **DONE 2026-04-22** — migration 079 + service + routes + Home integration + Reference Center UI.
 - ~~**OI-DATA-005** Activity feed needs a tenant-scoped audit query helper.~~ **DONE 2026-04-22** — `GET /workspace/activity` + 4 resource-delete audit writes + Activity page UI (filter form, expandable rows, pagination).
 - ~~**OI-USR-407** Profile editor~~ **DONE 2026-04-22** — replaced read-only Profile page with a 6-field editor (firstName / lastName / username / avatarUrl / language / timezone), baseline-vs-current dirty tracking, diff-only PATCH payloads, browser-detect helpers for language + timezone, context-strip refresh after save.
@@ -387,7 +394,7 @@ After that, OI-NAV-201 (promote `/admin-console` to `/admin`) once the team is c
 Each bullet is a deliberate scope cut that, once addressed on the backend side, would immediately strengthen the portal experience:
 
 1. **Reference-usage pipeline instrumentation (OI-DATA-001).** Unlocks "your top 5 books by skill-usage", "unused references", and auto-tag suggestions. The reference center goes from curation tool to intelligence tool.
-2. **`tenant_skill_config` schema (OI-DATA-003).** Unlocks the Configuration tab on every skill — voice guidelines, priority rules, equipment, budget, dietary restrictions all become portal-editable.
+2. ~~**`tenant_skill_config` schema (OI-DATA-003).**~~ **DONE 2026-04-22 (Content skill).** Infrastructure + Content schema shipped. Voice guidelines, default platform, output length, reference policy, auto-publish, extra notes now portal-editable. Per-skill schemas for Secretary/Training/Finance/Cooking tracked as OI-DATA-003a..d.
 3. ~~**`tenant_channels` schema (OI-DATA-002).**~~ **DONE 2026-04-22** — tenant-scoped channels live; Reference Center → Channels is a first-class tab with full CRUD, filters, and a corresponding `content.channel.primary` dependency in the Home payload.
 4. **Intelligence-bus cross-skill signals (OI-DATA-004 / OI-MODEL-503).** Unlocks insights like "your Training recovery is low and your Secretary has 3 scheduled sessions this week — consider dropping one." Today the MVP insights are deterministic; real cross-skill reasoning needs the bus.
 5. **Consolidated integrations read endpoint (OI-DATA-007).** Replaces the empty state on both `/admin-console` → Integrations and `/console` → Integrations with real per-provider status rows (last sync, error count, token expiry).

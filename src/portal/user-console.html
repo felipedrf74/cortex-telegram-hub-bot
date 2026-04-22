@@ -675,11 +675,68 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
         </div>
       </div>
       <div data-sub-section="content.configuration" class="hidden">
-        <div class="empty-state">
-          <div class="icon">✎</div>
-          <h3>Configuration editor lands next</h3>
-          <p>The Content skill config (voice guidelines, output preferences, brand notes) is currently edited via iOS Settings → Content. A full editor will land here once the backing <code>tenant_settings</code> schema promotes these fields. Tracked in open-items.</p>
-          <a class="btn" data-nav="ref-notes">Manage content notes meanwhile →</a>
+        <div class="panel">
+          <header>
+            <h2>Content skill configuration</h2>
+            <span class="meta small" id="contentCfgDirtyMeta">No unsaved changes</span>
+          </header>
+          <div class="body">
+            <p class="small muted" style="margin-bottom: var(--space-4);">
+              These settings apply to <strong>every member</strong> of this workspace. Any tenant member can view them;
+              only <strong>tenant_admin</strong> can edit.
+            </p>
+            <div class="form-row">
+              <label for="cfgVoiceGuidelines">Voice &amp; brand guidelines</label>
+              <textarea id="cfgVoiceGuidelines" rows="6" maxlength="4000" placeholder="Describe the tone, voice, and any brand rules the Content skill should respect. Examples, do's and don'ts, signature phrasing."></textarea>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-3);">
+              <div class="form-row">
+                <label for="cfgDefaultPlatform">Default platform</label>
+                <select id="cfgDefaultPlatform">
+                  <option value="general">General</option>
+                  <option value="blog">Blog</option>
+                  <option value="twitter">Twitter / X</option>
+                  <option value="linkedin">LinkedIn</option>
+                  <option value="youtube">YouTube</option>
+                  <option value="newsletter">Newsletter</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="cfgOutputLength">Output length</label>
+                <select id="cfgOutputLength">
+                  <option value="concise">Concise</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="detailed">Detailed</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="cfgReferencePolicy">Reference policy</label>
+                <select id="cfgReferencePolicy">
+                  <option value="always">Always cite references</option>
+                  <option value="when_relevant">When relevant</option>
+                  <option value="never">Don't cite</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label class="row-inline" style="gap: var(--space-2);">
+                <input id="cfgAutoPublish" type="checkbox" style="width: auto;" />
+                <span>Auto-publish generated content (skip the draft review step)</span>
+              </label>
+            </div>
+            <div class="form-row">
+              <label for="cfgExtraNotes">Extra notes</label>
+              <textarea id="cfgExtraNotes" rows="3" maxlength="2000" placeholder="Anything else the Content skill should know — audience, constraints, reference books it should lean on."></textarea>
+            </div>
+            <div id="contentCfgMsg" class="small" style="margin-top: var(--space-3); min-height: 1em;"></div>
+            <div class="row-inline" style="margin-top: var(--space-4); justify-content: flex-end;">
+              <button class="btn ghost" id="contentCfgResetBtn" onclick="contentConfigReset()">Revert</button>
+              <button class="btn primary" id="contentCfgSaveBtn" onclick="contentConfigSave()">Save changes</button>
+            </div>
+            <p class="small muted" id="contentCfgAdminNote" style="margin-top: var(--space-3); display: none;">
+              You're in view-only mode. Ask a <strong>tenant_admin</strong> to change these settings.
+            </p>
+          </div>
         </div>
       </div>
       <div data-sub-section="content.references" class="hidden">
@@ -1508,8 +1565,155 @@ function paintSkill(skill) {
         <a class="btn small" data-nav="ref-notes">Manage →</a>
       </div>`;
     }
+    // OI-DATA-003: load the Content skill config on tab switch.
+    // Safe to call every time — serves cached state if present, or
+    // fetches if not.
+    loadContentConfig();
   }
 }
+
+// ── Content skill config editor (OI-DATA-003) ─────────────────────
+// Same dirty-state pattern as the Profile editor: baseline holds
+// last-saved values, diff-only PUT payloads, Save disabled when
+// clean. READ is any member; WRITE is tenant_admin only.
+const contentConfigBaseline = {
+  voice_guidelines: '',
+  default_platform: 'general',
+  output_length: 'balanced',
+  include_references_policy: 'when_relevant',
+  auto_publish: false,
+  extra_notes: '',
+};
+
+function contentConfigFieldIds() {
+  return {
+    voice_guidelines:          'cfgVoiceGuidelines',
+    default_platform:          'cfgDefaultPlatform',
+    output_length:             'cfgOutputLength',
+    include_references_policy: 'cfgReferencePolicy',
+    auto_publish:              'cfgAutoPublish',
+    extra_notes:               'cfgExtraNotes',
+  };
+}
+
+async function loadContentConfig() {
+  try {
+    const r = await fetchJson('/workspace/skills/content/config');
+    const cfg = r.data.config || {};
+    const ids = contentConfigFieldIds();
+    for (const [field, id] of Object.entries(ids)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const val = cfg[field];
+      if (field === 'auto_publish') {
+        el.checked = !!val;
+        contentConfigBaseline[field] = !!val;
+      } else {
+        const str = val == null ? '' : String(val);
+        el.value = str;
+        contentConfigBaseline[field] = str;
+      }
+      // Bind dirty listener once per element.
+      if (!el.dataset.cfgBound) {
+        el.addEventListener(field === 'auto_publish' ? 'change' : 'input', contentConfigUpdateDirty);
+        el.dataset.cfgBound = '1';
+      }
+    }
+    // View-only mode for non-admins.
+    const role = (state.me && state.me.role) || 'tenant_member';
+    const isAdmin = role === 'tenant_admin';
+    for (const id of Object.values(ids)) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !isAdmin;
+    }
+    document.getElementById('contentCfgSaveBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('contentCfgResetBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('contentCfgAdminNote').style.display = isAdmin ? 'none' : '';
+    contentConfigUpdateDirty();
+    document.getElementById('contentCfgMsg').textContent = '';
+  } catch (e) {
+    toast('Could not load Content config: ' + (e.message || 'unknown error'), 'error');
+  }
+}
+
+function contentConfigCurrent() {
+  const ids = contentConfigFieldIds();
+  const out = {};
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    out[field] = field === 'auto_publish' ? !!el.checked : el.value;
+  }
+  return out;
+}
+
+function contentConfigUpdateDirty() {
+  const curr = contentConfigCurrent();
+  let dirty = false;
+  for (const key of Object.keys(contentConfigBaseline)) {
+    if (curr[key] !== contentConfigBaseline[key]) { dirty = true; break; }
+  }
+  const meta = document.getElementById('contentCfgDirtyMeta');
+  const save = document.getElementById('contentCfgSaveBtn');
+  const reset = document.getElementById('contentCfgResetBtn');
+  if (meta) {
+    meta.textContent = dirty ? 'Unsaved changes' : 'No unsaved changes';
+    meta.className = 'meta small ' + (dirty ? '' : 'muted');
+  }
+  if (save) save.disabled = !dirty;
+  if (reset) reset.disabled = !dirty;
+}
+
+window.contentConfigReset = function() {
+  const ids = contentConfigFieldIds();
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (field === 'auto_publish') el.checked = !!contentConfigBaseline[field];
+    else el.value = contentConfigBaseline[field] || '';
+  }
+  contentConfigUpdateDirty();
+  document.getElementById('contentCfgMsg').textContent = '';
+};
+
+window.contentConfigSave = async function() {
+  // Diff-only PUT payload. Same race-friendliness argument as the
+  // Profile editor — only send what changed.
+  const curr = contentConfigCurrent();
+  const patch = {};
+  for (const key of Object.keys(contentConfigBaseline)) {
+    if (curr[key] !== contentConfigBaseline[key]) patch[key] = curr[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    toast('Nothing to save.', 'error');
+    return;
+  }
+  const save = document.getElementById('contentCfgSaveBtn');
+  save.disabled = true;
+  const msg = document.getElementById('contentCfgMsg');
+  msg.textContent = '';
+  try {
+    await fetchJson('/workspace/skills/content/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config: patch }),
+    });
+    // Re-baseline so subsequent Revert is "undo unsaved" semantics.
+    Object.assign(contentConfigBaseline, curr);
+    contentConfigUpdateDirty();
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    toast('Content config saved', 'success');
+    // Refresh Home so the `content.voice.guidelines` dependency
+    // flips to ready once voice_guidelines is filled.
+    loadHome();
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    toast(e.message || 'Save failed', 'error');
+  } finally {
+    contentConfigUpdateDirty();
+  }
+};
 
 // ── Books CRUD ────────────────────────────────────────────────────
 async function loadBooks() {

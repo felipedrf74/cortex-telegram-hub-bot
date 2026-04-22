@@ -76,6 +76,11 @@ import {
   ChannelError,
   type ChannelKind, type ChannelStatus,
 } from '../services/tenant-channel-service';
+import {
+  getSkillConfig, putSkillConfig, getSkillSchemaKeys, isSkillId,
+  SkillConfigError,
+  type SkillId,
+} from '../services/tenant-skill-config-service';
 import { getDb } from '../services/database';
 
 // ── Audit helper ──────────────────────────────────────────────────
@@ -855,6 +860,90 @@ export function createPortalWorkspaceRouter(): Router {
     ok(res, { updated: true });
   });
 
+  // ── /workspace/skills/:skillId/config (OI-DATA-003, 2026-04-22) ─
+  //
+  // Per-tenant, per-skill configuration. Backs the Configuration
+  // tab on each skill page in the User Console. Storage = JSON blob
+  // per (tenant, skill) — migration 080. Per-skill schema validation
+  // lives in tenant-skill-config-service.ts.
+  //
+  //   GET  = any member (config is tenant-shared state; visibility
+  //          helps everyone understand what drives their skills)
+  //   PUT  = tenant_admin only (editing is admin-scope)
+  //
+  // v1 scope: only the Content skill has a real schema. Secretary /
+  // Training / Finance / Cooking accept GET but PUT with any field
+  // returns 400 BAD_REQUEST ("has no configurable fields yet").
+  // Per-skill schemas come in a follow-up (OI-DATA-003a..d).
+
+  function mapSkillConfigError(res: Response, e: SkillConfigError): void {
+    const statusByCode: Record<string, number> = {
+      NOT_FOUND: 404, UNKNOWN_SKILL: 404, BAD_REQUEST: 400, DB_ERROR: 500,
+    };
+    err(res, statusByCode[e.code] ?? 400, e.code, e.message, e.details);
+  }
+
+  router.get('/skills/:skillId/config', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const skillId = String(req.params.skillId);
+    if (!isSkillId(skillId)) {
+      return err(res, 404, 'UNKNOWN_SKILL', `Unknown skill '${skillId}'`, { skillId });
+    }
+    try {
+      const row = getSkillConfig(ctx.tenantId, skillId as SkillId);
+      ok(res, {
+        skillId,
+        tenantId: ctx.tenantId,
+        config: row.config,
+        schemaKeys: getSkillSchemaKeys(skillId as SkillId),
+        updatedBy: row.updatedBy,
+        updatedAt: row.updatedAt,
+      });
+    } catch (e) {
+      if (e instanceof SkillConfigError) return mapSkillConfigError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId, skillId }, 'portal-workspace-router: GET /skills/:id/config failed');
+      err(res, 500, 'INTERNAL', 'Failed to load skill config');
+    }
+  });
+
+  router.put('/skills/:skillId/config', requireTenantAdmin, (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const skillId = String(req.params.skillId);
+    if (!isSkillId(skillId)) {
+      return err(res, 404, 'UNKNOWN_SKILL', `Unknown skill '${skillId}'`, { skillId });
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    // Callers may send `{ config: { ... } }` OR the flat patch
+    // directly at the body root. Prefer the nested form for clarity
+    // but accept both so the UI can be terse.
+    const patch = (body.config && typeof body.config === 'object' && !Array.isArray(body.config))
+      ? body.config as Record<string, unknown>
+      : body;
+    try {
+      const row = putSkillConfig(ctx.tenantId, skillId as SkillId, ctx.userId, patch);
+      // Audit the save. We log 'tenant.skill_config.update' with the
+      // full key set of the patch (not the values — voice guidelines
+      // can be long and personal; we don't want them in audit_trail).
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.skill_config.update',
+        `tenant.${ctx.tenantId}.skill.${skillId}.config`,
+        { tenantId: ctx.tenantId, skillId, keysTouched: Object.keys(patch) },
+      );
+      ok(res, {
+        skillId,
+        tenantId: ctx.tenantId,
+        config: row.config,
+        updatedBy: row.updatedBy,
+        updatedAt: row.updatedAt,
+      });
+    } catch (e) {
+      if (e instanceof SkillConfigError) return mapSkillConfigError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId, skillId }, 'portal-workspace-router: PUT /skills/:id/config failed');
+      err(res, 500, 'INTERNAL', 'Failed to save skill config');
+    }
+  });
+
   // ── /workspace/security — read-only personal security view ─────
   //
   // Shows the caller's active iOS devices + recent audit_trail rows
@@ -1289,6 +1378,18 @@ export function createPortalWorkspaceRouter(): Router {
       // OI-DATA-002: active channels. Uses the service helper which
       // wraps the (cheap) index-backed SELECT … WHERE status='active'.
       const activeChannelsCount = countActiveChannels(ctx.tenantId);
+      // OI-DATA-003: has the tenant filled in Content voice guidelines?
+      // Safe to evaluate here — service returns an empty config for
+      // tenants that never saved, so no 404 path to handle.
+      let contentVoiceSet = false;
+      try {
+        const cfg = getSkillConfig(ctx.tenantId, 'content');
+        const vg = cfg.config.voice_guidelines;
+        contentVoiceSet = typeof vg === 'string' && vg.trim().length > 0;
+      } catch {
+        // If skill-config storage isn't ready yet, just treat as missing.
+        contentVoiceSet = false;
+      }
       const membersCount = row(
         'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
         ctx.tenantId,
@@ -1364,6 +1465,20 @@ export function createPortalWorkspaceRouter(): Router {
           label: 'Content notes',
           status: notesCount > 0 ? 'ready' : 'missing',
           cta: notesCount > 0 ? null : { label: 'Capture a note', href: '#/references/notes' },
+        },
+        {
+          // OI-DATA-003: voice guidelines wired as a first-class
+          // dependency. Without them the Content skill generates in
+          // a generic tone; with them every output respects the
+          // tenant's brand voice.
+          id: 'content.voice.guidelines',
+          skillId: 'content',
+          kind: 'setting',
+          label: 'Voice & brand guidelines',
+          status: contentVoiceSet ? 'ready' : 'missing',
+          cta: contentVoiceSet
+            ? null
+            : { label: 'Configure', href: '#/skills/content/configuration' },
         },
         {
           id: 'workspace.team.set-up',

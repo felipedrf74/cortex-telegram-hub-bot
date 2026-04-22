@@ -47,13 +47,35 @@ Follow-ups still open:
 
 ---
 
-### OI-DATA-003 — Skill configuration storage [P1, Data]
+### ~~OI-DATA-003 — Skill configuration storage~~ [DONE · 2026-04-22 — Content skill only (v1)]
 
-**What's missing.** The Content skill's `Configuration` tab (voice guidelines, output preferences, brand notes) cannot be edited in the portal today because the backing storage isn't a clean tenant_settings key/value. Edits live in scattered places (some in iOS user prefs, some in prompt files).
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Unblocks.** Real configuration editor on every skill page. Today each skill page renders an honest empty state that points to iOS.
+Infrastructure + first skill shipped. Secretary / Training / Finance / Cooking configuration UIs remain honest empty-state link-outs — per-skill schema decisions are a product call and land in follow-ups (OI-DATA-003a..d).
 
-**Sketch.** Schema: `tenant_skill_config (tenant_id, skill_id, key, value_json, updated_by, updated_at)`. Service: `tenant-skill-config-service.ts`. Routes: `GET/PUT /workspace/skills/:skillId/config`. Use a schema-per-skill validator so the UI can render typed inputs.
+What's live:
+
+- **Migration 080** — `tenant_skill_config` table. One row per `(tenant_id, skill_id)` carrying a JSON `config_json` blob. This is Option-B from the original sketch (key-per-row was rejected: UX saves the whole form at once, so atomic single-row update matches the intent; per-field audit history is tracked as OI-DATA-003e if ever needed).
+- **Service** — `src/services/tenant-skill-config-service.ts` with a per-skill validator registry. Each skill declares a TypeScript `Record<fieldKey, FieldValidator>`; storage is generic JSON but unknown keys are refused at the service layer. **Content** has a real schema (6 fields — voice_guidelines, default_platform, output_length, include_references_policy, auto_publish, extra_notes). The other 4 skills have empty schemas so any PUT field returns 400 with a clear "no configurable fields yet" message.
+- **Routes** — `GET /workspace/skills/:skillId/config` (any member; returns stored config merged over schema defaults so the UI always sees a populated form) and `PUT /workspace/skills/:skillId/config` (tenant_admin only, via `requireTenantAdmin`). PUT accepts nested `{ config: {...} }` OR flat body. Writes trigger a `tenant.skill_config.update` audit row carrying `keysTouched` but **never** the raw values — voice guidelines can be long, personal, and shouldn't leak through the audit table.
+- **Home payload** — new `content.voice.guidelines` dependency. Missing when voice_guidelines is empty/null; ready when it's filled. CTA `#/skills/content/configuration` deep-links to the editor. Auto-heals on save.
+- **UI** — Content skill Configuration tab replaces the "edit in iOS" empty state with a real editor: textarea for voice guidelines, 3 enum dropdowns, a checkbox for auto_publish, an extra_notes textarea. Same dirty-state / Revert / Save / diff-only PUT pattern as the OI-USR-407 Profile editor. Non-admins see the form fields disabled with a visible "ask a tenant_admin to change these" note; Save/Revert hidden.
+
+SECURITY notes:
+- **Audit log redaction.** The `tenant.skill_config.update` audit row's details blob contains `keysTouched: [...]` but never the values — test-pinned (a "Top-secret voice rule" test plants a known string and asserts `JSON.stringify(details).not.toContain(value)`).
+- **WRITE guard.** `requireTenantAdmin` at the route layer blocks tenant_member and tenant_viewer from PUT — test-pinned for both roles.
+
+Tests: 58 new pins across 3 files (all green).
+- `__tests__/services/tenant-skill-config-service.test.ts` (24): schema registry, Content round-trip, diff patches, enum/length/type validation, empty-schema skills rejection, isolation, unknown skill.
+- `__tests__/api/portal-workspace-skill-config-routes.test.ts` (14): GET+PUT + auth chain, tenant_viewer read access, admin-only write (403 for member/viewer), nested+flat body shapes, unknown field 400, audit values-not-leaked, Home dependency flips ready/missing on save/clear.
+- `__tests__/portal/user-console-content-config.test.ts` (20): markup, 6 input ids, enum option presence, dirty tracking, diff-only PUT, post-save re-baseline, loadHome refresh, non-admin disable+hide pattern.
+
+Follow-ups (one per remaining skill):
+- **OI-DATA-003a** — Secretary schema (routines / priority rules / calendar preferences).
+- **OI-DATA-003b** — Training schema (goals / equipment / constraints / readiness preferences).
+- **OI-DATA-003c** — Finance schema (budget / categories / affordability rules).
+- **OI-DATA-003d** — Cooking schema (restrictions / preferences / dietary rules).
+- **OI-DATA-003e** — per-key audit history (only if product asks for it; not worth the schema complexity on spec alone).
 
 ---
 
@@ -272,9 +294,9 @@ Follow-ups still open:
 
 ## 5 · User Console feature gaps
 
-### OI-USR-401 — Skill config editor [P1, Data+UX]
+### ~~OI-USR-401 — Skill config editor~~ [DONE · 2026-04-22 — Content skill only (v1)]
 
-**What's missing.** See OI-DATA-003.
+Closed alongside OI-DATA-003 — see that entry for the full resolution note. The Content skill Configuration tab is now a real editor; Secretary/Training/Finance/Cooking configs are tracked as per-skill follow-ups (OI-DATA-003a..d).
 
 ---
 
