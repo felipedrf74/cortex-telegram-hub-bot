@@ -316,9 +316,26 @@ Follow-ups still open:
 
 ---
 
-### OI-USR-407 — Profile editor [P2, UX]
+### ~~OI-USR-407 — Profile editor~~ [DONE · 2026-04-22]
 
-**What's missing.** Profile page renders read-only. Edits still go through iOS. A minimal editor (name, avatar URL, timezone) is low-risk to add.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+Profile page is now a real editor for 6 fields: `firstName`, `lastName`, `username`, `avatarUrl`, `language`, `timezone`. The backend `PATCH /workspace/profile` endpoint already existed from Phase 1 (accepts any subset of the 6 fields, each `string | null`, trim+cap at 256 chars). This pass wires the UI that consumes it.
+
+UX details:
+- **Read-only identity card** — email, tier, user id. Email-change needs re-verification and tier is plan-assigned; neither belongs in this editor.
+- **Baseline-vs-current dirty tracking.** Save and Revert both disable when no changes are pending. `profileBaseline` holds the last-saved values and is updated on successful save so Revert always means "undo my unsaved changes", not "reset to some historical point".
+- **Diff-only PATCH** — only fields the user actually changed are sent. Smaller payload; also race-friendly (if I never touched `username`, I can't accidentally overwrite a concurrent update from iOS).
+- **Empty string → `null`.** Users clearing a field persist as `NULL` in the DB rather than `""` — matches nullable-column semantics and keeps the GET round-trip clean.
+- **Browser detection helpers** — "Detect from browser" buttons for Language (`navigator.language`) and Timezone (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Free-form inputs remain so power users can override.
+- **Context-strip refresh** — Save triggers `loadMe()` after PATCH so the "You are <Name>" header at the top of the console updates without a full reload.
+
+Tests: `__tests__/portal/user-console-profile-editor.test.ts` — 17 structural + behavior pins (markup, Save/Revert/dirty-state, diff-only payload, empty→null conversion, post-save re-baseline, loadMe-after-save refresh, input-listener binding, browser-detect wiring, legacy empty-state removed).
+
+Follow-ups still open:
+- **OI-USR-407a** — avatar image upload (today only a URL input; file upload needs a storage backend).
+- **OI-USR-407b** — server-side validation for language (ISO 639-1) and timezone (IANA). Today the backend accepts any string ≤ 256 chars.
+- **OI-USR-407c** — username uniqueness check (today two users can hold the same username since the column isn't `UNIQUE`). Product-decision: is username user-visible enough to need a unique constraint?
 
 ---
 

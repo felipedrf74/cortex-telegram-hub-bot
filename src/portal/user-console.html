@@ -915,8 +915,61 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
     <!-- ═ Profile ═══════════════════════════════════════════ -->
     <section class="page hidden" data-page="profile">
       <h1>Profile &amp; Preferences</h1>
-      <p class="subtitle">Your personal account. These apply to you across every tenant.</p>
-      <div class="panel"><header><h2>Account</h2></header><div class="body" id="profileBody"></div></div>
+      <p class="subtitle">Your personal account. These apply to you across every tenant you belong to.</p>
+
+      <div class="panel">
+        <header>
+          <h2>Identity</h2>
+          <span class="meta small muted">Read-only &mdash; email/tier changes happen via iOS or support.</span>
+        </header>
+        <div class="body" id="profileReadOnly"></div>
+      </div>
+
+      <div class="panel">
+        <header>
+          <h2>Editable fields</h2>
+          <span class="meta small" id="profileDirtyMeta">No unsaved changes</span>
+        </header>
+        <div class="body">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+            <div class="form-row">
+              <label for="profFirstName">First name</label>
+              <input id="profFirstName" type="text" autocomplete="given-name" maxlength="128" />
+            </div>
+            <div class="form-row">
+              <label for="profLastName">Last name</label>
+              <input id="profLastName" type="text" autocomplete="family-name" maxlength="128" />
+            </div>
+            <div class="form-row">
+              <label for="profUsername">Username</label>
+              <input id="profUsername" type="text" autocomplete="username" maxlength="64" placeholder="display handle" />
+            </div>
+            <div class="form-row">
+              <label for="profAvatarUrl">Avatar URL</label>
+              <input id="profAvatarUrl" type="url" placeholder="https://…" maxlength="256" />
+            </div>
+            <div class="form-row">
+              <label for="profLanguage">
+                Language
+                <button type="button" class="btn ghost small" onclick="profileDetectLanguage()" style="float: right; padding: 2px 8px; font-size: 10px;">Detect from browser</button>
+              </label>
+              <input id="profLanguage" type="text" placeholder="e.g. en, es, pt-BR" maxlength="16" />
+            </div>
+            <div class="form-row">
+              <label for="profTimezone">
+                Timezone
+                <button type="button" class="btn ghost small" onclick="profileDetectTimezone()" style="float: right; padding: 2px 8px; font-size: 10px;">Detect from browser</button>
+              </label>
+              <input id="profTimezone" type="text" placeholder="e.g. America/Sao_Paulo" maxlength="64" />
+            </div>
+          </div>
+          <div id="profileMsg" class="small" style="margin-top: var(--space-3); min-height: 1em;"></div>
+          <div class="row-inline" style="margin-top: var(--space-4); justify-content: flex-end;">
+            <button class="btn ghost" id="profileResetBtn" onclick="profileReset()">Revert</button>
+            <button class="btn primary" id="profileSaveBtn" onclick="profileSave()">Save changes</button>
+          </div>
+        </div>
+      </div>
     </section>
 
   </main>
@@ -1821,19 +1874,161 @@ window.removeMember = async function(userId) {
   catch (e) { toast(e.message, 'error'); }
 };
 
-// ── Profile ────────────────────────────────────────────────────
+// ── Profile editor (OI-USR-407) ────────────────────────────────
+// state.me carries the current profile. profileBaseline holds the
+// snapshot we compare current inputs against to compute the dirty
+// flag — so "Revert" always restores the last-saved state, not the
+// state at page-open.
+const profileBaseline = { firstName: '', lastName: '', username: '', avatarUrl: '', language: '', timezone: '' };
+
+function profileFieldIds() {
+  return {
+    firstName: 'profFirstName', lastName: 'profLastName',
+    username: 'profUsername', avatarUrl: 'profAvatarUrl',
+    language: 'profLanguage', timezone: 'profTimezone',
+  };
+}
+
 function loadProfile() {
   if (!state.me) return;
   const u = state.me.user || {};
-  document.getElementById('profileBody').innerHTML = `
+
+  // Read-only identity card. Email + tier are deliberately not
+  // editable — email change requires re-verification, tier is
+  // plan-assigned. Those live outside this editor.
+  document.getElementById('profileReadOnly').innerHTML = `
     <div class="row-inline"><span class="small muted grow">Email</span><span class="mono">${esc(u.email || '—')}</span></div>
-    <div class="row-inline"><span class="small muted grow">Username</span><span class="mono">${esc(u.username || '—')}</span></div>
-    <div class="row-inline"><span class="small muted grow">Name</span><span>${esc([u.firstName, u.lastName].filter(Boolean).join(' ') || '—')}</span></div>
     <div class="row-inline"><span class="small muted grow">Tier</span><span class="pill info">${esc(u.tier || '—')}</span></div>
-    <div class="row-inline"><span class="small muted grow">Language</span><span>${esc(u.language || '—')}</span></div>
-    <div class="row-inline"><span class="small muted grow">Timezone</span><span class="mono">${esc(u.timezone || '—')}</span></div>
-    <p class="small muted" style="margin-top: var(--space-4);">Profile edits live in the iOS app for now. A portal-side editor is tracked in open-items.</p>`;
+    <div class="row-inline"><span class="small muted grow">User ID</span><span class="mono muted">#${esc(u.id ?? '—')}</span></div>`;
+
+  // Baseline + inputs.
+  const ids = profileFieldIds();
+  for (const field of Object.keys(ids)) {
+    const raw = u[field];
+    const val = raw == null ? '' : String(raw);
+    profileBaseline[field] = val;
+    const el = document.getElementById(ids[field]);
+    if (el) {
+      el.value = val;
+      // Wire dirty-tracking listener once per element.
+      if (!el.dataset.profBound) {
+        el.addEventListener('input', profileUpdateDirty);
+        el.dataset.profBound = '1';
+      }
+    }
+  }
+  profileUpdateDirty();
+  document.getElementById('profileMsg').textContent = '';
 }
+
+// Diff current inputs vs baseline → enable/disable Save, update
+// dirty meta label.
+function profileUpdateDirty() {
+  const ids = profileFieldIds();
+  let dirty = false;
+  for (const field of Object.keys(ids)) {
+    const el = document.getElementById(ids[field]);
+    if (!el) continue;
+    if (el.value !== (profileBaseline[field] || '')) { dirty = true; break; }
+  }
+  const metaEl = document.getElementById('profileDirtyMeta');
+  const saveEl = document.getElementById('profileSaveBtn');
+  const resetEl = document.getElementById('profileResetBtn');
+  if (metaEl) {
+    metaEl.textContent = dirty ? 'Unsaved changes' : 'No unsaved changes';
+    metaEl.className = 'meta small ' + (dirty ? '' : 'muted');
+  }
+  if (saveEl) saveEl.disabled = !dirty;
+  if (resetEl) resetEl.disabled = !dirty;
+}
+
+window.profileReset = function() {
+  const ids = profileFieldIds();
+  for (const field of Object.keys(ids)) {
+    const el = document.getElementById(ids[field]);
+    if (el) el.value = profileBaseline[field] || '';
+  }
+  profileUpdateDirty();
+  document.getElementById('profileMsg').textContent = '';
+};
+
+window.profileDetectLanguage = function() {
+  // navigator.language returns the browser's preferred language,
+  // e.g. "en-US", "pt-BR". The backend accepts any string; we just
+  // help the user.
+  const lang = (navigator.language || '').trim();
+  if (!lang) {
+    toast("Couldn't read browser language — fill it manually.", 'error');
+    return;
+  }
+  const el = document.getElementById('profLanguage');
+  if (el) { el.value = lang; profileUpdateDirty(); }
+};
+
+window.profileDetectTimezone = function() {
+  // Intl.DateTimeFormat().resolvedOptions().timeZone returns the
+  // IANA timezone ID, e.g. "America/Sao_Paulo". Falls back to an
+  // error toast if the browser can't resolve.
+  let tz = '';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch {}
+  if (!tz) {
+    toast("Couldn't read browser timezone — fill it manually.", 'error');
+    return;
+  }
+  const el = document.getElementById('profTimezone');
+  if (el) { el.value = tz; profileUpdateDirty(); }
+};
+
+window.profileSave = async function() {
+  const ids = profileFieldIds();
+  // Only send fields the user actually changed. That's both kinder
+  // on the server (smaller payload, fewer SET clauses) and correct
+  // behavior for username uniqueness — if the user didn't touch
+  // username, don't race-write it.
+  const patch = {};
+  for (const field of Object.keys(ids)) {
+    const el = document.getElementById(ids[field]);
+    if (!el) continue;
+    const curr = el.value;
+    if (curr !== (profileBaseline[field] || '')) {
+      // Empty string → null so the backend can clear a field.
+      // The PATCH contract accepts string OR null.
+      patch[field] = curr === '' ? null : curr;
+    }
+  }
+  if (Object.keys(patch).length === 0) {
+    toast('Nothing to save.', 'error');
+    return;
+  }
+  const saveEl = document.getElementById('profileSaveBtn');
+  saveEl.disabled = true;
+  const msg = document.getElementById('profileMsg');
+  msg.textContent = '';
+  try {
+    await fetchJson('/workspace/profile', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    // Refresh state.me so other pages (Home context strip, etc.)
+    // see the new values without a full reload.
+    await loadMe();
+    // Re-baseline so subsequent edits diff against saved values.
+    for (const field of Object.keys(ids)) {
+      const el = document.getElementById(ids[field]);
+      if (el) profileBaseline[field] = el.value;
+    }
+    profileUpdateDirty();
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    toast('Profile updated', 'success');
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    toast(e.message || 'Save failed', 'error');
+  } finally {
+    profileUpdateDirty(); // re-evaluate disabled state
+  }
+};
 
 async function loadFooter() {
   try {
