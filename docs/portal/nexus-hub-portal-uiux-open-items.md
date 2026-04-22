@@ -116,7 +116,7 @@ Follow-ups still open:
 
 **Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-Spotlight-style global search shipped on the User Console. The Admin Console variant is a follow-up (OI-UX-101a).
+Spotlight-style global search shipped on **both** the User Console (original OI-UX-101) and the Admin Console (OI-UX-101a, 2026-04-22).
 
 What's live:
 - **Trigger**: app-bar button with a platform-aware kbd hint (⌘K on Mac, Ctrl+K elsewhere).
@@ -129,7 +129,7 @@ What's live:
 Tests: `__tests__/portal/user-console-global-search.test.ts` — 19 structural + behavior pins (markup, Cmd/Ctrl key handling, ArrowUp/Down/Enter/Esc, platform-aware kbd label, 16 pages indexed, substring match no regex/fuzzy, `<mark>` highlight, showPage dispatch, banner when collections are unindexed, plural/singular result count).
 
 Follow-ups still open:
-- **OI-UX-101a** — port the search to Admin Console (different result set: tenants / users / platform admins / audit). Scope: 1–2 hours of wiring; the shell pattern is reusable.
+- ~~**OI-UX-101a** — port the search to Admin Console~~ **DONE 2026-04-22.** Admin Console spotlight indexes 11 pages + `state.tenants` + `state.platformAdmins` + `state.inactiveTenants` (adoption risk from /owner/console/overview) + `auditState.lastRows`. **Command-palette polish**: tenant hits deep-link to the tenant detail drawer (OI-ADM-301) instead of merely navigating to the Tenants page — searching is the fastest way to drill into any tenant. Required a small state-caching refactor so `loadTenants` / `loadPlatformAdmins` / `paintOverview` capture into `state.*`; the prior implementations rendered inline without caching. 25 new regression pins (markup, keyboard, 11 pages, 4 result groups, tenant-drawer deep-link, state caching).
 - **OI-UX-101b** — promote to server-side search when any collection exceeds ~500 rows (today we ship what's loaded; scale is the gate).
 - **OI-UX-101c** — warm pre-fetch on first open (load collections the user hasn't visited yet so the first search is fully indexed). Trade-off: adds latency on open; not worth it until scale forces it.
 
