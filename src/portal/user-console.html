@@ -275,6 +275,98 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
 .auth-prompt h1 { font-size: 20px; margin: 0 0 var(--space-2); }
 .auth-prompt p { color: var(--text-dim); font-size: 13px; margin: 0 0 var(--space-4); }
 .auth-prompt .form-row { margin-bottom: var(--space-3); }
+
+/* ── Onboarding wizard (OI-USR-404, 2026-04-22) ─────────────────
+ * Modal overlay. Auto-opens on first visit for tenant_admins with
+ * incomplete setup; can be re-opened manually from the Home setup
+ * panel. Dismissal is two-tier:
+ *   - "Skip" closes the modal for the session only.
+ *   - "Don't show again" persists `nx.usr.onboarded-dismissed`.
+ */
+.wizard-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  z-index: 60; backdrop-filter: blur(3px);
+}
+.wizard-card {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(560px, 92vw); max-height: 85vh; overflow-y: auto;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); z-index: 61;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  animation: wizardIn 0.22s ease-out;
+}
+@keyframes wizardIn {
+  from { opacity: 0; transform: translate(-50%, -48%); }
+  to   { opacity: 1; transform: translate(-50%, -50%); }
+}
+.wizard-head {
+  padding: var(--space-5) var(--space-6) var(--space-3);
+}
+.wizard-head h2 { margin: 0 0 4px; font-size: 20px; font-weight: 700; letter-spacing: -0.2px; }
+.wizard-head .lede { color: var(--text-dim); font-size: 13px; margin: 0; }
+.wizard-steps {
+  display: flex; gap: var(--space-2); padding: 0 var(--space-6);
+  align-items: center; font-size: 11px;
+}
+.wizard-steps .dot {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--bg-tertiary); color: var(--text-dim);
+  border: 1px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 600; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  flex-shrink: 0;
+}
+.wizard-steps .dot.active { background: var(--accent); color: #111; border-color: var(--accent); }
+.wizard-steps .dot.done { background: var(--success); color: #111; border-color: var(--success); }
+.wizard-steps .bar { flex: 1; height: 2px; background: var(--border); }
+.wizard-steps .bar.done { background: var(--accent); }
+.wizard-body {
+  padding: var(--space-5) var(--space-6);
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-4);
+}
+.wizard-foot {
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--border);
+  display: flex; gap: var(--space-3); align-items: center;
+  background: var(--bg-secondary);
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
+.wizard-foot .spacer { flex: 1; }
+.wizard-ref-types {
+  display: flex; gap: var(--space-2); margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.wizard-ref-types button {
+  background: transparent; border: 0; color: var(--text-dim);
+  padding: 8px var(--space-3); font-size: 13px; font-weight: 500;
+  border-bottom: 2px solid transparent; cursor: pointer; font-family: inherit;
+}
+.wizard-ref-types button:hover { color: var(--text-primary); }
+.wizard-ref-types button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.wizard-choice-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.wizard-choice {
+  padding: var(--space-4); border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-tertiary);
+  cursor: pointer; text-align: left;
+}
+.wizard-choice:hover { border-color: var(--accent); background: var(--bg-elevated); }
+.wizard-choice.selected { border-color: var(--accent); background: var(--accent-subtle); }
+.wizard-choice strong { display: block; font-size: 14px; margin-bottom: 4px; }
+.wizard-choice .hint { color: var(--text-dim); font-size: 12px; }
+.wizard-confirm {
+  padding: var(--space-5) var(--space-6); text-align: center;
+}
+.wizard-confirm .big-check {
+  width: 48px; height: 48px; margin: 0 auto var(--space-3);
+  border-radius: 50%; background: var(--success-bg); color: var(--success);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 700;
+}
 </style>
 </head>
 <body>
@@ -371,7 +463,13 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
       <div class="two-col">
         <div>
           <div class="panel">
-            <header><h2>Setup progress</h2><span class="meta" id="setupMeta">—</span></header>
+            <header>
+              <h2>Setup progress</h2>
+              <div class="row-inline small">
+                <span class="meta" id="setupMeta">—</span>
+                <button class="btn ghost small" id="launchWizardBtn" onclick="wizardOpen(1)" title="Launch the setup wizard">Launch wizard ▸</button>
+              </div>
+            </header>
             <div class="body">
               <div class="setup-bar"><div id="setupBar" style="width: 0%;"></div></div>
               <div class="small muted" id="setupSummary">Loading…</div>
@@ -770,6 +868,100 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
   </main>
 </div>
 
+<!-- ─────────────────────────────────────────────────────────────────
+     Onboarding wizard (OI-USR-404, 2026-04-22). Three steps:
+       1 — Welcome + setup progress overview
+       2 — Curate a first reference (book / link / note)
+       3 — Team or solo (inline invite OR "I'm solo" branch)
+     Auto-opens on first visit for tenant_admins with incomplete setup.
+     Re-openable from the Home setup panel. Two-tier dismissal.
+     ───────────────────────────────────────────────────────────── -->
+<div id="wizardOverlay" class="wizard-overlay hidden" onclick="wizardSkip()"></div>
+<div id="wizard" class="wizard-card hidden" role="dialog" aria-labelledby="wizardTitle">
+  <div class="wizard-head">
+    <h2 id="wizardTitle">Welcome to Nexus Hub</h2>
+    <p class="lede" id="wizardLede">Let's get your workspace set up — 3 quick steps.</p>
+  </div>
+  <div class="wizard-steps" aria-label="Onboarding progress">
+    <span class="dot active" data-step-dot="1">1</span>
+    <span class="bar" data-step-bar="1-2"></span>
+    <span class="dot" data-step-dot="2">2</span>
+    <span class="bar" data-step-bar="2-3"></span>
+    <span class="dot" data-step-dot="3">3</span>
+  </div>
+  <div class="wizard-body">
+    <!-- Step 1 — Welcome -->
+    <div data-step="1">
+      <p>The <strong>Nexus Hub iOS app</strong> is your daily assistant — conversation, quick actions, briefings.</p>
+      <p>The <strong>portal</strong> is where you set things up deeply: manage your reference library, configure each skill, review insights, invite your team.</p>
+      <p class="small muted">Your current setup is <strong id="wizardProgressPercent">—</strong>. We'll help you finish the last of it right here.</p>
+    </div>
+    <!-- Step 2 — Curate a first reference -->
+    <div data-step="2" class="hidden">
+      <p>Your skills get sharper with every reference you curate. Pick one to start — you can always add more later.</p>
+      <div class="wizard-ref-types" role="tablist">
+        <button class="active" data-ref-type="book">Book</button>
+        <button data-ref-type="link">Link</button>
+        <button data-ref-type="note">Note</button>
+      </div>
+      <div data-ref-form="book">
+        <div class="form-row"><label>Title</label><input id="wizBookTitle" placeholder="Atomic Habits" /></div>
+        <div class="form-row"><label>Author</label><input id="wizBookAuthor" placeholder="James Clear" /></div>
+        <div class="form-row"><label>Status</label><select id="wizBookStatus">
+          <option value="want_to_read">Want to read</option>
+          <option value="reading" selected>Reading</option>
+          <option value="finished">Finished</option>
+        </select></div>
+      </div>
+      <div data-ref-form="link" class="hidden">
+        <div class="form-row"><label>Title</label><input id="wizLinkTitle" placeholder="Short description" /></div>
+        <div class="form-row"><label>URL</label><input id="wizLinkUrl" placeholder="https://…" /></div>
+      </div>
+      <div data-ref-form="note" class="hidden">
+        <div class="form-row"><label>Title</label><input id="wizNoteTitle" placeholder="Idea for a blog post…" /></div>
+        <div class="form-row"><label>Body</label><textarea id="wizNoteBody" placeholder="Your thoughts…"></textarea></div>
+      </div>
+      <p class="small muted" id="wizRefMsg"></p>
+    </div>
+    <!-- Step 3 — Team or solo -->
+    <div data-step="3" class="hidden">
+      <p>Are you working alone, or with teammates?</p>
+      <div class="wizard-choice-grid">
+        <button class="wizard-choice" data-choice="invite" id="wizChoiceInvite">
+          <strong>Invite teammates</strong>
+          <span class="hint">Share books, notes, and skills across your team. You stay tenant_admin.</span>
+        </button>
+        <button class="wizard-choice" data-choice="solo" id="wizChoiceSolo">
+          <strong>I'm solo</strong>
+          <span class="hint">This is a personal workspace. You can always invite people later from Team → Invites.</span>
+        </button>
+      </div>
+      <div id="wizInviteForm" class="hidden" style="margin-top: var(--space-4);">
+        <div class="form-row"><label>Teammate's email</label><input id="wizInviteEmail" placeholder="teammate@domain.com" /></div>
+        <div class="form-row"><label>Role</label><select id="wizInviteRole">
+          <option value="tenant_member" selected>Member</option>
+          <option value="tenant_admin">Admin</option>
+          <option value="tenant_viewer">Viewer</option>
+        </select></div>
+        <p class="small muted" id="wizInviteMsg"></p>
+      </div>
+    </div>
+    <!-- Step 4 — Finish (final confirmation, rendered by switching steps to 4) -->
+    <div data-step="4" class="hidden wizard-confirm">
+      <div class="big-check">✓</div>
+      <h3 style="margin: 0 0 var(--space-2);">You're set up!</h3>
+      <p class="muted small">Your workspace is ready. You can always come back to this wizard from the Home setup panel.</p>
+    </div>
+  </div>
+  <div class="wizard-foot">
+    <button class="btn ghost small" onclick="wizardDismissForever()" id="wizardDismissBtn">Don't show again</button>
+    <div class="spacer"></div>
+    <button class="btn ghost" onclick="wizardSkip()" id="wizardSkipBtn">Skip for now</button>
+    <button class="btn ghost" onclick="wizardPrev()" id="wizardPrevBtn" style="display: none;">← Back</button>
+    <button class="btn primary" onclick="wizardNext()" id="wizardNextBtn">Continue →</button>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden"></div>
 
 <script>
@@ -925,6 +1117,12 @@ async function loadHome() {
     const r = await fetchJson('/workspace/console/home');
     state.home = r.data;
     paintHome(r.data);
+    // Decide whether to auto-open the onboarding wizard (OI-USR-404).
+    // Gated by: tenant_admin role + setup<100% + no persistent
+    // dismissal + no session skip. Safe to call on every home reload
+    // — the gate re-evaluates on each call and auto-open only fires
+    // when all conditions hold.
+    maybeAutoOpenWizard();
   } catch (e) {
     console.error('home load failed', e);
   }
@@ -1311,6 +1509,226 @@ async function loadFooter() {
     const r = await fetch('/api/snapshot');
     if (r.ok) { const j = await r.json(); document.getElementById('footerVersion').textContent = j.version || '—'; }
   } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Onboarding wizard controller (OI-USR-404)
+// ─────────────────────────────────────────────────────────────────
+const wizard = {
+  step: 1,
+  refType: 'book',
+  refCreated: false,   // true once step 2 persisted something
+  teamChoice: null,    // 'invite' | 'solo'
+  inviteSent: false,
+};
+
+// Called after every loadHome() once we have state.me + state.home.
+// Decides whether to auto-open. Auto-open gate is CONJUNCTIVE — all
+// three must hold:
+//   (a) role is tenant_admin (only admins can drive most setup actions)
+//   (b) setup.percent < 100 (otherwise nothing to do)
+//   (c) user has not persistently dismissed via "Don't show again"
+function maybeAutoOpenWizard() {
+  if (!state.me || !state.home) return;
+  const role = (state.me.role) || (state.me.tenant && state.me.tenant.role);
+  if (role !== 'tenant_admin') return;
+  if (state.home.setup.percent >= 100) return;
+  if (localStorage.getItem('nx.usr.onboarded-dismissed') === '1') return;
+  // Session-scoped skip (sessionStorage) blocks auto-open until the
+  // next tab session.
+  if (sessionStorage.getItem('nx.usr.onboarded-skipped') === '1') return;
+  wizardOpen(1);
+}
+
+function wizardOpen(step) {
+  wizard.step = step || 1;
+  document.getElementById('wizardOverlay').classList.remove('hidden');
+  document.getElementById('wizard').classList.remove('hidden');
+  wizardRenderStep();
+}
+window.wizardOpen = wizardOpen;
+
+function wizardClose() {
+  document.getElementById('wizardOverlay').classList.add('hidden');
+  document.getElementById('wizard').classList.add('hidden');
+}
+window.wizardSkip = function() {
+  sessionStorage.setItem('nx.usr.onboarded-skipped', '1');
+  wizardClose();
+};
+window.wizardDismissForever = function() {
+  localStorage.setItem('nx.usr.onboarded-dismissed', '1');
+  toast('Wizard dismissed. Re-open from Home setup panel anytime.', 'success');
+  wizardClose();
+};
+
+function wizardRenderStep() {
+  // Progress dots / bars
+  [1, 2, 3].forEach((n) => {
+    const dot = document.querySelector(`[data-step-dot="${n}"]`);
+    if (!dot) return;
+    dot.classList.toggle('active', n === wizard.step);
+    dot.classList.toggle('done', n < wizard.step);
+  });
+  ['1-2', '2-3'].forEach((span) => {
+    const bar = document.querySelector(`[data-step-bar="${span}"]`);
+    if (!bar) return;
+    const threshold = parseInt(span.split('-')[1], 10);
+    bar.classList.toggle('done', wizard.step >= threshold);
+  });
+  // Step panels
+  document.querySelectorAll('[data-step]').forEach((el) => {
+    el.classList.toggle('hidden', Number(el.getAttribute('data-step')) !== wizard.step);
+  });
+  // Step-specific body (lede/title)
+  const titleEl = document.getElementById('wizardTitle');
+  const ledeEl = document.getElementById('wizardLede');
+  if (wizard.step === 1) {
+    titleEl.textContent = 'Welcome to Nexus Hub';
+    ledeEl.textContent = "Let's get your workspace set up — 3 quick steps.";
+    document.getElementById('wizardProgressPercent').textContent = (state.home ? state.home.setup.percent : 0) + '% complete';
+  } else if (wizard.step === 2) {
+    titleEl.textContent = 'Curate a first reference';
+    ledeEl.textContent = 'Your Content and Secretary skills use your references as context.';
+  } else if (wizard.step === 3) {
+    titleEl.textContent = 'Team or solo?';
+    ledeEl.textContent = 'Tell us how you plan to use this workspace.';
+  } else {
+    titleEl.textContent = "You're all set";
+    ledeEl.textContent = 'Thanks for setting up. Your workspace is ready.';
+  }
+  // Footer buttons
+  const prev = document.getElementById('wizardPrevBtn');
+  const next = document.getElementById('wizardNextBtn');
+  const skip = document.getElementById('wizardSkipBtn');
+  const dismiss = document.getElementById('wizardDismissBtn');
+  prev.style.display = wizard.step > 1 && wizard.step < 4 ? '' : 'none';
+  skip.style.display = wizard.step < 4 ? '' : 'none';
+  dismiss.style.display = wizard.step < 4 ? '' : 'none';
+  if (wizard.step === 1) {
+    next.textContent = 'Continue →';
+  } else if (wizard.step === 2) {
+    next.textContent = wizard.refCreated ? 'Continue →' : 'Save &amp; continue →';
+  } else if (wizard.step === 3) {
+    next.textContent = wizard.teamChoice === 'invite' && !wizard.inviteSent ? 'Send invite &amp; finish' : 'Finish';
+  } else {
+    next.textContent = 'Close';
+  }
+}
+
+window.wizardPrev = function() {
+  if (wizard.step > 1) { wizard.step -= 1; wizardRenderStep(); }
+};
+window.wizardNext = async function() {
+  if (wizard.step === 1) {
+    wizard.step = 2; wizardRenderStep(); return;
+  }
+  if (wizard.step === 2) {
+    // If nothing was saved yet AND a form has values, try to save
+    // first. If all forms are empty, allow user to proceed (they
+    // might not be ready to add a reference).
+    if (!wizard.refCreated) {
+      const saved = await wizardSaveReference();
+      if (saved === 'error') return; // stay on step 2, toast already fired
+      // saved === 'empty' → advance without save (user chose to skip)
+      // saved === 'ok' → advance
+    }
+    wizard.step = 3; wizardRenderStep(); return;
+  }
+  if (wizard.step === 3) {
+    if (wizard.teamChoice === 'invite' && !wizard.inviteSent) {
+      const ok = await wizardSendInvite();
+      if (!ok) return;
+    }
+    // Solo path OR invite already sent → finish.
+    wizard.step = 4; wizardRenderStep();
+    // Refresh Home so the new reference / invite reflects in counts
+    // and milestones.
+    loadHome();
+    return;
+  }
+  // Step 4 → close.
+  wizardClose();
+};
+
+// Ref-type tabs on step 2
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('.wizard-ref-types button[data-ref-type]');
+  if (!t) return;
+  wizard.refType = t.getAttribute('data-ref-type');
+  t.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === t));
+  document.querySelectorAll('[data-ref-form]').forEach((f) => {
+    f.classList.toggle('hidden', f.getAttribute('data-ref-form') !== wizard.refType);
+  });
+});
+// Team choice on step 3
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('.wizard-choice[data-choice]');
+  if (!c) return;
+  wizard.teamChoice = c.getAttribute('data-choice');
+  document.querySelectorAll('.wizard-choice').forEach((el) => {
+    el.classList.toggle('selected', el === c);
+  });
+  document.getElementById('wizInviteForm').classList.toggle('hidden', wizard.teamChoice !== 'invite');
+  // Re-render so next button label updates.
+  wizardRenderStep();
+});
+
+async function wizardSaveReference() {
+  const msg = document.getElementById('wizRefMsg');
+  msg.textContent = '';
+  try {
+    if (wizard.refType === 'book') {
+      const title = document.getElementById('wizBookTitle').value.trim();
+      const author = document.getElementById('wizBookAuthor').value.trim();
+      const status = document.getElementById('wizBookStatus').value;
+      if (!title) { return 'empty'; }
+      await fetchJson('/workspace/books', { method: 'POST', body: JSON.stringify({ title, author, status }) });
+    } else if (wizard.refType === 'link') {
+      const title = document.getElementById('wizLinkTitle').value.trim();
+      const url = document.getElementById('wizLinkUrl').value.trim();
+      if (!title || !url) { return 'empty'; }
+      await fetchJson('/workspace/links', { method: 'POST', body: JSON.stringify({ title, url }) });
+    } else if (wizard.refType === 'note') {
+      const title = document.getElementById('wizNoteTitle').value.trim();
+      const body = document.getElementById('wizNoteBody').value.trim();
+      if (!title) { return 'empty'; }
+      await fetchJson('/workspace/content', { method: 'POST', body: JSON.stringify({ title, body }) });
+    }
+    wizard.refCreated = true;
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    return 'ok';
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    return 'error';
+  }
+}
+
+async function wizardSendInvite() {
+  const msg = document.getElementById('wizInviteMsg');
+  msg.textContent = '';
+  const email = document.getElementById('wizInviteEmail').value.trim();
+  const role = document.getElementById('wizInviteRole').value;
+  if (!email) {
+    msg.textContent = 'Enter an email or pick "I\'m solo" above.';
+    msg.style.color = 'var(--error)';
+    return false;
+  }
+  try {
+    const r = await fetchJson('/workspace/invites', { method: 'POST', body: JSON.stringify({ email, role }) });
+    const code = r.data.invite.inviteCode || r.data.invite.invite_code;
+    const url = location.origin + '/invite/accept?code=' + encodeURIComponent(code);
+    wizard.inviteSent = true;
+    msg.innerHTML = `Invite sent. Share this link: <a href="${esc(url)}" target="_blank">${esc(url)}</a>`;
+    msg.style.color = 'var(--text-secondary)';
+    return true;
+  } catch (e) {
+    msg.textContent = e.message || 'Invite failed';
+    msg.style.color = 'var(--error)';
+    return false;
+  }
 }
 
 // Boot

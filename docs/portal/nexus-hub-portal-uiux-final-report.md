@@ -199,6 +199,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `__tests__/portal/invite-accept-route.test.ts`                            | 5 KB         | 11 regression tests for the invite-accept HTML + route wiring |
 | `__tests__/api/portal-admin-audit-endpoints.test.ts`                      | 11 KB        | 18 regression tests for **OI-ADM-301** + **OI-ADM-303** endpoints (scope, filters, LIKE-injection, auth, clamp) |
 | `__tests__/portal/admin-console-drawer-audit.test.ts`                     | 4 KB         | 15 structural pins for the tenant drawer + audit viewer HTML/JS |
+| `__tests__/portal/user-console-wizard.test.ts`                            | 6 KB         | 17 structural pins for the **OI-USR-404** onboarding wizard (gate, two-tier dismissal, step flow, endpoint wiring) |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -213,6 +214,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
 | `src/portal/admin-console.html`             | +~420 lines (OI-ADM-301 + OI-ADM-303): tenant detail drawer (overlay, 4 tabs, parallel fetches, ESC close) + filtered audit viewer (5 filters, pagination, expandable rows, CSV export). Dead legacy `loadSecurity` removed. |
+| `src/portal/user-console.html`              | +~340 lines (OI-USR-404): 3-step onboarding wizard (welcome / reference / team-or-solo) with conjunctive auto-open gate, two-tier dismissal, inline book/link/note save, inline invite or "I'm solo" branch. Home Setup panel now has a manual "Launch wizard" button. |
 
 ### 11.3 Routes added
 
@@ -341,7 +343,7 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 - OI-DATA-001 Strategy-2 reference-usage tracking.
 - OI-DATA-004 Real insight engine wired to intelligence-bus.
 - OI-UX-101 Global search in app bar.
-- OI-USR-404 Onboarding wizard for first-time tenant admins.
+- ~~OI-USR-404 Onboarding wizard for first-time tenant admins.~~ **DONE 2026-04-22** — 3-step modal with conjunctive auto-open gate and two-tier dismissal.
 
 **P3 (eventual):** dark/light toggle, command palette, bulk actions, keyboard shortcuts.
 
@@ -354,7 +356,7 @@ Ranked by impact / effort ratio:
 1. ~~**OI-NAV-203 — invite-accept landing page.**~~ **DONE 2026-04-22** — the Team → Invite link now resolves end-to-end.
 2. ~~**OI-ADM-301 — tenant detail drawer.**~~ **DONE 2026-04-22** — 4-tab drawer with parallel fetches, ESC-to-close, ARIA wiring.
 3. ~~**OI-ADM-303 — filtered audit viewer.**~~ **DONE 2026-04-22** — full filtered viewer with expandable details + CSV export; server defends against LIKE-wildcard injection.
-4. **OI-USR-404 — onboarding wizard.** Convert the Home setup-progress milestones into an opt-in 3-step walkthrough for first-time tenant admins. ~4 h.
+4. ~~**OI-USR-404 — onboarding wizard.**~~ **DONE 2026-04-22** — auto-opens on first visit for tenant_admins with incomplete setup; re-launchable from Home setup panel; two-tier dismissal.
 5. **OI-DATA-002 — tenant-scoped channels.** Enables Reference Center → Channels. Schema + service + route + UI. ~1 day.
 6. **OI-NAV-201 — promote `/admin-console` → `/admin`.** Explicit post-review gate.
 

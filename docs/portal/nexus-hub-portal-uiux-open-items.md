@@ -245,9 +245,32 @@ Follow-ups still open:
 
 ---
 
-### OI-USR-404 — Onboarding wizard [P2, UX]
+### ~~OI-USR-404 — Onboarding wizard~~ [DONE · 2026-04-22]
 
-**What's missing.** Setup-progress milestones are visible on Home but there's no guided wizard for first-time tenant admins. A 3-step walkthrough (tenant name / add a book / invite teammate) would improve activation.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+User Console now ships a 3-step modal wizard that auto-opens on first visit for tenant_admins with incomplete setup, and can be re-launched anytime from the Home Setup panel.
+
+Steps:
+1. **Welcome** — explains the portal/iOS divide + shows live setup progress %.
+2. **Curate a first reference** — inline tabs for Book / Link / Note with real-time save to `/workspace/books` / `/workspace/links` / `/workspace/content`. Non-coercive: if all forms are empty, user can still advance.
+3. **Team or solo** — two big-button choice. "Invite" reveals an inline email+role form that POSTs to `/workspace/invites` and generates the OI-NAV-203 canonical URL. "Solo" just advances — no server call.
+
+Auto-open gate (all four must hold):
+- role === `tenant_admin`
+- `setup.percent < 100`
+- no `nx.usr.onboarded-dismissed` in localStorage
+- no `nx.usr.onboarded-skipped` in sessionStorage
+
+Two-tier dismissal:
+- **"Skip for now"** or overlay-click → sessionStorage only (re-prompts next session if setup still <100%).
+- **"Don't show again"** → localStorage (persistent; use Home button to re-open).
+
+Tests: `__tests__/portal/user-console-wizard.test.ts` — 17 structural pins covering markup, 4-step flow, two-tier dismissal, endpoint wiring, Solo path no-server-call, Home refresh after save.
+
+Follow-ups still open:
+- **OI-USR-404a** — role-aware wizard for tenant_member and tenant_viewer (different steps — they can't invite).
+- **OI-USR-404b** — wizard progress telemetry (server-side record of which step users drop off at) — requires a small schema + endpoint.
 
 ---
 
