@@ -21,6 +21,13 @@ process.env.INVOICE_FILING_ENABLED = 'false';
 process.env.GARMIN_COACH_ENABLED = 'false';
 process.env.CONTENT_ENGINE_ENABLED = 'false';
 process.env.TODO_DIGEST_ENABLED = 'false';
+// iOS defaults — any test that needs JWT auth gets a usable secret
+// out of the box. Tests that need different values override + call
+// `vi.resetModules()` (see auth-routes.test.ts for the pattern).
+process.env.IOS_API_ENABLED = process.env.IOS_API_ENABLED || 'true';
+process.env.IOS_API_JWT_SECRET = process.env.IOS_API_JWT_SECRET || 'test-setup-default-jwt-secret';
+process.env.IOS_INVITE_CODE = process.env.IOS_INVITE_CODE || 'LOCALBETA_TEST';
+process.env.IOS_OWNER_CODE = process.env.IOS_OWNER_CODE || 'LOCALOWNER_TEST';
 
 // ─── Mock external modules ─────────────────────────────────────────
 

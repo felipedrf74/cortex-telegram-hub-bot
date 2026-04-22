@@ -194,7 +194,54 @@ export function createPortalServer(bot?: any): http.Server {
     }
   }
 
+  // ── /workspace/* — Tenant Workspace user console ────────────────────
+  //
+  // Introduced by the portal redesign (2026-04-22, see
+  // docs/portal/nexus-hub-portal-owner-workspace-redesign.md).
+  //
+  // The workspace router enforces its own auth chain internally:
+  //   authMiddleware (iOS JWT) → resolveTenantContext (membership)
+  // It is mounted at a DIFFERENT prefix than /api/v1 so iOS traffic
+  // does NOT accidentally leak into the workspace routes through the
+  // existing /api middleware. All existing portal /api/* routes
+  // continue to work unchanged; this is strictly additive.
+  try {
+    const { createPortalWorkspaceRouter } = require('../api/portal-workspace-router');
+    app.use('/workspace', createPortalWorkspaceRouter());
+    logger.info('Tenant workspace router mounted at /workspace/*');
+  } catch (err) {
+    // Non-fatal: boots at pre-migration-076 cannot resolve tenants;
+    // the portal remains functional even if this router can't mount.
+    logger.warn({ err }, 'Workspace router failed to mount (non-fatal)');
+  }
+
   app.use(express.json());
+
+  // ── /owner/* — Platform Owner control plane ─────────────────────────
+  //
+  // Mounted AFTER the global express.json() because its own json()
+  // middleware inside the router deliberately duplicates the parser
+  // (defense-in-depth; if the global one is ever removed or scoped
+  // out, /owner/* body parsing still works). Mounted BEFORE the
+  // legacy /api/* portal routes so its path prefix never collides
+  // with an existing handler.
+  //
+  // Auth chain:
+  //   (shared PORTAL_TOKEN check on legacy /api/* — N/A here)
+  //   → resolvePlatformAdmin (X-Admin-User-Id identity resolution)
+  //
+  // Because /owner/* sits OUTSIDE /api/*, it does not inherit the
+  // existing portal-token middleware. For the MVP, the platform-
+  // admin identity check is the sole auth gate — intentionally
+  // strict, since a misconfigured deployment would reject rather
+  // than leak. Phase 2 layers a proper admin login session on top.
+  try {
+    const { createPortalOwnerRouter } = require('../api/portal-owner-router');
+    app.use('/owner', createPortalOwnerRouter());
+    logger.info('Owner control-plane router mounted at /owner/*');
+  } catch (err) {
+    logger.warn({ err }, 'Owner router failed to mount (non-fatal)');
+  }
 
   // ── AI provider routing (must initialize BEFORE any AI call) ─────────
   //

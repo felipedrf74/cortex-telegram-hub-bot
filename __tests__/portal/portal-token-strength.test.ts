@@ -22,8 +22,15 @@ describe('portal boot — PORTAL_TOKEN strength gate (M-3)', () => {
   const originalReadToken = process.env.PORTAL_READ_TOKEN;
   const originalWriteToken = process.env.PORTAL_WRITE_TOKEN;
   const originalAdminToken = process.env.PORTAL_ADMIN_TOKEN;
+  const originalIosEnabled = process.env.IOS_API_ENABLED;
 
   beforeEach(() => {
+    // Force iOS API off so createPortalServer doesn't try to
+    // require('../api/router') under vi.resetModules — this keeps
+    // the test laser-focused on the PORTAL_TOKEN strength check.
+    // Setup.ts defaults IOS_API_ENABLED=true for any test that needs
+    // JWT auth; we restore the original in afterEach.
+    process.env.IOS_API_ENABLED = 'false';
     vi.resetModules();
   });
 
@@ -32,6 +39,11 @@ describe('portal boot — PORTAL_TOKEN strength gate (M-3)', () => {
     process.env.PORTAL_READ_TOKEN = originalReadToken;
     process.env.PORTAL_WRITE_TOKEN = originalWriteToken;
     process.env.PORTAL_ADMIN_TOKEN = originalAdminToken;
+    if (originalIosEnabled === undefined) {
+      delete process.env.IOS_API_ENABLED;
+    } else {
+      process.env.IOS_API_ENABLED = originalIosEnabled;
+    }
     vi.resetModules();
   });
 
