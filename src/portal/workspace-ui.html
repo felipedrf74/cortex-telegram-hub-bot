@@ -61,6 +61,11 @@
   .role-tenant_admin { background: rgba(255,122,31,.15); color: var(--accent); }
   .role-tenant_member { background: rgba(148,163,184,.15); color: var(--text-dim); }
   .role-tenant_viewer { background: rgba(148,163,184,.08); color: var(--text-dim); }
+  /* Invite status badges */
+  .status-pending  { background: rgba(251,191,36,.18); color: var(--warning); }
+  .status-accepted { background: rgba(52,211,153,.15); color: var(--success); }
+  .status-revoked  { background: rgba(248,113,113,.15); color: var(--danger); }
+  .status-expired  { background: rgba(148,163,184,.15); color: var(--text-dim); }
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
   .kpi {
     background: #0c0d10; border: 1px solid var(--border); border-radius: 8px;
@@ -155,6 +160,9 @@
     <!-- Banner / errors -->
     <div id="banner" class="hidden"></div>
 
+    <!-- Pending invites (shown only when the caller has any addressed to them) -->
+    <div id="myInvitesBanner" class="hidden" style="margin-bottom: 1rem;"></div>
+
     <!-- Tenant switcher -->
     <div class="card">
       <h2>Active tenant</h2>
@@ -172,6 +180,7 @@
       <button class="active" data-tab="home" onclick="showTab('home')">Home</button>
       <button data-tab="profile" onclick="showTab('profile')">Profile</button>
       <button data-tab="members" onclick="showTab('members')" id="membersTab">Members (admin)</button>
+      <button data-tab="invites" onclick="showTab('invites')" id="invitesTab">Invites (admin)</button>
       <button data-tab="books" onclick="showTab('books')">Books</button>
       <button data-tab="raw" onclick="showTab('raw')">Raw /me</button>
     </div>
@@ -253,6 +262,41 @@
           Listing members of your <em>active</em> tenant. Cross-tenant leakage would show here if anything is wrong — should never happen.
         </div>
         <ul class="list" id="membersList"><li class="tiny">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Invites (tenant-admin-only) -->
+    <section data-tab-section="invites" class="hidden">
+      <div class="card">
+        <h2>Invite someone to this tenant</h2>
+        <div class="tiny" style="margin-bottom:.7rem;">
+          Invited users must log in with their own account. Role is granted on accept.
+        </div>
+        <div class="row">
+          <div style="flex: 2;">
+            <label class="tiny">Email</label>
+            <input id="inviteEmail" placeholder="colleague@company.com" type="email">
+          </div>
+          <div>
+            <label class="tiny">Role</label>
+            <select id="inviteRole">
+              <option value="tenant_member" selected>tenant_member</option>
+              <option value="tenant_admin">tenant_admin</option>
+              <option value="tenant_viewer">tenant_viewer</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top: .8rem;">
+          <button onclick="createInvite()">Create invite</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Pending &amp; history</h2>
+        <div class="tiny" style="margin-bottom:.6rem;">
+          Share the <code>invite_code</code> with the invitee — they accept by pasting it at the pending-invites banner on their workspace home.
+        </div>
+        <ul class="list" id="invitesList"><li class="tiny">Loading…</li></ul>
       </div>
     </section>
 
@@ -384,16 +428,21 @@ async function loadMe() {
   renderHome();
   document.getElementById('rawMe').textContent = JSON.stringify(r.data, null, 2);
 
-  // Toggle members tab visibility on role.
+  // Toggle admin-only tabs on role.
   const membersTab = document.getElementById('membersTab');
+  const invitesTab = document.getElementById('invitesTab');
   if (r.data.role === 'tenant_admin') {
     membersTab.classList.remove('hidden');
+    invitesTab.classList.remove('hidden');
     loadMembers();
+    loadInvites();
   } else {
     membersTab.classList.add('hidden');
+    invitesTab.classList.add('hidden');
   }
   loadUsage();
   loadBooks();
+  loadMyInvites();  // always — visible to everyone on home banner
 }
 
 async function loadTenants() {
@@ -435,6 +484,110 @@ async function loadBooks() {
     list.length
       ? list.map(b => `<li><strong>${escape(b.title || 'Untitled')}</strong><span class="meta">#${b.id}</span></li>`).join('')
       : `<li class="tiny">No books yet. ${r.data.note ? escape(r.data.note) : ''}</li>`;
+}
+
+// ── Invites (tenant_admin side) ─────────────────────────────
+async function loadInvites() {
+  const r = await api('GET', '/workspace/invites');
+  if (!r.ok) {
+    document.getElementById('invitesList').innerHTML =
+      `<li class="tiny">Error ${r.error?.code || ''}: ${r.error?.message || ''}</li>`;
+    return;
+  }
+  const list = r.data.invites || [];
+  document.getElementById('invitesList').innerHTML = list.length
+    ? list.map(inv => renderInviteRow(inv)).join('')
+    : '<li class="tiny">No invites yet. Create one above.</li>';
+}
+
+function renderInviteRow(inv) {
+  const roleBadge = `<span class="role-badge role-${inv.role}">${inv.role}</span>`;
+  const statusBadge = `<span class="role-badge status-${inv.status}">${inv.status}</span>`;
+  const code = inv.status === 'pending' ? `
+      <div style="margin-top:.5rem;">
+        <code style="user-select: all; font-size:10px; word-break: break-all;">${escape(inv.inviteCode)}</code>
+        <button class="ghost small" onclick="navigator.clipboard.writeText('${escape(inv.inviteCode)}');showBanner('Invite code copied','success',2000)">copy</button>
+      </div>` : '';
+  const action = inv.status === 'pending'
+    ? `<button class="ghost small" onclick="revokeInviteUI(${inv.id})">Revoke</button>`
+    : '';
+  return `<li style="display:block;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <strong>${escape(inv.email)}</strong> ${roleBadge} ${statusBadge}
+        <div class="tiny">created ${(inv.createdAt || '').slice(0,10)} by user #${inv.createdBy}${inv.acceptedBy ? ' · accepted by user #' + inv.acceptedBy : ''}${inv.revokedBy ? ' · revoked by user #' + inv.revokedBy : ''}</div>
+      </div>
+      <div>${action}</div>
+    </div>
+    ${code}
+  </li>`;
+}
+
+async function createInvite() {
+  const email = document.getElementById('inviteEmail').value.trim();
+  const role = document.getElementById('inviteRole').value;
+  if (!email || !email.includes('@')) { showBanner('Enter a valid email.', 'error'); return; }
+  const r = await api('POST', '/workspace/invites', { email, role });
+  if (!r.ok) {
+    showBanner('Failed: ' + (r.error?.code || '?') + ' · ' + (r.error?.message || ''), 'error');
+    return;
+  }
+  showBanner(`Invite created for ${email}. Share the invite_code shown in the list.`, 'success');
+  document.getElementById('inviteEmail').value = '';
+  loadInvites();
+}
+
+async function revokeInviteUI(id) {
+  if (!confirm(`Revoke invite #${id}?`)) return;
+  const r = await api('DELETE', '/workspace/invites/' + id);
+  if (!r.ok) {
+    showBanner('Revoke failed: ' + (r.error?.code || '?'), 'error');
+    return;
+  }
+  showBanner(`Invite #${id} revoked.`, 'success');
+  loadInvites();
+}
+
+// ── My invites (invitee side — visible to every signed-in user) ──
+async function loadMyInvites() {
+  const r = await api('GET', '/workspace/my-invites');
+  if (!r.ok) return;
+  const invs = r.data.invites || [];
+  const banner = document.getElementById('myInvitesBanner');
+  if (invs.length === 0) {
+    banner.classList.add('hidden');
+    banner.innerHTML = '';
+    return;
+  }
+  banner.classList.remove('hidden');
+  banner.className = 'banner info';
+  banner.innerHTML = `
+    <div style="font-weight:600; margin-bottom:.4rem;">You have ${invs.length} pending invite${invs.length > 1 ? 's' : ''}:</div>
+    ${invs.map(inv => `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:.4rem 0; border-top:1px solid var(--border);">
+        <div>
+          <strong>${escape(inv.tenant ? inv.tenant.displayName : 'tenant #' + inv.tenantId)}</strong>
+          <span class="role-badge role-${inv.role}">${inv.role}</span>
+          <div class="tiny">Invited ${(inv.createdAt || '').slice(0,10)}</div>
+        </div>
+        <button onclick="acceptInviteUI('${escape(inv.inviteCode)}', '${escape(inv.tenant ? inv.tenant.displayName : 'tenant #' + inv.tenantId)}')">Accept</button>
+      </div>
+    `).join('')}
+  `;
+}
+
+async function acceptInviteUI(code, tenantLabel) {
+  const r = await api('POST', '/workspace/my-invites/' + encodeURIComponent(code) + '/accept');
+  if (!r.ok) {
+    showBanner('Accept failed: ' + (r.error?.code || '?') + ' · ' + (r.error?.message || ''), 'error');
+    return;
+  }
+  showBanner(`Joined ${tenantLabel} as ${r.data.role}. Switching you over…`, 'success');
+  // Switch the active tenant to the newly-joined one so the user sees
+  // their new workspace immediately.
+  state.activeTenantId = r.data.tenantId;
+  await loadTenants();
+  await loadMe();
 }
 
 async function saveProfile() {

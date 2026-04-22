@@ -53,6 +53,15 @@ import {
   listTenantsForUser,
   listMembersOfTenant,
 } from '../services/tenant-service';
+import {
+  createInvite,
+  listInvitesForTenant,
+  listPendingForEmail,
+  acceptInvite,
+  revokeInvite,
+  InviteError,
+  type InviteRole,
+} from '../services/tenant-invite-service';
 import { getDb } from '../services/database';
 
 // ── Response helpers (same shape as /owner/*) ─────────────────────
@@ -305,6 +314,169 @@ export function createPortalWorkspaceRouter(): Router {
     } catch (dbErr) {
       logger.error({ err: dbErr, userId: ctx.userId }, 'portal-workspace-router: /usage failed');
       err(res, 500, 'INTERNAL', 'Failed to compute usage');
+    }
+  });
+
+  // ── /workspace/invites — tenant_admin side ────────────────────
+  //
+  // Admin flows for managing invites INTO the active tenant. All
+  // three endpoints require tenant_admin. The invite code is a
+  // 32-byte base64url string generated server-side; callers receive
+  // it on create and surface it to the invitee through whatever
+  // channel (email, chat, paste). We don't send emails from this
+  // service — the backend is email-agnostic for invites.
+
+  /** GET /workspace/invites — list all invites for the active tenant */
+  router.get('/invites', requireTenantAdmin, (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    ok(res, {
+      tenantId: ctx.tenantId,
+      invites: listInvitesForTenant(ctx.tenantId),
+    });
+  });
+
+  /** POST /workspace/invites — create a new invite for this tenant */
+  router.post('/invites', requireTenantAdmin, (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    const roleRaw = typeof body.role === 'string' ? body.role.trim() : 'tenant_member';
+    const allowedRoles: InviteRole[] = ['tenant_admin', 'tenant_member', 'tenant_viewer'];
+    const expiresAt = typeof body.expiresAt === 'string' ? body.expiresAt : null;
+
+    if (!email || !email.includes('@')) {
+      return err(res, 400, 'BAD_REQUEST', 'email must be a valid address');
+    }
+    if (!(allowedRoles as readonly string[]).includes(roleRaw)) {
+      return err(res, 400, 'BAD_REQUEST', `role must be one of ${allowedRoles.join('|')}`);
+    }
+
+    try {
+      const invite = createInvite({
+        tenantId: ctx.tenantId,
+        email,
+        role: roleRaw as InviteRole,
+        createdBy: ctx.userId,
+        expiresAt,
+      });
+      // Return the FULL invite including invite_code. The admin UI
+      // will typically copy this code to the clipboard and share it
+      // through their own channel.
+      ok(res, { invite }, 201);
+    } catch (e) {
+      if (e instanceof InviteError) {
+        const status = e.code === 'DUPLICATE_PENDING' ? 409 : 400;
+        return err(res, status, e.code, e.message, e.details);
+      }
+      logger.error({ err: e }, 'portal-workspace-router: POST /invites failed');
+      err(res, 500, 'INTERNAL', 'Failed to create invite');
+    }
+  });
+
+  /** DELETE /workspace/invites/:id — revoke a pending invite */
+  router.delete('/invites/:id', requireTenantAdmin, (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const inviteId = Number.parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(inviteId) || inviteId <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
+    }
+
+    // Tenant-admin can only revoke invites FOR their tenant — not
+    // cross-tenant. Check ownership BEFORE revoking.
+    const db = getDb();
+    const ownerRow = db
+      .prepare('SELECT tenant_id FROM tenant_invites WHERE id = ?')
+      .get(inviteId) as { tenant_id: number } | undefined;
+    if (!ownerRow) {
+      return err(res, 404, 'NOT_FOUND', 'Invite not found', { inviteId });
+    }
+    if (ownerRow.tenant_id !== ctx.tenantId) {
+      // Don't leak existence: return 404, not 403.
+      return err(res, 404, 'NOT_FOUND', 'Invite not found', { inviteId });
+    }
+
+    try {
+      const updated = revokeInvite(inviteId, ctx.userId);
+      ok(res, { invite: updated });
+    } catch (e) {
+      if (e instanceof InviteError) {
+        const status = e.code === 'NOT_FOUND' ? 404 : 400;
+        return err(res, status, e.code, e.message, e.details);
+      }
+      logger.error({ err: e, inviteId }, 'portal-workspace-router: DELETE /invites failed');
+      err(res, 500, 'INTERNAL', 'Failed to revoke invite');
+    }
+  });
+
+  // ── /workspace/my-invites — invitee side ──────────────────────
+
+  /** GET /workspace/my-invites — pending invites addressed to ME */
+  router.get('/my-invites', (req: Request, res: Response) => {
+    const userId = (req as TenantContextRequest).userId;
+    try {
+      const db = getDb();
+      const user = db
+        .prepare('SELECT email FROM users WHERE id = ?')
+        .get(userId) as { email: string | null } | undefined;
+      const email = user?.email || '';
+      if (!email) {
+        // User has no email on file — impossible to have received
+        // an invite. Return empty, not an error.
+        return ok(res, { invites: [] });
+      }
+      const invites = listPendingForEmail(email);
+      // Decorate each invite with the tenant display name so the
+      // UI can render "Accept invitation to Acme Corp" without a
+      // second request per row.
+      const stmt = db.prepare('SELECT id, slug, display_name FROM tenants WHERE id = ?');
+      const decorated = invites.map((inv) => {
+        const t = stmt.get(inv.tenantId) as
+          | { id: number; slug: string; display_name: string }
+          | undefined;
+        return {
+          ...inv,
+          tenant: t ? { id: t.id, slug: t.slug, displayName: t.display_name } : null,
+        };
+      });
+      ok(res, { email, invites: decorated });
+    } catch (dbErr) {
+      logger.error({ err: dbErr, userId }, 'portal-workspace-router: GET /my-invites failed');
+      err(res, 500, 'INTERNAL', 'Failed to load invites');
+    }
+  });
+
+  /** POST /workspace/my-invites/:code/accept — accept the invite */
+  router.post('/my-invites/:code/accept', (req: Request, res: Response) => {
+    const userId = (req as TenantContextRequest).userId;
+    const code = String(req.params.code || '').trim();
+    if (!code) {
+      return err(res, 400, 'BAD_REQUEST', 'code is required');
+    }
+    try {
+      const db = getDb();
+      const user = db
+        .prepare('SELECT email FROM users WHERE id = ?')
+        .get(userId) as { email: string | null } | undefined;
+      const invite = acceptInvite({
+        code,
+        userId,
+        userEmail: user?.email || '',
+      });
+      ok(res, { invite, tenantId: invite.tenantId, role: invite.role });
+    } catch (e) {
+      if (e instanceof InviteError) {
+        const statusMap: Record<string, number> = {
+          NOT_FOUND: 404,
+          EMAIL_MISMATCH: 403,
+          REVOKED: 410,
+          EXPIRED: 410,
+          ALREADY_ACCEPTED: 409,
+          DB_ERROR: 500,
+        };
+        return err(res, statusMap[e.code] ?? 400, e.code, e.message, e.details);
+      }
+      logger.error({ err: e, code }, 'portal-workspace-router: accept-invite failed');
+      err(res, 500, 'INTERNAL', 'Failed to accept invite');
     }
   });
 
