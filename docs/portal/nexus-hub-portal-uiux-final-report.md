@@ -200,6 +200,10 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `__tests__/api/portal-admin-audit-endpoints.test.ts`                      | 11 KB        | 18 regression tests for **OI-ADM-301** + **OI-ADM-303** endpoints (scope, filters, LIKE-injection, auth, clamp) |
 | `__tests__/portal/admin-console-drawer-audit.test.ts`                     | 4 KB         | 15 structural pins for the tenant drawer + audit viewer HTML/JS |
 | `__tests__/portal/user-console-wizard.test.ts`                            | 6 KB         | 17 structural pins for the **OI-USR-404** onboarding wizard (gate, two-tier dismissal, step flow, endpoint wiring) |
+| `migrations/079_tenant_channels.sql`                                      | 2 KB         | **OI-DATA-002** — new `tenant_channels` table with enum CHECK on kind/status + 2 indexes |
+| `src/services/tenant-channel-service.ts`                                  | 11 KB        | **OI-DATA-002** — CRUD service mirroring `tenant-resource-service` with added URL protocol whitelist |
+| `__tests__/services/tenant-channel-service.test.ts`                       | 10 KB        | 26 service unit tests (CRUD, isolation, authorship, URL whitelist × 3, enum validation, list filters) |
+| `__tests__/api/portal-workspace-channels-routes.test.ts`                  | 9 KB         | 15 route integration tests (HTTP glue, cross-tenant 404, PATCH null-clear, home integration, cost-privacy invariant) |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -210,11 +214,11 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 
 | File                                        | Delta                                                                    |
 |---------------------------------------------|--------------------------------------------------------------------------|
-| `src/api/portal-workspace-router.ts`        | +186 lines: new `GET /workspace/console/home` aggregator.                |
+| `src/api/portal-workspace-router.ts`        | +186 lines (console/home) + ~145 lines (OI-DATA-002): new `GET /workspace/console/home` aggregator + full `/workspace/channels` CRUD (5 routes) + home payload updated with `counts.channels` and `content.channel.primary` dependency. |
 | `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
 | `src/portal/admin-console.html`             | +~420 lines (OI-ADM-301 + OI-ADM-303): tenant detail drawer (overlay, 4 tabs, parallel fetches, ESC close) + filtered audit viewer (5 filters, pagination, expandable rows, CSV export). Dead legacy `loadSecurity` removed. |
-| `src/portal/user-console.html`              | +~340 lines (OI-USR-404): 3-step onboarding wizard (welcome / reference / team-or-solo) with conjunctive auto-open gate, two-tier dismissal, inline book/link/note save, inline invite or "I'm solo" branch. Home Setup panel now has a manual "Launch wizard" button. |
+| `src/portal/user-console.html`              | +~340 lines (OI-USR-404) + ~150 lines (OI-DATA-002): onboarding wizard + full Channels tab (form, table, Mute/Remove controls, status filter, search), sidebar badge, Home counts row. |
 
 ### 11.3 Routes added
 
@@ -228,6 +232,11 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `GET /owner/console/overview`       | token + admin id| Aggregated Admin Console overview payload   |
 | `GET /owner/tenants/:id/audit`      | token + admin id| **OI-ADM-301** — tenant-scoped audit feed (drawer Audit tab); dot-prefix scoping blocks cross-tenant leaks; `?limit=<=200` |
 | `GET /owner/audit`                  | token + admin id| **OI-ADM-303** — platform-wide audit with filters (`?actor=`, `?action=foo` or `?action=foo.*` prefix, `?from=`, `?to=`, `?q=`, `?limit=<=500`, `?offset=`). LIKE-wildcard escape + 128-char caps on text inputs. |
+| `GET /workspace/channels`           | iOS JWT + tenant | **OI-DATA-002** — list tenant-scoped reference channels. Default excludes archived; `?status=all` includes; `?status=active|muted|archived` filters; `?kind=...` filters. |
+| `GET /workspace/channels/:id`       | iOS JWT + tenant | Detail; 404 on cross-tenant id (no existence leak). |
+| `POST /workspace/channels`          | iOS JWT + tenant | Create. URL must be `http://` or `https://` — 400 on any other scheme. |
+| `PATCH /workspace/channels/:id`     | iOS JWT + tenant | Update. Supports explicit `null` to clear url/handle/description. Authorship rule enforced. |
+| `DELETE /workspace/channels/:id`    | iOS JWT + tenant | Delete. Authorship rule enforced. Prefer `PATCH { status: "archived" }` for soft-delete. |
 
 ### 11.4 Routes unchanged
 
@@ -332,7 +341,7 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 
 **P1 (near-term):**
 - **OI-DATA-003** Skill config editor needs `tenant_skill_config` schema before the Configuration tab on each skill page can be real.
-- **OI-DATA-002** Channels need tenant-scoping — Reference Center → Channels is currently an honest empty state.
+- ~~**OI-DATA-002** Channels need tenant-scoping~~ **DONE 2026-04-22** — migration 079 + service + routes + Home integration + Reference Center UI.
 - **OI-DATA-005** Activity feed needs a tenant-scoped audit query helper.
 - **OI-NAV-201** Promote `/admin-console` to `/admin` — explicit post-review gate.
 - ~~**OI-NAV-203** Wire `/invite/accept?code=` landing page so invite links resolve.~~ **DONE 2026-04-22** — `src/portal/invite-accept.html` + `GET /invite/accept`, 11 regression tests.
@@ -357,7 +366,7 @@ Ranked by impact / effort ratio:
 2. ~~**OI-ADM-301 — tenant detail drawer.**~~ **DONE 2026-04-22** — 4-tab drawer with parallel fetches, ESC-to-close, ARIA wiring.
 3. ~~**OI-ADM-303 — filtered audit viewer.**~~ **DONE 2026-04-22** — full filtered viewer with expandable details + CSV export; server defends against LIKE-wildcard injection.
 4. ~~**OI-USR-404 — onboarding wizard.**~~ **DONE 2026-04-22** — auto-opens on first visit for tenant_admins with incomplete setup; re-launchable from Home setup panel; two-tier dismissal.
-5. **OI-DATA-002 — tenant-scoped channels.** Enables Reference Center → Channels. Schema + service + route + UI. ~1 day.
+5. ~~**OI-DATA-002 — tenant-scoped channels.**~~ **DONE 2026-04-22** — migration 079 + new service + 5 routes + Home integration + Reference Center UI. HTTP-protocol whitelist on URLs as an XSS defense.
 6. **OI-NAV-201 — promote `/admin-console` → `/admin`.** Explicit post-review gate.
 
 After that, OI-NAV-201 (promote `/admin-console` to `/admin`) once the team is confident no bookmarks / monitors break.
@@ -370,7 +379,7 @@ Each bullet is a deliberate scope cut that, once addressed on the backend side, 
 
 1. **Reference-usage pipeline instrumentation (OI-DATA-001).** Unlocks "your top 5 books by skill-usage", "unused references", and auto-tag suggestions. The reference center goes from curation tool to intelligence tool.
 2. **`tenant_skill_config` schema (OI-DATA-003).** Unlocks the Configuration tab on every skill — voice guidelines, priority rules, equipment, budget, dietary restrictions all become portal-editable.
-3. **`tenant_channels` schema (OI-DATA-002).** Unlocks Reference Center → Channels as a first-class tab rather than an empty-state link-out.
+3. ~~**`tenant_channels` schema (OI-DATA-002).**~~ **DONE 2026-04-22** — tenant-scoped channels live; Reference Center → Channels is a first-class tab with full CRUD, filters, and a corresponding `content.channel.primary` dependency in the Home payload.
 4. **Intelligence-bus cross-skill signals (OI-DATA-004 / OI-MODEL-503).** Unlocks insights like "your Training recovery is low and your Secretary has 3 scheduled sessions this week — consider dropping one." Today the MVP insights are deterministic; real cross-skill reasoning needs the bus.
 5. **Consolidated integrations read endpoint (OI-DATA-007).** Replaces the empty state on both `/admin-console` → Integrations and `/console` → Integrations with real per-provider status rows (last sync, error count, token expiry).
 6. **`user_dismissed_insights` table (OI-MODEL-502).** Today dismissal would be localStorage-only; a server-side table syncs dismissal across devices and makes the re-surface-on-condition-change semantic correct.

@@ -71,6 +71,11 @@ import {
   ResourceError,
   type BookStatus, type ContentKind,
 } from '../services/tenant-resource-service';
+import {
+  listChannels, countActiveChannels, getChannel, createChannel, updateChannel, deleteChannel,
+  ChannelError,
+  type ChannelKind, type ChannelStatus,
+} from '../services/tenant-channel-service';
 import { getDb } from '../services/database';
 
 // ── Audit helper ──────────────────────────────────────────────────
@@ -635,6 +640,125 @@ export function createPortalWorkspaceRouter(): Router {
     }
   });
 
+  // ── /workspace/channels (OI-DATA-002, 2026-04-22) ──────────────
+  //
+  // Tenant-scoped channel references. Backs the Reference Center →
+  // Channels tab. Same shape as /workspace/books / /content / /links.
+  // Service layer enforces isolation + authorship; routes just parse
+  // input, call through, and translate ChannelError to HTTP codes.
+  //
+  // Default ?status filter: excludes archived (see service).
+  // Pass ?status=all to include archived, or ?status=<x> to pin down.
+
+  function mapChannelError(res: Response, e: ChannelError): void {
+    const statusByCode: Record<string, number> = {
+      NOT_FOUND: 404, FORBIDDEN: 403, BAD_REQUEST: 400, DB_ERROR: 500,
+    };
+    err(res, statusByCode[e.code] ?? 400, e.code, e.message, e.details);
+  }
+
+  router.get('/channels', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const rawStatus = req.query.status ? String(req.query.status) : undefined;
+    const rawKind = req.query.kind ? String(req.query.kind) : undefined;
+    const rawLimit = req.query.limit ? Number.parseInt(String(req.query.limit), 10) : undefined;
+    const rawOffset = req.query.offset ? Number.parseInt(String(req.query.offset), 10) : undefined;
+    try {
+      const channels = listChannels(ctx.tenantId, {
+        limit: rawLimit,
+        offset: rawOffset,
+        status: rawStatus as ChannelStatus | 'all' | undefined,
+        kind: rawKind as ChannelKind | undefined,
+      });
+      ok(res, { tenantId: ctx.tenantId, channels });
+    } catch (e) {
+      if (e instanceof ChannelError) return mapChannelError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId }, 'portal-workspace-router: GET /channels failed');
+      err(res, 500, 'INTERNAL', 'Failed to list channels');
+    }
+  });
+
+  router.get('/channels/:id', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const id = Number.parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
+    }
+    const channel = getChannel(ctx.tenantId, id);
+    if (!channel) return err(res, 404, 'NOT_FOUND', 'Channel not found', { id });
+    ok(res, { channel });
+  });
+
+  router.post('/channels', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const channel = createChannel(
+        ctx.tenantId,
+        { userId: ctx.userId, role: ctx.role },
+        {
+          title: typeof body.title === 'string' ? body.title : '',
+          url: typeof body.url === 'string' ? body.url : null,
+          handle: typeof body.handle === 'string' ? body.handle : null,
+          description: typeof body.description === 'string' ? body.description : null,
+          kind: typeof body.kind === 'string' ? (body.kind as ChannelKind) : undefined,
+          status: typeof body.status === 'string' ? (body.status as ChannelStatus) : undefined,
+          tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
+        },
+      );
+      ok(res, { channel }, 201);
+    } catch (e) {
+      if (e instanceof ChannelError) return mapChannelError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId }, 'portal-workspace-router: POST /channels failed');
+      err(res, 500, 'INTERNAL', 'Failed to create channel');
+    }
+  });
+
+  router.patch('/channels/:id', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const id = Number.parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const channel = updateChannel(
+        ctx.tenantId, id,
+        { userId: ctx.userId, role: ctx.role },
+        {
+          title: typeof body.title === 'string' ? body.title : undefined,
+          url: body.url === null ? null : (typeof body.url === 'string' ? body.url : undefined),
+          handle: body.handle === null ? null : (typeof body.handle === 'string' ? body.handle : undefined),
+          description: body.description === null ? null : (typeof body.description === 'string' ? body.description : undefined),
+          kind: typeof body.kind === 'string' ? (body.kind as ChannelKind) : undefined,
+          status: typeof body.status === 'string' ? (body.status as ChannelStatus) : undefined,
+          tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
+        },
+      );
+      ok(res, { channel });
+    } catch (e) {
+      if (e instanceof ChannelError) return mapChannelError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId, id }, 'portal-workspace-router: PATCH /channels failed');
+      err(res, 500, 'INTERNAL', 'Failed to update channel');
+    }
+  });
+
+  router.delete('/channels/:id', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const id = Number.parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
+    }
+    try {
+      deleteChannel(ctx.tenantId, id, { userId: ctx.userId, role: ctx.role });
+      ok(res, { deleted: true, id });
+    } catch (e) {
+      if (e instanceof ChannelError) return mapChannelError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId, id }, 'portal-workspace-router: DELETE /channels failed');
+      err(res, 500, 'INTERNAL', 'Failed to delete channel');
+    }
+  });
+
   // ── /workspace/settings — tenant-local settings ─────────────────
   //
   // Tenant-admin can rename the tenant + mutate metadata_json. The
@@ -1016,6 +1140,9 @@ export function createPortalWorkspaceRouter(): Router {
         'SELECT COUNT(*) AS c FROM tenant_links WHERE tenant_id = ?',
         ctx.tenantId,
       );
+      // OI-DATA-002: active channels. Uses the service helper which
+      // wraps the (cheap) index-backed SELECT … WHERE status='active'.
+      const activeChannelsCount = countActiveChannels(ctx.tenantId);
       const membersCount = row(
         'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
         ctx.tenantId,
@@ -1063,6 +1190,18 @@ export function createPortalWorkspaceRouter(): Router {
           label: 'Books library',
           status: booksCount > 0 ? 'ready' : 'missing',
           cta: booksCount > 0 ? null : { label: 'Add a book', href: '#/references/books' },
+        },
+        {
+          // OI-DATA-002: promoted from the full catalog (spec §2.2).
+          // Content Radar is blind without at least one active channel.
+          id: 'content.channel.primary',
+          skillId: 'content',
+          kind: 'reference',
+          label: 'Primary reference channel',
+          status: activeChannelsCount > 0 ? 'ready' : 'missing',
+          cta: activeChannelsCount > 0
+            ? null
+            : { label: 'Add a channel', href: '#/references/channels' },
         },
         {
           id: 'content.links.curated',
@@ -1151,6 +1290,7 @@ export function createPortalWorkspaceRouter(): Router {
           books: booksCount,
           notes: notesCount,
           links: linksCount,
+          channels: activeChannelsCount,
           members: membersCount,
           pendingInvites: pendingInvitesCount,
         },

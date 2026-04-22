@@ -22,13 +22,28 @@ Legend: **P1** near-term, **P2** next pass, **P3** eventual. **Data** = requires
 
 ---
 
-### OI-DATA-002 — Channels not tenant-scoped [P1, Data]
+### ~~OI-DATA-002 — Channels not tenant-scoped~~ [DONE · 2026-04-22]
 
-**What's missing.** `tenant_books`, `tenant_content_notes`, `tenant_links` all scope by `tenant_id`. Channels live in a per-user `channels` table (migration 047-ish) and have no tenant scoping. Result: the Reference Center → Channels tab currently renders an honest empty state that points to `/portal` for channel management.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Unblocks.** True tenant-shared channel management, channel-as-reference in skill dependency panels.
+Shipped the full end-to-end stack:
 
-**Sketch.** New migration `079_tenant_channels.sql` mirroring 078's resource model. Promote channels handler from `server.ts /api/channels` into `tenant-resource-service.ts`. Add CRUD routes under `/workspace/channels`.
+- **Migration 079** — new `tenant_channels` table with `(id, tenant_id, created_by, title, url, handle, description, kind, status, tags_json, last_fetched_at, created_at, updated_at)`. Enum CHECK constraints on `kind` (generic / rss / youtube / podcast / newsletter / twitter / substack) and `status` (active / muted / archived). Two indexes: `(tenant_id, status, updated_at DESC)` for the default list; `(tenant_id, kind)` for kind filters.
+- **Service** — `src/services/tenant-channel-service.ts` mirrors the `tenant-resource-service` pattern (isolation by construction, authorship rule, enum validation). Extra: **HTTP-protocol whitelist on URLs** (`http://` or `https://` only) to prevent `javascript:` / `data:` / `file:` from becoming clickable links downstream.
+- **Routes** — 5 endpoints at `/workspace/channels`: `GET /` (with `?status=&kind=&limit=&offset=`), `GET /:id`, `POST /`, `PATCH /:id`, `DELETE /:id`. List default excludes archived; pass `?status=all` to include.
+- **Home payload** — `/workspace/console/home` now returns `counts.channels` (active count) + a new `content.channel.primary` dependency row. When no active channels exist, the dependency is `missing` with a CTA pointing at `#/references/channels`; auto-heals to `ready` on first active channel.
+- **UI** — Reference Center → Channels tab replaces the old empty-state link-out with a full add-form (title / URL / kind / handle) + searchable / filterable table. Each row has Mute/Unmute + Remove controls. Sidebar badge + Home counts panel both show live channel count.
+- **Legacy `channels` table** untouched. The per-user table stays for the content-creator pipeline; tenant-shared channels use the new table. A future migration can unify if the product calls for it.
+
+Tests (41 new, all green):
+- `__tests__/services/tenant-channel-service.test.ts` (26): CRUD happy path, enum validation, authorship rule across admin/member/viewer/cross-member, URL whitelist (3 pins: javascript, data, file), tag normalization, list filters, archived exclusion, cross-tenant isolation + existence non-leakage.
+- `__tests__/api/portal-workspace-channels-routes.test.ts` (15): HTTP glue, 201 on create, 400 on bad URL, 404 on cross-tenant GET/DELETE (no leak), PATCH explicit-null url handling, home integration with count + dependency, cost-privacy invariant pinned with channels in the mix.
+- Existing `/workspace/console/home` tests (12) continue to pass — they were written against dep-set invariants, not cardinality.
+
+Follow-ups still open:
+- **OI-DATA-002a** — unify the legacy per-user `channels` table (content-creator pipeline) with `tenant_channels` when the pipeline promotes tenant-awareness. Today they coexist cleanly but conceptually the pipeline should consume the tenant-scoped view.
+- **OI-DATA-002b** — channel feed ingestion (populate `last_fetched_at` and surface new items). Today the column exists but nothing writes to it — ingestion is Phase-later work.
+- **OI-DATA-002c** — channel health indicators (last fetch success/failure, error rate) on the UI table.
 
 ---
 

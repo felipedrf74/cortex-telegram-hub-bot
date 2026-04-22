@@ -500,6 +500,7 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
             <header><h2>This workspace</h2></header>
             <div style="padding: var(--space-4) var(--space-5);">
               <div class="row-inline"><span class="muted small grow">Books</span><span class="mono" id="countBooks">—</span></div>
+              <div class="row-inline"><span class="muted small grow">Channels</span><span class="mono" id="countChannels">—</span></div>
               <div class="row-inline"><span class="muted small grow">Links</span><span class="mono" id="countLinks">—</span></div>
               <div class="row-inline"><span class="muted small grow">Notes</span><span class="mono" id="countNotes">—</span></div>
               <div class="row-inline"><span class="muted small grow">Members</span><span class="mono" id="countMembers">—</span></div>
@@ -753,12 +754,41 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
     <!-- ═ Reference Center — Channels ═══════════════════════════════════════════ -->
     <section class="page hidden" data-page="ref-channels">
       <h1>Channels</h1>
-      <p class="subtitle">Sources the Content Radar watches. Channels are currently user-scoped, not tenant-scoped — promotion to tenant-scoped is tracked in open-items.</p>
-      <div class="empty-state">
-        <div class="icon">📡</div>
-        <h3>Channels live in the legacy admin panel for now</h3>
-        <p>Because channels are not yet tenant-scoped, channel management lives in the Admin portal. A tenant-scoped channels table lands in a follow-up branch.</p>
-        <button class="btn" onclick="location.href='/portal'">Open legacy Channels →</button>
+      <p class="subtitle">Sources the Content skill watches — YouTube, podcasts, newsletters, RSS feeds. Tenant-scoped: every member of this workspace sees the same channel list.</p>
+      <div class="panel">
+        <header><h2>Add a channel</h2></header>
+        <div class="body">
+          <div style="display:grid; grid-template-columns: 1.5fr 2fr 140px 140px auto; gap: var(--space-3); align-items: end;">
+            <div><label>Title</label><input id="channelTitle" placeholder="e.g. Huberman Lab" /></div>
+            <div><label>URL</label><input id="channelUrl" placeholder="https://…" /></div>
+            <div><label>Kind</label><select id="channelKind">
+              <option value="generic">Generic</option>
+              <option value="youtube">YouTube</option>
+              <option value="podcast">Podcast</option>
+              <option value="newsletter">Newsletter</option>
+              <option value="rss">RSS</option>
+              <option value="twitter">Twitter</option>
+              <option value="substack">Substack</option>
+            </select></div>
+            <div><label>Handle</label><input id="channelHandle" placeholder="@handle" /></div>
+            <button class="btn primary" onclick="createChannel()">Add</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <header>
+          <h2>My channels</h2>
+          <div class="row-inline small">
+            <input id="channelSearch" placeholder="Search…" style="width: 180px;" oninput="renderChannels()" />
+            <select id="channelFilter" onchange="renderChannels()" style="width: 140px;">
+              <option value="">Active + muted</option>
+              <option value="active">Active</option>
+              <option value="muted">Muted</option>
+              <option value="all">All (incl archived)</option>
+            </select>
+          </div>
+        </header>
+        <div id="channelsTable"></div>
       </div>
     </section>
 
@@ -980,6 +1010,7 @@ const state = {
   books: [],
   notes: [],
   links: [],
+  channels: [],
   members: [],
   invites: [],
 };
@@ -1060,6 +1091,7 @@ function showPage(id) {
   // Lazy-load per page
   if (id === 'insights' || id === 'dependencies') paintDepsAndInsights();
   if (id === 'ref-books') loadBooks();
+  if (id === 'ref-channels') loadChannels();
   if (id === 'ref-links') loadLinks();
   if (id === 'ref-notes') loadNotes();
   if (id === 'team') loadTeam();
@@ -1143,11 +1175,13 @@ function paintHome(d) {
   document.getElementById('countBooks').textContent = d.counts.books;
   document.getElementById('countLinks').textContent = d.counts.links;
   document.getElementById('countNotes').textContent = d.counts.notes;
+  document.getElementById('countChannels').textContent = d.counts.channels ?? 0;
   document.getElementById('countMembers').textContent = d.counts.members;
   document.getElementById('countCalls').textContent = d.usage.callsToday;
   document.getElementById('navBooks').textContent = d.counts.books;
   document.getElementById('navLinks').textContent = d.counts.links;
   document.getElementById('navNotes').textContent = d.counts.notes;
+  document.getElementById('navChannels').textContent = d.counts.channels ?? 0;
 
   // Top insights (max 3)
   const ib = document.getElementById('homeInsights');
@@ -1366,6 +1400,115 @@ window.deleteLink = async function(id) {
     await fetchJson('/workspace/links/' + id, { method: 'DELETE' });
     toast('Removed', 'success');
     loadLinks(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Channels CRUD (OI-DATA-002) ───────────────────────────────────
+async function loadChannels() {
+  const c = document.getElementById('channelsTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div>';
+  try {
+    // Server excludes archived by default; we pass status per filter.
+    const filter = document.getElementById('channelFilter').value;
+    const qs = filter ? '?status=' + encodeURIComponent(filter) : '';
+    const r = await fetchJson('/workspace/channels' + qs);
+    state.channels = r.data.channels || [];
+    renderChannels();
+  } catch (e) { c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`; }
+}
+
+window.renderChannels = function() {
+  const c = document.getElementById('channelsTable');
+  const q = (document.getElementById('channelSearch').value || '').toLowerCase();
+  let rows = state.channels;
+  if (q) rows = rows.filter((x) =>
+    (x.title || '').toLowerCase().includes(q) ||
+    (x.handle || '').toLowerCase().includes(q) ||
+    (x.url || '').toLowerCase().includes(q),
+  );
+  if (rows.length === 0) {
+    c.innerHTML = '<div class="empty-state"><h3>' +
+      (state.channels.length === 0
+        ? "You haven't added a channel yet"
+        : 'No channels match your search') +
+      '</h3><p>' +
+      (state.channels.length === 0
+        ? 'Channels are the sources the Content skill watches for ideas and signals. Add a YouTube channel, a podcast feed, or a newsletter you follow.'
+        : 'Clear the search or switch the filter above.') +
+      '</p></div>';
+    return;
+  }
+  c.innerHTML = `<table class="data">
+    <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Status</th><th></th></tr></thead>
+    <tbody>${rows.map((ch) => {
+      const kindPill = `<span class="pill info">${esc(ch.kind)}</span>`;
+      const statusPill =
+        ch.status === 'active'   ? '<span class="pill ready">active</span>' :
+        ch.status === 'muted'    ? '<span class="pill degraded">muted</span>' :
+        /* archived */             '<span class="pill unknown">archived</span>';
+      const src = ch.url
+        ? `<a href="${esc(ch.url)}" target="_blank" rel="noopener noreferrer" class="mono muted small">${esc((ch.url || '').slice(0, 60))}${ch.url.length > 60 ? '…' : ''}</a>`
+        : ch.handle
+          ? `<span class="mono muted small">${esc(ch.handle)}</span>`
+          : '<span class="muted small">—</span>';
+      const toggleLabel = ch.status === 'muted' ? 'Unmute' : 'Mute';
+      const toggleTarget = ch.status === 'muted' ? 'active' : 'muted';
+      return `
+        <tr>
+          <td><strong>${esc(ch.title)}</strong></td>
+          <td>${kindPill}</td>
+          <td>${src}</td>
+          <td>${statusPill}</td>
+          <td class="right row-inline" style="justify-content: flex-end;">
+            <button class="btn ghost small" onclick="setChannelStatus(${ch.id}, '${toggleTarget}')">${toggleLabel}</button>
+            <button class="btn ghost danger small" onclick="deleteChannel(${ch.id})">Remove</button>
+          </td>
+        </tr>`;
+    }).join('')}
+    </tbody></table>`;
+};
+
+window.createChannel = async function() {
+  const title = document.getElementById('channelTitle').value.trim();
+  const url = document.getElementById('channelUrl').value.trim();
+  const kind = document.getElementById('channelKind').value;
+  const handle = document.getElementById('channelHandle').value.trim();
+  if (!title) return toast('Title required', 'error');
+  try {
+    await fetchJson('/workspace/channels', {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        url: url || null,
+        handle: handle || null,
+        kind: kind || 'generic',
+      }),
+    });
+    document.getElementById('channelTitle').value = '';
+    document.getElementById('channelUrl').value = '';
+    document.getElementById('channelHandle').value = '';
+    toast('Channel added', 'success');
+    loadChannels(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+window.deleteChannel = async function(id) {
+  if (!confirm('Remove this channel? The row is permanently deleted — if you want to keep it but hide it, use "Mute" instead.')) return;
+  try {
+    await fetchJson('/workspace/channels/' + id, { method: 'DELETE' });
+    toast('Removed', 'success');
+    loadChannels(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+window.setChannelStatus = async function(id, status) {
+  try {
+    await fetchJson('/workspace/channels/' + id, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+    toast('Updated', 'success');
+    loadChannels(); loadHome();
   } catch (e) { toast(e.message, 'error'); }
 };
 
