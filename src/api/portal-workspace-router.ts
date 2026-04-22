@@ -52,6 +52,8 @@ import {
 import {
   listTenantsForUser,
   listMembersOfTenant,
+  removeMember,
+  RemoveMemberError,
 } from '../services/tenant-service';
 import {
   createInvite,
@@ -267,15 +269,64 @@ export function createPortalWorkspaceRouter(): Router {
     ok(res, { updated: true });
   });
 
-  // ── GET /workspace/members ─────────────────────────────────────
-  // Tenant-admin only. List members of MY tenant (the active tenant
-  // from context), never cross-tenant.
+  // ── /workspace/members — tenant-admin-scoped ──────────────────
+  // List members of the ACTIVE tenant (never cross-tenant). The
+  // guard chain (authMiddleware → resolveTenantContext → requireTenantAdmin)
+  // already proved the caller is tenant_admin of this tenant; this
+  // endpoint just surfaces the membership list.
   router.get('/members', requireTenantAdmin, (req: Request, res: Response) => {
     const ctx = (req as TenantContextRequest).tenantContext;
     ok(res, {
       tenantId: ctx.tenantId,
       members: listMembersOfTenant(ctx.tenantId),
     });
+  });
+
+  /**
+   * DELETE /workspace/members/:userId — remove a member from the
+   * active tenant. Enforces three rules server-side (see
+   * tenant-service.ts `removeMember` for full rationale):
+   *   1. target must be a member (else 404)
+   *   2. cannot remove self through this endpoint (400)
+   *   3. cannot remove the last tenant_admin (409)
+   *
+   * Rows the removed member authored (books/notes/links) are
+   * intentionally preserved — their `created_by` stays, the rows
+   * become read-only for them (membership guard blocks re-entry)
+   * and editable by any tenant_admin per the authorship rule in
+   * tenant-resource-service.
+   */
+  router.delete('/members/:userId', requireTenantAdmin, (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const targetUserId = Number.parseInt(String(req.params.userId), 10);
+    if (!Number.isFinite(targetUserId) || targetUserId <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'userId must be a positive integer');
+    }
+    try {
+      const removed = removeMember(ctx.tenantId, targetUserId, {
+        userId: ctx.userId,
+        role: ctx.role,
+      });
+      ok(res, {
+        removed: {
+          tenantId: removed.tenantId,
+          userId: removed.userId,
+          role: removed.role,
+          joinedAt: removed.joinedAt,
+        },
+      });
+    } catch (e) {
+      if (e instanceof RemoveMemberError) {
+        const status =
+          e.code === 'NOT_A_MEMBER' ? 404
+            : e.code === 'CANNOT_REMOVE_SELF' ? 400
+              : e.code === 'CANNOT_REMOVE_LAST_ADMIN' ? 409
+                : 500;
+        return err(res, status, e.code, e.message, e.details);
+      }
+      logger.error({ err: e, targetUserId }, 'portal-workspace-router: DELETE /members failed');
+      err(res, 500, 'INTERNAL', 'Failed to remove member');
+    }
   });
 
   // ── /workspace/books — full CRUD (Phase 2C) ────────────────────

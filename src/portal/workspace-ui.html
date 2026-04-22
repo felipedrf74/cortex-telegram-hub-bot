@@ -626,13 +626,55 @@ async function loadMembers() {
       `<li class="tiny">Error: ${r.error?.code || '?'} · ${r.error?.message || ''}</li>`;
     return;
   }
-  document.getElementById('membersList').innerHTML =
-    r.data.members.map(m =>
-      `<li>
-        <div><strong>user #${m.userId}</strong> <span class="role-badge role-${m.role}">${m.role}</span></div>
-        <div class="meta">joined ${m.joinedAt}</div>
-      </li>`
-    ).join('') || '<li class="tiny">No members (shouldn\'t be possible — you are a member)</li>';
+  const meId = state.me?.user?.id;
+  const members = r.data.members || [];
+  // Count admins client-side so the Remove button can surface the
+  // "last admin" hint proactively — the server still enforces it.
+  const adminCount = members.filter(m => m.role === 'tenant_admin').length;
+  document.getElementById('membersList').innerHTML = members.length
+    ? members.map(m => renderMemberRow(m, meId, adminCount)).join('')
+    : '<li class="tiny">No members (shouldn\'t be possible — you are a member)</li>';
+}
+
+function renderMemberRow(m, meId, adminCount) {
+  const isSelf = m.userId === meId;
+  const isOnlyAdmin = m.role === 'tenant_admin' && adminCount <= 1;
+  // Actions: hide Remove for self (self-removal is refused anyway);
+  // disable Remove for the only admin (with a tooltip).
+  const removeBtn = isSelf
+    ? '<span class="tiny" style="color: var(--text-dim);">that\'s you</span>'
+    : isOnlyAdmin
+      ? `<button class="ghost small" disabled title="Cannot remove the last tenant_admin. Promote another member first." style="opacity:.5; cursor:not-allowed;">Last admin</button>`
+      : `<button class="ghost small" onclick="removeMemberUI(${m.userId}, ${JSON.stringify(m.role).replace(/"/g,'&quot;')})">Remove</button>`;
+
+  return `<li>
+    <div>
+      <strong>user #${m.userId}</strong>
+      <span class="role-badge role-${m.role}">${m.role}</span>
+      ${isSelf ? '<span class="chip" style="margin-left:.4rem; font-size:10px;">you</span>' : ''}
+    </div>
+    <div style="display:flex; align-items:center; gap:.6rem;">
+      <div class="meta">joined ${escape((m.joinedAt || '').slice(0,10))}</div>
+      ${removeBtn}
+    </div>
+  </li>`;
+}
+
+async function removeMemberUI(userId, role) {
+  if (!confirm(`Remove user #${userId} (${role}) from this tenant?\n\nTheir authored books, notes, and links stay; they just lose access.`)) return;
+  const r = await api('DELETE', '/workspace/members/' + userId);
+  if (!r.ok) {
+    const code = r.error?.code || '?';
+    const hint =
+      code === 'CANNOT_REMOVE_LAST_ADMIN' ? ' Promote another member to admin first.' :
+      code === 'CANNOT_REMOVE_SELF' ? ' Ask another admin to remove you.' :
+      code === 'NOT_A_MEMBER' ? ' They may have already left.' : '';
+    showBanner('Remove failed: ' + code + '.' + hint, 'error', 6000);
+    return;
+  }
+  showBanner(`Removed user #${userId}. Their authored content stays.`, 'success');
+  loadMembers();
+  loadInvites(); // refresh invite list in case an outstanding invite existed
 }
 
 // ── Books CRUD ──────────────────────────────────────────────

@@ -481,3 +481,132 @@ export function ensureSoloTenantFor(userId: number, fallbackName?: string): numb
     return null;
   }
 }
+
+// ── Member removal (Phase 2D) ─────────────────────────────────────
+
+/**
+ * Error codes raised by `removeMember`. The HTTP layer maps:
+ *   NOT_A_MEMBER            → 404 (target was never in the tenant)
+ *   CANNOT_REMOVE_SELF      → 400 (use a different admin, or leave-tenant flow)
+ *   CANNOT_REMOVE_LAST_ADMIN → 409 (tenant would be orphaned)
+ *   DB_ERROR                → 500
+ */
+export type RemoveMemberErrorCode =
+  | 'NOT_A_MEMBER'
+  | 'CANNOT_REMOVE_SELF'
+  | 'CANNOT_REMOVE_LAST_ADMIN'
+  | 'DB_ERROR';
+
+export class RemoveMemberError extends Error {
+  readonly code: RemoveMemberErrorCode;
+  readonly details?: Record<string, unknown>;
+  constructor(code: RemoveMemberErrorCode, message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'RemoveMemberError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/**
+ * Count the number of tenant_admin members in a tenant. Used by
+ * `removeMember` to enforce "cannot remove the last admin" — if this
+ * returns 1 and the target is a tenant_admin, the removal is refused.
+ */
+export function countTenantAdmins(tenantId: number): number {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) as c FROM tenant_members
+         WHERE tenant_id = ? AND role = 'tenant_admin'`,
+      )
+      .get(tenantId) as { c: number } | undefined;
+    return row?.c ?? 0;
+  } catch (err) {
+    logger.error({ err, tenantId }, 'tenant-service: countTenantAdmins failed');
+    return 0;
+  }
+}
+
+/**
+ * Remove a user from a tenant. Enforces three business rules:
+ *
+ *   1. `target` must actually be a member (else NOT_A_MEMBER / 404).
+ *   2. `actor` cannot remove themselves through this endpoint
+ *      (CANNOT_REMOVE_SELF / 400). Rationale: if the actor is the
+ *      last admin, self-removal orphans the tenant; if they aren't
+ *      the last, another admin should remove them. Either way this
+ *      is an ambiguous action we refuse.
+ *   3. If the target is a `tenant_admin` AND they're the last one,
+ *      removal is refused (CANNOT_REMOVE_LAST_ADMIN / 409). The
+ *      caller must either promote another member to admin first or
+ *      delete the tenant entirely.
+ *
+ * Authorship preservation: rows in tenant_books / tenant_content_notes /
+ * tenant_links that the removed user created are NOT deleted. Their
+ * `created_by` column retains the userId. The ex-member can no longer
+ * mutate those rows (membership guard blocks re-entry), but the
+ * remaining members see them as "created by <removed user>".
+ *
+ * The caller is expected to have already passed the workspace guard
+ * (so actor is a tenant_admin of the tenant). This service re-checks
+ * the role-agnostic invariants (membership, self-removal, last admin)
+ * so a bypassed route can't silently orphan a tenant.
+ */
+export function removeMember(
+  tenantId: number,
+  targetUserId: number,
+  actor: { userId: number; role: TenantRole },
+): MembershipRow {
+  if (!Number.isFinite(tenantId) || tenantId <= 0) {
+    throw new RemoveMemberError('NOT_A_MEMBER', 'Invalid tenant id', { tenantId });
+  }
+  if (!Number.isFinite(targetUserId) || targetUserId <= 0) {
+    throw new RemoveMemberError('NOT_A_MEMBER', 'Invalid user id', { targetUserId });
+  }
+
+  // Rule 2: self-removal refused at this endpoint.
+  if (targetUserId === actor.userId) {
+    throw new RemoveMemberError(
+      'CANNOT_REMOVE_SELF',
+      'You cannot remove yourself through this endpoint. Ask another tenant_admin to remove you, or delete the tenant if you\'re the last admin.',
+      { userId: targetUserId },
+    );
+  }
+
+  // Rule 1: target must actually be a member.
+  const existing = getMembership(tenantId, targetUserId);
+  if (!existing) {
+    throw new RemoveMemberError('NOT_A_MEMBER', 'That user is not a member of this tenant', {
+      tenantId,
+      userId: targetUserId,
+    });
+  }
+
+  // Rule 3: last-admin protection. Count admins AFTER hypothetically
+  // removing this one. If the target is an admin and they're the
+  // only one, refuse.
+  if (existing.role === 'tenant_admin') {
+    const adminCount = countTenantAdmins(tenantId);
+    if (adminCount <= 1) {
+      throw new RemoveMemberError(
+        'CANNOT_REMOVE_LAST_ADMIN',
+        'Cannot remove the last tenant_admin. Promote another member first, or archive the tenant.',
+        { tenantId, userId: targetUserId, adminCount },
+      );
+    }
+  }
+
+  try {
+    const db = getDb();
+    db.prepare(
+      'DELETE FROM tenant_members WHERE tenant_id = ? AND user_id = ?',
+    ).run(tenantId, targetUserId);
+  } catch (err) {
+    logger.error({ err, tenantId, targetUserId }, 'tenant-service: removeMember failed');
+    throw new RemoveMemberError('DB_ERROR', 'Failed to remove member');
+  }
+
+  return existing; // the row AS IT WAS before removal, for the caller
+}
