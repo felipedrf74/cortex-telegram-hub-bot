@@ -260,15 +260,18 @@ describe('/workspace/* router integration', () => {
     expect(r.body.error.code).toBe('INSUFFICIENT_TENANT_ROLE');
   });
 
-  it('/workspace/books returns the Phase-2 stub shape (empty list + note)', async () => {
+  it('/workspace/books returns an empty list for a fresh tenant (Phase-2C real CRUD)', async () => {
+    // Replaced the Phase-2 stub in 2026-04-22 with real CRUD backed by
+    // tenant_books (migration 078). Shape is unchanged except that
+    // the "note" field is gone — see the resource-routes test for
+    // coverage of populated/created/updated/deleted rows.
     const r = await req(app, 'GET', '/workspace/books', { userId: alice });
     expect(r.status).toBe(200);
     expect(r.body.data.tenantId).toBe(alice);
     expect(r.body.data.books).toEqual([]);
-    expect(r.body.data.note).toContain('Phase 2');
   });
 
-  it('/workspace/usage returns the caller\'s spend only (scoped)', async () => {
+  it('/workspace/usage returns the caller\'s call count scoped, WITHOUT cost (privacy invariant)', async () => {
     testDb.prepare(
       `INSERT INTO api_usage (user_id, cost_usd, category, provider, model)
        VALUES (?, 0.10, 'test', 'test', 'test-model')`,
@@ -281,6 +284,8 @@ describe('/workspace/* router integration', () => {
     const r = await req(app, 'GET', '/workspace/usage', { userId: alice });
     expect(r.status).toBe(200);
     expect(r.body.data.userId).toBe(alice);
-    expect(r.body.data.today.costUsd).toBeCloseTo(0.10, 5);
+    expect(r.body.data.today.calls).toBe(1);
+    // Cost-privacy (2026-04-22): /workspace/* never exposes spend $.
+    expect(r.body.data.today).not.toHaveProperty('costUsd');
   });
 });

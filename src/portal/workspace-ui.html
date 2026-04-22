@@ -178,10 +178,14 @@
     <!-- Tabs -->
     <div class="tabs">
       <button class="active" data-tab="home" onclick="showTab('home')">Home</button>
+      <button data-tab="books" onclick="showTab('books')">Books</button>
+      <button data-tab="content" onclick="showTab('content')">Content</button>
+      <button data-tab="links" onclick="showTab('links')">Links</button>
       <button data-tab="profile" onclick="showTab('profile')">Profile</button>
+      <button data-tab="security" onclick="showTab('security')">Security</button>
       <button data-tab="members" onclick="showTab('members')" id="membersTab">Members (admin)</button>
       <button data-tab="invites" onclick="showTab('invites')" id="invitesTab">Invites (admin)</button>
-      <button data-tab="books" onclick="showTab('books')">Books</button>
+      <button data-tab="settings" onclick="showTab('settings')" id="settingsTab">Settings (admin)</button>
       <button data-tab="raw" onclick="showTab('raw')">Raw /me</button>
     </div>
 
@@ -191,12 +195,20 @@
         <h2>Today</h2>
         <div class="kpi-row">
           <div class="kpi">
-            <div class="label">Spend today</div>
-            <div class="value accent" id="kpiSpend">—</div>
+            <div class="label">AI calls today</div>
+            <div class="value accent" id="kpiCalls">—</div>
           </div>
           <div class="kpi">
-            <div class="label">AI calls today</div>
-            <div class="value" id="kpiCalls">—</div>
+            <div class="label">Books</div>
+            <div class="value" id="kpiBooks">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Notes</div>
+            <div class="value" id="kpiNotes">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Links</div>
+            <div class="value" id="kpiLinks">—</div>
           </div>
           <div class="kpi">
             <div class="label">Plan</div>
@@ -300,14 +312,151 @@
       </div>
     </section>
 
-    <!-- Books (stub) -->
+    <!-- Books — real CRUD (Phase 2C) -->
     <section data-tab-section="books" class="hidden">
       <div class="card">
-        <h2>My books</h2>
-        <div class="banner info">
-          This endpoint is a Phase-2 stub. Real per-tenant books backing lands when migration 077 adds a <code>tenant_books</code> table.
+        <h2>Add a book</h2>
+        <div class="row">
+          <div style="flex: 2;">
+            <label class="tiny">Title</label>
+            <input id="bookTitle" placeholder="e.g. Atomic Habits">
+          </div>
+          <div>
+            <label class="tiny">Author</label>
+            <input id="bookAuthor" placeholder="James Clear">
+          </div>
+          <div style="flex: 0 0 160px;">
+            <label class="tiny">Status</label>
+            <select id="bookStatus">
+              <option value="reading">reading</option>
+              <option value="want_to_read">want_to_read</option>
+              <option value="finished">finished</option>
+              <option value="abandoned">abandoned</option>
+            </select>
+          </div>
         </div>
+        <div style="margin-top:.7rem;"><button onclick="createBookUI()">Add book</button></div>
+      </div>
+      <div class="card">
+        <h2>My books</h2>
         <ul class="list" id="booksList"><li class="tiny">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Content notes -->
+    <section data-tab-section="content" class="hidden">
+      <div class="card">
+        <h2>New note</h2>
+        <div class="row">
+          <div style="flex: 2;">
+            <label class="tiny">Title</label>
+            <input id="noteTitle" placeholder="e.g. Launch checklist">
+          </div>
+          <div style="flex: 0 0 140px;">
+            <label class="tiny">Kind</label>
+            <select id="noteKind">
+              <option value="note">note</option>
+              <option value="idea">idea</option>
+              <option value="draft">draft</option>
+              <option value="published">published</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top:.7rem;">
+          <label class="tiny">Body</label>
+          <textarea id="noteBody" rows="3" placeholder="Optional body (markdown-ish plain text)"></textarea>
+        </div>
+        <div style="margin-top:.7rem;"><button onclick="createNoteUI()">Add note</button></div>
+      </div>
+      <div class="card">
+        <h2>My notes</h2>
+        <div style="margin-bottom:.7rem;">
+          <label class="tiny">Filter by kind:</label>
+          <select id="noteFilter" onchange="loadNotes()">
+            <option value="">all</option>
+            <option value="note">note</option>
+            <option value="idea">idea</option>
+            <option value="draft">draft</option>
+            <option value="published">published</option>
+          </select>
+        </div>
+        <ul class="list" id="notesList"><li class="tiny">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Links -->
+    <section data-tab-section="links" class="hidden">
+      <div class="card">
+        <h2>Save a link</h2>
+        <div class="row">
+          <div style="flex: 3;">
+            <label class="tiny">URL</label>
+            <input id="linkUrl" placeholder="https://example.com/article" type="url">
+          </div>
+          <div style="flex: 2;">
+            <label class="tiny">Title (optional)</label>
+            <input id="linkTitle" placeholder="auto-filled later">
+          </div>
+        </div>
+        <div style="margin-top:.7rem;">
+          <label class="tiny">
+            <input type="checkbox" id="linkFavorite" style="width:auto; margin-right:6px;">
+            Mark as favorite
+          </label>
+        </div>
+        <div style="margin-top:.7rem;"><button onclick="createLinkUI()">Save link</button></div>
+      </div>
+      <div class="card">
+        <h2>My links</h2>
+        <div style="margin-bottom:.7rem;">
+          <label class="tiny">
+            <input type="checkbox" id="linksFavoritesOnly" style="width:auto; margin-right:6px;" onchange="loadLinks()">
+            Favorites only
+          </label>
+        </div>
+        <ul class="list" id="linksList"><li class="tiny">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Security (read-only personal) -->
+    <section data-tab-section="security" class="hidden">
+      <div class="card">
+        <h2>Active devices</h2>
+        <div class="tiny" style="margin-bottom:.6rem;">iOS devices that have signed in with my account.</div>
+        <ul class="list" id="devicesList"><li class="tiny">Loading…</li></ul>
+      </div>
+      <div class="card">
+        <h2>Recent activity</h2>
+        <div class="tiny" style="margin-bottom:.6rem;">Last 50 audit trail entries for my user id.</div>
+        <ul class="list" id="auditList"><li class="tiny">Loading…</li></ul>
+      </div>
+    </section>
+
+    <!-- Settings (tenant_admin-only) -->
+    <section data-tab-section="settings" class="hidden">
+      <div class="card">
+        <h2>Tenant settings</h2>
+        <div class="tiny" style="margin-bottom:.6rem;">
+          Rename your tenant and store custom metadata. Plan changes are platform-owner-only.
+        </div>
+        <div class="row">
+          <div>
+            <label class="tiny">Display name</label>
+            <input id="settingsDisplay" placeholder="My Workspace">
+          </div>
+        </div>
+        <div style="margin-top:.7rem;">
+          <label class="tiny">Metadata (JSON — merged with existing)</label>
+          <textarea id="settingsMetadata" rows="4" placeholder='{"theme":"dark"}'></textarea>
+        </div>
+        <div style="margin-top:.8rem;">
+          <button onclick="saveSettings()">Save settings</button>
+          <button class="ghost" onclick="loadSettings()">Reload</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Current</h2>
+        <pre class="resp" id="settingsView">—</pre>
       </div>
     </section>
 
@@ -431,17 +580,24 @@ async function loadMe() {
   // Toggle admin-only tabs on role.
   const membersTab = document.getElementById('membersTab');
   const invitesTab = document.getElementById('invitesTab');
+  const settingsTab = document.getElementById('settingsTab');
   if (r.data.role === 'tenant_admin') {
     membersTab.classList.remove('hidden');
     invitesTab.classList.remove('hidden');
+    settingsTab.classList.remove('hidden');
     loadMembers();
     loadInvites();
+    loadSettings();
   } else {
     membersTab.classList.add('hidden');
     invitesTab.classList.add('hidden');
+    settingsTab.classList.add('hidden');
   }
   loadUsage();
   loadBooks();
+  loadNotes();
+  loadLinks();
+  loadSecurity();
   loadMyInvites();  // always — visible to everyone on home banner
 }
 
@@ -454,9 +610,12 @@ async function loadTenants() {
 }
 
 async function loadUsage() {
+  // Cost-privacy invariant (2026-04-22): the backend no longer
+  // returns costUsd on /workspace/usage. Tenant users see call
+  // count only — the $ figure lives at /owner/usage, platform-
+  // owner-gated.
   const r = await api('GET', '/workspace/usage');
   if (!r.ok) return;
-  document.getElementById('kpiSpend').textContent = '$' + Number(r.data.today.costUsd || 0).toFixed(4);
   document.getElementById('kpiCalls').textContent = r.data.today.calls || 0;
 }
 
@@ -476,14 +635,208 @@ async function loadMembers() {
     ).join('') || '<li class="tiny">No members (shouldn\'t be possible — you are a member)</li>';
 }
 
+// ── Books CRUD ──────────────────────────────────────────────
 async function loadBooks() {
   const r = await api('GET', '/workspace/books');
   if (!r.ok) return;
-  const list = r.data.books;
-  document.getElementById('booksList').innerHTML =
-    list.length
-      ? list.map(b => `<li><strong>${escape(b.title || 'Untitled')}</strong><span class="meta">#${b.id}</span></li>`).join('')
-      : `<li class="tiny">No books yet. ${r.data.note ? escape(r.data.note) : ''}</li>`;
+  const list = r.data.books || [];
+  document.getElementById('kpiBooks').textContent = list.length;
+  document.getElementById('booksList').innerHTML = list.length
+    ? list.map(b => renderBookRow(b)).join('')
+    : '<li class="tiny">No books yet — add one above.</li>';
+}
+function renderBookRow(b) {
+  const tags = (b.tags || []).map(t => `<span class="tiny" style="margin-right:.4rem;">#${escape(t)}</span>`).join('');
+  return `<li style="display:block;">
+    <div style="display:flex; justify-content: space-between; align-items: flex-start; gap:.5rem;">
+      <div style="flex: 1;">
+        <strong>${escape(b.title)}</strong>
+        <span class="role-badge status-${b.status === 'finished' ? 'accepted' : 'pending'}" style="margin-left:.4rem;">${b.status}</span>
+        ${b.author ? `<div class="tiny">by ${escape(b.author)}</div>` : ''}
+        ${tags ? `<div style="margin-top:.3rem;">${tags}</div>` : ''}
+        ${b.notes ? `<div class="tiny" style="margin-top:.3rem;">${escape(b.notes)}</div>` : ''}
+      </div>
+      <div style="display:flex; flex-direction: column; gap:.3rem;">
+        ${b.status !== 'finished'
+          ? `<button class="ghost small" onclick="markBookFinished(${b.id})">Mark finished</button>`
+          : ''}
+        <button class="ghost small" onclick="deleteBookUI(${b.id})">Delete</button>
+      </div>
+    </div>
+  </li>`;
+}
+async function createBookUI() {
+  const title = document.getElementById('bookTitle').value.trim();
+  const author = document.getElementById('bookAuthor').value.trim() || null;
+  const status = document.getElementById('bookStatus').value;
+  if (!title) { showBanner('Title is required', 'error'); return; }
+  const r = await api('POST', '/workspace/books', { title, author, status });
+  if (!r.ok) { showBanner('Failed: ' + (r.error?.code || '?') + ' · ' + (r.error?.message || ''), 'error'); return; }
+  showBanner(`Added "${title}"`, 'success');
+  document.getElementById('bookTitle').value = '';
+  document.getElementById('bookAuthor').value = '';
+  loadBooks();
+}
+async function markBookFinished(id) {
+  const r = await api('PATCH', '/workspace/books/' + id, { status: 'finished' });
+  if (!r.ok) { showBanner('Failed: ' + (r.error?.code || '?'), 'error'); return; }
+  loadBooks();
+}
+async function deleteBookUI(id) {
+  if (!confirm('Delete book #' + id + '?')) return;
+  const r = await api('DELETE', '/workspace/books/' + id);
+  if (!r.ok) { showBanner('Delete failed: ' + (r.error?.code || '?'), 'error'); return; }
+  showBanner('Deleted', 'success');
+  loadBooks();
+}
+
+// ── Content notes CRUD ─────────────────────────────────────
+async function loadNotes() {
+  const kind = document.getElementById('noteFilter')?.value || '';
+  const path = '/workspace/content' + (kind ? ('?kind=' + encodeURIComponent(kind)) : '');
+  const r = await api('GET', path);
+  if (!r.ok) return;
+  const list = r.data.notes || [];
+  if (!kind) document.getElementById('kpiNotes').textContent = list.length;
+  document.getElementById('notesList').innerHTML = list.length
+    ? list.map(n => renderNoteRow(n)).join('')
+    : '<li class="tiny">No notes match.</li>';
+}
+function renderNoteRow(n) {
+  const tags = (n.tags || []).map(t => `<span class="tiny" style="margin-right:.4rem;">#${escape(t)}</span>`).join('');
+  return `<li style="display:block;">
+    <div style="display:flex; justify-content: space-between; align-items: flex-start;">
+      <div style="flex:1;">
+        <strong>${escape(n.title)}</strong>
+        <span class="role-badge role-tenant_member" style="margin-left:.4rem;">${n.kind}</span>
+        ${tags ? `<div style="margin-top:.3rem;">${tags}</div>` : ''}
+        ${n.body ? `<div class="tiny" style="margin-top:.3rem; white-space: pre-wrap;">${escape(n.body.slice(0, 400))}${n.body.length > 400 ? '…' : ''}</div>` : ''}
+      </div>
+      <button class="ghost small" onclick="deleteNoteUI(${n.id})">Delete</button>
+    </div>
+  </li>`;
+}
+async function createNoteUI() {
+  const title = document.getElementById('noteTitle').value.trim();
+  const body = document.getElementById('noteBody').value;
+  const kind = document.getElementById('noteKind').value;
+  if (!title) { showBanner('Title is required', 'error'); return; }
+  const r = await api('POST', '/workspace/content', { title, body, kind });
+  if (!r.ok) { showBanner('Failed: ' + (r.error?.code || '?'), 'error'); return; }
+  document.getElementById('noteTitle').value = '';
+  document.getElementById('noteBody').value = '';
+  showBanner(`Added "${title}"`, 'success');
+  loadNotes();
+}
+async function deleteNoteUI(id) {
+  if (!confirm('Delete note #' + id + '?')) return;
+  const r = await api('DELETE', '/workspace/content/' + id);
+  if (!r.ok) { showBanner('Delete failed: ' + (r.error?.code || '?'), 'error'); return; }
+  loadNotes();
+}
+
+// ── Links CRUD ─────────────────────────────────────────────
+async function loadLinks() {
+  const favs = document.getElementById('linksFavoritesOnly')?.checked ? 'favorites=true' : '';
+  const r = await api('GET', '/workspace/links' + (favs ? '?' + favs : ''));
+  if (!r.ok) return;
+  const list = r.data.links || [];
+  if (!favs) document.getElementById('kpiLinks').textContent = list.length;
+  document.getElementById('linksList').innerHTML = list.length
+    ? list.map(l => renderLinkRow(l)).join('')
+    : '<li class="tiny">No links yet.</li>';
+}
+function renderLinkRow(l) {
+  const tags = (l.tags || []).map(t => `<span class="tiny" style="margin-right:.4rem;">#${escape(t)}</span>`).join('');
+  return `<li style="display:block;">
+    <div style="display:flex; justify-content: space-between; align-items: flex-start;">
+      <div style="flex:1; min-width:0;">
+        <strong>${l.isFavorite ? '⭐ ' : ''}${escape(l.title || l.url)}</strong>
+        <div class="tiny" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          <a href="${escape(l.url)}" target="_blank" rel="noreferrer">${escape(l.url)}</a>
+        </div>
+        ${l.description ? `<div class="tiny" style="margin-top:.3rem;">${escape(l.description)}</div>` : ''}
+        ${tags ? `<div style="margin-top:.3rem;">${tags}</div>` : ''}
+      </div>
+      <div style="display:flex; flex-direction: column; gap:.3rem;">
+        <button class="ghost small" onclick="toggleLinkFavorite(${l.id}, ${!l.isFavorite})">
+          ${l.isFavorite ? 'Unfavorite' : 'Favorite'}
+        </button>
+        <button class="ghost small" onclick="deleteLinkUI(${l.id})">Delete</button>
+      </div>
+    </div>
+  </li>`;
+}
+async function createLinkUI() {
+  const url = document.getElementById('linkUrl').value.trim();
+  const title = document.getElementById('linkTitle').value.trim() || null;
+  const isFavorite = document.getElementById('linkFavorite').checked;
+  if (!url) { showBanner('URL is required', 'error'); return; }
+  const r = await api('POST', '/workspace/links', { url, title, isFavorite });
+  if (!r.ok) { showBanner('Failed: ' + (r.error?.code || '?') + ' · ' + (r.error?.message || ''), 'error'); return; }
+  document.getElementById('linkUrl').value = '';
+  document.getElementById('linkTitle').value = '';
+  document.getElementById('linkFavorite').checked = false;
+  showBanner('Link saved', 'success');
+  loadLinks();
+}
+async function toggleLinkFavorite(id, isFavorite) {
+  const r = await api('PATCH', '/workspace/links/' + id, { isFavorite });
+  if (!r.ok) { showBanner('Failed: ' + (r.error?.code || '?'), 'error'); return; }
+  loadLinks();
+}
+async function deleteLinkUI(id) {
+  if (!confirm('Delete link #' + id + '?')) return;
+  const r = await api('DELETE', '/workspace/links/' + id);
+  if (!r.ok) { showBanner('Delete failed: ' + (r.error?.code || '?'), 'error'); return; }
+  loadLinks();
+}
+
+// ── Settings (tenant_admin) ─────────────────────────────────
+async function loadSettings() {
+  const r = await api('GET', '/workspace/settings');
+  if (!r.ok) return;
+  document.getElementById('settingsDisplay').value = r.data.settings.displayName || '';
+  document.getElementById('settingsView').textContent = JSON.stringify(r.data.settings, null, 2);
+  document.getElementById('settingsMetadata').value = '';
+}
+async function saveSettings() {
+  const displayName = document.getElementById('settingsDisplay').value.trim();
+  const metadataRaw = document.getElementById('settingsMetadata').value.trim();
+  const body = {};
+  if (displayName) body.displayName = displayName;
+  if (metadataRaw) {
+    try { body.metadata = JSON.parse(metadataRaw); }
+    catch { showBanner('Metadata must be valid JSON', 'error'); return; }
+  }
+  if (Object.keys(body).length === 0) { showBanner('Nothing to save.', 'info'); return; }
+  const r = await api('PATCH', '/workspace/settings', body);
+  if (!r.ok) { showBanner('Save failed: ' + (r.error?.code || '?'), 'error'); return; }
+  showBanner('Settings saved', 'success');
+  loadSettings();
+  loadMe(); // refresh header chip since displayName may have changed
+}
+
+// ── Security (read-only) ────────────────────────────────────
+async function loadSecurity() {
+  const r = await api('GET', '/workspace/security');
+  if (!r.ok) return;
+  const devices = r.data.devices || [];
+  const audit = r.data.recentAudit || [];
+  document.getElementById('devicesList').innerHTML = devices.length
+    ? devices.map(d => `
+      <li>
+        <div><strong>${escape(d.deviceName || d.deviceId)}</strong></div>
+        <div class="tiny">last active ${escape(d.lastActiveAt || 'never')} · created ${escape(d.createdAt || '?')}</div>
+      </li>`).join('')
+    : '<li class="tiny">No active devices recorded.</li>';
+  document.getElementById('auditList').innerHTML = audit.length
+    ? audit.map(a => `
+      <li>
+        <div><strong>${escape(a.action)}</strong> <code>${escape(a.resource)}</code></div>
+        <div class="tiny">${escape(a.ts)} · ${a.details ? escape(JSON.stringify(a.details).slice(0, 80)) : ''}</div>
+      </li>`).join('')
+    : '<li class="tiny">No recent activity.</li>';
 }
 
 // ── Invites (tenant_admin side) ─────────────────────────────
