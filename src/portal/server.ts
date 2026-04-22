@@ -230,6 +230,40 @@ export function createPortalServer(bot?: any): http.Server {
     res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
   });
 
+  // ── /admin and /console — new top-level IA shells (2026-04-22) ────
+  //
+  // Part of the admin/user-console IA pass
+  // (feature/nexus-hub-portal-uiux-admin-user-console). See
+  //   docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md
+  // These serve NEW HTML shells that reorganize the existing portal
+  // capabilities into two disjoint consoles:
+  //   /admin   → admin-console.html (platform-owner + platform-admin scope)
+  //   /console → user-console.html  (tenant-scoped power user workspace)
+  //
+  // Both are additive. /portal, /owner-ui, /workspace-ui still resolve
+  // to their existing HTML unchanged — nothing is removed or hidden.
+  const serveShell = (filename: string) => (_req: Request, res: Response) => {
+    const htmlPath = path.join(__dirname, filename);
+    if (!fs.existsSync(htmlPath)) {
+      res.status(503).send(filename + ' not found in dist/portal (run npm run build)');
+      return;
+    }
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('X-Frame-Options', 'DENY');
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
+  };
+  app.get('/admin-console', serveShell('admin-console.html'));
+  // NOTE: we deliberately do NOT rebind /admin yet. The legacy
+  // `serveAdminDashboard` (portal.html) is already aliased at /admin
+  // (see further down in this file). Platform admins with /admin
+  // bookmarks and scripts continue to land on the legacy dashboard.
+  // Promoting /admin to the new console is an explicit post-review
+  // step documented in
+  //   docs/portal/nexus-hub-portal-uiux-final-report.md §Recommended next steps
+  app.get('/console', serveShell('user-console.html'));
+  app.get('/user-console', serveShell('user-console.html'));
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see

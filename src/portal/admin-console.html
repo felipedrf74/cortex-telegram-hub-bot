@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0A0A0A">
+<title>Nexus Hub — Admin Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+ * NEXUS HUB PORTAL — Shared shell tokens
+ * Admin Console + User Console both load this. Dark industrial,
+ * orange accent, density-first. Matches the legacy portal.html
+ * palette so users don't feel UI whiplash when they cross between.
+ * ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --bg-primary: #0A0A0A;
+  --bg-secondary: #141414;
+  --bg-tertiary: #1E1E1E;
+  --bg-elevated: #242424;
+  --bg-panel: #181818;
+
+  --border: #2A2A2A;
+  --border-hover: #3A3A3A;
+  --border-strong: #4A4A4A;
+
+  --text-primary: #FFFFFF;
+  --text-secondary: #B5B5B8;
+  --text-dim: #8E8E93;
+  --text-muted: #5C5C66;
+
+  --accent: #FF6B35;
+  --accent-hover: #FF8456;
+  --accent-subtle: rgba(255, 107, 53, 0.12);
+  --accent-border: rgba(255, 107, 53, 0.3);
+
+  --success: #34C759;
+  --success-bg: rgba(52, 199, 89, 0.12);
+  --warning: #FFD60A;
+  --warning-bg: rgba(255, 214, 10, 0.12);
+  --error: #FF3B30;
+  --error-bg: rgba(255, 59, 48, 0.12);
+  --info: #60A5FA;
+  --info-bg: rgba(96, 165, 250, 0.12);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+
+  --shadow: 0 4px 12px rgba(0,0,0,.3);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: 'JetBrains Mono', monospace; }
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; cursor: pointer; }
+
+/* ── App shell ───────────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  grid-template-rows: 56px 1fr;
+  grid-template-areas:
+    'bar bar'
+    'nav main';
+  height: 100vh;
+}
+.app-bar {
+  grid-area: bar;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-5);
+  gap: var(--space-4);
+}
+.app-bar .brand {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-weight: 700; font-size: 15px; letter-spacing: 0.3px;
+}
+.app-bar .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.app-bar .divider { color: var(--text-muted); }
+.app-bar .scope-pill {
+  background: var(--accent-subtle); color: var(--accent);
+  border: 1px solid var(--accent-border);
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+}
+.app-bar .console-switch {
+  margin-left: auto; display: flex; gap: var(--space-2); align-items: center;
+}
+.app-bar button.switch {
+  background: var(--bg-tertiary); color: var(--text-secondary);
+  border: 1px solid var(--border); padding: 6px 12px;
+  border-radius: var(--radius-sm); font-size: 12px;
+}
+.app-bar button.switch:hover { border-color: var(--border-hover); color: var(--text-primary); }
+
+/* ── Sidebar nav ─────────────────────────────────────────────────── */
+.sidebar {
+  grid-area: nav;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  padding: var(--space-4) 0;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+.sidebar .nav-group-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-muted); padding: var(--space-4) var(--space-5) var(--space-2);
+}
+.sidebar a.nav-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 10px var(--space-5); font-size: 13px;
+  color: var(--text-secondary); border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.sidebar a.nav-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.sidebar a.nav-item.active {
+  background: var(--accent-subtle); color: var(--accent);
+  border-left-color: var(--accent);
+}
+.sidebar .nav-icon { display: inline-flex; width: 18px; height: 18px; flex-shrink: 0; }
+.sidebar .nav-label { flex: 1; }
+.sidebar .nav-badge {
+  background: var(--bg-tertiary); color: var(--text-dim);
+  font-size: 11px; padding: 1px 6px; border-radius: 999px;
+}
+.sidebar .nav-item.active .nav-badge { background: var(--accent); color: #111; font-weight: 600; }
+.sidebar .nav-spacer { flex: 1; }
+.sidebar .nav-footer {
+  padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.sidebar .nav-footer a { color: var(--text-secondary); }
+.sidebar .nav-footer a:hover { color: var(--accent); }
+
+/* ── Main content ────────────────────────────────────────────────── */
+.main {
+  grid-area: main;
+  overflow-y: auto;
+  background: var(--bg-primary);
+}
+.context-strip {
+  padding: 10px var(--space-6);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: var(--space-3);
+  font-size: 12px; color: var(--text-dim);
+}
+.context-strip .role {
+  font-weight: 600; color: var(--accent);
+  background: var(--accent-subtle); padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--accent-border);
+}
+.context-strip .role.neutral { color: var(--text-primary); background: var(--bg-tertiary); border-color: var(--border); }
+.context-strip .role.muted { color: var(--text-dim); background: transparent; border-color: var(--border); }
+.crumbs {
+  padding: var(--space-3) var(--space-6);
+  font-size: 12px; color: var(--text-dim);
+  display: flex; gap: var(--space-2); align-items: center;
+}
+.crumbs a:hover { color: var(--accent); }
+.crumbs .sep { color: var(--text-muted); }
+.page {
+  padding: var(--space-5) var(--space-6) var(--space-7);
+  max-width: 1400px;
+}
+.page h1 {
+  font-size: 26px; font-weight: 700; margin: 0 0 var(--space-2);
+  letter-spacing: -0.3px;
+}
+.page .subtitle { color: var(--text-dim); margin-bottom: var(--space-6); font-size: 14px; }
+
+/* ── Shared components ───────────────────────────────────────────── */
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-4); }
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+}
+.card:hover { border-color: var(--border-hover); }
+.card h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin: 0 0 var(--space-2); font-weight: 600; }
+.card .big { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
+.card .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.card.accent .big { color: var(--accent); }
+.card.success .big { color: var(--success); }
+.card.warning .big { color: var(--warning); }
+.card.error .big { color: var(--error); }
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: var(--space-5);
+}
+.panel header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg-secondary);
+}
+.panel header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.panel header .meta { font-size: 12px; color: var(--text-dim); }
+.panel > .body { padding: var(--space-5); }
+.panel .row { padding: 10px var(--space-5); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: var(--space-3); }
+.panel .row:last-child { border-bottom: none; }
+
+table.data {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+table.data th {
+  text-align: left; padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim); font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+table.data td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+table.data tr:hover td { background: var(--bg-tertiary); }
+table.data tr:last-child td { border-bottom: none; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+}
+.pill.ready { background: var(--success-bg); color: var(--success); }
+.pill.missing { background: var(--error-bg); color: var(--error); }
+.pill.degraded { background: var(--warning-bg); color: var(--warning); }
+.pill.unknown { background: var(--bg-tertiary); color: var(--text-dim); }
+.pill.info { background: var(--info-bg); color: var(--info); }
+
+button.btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 500;
+}
+button.btn:hover { background: var(--bg-elevated); border-color: var(--border-hover); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+button.btn.primary:hover { background: var(--accent-hover); }
+button.btn.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+button.btn.ghost:hover { color: var(--text-primary); }
+button.btn.danger:hover { background: var(--error-bg); border-color: var(--error); color: var(--error); }
+
+input, select, textarea {
+  background: var(--bg-tertiary); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 12px; font-size: 13px; font-family: inherit;
+  width: 100%;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+
+.quick-actions {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3); margin-bottom: var(--space-5);
+}
+.quick-actions .qa {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  padding: var(--space-4); border-radius: var(--radius);
+  cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.quick-actions .qa:hover { border-color: var(--accent); }
+.quick-actions .qa strong { font-size: 13px; }
+.quick-actions .qa span { font-size: 11px; color: var(--text-dim); }
+
+.empty-state {
+  padding: var(--space-7) var(--space-5);
+  text-align: center; color: var(--text-dim);
+}
+.empty-state .icon { font-size: 32px; margin-bottom: var(--space-3); opacity: 0.5; }
+.empty-state h3 { color: var(--text-primary); margin: 0 0 var(--space-2); font-size: 15px; }
+.empty-state p { margin: 0 0 var(--space-4); font-size: 13px; }
+
+.skeleton { background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--bg-elevated) 50%, var(--bg-tertiary) 100%); background-size: 200% 100%; animation: sk 1.4s linear infinite; border-radius: 4px; }
+@keyframes sk { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.sk-row { height: 14px; margin: 8px 0; }
+.sk-row.w-30 { width: 30%; }
+.sk-row.w-60 { width: 60%; }
+.sk-row.w-90 { width: 90%; }
+
+.error-banner {
+  background: var(--error-bg); border: 1px solid var(--error);
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-sm);
+  color: var(--error); font-size: 12px;
+  display: flex; align-items: center; gap: var(--space-3);
+}
+
+.hidden { display: none !important; }
+.muted { color: var(--text-dim); }
+.small { font-size: 12px; }
+.right { text-align: right; }
+
+.auth-prompt {
+  max-width: 440px; margin: 10vh auto;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-6);
+}
+.auth-prompt h1 { font-size: 20px; margin: 0 0 var(--space-2); }
+.auth-prompt p { color: var(--text-dim); font-size: 13px; margin: 0 0 var(--space-4); }
+.auth-prompt .form-row { margin-bottom: var(--space-3); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     AUTH VIEW (shown before credentials are entered)
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="authView" class="hidden">
+  <div class="auth-prompt">
+    <h1>Admin Console sign-in</h1>
+    <p>Enter your <strong>owner token</strong> and <strong>admin user id</strong>. Both are required — the token alone doesn't grant access. Rate-limited at 30 req/min/IP regardless of what you type.</p>
+    <div class="form-row">
+      <label for="authToken">PORTAL_OWNER_TOKEN</label>
+      <input id="authToken" type="password" placeholder="16+ chars" autocomplete="off" />
+    </div>
+    <div class="form-row">
+      <label for="authUid">X-Admin-User-Id</label>
+      <input id="authUid" type="number" placeholder="e.g. 1" />
+    </div>
+    <div id="authError" class="error-banner hidden"></div>
+    <button class="btn primary" id="authSubmit" style="width:100%; margin-top: var(--space-3);">Sign in</button>
+    <p class="small muted" style="margin-top: var(--space-4); text-align: center;">Session is stored in <code>sessionStorage</code> and cleared when you sign out.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     MAIN SHELL
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="shell" class="shell hidden">
+
+  <!-- App bar ---------------------------------------------- -->
+  <div class="app-bar">
+    <div class="brand"><span class="dot"></span> Nexus Hub</div>
+    <span class="divider">·</span>
+    <span class="scope-pill">ADMIN CONSOLE</span>
+    <div class="console-switch">
+      <button class="switch" onclick="location.href='/console'">↘ User Console</button>
+      <button class="switch" onclick="location.href='/portal'">↗ Legacy Portal</button>
+    </div>
+  </div>
+
+  <!-- Sidebar ---------------------------------------------- -->
+  <nav class="sidebar">
+    <div class="nav-group-label">Operational</div>
+    <a class="nav-item active" data-page="overview">
+      <span class="nav-icon">⌂</span><span class="nav-label">Overview</span>
+    </a>
+    <a class="nav-item" data-page="tenants">
+      <span class="nav-icon">◫</span><span class="nav-label">Tenants</span>
+      <span class="nav-badge mono" id="navTenantsCount">—</span>
+    </a>
+    <a class="nav-item" data-page="users">
+      <span class="nav-icon">☰</span><span class="nav-label">Users &amp; Access</span>
+      <span class="nav-badge mono" id="navUsersCount">—</span>
+    </a>
+    <a class="nav-item" data-page="usage">
+      <span class="nav-icon">∑</span><span class="nav-label">Usage</span>
+    </a>
+    <a class="nav-item" data-page="skills">
+      <span class="nav-icon">◇</span><span class="nav-label">Skills</span>
+    </a>
+    <a class="nav-item" data-page="security">
+      <span class="nav-icon">⚷</span><span class="nav-label">Security</span>
+    </a>
+
+    <div class="nav-group-label">Content &amp; Infrastructure</div>
+    <a class="nav-item" data-page="references">
+      <span class="nav-icon">❏</span><span class="nav-label">References</span>
+    </a>
+    <a class="nav-item" data-page="integrations">
+      <span class="nav-icon">⚙</span><span class="nav-label">Integrations</span>
+    </a>
+    <a class="nav-item" data-page="operations">
+      <span class="nav-icon">▣</span><span class="nav-label">Operations ↗</span>
+    </a>
+    <a class="nav-item" data-page="growth">
+      <span class="nav-icon">↑</span><span class="nav-label">Growth</span>
+      <span class="nav-badge mono" id="navWaitlistCount">—</span>
+    </a>
+    <a class="nav-item" data-page="settings">
+      <span class="nav-icon">⚙</span><span class="nav-label">Settings</span>
+    </a>
+
+    <div class="nav-spacer"></div>
+    <div class="nav-footer">
+      <span class="mono">v<span id="footerVersion">—</span></span>
+      <a href="#" id="signOut">Sign out</a>
+    </div>
+  </nav>
+
+  <!-- Main ---------------------------------------------- -->
+  <main class="main">
+    <div class="context-strip">
+      <span>Platform scope</span>
+      <span class="divider">·</span>
+      <span>You are <strong id="ctxUser">—</strong></span>
+      <span class="divider">·</span>
+      <span class="role" id="ctxRole">—</span>
+    </div>
+    <div class="crumbs" id="crumbs">
+      <a data-nav="overview">Admin</a>
+      <span class="sep">›</span>
+      <span id="crumbTail">Overview</span>
+    </div>
+
+    <!-- ═ Overview ═══════════════════════════════════════════ -->
+    <section class="page" data-page="overview">
+      <h1>Platform overview</h1>
+      <p class="subtitle">Platform-wide health, consumption, and recent activity.</p>
+
+      <div id="overviewCards" class="grid-cards" style="margin-bottom: var(--space-5);">
+        <div class="card"><h3>Tenants</h3><div class="big mono" id="kpiTenants">—</div></div>
+        <div class="card"><h3>Active users</h3><div class="big mono" id="kpiActive">—</div><div class="sub" id="kpiActiveSub"></div></div>
+        <div class="card accent"><h3>Usage today</h3><div class="big mono" id="kpiUsd">—</div><div class="sub" id="kpiUsdSub"></div></div>
+        <div class="card warning"><h3>Waitlist pending</h3><div class="big mono" id="kpiWait">—</div></div>
+      </div>
+
+      <div class="quick-actions">
+        <div class="qa" data-nav="tenants"><strong>Browse tenants →</strong><span>Detail, usage, members</span></div>
+        <div class="qa" data-nav="users"><strong>Manage platform admins →</strong><span>Grant / revoke roles</span></div>
+        <div class="qa" data-nav="security"><strong>Review audit trail →</strong><span>All platform events</span></div>
+        <div class="qa" data-nav="growth"><strong>Waitlist approvals →</strong><span>Pending sign-ups</span></div>
+      </div>
+
+      <div class="panel">
+        <header><h2>Recent platform events</h2><span class="meta" id="auditMeta">—</span></header>
+        <div id="overviewAudit"></div>
+      </div>
+
+      <div class="panel">
+        <header><h2>Tenant-adoption risk</h2><span class="meta">Zero activity in last 14 days</span></header>
+        <div id="overviewInactive"></div>
+      </div>
+    </section>
+
+    <!-- ═ Tenants ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="tenants">
+      <h1>Tenants</h1>
+      <p class="subtitle">Every tenant on the platform. Click a row for detail.</p>
+      <div class="panel">
+        <header><h2>All tenants</h2><button class="btn ghost" onclick="loadTenants()">Refresh</button></header>
+        <div id="tenantsTable"></div>
+      </div>
+    </section>
+
+    <!-- ═ Users & Access ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="users">
+      <h1>Users &amp; Access</h1>
+      <p class="subtitle">Platform admins, global roles, user directory.</p>
+      <div class="panel">
+        <header><h2>Platform admins</h2></header>
+        <div id="platformAdminsTable"></div>
+      </div>
+      <div class="panel">
+        <header><h2>Grant platform role</h2></header>
+        <div class="body">
+          <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--space-3); align-items: end;">
+            <div><label>User ID</label><input id="grantUid" type="number" placeholder="123" /></div>
+            <div><label>Role</label><select id="grantRole">
+              <option value="platform_admin">platform_admin</option>
+              <option value="platform_readonly">platform_readonly</option>
+              <option value="platform_owner">platform_owner</option>
+            </select></div>
+            <button class="btn primary" onclick="grantRole()">Grant</button>
+          </div>
+          <div id="grantResult" class="small muted" style="margin-top: var(--space-3);"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═ Usage ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="usage">
+      <h1>Usage &amp; Consumption</h1>
+      <p class="subtitle">Platform spend today, by tenant and user. Admin-only (cost visible).</p>
+      <div class="panel">
+        <header><h2>Today · cross-tenant</h2><button class="btn ghost" onclick="loadUsage()">Refresh</button></header>
+        <div id="usageTable"></div>
+      </div>
+    </section>
+
+    <!-- ═ Skills ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="skills">
+      <h1>Skills</h1>
+      <p class="subtitle">Global skill flags and tenant/user skill adoption patterns.</p>
+      <div class="empty-state">
+        <div class="icon">◇</div>
+        <h3>Skill adoption analytics live in the legacy portal for now</h3>
+        <p>Global enable/disable toggles are in <strong>Operations → Legacy Portal → Skills</strong>. A consolidated cohort view is on the roadmap.</p>
+        <button class="btn" onclick="location.href='/portal'">Open legacy Skills page →</button>
+      </div>
+    </section>
+
+    <!-- ═ Security ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="security">
+      <h1>Security</h1>
+      <p class="subtitle">Audit trail, access changes, alerts.</p>
+      <div class="panel">
+        <header><h2>Recent audit events (last 10)</h2></header>
+        <div id="securityAudit"></div>
+      </div>
+      <div class="empty-state">
+        <p class="muted small">Full audit with filters (by actor / action / tenant / date range) is tracked in the open-items backlog. For now use <strong>Operations → Legacy Portal → Audit Trail</strong>.</p>
+        <button class="btn ghost" onclick="location.href='/portal'">Full audit →</button>
+      </div>
+    </section>
+
+    <!-- ═ References (platform library) ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="references">
+      <h1>References Platform Library</h1>
+      <p class="subtitle">Platform-curated books and content that tenants can reference.</p>
+      <div class="empty-state">
+        <div class="icon">❏</div>
+        <h3>Platform library not yet backed by a dedicated table</h3>
+        <p>Current platform-level books live in the legacy <code>books</code> surface. The new tenant-scoped library lives under User Console → Reference Center. A platform-curated catalog (for tenants to "fork" into their library) is tracked as an open item.</p>
+        <button class="btn" onclick="location.href='/portal'">Open legacy Books →</button>
+      </div>
+    </section>
+
+    <!-- ═ Integrations ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="integrations">
+      <h1>Integrations</h1>
+      <p class="subtitle">Connected providers and ingestion health.</p>
+      <div class="empty-state">
+        <div class="icon">⚙</div>
+        <h3>Provider health lives in the legacy portal</h3>
+        <p>AI provider health, rate-limit status, and webhook stats are in <strong>Operations → Legacy Portal → AI &amp; Providers</strong>.</p>
+        <button class="btn" onclick="location.href='/portal'">Open provider health →</button>
+      </div>
+    </section>
+
+    <!-- ═ Operations (link-out) ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="operations">
+      <h1>Operations</h1>
+      <p class="subtitle">AI providers, scheduled jobs, error monitor, settings. These surfaces live in the legacy admin portal.</p>
+      <div class="grid-cards">
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>AI &amp; Providers</h3><div class="sub">Provider health · model config · cost-by-domain</div></a>
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Scheduled Jobs</h3><div class="sub">Cron visibility</div></a>
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Error Monitor</h3><div class="sub">Recent errors · provider health</div></a>
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Skills (global)</h3><div class="sub">Enable/disable skills platform-wide</div></a>
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Settings</h3><div class="sub">Platform configuration</div></a>
+      </div>
+    </section>
+
+    <!-- ═ Growth ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="growth">
+      <h1>Growth</h1>
+      <p class="subtitle">Waitlist approvals, founders, marketing invite codes.</p>
+      <div class="grid-cards">
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Waitlist</h3><div class="sub">Approve pending sign-ups</div></a>
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Founders</h3><div class="sub">Lifetime access list</div></a>
+        <a class="card" href="/portal" target="_blank" rel="noopener"><h3>Invite Codes</h3><div class="sub">Marketing codes</div></a>
+      </div>
+    </section>
+
+    <!-- ═ Settings ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="settings">
+      <h1>Settings</h1>
+      <p class="subtitle">Platform configuration, entitlements, rate limits.</p>
+      <div class="empty-state">
+        <div class="icon">⚙</div>
+        <h3>Platform settings live in the legacy portal</h3>
+        <p>Settings, rate-limits, entitlements, and model configuration are in <strong>Operations → Legacy Portal → Settings</strong>. They will migrate into this console in a later pass.</p>
+        <button class="btn" onclick="location.href='/portal'">Open legacy Settings →</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(function() {
+'use strict';
+
+// ── Session ───────────────────────────────────────────────────────
+const SS = sessionStorage;
+const state = {
+  token: SS.getItem('nx.adm.token') || '',
+  uid:   SS.getItem('nx.adm.uid')   || '',
+  page:  'overview',
+};
+
+function authHeaders(contentType) {
+  const h = {};
+  if (state.token) h['Authorization'] = 'Bearer ' + state.token;
+  if (state.uid)   h['X-Admin-User-Id'] = state.uid;
+  if (contentType) h['Content-Type'] = contentType;
+  return h;
+}
+async function fetchJson(url, opts) {
+  const o = Object.assign({ method: 'GET' }, opts || {});
+  o.headers = Object.assign({}, authHeaders('application/json'), o.headers || {});
+  const res = await fetch(url, o);
+  let body = null;
+  try { body = await res.json(); } catch {}
+  if (!res.ok) {
+    const err = new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
+    err.status = res.status; err.body = body;
+    throw err;
+  }
+  return body;
+}
+
+// ── Auth bootstrap ────────────────────────────────────────────────
+function showAuth(msg) {
+  document.getElementById('authView').classList.remove('hidden');
+  document.getElementById('shell').classList.add('hidden');
+  if (msg) {
+    const b = document.getElementById('authError');
+    b.textContent = msg;
+    b.classList.remove('hidden');
+  }
+}
+function showShell() {
+  document.getElementById('authView').classList.add('hidden');
+  document.getElementById('shell').classList.remove('hidden');
+  showPage(state.page);
+  loadOverview();
+  loadFooter();
+}
+async function tryAuthenticate() {
+  if (!state.token || !state.uid) { showAuth(); return; }
+  try {
+    const r = await fetchJson('/owner/console/overview');
+    // If this succeeds, identity is valid.
+    document.getElementById('ctxUser').textContent = '#' + state.uid;
+    document.getElementById('ctxRole').textContent = 'platform_admin';
+    showShell();
+    paintOverview(r.data);
+  } catch (e) {
+    SS.removeItem('nx.adm.token'); SS.removeItem('nx.adm.uid');
+    state.token = ''; state.uid = '';
+    showAuth(e.status === 401 ? 'Invalid token or user id.' :
+             e.status === 403 ? 'You are not a platform admin.' :
+             e.status === 429 ? 'Rate limit hit. Wait a minute.' :
+             'Could not reach /owner/*.');
+  }
+}
+document.getElementById('authSubmit').addEventListener('click', () => {
+  state.token = document.getElementById('authToken').value.trim();
+  state.uid = document.getElementById('authUid').value.trim();
+  if (!state.token || !state.uid) return showAuth('Both fields are required.');
+  SS.setItem('nx.adm.token', state.token);
+  SS.setItem('nx.adm.uid', state.uid);
+  tryAuthenticate();
+});
+document.getElementById('signOut').addEventListener('click', (e) => {
+  e.preventDefault();
+  SS.clear();
+  location.reload();
+});
+
+// ── Nav / routing ─────────────────────────────────────────────────
+function showPage(id) {
+  state.page = id;
+  document.querySelectorAll('[data-page]').forEach((n) => {
+    if (n.tagName === 'A') n.classList.toggle('active', n.getAttribute('data-page') === id);
+    if (n.tagName === 'SECTION') n.classList.toggle('hidden', n.getAttribute('data-page') !== id);
+  });
+  const label = {
+    overview: 'Overview', tenants: 'Tenants', users: 'Users & Access',
+    usage: 'Usage', skills: 'Skills', security: 'Security',
+    references: 'References', integrations: 'Integrations',
+    operations: 'Operations', growth: 'Growth', settings: 'Settings',
+  }[id] || id;
+  document.getElementById('crumbTail').textContent = label;
+  // Lazy load by page.
+  if (id === 'tenants') loadTenants();
+  if (id === 'users') loadPlatformAdmins();
+  if (id === 'usage') loadUsage();
+  if (id === 'security') loadSecurity();
+}
+document.querySelectorAll('a.nav-item').forEach((a) => {
+  a.addEventListener('click', (e) => { e.preventDefault(); showPage(a.getAttribute('data-page')); });
+});
+document.querySelectorAll('[data-nav]').forEach((a) => {
+  a.addEventListener('click', (e) => { e.preventDefault(); showPage(a.getAttribute('data-nav')); });
+});
+
+// ── Renderers ─────────────────────────────────────────────────────
+function esc(s) { return String(s ?? '').replace(/[&<>\"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function paintOverview(d) {
+  document.getElementById('kpiTenants').textContent = d.counts.tenants;
+  document.getElementById('kpiActive').textContent = d.counts.activeUsers;
+  document.getElementById('kpiActiveSub').textContent =
+    d.counts.suspendedUsers > 0 ? (d.counts.suspendedUsers + ' suspended') : 'all active';
+  document.getElementById('kpiUsd').textContent = '$' + (d.usageToday.totalUsd || 0).toFixed(2);
+  document.getElementById('kpiUsdSub').textContent = d.usageToday.calls + ' calls';
+  document.getElementById('kpiWait').textContent = d.counts.waitlistPending;
+  document.getElementById('navTenantsCount').textContent = d.counts.tenants;
+  document.getElementById('navUsersCount').textContent = d.counts.users;
+  document.getElementById('navWaitlistCount').textContent = d.counts.waitlistPending || '—';
+
+  const ab = document.getElementById('overviewAudit');
+  const audit = d.recentAudit || [];
+  document.getElementById('auditMeta').textContent = audit.length + ' events';
+  if (audit.length === 0) {
+    ab.innerHTML = '<div class="empty-state small muted"><p>No platform events recorded yet.</p></div>';
+  } else {
+    ab.innerHTML = audit.map((r) =>
+      `<div class="row small">
+        <span class="mono muted">#${r.id}</span>
+        <span class="mono muted">${esc(r.ts)}</span>
+        <span><strong>${esc(r.action)}</strong> on <span class="mono">${esc(r.resource)}</span></span>
+        <span class="muted" style="margin-left:auto;">actor #${r.actorId}</span>
+      </div>`).join('');
+  }
+
+  const ib = document.getElementById('overviewInactive');
+  const inactive = d.adoptionRisk.samples || [];
+  if (inactive.length === 0) {
+    ib.innerHTML = '<div class="empty-state small muted"><p>All tenants have recent activity.</p></div>';
+  } else {
+    ib.innerHTML = inactive.map((t) =>
+      `<div class="row small">
+        <span class="mono muted">#${t.id}</span>
+        <span><strong>${esc(t.slug)}</strong></span>
+        <span class="muted">${esc(t.display_name || '—')}</span>
+        <span class="pill warning" style="margin-left:auto;">inactive 14d+</span>
+      </div>`).join('');
+  }
+}
+async function loadOverview() {
+  try {
+    const r = await fetchJson('/owner/console/overview');
+    paintOverview(r.data);
+  } catch (e) {
+    console.error(e);
+  }
+}
+async function loadTenants() {
+  const c = document.getElementById('tenantsTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div><div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/owner/tenants');
+    const tenants = r.data.tenants || [];
+    if (tenants.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No tenants yet</h3><p>Tenants are created automatically when users sign up.</p></div>';
+      return;
+    }
+    c.innerHTML = `<table class="data">
+      <thead><tr><th>ID</th><th>Slug</th><th>Name</th><th>Plan</th><th class="right">Members</th><th>Created</th></tr></thead>
+      <tbody>${tenants.map((t) => `
+        <tr>
+          <td class="mono muted">#${t.id}</td>
+          <td><strong>${esc(t.slug)}</strong></td>
+          <td>${esc(t.display_name || '—')}</td>
+          <td><span class="pill info">${esc(t.plan || 'free')}</span></td>
+          <td class="right mono">${t.member_count ?? '—'}</td>
+          <td class="small muted">${esc(t.created_at || '—')}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  } catch (e) {
+    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+  }
+}
+async function loadPlatformAdmins() {
+  const c = document.getElementById('platformAdminsTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div>';
+  try {
+    const r = await fetchJson('/owner/platform-admins');
+    const admins = r.data.admins || [];
+    if (admins.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No platform admins yet</h3><p>Grant the first role below.</p></div>';
+      return;
+    }
+    c.innerHTML = `<table class="data">
+      <thead><tr><th>User ID</th><th>Role</th><th>Granted</th><th></th></tr></thead>
+      <tbody>${admins.map((a) => `
+        <tr>
+          <td class="mono">#${a.userId ?? a.user_id}</td>
+          <td><span class="pill info">${esc(a.role)}</span></td>
+          <td class="small muted">${esc(a.grantedAt ?? a.granted_at ?? '—')}</td>
+          <td class="right"><button class="btn ghost danger" onclick="revokeRole(${a.userId ?? a.user_id})">Revoke</button></td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  } catch (e) {
+    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+  }
+}
+async function loadUsage() {
+  const c = document.getElementById('usageTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/owner/usage');
+    const rows = r.data.today.byTenant || [];
+    if (rows.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No usage today</h3><p>This table fills as tenants make AI calls.</p></div>';
+      return;
+    }
+    c.innerHTML = `<table class="data">
+      <thead><tr><th>Tenant</th><th class="right">Calls</th><th class="right">Cost (USD)</th></tr></thead>
+      <tbody>${rows.map((x) => `
+        <tr><td class="mono">#${x.tenantId}</td><td class="right mono">${x.calls}</td><td class="right mono">$${(x.costUsd || 0).toFixed(4)}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="row small muted">Total today: $${(r.data.today.totalUsd || 0).toFixed(4)}</div>`;
+  } catch (e) {
+    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+  }
+}
+async function loadSecurity() {
+  const c = document.getElementById('securityAudit');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/owner/console/overview');
+    const rows = r.data.recentAudit || [];
+    if (rows.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No audit events yet</h3></div>';
+      return;
+    }
+    c.innerHTML = rows.map((x) =>
+      `<div class="row small">
+        <span class="mono muted">#${x.id}</span>
+        <span class="mono muted">${esc(x.ts)}</span>
+        <span><strong>${esc(x.action)}</strong> on <span class="mono">${esc(x.resource)}</span></span>
+        <span class="muted" style="margin-left:auto;">actor #${x.actorId}</span>
+      </div>`).join('');
+  } catch (e) {
+    c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
+  }
+}
+async function loadFooter() {
+  try {
+    const r = await fetch('/api/snapshot');
+    if (r.ok) {
+      const j = await r.json();
+      document.getElementById('footerVersion').textContent = j.version || '—';
+    }
+  } catch {}
+}
+window.grantRole = async function() {
+  const uid = Number(document.getElementById('grantUid').value);
+  const role = document.getElementById('grantRole').value;
+  const out = document.getElementById('grantResult');
+  if (!uid) { out.textContent = 'Enter a user id.'; return; }
+  try {
+    await fetchJson('/owner/platform-admins', { method: 'POST', body: JSON.stringify({ userId: uid, role }) });
+    out.textContent = 'Granted. Refreshing admin list…';
+    loadPlatformAdmins();
+  } catch (e) {
+    out.textContent = e.message + (e.body && e.body.error && e.body.error.details ? ' · ' + JSON.stringify(e.body.error.details) : '');
+  }
+};
+window.revokeRole = async function(uid) {
+  if (!confirm('Revoke platform role from user #' + uid + '?')) return;
+  try {
+    await fetchJson('/owner/platform-admins/' + uid, { method: 'DELETE' });
+    loadPlatformAdmins();
+  } catch (e) {
+    alert(e.message);
+  }
+};
+window.loadTenants = loadTenants;
+window.loadUsage = loadUsage;
+
+// ── Boot ──────────────────────────────────────────────────────────
+tryAuthenticate();
+})();
+</script>
+</body>
+</html>

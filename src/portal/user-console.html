@@ -1,0 +1,1321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0A0A0A">
+<title>Nexus Hub — User Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+ * NEXUS HUB · USER CONSOLE
+ * Tenant-scoped workspace for power users. Paired with the iOS app.
+ * Matches the Admin Console design system (see admin-console.html).
+ * ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --bg-primary: #0A0A0A; --bg-secondary: #141414; --bg-tertiary: #1E1E1E;
+  --bg-elevated: #242424; --bg-panel: #181818;
+  --border: #2A2A2A; --border-hover: #3A3A3A; --border-strong: #4A4A4A;
+  --text-primary: #FFFFFF; --text-secondary: #B5B5B8; --text-dim: #8E8E93; --text-muted: #5C5C66;
+  --accent: #FF6B35; --accent-hover: #FF8456;
+  --accent-subtle: rgba(255, 107, 53, 0.12); --accent-border: rgba(255, 107, 53, 0.3);
+  --success: #34C759; --success-bg: rgba(52, 199, 89, 0.12);
+  --warning: #FFD60A; --warning-bg: rgba(255, 214, 10, 0.12);
+  --error: #FF3B30; --error-bg: rgba(255, 59, 48, 0.12);
+  --info: #60A5FA; --info-bg: rgba(96, 165, 250, 0.12);
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius-sm: 6px; --radius: 10px; --radius-lg: 14px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  background: var(--bg-primary); color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px; line-height: 1.5;
+}
+.mono { font-family: 'JetBrains Mono', monospace; }
+a { color: inherit; text-decoration: none; cursor: pointer; }
+button { font-family: inherit; cursor: pointer; }
+
+.shell {
+  display: grid; grid-template-columns: 260px 1fr; grid-template-rows: 56px 1fr;
+  grid-template-areas: 'bar bar' 'nav main'; height: 100vh;
+}
+.app-bar {
+  grid-area: bar; background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 var(--space-5); gap: var(--space-4);
+}
+.app-bar .brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 700; font-size: 15px; }
+.app-bar .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.app-bar .divider { color: var(--text-muted); }
+.app-bar .scope-pill {
+  background: rgba(96,165,250,.12); color: var(--info);
+  border: 1px solid rgba(96,165,250,.3); padding: 4px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 600;
+}
+.app-bar .console-switch { margin-left: auto; display: flex; gap: var(--space-2); align-items: center; }
+.app-bar button.switch {
+  background: var(--bg-tertiary); color: var(--text-secondary);
+  border: 1px solid var(--border); padding: 6px 12px; border-radius: var(--radius-sm); font-size: 12px;
+}
+.app-bar button.switch:hover { border-color: var(--border-hover); color: var(--text-primary); }
+
+.sidebar {
+  grid-area: nav; background: var(--bg-secondary); border-right: 1px solid var(--border);
+  padding: var(--space-3) 0; overflow-y: auto; display: flex; flex-direction: column;
+}
+.tenant-switch {
+  margin: 0 var(--space-5) var(--space-3); padding: var(--space-3);
+  background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12px; cursor: pointer;
+}
+.tenant-switch .label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.tenant-switch .value { font-weight: 600; font-size: 13px; margin-top: 2px; }
+.tenant-switch .role { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.tenant-switch select { background: transparent; color: var(--text-primary); border: 0; font-size: 13px; font-weight: 600; width: 100%; padding: 0; margin-top: 2px; cursor: pointer; }
+.sidebar .nav-group-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-muted); padding: var(--space-3) var(--space-5) var(--space-1);
+}
+.sidebar a.nav-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 8px var(--space-5); font-size: 13px;
+  color: var(--text-secondary); border-left: 2px solid transparent;
+}
+.sidebar a.nav-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.sidebar a.nav-item.active { background: var(--accent-subtle); color: var(--accent); border-left-color: var(--accent); }
+.sidebar .nav-icon { display: inline-flex; width: 16px; height: 16px; flex-shrink: 0; font-size: 14px; }
+.sidebar .nav-label { flex: 1; }
+.sidebar .nav-badge {
+  background: var(--bg-tertiary); color: var(--text-dim);
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+}
+.sidebar .nav-item.active .nav-badge { background: var(--accent); color: #111; font-weight: 600; }
+.sidebar .nav-badge.missing { background: var(--error-bg); color: var(--error); }
+.sidebar .nav-badge.warn    { background: var(--warning-bg); color: var(--warning); }
+.sidebar .nav-spacer { flex: 1; }
+.sidebar .nav-footer {
+  padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-muted);
+  display: flex; justify-content: space-between; align-items: center;
+}
+
+.main { grid-area: main; overflow-y: auto; background: var(--bg-primary); }
+.context-strip {
+  padding: 10px var(--space-6); background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: var(--space-3);
+  font-size: 12px; color: var(--text-dim);
+}
+.context-strip .role {
+  font-weight: 600; color: var(--accent);
+  background: var(--accent-subtle); padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--accent-border);
+}
+.context-strip .role.neutral { color: var(--text-primary); background: var(--bg-tertiary); border-color: var(--border); }
+.context-strip .role.muted { color: var(--text-dim); background: transparent; }
+.crumbs {
+  padding: var(--space-3) var(--space-6); font-size: 12px; color: var(--text-dim);
+  display: flex; gap: var(--space-2); align-items: center;
+}
+.crumbs a:hover { color: var(--accent); }
+.crumbs .sep { color: var(--text-muted); }
+.page { padding: var(--space-5) var(--space-6) var(--space-7); max-width: 1400px; }
+.page h1 { font-size: 26px; font-weight: 700; margin: 0 0 var(--space-2); letter-spacing: -0.3px; }
+.page .subtitle { color: var(--text-dim); margin-bottom: var(--space-6); font-size: 14px; }
+
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-4); }
+.two-col { display: grid; grid-template-columns: 2fr 1fr; gap: var(--space-5); align-items: start; }
+@media (max-width: 1100px) { .two-col { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-5);
+}
+.card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin: 0 0 var(--space-2); font-weight: 600; }
+.card .big { font-size: 26px; font-weight: 700; letter-spacing: -0.3px; }
+.card .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.card.accent .big { color: var(--accent); }
+.card.success .big { color: var(--success); }
+
+.panel {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; margin-bottom: var(--space-5);
+}
+.panel header {
+  padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg-secondary);
+}
+.panel header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.panel header .meta { font-size: 12px; color: var(--text-dim); }
+.panel > .body { padding: var(--space-5); }
+.panel .row { padding: 10px var(--space-5); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: var(--space-3); font-size: 13px; }
+.panel .row:last-child { border-bottom: none; }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.data th { text-align: left; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+table.data td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+table.data tr:hover td { background: var(--bg-tertiary); }
+table.data tr:last-child td { border-bottom: none; }
+
+.pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+.pill.ready { background: var(--success-bg); color: var(--success); }
+.pill.missing { background: var(--error-bg); color: var(--error); }
+.pill.degraded { background: var(--warning-bg); color: var(--warning); }
+.pill.unknown { background: var(--bg-tertiary); color: var(--text-dim); }
+.pill.info { background: var(--info-bg); color: var(--info); }
+.pill.role { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent-border); }
+
+button.btn {
+  background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border);
+  padding: 8px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;
+}
+button.btn:hover { background: var(--bg-elevated); border-color: var(--border-hover); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+button.btn.primary:hover { background: var(--accent-hover); }
+button.btn.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
+button.btn.ghost:hover { color: var(--text-primary); }
+button.btn.danger:hover { background: var(--error-bg); border-color: var(--error); color: var(--error); }
+button.btn.small { padding: 4px 10px; font-size: 12px; }
+
+input, select, textarea {
+  background: var(--bg-tertiary); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 12px; font-size: 13px; font-family: inherit; width: 100%;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; font-weight: 500; }
+textarea { min-height: 80px; font-family: inherit; resize: vertical; }
+
+.empty-state { padding: var(--space-7) var(--space-5); text-align: center; color: var(--text-dim); }
+.empty-state .icon { font-size: 32px; margin-bottom: var(--space-3); opacity: 0.5; }
+.empty-state h3 { color: var(--text-primary); margin: 0 0 var(--space-2); font-size: 15px; }
+.empty-state p { margin: 0 0 var(--space-4); font-size: 13px; }
+
+.skeleton { background: linear-gradient(90deg, var(--bg-tertiary) 0%, var(--bg-elevated) 50%, var(--bg-tertiary) 100%); background-size: 200% 100%; animation: sk 1.4s linear infinite; border-radius: 4px; }
+@keyframes sk { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.sk-row { height: 14px; margin: 8px 0; }
+.sk-row.w-30 { width: 30%; } .sk-row.w-60 { width: 60%; } .sk-row.w-90 { width: 90%; }
+
+.error-banner {
+  background: var(--error-bg); border: 1px solid var(--error);
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-sm);
+  color: var(--error); font-size: 12px; display: flex; align-items: center; gap: var(--space-3);
+}
+.toast {
+  position: fixed; bottom: 20px; right: 20px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  padding: 10px 16px; border-radius: var(--radius-sm); font-size: 13px;
+  box-shadow: 0 8px 20px rgba(0,0,0,.4); z-index: 1000;
+}
+.toast.success { border-color: var(--success); color: var(--success); }
+.toast.error { border-color: var(--error); color: var(--error); }
+
+.hidden { display: none !important; }
+.muted { color: var(--text-dim); }
+.small { font-size: 12px; }
+.right { text-align: right; }
+.row-inline { display: flex; gap: var(--space-3); align-items: center; }
+.grow { flex: 1; }
+.tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-dim); margin-right: 4px; }
+
+/* Skill sub-tabs */
+.subtabs {
+  display: flex; gap: var(--space-1); margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border); overflow-x: auto;
+}
+.subtabs button {
+  background: transparent; color: var(--text-dim); border: 0;
+  padding: 10px var(--space-4); font-size: 13px; font-weight: 500;
+  border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.subtabs button:hover { color: var(--text-primary); }
+.subtabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Dependency / insight list rows */
+.dep-row { display: flex; align-items: center; gap: var(--space-3); padding: 10px 0; border-bottom: 1px solid var(--border); }
+.dep-row:last-child { border-bottom: none; }
+.dep-row .dep-icon { width: 20px; text-align: center; }
+.dep-row .dep-label { flex: 1; font-size: 13px; }
+.dep-row .dep-detail { font-size: 11px; color: var(--text-dim); }
+
+.setup-bar {
+  height: 8px; background: var(--bg-tertiary); border-radius: 999px; overflow: hidden;
+  margin: var(--space-3) 0 var(--space-2);
+}
+.setup-bar > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+.milestone { display: flex; align-items: center; gap: var(--space-2); padding: 6px 0; font-size: 13px; }
+.milestone .box {
+  width: 14px; height: 14px; border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; flex-shrink: 0;
+}
+.milestone.done .box { background: var(--success); border-color: var(--success); color: #111; }
+.milestone.done .label { text-decoration: line-through; color: var(--text-dim); }
+
+.insight-row {
+  display: flex; gap: var(--space-3); align-items: flex-start;
+  padding: var(--space-3) 0; border-bottom: 1px solid var(--border);
+}
+.insight-row:last-child { border-bottom: none; }
+.insight-row .sev { width: 4px; min-height: 36px; border-radius: 2px; flex-shrink: 0; }
+.insight-row .sev.warning { background: var(--warning); }
+.insight-row .sev.nudge { background: var(--info); }
+.insight-row .sev.info { background: var(--text-muted); }
+.insight-row .body { flex: 1; }
+.insight-row .ttl { font-weight: 600; font-size: 13px; }
+.insight-row .msg { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+.auth-prompt { max-width: 440px; margin: 10vh auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-6); }
+.auth-prompt h1 { font-size: 20px; margin: 0 0 var(--space-2); }
+.auth-prompt p { color: var(--text-dim); font-size: 13px; margin: 0 0 var(--space-4); }
+.auth-prompt .form-row { margin-bottom: var(--space-3); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     AUTH VIEW
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="authView" class="hidden">
+  <div class="auth-prompt">
+    <h1>User Console sign-in</h1>
+    <p>Paste your iOS-session JWT. You can get one from the iOS app → Settings → Developer → Copy access token, or from the existing <a href="/workspace-ui">/workspace-ui</a> prompt.</p>
+    <div class="form-row">
+      <label for="authJwt">Access token (JWT)</label>
+      <input id="authJwt" type="password" placeholder="eyJhbG…" autocomplete="off" />
+    </div>
+    <div id="authError" class="error-banner hidden"></div>
+    <button class="btn primary" id="authSubmit" style="width:100%; margin-top: var(--space-3);">Enter workspace</button>
+    <p class="small muted" style="margin-top: var(--space-4); text-align: center;">Token is stored in sessionStorage and cleared on sign-out.</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     MAIN SHELL
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="shell" class="shell hidden">
+  <!-- App bar -->
+  <div class="app-bar">
+    <div class="brand"><span class="dot"></span> Nexus Hub</div>
+    <span class="divider">·</span>
+    <span class="scope-pill">USER CONSOLE</span>
+    <div class="console-switch">
+      <button class="switch" onclick="location.href='/admin-console'">↗ Admin Console</button>
+      <button class="switch" onclick="location.href='/workspace-ui'">↙ Classic view</button>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="tenant-switch">
+      <div class="label">Active tenant</div>
+      <select id="tenantSwitch"></select>
+      <div class="role" id="tenantRoleLabel">—</div>
+    </div>
+
+    <a class="nav-item active" data-page="home"><span class="nav-icon">⌂</span><span class="nav-label">Home</span></a>
+    <a class="nav-item" data-page="insights"><span class="nav-icon">✦</span><span class="nav-label">Insights</span><span class="nav-badge" id="navInsights">—</span></a>
+    <a class="nav-item" data-page="dependencies"><span class="nav-icon">⇄</span><span class="nav-label">Dependencies</span><span class="nav-badge" id="navDeps">—</span></a>
+
+    <div class="nav-group-label">Skills</div>
+    <a class="nav-item" data-page="skill-content"><span class="nav-icon">✎</span><span class="nav-label">Content</span></a>
+    <a class="nav-item" data-page="skill-secretary"><span class="nav-icon">☎</span><span class="nav-label">Secretary</span></a>
+    <a class="nav-item" data-page="skill-training"><span class="nav-icon">⚐</span><span class="nav-label">Training</span></a>
+    <a class="nav-item" data-page="skill-finance"><span class="nav-icon">$</span><span class="nav-label">Finance</span></a>
+    <a class="nav-item" data-page="skill-cooking"><span class="nav-icon">♨</span><span class="nav-label">Cooking</span></a>
+
+    <div class="nav-group-label">References</div>
+    <a class="nav-item" data-page="ref-books"><span class="nav-icon">📚</span><span class="nav-label">Books</span><span class="nav-badge" id="navBooks">—</span></a>
+    <a class="nav-item" data-page="ref-channels"><span class="nav-icon">📡</span><span class="nav-label">Channels</span><span class="nav-badge" id="navChannels">—</span></a>
+    <a class="nav-item" data-page="ref-links"><span class="nav-icon">🔗</span><span class="nav-label">Links</span><span class="nav-badge" id="navLinks">—</span></a>
+    <a class="nav-item" data-page="ref-notes"><span class="nav-icon">📝</span><span class="nav-label">Notes</span><span class="nav-badge" id="navNotes">—</span></a>
+
+    <a class="nav-item" data-page="activity"><span class="nav-icon">⏲</span><span class="nav-label">Activity</span></a>
+    <a class="nav-item" data-page="integrations"><span class="nav-icon">⚙</span><span class="nav-label">Integrations</span></a>
+    <a class="nav-item hidden" id="navTeam" data-page="team"><span class="nav-icon">☰</span><span class="nav-label">Team</span></a>
+    <a class="nav-item" data-page="profile"><span class="nav-icon">☰</span><span class="nav-label">Profile</span></a>
+
+    <div class="nav-spacer"></div>
+    <div class="nav-footer">
+      <span class="mono">v<span id="footerVersion">—</span></span>
+      <a id="signOut">Sign out</a>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="context-strip">
+      <span id="ctxTenant">—</span>
+      <span class="divider">·</span>
+      <span>You are <strong id="ctxUser">—</strong></span>
+      <span class="divider">·</span>
+      <span class="role" id="ctxRole">—</span>
+    </div>
+    <div class="crumbs">
+      <a data-nav="home">Workspace</a>
+      <span class="sep">›</span>
+      <span id="crumbTail">Home</span>
+    </div>
+
+    <!-- ═ Home ═══════════════════════════════════════════════ -->
+    <section class="page" data-page="home">
+      <h1>Welcome back</h1>
+      <p class="subtitle">Your workspace overview. What's set up, what's recommended, what's changed.</p>
+
+      <div class="two-col">
+        <div>
+          <div class="panel">
+            <header><h2>Setup progress</h2><span class="meta" id="setupMeta">—</span></header>
+            <div class="body">
+              <div class="setup-bar"><div id="setupBar" style="width: 0%;"></div></div>
+              <div class="small muted" id="setupSummary">Loading…</div>
+              <div id="milestones" style="margin-top: var(--space-3);"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <header><h2>Top insights</h2><a class="small" data-nav="insights">View all →</a></header>
+            <div class="body" id="homeInsights"></div>
+          </div>
+
+          <div class="panel">
+            <header><h2>Quick actions</h2></header>
+            <div class="body">
+              <div class="grid-cards">
+                <a class="card" data-nav="ref-books"><h3>Add a book</h3><div class="sub">Grow your Content library</div></a>
+                <a class="card" data-nav="ref-links"><h3>Save a link</h3><div class="sub">Curated reference</div></a>
+                <a class="card" data-nav="skill-content"><h3>Set up Content skill</h3><div class="sub">Agent + references</div></a>
+                <a class="card" data-nav="integrations"><h3>Connect Google / Outlook</h3><div class="sub">Calendar + drive</div></a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="panel">
+            <header><h2>This workspace</h2></header>
+            <div style="padding: var(--space-4) var(--space-5);">
+              <div class="row-inline"><span class="muted small grow">Books</span><span class="mono" id="countBooks">—</span></div>
+              <div class="row-inline"><span class="muted small grow">Links</span><span class="mono" id="countLinks">—</span></div>
+              <div class="row-inline"><span class="muted small grow">Notes</span><span class="mono" id="countNotes">—</span></div>
+              <div class="row-inline"><span class="muted small grow">Members</span><span class="mono" id="countMembers">—</span></div>
+              <div class="row-inline"><span class="muted small grow">Calls today</span><span class="mono" id="countCalls">—</span></div>
+              <p class="small muted" style="margin-top: var(--space-3);">Cost is not shown here — see the iOS app if you need tokens-vs-quota, or ask your platform owner for billing.</p>
+            </div>
+          </div>
+          <div class="panel">
+            <header><h2>Dependencies</h2><a class="small" data-nav="dependencies">View all →</a></header>
+            <div style="padding: var(--space-3) var(--space-5);" id="homeDeps"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═ Insights ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="insights">
+      <h1>Insights</h1>
+      <p class="subtitle">Recommendations, setup gaps, and opportunities — derived from your workspace state.</p>
+      <div class="panel">
+        <header><h2>Active insights</h2><span class="meta" id="insightsMeta">—</span></header>
+        <div class="body" id="insightsList"></div>
+      </div>
+      <p class="small muted" style="max-width: 600px;">
+        Insights update automatically as you change your workspace — add a reference, complete a setup step, and the corresponding warning disappears.
+        We never fabricate insights; if there's nothing to surface, this page is empty.
+      </p>
+    </section>
+
+    <!-- ═ Dependencies ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="dependencies">
+      <h1>Dependencies</h1>
+      <p class="subtitle">What each skill needs to work well. Green is ready, red is missing, amber is partial.</p>
+      <div class="panel">
+        <header><h2>By skill</h2><span class="meta" id="depsMeta">—</span></header>
+        <div class="body" id="depsList"></div>
+      </div>
+    </section>
+
+    <!-- ═ Skills — Content ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="skill-content">
+      <h1>Content Creation</h1>
+      <p class="subtitle">Your content agent — what it reads, what it writes, what's missing.</p>
+      <div class="subtabs" data-subtabs-for="content">
+        <button class="active" data-sub="overview">Overview</button>
+        <button data-sub="configuration">Configuration</button>
+        <button data-sub="references">References</button>
+        <button data-sub="dependencies">Dependencies</button>
+        <button data-sub="activity">Activity</button>
+        <button data-sub="insights">Insights</button>
+        <button data-sub="radar">Radar</button>
+      </div>
+      <div data-sub-section="content.overview">
+        <div class="two-col">
+          <div class="panel"><header><h2>What this skill does</h2></header>
+            <div class="body">
+              <p>The Content skill researches topics, reads your curated books/links, watches channels you follow, and drafts content aligned to your voice guidelines.</p>
+              <p class="muted small">It pulls from your Reference Center and writes to your Content Notes. Deep editing of voice / tone / output preferences lives on the Configuration tab.</p>
+            </div>
+          </div>
+          <div class="panel"><header><h2>Status</h2></header>
+            <div style="padding: var(--space-3) var(--space-5);" id="contentStatus"></div>
+          </div>
+        </div>
+      </div>
+      <div data-sub-section="content.configuration" class="hidden">
+        <div class="empty-state">
+          <div class="icon">✎</div>
+          <h3>Configuration editor lands next</h3>
+          <p>The Content skill config (voice guidelines, output preferences, brand notes) is currently edited via iOS Settings → Content. A full editor will land here once the backing <code>tenant_settings</code> schema promotes these fields. Tracked in open-items.</p>
+          <a class="btn" data-nav="ref-notes">Manage content notes meanwhile →</a>
+        </div>
+      </div>
+      <div data-sub-section="content.references" class="hidden">
+        <div class="panel"><header><h2>References powering Content</h2>
+          <a class="btn small" data-nav="ref-books">Books →</a>
+        </header>
+          <div class="body" id="contentRefs"></div>
+        </div>
+      </div>
+      <div data-sub-section="content.dependencies" class="hidden">
+        <div class="panel"><header><h2>Content dependencies</h2></header>
+          <div class="body" id="contentDeps"></div>
+        </div>
+      </div>
+      <div data-sub-section="content.activity" class="hidden">
+        <div class="empty-state">
+          <div class="icon">⏲</div>
+          <h3>No activity history yet</h3>
+          <p>Once the Content skill runs, recent research and draft events will appear here. Trigger a content workflow from the iOS app to populate this view.</p>
+        </div>
+      </div>
+      <div data-sub-section="content.insights" class="hidden">
+        <div id="contentInsights"></div>
+      </div>
+      <div data-sub-section="content.radar" class="hidden">
+        <div class="empty-state">
+          <div class="icon">⦿</div>
+          <h3>Content Radar</h3>
+          <p>Radar surfaces content opportunities from your channels and curated links. The radar engine is behind a Phase 1 rollout — once it ships, a topic / opportunity feed will render here.</p>
+          <a class="btn" data-nav="ref-channels">Add channels to watch →</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═ Skills — Secretary ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="skill-secretary">
+      <h1>Secretary</h1>
+      <p class="subtitle">Scheduling, priorities, routines — the background operator of your day.</p>
+      <div class="subtabs" data-subtabs-for="secretary">
+        <button class="active" data-sub="overview">Overview</button>
+        <button data-sub="configuration">Routines &amp; priorities</button>
+        <button data-sub="dependencies">Dependencies</button>
+        <button data-sub="insights">Insights</button>
+      </div>
+      <div data-sub-section="secretary.overview">
+        <div class="two-col">
+          <div class="panel"><header><h2>What Secretary does</h2></header>
+            <div class="body">
+              <p>Secretary reads your calendar(s), applies your priority rules, and protects focus blocks. It hands context to other skills (Training for scheduling, Content for publish cadence).</p>
+              <p class="muted small">Calendar integrations live on the Integrations page. Routines and priority rules are edited from the iOS app; editing them here is tracked as an open item.</p>
+            </div>
+          </div>
+          <div class="panel"><header><h2>Status</h2></header><div style="padding: var(--space-3) var(--space-5);" id="secretaryStatus"></div></div>
+        </div>
+      </div>
+      <div data-sub-section="secretary.configuration" class="hidden">
+        <div class="empty-state"><div class="icon">☎</div><h3>Routine editor not yet wired</h3><p>Edit routines and priority rules in the iOS app → Settings → Secretary for now.</p></div>
+      </div>
+      <div data-sub-section="secretary.dependencies" class="hidden">
+        <div class="panel"><header><h2>Secretary dependencies</h2></header><div class="body" id="secretaryDeps"></div></div>
+      </div>
+      <div data-sub-section="secretary.insights" class="hidden"><div id="secretaryInsights"></div></div>
+    </section>
+
+    <!-- ═ Skills — Training ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="skill-training">
+      <h1>Training</h1>
+      <p class="subtitle">Fitness goals, schedule, readiness. Being split into gym / running / cycle / swim in Phase 1.</p>
+      <div class="subtabs" data-subtabs-for="training">
+        <button class="active" data-sub="overview">Overview</button>
+        <button data-sub="configuration">Goals &amp; equipment</button>
+        <button data-sub="dependencies">Dependencies</button>
+        <button data-sub="insights">Insights</button>
+      </div>
+      <div data-sub-section="training.overview">
+        <div class="panel"><header><h2>What Training does</h2></header>
+          <div class="body">
+            <p>Training merges Garmin/Strava/Whoop telemetry with Secretary's schedule awareness to recommend sessions, warn about overreach, and guide recovery.</p>
+            <p class="muted small">Phase 1 will break Training into sub-skills (gym / running / cycle / swim). When that ships, each sub-skill gets its own sidebar entry here.</p>
+          </div>
+        </div>
+      </div>
+      <div data-sub-section="training.configuration" class="hidden">
+        <div class="empty-state"><div class="icon">⚐</div><h3>Training profile editor not yet wired</h3><p>Edit goals, equipment, and injury notes in the iOS app.</p></div>
+      </div>
+      <div data-sub-section="training.dependencies" class="hidden">
+        <div class="panel"><header><h2>Training dependencies</h2></header><div class="body" id="trainingDeps"></div></div>
+      </div>
+      <div data-sub-section="training.insights" class="hidden"><div id="trainingInsights"></div></div>
+    </section>
+
+    <!-- ═ Skills — Finance ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="skill-finance">
+      <h1>Finance</h1>
+      <p class="subtitle">Budget awareness, categorization, affordability context for other skills.</p>
+      <div class="subtabs" data-subtabs-for="finance">
+        <button class="active" data-sub="overview">Overview</button>
+        <button data-sub="configuration">Budget &amp; categories</button>
+        <button data-sub="dependencies">Dependencies</button>
+        <button data-sub="insights">Insights</button>
+      </div>
+      <div data-sub-section="finance.overview">
+        <div class="panel"><header><h2>What Finance does</h2></header>
+          <div class="body">
+            <p>Finance keeps a lightweight model of your budget and categories. It answers "can I afford this?" for other skills (Cooking meal cost, Training gear purchases).</p>
+            <p class="muted small">Budget editing lives in the iOS app; this console currently shows read-only status.</p>
+          </div>
+        </div>
+      </div>
+      <div data-sub-section="finance.configuration" class="hidden">
+        <div class="empty-state"><div class="icon">$</div><h3>Budget editor not yet wired</h3><p>Edit budget and categories in the iOS app.</p></div>
+      </div>
+      <div data-sub-section="finance.dependencies" class="hidden"><div class="panel"><header><h2>Finance dependencies</h2></header><div class="body" id="financeDeps"></div></div></div>
+      <div data-sub-section="finance.insights" class="hidden"><div id="financeInsights"></div></div>
+    </section>
+
+    <!-- ═ Skills — Cooking ═══════════════════════════════════════════════ -->
+    <section class="page hidden" data-page="skill-cooking">
+      <h1>Cooking</h1>
+      <p class="subtitle">Meal planning, dietary preferences, kitchen cost awareness.</p>
+      <div class="subtabs" data-subtabs-for="cooking">
+        <button class="active" data-sub="overview">Overview</button>
+        <button data-sub="configuration">Restrictions &amp; preferences</button>
+        <button data-sub="dependencies">Dependencies</button>
+        <button data-sub="insights">Insights</button>
+      </div>
+      <div data-sub-section="cooking.overview">
+        <div class="panel"><header><h2>What Cooking does</h2></header>
+          <div class="body">
+            <p>Cooking plans meals against your dietary rules, pantry state, and (optionally) your Finance budget. When Training nutrition is needed, it syncs with Training's session plan.</p>
+          </div>
+        </div>
+      </div>
+      <div data-sub-section="cooking.configuration" class="hidden">
+        <div class="empty-state"><div class="icon">♨</div><h3>Cooking profile editor not yet wired</h3><p>Edit restrictions and preferences in the iOS app.</p></div>
+      </div>
+      <div data-sub-section="cooking.dependencies" class="hidden"><div class="panel"><header><h2>Cooking dependencies</h2></header><div class="body" id="cookingDeps"></div></div></div>
+      <div data-sub-section="cooking.insights" class="hidden"><div id="cookingInsights"></div></div>
+    </section>
+
+    <!-- ═ Reference Center — Books ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="ref-books">
+      <h1>Books</h1>
+      <p class="subtitle">Your reading list. Feeds the Content skill's research and the Secretary's context.</p>
+      <div class="panel">
+        <header><h2>Add a book</h2></header>
+        <div class="body">
+          <div style="display:grid; grid-template-columns: 1fr 1fr 160px 1fr auto; gap: var(--space-3); align-items: end;">
+            <div><label>Title</label><input id="bookTitle" placeholder="Atomic Habits" /></div>
+            <div><label>Author</label><input id="bookAuthor" placeholder="James Clear" /></div>
+            <div><label>Status</label><select id="bookStatus">
+              <option value="want_to_read">Want to read</option>
+              <option value="reading">Reading</option>
+              <option value="finished">Finished</option>
+              <option value="abandoned">Abandoned</option>
+            </select></div>
+            <div><label>Tags (comma-sep)</label><input id="bookTags" placeholder="content, habits" /></div>
+            <button class="btn primary" onclick="createBook()">Add</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <header>
+          <h2>My books</h2>
+          <div class="row-inline small">
+            <input id="bookSearch" placeholder="Search…" style="width: 180px;" oninput="renderBooks()" />
+            <select id="bookFilter" onchange="renderBooks()" style="width: 140px;">
+              <option value="">All statuses</option>
+              <option value="want_to_read">Want to read</option>
+              <option value="reading">Reading</option>
+              <option value="finished">Finished</option>
+              <option value="abandoned">Abandoned</option>
+            </select>
+          </div>
+        </header>
+        <div id="booksTable"></div>
+      </div>
+    </section>
+
+    <!-- ═ Reference Center — Channels ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="ref-channels">
+      <h1>Channels</h1>
+      <p class="subtitle">Sources the Content Radar watches. Channels are currently user-scoped, not tenant-scoped — promotion to tenant-scoped is tracked in open-items.</p>
+      <div class="empty-state">
+        <div class="icon">📡</div>
+        <h3>Channels live in the legacy admin panel for now</h3>
+        <p>Because channels are not yet tenant-scoped, channel management lives in the Admin portal. A tenant-scoped channels table lands in a follow-up branch.</p>
+        <button class="btn" onclick="location.href='/portal'">Open legacy Channels →</button>
+      </div>
+    </section>
+
+    <!-- ═ Reference Center — Links ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="ref-links">
+      <h1>Links</h1>
+      <p class="subtitle">Curated URLs. Reference material for any skill.</p>
+      <div class="panel">
+        <header><h2>Save a link</h2></header>
+        <div class="body">
+          <div style="display:grid; grid-template-columns: 1fr 2fr 1fr auto; gap: var(--space-3); align-items: end;">
+            <div><label>Title</label><input id="linkTitle" placeholder="Short description" /></div>
+            <div><label>URL</label><input id="linkUrl" placeholder="https://…" /></div>
+            <div><label>Tags</label><input id="linkTags" placeholder="content, research" /></div>
+            <button class="btn primary" onclick="createLink()">Save</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <header><h2>My links</h2></header>
+        <div id="linksTable"></div>
+      </div>
+    </section>
+
+    <!-- ═ Reference Center — Notes ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="ref-notes">
+      <h1>Content Notes</h1>
+      <p class="subtitle">Your content ideas, drafts, and knowledge captures.</p>
+      <div class="panel">
+        <header><h2>New note</h2></header>
+        <div class="body">
+          <label>Title</label>
+          <input id="noteTitle" placeholder="Idea for a blog post…" style="margin-bottom: var(--space-3);" />
+          <label>Body</label>
+          <textarea id="noteBody" placeholder="Your thoughts…"></textarea>
+          <div class="row-inline" style="margin-top: var(--space-3);">
+            <input id="noteTags" placeholder="tags, comma-separated" class="grow" />
+            <button class="btn primary" onclick="createNote()">Save</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <header><h2>My notes</h2></header>
+        <div id="notesTable"></div>
+      </div>
+    </section>
+
+    <!-- ═ Activity ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="activity">
+      <h1>Activity</h1>
+      <p class="subtitle">Recent changes on this workspace. Feeds from the audit trail (tenant-scoped).</p>
+      <div class="empty-state">
+        <div class="icon">⏲</div>
+        <h3>Activity view in progress</h3>
+        <p>The tenant-scoped audit feed is backed by <code>audit_trail</code> rows with <code>user_id = activeTenantId</code>. Filtered viewer is tracked in open-items; the raw feed is accessible from the Admin Console for now.</p>
+      </div>
+    </section>
+
+    <!-- ═ Integrations ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="integrations">
+      <h1>Integrations</h1>
+      <p class="subtitle">Providers connected to your workspace and your personal account.</p>
+      <div class="empty-state">
+        <div class="icon">⚙</div>
+        <h3>Integration management lives in the iOS app</h3>
+        <p>OAuth connections (Google, Outlook, Garmin, Strava, Todoist, Notion) are established from iOS and status is reflected on skill Dependency panels. A dedicated integration-status page here is tracked as an open item.</p>
+        <a class="btn" data-nav="dependencies">See dependency status →</a>
+      </div>
+    </section>
+
+    <!-- ═ Team ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="team">
+      <h1>Team</h1>
+      <p class="subtitle">Members of this tenant and pending invites. Admin-only.</p>
+      <div class="panel">
+        <header><h2>Members</h2><span class="meta" id="membersMeta">—</span></header>
+        <div id="membersTable"></div>
+      </div>
+      <div class="panel">
+        <header><h2>Invite someone</h2></header>
+        <div class="body">
+          <div style="display:grid; grid-template-columns: 2fr 1fr auto; gap: var(--space-3); align-items: end;">
+            <div><label>Email</label><input id="inviteEmail" placeholder="teammate@domain.com" /></div>
+            <div><label>Role</label><select id="inviteRole">
+              <option value="tenant_member">Member</option>
+              <option value="tenant_admin">Admin</option>
+              <option value="tenant_viewer">Viewer</option>
+            </select></div>
+            <button class="btn primary" onclick="createInvite()">Invite</button>
+          </div>
+          <div id="inviteLinkBox" class="small" style="margin-top: var(--space-3);"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <header><h2>Pending &amp; history</h2></header>
+        <div id="invitesTable"></div>
+      </div>
+    </section>
+
+    <!-- ═ Profile ═══════════════════════════════════════════ -->
+    <section class="page hidden" data-page="profile">
+      <h1>Profile &amp; Preferences</h1>
+      <p class="subtitle">Your personal account. These apply to you across every tenant.</p>
+      <div class="panel"><header><h2>Account</h2></header><div class="body" id="profileBody"></div></div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+(function() {
+'use strict';
+
+// ── Session + state ───────────────────────────────────────────────
+const SS = sessionStorage;
+const state = {
+  jwt: SS.getItem('nx.usr.jwt') || '',
+  tenantId: SS.getItem('nx.usr.tenantId') || '',
+  page: 'home',
+  sub: {},
+  me: null,
+  home: null,
+  books: [],
+  notes: [],
+  links: [],
+  members: [],
+  invites: [],
+};
+
+function authHeaders(ct) {
+  const h = { Authorization: 'Bearer ' + state.jwt };
+  if (state.tenantId) h['X-Tenant-Id'] = state.tenantId;
+  if (ct) h['Content-Type'] = ct;
+  return h;
+}
+async function fetchJson(url, opts) {
+  const o = Object.assign({ method: 'GET' }, opts || {});
+  o.headers = Object.assign({}, authHeaders('application/json'), o.headers || {});
+  const res = await fetch(url, o);
+  let body = null; try { body = await res.json(); } catch {}
+  if (!res.ok) {
+    const err = new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
+    err.status = res.status; err.body = body; throw err;
+  }
+  return body;
+}
+function esc(s) { return String(s ?? '').replace(/[&<>\"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg, kind) {
+  const t = document.getElementById('toast');
+  t.className = 'toast ' + (kind || '');
+  t.textContent = msg;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 3000);
+}
+
+// ── Auth / boot ───────────────────────────────────────────────────
+function showAuth(msg) {
+  document.getElementById('authView').classList.remove('hidden');
+  document.getElementById('shell').classList.add('hidden');
+  if (msg) { const b = document.getElementById('authError'); b.textContent = msg; b.classList.remove('hidden'); }
+}
+async function showShell() {
+  document.getElementById('authView').classList.add('hidden');
+  document.getElementById('shell').classList.remove('hidden');
+  await loadMe();
+  showPage(state.page);
+  loadHome();
+  loadFooter();
+}
+async function tryAuth() {
+  if (!state.jwt) { showAuth(); return; }
+  try { await showShell(); }
+  catch (e) {
+    SS.clear(); state.jwt = '';
+    showAuth(e.status === 401 ? 'Token invalid or expired.' : 'Could not reach /workspace/me.');
+  }
+}
+document.getElementById('authSubmit').addEventListener('click', () => {
+  state.jwt = document.getElementById('authJwt').value.trim();
+  if (!state.jwt) return showAuth('Token required.');
+  SS.setItem('nx.usr.jwt', state.jwt);
+  tryAuth();
+});
+document.getElementById('signOut').addEventListener('click', (e) => {
+  e.preventDefault(); SS.clear(); location.reload();
+});
+
+// ── Nav ───────────────────────────────────────────────────────────
+function showPage(id) {
+  state.page = id;
+  document.querySelectorAll('a.nav-item').forEach((n) => n.classList.toggle('active', n.getAttribute('data-page') === id));
+  document.querySelectorAll('section.page').forEach((s) => s.classList.toggle('hidden', s.getAttribute('data-page') !== id));
+  const labels = {
+    home: 'Home', insights: 'Insights', dependencies: 'Dependencies',
+    'skill-content': 'Skills › Content', 'skill-secretary': 'Skills › Secretary',
+    'skill-training': 'Skills › Training', 'skill-finance': 'Skills › Finance',
+    'skill-cooking': 'Skills › Cooking',
+    'ref-books': 'Reference › Books', 'ref-channels': 'Reference › Channels',
+    'ref-links': 'Reference › Links', 'ref-notes': 'Reference › Notes',
+    activity: 'Activity', integrations: 'Integrations', team: 'Team', profile: 'Profile',
+  };
+  document.getElementById('crumbTail').textContent = labels[id] || id;
+  // Lazy-load per page
+  if (id === 'insights' || id === 'dependencies') paintDepsAndInsights();
+  if (id === 'ref-books') loadBooks();
+  if (id === 'ref-links') loadLinks();
+  if (id === 'ref-notes') loadNotes();
+  if (id === 'team') loadTeam();
+  if (id === 'profile') loadProfile();
+  if (id.startsWith('skill-')) paintSkill(id.slice(6));
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('[data-nav]');
+  if (a) { e.preventDefault(); showPage(a.getAttribute('data-nav')); return; }
+  const n = e.target.closest('a.nav-item[data-page]');
+  if (n) { e.preventDefault(); showPage(n.getAttribute('data-page')); return; }
+  const sb = e.target.closest('.subtabs button[data-sub]');
+  if (sb) {
+    const skill = sb.parentElement.getAttribute('data-subtabs-for');
+    const sub = sb.getAttribute('data-sub');
+    state.sub[skill] = sub;
+    sb.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === sb));
+    document.querySelectorAll('[data-sub-section^="' + skill + '."]').forEach((s) => {
+      s.classList.toggle('hidden', s.getAttribute('data-sub-section') !== (skill + '.' + sub));
+    });
+  }
+});
+
+// ── Load paths ────────────────────────────────────────────────────
+async function loadMe() {
+  const r = await fetchJson('/workspace/me');
+  state.me = r.data;
+  const t = r.data.tenant || {};
+  const u = r.data.user || {};
+  const role = r.data.role || (t && t.role) || 'tenant_member';
+  const userName = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.username || u.email || '#' + u.id;
+  document.getElementById('ctxTenant').textContent = 'Tenant: ' + (t.slug || '#' + t.id);
+  document.getElementById('ctxUser').textContent = userName;
+  const rEl = document.getElementById('ctxRole');
+  rEl.textContent = role;
+  rEl.className = 'role ' + (role === 'tenant_admin' ? '' : role === 'tenant_viewer' ? 'muted' : 'neutral');
+  document.getElementById('tenantRoleLabel').textContent = role;
+  document.getElementById('navTeam').classList.toggle('hidden', role !== 'tenant_admin');
+  // Populate tenant switcher
+  try {
+    const rt = await fetchJson('/workspace/tenants');
+    const sel = document.getElementById('tenantSwitch');
+    sel.innerHTML = (rt.data.tenants || []).map((t) =>
+      `<option value="${t.id}" ${t.id === (state.tenantId ? +state.tenantId : (state.me.tenant && state.me.tenant.id)) ? 'selected' : ''}>${esc(t.slug)} (${esc(t.role)})</option>`
+    ).join('');
+    sel.onchange = () => {
+      state.tenantId = sel.value;
+      SS.setItem('nx.usr.tenantId', state.tenantId);
+      location.reload();
+    };
+  } catch {}
+}
+async function loadHome() {
+  try {
+    const r = await fetchJson('/workspace/console/home');
+    state.home = r.data;
+    paintHome(r.data);
+  } catch (e) {
+    console.error('home load failed', e);
+  }
+}
+function paintHome(d) {
+  // Setup
+  document.getElementById('setupBar').style.width = d.setup.percent + '%';
+  document.getElementById('setupMeta').textContent = d.setup.percent + '% complete';
+  document.getElementById('setupSummary').textContent =
+    d.setup.done + ' of ' + d.setup.total + ' milestones — finish setup to unlock stronger skill outputs.';
+  document.getElementById('milestones').innerHTML = d.setup.milestones.map((m) =>
+    `<div class="milestone ${m.done ? 'done' : ''}">
+       <span class="box">${m.done ? '✓' : ''}</span>
+       <span class="label">${esc(m.label)}</span>
+     </div>`).join('');
+
+  // Counts
+  document.getElementById('countBooks').textContent = d.counts.books;
+  document.getElementById('countLinks').textContent = d.counts.links;
+  document.getElementById('countNotes').textContent = d.counts.notes;
+  document.getElementById('countMembers').textContent = d.counts.members;
+  document.getElementById('countCalls').textContent = d.usage.callsToday;
+  document.getElementById('navBooks').textContent = d.counts.books;
+  document.getElementById('navLinks').textContent = d.counts.links;
+  document.getElementById('navNotes').textContent = d.counts.notes;
+
+  // Top insights (max 3)
+  const ib = document.getElementById('homeInsights');
+  const topIns = (d.insights || []).slice(0, 3);
+  if (topIns.length === 0) {
+    ib.innerHTML = '<div class="empty-state small"><p>No open insights. Your workspace is in good shape.</p></div>';
+  } else {
+    ib.innerHTML = topIns.map(renderInsight).join('');
+  }
+  const depMissing = d.dependencies.missing || 0;
+  document.getElementById('navInsights').textContent = d.insights.length || '—';
+  document.getElementById('navInsights').className = 'nav-badge ' + (d.insights.length ? 'warn' : '');
+  document.getElementById('navDeps').textContent = depMissing || '—';
+  document.getElementById('navDeps').className = 'nav-badge ' + (depMissing ? 'missing' : '');
+
+  // Home deps summary (first 4)
+  const hd = document.getElementById('homeDeps');
+  hd.innerHTML = d.dependencies.items.slice(0, 6).map(renderDepRow).join('');
+}
+function renderInsight(i) {
+  return `<div class="insight-row">
+    <div class="sev ${esc(i.severity)}"></div>
+    <div class="body">
+      <div class="ttl">${esc(i.title)}</div>
+      <div class="msg">${esc(i.body)}</div>
+    </div>
+    ${i.cta ? `<a class="btn small" href="${esc(i.cta.href)}">${esc(i.cta.label)}</a>` : ''}
+  </div>`;
+}
+function renderDepRow(d) {
+  const icon = d.status === 'ready' ? '✓' : d.status === 'missing' ? '✗' : d.status === 'degraded' ? '◐' : '?';
+  return `<div class="dep-row">
+    <span class="dep-icon ${esc(d.status)}"><span class="pill ${esc(d.status)}">${icon}</span></span>
+    <span class="dep-label">${esc(d.label)}</span>
+    ${d.cta ? `<a class="btn small" href="${esc(d.cta.href)}">${esc(d.cta.label)}</a>` : ''}
+  </div>`;
+}
+
+function paintDepsAndInsights() {
+  if (!state.home) return;
+  // Dependencies page
+  const groups = {};
+  (state.home.dependencies.items || []).forEach((d) => { (groups[d.skillId] = groups[d.skillId] || []).push(d); });
+  const depList = document.getElementById('depsList');
+  depList.innerHTML = Object.entries(groups).map(([skill, items]) => {
+    const ready = items.filter((i) => i.status === 'ready').length;
+    return `<div style="padding: var(--space-3) var(--space-5); border-bottom: 1px solid var(--border);">
+      <div style="display:flex; align-items:center; gap: var(--space-3); margin-bottom: var(--space-2);">
+        <strong style="text-transform: capitalize;">${esc(skill)}</strong>
+        <span class="small muted">${ready} / ${items.length} ready</span>
+      </div>
+      ${items.map(renderDepRow).join('')}
+    </div>`;
+  }).join('');
+  document.getElementById('depsMeta').textContent =
+    state.home.dependencies.ready + ' / ' + state.home.dependencies.total + ' ready';
+
+  // Insights page
+  const ic = document.getElementById('insightsList');
+  const ins = state.home.insights || [];
+  document.getElementById('insightsMeta').textContent = ins.length + ' active';
+  if (ins.length === 0) {
+    ic.innerHTML = '<div class="empty-state"><div class="icon">✦</div><h3>No insights right now</h3><p>Once there\'s more activity on your workspace we\'ll surface recommendations here.</p></div>';
+  } else {
+    ic.innerHTML = ins.map(renderInsight).join('');
+  }
+}
+
+function paintSkill(skill) {
+  if (!state.home) return;
+  const items = (state.home.dependencies.items || []).filter((d) => d.skillId === skill);
+  const el = document.getElementById(skill + 'Deps');
+  if (el) {
+    if (items.length === 0) {
+      el.innerHTML = '<div class="empty-state small"><p>No dependencies modeled for this skill yet.</p></div>';
+    } else {
+      el.innerHTML = items.map(renderDepRow).join('');
+    }
+  }
+  const stat = document.getElementById(skill + 'Status');
+  if (stat && items.length) {
+    const ready = items.filter((i) => i.status === 'ready').length;
+    const pct = Math.round((ready / items.length) * 100);
+    stat.innerHTML = `<div class="row-inline"><span class="small muted grow">Readiness</span><span class="mono">${ready} / ${items.length}</span></div>
+      <div class="setup-bar"><div style="width: ${pct}%;"></div></div>`;
+  }
+  const ins = document.getElementById(skill + 'Insights');
+  if (ins) {
+    const related = (state.home.insights || []).filter((i) => i.skillId === skill);
+    if (related.length === 0) {
+      ins.innerHTML = '<div class="empty-state small"><p>No insights scoped to ' + esc(skill) + ' right now.</p></div>';
+    } else {
+      ins.innerHTML = related.map(renderInsight).join('');
+    }
+  }
+  // Content references tab
+  if (skill === 'content') {
+    const refEl = document.getElementById('contentRefs');
+    if (refEl) {
+      refEl.innerHTML = `<div class="row-inline" style="padding: 0 var(--space-5);">
+        <div class="grow"><strong>Books</strong><div class="small muted">Your curated reading list.</div></div>
+        <span class="mono">${state.home.counts.books}</span>
+        <a class="btn small" data-nav="ref-books">Manage →</a>
+      </div>
+      <div class="row-inline" style="padding: 10px var(--space-5); border-top: 1px solid var(--border);">
+        <div class="grow"><strong>Links</strong><div class="small muted">Curated URLs.</div></div>
+        <span class="mono">${state.home.counts.links}</span>
+        <a class="btn small" data-nav="ref-links">Manage →</a>
+      </div>
+      <div class="row-inline" style="padding: 10px var(--space-5); border-top: 1px solid var(--border);">
+        <div class="grow"><strong>Notes</strong><div class="small muted">Drafts and ideas.</div></div>
+        <span class="mono">${state.home.counts.notes}</span>
+        <a class="btn small" data-nav="ref-notes">Manage →</a>
+      </div>`;
+    }
+  }
+}
+
+// ── Books CRUD ────────────────────────────────────────────────────
+async function loadBooks() {
+  const c = document.getElementById('booksTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div>';
+  try {
+    const r = await fetchJson('/workspace/books');
+    state.books = r.data.books || [];
+    renderBooks();
+  } catch (e) { c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`; }
+}
+window.renderBooks = function() {
+  const c = document.getElementById('booksTable');
+  const q = (document.getElementById('bookSearch').value || '').toLowerCase();
+  const f = document.getElementById('bookFilter').value;
+  let rows = state.books;
+  if (q) rows = rows.filter((b) => (b.title || '').toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q));
+  if (f) rows = rows.filter((b) => b.status === f);
+  if (rows.length === 0) {
+    c.innerHTML = '<div class="empty-state"><h3>' + (state.books.length === 0 ? "You haven't added a book yet" : 'No books match your filter') + '</h3><p>' + (state.books.length === 0 ? 'Your Content and Secretary skills use your library as reference. Start with one you\'re reading now.' : 'Clear the filter above to see all books.') + '</p></div>';
+    return;
+  }
+  c.innerHTML = `<table class="data">
+    <thead><tr><th>Title</th><th>Author</th><th>Status</th><th>Tags</th><th></th></tr></thead>
+    <tbody>${rows.map((b) => `
+      <tr>
+        <td><strong>${esc(b.title)}</strong></td>
+        <td>${esc(b.author || '—')}</td>
+        <td><span class="pill ${b.status === 'finished' ? 'ready' : b.status === 'reading' ? 'degraded' : b.status === 'abandoned' ? 'unknown' : 'info'}">${esc(b.status || 'want_to_read')}</span></td>
+        <td>${(b.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</td>
+        <td class="right"><button class="btn ghost danger small" onclick="deleteBook(${b.id})">Remove</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+};
+window.createBook = async function() {
+  const title = document.getElementById('bookTitle').value.trim();
+  const author = document.getElementById('bookAuthor').value.trim();
+  const status = document.getElementById('bookStatus').value;
+  const tags = document.getElementById('bookTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  if (!title) return toast('Title required', 'error');
+  try {
+    await fetchJson('/workspace/books', { method: 'POST', body: JSON.stringify({ title, author, status, tags }) });
+    document.getElementById('bookTitle').value = '';
+    document.getElementById('bookAuthor').value = '';
+    document.getElementById('bookTags').value = '';
+    toast('Book added', 'success');
+    loadBooks(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.deleteBook = async function(id) {
+  if (!confirm('Remove this book?')) return;
+  try {
+    await fetchJson('/workspace/books/' + id, { method: 'DELETE' });
+    toast('Removed', 'success');
+    loadBooks(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Links CRUD ────────────────────────────────────────────────────
+async function loadLinks() {
+  const c = document.getElementById('linksTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/workspace/links');
+    state.links = r.data.links || [];
+    if (state.links.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No links yet</h3><p>Save URLs you want your skills to reference.</p></div>';
+      return;
+    }
+    c.innerHTML = `<table class="data">
+      <thead><tr><th>Title</th><th>URL</th><th>Tags</th><th></th></tr></thead>
+      <tbody>${state.links.map((l) => `
+        <tr>
+          <td><strong>${esc(l.title)}</strong></td>
+          <td class="small"><a href="${esc(l.url)}" target="_blank" rel="noopener" class="mono muted">${esc(l.url)}</a></td>
+          <td>${(l.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</td>
+          <td class="right"><button class="btn ghost danger small" onclick="deleteLink(${l.id})">Remove</button></td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  } catch (e) { c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`; }
+}
+window.createLink = async function() {
+  const title = document.getElementById('linkTitle').value.trim();
+  const url = document.getElementById('linkUrl').value.trim();
+  const tags = document.getElementById('linkTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  if (!title || !url) return toast('Title and URL required', 'error');
+  try {
+    await fetchJson('/workspace/links', { method: 'POST', body: JSON.stringify({ title, url, tags }) });
+    document.getElementById('linkTitle').value = '';
+    document.getElementById('linkUrl').value = '';
+    document.getElementById('linkTags').value = '';
+    toast('Link saved', 'success');
+    loadLinks(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.deleteLink = async function(id) {
+  if (!confirm('Remove this link?')) return;
+  try {
+    await fetchJson('/workspace/links/' + id, { method: 'DELETE' });
+    toast('Removed', 'success');
+    loadLinks(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Notes CRUD ────────────────────────────────────────────────────
+async function loadNotes() {
+  const c = document.getElementById('notesTable');
+  c.innerHTML = '<div class="sk-row w-90 skeleton"></div>';
+  try {
+    const r = await fetchJson('/workspace/content');
+    state.notes = r.data.notes || [];
+    if (state.notes.length === 0) {
+      c.innerHTML = '<div class="empty-state"><h3>No notes yet</h3><p>Capture ideas, drafts, or knowledge. Your Content skill reads these as context.</p></div>';
+      return;
+    }
+    c.innerHTML = state.notes.map((n) => `
+      <div class="row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+        <div class="row-inline" style="width:100%;">
+          <strong class="grow">${esc(n.title)}</strong>
+          <span class="small muted">${esc(n.created_at || n.createdAt || '')}</span>
+          <button class="btn ghost danger small" onclick="deleteNote(${n.id})">Remove</button>
+        </div>
+        <div class="small muted" style="white-space: pre-wrap;">${esc((n.body || '').slice(0, 220))}${(n.body || '').length > 220 ? '…' : ''}</div>
+        <div>${(n.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+      </div>`).join('');
+  } catch (e) { c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`; }
+}
+window.createNote = async function() {
+  const title = document.getElementById('noteTitle').value.trim();
+  const body = document.getElementById('noteBody').value.trim();
+  const tags = document.getElementById('noteTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  if (!title) return toast('Title required', 'error');
+  try {
+    await fetchJson('/workspace/content', { method: 'POST', body: JSON.stringify({ title, body, tags }) });
+    document.getElementById('noteTitle').value = '';
+    document.getElementById('noteBody').value = '';
+    document.getElementById('noteTags').value = '';
+    toast('Note saved', 'success');
+    loadNotes(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.deleteNote = async function(id) {
+  if (!confirm('Remove this note?')) return;
+  try {
+    await fetchJson('/workspace/content/' + id, { method: 'DELETE' });
+    toast('Removed', 'success');
+    loadNotes(); loadHome();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Team ──────────────────────────────────────────────────────────
+async function loadTeam() {
+  try {
+    const r = await fetchJson('/workspace/members');
+    state.members = r.data.members || [];
+    const m = document.getElementById('membersTable');
+    document.getElementById('membersMeta').textContent = state.members.length + ' members';
+    if (state.members.length === 0) {
+      m.innerHTML = '<div class="empty-state"><h3>You\'re the only member</h3><p>Use the form below to invite a teammate.</p></div>';
+    } else {
+      m.innerHTML = `<table class="data">
+        <thead><tr><th>User</th><th>Role</th><th></th></tr></thead>
+        <tbody>${state.members.map((x) => `
+          <tr>
+            <td><strong>${esc(x.email || ('#' + x.userId))}</strong></td>
+            <td><span class="pill role">${esc(x.role)}</span></td>
+            <td class="right">${x.userId !== (state.me.user && state.me.user.id) ? `<button class="btn ghost danger small" onclick="removeMember(${x.userId})">Remove</button>` : '<span class="small muted">(you)</span>'}</td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    }
+  } catch (e) {}
+  try {
+    const r = await fetchJson('/workspace/invites');
+    state.invites = r.data.invites || [];
+    const t = document.getElementById('invitesTable');
+    if (state.invites.length === 0) {
+      t.innerHTML = '<div class="empty-state small"><p>No invites yet.</p></div>';
+    } else {
+      t.innerHTML = `<table class="data">
+        <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <tbody>${state.invites.map((i) => `
+          <tr>
+            <td>${esc(i.email)}</td>
+            <td><span class="pill role">${esc(i.role)}</span></td>
+            <td><span class="pill ${i.status === 'accepted' ? 'ready' : i.status === 'pending' ? 'info' : 'unknown'}">${esc(i.status)}</span></td>
+            <td class="small muted">${esc(i.createdAt || i.created_at || '')}</td>
+            <td class="right">${i.status === 'pending' ? `<button class="btn ghost small" onclick="copyInvite('${esc(i.inviteCode || i.invite_code)}')">Copy link</button> <button class="btn ghost danger small" onclick="revokeInvite(${i.id})">Revoke</button>` : ''}</td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    }
+  } catch (e) {}
+}
+window.createInvite = async function() {
+  const email = document.getElementById('inviteEmail').value.trim();
+  const role = document.getElementById('inviteRole').value;
+  if (!email) return toast('Email required', 'error');
+  try {
+    const r = await fetchJson('/workspace/invites', { method: 'POST', body: JSON.stringify({ email, role }) });
+    const code = r.data.invite.inviteCode || r.data.invite.invite_code;
+    const url = location.origin + '/invite/accept?code=' + encodeURIComponent(code);
+    document.getElementById('inviteEmail').value = '';
+    document.getElementById('inviteLinkBox').innerHTML =
+      `<div class="row-inline">
+        <span class="mono grow" style="word-break: break-all;">${esc(url)}</span>
+        <button class="btn small" onclick="navigator.clipboard.writeText('${esc(url)}').then(() => { const b = this; b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1500); })">Copy</button>
+      </div>`;
+    toast('Invite created', 'success');
+    loadTeam();
+  } catch (e) { toast(e.message, 'error'); }
+};
+window.copyInvite = function(code) {
+  const url = location.origin + '/invite/accept?code=' + encodeURIComponent(code);
+  navigator.clipboard.writeText(url).then(() => toast('Copied invite link', 'success'));
+};
+window.revokeInvite = async function(id) {
+  if (!confirm('Revoke this invite?')) return;
+  try { await fetchJson('/workspace/invites/' + id, { method: 'DELETE' }); toast('Revoked', 'success'); loadTeam(); }
+  catch (e) { toast(e.message, 'error'); }
+};
+window.removeMember = async function(userId) {
+  if (!confirm('Remove this member from the tenant? They lose access to all shared resources.')) return;
+  try { await fetchJson('/workspace/members/' + userId, { method: 'DELETE' }); toast('Member removed', 'success'); loadTeam(); loadHome(); }
+  catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Profile ────────────────────────────────────────────────────
+function loadProfile() {
+  if (!state.me) return;
+  const u = state.me.user || {};
+  document.getElementById('profileBody').innerHTML = `
+    <div class="row-inline"><span class="small muted grow">Email</span><span class="mono">${esc(u.email || '—')}</span></div>
+    <div class="row-inline"><span class="small muted grow">Username</span><span class="mono">${esc(u.username || '—')}</span></div>
+    <div class="row-inline"><span class="small muted grow">Name</span><span>${esc([u.firstName, u.lastName].filter(Boolean).join(' ') || '—')}</span></div>
+    <div class="row-inline"><span class="small muted grow">Tier</span><span class="pill info">${esc(u.tier || '—')}</span></div>
+    <div class="row-inline"><span class="small muted grow">Language</span><span>${esc(u.language || '—')}</span></div>
+    <div class="row-inline"><span class="small muted grow">Timezone</span><span class="mono">${esc(u.timezone || '—')}</span></div>
+    <p class="small muted" style="margin-top: var(--space-4);">Profile edits live in the iOS app for now. A portal-side editor is tracked in open-items.</p>`;
+}
+
+async function loadFooter() {
+  try {
+    const r = await fetch('/api/snapshot');
+    if (r.ok) { const j = await r.json(); document.getElementById('footerVersion').textContent = j.version || '—'; }
+  } catch {}
+}
+
+// Boot
+tryAuth();
+})();
+</script>
+</body>
+</html>

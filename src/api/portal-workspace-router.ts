@@ -978,5 +978,203 @@ export function createPortalWorkspaceRouter(): Router {
     }
   });
 
+  // ── GET /workspace/console/home ──────────────────────────────────
+  //
+  // Aggregated User Console home payload. Added 2026-04-22 for the
+  // admin/user-console IA pass. It is a READ-ONLY convenience
+  // endpoint that composes existing tables — no schema changes, no
+  // side effects, no cost exposure (tenant plane never shows costUsd).
+  //
+  // Response shape is documented in
+  //   docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md §9.2
+  //   docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md
+  //
+  // Kept intentionally small: each field is a pure function of
+  // existing data. If a derived field can't be computed honestly
+  // (e.g. real insight engine not yet built) we return an empty
+  // array and let the UI render an honest empty state.
+  router.get('/console/home', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    try {
+      const db = getDb();
+
+      // ── Counts of tenant-scoped reference material. Used by the
+      //    sidebar badges and the dependency evaluator below.
+      const row = (stmt: string, ...args: unknown[]): number => {
+        const r = db.prepare(stmt).get(...args) as { c: number } | undefined;
+        return r?.c ?? 0;
+      };
+      const booksCount = row(
+        'SELECT COUNT(*) AS c FROM tenant_books WHERE tenant_id = ?',
+        ctx.tenantId,
+      );
+      const notesCount = row(
+        'SELECT COUNT(*) AS c FROM tenant_content_notes WHERE tenant_id = ?',
+        ctx.tenantId,
+      );
+      const linksCount = row(
+        'SELECT COUNT(*) AS c FROM tenant_links WHERE tenant_id = ?',
+        ctx.tenantId,
+      );
+      const membersCount = row(
+        'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
+        ctx.tenantId,
+      );
+      const pendingInvitesCount = row(
+        "SELECT COUNT(*) AS c FROM tenant_invites WHERE tenant_id = ? AND status = 'pending'",
+        ctx.tenantId,
+      );
+
+      // ── Usage today (NO costUsd — tenant plane never shows dollars)
+      const usageRow = db
+        .prepare(
+          `SELECT COUNT(*) AS calls
+           FROM api_usage
+           WHERE user_id = ? AND ts >= date('now')`,
+        )
+        .get(ctx.userId) as { calls: number } | undefined;
+
+      // ── Setup progress. Honest: 4 milestones, counted as done if
+      //    the underlying table has a row.
+      const milestones = [
+        { id: 'first-book',     label: 'Add your first book',           done: booksCount > 0 },
+        { id: 'first-note',     label: 'Capture a content note',        done: notesCount > 0 },
+        { id: 'first-link',     label: 'Save a reference link',         done: linksCount > 0 },
+        { id: 'team-or-solo',   label: 'Set up your team (or stay solo)', done: membersCount > 0 || pendingInvitesCount > 0 },
+      ];
+      const doneCount = milestones.filter((m) => m.done).length;
+      const setupPercent = Math.round((doneCount / milestones.length) * 100);
+
+      // ── Dependencies (MVP subset — only the four we can compute
+      //    cheaply from existing tables; full catalog in the spec).
+      interface ConsoleDependency {
+        id: string;
+        skillId: string;
+        kind: string;
+        label: string;
+        status: 'ready' | 'missing' | 'degraded' | 'unknown';
+        cta: { label: string; href: string } | null;
+      }
+      const dependencies: ConsoleDependency[] = [
+        {
+          id: 'content.books.library',
+          skillId: 'content',
+          kind: 'reference',
+          label: 'Books library',
+          status: booksCount > 0 ? 'ready' : 'missing',
+          cta: booksCount > 0 ? null : { label: 'Add a book', href: '#/references/books' },
+        },
+        {
+          id: 'content.links.curated',
+          skillId: 'content',
+          kind: 'reference',
+          label: 'Curated links',
+          status: linksCount >= 3 ? 'ready' : linksCount > 0 ? 'degraded' : 'missing',
+          cta: linksCount >= 3 ? null : { label: 'Add links', href: '#/references/links' },
+        },
+        {
+          id: 'content.notes.captured',
+          skillId: 'content',
+          kind: 'reference',
+          label: 'Content notes',
+          status: notesCount > 0 ? 'ready' : 'missing',
+          cta: notesCount > 0 ? null : { label: 'Capture a note', href: '#/references/notes' },
+        },
+        {
+          id: 'workspace.team.set-up',
+          skillId: 'workspace',
+          kind: 'setting',
+          label: 'Team set up (or solo confirmed)',
+          status: membersCount > 0 || pendingInvitesCount > 0 ? 'ready' : 'unknown',
+          cta: ctx.role === 'tenant_admin'
+            ? { label: 'Invite a teammate', href: '#/team/invites' }
+            : null,
+        },
+      ];
+      const depCounts = {
+        total: dependencies.length,
+        ready: dependencies.filter((d) => d.status === 'ready').length,
+        missing: dependencies.filter((d) => d.status === 'missing').length,
+        degraded: dependencies.filter((d) => d.status === 'degraded').length,
+        unknown: dependencies.filter((d) => d.status === 'unknown').length,
+      };
+
+      // ── Insights (MVP: derived ONLY from missing dependencies +
+      //    setup progress. No fake intelligence.).
+      interface ConsoleInsight {
+        id: string;
+        scope: 'tenant' | 'user';
+        skillId: string | null;
+        severity: 'info' | 'nudge' | 'warning';
+        kind: 'setup' | 'dependency-missing';
+        title: string;
+        body: string;
+        cta: { label: string; href: string } | null;
+      }
+      const insights: ConsoleInsight[] = [];
+      for (const dep of dependencies) {
+        if (dep.status === 'missing') {
+          insights.push({
+            id: `dep:${dep.id}`,
+            scope: 'tenant',
+            skillId: dep.skillId,
+            severity: 'warning',
+            kind: 'dependency-missing',
+            title: `${dep.label} — not set up`,
+            body: `Your ${dep.skillId} skill needs this to work at its best.`,
+            cta: dep.cta,
+          });
+        }
+      }
+      if (setupPercent < 100) {
+        insights.push({
+          id: 'setup:incomplete',
+          scope: 'user',
+          skillId: null,
+          severity: 'nudge',
+          kind: 'setup',
+          title: `Workspace setup is ${setupPercent}% complete`,
+          body: `${doneCount} of ${milestones.length} milestones done. Finishing setup unlocks stronger skill outputs.`,
+          cta: { label: 'Finish setup', href: '#/home' },
+        });
+      }
+
+      ok(res, {
+        tenant: {
+          id: ctx.tenantId,
+          role: ctx.role,
+        },
+        user: {
+          id: ctx.userId,
+        },
+        counts: {
+          books: booksCount,
+          notes: notesCount,
+          links: linksCount,
+          members: membersCount,
+          pendingInvites: pendingInvitesCount,
+        },
+        usage: {
+          // No costUsd. Tenant plane never exposes dollars.
+          callsToday: usageRow?.calls ?? 0,
+        },
+        setup: {
+          percent: setupPercent,
+          done: doneCount,
+          total: milestones.length,
+          milestones,
+        },
+        dependencies: {
+          ...depCounts,
+          items: dependencies,
+        },
+        insights,
+      });
+    } catch (dbErr) {
+      logger.error({ err: dbErr, tenantId: ctx.tenantId, userId: ctx.userId }, 'portal-workspace-router: /console/home failed');
+      err(res, 500, 'INTERNAL', 'Failed to compute console home');
+    }
+  });
+
   return router;
 }

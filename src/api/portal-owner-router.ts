@@ -395,5 +395,95 @@ export function createPortalOwnerRouter(): Router {
     },
   );
 
+  // ── GET /owner/console/overview ─────────────────────────────────
+  //
+  // Aggregated Admin Console overview payload. Added 2026-04-22 for
+  // the admin/user-console IA pass. Composes data from existing
+  // tables; no schema changes, no mutations. Feeds the top cards on
+  // the new Admin Console home.
+  //
+  // Shape is documented in
+  //   docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md §9.2
+  router.get('/console/overview', (_req: Request, res: Response) => {
+    try {
+      const db = getDb();
+      const scalar = (stmt: string, args: unknown[] = []): number => {
+        const r = db.prepare(stmt).get(...args) as { c: number } | undefined;
+        return r?.c ?? 0;
+      };
+
+      const tenantCount = scalar('SELECT COUNT(*) AS c FROM tenants');
+      const userCount = scalar('SELECT COUNT(*) AS c FROM users');
+      const activeUserCount = scalar("SELECT COUNT(*) AS c FROM users WHERE status = 'active'");
+      const suspendedUserCount = scalar("SELECT COUNT(*) AS c FROM users WHERE status = 'suspended'");
+
+      // Waitlist may not exist on every deployment; wrap in try/catch
+      // so the overview still renders if the table is absent.
+      let waitlistPending = 0;
+      try {
+        waitlistPending = scalar("SELECT COUNT(*) AS c FROM waitlist WHERE status = 'pending'");
+      } catch { /* table not present on this deployment */ }
+
+      // Usage today (admin plane — may expose cost).
+      const usageTotalRow = db
+        .prepare("SELECT COALESCE(SUM(cost_usd), 0) AS total, COUNT(*) AS calls FROM api_usage WHERE ts >= date('now')")
+        .get() as { total: number; calls: number } | undefined;
+
+      // Recent audit events (last 10 — newest first).
+      const recentAudit = db
+        .prepare(
+          `SELECT id, ts, user_id, actor_id, action, resource
+           FROM audit_trail
+           ORDER BY id DESC
+           LIMIT 10`,
+        )
+        .all() as Array<{
+          id: number; ts: string; user_id: number; actor_id: number; action: string; resource: string;
+        }>;
+
+      // Tenant-adoption risk: tenants with zero api_usage in the
+      // last 14 days. Cheap heuristic; real churn scoring is future.
+      const inactiveTenants = db
+        .prepare(
+          `SELECT t.id, t.slug, t.display_name
+           FROM tenants t
+           LEFT JOIN api_usage u ON u.user_id = t.id AND u.ts >= datetime('now', '-14 days')
+           WHERE u.user_id IS NULL
+           ORDER BY t.id DESC
+           LIMIT 20`,
+        )
+        .all() as Array<{ id: number; slug: string; display_name: string | null }>;
+
+      ok(res, {
+        counts: {
+          tenants: tenantCount,
+          users: userCount,
+          activeUsers: activeUserCount,
+          suspendedUsers: suspendedUserCount,
+          waitlistPending,
+        },
+        usageToday: {
+          totalUsd: usageTotalRow?.total ?? 0,
+          calls: usageTotalRow?.calls ?? 0,
+        },
+        recentAudit: recentAudit.map((r) => ({
+          id: r.id,
+          ts: r.ts,
+          userId: r.user_id,
+          actorId: r.actor_id,
+          action: r.action,
+          resource: r.resource,
+        })),
+        adoptionRisk: {
+          inactiveTenants: inactiveTenants.length,
+          samples: inactiveTenants,
+        },
+      });
+    } catch (dbErr) {
+      logger.error({ err: dbErr }, 'portal-owner-router: /console/overview failed');
+      err(res, 500, 'INTERNAL', 'Failed to compute overview');
+    }
+  });
+
   return router;
 }
