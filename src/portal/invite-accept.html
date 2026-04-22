@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0A0A0A">
+<meta name="robots" content="noindex, nofollow">
+<title>Nexus Hub — Accept invitation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+ * Nexus Hub · Invite acceptance landing
+ * Intentionally thin. One job: take ?code=... from the URL, POST it
+ * to /workspace/my-invites/:code/accept, and land the user in the
+ * right tenant on /console. Matches the portal design system.
+ * ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --bg-primary: #0A0A0A; --bg-secondary: #141414; --bg-tertiary: #1E1E1E;
+  --bg-panel: #181818; --bg-elevated: #242424;
+  --border: #2A2A2A; --border-hover: #3A3A3A;
+  --text-primary: #FFFFFF; --text-secondary: #B5B5B8;
+  --text-dim: #8E8E93; --text-muted: #5C5C66;
+  --accent: #FF6B35; --accent-hover: #FF8456;
+  --accent-subtle: rgba(255, 107, 53, 0.12); --accent-border: rgba(255, 107, 53, 0.3);
+  --success: #34C759; --success-bg: rgba(52, 199, 89, 0.12);
+  --warning: #FFD60A; --warning-bg: rgba(255, 214, 10, 0.12);
+  --error: #FF3B30; --error-bg: rgba(255, 59, 48, 0.12);
+  --info: #60A5FA; --info-bg: rgba(96, 165, 250, 0.12);
+  --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius-sm: 6px; --radius: 10px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100vh; }
+body {
+  background: var(--bg-primary); color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px; line-height: 1.5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.mono { font-family: 'JetBrains Mono', monospace; }
+
+.wrap {
+  max-width: 440px; width: 100%; padding: var(--space-5);
+}
+.brand {
+  display: flex; align-items: center; justify-content: center; gap: var(--space-2);
+  font-weight: 700; font-size: 15px; letter-spacing: 0.3px;
+  margin-bottom: var(--space-6);
+}
+.brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.brand .divider { color: var(--text-muted); }
+.brand .scope-pill {
+  background: var(--accent-subtle); color: var(--accent);
+  border: 1px solid var(--accent-border);
+  padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+}
+
+.card {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-6);
+}
+h1 {
+  font-size: 22px; font-weight: 700; margin: 0 0 var(--space-2);
+  letter-spacing: -0.2px;
+}
+.lede { color: var(--text-dim); font-size: 13px; margin: 0 0 var(--space-5); }
+
+.code-preview {
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: var(--space-3);
+  font-size: 12px; color: var(--text-dim);
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: var(--space-5);
+}
+.code-preview .mono { color: var(--text-primary); }
+
+.form-row { margin-bottom: var(--space-3); }
+label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; font-weight: 500; }
+input {
+  background: var(--bg-tertiary); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-size: 13px; font-family: inherit;
+  width: 100%;
+}
+input:focus { outline: none; border-color: var(--accent); }
+
+button.btn {
+  background: var(--accent); color: #111;
+  border: 1px solid var(--accent); font-weight: 600;
+  padding: 10px 16px; border-radius: var(--radius-sm);
+  font-size: 14px; cursor: pointer; width: 100%;
+}
+button.btn:hover { background: var(--accent-hover); }
+button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+button.btn.ghost {
+  background: transparent; color: var(--text-secondary);
+  border-color: var(--border);
+}
+button.btn.ghost:hover { border-color: var(--border-hover); color: var(--text-primary); }
+.btn-row { display: flex; gap: var(--space-3); }
+
+.banner {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.banner.error { background: var(--error-bg); border: 1px solid var(--error); color: var(--error); }
+.banner.warning { background: var(--warning-bg); border: 1px solid rgba(255,214,10,.3); color: var(--warning); }
+.banner.info { background: var(--info-bg); border: 1px solid rgba(96,165,250,.3); color: var(--info); }
+.banner.success { background: var(--success-bg); border: 1px solid rgba(52,199,89,.3); color: var(--success); }
+.banner .icon { font-size: 16px; line-height: 1; flex-shrink: 0; }
+.banner .body { flex: 1; }
+.banner strong { display: block; margin-bottom: 2px; font-weight: 600; }
+.banner p { margin: 0; }
+
+.spinner {
+  width: 16px; height: 16px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  display: inline-block; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.subtle { color: var(--text-muted); font-size: 11px; text-align: center; margin-top: var(--space-5); }
+.subtle a { color: var(--text-dim); text-decoration: underline; }
+.subtle a:hover { color: var(--accent); }
+.hidden { display: none !important; }
+.small { font-size: 12px; }
+.muted { color: var(--text-dim); }
+
+.role-pill {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  background: var(--accent-subtle); color: var(--accent);
+  border: 1px solid var(--accent-border); font-size: 11px; font-weight: 600;
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="brand">
+    <span class="dot"></span> Nexus Hub
+    <span class="divider">·</span>
+    <span class="scope-pill">INVITATION</span>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: no code in URL
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-no-code">
+    <h1>No invitation code</h1>
+    <p class="lede">This page expects a <span class="mono">?code=…</span> parameter. Open the invitation link exactly as you received it.</p>
+    <div class="btn-row">
+      <button class="btn ghost" onclick="location.href='/console'">Go to workspace</button>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: code present, no JWT yet
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-need-auth">
+    <h1>Accept your invitation</h1>
+    <p class="lede">You've been invited to a Nexus Hub workspace. Paste your iOS session token to continue.</p>
+    <div class="code-preview">
+      <span>Invitation code</span>
+      <span class="mono" id="codeMask">—</span>
+    </div>
+    <div class="banner info">
+      <span class="icon">ℹ</span>
+      <div class="body">
+        <strong>Where do I get a token?</strong>
+        <p>Open the Nexus Hub iOS app → Settings → Developer → Copy access token. The token is required so the server can verify the invite was issued to your email.</p>
+      </div>
+    </div>
+    <div class="form-row">
+      <label for="jwtInput">Access token (JWT)</label>
+      <input id="jwtInput" type="password" placeholder="eyJhbG…" autocomplete="off" />
+    </div>
+    <button class="btn" id="signInBtn">Continue</button>
+    <p class="subtle">The token is stored only in this tab (<span class="mono">sessionStorage</span>) and cleared when you close the tab.</p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: accepting (loading)
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-loading">
+    <h1><span class="spinner"></span>&nbsp;&nbsp;Accepting invitation…</h1>
+    <p class="lede">Verifying the invite and adding you to the workspace.</p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: success
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-success">
+    <h1>You're in</h1>
+    <p class="lede">Welcome to the workspace. You were added as <span class="role-pill" id="successRole">—</span>.</p>
+    <div class="banner success">
+      <span class="icon">✓</span>
+      <div class="body">
+        <strong>Redirecting to your workspace…</strong>
+        <p class="small muted" id="successCountdown">in 3 seconds</p>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" onclick="goToConsole()">Go now →</button>
+    </div>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: error (generic)
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-error">
+    <h1 id="errorTitle">Something went wrong</h1>
+    <p class="lede" id="errorLede">The server returned an error.</p>
+    <div class="banner error">
+      <span class="icon">⚠</span>
+      <div class="body">
+        <strong id="errorCode">ERROR</strong>
+        <p id="errorMessage"></p>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="retryBtn">Try again</button>
+      <button class="btn ghost" onclick="location.href='/console'">Go to workspace</button>
+    </div>
+    <p class="subtle" id="errorHelp"></p>
+  </div>
+</div>
+
+<script>
+(function() {
+'use strict';
+
+// ── Module-private state ─────────────────────────────────────────
+// The invite code lives ONLY in this closure. Not on window. Not in
+// sessionStorage (no need — the URL carried it; losing it on refresh
+// is acceptable and actually safer because the URL is strip-replaced
+// immediately on load).
+let code = null;
+let jwt = sessionStorage.getItem('nx.usr.jwt') || '';
+
+// ── URL parsing + privacy cleanup ────────────────────────────────
+// Read ?code=..., strip it from the URL so later screenshots, copy-
+// link, or browser-back don't carry the live secret around.
+try {
+  const params = new URLSearchParams(location.search);
+  code = (params.get('code') || '').trim();
+  if (code) {
+    const clean = location.pathname;
+    history.replaceState({}, '', clean);
+  }
+} catch { /* URLSearchParams failure → treat as no-code */ }
+
+// Masked preview: show first 3 + last 3 only.
+function maskCode(c) {
+  if (!c || c.length < 8) return '•'.repeat(c ? c.length : 0);
+  return c.slice(0, 3) + '…' + c.slice(-3);
+}
+
+// ── View switching ───────────────────────────────────────────────
+function show(viewId) {
+  ['no-code', 'need-auth', 'loading', 'success', 'error'].forEach((v) => {
+    document.getElementById('view-' + v).classList.toggle('hidden', v !== viewId);
+  });
+}
+
+// ── Accept flow ──────────────────────────────────────────────────
+async function acceptInvite() {
+  show('loading');
+  try {
+    const res = await fetch('/workspace/my-invites/' + encodeURIComponent(code) + '/accept', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + jwt,
+        'Content-Type': 'application/json',
+      },
+    });
+    let body = null;
+    try { body = await res.json(); } catch {}
+    if (res.ok && body && body.ok) {
+      return showSuccess(body.data);
+    }
+    return showError(res.status, body);
+  } catch (e) {
+    return showError(0, { error: { code: 'NETWORK', message: 'Network error — check your connection and try again.' } });
+  }
+}
+
+function showSuccess(data) {
+  const role = (data && data.role) || 'member';
+  const tenantId = (data && data.tenantId) || '';
+  document.getElementById('successRole').textContent = role;
+  // Persist the newly-joined tenant as the active tenant so /console
+  // lands on the right workspace on the first navigation.
+  if (tenantId) sessionStorage.setItem('nx.usr.tenantId', String(tenantId));
+  show('success');
+  let left = 3;
+  document.getElementById('successCountdown').textContent = 'in ' + left + ' seconds';
+  const t = setInterval(() => {
+    left -= 1;
+    if (left <= 0) { clearInterval(t); goToConsole(); return; }
+    document.getElementById('successCountdown').textContent = 'in ' + left + ' seconds';
+  }, 1000);
+}
+
+// Map server error codes to user-facing copy. Every case includes a
+// plain-English explanation and an actionable next step. The raw
+// server `code` is always shown for support purposes.
+function showError(httpStatus, body) {
+  const ec = (body && body.error && body.error.code) || 'UNKNOWN';
+  const em = (body && body.error && body.error.message) || ('HTTP ' + httpStatus);
+  let title = 'Something went wrong';
+  let lede = 'The invitation couldn\'t be accepted.';
+  let help = '';
+  let retryLabel = 'Try again';
+  let retryEnabled = true;
+
+  if (httpStatus === 401) {
+    title = 'Token expired or invalid';
+    lede = 'Your iOS session token isn\'t valid. Grab a fresh one from the iOS app.';
+    retryLabel = 'Sign in again';
+    // Wipe the JWT so the retry lands on the sign-in view.
+    sessionStorage.removeItem('nx.usr.jwt');
+    jwt = '';
+  } else if (ec === 'NOT_FOUND') {
+    title = 'Invitation not found';
+    lede = 'The code in your link doesn\'t match any invite. Ask the person who invited you for a fresh link.';
+    retryEnabled = false;
+  } else if (ec === 'EMAIL_MISMATCH') {
+    title = 'Wrong account';
+    lede = 'This invitation was issued to a different email. Sign in to Nexus Hub with the email the invite was sent to, and try again.';
+    help = 'Log out of iOS and sign back in with the invited email, then request a fresh token.';
+    retryLabel = 'Switch account';
+  } else if (ec === 'REVOKED') {
+    title = 'Invitation revoked';
+    lede = 'The admin who created this invitation revoked it. Ask them to issue a new one.';
+    retryEnabled = false;
+  } else if (ec === 'EXPIRED') {
+    title = 'Invitation expired';
+    lede = 'This invite is past its expiry date. Ask the admin who created it to send a fresh one.';
+    retryEnabled = false;
+  } else if (ec === 'ALREADY_ACCEPTED') {
+    title = 'Already accepted';
+    lede = 'You\'ve already joined this workspace. Head to your console to start using it.';
+    retryEnabled = false;
+    // Soften the UI: the "error" view, but the primary CTA should
+    // just take them to /console.
+    document.getElementById('retryBtn').classList.add('hidden');
+  } else if (ec === 'NETWORK') {
+    title = 'Couldn\'t reach the server';
+    lede = em;
+  } else {
+    help = 'If this keeps happening, copy the error code above and share it with the admin who invited you.';
+  }
+
+  document.getElementById('errorTitle').textContent = title;
+  document.getElementById('errorLede').textContent = lede;
+  document.getElementById('errorCode').textContent = ec + (httpStatus ? ' · HTTP ' + httpStatus : '');
+  document.getElementById('errorMessage').textContent = em;
+  document.getElementById('errorHelp').textContent = help;
+  const retry = document.getElementById('retryBtn');
+  retry.textContent = retryLabel;
+  retry.disabled = !retryEnabled;
+  show('error');
+}
+
+// ── Sign-in step (no-JWT branch) ─────────────────────────────────
+document.getElementById('signInBtn').addEventListener('click', () => {
+  const raw = document.getElementById('jwtInput').value.trim();
+  if (!raw) return;
+  jwt = raw;
+  sessionStorage.setItem('nx.usr.jwt', jwt);
+  acceptInvite();
+});
+document.getElementById('jwtInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('signInBtn').click();
+});
+
+// ── Retry from the error view ────────────────────────────────────
+document.getElementById('retryBtn').addEventListener('click', () => {
+  if (!jwt) {
+    document.getElementById('codeMask').textContent = maskCode(code);
+    show('need-auth');
+    return;
+  }
+  acceptInvite();
+});
+
+// ── Helper used by a couple of buttons ───────────────────────────
+window.goToConsole = function() { location.href = '/console'; };
+
+// ── Boot ─────────────────────────────────────────────────────────
+if (!code) {
+  show('no-code');
+} else if (!jwt) {
+  document.getElementById('codeMask').textContent = maskCode(code);
+  show('need-auth');
+} else {
+  acceptInvite();
+}
+})();
+</script>
+</body>
+</html>

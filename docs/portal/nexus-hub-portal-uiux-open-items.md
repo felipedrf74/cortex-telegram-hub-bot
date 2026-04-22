@@ -144,11 +144,22 @@ Legend: **P1** near-term, **P2** next pass, **P3** eventual. **Data** = requires
 
 ---
 
-### OI-NAV-203 — `/invite/accept?code=` landing page [P1, UX]
+### ~~OI-NAV-203 — `/invite/accept?code=` landing page~~ [DONE · 2026-04-22]
 
-**What's missing.** The Team → Invite flow generates a link `{origin}/invite/accept?code=XYZ` but that URL isn't wired yet. Clicking it 404s.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+Shipped `src/portal/invite-accept.html` + `GET /invite/accept` route in `server.ts`.
+The landing page:
+  1. strips `?code=` from the URL on load (`history.replaceState`) so screenshots / copy-link / browser-history don't carry the live secret;
+  2. prompts for an iOS JWT if none is cached in sessionStorage;
+  3. POSTs to `/workspace/my-invites/:code/accept`;
+  4. handles every documented error shape (NOT_FOUND / EMAIL_MISMATCH / EXPIRED / REVOKED / ALREADY_ACCEPTED / 401 / network) with a bespoke UI state;
+  5. on success, persists the newly-joined tenant as `nx.usr.tenantId` so `/console` lands on the right workspace.
 
-**Sketch.** A thin `invite-accept.html` that pulls `?code` from the URL, prompts for iOS JWT, POSTs to `/workspace/my-invites/:code/accept`, and redirects to `/console`.
+Test coverage: `__tests__/portal/invite-accept-route.test.ts` (11 pins, including: no-raw-code-in-initial-HTML, `history.replaceState` called, all 6 error codes branched, masked preview only, route wired with anti-cache + clickjacking headers).
+
+Follow-up items still open:
+- **OI-NAV-203a** — queued invitations for users who don't yet have a Nexus account (email link → sign-up path → auto-accept on first login). Today the landing page assumes the invitee has an iOS account + token.
+- **OI-NAV-203b** — email delivery of the invite link. Backend is email-agnostic (by design); a minimal transactional-email integration is a product choice, not a UX blocker.
 
 ---
 

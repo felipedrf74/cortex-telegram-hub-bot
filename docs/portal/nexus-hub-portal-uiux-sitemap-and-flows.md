@@ -13,7 +13,10 @@
 /                          → landing OR workspace-ui (auth-aware)
 /landing                   → landing.html (public marketing)
 /login                     → existing login flow (unchanged)
-/invite/accept?code=...    → invite acceptance landing (future, see open-items)
+/invite/accept?code=...    → invite acceptance landing (shipped 2026-04-22 —
+                              strips ?code from URL on load, prompts for JWT if
+                              needed, handles all server error codes, persists
+                              the newly-joined tenant as active on success)
 /health, /health/detailed  → ops health endpoints (unchanged)
 ```
 

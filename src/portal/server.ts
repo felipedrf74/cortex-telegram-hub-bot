@@ -264,6 +264,26 @@ export function createPortalServer(bot?: any): http.Server {
   app.get('/console', serveShell('user-console.html'));
   app.get('/user-console', serveShell('user-console.html'));
 
+  // ── /invite/accept — invitation acceptance landing (2026-04-22) ──
+  //
+  // OI-NAV-203 from the UI/UX pass open-items. Pairs with the
+  // Team → Invite button in the User Console, which generates a
+  // link of the shape
+  //   {origin}/invite/accept?code=<invite_code>
+  //
+  // The landing page:
+  //   (1) strips ?code=… from the URL on load (history.replaceState)
+  //       so screenshots / copy-link / browser-history don't carry
+  //       the live secret,
+  //   (2) prompts for an iOS JWT if none is cached in sessionStorage,
+  //   (3) POSTs to /workspace/my-invites/:code/accept (existing),
+  //   (4) handles every documented error shape from that endpoint
+  //       (NOT_FOUND, EMAIL_MISMATCH, EXPIRED, REVOKED,
+  //       ALREADY_ACCEPTED, 401, network) with a bespoke UI state,
+  //   (5) on success, persists the newly-joined tenant as
+  //       nx.usr.tenantId so /console lands on the right workspace.
+  app.get('/invite/accept', serveShell('invite-accept.html'));
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see
