@@ -223,6 +223,41 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
 .grow { flex: 1; }
 .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--bg-tertiary); color: var(--text-dim); margin-right: 4px; }
 
+/* OI-USR-405: skill chips are visually distinct from regular tags
+ * so the user reads them as "this reference is used by X" rather
+ * than as a tag they should also type into the tags field. */
+.skill-chip {
+  display: inline-block; font-size: 10px; padding: 1px 7px;
+  border-radius: 999px; background: var(--accent-subtle);
+  color: var(--accent); border: 1px solid var(--accent-border);
+  margin-right: 4px; font-weight: 500;
+  letter-spacing: 0.2px;
+}
+.skill-chip-group {
+  display: inline-flex; flex-wrap: wrap; gap: 3px;
+}
+/* Add-form "Used by skills" checkbox group */
+.skill-picker {
+  display: flex; flex-wrap: wrap; gap: var(--space-3);
+  margin-top: 4px;
+}
+.skill-picker label {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--text-secondary);
+  cursor: pointer; font-weight: normal; margin: 0;
+  padding: 4px 10px; border-radius: var(--radius-sm);
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+}
+.skill-picker label:hover { border-color: var(--border-hover); }
+.skill-picker label input[type="checkbox"] {
+  width: auto; margin: 0;
+}
+.skill-picker label.selected {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
 /* Skill sub-tabs */
 .subtabs {
   display: flex; gap: var(--space-1); margin-bottom: var(--space-4);
@@ -893,8 +928,12 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
               <option value="finished">Finished</option>
               <option value="abandoned">Abandoned</option>
             </select></div>
-            <div><label>Tags (comma-sep)</label><input id="bookTags" placeholder="content, habits" /></div>
+            <div><label>Tags (comma-sep)</label><input id="bookTags" placeholder="habits, productivity" /></div>
             <button class="btn primary" onclick="createBook()">Add</button>
+          </div>
+          <div>
+            <label>Used by skills <span class="muted small">(optional — can edit later)</span></label>
+            <div class="skill-picker" data-skill-picker-for="book"></div>
           </div>
         </div>
       </div>
@@ -909,6 +948,14 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
               <option value="reading">Reading</option>
               <option value="finished">Finished</option>
               <option value="abandoned">Abandoned</option>
+            </select>
+            <select id="bookSkillFilter" onchange="renderBooks()" style="width: 140px;">
+              <option value="">All skills</option>
+              <option value="content">Content</option>
+              <option value="secretary">Secretary</option>
+              <option value="training">Training</option>
+              <option value="finance">Finance</option>
+              <option value="cooking">Cooking</option>
             </select>
           </div>
         </header>
@@ -938,6 +985,10 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
             <div><label>Handle</label><input id="channelHandle" placeholder="@handle" /></div>
             <button class="btn primary" onclick="createChannel()">Add</button>
           </div>
+          <div>
+            <label>Used by skills <span class="muted small">(optional — can edit later)</span></label>
+            <div class="skill-picker" data-skill-picker-for="channel"></div>
+          </div>
         </div>
       </div>
       <div class="panel">
@@ -950,6 +1001,14 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
               <option value="active">Active</option>
               <option value="muted">Muted</option>
               <option value="all">All (incl archived)</option>
+            </select>
+            <select id="channelSkillFilter" onchange="renderChannels()" style="width: 140px;">
+              <option value="">All skills</option>
+              <option value="content">Content</option>
+              <option value="secretary">Secretary</option>
+              <option value="training">Training</option>
+              <option value="finance">Finance</option>
+              <option value="cooking">Cooking</option>
             </select>
           </div>
         </header>
@@ -967,13 +1026,29 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
           <div style="display:grid; grid-template-columns: 1fr 2fr 1fr auto; gap: var(--space-3); align-items: end;">
             <div><label>Title</label><input id="linkTitle" placeholder="Short description" /></div>
             <div><label>URL</label><input id="linkUrl" placeholder="https://…" /></div>
-            <div><label>Tags</label><input id="linkTags" placeholder="content, research" /></div>
+            <div><label>Tags</label><input id="linkTags" placeholder="research, productivity" /></div>
             <button class="btn primary" onclick="createLink()">Save</button>
+          </div>
+          <div>
+            <label>Used by skills <span class="muted small">(optional — can edit later)</span></label>
+            <div class="skill-picker" data-skill-picker-for="link"></div>
           </div>
         </div>
       </div>
       <div class="panel">
-        <header><h2>My links</h2></header>
+        <header>
+          <h2>My links</h2>
+          <div class="row-inline small">
+            <select id="linkSkillFilter" onchange="renderLinks()" style="width: 140px;">
+              <option value="">All skills</option>
+              <option value="content">Content</option>
+              <option value="secretary">Secretary</option>
+              <option value="training">Training</option>
+              <option value="finance">Finance</option>
+              <option value="cooking">Cooking</option>
+            </select>
+          </div>
+        </header>
         <div id="linksTable"></div>
       </div>
     </section>
@@ -993,10 +1068,26 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
             <input id="noteTags" placeholder="tags, comma-separated" class="grow" />
             <button class="btn primary" onclick="createNote()">Save</button>
           </div>
+          <div style="margin-top: var(--space-3);">
+            <label>Used by skills <span class="muted small">(optional — can edit later)</span></label>
+            <div class="skill-picker" data-skill-picker-for="note"></div>
+          </div>
         </div>
       </div>
       <div class="panel">
-        <header><h2>My notes</h2></header>
+        <header>
+          <h2>My notes</h2>
+          <div class="row-inline small">
+            <select id="noteSkillFilter" onchange="renderNotes()" style="width: 140px;">
+              <option value="">All skills</option>
+              <option value="content">Content</option>
+              <option value="secretary">Secretary</option>
+              <option value="training">Training</option>
+              <option value="finance">Finance</option>
+              <option value="cooking">Cooking</option>
+            </select>
+          </div>
+        </header>
         <div id="notesTable"></div>
       </div>
     </section>
@@ -1715,6 +1806,144 @@ window.contentConfigSave = async function() {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+// Reference-to-skill tag convention (OI-USR-405)
+// ─────────────────────────────────────────────────────────────────
+// We encode the "this reference is used by skill X" relationship as
+// a tag on the reference itself, using the reserved namespace
+// `skill:<id>` (e.g. `skill:content`, `skill:secretary`).
+//
+// Why tags and not a separate column?
+//   - Every reference type already has a `tags_json` column.
+//   - Zero backend / schema change needed.
+//   - The service is already isolation-safe by tenant, so a skill
+//     tag inherits that isolation automatically.
+//
+// Users don't type `skill:content` into the tags field — the UI
+// renders a separate checkbox group on the Add form and separate
+// badges on the list rows. Internally we translate to/from the
+// `skill:*` tag namespace.
+const SKILLS_LIST = [
+  { id: 'content',   label: 'Content' },
+  { id: 'secretary', label: 'Secretary' },
+  { id: 'training',  label: 'Training' },
+  { id: 'finance',   label: 'Finance' },
+  { id: 'cooking',   label: 'Cooking' },
+];
+const SKILL_IDS = SKILLS_LIST.map((s) => s.id);
+
+// Extract `skill:*` tags from a tags array → ['content', 'secretary']
+function parseSkillTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const t of tags) {
+    if (typeof t !== 'string') continue;
+    if (!t.startsWith('skill:')) continue;
+    const id = t.slice(6);
+    if (SKILL_IDS.includes(id) && !seen.has(id)) {
+      out.push(id);
+      seen.add(id);
+    }
+  }
+  return out;
+}
+
+// Return a copy of tags WITHOUT any `skill:*` entries.
+function stripSkillTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  return tags.filter((t) => typeof t === 'string' && !t.startsWith('skill:'));
+}
+
+// Merge user tags + selected skill ids into a single tags array
+// for the wire. Dedupes and preserves user-entered casing on
+// non-skill tags.
+function mergeTagsWithSkills(userTags, skillIds) {
+  const out = [];
+  const seen = new Set();
+  for (const t of userTags) {
+    if (typeof t !== 'string') continue;
+    const trimmed = t.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  for (const id of skillIds) {
+    if (!SKILL_IDS.includes(id)) continue;
+    const tag = 'skill:' + id;
+    if (seen.has(tag.toLowerCase())) continue;
+    seen.add(tag.toLowerCase());
+    out.push(tag);
+  }
+  return out;
+}
+
+// Render skill badges for a row's tags array. Returns HTML string.
+function renderSkillBadges(tags) {
+  const skills = parseSkillTags(tags);
+  if (skills.length === 0) return '';
+  const labels = skills.map((id) => {
+    const s = SKILLS_LIST.find((x) => x.id === id);
+    return `<span class="skill-chip">${esc(s ? s.label : id)}</span>`;
+  }).join('');
+  return `<span class="skill-chip-group">${labels}</span>`;
+}
+
+// Render the checkbox group in an Add form. `container` is the
+// .skill-picker div; `kind` is 'book' | 'link' | 'note' | 'channel'
+// (used only to scope checkbox ids so multiple forms don't collide).
+function renderSkillPicker(container, kind) {
+  if (!container) return;
+  container.innerHTML = SKILLS_LIST.map((s) => `
+    <label>
+      <input type="checkbox" value="${esc(s.id)}" data-skill-picker="${esc(kind)}" />
+      <span>${esc(s.label)}</span>
+    </label>
+  `).join('');
+  // Highlight selected chip when the checkbox toggles.
+  container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const lbl = cb.closest('label');
+      if (lbl) lbl.classList.toggle('selected', cb.checked);
+    });
+  });
+}
+
+// Read the selected skill ids from an Add-form picker.
+function readSkillPicker(kind) {
+  const inputs = document.querySelectorAll(`input[data-skill-picker="${kind}"]`);
+  const out = [];
+  inputs.forEach((cb) => { if (cb.checked) out.push(cb.value); });
+  return out;
+}
+
+// Reset the skill-picker checkboxes (called after a successful save).
+function resetSkillPicker(kind) {
+  const inputs = document.querySelectorAll(`input[data-skill-picker="${kind}"]`);
+  inputs.forEach((cb) => {
+    cb.checked = false;
+    const lbl = cb.closest('label');
+    if (lbl) lbl.classList.remove('selected');
+  });
+}
+
+// Filter helper: does this row's tags include skill:<id>?
+function rowMatchesSkill(tags, skillId) {
+  if (!skillId) return true;
+  return parseSkillTags(tags).includes(skillId);
+}
+
+// Boot-time: populate every skill-picker on every ref page. Safe
+// to call once on shell load — the HTML elements always exist
+// even if the user hasn't visited those pages yet.
+setTimeout(() => {
+  document.querySelectorAll('.skill-picker[data-skill-picker-for]').forEach((el) => {
+    renderSkillPicker(el, el.getAttribute('data-skill-picker-for'));
+  });
+}, 0);
+
 // ── Books CRUD ────────────────────────────────────────────────────
 async function loadBooks() {
   const c = document.getElementById('booksTable');
@@ -1729,21 +1958,24 @@ window.renderBooks = function() {
   const c = document.getElementById('booksTable');
   const q = (document.getElementById('bookSearch').value || '').toLowerCase();
   const f = document.getElementById('bookFilter').value;
+  const skillF = (document.getElementById('bookSkillFilter') || { value: '' }).value;
   let rows = state.books;
   if (q) rows = rows.filter((b) => (b.title || '').toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q));
   if (f) rows = rows.filter((b) => b.status === f);
+  if (skillF) rows = rows.filter((b) => rowMatchesSkill(b.tags, skillF));
   if (rows.length === 0) {
-    c.innerHTML = '<div class="empty-state"><h3>' + (state.books.length === 0 ? "You haven't added a book yet" : 'No books match your filter') + '</h3><p>' + (state.books.length === 0 ? 'Your Content and Secretary skills use your library as reference. Start with one you\'re reading now.' : 'Clear the filter above to see all books.') + '</p></div>';
+    c.innerHTML = '<div class="empty-state"><h3>' + (state.books.length === 0 ? "You haven't added a book yet" : 'No books match your filter') + '</h3><p>' + (state.books.length === 0 ? 'Your Content and Secretary skills use your library as reference. Start with one you\'re reading now.' : 'Clear the filters above to see all books.') + '</p></div>';
     return;
   }
   c.innerHTML = `<table class="data">
-    <thead><tr><th>Title</th><th>Author</th><th>Status</th><th>Tags</th><th></th></tr></thead>
+    <thead><tr><th>Title</th><th>Author</th><th>Status</th><th>Used by</th><th>Tags</th><th></th></tr></thead>
     <tbody>${rows.map((b) => `
       <tr>
         <td><strong>${esc(b.title)}</strong></td>
         <td>${esc(b.author || '—')}</td>
         <td><span class="pill ${b.status === 'finished' ? 'ready' : b.status === 'reading' ? 'degraded' : b.status === 'abandoned' ? 'unknown' : 'info'}">${esc(b.status || 'want_to_read')}</span></td>
-        <td>${(b.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</td>
+        <td>${renderSkillBadges(b.tags) || '<span class="small muted">—</span>'}</td>
+        <td>${stripSkillTags(b.tags).map((t) => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="small muted">—</span>'}</td>
         <td class="right"><button class="btn ghost danger small" onclick="deleteBook(${b.id})">Remove</button></td>
       </tr>`).join('')}
     </tbody></table>`;
@@ -1752,13 +1984,16 @@ window.createBook = async function() {
   const title = document.getElementById('bookTitle').value.trim();
   const author = document.getElementById('bookAuthor').value.trim();
   const status = document.getElementById('bookStatus').value;
-  const tags = document.getElementById('bookTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  const userTags = document.getElementById('bookTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  const skillIds = readSkillPicker('book');
+  const tags = mergeTagsWithSkills(userTags, skillIds);
   if (!title) return toast('Title required', 'error');
   try {
     await fetchJson('/workspace/books', { method: 'POST', body: JSON.stringify({ title, author, status, tags }) });
     document.getElementById('bookTitle').value = '';
     document.getElementById('bookAuthor').value = '';
     document.getElementById('bookTags').value = '';
+    resetSkillPicker('book');
     toast('Book added', 'success');
     loadBooks(); loadHome();
   } catch (e) { toast(e.message, 'error'); }
@@ -1779,32 +2014,47 @@ async function loadLinks() {
   try {
     const r = await fetchJson('/workspace/links');
     state.links = r.data.links || [];
-    if (state.links.length === 0) {
-      c.innerHTML = '<div class="empty-state"><h3>No links yet</h3><p>Save URLs you want your skills to reference.</p></div>';
-      return;
-    }
-    c.innerHTML = `<table class="data">
-      <thead><tr><th>Title</th><th>URL</th><th>Tags</th><th></th></tr></thead>
-      <tbody>${state.links.map((l) => `
-        <tr>
-          <td><strong>${esc(l.title)}</strong></td>
-          <td class="small"><a href="${esc(l.url)}" target="_blank" rel="noopener" class="mono muted">${esc(l.url)}</a></td>
-          <td>${(l.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</td>
-          <td class="right"><button class="btn ghost danger small" onclick="deleteLink(${l.id})">Remove</button></td>
-        </tr>`).join('')}
-      </tbody></table>`;
+    renderLinks();
   } catch (e) { c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`; }
 }
+window.renderLinks = function() {
+  const c = document.getElementById('linksTable');
+  const skillF = (document.getElementById('linkSkillFilter') || { value: '' }).value;
+  let rows = state.links;
+  if (skillF) rows = rows.filter((l) => rowMatchesSkill(l.tags, skillF));
+  if (rows.length === 0) {
+    c.innerHTML = '<div class="empty-state"><h3>' +
+      (state.links.length === 0 ? 'No links yet' : 'No links match your filter') +
+      '</h3><p>' +
+      (state.links.length === 0 ? 'Save URLs you want your skills to reference.' : 'Clear the skill filter to see all links.') +
+      '</p></div>';
+    return;
+  }
+  c.innerHTML = `<table class="data">
+    <thead><tr><th>Title</th><th>URL</th><th>Used by</th><th>Tags</th><th></th></tr></thead>
+    <tbody>${rows.map((l) => `
+      <tr>
+        <td><strong>${esc(l.title)}</strong></td>
+        <td class="small"><a href="${esc(l.url)}" target="_blank" rel="noopener" class="mono muted">${esc(l.url)}</a></td>
+        <td>${renderSkillBadges(l.tags) || '<span class="small muted">—</span>'}</td>
+        <td>${stripSkillTags(l.tags).map((t) => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="small muted">—</span>'}</td>
+        <td class="right"><button class="btn ghost danger small" onclick="deleteLink(${l.id})">Remove</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+};
 window.createLink = async function() {
   const title = document.getElementById('linkTitle').value.trim();
   const url = document.getElementById('linkUrl').value.trim();
-  const tags = document.getElementById('linkTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  const userTags = document.getElementById('linkTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  const skillIds = readSkillPicker('link');
+  const tags = mergeTagsWithSkills(userTags, skillIds);
   if (!title || !url) return toast('Title and URL required', 'error');
   try {
     await fetchJson('/workspace/links', { method: 'POST', body: JSON.stringify({ title, url, tags }) });
     document.getElementById('linkTitle').value = '';
     document.getElementById('linkUrl').value = '';
     document.getElementById('linkTags').value = '';
+    resetSkillPicker('link');
     toast('Link saved', 'success');
     loadLinks(); loadHome();
   } catch (e) { toast(e.message, 'error'); }
@@ -1835,12 +2085,14 @@ async function loadChannels() {
 window.renderChannels = function() {
   const c = document.getElementById('channelsTable');
   const q = (document.getElementById('channelSearch').value || '').toLowerCase();
+  const skillF = (document.getElementById('channelSkillFilter') || { value: '' }).value;
   let rows = state.channels;
   if (q) rows = rows.filter((x) =>
     (x.title || '').toLowerCase().includes(q) ||
     (x.handle || '').toLowerCase().includes(q) ||
     (x.url || '').toLowerCase().includes(q),
   );
+  if (skillF) rows = rows.filter((x) => rowMatchesSkill(x.tags, skillF));
   if (rows.length === 0) {
     c.innerHTML = '<div class="empty-state"><h3>' +
       (state.channels.length === 0
@@ -1854,7 +2106,7 @@ window.renderChannels = function() {
     return;
   }
   c.innerHTML = `<table class="data">
-    <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Status</th><th>Used by</th><th></th></tr></thead>
     <tbody>${rows.map((ch) => {
       const kindPill = `<span class="pill info">${esc(ch.kind)}</span>`;
       const statusPill =
@@ -1874,6 +2126,7 @@ window.renderChannels = function() {
           <td>${kindPill}</td>
           <td>${src}</td>
           <td>${statusPill}</td>
+          <td>${renderSkillBadges(ch.tags) || '<span class="small muted">—</span>'}</td>
           <td class="right row-inline" style="justify-content: flex-end;">
             <button class="btn ghost small" onclick="setChannelStatus(${ch.id}, '${toggleTarget}')">${toggleLabel}</button>
             <button class="btn ghost danger small" onclick="deleteChannel(${ch.id})">Remove</button>
@@ -1888,6 +2141,8 @@ window.createChannel = async function() {
   const url = document.getElementById('channelUrl').value.trim();
   const kind = document.getElementById('channelKind').value;
   const handle = document.getElementById('channelHandle').value.trim();
+  const skillIds = readSkillPicker('channel');
+  const tags = mergeTagsWithSkills([], skillIds);
   if (!title) return toast('Title required', 'error');
   try {
     await fetchJson('/workspace/channels', {
@@ -1897,11 +2152,13 @@ window.createChannel = async function() {
         url: url || null,
         handle: handle || null,
         kind: kind || 'generic',
+        tags,
       }),
     });
     document.getElementById('channelTitle').value = '';
     document.getElementById('channelUrl').value = '';
     document.getElementById('channelHandle').value = '';
+    resetSkillPicker('channel');
     toast('Channel added', 'success');
     loadChannels(); loadHome();
   } catch (e) { toast(e.message, 'error'); }
@@ -2097,32 +2354,49 @@ async function loadNotes() {
   try {
     const r = await fetchJson('/workspace/content');
     state.notes = r.data.notes || [];
-    if (state.notes.length === 0) {
-      c.innerHTML = '<div class="empty-state"><h3>No notes yet</h3><p>Capture ideas, drafts, or knowledge. Your Content skill reads these as context.</p></div>';
-      return;
-    }
-    c.innerHTML = state.notes.map((n) => `
-      <div class="row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
-        <div class="row-inline" style="width:100%;">
-          <strong class="grow">${esc(n.title)}</strong>
-          <span class="small muted">${esc(n.created_at || n.createdAt || '')}</span>
-          <button class="btn ghost danger small" onclick="deleteNote(${n.id})">Remove</button>
-        </div>
-        <div class="small muted" style="white-space: pre-wrap;">${esc((n.body || '').slice(0, 220))}${(n.body || '').length > 220 ? '…' : ''}</div>
-        <div>${(n.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
-      </div>`).join('');
+    renderNotes();
   } catch (e) { c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`; }
 }
+window.renderNotes = function() {
+  const c = document.getElementById('notesTable');
+  const skillF = (document.getElementById('noteSkillFilter') || { value: '' }).value;
+  let rows = state.notes;
+  if (skillF) rows = rows.filter((n) => rowMatchesSkill(n.tags, skillF));
+  if (rows.length === 0) {
+    c.innerHTML = '<div class="empty-state"><h3>' +
+      (state.notes.length === 0 ? 'No notes yet' : 'No notes match your filter') +
+      '</h3><p>' +
+      (state.notes.length === 0
+        ? 'Capture ideas, drafts, or knowledge. Your Content skill reads these as context.'
+        : 'Clear the skill filter to see all notes.') +
+      '</p></div>';
+    return;
+  }
+  c.innerHTML = rows.map((n) => `
+    <div class="row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+      <div class="row-inline" style="width:100%;">
+        <strong class="grow">${esc(n.title)}</strong>
+        ${renderSkillBadges(n.tags)}
+        <span class="small muted">${esc(n.created_at || n.createdAt || '')}</span>
+        <button class="btn ghost danger small" onclick="deleteNote(${n.id})">Remove</button>
+      </div>
+      <div class="small muted" style="white-space: pre-wrap;">${esc((n.body || '').slice(0, 220))}${(n.body || '').length > 220 ? '…' : ''}</div>
+      <div>${stripSkillTags(n.tags).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+    </div>`).join('');
+};
 window.createNote = async function() {
   const title = document.getElementById('noteTitle').value.trim();
   const body = document.getElementById('noteBody').value.trim();
-  const tags = document.getElementById('noteTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  const userTags = document.getElementById('noteTags').value.split(',').map((t) => t.trim()).filter(Boolean);
+  const skillIds = readSkillPicker('note');
+  const tags = mergeTagsWithSkills(userTags, skillIds);
   if (!title) return toast('Title required', 'error');
   try {
     await fetchJson('/workspace/content', { method: 'POST', body: JSON.stringify({ title, body, tags }) });
     document.getElementById('noteTitle').value = '';
     document.getElementById('noteBody').value = '';
     document.getElementById('noteTags').value = '';
+    resetSkillPicker('note');
     toast('Note saved', 'success');
     loadNotes(); loadHome();
   } catch (e) { toast(e.message, 'error'); }

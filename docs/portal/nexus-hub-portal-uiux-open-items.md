@@ -341,9 +341,28 @@ Follow-ups still open:
 
 ---
 
-### OI-USR-405 — Reference-to-skill assignment UI [P2, UX]
+### ~~OI-USR-405 — Reference-to-skill assignment UI~~ [DONE · 2026-04-23]
 
-**What's missing.** Tagging a reference with `skill:content` works but isn't obvious from the UI. A "Used by skills" multi-select on each reference card would make the relationship explicit.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+All 4 reference types (books / channels / links / notes) now have an explicit "Used by skills" UX. Zero backend change — rides on the existing `tags` arrays using a `skill:<id>` namespace convention (`skill:content`, `skill:secretary`, `skill:training`, `skill:finance`, `skill:cooking`).
+
+Three layers of UI support:
+
+1. **Create forms** — a new "Used by skills (optional)" row below each Add form with a checkbox chip per skill. Selecting checkboxes adds the corresponding `skill:<id>` tag to the outgoing `tags` array on POST. Post-save, checkboxes reset.
+
+2. **Table rows** — each row now has a dedicated "Used by" column (books / channels / links) or inline badges (notes) showing skill chips. The plain "Tags" column strips `skill:*` entries so the same tag never renders twice. Visual distinction: skill chips use the orange accent palette; regular tags stay muted grey.
+
+3. **Filter dropdowns** — each of the 4 reference pages has a new "Filter by skill" dropdown next to the existing search/status filters. Client-side filter via `rowMatchesSkill(tags, skillId)`.
+
+SECURITY: `parseSkillTags` only lifts `skill:<id>` entries to the "Used by" display when `id` is in the static `SKILL_IDS` allowlist. A user who types a raw `skill:evil` into the tags field gets a plain gray tag, not a rendered chip. `renderSkillBadges` HTML-escapes the label before interpolation. `renderSkillPicker` escapes checkbox value + label.
+
+Tests: 32 structural + behavior pins in `__tests__/portal/user-console-ref-skill-tags.test.ts` covering helper functions, 4 forms × skill-picker, 4 filter dropdowns, create-function merge + reset, render split (skill badges vs regular tags), rowMatchesSkill filter, security pins (esc on label, SKILL_IDS allowlist gating).
+
+Follow-ups still open:
+- **OI-USR-405a** — edit-mode UI (today you can tag on create; editing an existing reference's skills requires the backend PATCH + a modal). Low-value: users can delete and re-add to change skill tags.
+- **OI-USR-405b** — automatic skill-tag inference from the reference content (e.g. a book titled "Atomic Habits" auto-suggests `skill:content`). Needs an ML hook; tracked separately.
+- **OI-DATA-001 interaction** — once reference-usage tracking ships (OI-DATA-001), the "Used by skills" labels can be split into "Tagged by user" vs "Used by pipeline", showing both explicit intent and observed usage.
 
 ---
 

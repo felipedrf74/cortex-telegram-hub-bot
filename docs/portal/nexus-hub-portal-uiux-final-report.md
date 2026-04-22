@@ -214,6 +214,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `__tests__/services/tenant-skill-config-service.test.ts`                  | 8 KB         | 24 service unit pins: schema registry, Content round-trip, enum/length/type validators, empty-schema reject, isolation |
 | `__tests__/api/portal-workspace-skill-config-routes.test.ts`              | 8 KB         | 14 route tests: GET for any member incl. tenant_viewer, admin-only PUT, nested+flat body, audit **values-not-leaked**, home dependency auto-heal |
 | `__tests__/portal/user-console-content-config.test.ts`                    | 5 KB         | 20 UI pins: 6 fields, enum options, dirty tracking, diff-only PUT, post-save re-baseline, loadHome refresh, non-admin disable+hide pattern |
+| `__tests__/portal/user-console-ref-skill-tags.test.ts`                    | 8 KB         | **OI-USR-405** — 32 pins: SKILLS_LIST stable order, 4 skill-pickers, 4 filter dropdowns, create functions merge+reset, render split (skill badges vs plain tags), rowMatchesSkill filter, security (esc + SKILL_IDS allowlist) |
 | `docs/portal/nexus-hub-portal-uiux-admin-user-console-spec.md`            | 18 KB        | IA spec                                    |
 | `docs/portal/nexus-hub-portal-uiux-sitemap-and-flows.md`                  | 13 KB        | Sitemap + flows + empty-state patterns     |
 | `docs/portal/nexus-hub-portal-uiux-dependencies-and-insights-model.md`    | 13 KB        | Data model + UX model for Deps / Refs / Insights |
@@ -228,7 +229,7 @@ Nothing was deleted. Nothing was renamed. Nothing was hidden behind a flag.
 | `src/api/portal-owner-router.ts`            | +92 lines (console/overview) + ~175 lines (OI-ADM-301/303): new `GET /owner/console/overview`, `GET /owner/tenants/:id/audit`, `GET /owner/audit`. |
 | `src/portal/server.ts`                      | +33 lines (original pass) + ~20 lines (OI-NAV-203): route aliases for `/admin-console`, `/console`, `/user-console`, `/invite/accept`. |
 | `src/portal/admin-console.html`             | +~420 (OI-ADM-301 + OI-ADM-303) + ~380 (OI-UX-101a): tenant detail drawer + filtered audit viewer + global spotlight search with tenant-drawer deep-link + state caching refactor (loadTenants/loadPlatformAdmins/paintOverview capture into state.*). |
-| `src/portal/user-console.html`              | +~340 (OI-USR-404) + ~150 (OI-DATA-002) + ~160 (OI-DATA-005) + ~155 (OI-USR-407) + ~350 (OI-UX-101) + ~220 (OI-DATA-003): wizard + Channels + Activity + Profile editor + global search + **Content skill Configuration editor** (6 typed inputs, dirty tracking, non-admin view-only mode). |
+| `src/portal/user-console.html`              | +~340 (OI-USR-404) + ~150 (OI-DATA-002) + ~160 (OI-DATA-005) + ~155 (OI-USR-407) + ~350 (OI-UX-101) + ~220 (OI-DATA-003) + ~200 (OI-USR-405): wizard + Channels + Activity + Profile editor + global search + Content Configuration editor + **reference-to-skill assignment UI across 4 reference types** (skill pickers on Add forms, skill chips on rows, skill filter dropdowns). |
 
 ### 11.3 Routes added
 
@@ -359,6 +360,7 @@ Full list in `nexus-hub-portal-uiux-open-items.md`. Highlights:
 - ~~**OI-USR-407** Profile editor~~ **DONE 2026-04-22** — replaced read-only Profile page with a 6-field editor (firstName / lastName / username / avatarUrl / language / timezone), baseline-vs-current dirty tracking, diff-only PATCH payloads, browser-detect helpers for language + timezone, context-strip refresh after save.
 - ~~**OI-UX-101** Global search (User Console)~~ **DONE 2026-04-22** — ⌘K/Ctrl+K spotlight modal indexing pages + books + channels + links + notes + team + activity with substring highlight, keyboard nav (↑↓↵ Esc), and platform-aware kbd hint (⌘K on Mac, Ctrl+K elsewhere).
 - ~~**OI-UX-101a** Global search (Admin Console)~~ **DONE 2026-04-22** — parallel spotlight on Admin Console indexing 11 pages + tenants + platform admins + adoption-risk + audit events. **Command-palette polish**: tenant hits deep-link to the OI-ADM-301 tenant drawer (navigate → drawer opens over familiar context) so searching is the fastest drill-in path.
+- ~~**OI-USR-405** Reference-to-skill assignment UI~~ **DONE 2026-04-23** — all 4 reference types (books / channels / links / notes) now have explicit "Used by skills" chips on rows, a skill-picker checkbox group on Add forms, and a per-page skill filter dropdown. Rides on the existing `tags` array via a `skill:<id>` namespace convention; zero backend change.
 - **OI-NAV-201** Promote `/admin-console` to `/admin` — explicit post-review gate.
 - ~~**OI-NAV-203** Wire `/invite/accept?code=` landing page so invite links resolve.~~ **DONE 2026-04-22** — `src/portal/invite-accept.html` + `GET /invite/accept`, 11 regression tests.
 - ~~**OI-ADM-301** Tenant detail drill-in drawer in Admin Console.~~ **DONE 2026-04-22** — 4-tab drawer (Details/Members/Usage/Audit) + new `GET /owner/tenants/:id/audit` endpoint with dot-prefix scoping.
