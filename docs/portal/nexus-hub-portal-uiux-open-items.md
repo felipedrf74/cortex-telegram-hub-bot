@@ -237,9 +237,34 @@ Tests: 35 structural + behavior pins in `__tests__/portal/portal-label-map.test.
 
 ---
 
-### OI-UX-105 — Keyboard navigation [P2, UX]
+### ~~OI-UX-105 — Keyboard shortcuts~~ [DONE · 2026-04-23]
 
-**What's missing.** Tab-reachability is OK for forms; but keyboard shortcuts for power users (g h = go home, / = focus search, j/k = navigate table rows) would match the "density-first power console" framing.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+User Console now supports power-user keyboard navigation on top of the existing Cmd+K / Ctrl+K search binding from OI-UX-101:
+
+- `/` → Open search (complements Cmd+K)
+- `?` → Open shortcuts help modal
+- `Esc` → Close shortcuts modal when open
+- `g` then `h/i/d/a/t/p` → Home / Insights / Dependencies / Activity / Team / Profile
+- `g` then `b/c/l/n` → Reference Center Books / Channels / Links / Notes
+
+Four correctness guards in the handler:
+
+1. **Input-focus guard** (`isTypingInInput`): if the target is `INPUT` / `TEXTAREA` / `SELECT` / `contentEditable`, the whole handler bails. Typing "google" into a note body must stay literal — the single biggest footgun in global keyboard bindings.
+2. **Modifier-key bailout**: any `metaKey`/`ctrlKey`/`altKey` press bails so browser shortcuts (Ctrl+T, Cmd+R, Cmd+Shift+[, etc.) remain untouched. Cmd+K continues to live in the dedicated search listener.
+3. **Pending-state expiry**: the `g` prefix self-clears after 1500ms (Vim/Gmail/Linear convention). A stray `g` that's not followed up doesn't swallow the user's next key half an hour later.
+4. **`preventDefault()` only when consumed**: the handler only calls `e.preventDefault()` on keys it actually acts on. Non-bound keys pass through to the browser.
+
+UX polish:
+- Help modal is a two-column grid of `<kbd>`-styled bindings with three sections (Navigation / Reference Center / Global) and a footer disclaimer that shortcuts are disabled while typing in a field.
+- Search-modal footer now advertises `? shortcuts` next to the other key hints, so users who discovered Cmd+K have a trail back to the full list.
+- The help modal shares styling DNA with the search modal (`position:fixed`, `z-index:72` — one above search at 71 so it stacks cleanly if both ever open together) for visual consistency.
+- `kbShortcutsIsOpen()` uses the element's `classList.contains('hidden')` as state instead of a separate boolean — one source of truth, fewer desync bugs.
+
+Files: `src/portal/user-console.html` (+~80 LOC JS + ~40 LOC CSS + ~35 LOC modal HTML + 1 line in search footer).
+
+Tests: 29 structural + behavior pins in `__tests__/portal/user-console-keyboard-shortcuts.test.ts` — 10 g-prefix map entries (plus cross-check that every key in the map has a corresponding `<kbd>` row in the modal HTML, catching drift), 3 correctness guards, 1500ms pending expiry, input-guard-first contract, / and ? and Esc handlers, modal structure (role, aria-label, 3 section headings, footer disclaimer), CSS anchors (`position:fixed`, `z-index:72`, 2-column grid, monospace kbd), open/close helper exposure on `window`, 2 regression pins for the pre-existing Cmd+K listener + search functions.
 
 ---
 

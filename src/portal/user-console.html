@@ -577,6 +577,50 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
   background: var(--bg-tertiary); border-radius: var(--radius-sm);
   border: 1px solid var(--border);
 }
+
+/* OI-UX-105: keyboard-shortcuts help modal. Shares layout DNA with
+ * `.search-modal` — same z-index stack, same panel chrome — but is
+ * a static two-column reference card instead of an interactive list. */
+.kb-modal {
+  position: fixed; top: 10vh; left: 50%; transform: translateX(-50%);
+  width: min(560px, 92vw); max-height: 80vh;
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); z-index: 72;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: wizardIn 0.16s ease-out;
+}
+.kb-modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.kb-modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.kb-modal-body {
+  padding: var(--space-3) var(--space-4); overflow-y: auto;
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);
+}
+.kb-modal-section h4 {
+  margin: 0 0 var(--space-2) 0; font-size: 11px;
+  font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.kb-modal-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 12px; color: var(--text-primary);
+}
+.kb-modal-row .keys { display: inline-flex; gap: 4px; }
+.kb-modal-row kbd {
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 4px; font-size: 11px;
+  color: var(--text-dim); font-family: 'JetBrains Mono', monospace;
+  min-width: 14px; text-align: center;
+}
+.kb-modal-footer {
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
 </style>
 </head>
 <body>
@@ -1642,8 +1686,45 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
       <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
       <span><kbd>↵</kbd> pick</span>
       <span><kbd>Esc</kbd> close</span>
+      <span><kbd>?</kbd> shortcuts</span>
     </div>
     <span id="searchCountLabel" class="small muted">—</span>
+  </div>
+</div>
+
+<!-- OI-UX-105: keyboard-shortcuts help modal. Toggled via `?` key. -->
+<div id="kbShortcutsModal" class="kb-modal hidden" role="dialog" aria-label="Keyboard shortcuts">
+  <div class="kb-modal-header">
+    <h3>Keyboard shortcuts</h3>
+    <button class="btn ghost small" onclick="kbShortcutsClose()">Close</button>
+  </div>
+  <div class="kb-modal-body">
+    <div class="kb-modal-section">
+      <h4>Navigation</h4>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>h</kbd></span><span>Home</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>i</kbd></span><span>Insights</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>d</kbd></span><span>Dependencies</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>a</kbd></span><span>Activity</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>t</kbd></span><span>Team</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>p</kbd></span><span>Profile</span></div>
+    </div>
+    <div class="kb-modal-section">
+      <h4>Reference Center</h4>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>b</kbd></span><span>Books</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>c</kbd></span><span>Channels</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>l</kbd></span><span>Links</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>g</kbd><kbd>n</kbd></span><span>Notes</span></div>
+    </div>
+    <div class="kb-modal-section">
+      <h4>Global</h4>
+      <div class="kb-modal-row"><span class="keys"><kbd>/</kbd></span><span>Open search</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>⌘</kbd><kbd>K</kbd></span><span>Open search (Cmd+K)</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>?</kbd></span><span>Show this help</span></div>
+      <div class="kb-modal-row"><span class="keys"><kbd>Esc</kbd></span><span>Close modals</span></div>
+    </div>
+  </div>
+  <div class="kb-modal-footer">
+    <span class="small muted">Shortcuts are disabled while you're typing in a field.</span>
   </div>
 </div>
 
@@ -4088,6 +4169,96 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
     searchPick(searchModalState.focusedIdx);
+  }
+});
+
+// ── OI-UX-105: keyboard shortcuts ─────────────────────────────────
+// Power-user bindings in addition to the Cmd+K / search modal keys.
+// Bindings (see #kbShortcutsModal for the rendered reference):
+//   /          Open search (complements Cmd+K from OI-UX-101)
+//   ?          Show shortcuts help
+//   Esc        Close shortcuts help (if open)
+//   g then X   Navigate — g h/i/d/a/t/p + g b/c/l/n (Reference)
+//
+// Guards:
+//   1. `isTypingInInput(target)` bails when the user is focused in
+//      any editable surface — typing "g" into a note must stay a
+//      literal g, not a nav-prefix trigger.
+//   2. Any modifier (meta/ctrl/alt) bails so browser shortcuts
+//      (Ctrl+T, Ctrl+R, Cmd+Shift+[, etc.) remain untouched.
+//      Cmd+K is handled in the search listener above.
+//   3. The g-prefix auto-expires after 1500ms so a stray `g`
+//      doesn't swallow the user's next key forever.
+
+const SHORTCUT_G_MAP = {
+  h: 'home',
+  b: 'ref-books',
+  c: 'ref-channels',
+  l: 'ref-links',
+  n: 'ref-notes',
+  i: 'insights',
+  d: 'dependencies',
+  a: 'activity',
+  t: 'team',
+  p: 'profile',
+};
+
+const kbPending = { g: false, timer: null };
+function kbClearPending() {
+  kbPending.g = false;
+  if (kbPending.timer) { clearTimeout(kbPending.timer); kbPending.timer = null; }
+}
+function kbSetPending() {
+  kbPending.g = true;
+  if (kbPending.timer) clearTimeout(kbPending.timer);
+  kbPending.timer = setTimeout(kbClearPending, 1500);
+}
+
+function isTypingInInput(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return !!target.isContentEditable;
+}
+
+function kbShortcutsIsOpen() {
+  const m = document.getElementById('kbShortcutsModal');
+  return !!(m && !m.classList.contains('hidden'));
+}
+function kbShortcutsOpen() {
+  const m = document.getElementById('kbShortcutsModal');
+  if (m) m.classList.remove('hidden');
+}
+function kbShortcutsClose() {
+  const m = document.getElementById('kbShortcutsModal');
+  if (m) m.classList.add('hidden');
+}
+window.kbShortcutsOpen = kbShortcutsOpen;
+window.kbShortcutsClose = kbShortcutsClose;
+
+document.addEventListener('keydown', (e) => {
+  if (isTypingInInput(e.target)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+  if (e.key === 'Escape' && kbShortcutsIsOpen()) {
+    e.preventDefault(); kbShortcutsClose(); return;
+  }
+  if (e.key === '?') { e.preventDefault(); kbShortcutsOpen(); return; }
+  if (e.key === '/') {
+    e.preventDefault();
+    if (typeof searchOpen === 'function') searchOpen();
+    return;
+  }
+
+  if (kbPending.g) {
+    kbClearPending();
+    const page = SHORTCUT_G_MAP[e.key.toLowerCase()];
+    if (page) { e.preventDefault(); showPage(page); }
+    return;
+  }
+  if (e.key === 'g' || e.key === 'G') {
+    e.preventDefault();
+    kbSetPending();
   }
 });
 
