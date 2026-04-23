@@ -142,17 +142,38 @@ const SECRETARY_SCHEMA: Record<string, FieldValidator> = {
   extra_notes:             stringField({ maxLength: 2000 }),
 };
 
+// ── Training skill schema (OI-DATA-003b, 2026-04-23) ──────────────
+//
+// Training merges Garmin/Strava/Whoop telemetry with schedule
+// awareness from Secretary. Per CLAUDE.md the legacy 'triathlon'
+// skill is being split into gym/running/cycle/swim in Phase 1; this
+// single-skill schema serves today and is forward-compatible —
+// sub-skills will carry their own tenant_skill_config rows under
+// new skill ids and inherit this shape.
+
+const TRAINING_DAYS_POLICIES = ['daily', 'six_days', 'five_days', 'four_days', 'three_days'] as const;
+const TRAINING_RECOVERY_PRIORITY = ['maximum', 'balanced', 'push_hard'] as const;
+
+const TRAINING_SCHEMA: Record<string, FieldValidator> = {
+  goals:                     stringField({ maxLength: 2000 }),
+  equipment_available:       stringField({ maxLength: 2000 }),
+  constraints_and_injuries:  stringField({ maxLength: 2000 }),
+  preferred_training_days:   stringField({ enumValues: TRAINING_DAYS_POLICIES, default: 'four_days' }),
+  recovery_priority:         stringField({ enumValues: TRAINING_RECOVERY_PRIORITY, default: 'balanced' }),
+  extra_notes:               stringField({ maxLength: 2000 }),
+};
+
 // ── Placeholder schemas for the remaining skills (v1 scope cut) ───
 // Empty records mean "no fields defined yet". Saves that send any
 // field to these skills will be rejected. This keeps the
 // infrastructure wired but defers per-skill UX decisions.
-// Follow-ups: OI-DATA-003b (training), 003c (finance), 003d (cooking).
+// Follow-ups: OI-DATA-003c (finance), 003d (cooking).
 const EMPTY_SCHEMA: Record<string, FieldValidator> = {};
 
 const SCHEMAS: Record<SkillId, Record<string, FieldValidator>> = {
   content: CONTENT_SCHEMA,
   secretary: SECRETARY_SCHEMA,
-  training: EMPTY_SCHEMA,
+  training: TRAINING_SCHEMA,
   finance: EMPTY_SCHEMA,
   cooking: EMPTY_SCHEMA,
 };

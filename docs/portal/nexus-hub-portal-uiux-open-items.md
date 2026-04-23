@@ -72,7 +72,7 @@ Tests: 58 new pins across 3 files (all green).
 
 Follow-ups (one per remaining skill):
 - ~~**OI-DATA-003a** — Secretary schema~~ **DONE 2026-04-23.** 6-field schema (daily_routines, priority_rules, focus_block_policy, primary_calendar, interruption_tolerance, extra_notes) — same shape as Content. Configuration tab now a real editor. New Home dependency `secretary.routines.set` auto-heals when daily_routines is filled. 35 new regression tests (12 service + 5 route + 18 UI). See the "Secretary editor" note below for the full resolution.
-- **OI-DATA-003b** — Training schema (goals / equipment / constraints / readiness preferences).
+- ~~**OI-DATA-003b** — Training schema~~ **DONE 2026-04-23.** 6-field schema (goals, equipment_available, constraints_and_injuries, preferred_training_days, recovery_priority, extra_notes). Configuration tab now a real editor. New Home dependency `training.goals.set` auto-heals when goals is filled. 35 new regression tests (12 service + 5 route + 18 UI). Forward-compatible with the Phase 1 triathlon→gym/running/cycle/swim split: sub-skills will carry their own `tenant_skill_config` rows under new skill ids and inherit this shape.
 - **OI-DATA-003c** — Finance schema (budget / categories / affordability rules).
 - **OI-DATA-003d** — Cooking schema (restrictions / preferences / dietary rules).
 - **OI-DATA-003e** — per-key audit history (only if product asks for it; not worth the schema complexity on spec alone).

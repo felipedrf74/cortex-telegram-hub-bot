@@ -175,16 +175,24 @@ describe('GET /workspace/console/home — User Console home payload', () => {
     // input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
     // cost_usd, duration_ms, provider, user_id. `calls` is NOT a column
     // — it's a COUNT(*) alias in the reading queries.
+    //
+    // Cost marker: use a 4-decimal value. Timestamps are
+    // `YYYY-MM-DDTHH:MM:SS.sssZ` — the fractional part has at most
+    // 3 digits. A 4-decimal cost like `123.4567` can never appear
+    // in a timestamp → the leak check is robust to clock timing.
+    // (The earlier value `9.99` occasionally collided with timestamp
+    // fragments like `29.990Z`, making this test flaky.)
+    const COST_MARKER = '123.4567';
     testDb.prepare(
       `INSERT INTO api_usage (user_id, ts, category, model, cost_usd)
-       VALUES (?, datetime('now'), 'chat', 'gemini', 9.99)`,
+       VALUES (?, datetime('now'), 'chat', 'gemini', ${COST_MARKER})`,
     ).run(alice);
     const r = await httpReq(app, 'GET', '/workspace/console/home', { userId: alice });
     expect(r.status).toBe(200);
     const serialized = JSON.stringify(r.body);
     expect(serialized).not.toMatch(/costUsd/i);
     expect(serialized).not.toMatch(/cost_usd/i);
-    expect(serialized).not.toMatch(/9\.99/); // the dollar amount doesn't leak either
+    expect(serialized).not.toContain(COST_MARKER); // the exact amount doesn't leak either
   });
 
   it('books-library dependency flips from missing → ready when a book is added', async () => {

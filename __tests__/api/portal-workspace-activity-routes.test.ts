@@ -274,16 +274,20 @@ describe('GET /workspace/activity — tenant audit feed (OI-DATA-005)', () => {
   });
 
   it('cost-privacy: no costUsd / cost_usd / dollar amount in payload', async () => {
+    // 4-decimal cost marker — can't appear in ISO-8601 timestamps
+    // (millis cap at 3 digits). Avoids clock-timing flakes where
+    // a value like `9.99` coincidentally matched `29.990Z` etc.
+    const COST_MARKER = '123.4567';
     testDb.prepare(
       `INSERT INTO api_usage (user_id, ts, category, model, cost_usd)
-       VALUES (?, datetime('now'), 'chat', 'gemini', 9.99)`,
+       VALUES (?, datetime('now'), 'chat', 'gemini', ${COST_MARKER})`,
     ).run(alice);
     writeAudit(testDb, { actorId: alice, action: 'tenant.invite.create', resource: `tenant.${alice}` });
     const r = await req(app, 'GET', '/workspace/activity', { userId: alice });
     const serialized = JSON.stringify(r.body);
     expect(serialized).not.toMatch(/costUsd/i);
     expect(serialized).not.toMatch(/cost_usd/i);
-    expect(serialized).not.toMatch(/9\.99/);
+    expect(serialized).not.toContain(COST_MARKER);
   });
 
   it('DELETE of a book writes tenant.book.delete to audit + shows up in the feed', async () => {

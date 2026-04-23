@@ -914,7 +914,61 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
         </div>
       </div>
       <div data-sub-section="training.configuration" class="hidden">
-        <div class="empty-state"><div class="icon">⚐</div><h3>Training profile editor not yet wired</h3><p>Edit goals, equipment, and injury notes in the iOS app.</p></div>
+        <div class="panel">
+          <header>
+            <h2>Training skill configuration</h2>
+            <span class="meta small" id="trainingCfgDirtyMeta">No unsaved changes</span>
+          </header>
+          <div class="body">
+            <p class="small muted" style="margin-bottom: var(--space-4);">
+              Training uses these to plan sessions, recommend intensity, and respect your constraints. View = any member; edit = <strong>tenant_admin</strong>.
+            </p>
+            <div class="form-row">
+              <label for="trnCfgGoals">Goals</label>
+              <textarea id="trnCfgGoals" rows="3" maxlength="2000" placeholder="e.g. 'Run a sub-2h half marathon by October.' 'Lift 3×5 at 1.5× bodyweight by year-end.'"></textarea>
+            </div>
+            <div class="form-row">
+              <label for="trnCfgEquipment">Equipment available</label>
+              <textarea id="trnCfgEquipment" rows="3" maxlength="2000" placeholder="e.g. 'Gym membership (squat rack, DBs to 50kg). Road bike. 25m pool Mon/Wed/Fri.'"></textarea>
+            </div>
+            <div class="form-row">
+              <label for="trnCfgConstraints">Constraints &amp; injuries</label>
+              <textarea id="trnCfgConstraints" rows="3" maxlength="2000" placeholder="e.g. 'Left knee IT band syndrome recovering. Easy-pace runs only for 4 more weeks. No back squat.'"></textarea>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+              <div class="form-row">
+                <label for="trnCfgDaysPolicy">Preferred training days</label>
+                <select id="trnCfgDaysPolicy">
+                  <option value="daily">Daily (7 days)</option>
+                  <option value="six_days">Six days</option>
+                  <option value="five_days">Five days</option>
+                  <option value="four_days">Four days</option>
+                  <option value="three_days">Three days</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="trnCfgRecoveryPriority">Recovery priority</label>
+                <select id="trnCfgRecoveryPriority">
+                  <option value="maximum">Maximum — protect recovery aggressively</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="push_hard">Push hard — accept more fatigue</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="trnCfgExtraNotes">Extra notes</label>
+              <textarea id="trnCfgExtraNotes" rows="3" maxlength="2000" placeholder="Anything else Training should know — travel schedule, competition dates, preferred coach voice."></textarea>
+            </div>
+            <div id="trainingCfgMsg" class="small" style="margin-top: var(--space-3); min-height: 1em;"></div>
+            <div class="row-inline" style="margin-top: var(--space-4); justify-content: flex-end;">
+              <button class="btn ghost" id="trainingCfgResetBtn" onclick="trainingConfigReset()">Revert</button>
+              <button class="btn primary" id="trainingCfgSaveBtn" onclick="trainingConfigSave()">Save changes</button>
+            </div>
+            <p class="small muted" id="trainingCfgAdminNote" style="margin-top: var(--space-3); display: none;">
+              You're in view-only mode. Ask a <strong>tenant_admin</strong> to change these settings.
+            </p>
+          </div>
+        </div>
       </div>
       <div data-sub-section="training.dependencies" class="hidden">
         <div class="panel"><header><h2>Training dependencies</h2></header><div class="body" id="trainingDeps"></div></div>
@@ -1724,6 +1778,10 @@ function paintSkill(skill) {
   if (skill === 'secretary') {
     loadSecretaryConfig();
   }
+  // OI-DATA-003b: same pattern for Training.
+  if (skill === 'training') {
+    loadTrainingConfig();
+  }
 }
 
 // ── Content skill config editor (OI-DATA-003) ─────────────────────
@@ -1999,6 +2057,139 @@ window.secretaryConfigSave = async function() {
     toast(e.message || 'Save failed', 'error');
   } finally {
     secretaryConfigUpdateDirty();
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Training skill config editor (OI-DATA-003b)
+// ─────────────────────────────────────────────────────────────────
+// Parallel to Content + Secretary editors. Same dirty-state pattern,
+// diff-only PUT, non-admin view-only mode. 6 fields matching the
+// service schema; enum defaults align with TRAINING_DAYS_POLICIES
+// and TRAINING_RECOVERY_PRIORITY.
+const trainingConfigBaseline = {
+  goals: '',
+  equipment_available: '',
+  constraints_and_injuries: '',
+  preferred_training_days: 'four_days',
+  recovery_priority: 'balanced',
+  extra_notes: '',
+};
+
+function trainingConfigFieldIds() {
+  return {
+    goals:                     'trnCfgGoals',
+    equipment_available:       'trnCfgEquipment',
+    constraints_and_injuries:  'trnCfgConstraints',
+    preferred_training_days:   'trnCfgDaysPolicy',
+    recovery_priority:         'trnCfgRecoveryPriority',
+    extra_notes:               'trnCfgExtraNotes',
+  };
+}
+
+async function loadTrainingConfig() {
+  try {
+    const r = await fetchJson('/workspace/skills/training/config');
+    const cfg = r.data.config || {};
+    const ids = trainingConfigFieldIds();
+    for (const [field, id] of Object.entries(ids)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const val = cfg[field];
+      const str = val == null ? '' : String(val);
+      el.value = str;
+      trainingConfigBaseline[field] = str;
+      if (!el.dataset.trnCfgBound) {
+        el.addEventListener('input', trainingConfigUpdateDirty);
+        el.dataset.trnCfgBound = '1';
+      }
+    }
+    const role = (state.me && state.me.role) || 'tenant_member';
+    const isAdmin = role === 'tenant_admin';
+    for (const id of Object.values(ids)) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !isAdmin;
+    }
+    document.getElementById('trainingCfgSaveBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('trainingCfgResetBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('trainingCfgAdminNote').style.display = isAdmin ? 'none' : '';
+    trainingConfigUpdateDirty();
+    document.getElementById('trainingCfgMsg').textContent = '';
+  } catch (e) {
+    toast('Could not load Training config: ' + (e.message || 'unknown error'), 'error');
+  }
+}
+
+function trainingConfigCurrent() {
+  const ids = trainingConfigFieldIds();
+  const out = {};
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    out[field] = el.value;
+  }
+  return out;
+}
+
+function trainingConfigUpdateDirty() {
+  const curr = trainingConfigCurrent();
+  let dirty = false;
+  for (const key of Object.keys(trainingConfigBaseline)) {
+    if (curr[key] !== trainingConfigBaseline[key]) { dirty = true; break; }
+  }
+  const meta = document.getElementById('trainingCfgDirtyMeta');
+  const save = document.getElementById('trainingCfgSaveBtn');
+  const reset = document.getElementById('trainingCfgResetBtn');
+  if (meta) {
+    meta.textContent = dirty ? 'Unsaved changes' : 'No unsaved changes';
+    meta.className = 'meta small ' + (dirty ? '' : 'muted');
+  }
+  if (save) save.disabled = !dirty;
+  if (reset) reset.disabled = !dirty;
+}
+
+window.trainingConfigReset = function() {
+  const ids = trainingConfigFieldIds();
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.value = trainingConfigBaseline[field] || '';
+  }
+  trainingConfigUpdateDirty();
+  document.getElementById('trainingCfgMsg').textContent = '';
+};
+
+window.trainingConfigSave = async function() {
+  const curr = trainingConfigCurrent();
+  const patch = {};
+  for (const key of Object.keys(trainingConfigBaseline)) {
+    if (curr[key] !== trainingConfigBaseline[key]) patch[key] = curr[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    toast('Nothing to save.', 'error');
+    return;
+  }
+  const save = document.getElementById('trainingCfgSaveBtn');
+  save.disabled = true;
+  const msg = document.getElementById('trainingCfgMsg');
+  msg.textContent = '';
+  try {
+    await fetchJson('/workspace/skills/training/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config: patch }),
+    });
+    Object.assign(trainingConfigBaseline, curr);
+    trainingConfigUpdateDirty();
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    toast('Training config saved', 'success');
+    // Refresh Home so the training.goals.set dependency flips.
+    loadHome();
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    toast(e.message || 'Save failed', 'error');
+  } finally {
+    trainingConfigUpdateDirty();
   }
 };
 

@@ -329,9 +329,13 @@ describe('GET /workspace/console/home — channels integration', () => {
   it('cost-privacy invariant still holds with channels added', async () => {
     // Plant a cost_usd row + create a channel → neither surfaces
     // costUsd on the tenant plane.
+    // Cost marker: 4-decimal value can't appear in ISO-8601 timestamps
+    // (millis cap at 3 digits) — robust against clock-timing flakes
+    // like `29.990Z` that were triggering false positives on `/9\.99/`.
+    const COST_MARKER = '123.4567';
     testDb.prepare(
       `INSERT INTO api_usage (user_id, ts, category, model, cost_usd)
-       VALUES (?, datetime('now'), 'chat', 'gemini', 9.99)`,
+       VALUES (?, datetime('now'), 'chat', 'gemini', ${COST_MARKER})`,
     ).run(alice);
     await req(app, 'POST', '/workspace/channels', {
       userId: alice, tenantId: String(alice), body: { title: 'X' },
@@ -339,6 +343,6 @@ describe('GET /workspace/console/home — channels integration', () => {
     const r = await req(app, 'GET', '/workspace/console/home', { userId: alice });
     const serialized = JSON.stringify(r.body);
     expect(serialized).not.toMatch(/costUsd/i);
-    expect(serialized).not.toMatch(/9\.99/);
+    expect(serialized).not.toContain(COST_MARKER);
   });
 });

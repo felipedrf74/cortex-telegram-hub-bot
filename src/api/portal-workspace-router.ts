@@ -1401,6 +1401,17 @@ export function createPortalWorkspaceRouter(): Router {
       } catch {
         secretaryRoutinesSet = false;
       }
+      // OI-DATA-003b: has the tenant set Training goals? Without a
+      // north star, Training's plans default to generic endurance
+      // and miss the user's real objective.
+      let trainingGoalsSet = false;
+      try {
+        const cfg = getSkillConfig(ctx.tenantId, 'training');
+        const g = cfg.config.goals;
+        trainingGoalsSet = typeof g === 'string' && g.trim().length > 0;
+      } catch {
+        trainingGoalsSet = false;
+      }
       const membersCount = row(
         'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
         ctx.tenantId,
@@ -1503,6 +1514,19 @@ export function createPortalWorkspaceRouter(): Router {
           cta: secretaryRoutinesSet
             ? null
             : { label: 'Describe your routines', href: '#/skills/secretary/configuration' },
+        },
+        {
+          // OI-DATA-003b: training goals are Training's north star.
+          // Without them plans default to generic endurance work
+          // and miss what the user is actually training for.
+          id: 'training.goals.set',
+          skillId: 'training',
+          kind: 'setting',
+          label: 'Training goals',
+          status: trainingGoalsSet ? 'ready' : 'missing',
+          cta: trainingGoalsSet
+            ? null
+            : { label: 'Set your goals', href: '#/skills/training/configuration' },
         },
         {
           id: 'workspace.team.set-up',
