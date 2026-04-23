@@ -201,9 +201,34 @@ Tests: 31 structural + behavior pins in `__tests__/portal/user-console-tag-autoc
 
 ---
 
-### OI-UX-103 — Bulk actions on reference tables [P2, UX]
+### ~~OI-UX-103 — Bulk actions on reference tables~~ [DONE · 2026-04-23]
 
-**What's missing.** Select-many + bulk-tag, bulk-delete, bulk-re-status. Relevant once a tenant has >50 books/links/notes.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+Every reference page (Books / Channels / Links / Notes) now supports row selection + bulk operations:
+
+- **Checkbox column** on every row + a header "select all" checkbox (on Notes, a leading flex-inline "Select all" row since it's a div-list, not a table).
+- **Bulk toolbar** appears above the list when ≥1 row is selected. Shows "{N} selected" + a skill-selector + "Apply" (bulk add-skill) + "Delete" + "Clear".
+- **Bulk add-skill**: idempotent — rows that already carry the selected skill are skipped and reported ("Tagged 5 books with Content (3 already had it)"). Non-skill tags are preserved via the same `stripSkillTags + mergeTagsWithSkills` pattern as the single-row chip editor (OI-USR-405a).
+- **Bulk delete**: guarded by `confirm()` (destructive-action gate). Partial failures are reported honestly ("Deleted 8 of 10; 2 failed").
+
+Design calls worth remembering:
+
+1. **Sequential operations (for-of, not Promise.all).** Two reasons: the tenant rate-limiter can push back on burst writes, and partial-failure reporting is much more actionable than all-or-nothing. 50 rows × 50-100ms = 2.5-5s — acceptable for an admin batch action, and predictable under load.
+
+2. **Selection state is `Set<id>` per kind** (`state.bulkSel = { book, link, note, channel }`). O(1) membership and toggle; no risk of cross-kind leakage. Set lives outside any row, so loads/renders don't require resync.
+
+3. **"Select all" acts on visible rows only.** When a skill filter is active, `Array.every(id => bulkSel.has(id))` is computed against `visibleIds = rows.map(...)` — not `state.books`. The worst regression this prevents: a user filters to Content-tagged books, hits select-all, then bulk-delete, and the operation wipes rows they can't see. A structural test pins the `visibleIds.every(...)` shape in all 4 renderers.
+
+4. **Selection persists across filter changes.** A user can toggle filters to narrow rows, select them, broaden the filter, and the prior selection survives. Pairs naturally with sequential bulk ops — the user sees confirmed counts in the toolbar regardless of the current filter view.
+
+5. **Row-selected tint via CSS.** `tr.row-selected td` and `.row.row-selected` both lean on `var(--accent-subtle)` — same tint used by the toolbar so the visual grouping is obvious. Subtle enough to coexist with existing zebra-striping and hover states.
+
+6. **Inline Remove buttons preserved.** Bulk delete doesn't replace per-row delete; a user who wants to remove one book shouldn't have to check a box + confirm a modal. A regression pin ensures `onclick="deleteBook(..."` (and the other three) still exist.
+
+Files: `src/portal/user-console.html` (+~175 LOC JS for helpers + toolbar renderer + 4 renderer updates; +~42 LOC CSS).
+
+Tests: 41 structural + behavior pins in `__tests__/portal/user-console-bulk-actions.test.ts` — `state.bulkSel` shape, `BULK_KINDS` lookup (4 kinds × path + reload + findById + render), `bulkToggle` / `bulkToggleAll` (visible-only + progressive-all-off affordance), `bulkDelete` (sequential-not-parallel, `confirm()` gate, partial-success toast, DELETE shape, clear-then-reload), `bulkAddSkill` (idempotent skip, label-humanised toast, non-skill-tag preservation, PATCH shape, sequential-not-parallel), `renderBulkToolbar` (zero-state returns empty string, markup, role+aria-label, ≥6 `esc(kind)` uses as defense in depth), 4 renderers wired with matching checkbox column + body rows + toolbar prepend, CSS anchors (accent-subtle tint on toolbar + row-selected, flex-gap layout, 32px check column), and 3 regression pins (inline delete buttons, tag autocomplete, skill-badges-editable rendering all survive).
 
 ---
 

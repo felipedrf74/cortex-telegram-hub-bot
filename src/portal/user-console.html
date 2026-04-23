@@ -309,6 +309,46 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
 }
 .tag-ac-item:hover { background: var(--accent-subtle); color: var(--accent); }
 
+/* OI-UX-103: bulk-action toolbar rendered above reference tables
+ * when ≥1 row is selected. Accent-tint to signal "you have a
+ * selection", kept compact so it doesn't push the table content
+ * off-screen on dense rows. */
+.bulk-toolbar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: 8px var(--space-3); margin-bottom: var(--space-2);
+  background: var(--accent-subtle); border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm); font-size: 12px;
+}
+.bulk-toolbar .bulk-count {
+  font-weight: 600; color: var(--accent);
+  margin-right: var(--space-2);
+}
+.bulk-toolbar .bulk-skill-select {
+  font-size: 12px; padding: 4px 8px;
+  background: var(--bg-panel); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.bulk-check-col {
+  width: 32px; text-align: center;
+  padding-left: var(--space-2) !important;
+  padding-right: 0 !important;
+}
+.bulk-check-col input[type="checkbox"] {
+  width: auto; margin: 0; cursor: pointer;
+}
+/* Selected-row tint — subtle enough to coexist with hover but
+ * clear enough at a glance. The table already has zebra-striping,
+ * so we lean on the accent-subtle hue rather than a hard border. */
+tr.row-selected td, .row.row-selected {
+  background: var(--accent-subtle);
+}
+/* Notes list "Select all" row — sits above the first note card
+ * so the checkbox has a natural anchor even in the non-table view. */
+.note-select-all {
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: var(--space-2);
+}
+
 /* Add-form "Used by skills" checkbox group */
 .skill-picker {
   display: flex; flex-wrap: wrap; gap: var(--space-3);
@@ -1749,6 +1789,9 @@ const state = {
   channels: [],
   members: [],
   invites: [],
+  // OI-UX-103: per-table bulk selection state. Set<rowId> per kind.
+  // Cleared on save/delete/load or via the toolbar "Clear" button.
+  bulkSel: { book: new Set(), link: new Set(), note: new Set(), channel: new Set() },
 };
 
 function authHeaders(ct) {
@@ -3017,6 +3060,147 @@ function renderSkillBadgesEditable(tags, kind, id) {
   return `<span class="skill-chip-group">${chips}${popover}</span>`;
 }
 
+// ── OI-UX-103: bulk actions across reference tables ───────────────
+// Each reference row renderer now gets a checkbox column + a
+// context-sensitive bulk toolbar that appears when ≥1 row is
+// selected. Selection state is a Set per kind, so toggling and
+// membership checks stay O(1). The toolbar operations are delete
+// and add-skill — both use the same per-kind lookup as
+// setSkillTagOnRef, keeping the mental model consistent.
+//
+// Operations loop sequentially over selected ids rather than
+// Promise.all. Two reasons:
+//   1. A tenant's rate-limiter can push back on burst traffic;
+//      sequential keeps us below that threshold without logic.
+//   2. A partial-failure report is useful — "deleted 8 of 10" is
+//      more actionable than "all-or-nothing". Sequential lets the
+//      per-op toast accumulate cleanly.
+
+const BULK_KINDS = {
+  book: {
+    path: '/workspace/books/',
+    reload: () => { loadBooks(); loadHome(); },
+    findById: (id) => state.books.find((x) => x.id === id),
+    render: () => renderBooks(),
+  },
+  link: {
+    path: '/workspace/links/',
+    reload: () => { loadLinks(); loadHome(); },
+    findById: (id) => state.links.find((x) => x.id === id),
+    render: () => renderLinks(),
+  },
+  note: {
+    path: '/workspace/content/',
+    reload: () => { loadNotes(); loadHome(); },
+    findById: (id) => state.notes.find((x) => x.id === id),
+    render: () => renderNotes(),
+  },
+  channel: {
+    path: '/workspace/channels/',
+    reload: () => { loadChannels(); loadHome(); },
+    findById: (id) => state.channels.find((x) => x.id === id),
+    render: () => renderChannels(),
+  },
+};
+
+function bulkToggle(kind, id) {
+  const s = state.bulkSel[kind];
+  if (!s) return;
+  if (s.has(id)) s.delete(id); else s.add(id);
+  BULK_KINDS[kind].render();
+}
+function bulkToggleAll(kind, ids) {
+  const s = state.bulkSel[kind];
+  if (!s) return;
+  // If all visible rows are already selected, treat as "clear"
+  // (progressive affordance — same checkbox click toggles state).
+  const allSelected = ids.length > 0 && ids.every((id) => s.has(id));
+  if (allSelected) { ids.forEach((id) => s.delete(id)); }
+  else { ids.forEach((id) => s.add(id)); }
+  BULK_KINDS[kind].render();
+}
+function bulkClear(kind) {
+  state.bulkSel[kind].clear();
+}
+function bulkClearAndRender(kind) {
+  bulkClear(kind);
+  BULK_KINDS[kind].render();
+}
+window.bulkToggle = bulkToggle;
+window.bulkToggleAll = bulkToggleAll;
+window.bulkClearAndRender = bulkClearAndRender;
+
+async function bulkDelete(kind) {
+  const meta = BULK_KINDS[kind];
+  const ids = Array.from(state.bulkSel[kind]);
+  if (ids.length === 0) return;
+  if (!confirm(`Delete ${ids.length} ${kind}${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+  let ok = 0; let errs = 0;
+  for (const id of ids) {
+    try {
+      await fetchJson(meta.path + id, { method: 'DELETE' });
+      ok++;
+    } catch (_e) { errs++; }
+  }
+  bulkClear(kind);
+  if (errs === 0) toast(`Deleted ${ok} ${kind}${ok === 1 ? '' : 's'}`, 'success');
+  else toast(`Deleted ${ok} of ${ids.length}; ${errs} failed`, 'error');
+  meta.reload();
+}
+async function bulkAddSkill(kind, skillId) {
+  const meta = BULK_KINDS[kind];
+  const ids = Array.from(state.bulkSel[kind]);
+  if (ids.length === 0) return;
+  if (!skillId) return toast('Pick a skill first', 'error');
+  let changed = 0; let skipped = 0; let errs = 0;
+  for (const id of ids) {
+    const row = meta.findById(id);
+    if (!row) { errs++; continue; }
+    const currentSkills = parseSkillTags(row.tags);
+    if (currentSkills.includes(skillId)) { skipped++; continue; }
+    const nonSkill = stripSkillTags(row.tags);
+    const newTags = mergeTagsWithSkills(nonSkill, [...currentSkills, skillId]);
+    try {
+      await fetchJson(meta.path + id, {
+        method: 'PATCH',
+        body: JSON.stringify({ tags: newTags }),
+      });
+      changed++;
+    } catch (_e) { errs++; }
+  }
+  bulkClear(kind);
+  const skillLabel = (SKILLS_LIST.find((s) => s.id === skillId) || { label: skillId }).label;
+  let msg = `Tagged ${changed} ${kind}${changed === 1 ? '' : 's'} with ${skillLabel}`;
+  if (skipped) msg += ` (${skipped} already had it)`;
+  if (errs) msg += ` (${errs} failed)`;
+  toast(msg, errs ? 'error' : 'success');
+  meta.reload();
+}
+window.bulkDelete = bulkDelete;
+window.bulkAddSkill = bulkAddSkill;
+
+// Render the bulk toolbar above a reference table/list. Pass the
+// visible-row ids so "Clear selection" only counts toward visible
+// rows (filtered-out rows stay selected across filter changes —
+// the user's intent is "operate on what I can see").
+function renderBulkToolbar(kind) {
+  const selSet = state.bulkSel[kind];
+  const n = selSet.size;
+  if (n === 0) return '';
+  const skillOpts = SKILLS_LIST.map(
+    (s) => `<option value="${esc(s.id)}">${esc(s.label)}</option>`,
+  ).join('');
+  return `<div class="bulk-toolbar" role="toolbar" aria-label="Bulk actions for selected ${esc(kind)}s">
+    <span class="bulk-count">${n} selected</span>
+    <select class="bulk-skill-select" id="bulk-${esc(kind)}-skill">
+      <option value="">Add skill…</option>${skillOpts}
+    </select>
+    <button class="btn ghost small" onclick="bulkAddSkill('${esc(kind)}', document.getElementById('bulk-${esc(kind)}-skill').value)">Apply</button>
+    <button class="btn ghost danger small" onclick="bulkDelete('${esc(kind)}')">Delete</button>
+    <button class="btn ghost small" onclick="bulkClearAndRender('${esc(kind)}')">Clear</button>
+  </div>`;
+}
+
 // Boot-time: populate every skill-picker on every ref page. Safe
 // to call once on shell load — the HTML elements always exist
 // even if the user hasn't visited those pages yet.
@@ -3177,10 +3361,16 @@ window.renderBooks = function() {
     c.innerHTML = '<div class="empty-state"><h3>' + (state.books.length === 0 ? "You haven't added a book yet" : 'No books match your filter') + '</h3><p>' + (state.books.length === 0 ? 'Your Content and Secretary skills use your library as reference. Start with one you\'re reading now.' : 'Clear the filters above to see all books.') + '</p></div>';
     return;
   }
-  c.innerHTML = `<table class="data">
-    <thead><tr><th>Title</th><th>Author</th><th>Status</th><th>Used by</th><th>Tags</th><th></th></tr></thead>
+  const visibleIds = rows.map((b) => b.id);
+  const allSel = state.bulkSel.book.size > 0 && visibleIds.every((id) => state.bulkSel.book.has(id));
+  c.innerHTML = renderBulkToolbar('book') + `<table class="data">
+    <thead><tr>
+      <th class="bulk-check-col"><input type="checkbox" onchange="bulkToggleAll('book', [${visibleIds.join(',')}])" ${allSel ? 'checked' : ''} aria-label="Select all visible books" /></th>
+      <th>Title</th><th>Author</th><th>Status</th><th>Used by</th><th>Tags</th><th></th>
+    </tr></thead>
     <tbody>${rows.map((b) => `
-      <tr>
+      <tr${state.bulkSel.book.has(b.id) ? ' class="row-selected"' : ''}>
+        <td class="bulk-check-col"><input type="checkbox" onchange="bulkToggle('book', ${b.id})" ${state.bulkSel.book.has(b.id) ? 'checked' : ''} aria-label="Select book ${esc(b.title)}" /></td>
         <td><strong>${esc(b.title)}</strong></td>
         <td>${esc(b.author || '—')}</td>
         <td><span class="pill ${b.status === 'finished' ? 'ready' : b.status === 'reading' ? 'degraded' : b.status === 'abandoned' ? 'unknown' : 'info'}">${esc(labelFor('bookStatus', b.status || 'want_to_read'))}</span></td>
@@ -3240,10 +3430,16 @@ window.renderLinks = function() {
       '</p></div>';
     return;
   }
-  c.innerHTML = `<table class="data">
-    <thead><tr><th>Title</th><th>URL</th><th>Used by</th><th>Tags</th><th></th></tr></thead>
+  const visibleIds = rows.map((l) => l.id);
+  const allSel = state.bulkSel.link.size > 0 && visibleIds.every((id) => state.bulkSel.link.has(id));
+  c.innerHTML = renderBulkToolbar('link') + `<table class="data">
+    <thead><tr>
+      <th class="bulk-check-col"><input type="checkbox" onchange="bulkToggleAll('link', [${visibleIds.join(',')}])" ${allSel ? 'checked' : ''} aria-label="Select all visible links" /></th>
+      <th>Title</th><th>URL</th><th>Used by</th><th>Tags</th><th></th>
+    </tr></thead>
     <tbody>${rows.map((l) => `
-      <tr>
+      <tr${state.bulkSel.link.has(l.id) ? ' class="row-selected"' : ''}>
+        <td class="bulk-check-col"><input type="checkbox" onchange="bulkToggle('link', ${l.id})" ${state.bulkSel.link.has(l.id) ? 'checked' : ''} aria-label="Select link ${esc(l.title)}" /></td>
         <td><strong>${esc(l.title)}</strong></td>
         <td class="small"><a href="${esc(l.url)}" target="_blank" rel="noopener" class="mono muted">${esc(l.url)}</a></td>
         <td>${renderSkillBadgesEditable(l.tags, 'link', l.id)}</td>
@@ -3315,8 +3511,13 @@ window.renderChannels = function() {
       '</p></div>';
     return;
   }
-  c.innerHTML = `<table class="data">
-    <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Status</th><th>Used by</th><th></th></tr></thead>
+  const visibleIds = rows.map((ch) => ch.id);
+  const allSel = state.bulkSel.channel.size > 0 && visibleIds.every((id) => state.bulkSel.channel.has(id));
+  c.innerHTML = renderBulkToolbar('channel') + `<table class="data">
+    <thead><tr>
+      <th class="bulk-check-col"><input type="checkbox" onchange="bulkToggleAll('channel', [${visibleIds.join(',')}])" ${allSel ? 'checked' : ''} aria-label="Select all visible channels" /></th>
+      <th>Title</th><th>Kind</th><th>Source</th><th>Status</th><th>Used by</th><th></th>
+    </tr></thead>
     <tbody>${rows.map((ch) => {
       const kindPill = `<span class="pill info">${esc(labelFor('channelKind', ch.kind))}</span>`;
       const statusPill =
@@ -3331,7 +3532,8 @@ window.renderChannels = function() {
       const toggleLabel = ch.status === 'muted' ? 'Unmute' : 'Mute';
       const toggleTarget = ch.status === 'muted' ? 'active' : 'muted';
       return `
-        <tr>
+        <tr${state.bulkSel.channel.has(ch.id) ? ' class="row-selected"' : ''}>
+          <td class="bulk-check-col"><input type="checkbox" onchange="bulkToggle('channel', ${ch.id})" ${state.bulkSel.channel.has(ch.id) ? 'checked' : ''} aria-label="Select channel ${esc(ch.title)}" /></td>
           <td><strong>${esc(ch.title)}</strong></td>
           <td>${kindPill}</td>
           <td>${src}</td>
@@ -3582,9 +3784,19 @@ window.renderNotes = function() {
       '</p></div>';
     return;
   }
-  c.innerHTML = rows.map((n) => `
-    <div class="row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+  const visibleIds = rows.map((n) => n.id);
+  const allSel = state.bulkSel.note.size > 0 && visibleIds.every((id) => state.bulkSel.note.has(id));
+  // The note list is a div-list, not a table — so we emit a
+  // "Select all" affordance as a leading flex-inline row that
+  // mirrors the shape of the per-row header.
+  const selectAllRow = `<div class="row-inline note-select-all" style="gap: 8px; padding: 6px 4px;">
+    <input type="checkbox" onchange="bulkToggleAll('note', [${visibleIds.join(',')}])" ${allSel ? 'checked' : ''} aria-label="Select all visible notes" />
+    <span class="small muted">Select all (${visibleIds.length})</span>
+  </div>`;
+  c.innerHTML = renderBulkToolbar('note') + selectAllRow + rows.map((n) => `
+    <div class="row${state.bulkSel.note.has(n.id) ? ' row-selected' : ''}" style="flex-direction: column; align-items: flex-start; gap: 6px;">
       <div class="row-inline" style="width:100%;">
+        <input type="checkbox" onchange="bulkToggle('note', ${n.id})" ${state.bulkSel.note.has(n.id) ? 'checked' : ''} aria-label="Select note ${esc(n.title)}" />
         <strong class="grow">${esc(n.title)}</strong>
         ${renderSkillBadgesEditable(n.tags, 'note', n.id)}
         <span class="small muted">${esc(n.created_at || n.createdAt || '')}</span>
