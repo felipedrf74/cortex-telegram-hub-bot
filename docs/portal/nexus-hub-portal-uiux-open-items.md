@@ -207,9 +207,33 @@ Tests: 31 structural + behavior pins in `__tests__/portal/user-console-tag-autoc
 
 ---
 
-### OI-UX-104 — Skill-name label map in dropdowns [P3, UX]
+### ~~OI-UX-104 — Wire-enum → human label map~~ [DONE · 2026-04-23]
 
-**What's missing.** Book status dropdown shows raw `want_to_read` / `reading`. Should render as "Want to read" / "Reading" etc. Same for role selectors (`tenant_admin` → "Admin"). Small polish; inherited from the OI-UX-003 item in the hardening open-items.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+Wire values (`want_to_read`, `tenant_admin`, `suspended`) used to leak into user-facing pills. A central `LABELS` object + `labelFor(kind, value)` helper is now the single source of truth for human-facing labels. Both consoles carry the same LABELS shape so keys stay in sync.
+
+Scope (11 raw-enum leak sites rewrapped):
+- **user-console.html (7 sites):** Books-table status pill, Books search-result subtitle, Channels-table kind pill, Team members role pill, Invites role pill, Invites status pill, Tenant switcher option text.
+- **admin-console.html (4 sites):** Tenants-table plan pill, tenant-drawer plan KV, tenant-drawer status KV, drawer-members role pill.
+
+Covered enum kinds:
+- `bookStatus`: `want_to_read`/`reading`/`finished`/`abandoned`
+- `channelKind`: `generic`/`youtube`/`podcast`/`newsletter`/`rss`/`twitter`/`substack`
+- `role`: `tenant_admin`→"Admin" / `tenant_member`→"Member" / `tenant_viewer`→"Viewer" / `platform_admin`→"Platform admin" / `owner`→"Owner"
+- `inviteStatus`: `pending`/`accepted`/`revoked`/`expired`
+- `tenantPlan`: `free`/`pro`/`enterprise`
+- `tenantStatus`: `active`/`suspended`/`archived`
+
+Design calls:
+- **Raw fallback.** `labelFor('bookStatus', 'sold')` returns `'sold'` (the raw value) rather than `''`. A new server-side enum shows as the raw wire value, prompting "add it to LABELS" — a visible bug beats an invisible render gap.
+- **Empty input → empty string.** `labelFor(kind, undefined)` returns `''` so an unset field never renders as `"undefined"` in the UI.
+- **Wire/display split preserved.** Form `<option value="...">` attributes still carry wire values; `labelFor` only applies to display pills. This is pinned via regression test to prevent a "helpful" refactor that would break POST/PATCH validation.
+- **Both consoles carry identical LABELS shape** even when a key isn't used locally (user-console has `tenantPlan`/`tenantStatus` that only admin-console displays today). The cost is ~20 bytes of dead data per console; the benefit is "one map, two callers" mental model for future maintenance.
+
+Files: `src/portal/user-console.html` (+~48 LOC), `src/portal/admin-console.html` (+~50 LOC). Zero backend change. Zero migration.
+
+Tests: 35 structural + behavior pins in `__tests__/portal/portal-label-map.test.ts` — 6 kinds × {declared, each value pair} × both consoles + labelFor fallback + 11 display-site swaps (7 user + 4 admin) + 4 absence pins (old `esc(x.role)` / `esc(i.role)` / `esc(i.status)` / `esc(ch.kind)` leaks verified gone) + wire/display split regression (option values stay snake_case).
 
 ---
 

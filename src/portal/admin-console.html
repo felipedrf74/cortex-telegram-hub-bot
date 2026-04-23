@@ -974,6 +974,59 @@ document.querySelectorAll('[data-nav]').forEach((a) => {
 
 // ── Renderers ─────────────────────────────────────────────────────
 function esc(s) { return String(s ?? '').replace(/[&<>\"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ── OI-UX-104: central label map for wire-enum → human display ────
+// Keep identical to the LABELS object in user-console.html so both
+// consoles render enum values consistently. `labelFor(kind, value)`
+// falls back to the raw value when a key is missing — a newly-added
+// status on the server shows the raw wire value, prompting
+// "add it to LABELS" rather than silently rendering nothing.
+const LABELS = {
+  bookStatus: {
+    want_to_read: 'Want to read',
+    reading: 'Reading',
+    finished: 'Finished',
+    abandoned: 'Abandoned',
+  },
+  channelKind: {
+    generic: 'Generic',
+    youtube: 'YouTube',
+    podcast: 'Podcast',
+    newsletter: 'Newsletter',
+    rss: 'RSS',
+    twitter: 'Twitter',
+    substack: 'Substack',
+  },
+  role: {
+    tenant_admin: 'Admin',
+    tenant_member: 'Member',
+    tenant_viewer: 'Viewer',
+    platform_admin: 'Platform admin',
+    owner: 'Owner',
+  },
+  inviteStatus: {
+    pending: 'Pending',
+    accepted: 'Accepted',
+    revoked: 'Revoked',
+    expired: 'Expired',
+  },
+  tenantPlan: {
+    free: 'Free',
+    pro: 'Pro',
+    enterprise: 'Enterprise',
+  },
+  tenantStatus: {
+    active: 'Active',
+    suspended: 'Suspended',
+    archived: 'Archived',
+  },
+};
+function labelFor(kind, value) {
+  if (value === undefined || value === null || value === '') return '';
+  const map = LABELS[kind];
+  return (map && map[value]) || value;
+}
+
 function paintOverview(d) {
   document.getElementById('kpiTenants').textContent = d.counts.tenants;
   document.getElementById('kpiActive').textContent = d.counts.activeUsers;
@@ -1043,7 +1096,7 @@ async function loadTenants() {
           <td class="mono muted">#${t.id}</td>
           <td><strong>${esc(t.slug)}</strong></td>
           <td>${esc(t.display_name || '—')}</td>
-          <td><span class="pill info">${esc(t.plan || 'free')}</span></td>
+          <td><span class="pill info">${esc(labelFor('tenantPlan', t.plan || 'free'))}</span></td>
           <td class="right mono">${t.member_count ?? '—'}</td>
           <td class="small muted">${esc(t.created_at || '—')}</td>
         </tr>`).join('')}
@@ -1100,8 +1153,8 @@ function paintDrawerDetails(d) {
     <div class="kv-row"><span class="k">ID</span><span class="v mono">#${t.id}</span></div>
     <div class="kv-row"><span class="k">Slug</span><span class="v mono">${esc(t.slug || '—')}</span></div>
     <div class="kv-row"><span class="k">Display name</span><span class="v">${esc(t.display_name || t.displayName || '—')}</span></div>
-    <div class="kv-row"><span class="k">Plan</span><span class="v"><span class="pill info">${esc(t.plan || 'free')}</span></span></div>
-    <div class="kv-row"><span class="k">Status</span><span class="v"><span class="pill ${t.status === 'suspended' ? 'missing' : t.status === 'archived' ? 'unknown' : 'ready'}">${esc(t.status || 'active')}</span></span></div>
+    <div class="kv-row"><span class="k">Plan</span><span class="v"><span class="pill info">${esc(labelFor('tenantPlan', t.plan || 'free'))}</span></span></div>
+    <div class="kv-row"><span class="k">Status</span><span class="v"><span class="pill ${t.status === 'suspended' ? 'missing' : t.status === 'archived' ? 'unknown' : 'ready'}">${esc(labelFor('tenantStatus', t.status || 'active'))}</span></span></div>
     <div class="kv-row"><span class="k">Members</span><span class="v mono">${d.memberCount ?? (d.members ? d.members.length : '—')}</span></div>
     <div class="kv-row"><span class="k">Created</span><span class="v mono">${esc(t.created_at || t.createdAt || '—')}</span></div>
   `;
@@ -1117,7 +1170,7 @@ function paintDrawerMembers(d) {
     <tbody>${m.map((x) => `
       <tr>
         <td><strong>${esc(x.email || ('#' + (x.userId ?? x.user_id)))}</strong></td>
-        <td><span class="pill info">${esc(x.role)}</span></td>
+        <td><span class="pill info">${esc(labelFor('role', x.role))}</span></td>
         <td class="small muted">${esc(x.joinedAt || x.joined_at || '—')}</td>
       </tr>`).join('')}
     </tbody></table>`;

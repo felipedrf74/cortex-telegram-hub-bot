@@ -1688,6 +1688,68 @@ async function fetchJson(url, opts) {
   return body;
 }
 function esc(s) { return String(s ?? '').replace(/[&<>\"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ── OI-UX-104: central label map for wire-enum → human display ────
+// The UI used to leak snake_case wire values into pills ("want_to_read"
+// shown verbatim). This map is the single source of truth for how
+// enum values render to humans. Kept in the same shape in admin-
+// console.html — if you change a key here, mirror it there.
+//
+// `labelFor(kind, value)` gracefully falls back to the raw value
+// when a key is missing — so a newly-added status on the server
+// doesn't *break* the UI, it just shows the raw value (which is
+// the correct failure mode: a missing label is a visible bug that
+// prompts "add it to LABELS" rather than an invisible render gap).
+const LABELS = {
+  bookStatus: {
+    want_to_read: 'Want to read',
+    reading: 'Reading',
+    finished: 'Finished',
+    abandoned: 'Abandoned',
+  },
+  channelKind: {
+    generic: 'Generic',
+    youtube: 'YouTube',
+    podcast: 'Podcast',
+    newsletter: 'Newsletter',
+    rss: 'RSS',
+    twitter: 'Twitter',
+    substack: 'Substack',
+  },
+  role: {
+    tenant_admin: 'Admin',
+    tenant_member: 'Member',
+    tenant_viewer: 'Viewer',
+    platform_admin: 'Platform admin',
+    owner: 'Owner',
+  },
+  inviteStatus: {
+    pending: 'Pending',
+    accepted: 'Accepted',
+    revoked: 'Revoked',
+    expired: 'Expired',
+  },
+  // Tenant plan + status live here too so user-console and admin-
+  // console ship identical LABELS shapes — user-console does not
+  // display these today (admin does), but keeping the parity avoids
+  // "oh wait, which console has which keys?" debugging later.
+  tenantPlan: {
+    free: 'Free',
+    pro: 'Pro',
+    enterprise: 'Enterprise',
+  },
+  tenantStatus: {
+    active: 'Active',
+    suspended: 'Suspended',
+    archived: 'Archived',
+  },
+};
+function labelFor(kind, value) {
+  if (value === undefined || value === null || value === '') return '';
+  const map = LABELS[kind];
+  return (map && map[value]) || value;
+}
+
 function toast(msg, kind) {
   const t = document.getElementById('toast');
   t.className = 'toast ' + (kind || '');
@@ -1791,7 +1853,7 @@ async function loadMe() {
     const rt = await fetchJson('/workspace/tenants');
     const sel = document.getElementById('tenantSwitch');
     sel.innerHTML = (rt.data.tenants || []).map((t) =>
-      `<option value="${t.id}" ${t.id === (state.tenantId ? +state.tenantId : (state.me.tenant && state.me.tenant.id)) ? 'selected' : ''}>${esc(t.slug)} (${esc(t.role)})</option>`
+      `<option value="${t.id}" ${t.id === (state.tenantId ? +state.tenantId : (state.me.tenant && state.me.tenant.id)) ? 'selected' : ''}>${esc(t.slug)} (${esc(labelFor('role', t.role))})</option>`
     ).join('');
     sel.onchange = () => {
       state.tenantId = sel.value;
@@ -3040,7 +3102,7 @@ window.renderBooks = function() {
       <tr>
         <td><strong>${esc(b.title)}</strong></td>
         <td>${esc(b.author || '—')}</td>
-        <td><span class="pill ${b.status === 'finished' ? 'ready' : b.status === 'reading' ? 'degraded' : b.status === 'abandoned' ? 'unknown' : 'info'}">${esc(b.status || 'want_to_read')}</span></td>
+        <td><span class="pill ${b.status === 'finished' ? 'ready' : b.status === 'reading' ? 'degraded' : b.status === 'abandoned' ? 'unknown' : 'info'}">${esc(labelFor('bookStatus', b.status || 'want_to_read'))}</span></td>
         <td>${renderSkillBadgesEditable(b.tags, 'book', b.id)}</td>
         <td>${stripSkillTags(b.tags).map((t) => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="small muted">—</span>'}</td>
         <td class="right"><button class="btn ghost danger small" onclick="deleteBook(${b.id})">Remove</button></td>
@@ -3175,7 +3237,7 @@ window.renderChannels = function() {
   c.innerHTML = `<table class="data">
     <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Status</th><th>Used by</th><th></th></tr></thead>
     <tbody>${rows.map((ch) => {
-      const kindPill = `<span class="pill info">${esc(ch.kind)}</span>`;
+      const kindPill = `<span class="pill info">${esc(labelFor('channelKind', ch.kind))}</span>`;
       const statusPill =
         ch.status === 'active'   ? '<span class="pill ready">active</span>' :
         ch.status === 'muted'    ? '<span class="pill degraded">muted</span>' :
@@ -3492,7 +3554,7 @@ async function loadTeam() {
         <tbody>${state.members.map((x) => `
           <tr>
             <td><strong>${esc(x.email || ('#' + x.userId))}</strong></td>
-            <td><span class="pill role">${esc(x.role)}</span></td>
+            <td><span class="pill role">${esc(labelFor('role', x.role))}</span></td>
             <td class="right">${x.userId !== (state.me.user && state.me.user.id) ? `<button class="btn ghost danger small" onclick="removeMember(${x.userId})">Remove</button>` : '<span class="small muted">(you)</span>'}</td>
           </tr>`).join('')}
         </tbody></table>`;
@@ -3510,8 +3572,8 @@ async function loadTeam() {
         <tbody>${state.invites.map((i) => `
           <tr>
             <td>${esc(i.email)}</td>
-            <td><span class="pill role">${esc(i.role)}</span></td>
-            <td><span class="pill ${i.status === 'accepted' ? 'ready' : i.status === 'pending' ? 'info' : 'unknown'}">${esc(i.status)}</span></td>
+            <td><span class="pill role">${esc(labelFor('role', i.role))}</span></td>
+            <td><span class="pill ${i.status === 'accepted' ? 'ready' : i.status === 'pending' ? 'info' : 'unknown'}">${esc(labelFor('inviteStatus', i.status))}</span></td>
             <td class="small muted">${esc(i.createdAt || i.created_at || '')}</td>
             <td class="right">${i.status === 'pending' ? `<button class="btn ghost small" onclick="copyInvite('${esc(i.inviteCode || i.invite_code)}')">Copy link</button> <button class="btn ghost danger small" onclick="revokeInvite(${i.id})">Revoke</button>` : ''}</td>
           </tr>`).join('')}
@@ -4088,7 +4150,7 @@ function searchBuild() {
         _match: !q || m1.matched || m2.matched,
         id: 'book:' + b.id, nav: 'ref-books',
         title: m1.highlighted,
-        sub: '<span class="sub">' + (m2.highlighted || esc(b.author || '')) + ' &middot; ' + esc(b.status || '') + '</span>',
+        sub: '<span class="sub">' + (m2.highlighted || esc(b.author || '')) + ' &middot; ' + esc(labelFor('bookStatus', b.status || '')) + '</span>',
       };
     });
     pushGroup('book', 'Books · ' + state.books.length, rows);
