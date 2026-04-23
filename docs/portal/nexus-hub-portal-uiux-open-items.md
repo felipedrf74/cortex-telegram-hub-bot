@@ -71,11 +71,33 @@ Tests: 58 new pins across 3 files (all green).
 - `__tests__/portal/user-console-content-config.test.ts` (20): markup, 6 input ids, enum option presence, dirty tracking, diff-only PUT, post-save re-baseline, loadHome refresh, non-admin disable+hide pattern.
 
 Follow-ups (one per remaining skill):
-- **OI-DATA-003a** — Secretary schema (routines / priority rules / calendar preferences).
+- ~~**OI-DATA-003a** — Secretary schema~~ **DONE 2026-04-23.** 6-field schema (daily_routines, priority_rules, focus_block_policy, primary_calendar, interruption_tolerance, extra_notes) — same shape as Content. Configuration tab now a real editor. New Home dependency `secretary.routines.set` auto-heals when daily_routines is filled. 35 new regression tests (12 service + 5 route + 18 UI). See the "Secretary editor" note below for the full resolution.
 - **OI-DATA-003b** — Training schema (goals / equipment / constraints / readiness preferences).
 - **OI-DATA-003c** — Finance schema (budget / categories / affordability rules).
 - **OI-DATA-003d** — Cooking schema (restrictions / preferences / dietary rules).
 - **OI-DATA-003e** — per-key audit history (only if product asks for it; not worth the schema complexity on spec alone).
+
+#### OI-DATA-003a — Secretary editor resolution note
+
+Secretary's Configuration tab is now a real editor mirroring Content's shape. Schema:
+
+| Field | Type | Notes |
+|---|---|---|
+| `daily_routines` | string ≤4000 | Largest field — morning/evening rituals that anchor Secretary's scheduling. |
+| `priority_rules` | string ≤2000 | Plain-English rules like "Felipe > family > email". |
+| `focus_block_policy` | enum(5) | `none` / `mornings` / `afternoons` / `all_day` / `custom`. |
+| `primary_calendar` | enum(4) | `google` / `outlook` / `icloud` / `none` — informational (actual integration is OAuth). |
+| `interruption_tolerance` | enum(3) | `low` / `medium` / `high` — controls nudge aggressiveness. |
+| `extra_notes` | string ≤2000 | Safety valve — same pattern as Content. |
+
+Home dependency: `secretary.routines.set` = `missing` when `daily_routines` is empty/null; `ready` otherwise. CTA `#/skills/secretary/configuration`.
+
+Tests added on this pass:
+- `__tests__/services/tenant-skill-config-secretary.test.ts` (12 pins): enum validation, length caps, empty-string→null, diff patches, unknown-field 400 with the 6-field allowed list.
+- `__tests__/api/portal-workspace-secretary-config-routes.test.ts` (5 pins): GET defaults, PUT wrong-skill field rejection, Home dep flip missing→ready→missing on set/clear, cost-privacy invariant pinned.
+- `__tests__/portal/user-console-secretary-config.test.ts` (18 pins): legacy empty-state gone, 6 input ids, enum options, Save/Revert/dirty wiring, diff-only PUT, post-save re-baseline, loadHome refresh, non-admin view-only mode, Content editor not regressed.
+
+Pre-existing tests updated (not new): `__tests__/services/tenant-skill-config-service.test.ts` — the "Content + other-skills-have-0" assertion now expects Secretary to have 6 fields. Training/Finance/Cooking still empty.
 
 ---
 

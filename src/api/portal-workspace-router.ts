@@ -1390,6 +1390,17 @@ export function createPortalWorkspaceRouter(): Router {
         // If skill-config storage isn't ready yet, just treat as missing.
         contentVoiceSet = false;
       }
+      // OI-DATA-003a: has the tenant described their daily routines?
+      // Secretary leans on these to know when to protect focus blocks
+      // and how to sequence the day.
+      let secretaryRoutinesSet = false;
+      try {
+        const cfg = getSkillConfig(ctx.tenantId, 'secretary');
+        const dr = cfg.config.daily_routines;
+        secretaryRoutinesSet = typeof dr === 'string' && dr.trim().length > 0;
+      } catch {
+        secretaryRoutinesSet = false;
+      }
       const membersCount = row(
         'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
         ctx.tenantId,
@@ -1479,6 +1490,19 @@ export function createPortalWorkspaceRouter(): Router {
           cta: contentVoiceSet
             ? null
             : { label: 'Configure', href: '#/skills/content/configuration' },
+        },
+        {
+          // OI-DATA-003a: daily routines anchor Secretary's scheduling
+          // decisions. Without them it has no way to know when to
+          // protect focus blocks or how the user's day is shaped.
+          id: 'secretary.routines.set',
+          skillId: 'secretary',
+          kind: 'setting',
+          label: 'Daily routines',
+          status: secretaryRoutinesSet ? 'ready' : 'missing',
+          cta: secretaryRoutinesSet
+            ? null
+            : { label: 'Describe your routines', href: '#/skills/secretary/configuration' },
         },
         {
           id: 'workspace.team.set-up',

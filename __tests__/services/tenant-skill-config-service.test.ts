@@ -83,7 +83,7 @@ describe('tenant-skill-config-service — schema registry', () => {
     expect(isSkillId(42)).toBe(false);
   });
 
-  it('Content schema exposes 6 fields; other skills have 0 (v1 scope cut)', () => {
+  it('Content + Secretary schemas expose 6 fields each; remaining 3 have 0 (OI-DATA-003a pass)', () => {
     expect(getSkillSchemaKeys('content').sort()).toEqual([
       'auto_publish',
       'default_platform',
@@ -92,7 +92,14 @@ describe('tenant-skill-config-service — schema registry', () => {
       'output_length',
       'voice_guidelines',
     ]);
-    expect(getSkillSchemaKeys('secretary')).toEqual([]);
+    expect(getSkillSchemaKeys('secretary').sort()).toEqual([
+      'daily_routines',
+      'extra_notes',
+      'focus_block_policy',
+      'interruption_tolerance',
+      'primary_calendar',
+      'priority_rules',
+    ]);
     expect(getSkillSchemaKeys('training')).toEqual([]);
     expect(getSkillSchemaKeys('finance')).toEqual([]);
     expect(getSkillSchemaKeys('cooking')).toEqual([]);
@@ -237,7 +244,7 @@ describe('tenant-skill-config-service — validation', () => {
   });
 });
 
-describe('tenant-skill-config-service — empty-schema skills (v1 scope cut)', () => {
+describe('tenant-skill-config-service — empty-schema skills (training/finance/cooking remain; secretary promoted in OI-DATA-003a)', () => {
   let alice: number;
   beforeEach(() => {
     testDb = new Database(':memory:');
@@ -247,8 +254,10 @@ describe('tenant-skill-config-service — empty-schema skills (v1 scope cut)', (
   });
   afterEach(() => testDb?.close());
 
-  it('secretary: GET returns empty config with no defaults', () => {
-    const row = getSkillConfig(alice, 'secretary');
+  // OI-DATA-003a: Secretary now has a real schema. The "empty-schema
+  // skills" block only covers Training / Finance / Cooking.
+  it('training: GET returns empty config with no defaults', () => {
+    const row = getSkillConfig(alice, 'training');
     expect(row.config).toEqual({});
   });
 

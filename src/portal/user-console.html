@@ -828,7 +828,66 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
         </div>
       </div>
       <div data-sub-section="secretary.configuration" class="hidden">
-        <div class="empty-state"><div class="icon">☎</div><h3>Routine editor not yet wired</h3><p>Edit routines and priority rules in the iOS app → Settings → Secretary for now.</p></div>
+        <div class="panel">
+          <header>
+            <h2>Secretary skill configuration</h2>
+            <span class="meta small" id="secretaryCfgDirtyMeta">No unsaved changes</span>
+          </header>
+          <div class="body">
+            <p class="small muted" style="margin-bottom: var(--space-4);">
+              Secretary reads these to sequence your day. Apply to <strong>every member</strong> of this workspace. View = any member; edit = <strong>tenant_admin</strong>.
+            </p>
+            <div class="form-row">
+              <label for="secCfgDailyRoutines">Daily routines</label>
+              <textarea id="secCfgDailyRoutines" rows="5" maxlength="4000" placeholder="Describe your morning and evening rituals. What time you start, when you break, when you stop. Secretary uses this to protect focus blocks and sequence your day."></textarea>
+            </div>
+            <div class="form-row">
+              <label for="secCfgPriorityRules">Priority rules</label>
+              <textarea id="secCfgPriorityRules" rows="4" maxlength="2000" placeholder="How should competing tasks be prioritized? e.g. 'Meetings with Felipe always override focus blocks.' 'Deep work > email before 11 AM.'"></textarea>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-3);">
+              <div class="form-row">
+                <label for="secCfgFocusPolicy">Focus-block policy</label>
+                <select id="secCfgFocusPolicy">
+                  <option value="none">No focus blocks</option>
+                  <option value="mornings">Mornings only</option>
+                  <option value="afternoons">Afternoons only</option>
+                  <option value="all_day">All day</option>
+                  <option value="custom">Custom (describe below)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="secCfgPrimaryCalendar">Primary calendar</label>
+                <select id="secCfgPrimaryCalendar">
+                  <option value="none">None / not specified</option>
+                  <option value="google">Google</option>
+                  <option value="outlook">Outlook</option>
+                  <option value="icloud">iCloud</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="secCfgInterruptionTolerance">Interruption tolerance</label>
+                <select id="secCfgInterruptionTolerance">
+                  <option value="low">Low — rarely nudge</option>
+                  <option value="medium">Medium — balanced</option>
+                  <option value="high">High — nudge often</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="secCfgExtraNotes">Extra notes</label>
+              <textarea id="secCfgExtraNotes" rows="3" maxlength="2000" placeholder="Anything else Secretary should know — timezone quirks, do-not-disturb hours, context handoff preferences."></textarea>
+            </div>
+            <div id="secretaryCfgMsg" class="small" style="margin-top: var(--space-3); min-height: 1em;"></div>
+            <div class="row-inline" style="margin-top: var(--space-4); justify-content: flex-end;">
+              <button class="btn ghost" id="secretaryCfgResetBtn" onclick="secretaryConfigReset()">Revert</button>
+              <button class="btn primary" id="secretaryCfgSaveBtn" onclick="secretaryConfigSave()">Save changes</button>
+            </div>
+            <p class="small muted" id="secretaryCfgAdminNote" style="margin-top: var(--space-3); display: none;">
+              You're in view-only mode. Ask a <strong>tenant_admin</strong> to change these settings.
+            </p>
+          </div>
+        </div>
       </div>
       <div data-sub-section="secretary.dependencies" class="hidden">
         <div class="panel"><header><h2>Secretary dependencies</h2></header><div class="body" id="secretaryDeps"></div></div>
@@ -1661,6 +1720,10 @@ function paintSkill(skill) {
     // fetches if not.
     loadContentConfig();
   }
+  // OI-DATA-003a: same pattern for Secretary.
+  if (skill === 'secretary') {
+    loadSecretaryConfig();
+  }
 }
 
 // ── Content skill config editor (OI-DATA-003) ─────────────────────
@@ -1803,6 +1866,139 @@ window.contentConfigSave = async function() {
     toast(e.message || 'Save failed', 'error');
   } finally {
     contentConfigUpdateDirty();
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Secretary skill config editor (OI-DATA-003a)
+// ─────────────────────────────────────────────────────────────────
+// Parallel to the Content editor (OI-DATA-003). Same dirty-state
+// pattern: baseline holds last-saved values, diff-only PUT,
+// Save/Revert disabled when clean, non-admin view-only mode.
+const secretaryConfigBaseline = {
+  daily_routines: '',
+  priority_rules: '',
+  focus_block_policy: 'none',
+  primary_calendar: 'none',
+  interruption_tolerance: 'medium',
+  extra_notes: '',
+};
+
+function secretaryConfigFieldIds() {
+  return {
+    daily_routines:         'secCfgDailyRoutines',
+    priority_rules:         'secCfgPriorityRules',
+    focus_block_policy:     'secCfgFocusPolicy',
+    primary_calendar:       'secCfgPrimaryCalendar',
+    interruption_tolerance: 'secCfgInterruptionTolerance',
+    extra_notes:            'secCfgExtraNotes',
+  };
+}
+
+async function loadSecretaryConfig() {
+  try {
+    const r = await fetchJson('/workspace/skills/secretary/config');
+    const cfg = r.data.config || {};
+    const ids = secretaryConfigFieldIds();
+    for (const [field, id] of Object.entries(ids)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const val = cfg[field];
+      const str = val == null ? '' : String(val);
+      el.value = str;
+      secretaryConfigBaseline[field] = str;
+      if (!el.dataset.secCfgBound) {
+        el.addEventListener('input', secretaryConfigUpdateDirty);
+        el.dataset.secCfgBound = '1';
+      }
+    }
+    // View-only for non-admins.
+    const role = (state.me && state.me.role) || 'tenant_member';
+    const isAdmin = role === 'tenant_admin';
+    for (const id of Object.values(ids)) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !isAdmin;
+    }
+    document.getElementById('secretaryCfgSaveBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('secretaryCfgResetBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('secretaryCfgAdminNote').style.display = isAdmin ? 'none' : '';
+    secretaryConfigUpdateDirty();
+    document.getElementById('secretaryCfgMsg').textContent = '';
+  } catch (e) {
+    toast('Could not load Secretary config: ' + (e.message || 'unknown error'), 'error');
+  }
+}
+
+function secretaryConfigCurrent() {
+  const ids = secretaryConfigFieldIds();
+  const out = {};
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    out[field] = el.value;
+  }
+  return out;
+}
+
+function secretaryConfigUpdateDirty() {
+  const curr = secretaryConfigCurrent();
+  let dirty = false;
+  for (const key of Object.keys(secretaryConfigBaseline)) {
+    if (curr[key] !== secretaryConfigBaseline[key]) { dirty = true; break; }
+  }
+  const meta = document.getElementById('secretaryCfgDirtyMeta');
+  const save = document.getElementById('secretaryCfgSaveBtn');
+  const reset = document.getElementById('secretaryCfgResetBtn');
+  if (meta) {
+    meta.textContent = dirty ? 'Unsaved changes' : 'No unsaved changes';
+    meta.className = 'meta small ' + (dirty ? '' : 'muted');
+  }
+  if (save) save.disabled = !dirty;
+  if (reset) reset.disabled = !dirty;
+}
+
+window.secretaryConfigReset = function() {
+  const ids = secretaryConfigFieldIds();
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.value = secretaryConfigBaseline[field] || '';
+  }
+  secretaryConfigUpdateDirty();
+  document.getElementById('secretaryCfgMsg').textContent = '';
+};
+
+window.secretaryConfigSave = async function() {
+  const curr = secretaryConfigCurrent();
+  const patch = {};
+  for (const key of Object.keys(secretaryConfigBaseline)) {
+    if (curr[key] !== secretaryConfigBaseline[key]) patch[key] = curr[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    toast('Nothing to save.', 'error');
+    return;
+  }
+  const save = document.getElementById('secretaryCfgSaveBtn');
+  save.disabled = true;
+  const msg = document.getElementById('secretaryCfgMsg');
+  msg.textContent = '';
+  try {
+    await fetchJson('/workspace/skills/secretary/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config: patch }),
+    });
+    Object.assign(secretaryConfigBaseline, curr);
+    secretaryConfigUpdateDirty();
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    toast('Secretary config saved', 'success');
+    // Refresh Home so the secretary.routines.set dependency flips.
+    loadHome();
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    toast(e.message || 'Save failed', 'error');
+  } finally {
+    secretaryConfigUpdateDirty();
   }
 };
 

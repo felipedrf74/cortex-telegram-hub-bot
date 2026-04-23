@@ -121,15 +121,37 @@ const CONTENT_SCHEMA: Record<string, FieldValidator> = {
   extra_notes:                 stringField({ maxLength: 2000 }),
 };
 
-// ── Placeholder schemas for other skills (v1 scope cut) ───────────
+// ── Secretary skill schema (OI-DATA-003a, 2026-04-23) ─────────────
+//
+// Secretary is the background operator of the user's day — reads
+// calendars, applies priority rules, protects focus blocks, hands
+// context to other skills. The schema mirrors Content's 6-field
+// shape for consistency: one free-text (daily_routines, 4000), one
+// more free-text (priority_rules, 2000), 3 enums, one extra_notes.
+
+const SECRETARY_FOCUS_POLICIES = ['none', 'mornings', 'afternoons', 'all_day', 'custom'] as const;
+const SECRETARY_CALENDARS = ['google', 'outlook', 'icloud', 'none'] as const;
+const SECRETARY_INTERRUPTION = ['low', 'medium', 'high'] as const;
+
+const SECRETARY_SCHEMA: Record<string, FieldValidator> = {
+  daily_routines:          stringField({ maxLength: 4000 }),
+  priority_rules:          stringField({ maxLength: 2000 }),
+  focus_block_policy:      stringField({ enumValues: SECRETARY_FOCUS_POLICIES, default: 'none' }),
+  primary_calendar:        stringField({ enumValues: SECRETARY_CALENDARS, default: 'none' }),
+  interruption_tolerance:  stringField({ enumValues: SECRETARY_INTERRUPTION, default: 'medium' }),
+  extra_notes:             stringField({ maxLength: 2000 }),
+};
+
+// ── Placeholder schemas for the remaining skills (v1 scope cut) ───
 // Empty records mean "no fields defined yet". Saves that send any
 // field to these skills will be rejected. This keeps the
 // infrastructure wired but defers per-skill UX decisions.
+// Follow-ups: OI-DATA-003b (training), 003c (finance), 003d (cooking).
 const EMPTY_SCHEMA: Record<string, FieldValidator> = {};
 
 const SCHEMAS: Record<SkillId, Record<string, FieldValidator>> = {
   content: CONTENT_SCHEMA,
-  secretary: EMPTY_SCHEMA,
+  secretary: SECRETARY_SCHEMA,
   training: EMPTY_SCHEMA,
   finance: EMPTY_SCHEMA,
   cooking: EMPTY_SCHEMA,
