@@ -349,6 +349,26 @@ tr.row-selected td, .row.row-selected {
   margin-bottom: var(--space-2);
 }
 
+/* OI-USR-406: invite expiry countdown. Tint ramps from neutral
+ * (> 24h) through warning (1-24h) and orange (< 1h) to danger
+ * (expired). `none` covers invites with no expiry set. Updates
+ * every 30s via refreshInviteCountdowns() — no row replacement
+ * so in-flight button clicks survive the tick. */
+.invite-countdown {
+  display: inline-block; font-size: 11px; line-height: 1.3;
+  padding: 1px 6px; border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.invite-countdown.none     { color: var(--text-muted); font-style: italic; }
+.invite-countdown.fresh    { color: var(--text-dim); }
+.invite-countdown.soon     { color: var(--accent);
+                              background: var(--accent-subtle); }
+.invite-countdown.expiring { color: #d97706;
+                              background: rgba(217, 119, 6, 0.15); }
+.invite-countdown.expired  { color: var(--danger, #dc3545);
+                              background: rgba(220, 53, 69, 0.1);
+                              font-weight: 500; }
+
 /* Add-form "Used by skills" checkbox group */
 .skill-picker {
   display: flex; flex-wrap: wrap; gap: var(--space-3);
@@ -1873,6 +1893,61 @@ function labelFor(kind, value) {
   const map = LABELS[kind];
   return (map && map[value]) || value;
 }
+
+// ── OI-USR-406: relative countdown for invite expiry timestamps ───
+// Pure helper — returns { label, kind } pair so the caller can both
+// render the text AND tint the row by urgency. `kind` is one of:
+//   'none'      expiresAt is null/undefined — "never"
+//   'fresh'     > 24h remaining — neutral tint
+//   'soon'      1–24h remaining — warning tint
+//   'expiring'  < 1h remaining — orange tint
+//   'expired'   past expiry — danger tint
+//
+// Resolution is day/hour/minute only (no seconds — a UX that
+// ticks every second creates visual noise and forces setInterval
+// at 1s cadence). The 30s refresh tick in the invites loader is
+// enough to keep "expires in Nm" accurate within a minute.
+function formatCountdown(iso) {
+  if (iso === null || iso === undefined || iso === '') {
+    return { label: 'never', kind: 'none' };
+  }
+  const target = new Date(iso).getTime();
+  if (!Number.isFinite(target)) return { label: 'unknown', kind: 'none' };
+  const now = Date.now();
+  const deltaMs = target - now;
+  if (deltaMs <= 0) {
+    return { label: 'expired ' + humanizeDuration(-deltaMs) + ' ago', kind: 'expired' };
+  }
+  const d = Math.floor(deltaMs / 86400000);
+  const h = Math.floor((deltaMs % 86400000) / 3600000);
+  const m = Math.floor((deltaMs % 3600000) / 60000);
+  if (d >= 1) return { label: 'expires in ' + d + 'd', kind: 'fresh' };
+  if (h >= 1) return { label: 'expires in ' + h + 'h', kind: 'soon' };
+  return { label: 'expires in ' + Math.max(m, 1) + 'm', kind: 'expiring' };
+}
+function humanizeDuration(ms) {
+  const d = Math.floor(ms / 86400000);
+  if (d >= 1) return d + 'd';
+  const h = Math.floor(ms / 3600000);
+  if (h >= 1) return h + 'h';
+  const m = Math.floor(ms / 60000);
+  return Math.max(m, 1) + 'm';
+}
+// Re-tick every visible .invite-countdown cell every 30s so
+// "expires in 5m" becomes "expired 0m ago" without the user
+// having to reload the team page. Only touches textContent +
+// className — no row replacement, so in-flight button clicks
+// survive the tick.
+function refreshInviteCountdowns() {
+  const els = document.querySelectorAll('.invite-countdown[data-expires]');
+  els.forEach((el) => {
+    const iso = el.getAttribute('data-expires');
+    const c = formatCountdown(iso || null);
+    el.textContent = c.label;
+    el.className = 'invite-countdown ' + c.kind;
+  });
+}
+setInterval(refreshInviteCountdowns, 30000);
 
 function toast(msg, kind) {
   const t = document.getElementById('toast');
@@ -3861,15 +3936,20 @@ async function loadTeam() {
       t.innerHTML = '<div class="empty-state small"><p>No invites yet.</p></div>';
     } else {
       t.innerHTML = `<table class="data">
-        <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
-        <tbody>${state.invites.map((i) => `
+        <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead>
+        <tbody>${state.invites.map((i) => {
+          const iso = i.expiresAt || i.expires_at || '';
+          const c = formatCountdown(iso || null);
+          return `
           <tr>
             <td>${esc(i.email)}</td>
             <td><span class="pill role">${esc(labelFor('role', i.role))}</span></td>
             <td><span class="pill ${i.status === 'accepted' ? 'ready' : i.status === 'pending' ? 'info' : 'unknown'}">${esc(labelFor('inviteStatus', i.status))}</span></td>
             <td class="small muted">${esc(i.createdAt || i.created_at || '')}</td>
+            <td class="small"><span class="invite-countdown ${esc(c.kind)}" data-expires="${esc(iso)}" title="${esc(iso) || 'no expiry set'}">${esc(c.label)}</span></td>
             <td class="right">${i.status === 'pending' ? `<button class="btn ghost small" onclick="copyInvite('${esc(i.inviteCode || i.invite_code)}')">Copy link</button> <button class="btn ghost danger small" onclick="revokeInvite(${i.id})">Revoke</button>` : ''}</td>
-          </tr>`).join('')}
+          </tr>`;
+        }).join('')}
         </tbody></table>`;
     }
   } catch (e) {}

@@ -478,9 +478,36 @@ Follow-ups:
 
 ---
 
-### OI-USR-406 — In-UI invite expiry countdown [P3, UX]
+### ~~OI-USR-406 — In-UI invite expiry countdown~~ [DONE · 2026-04-23]
 
-**What's missing.** Invites have `expires_at`; the team table shows the timestamp but not a relative countdown. Inherited from OI-UX-002 in the hardening open-items.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+The Team page's Invites table now carries a dedicated "Expires" column showing a relative countdown instead of a raw timestamp. Five urgency states with tinted pills:
+
+- `none` — no expiry set → "never" (muted italic)
+- `fresh` — > 24h remaining → "expires in Nd" (neutral)
+- `soon` — 1-24h remaining → "expires in Nh" (accent blue)
+- `expiring` — < 1h remaining → "expires in Nm" (orange tint)
+- `expired` — past expiry → "expired Nd/Nh/Nm ago" (danger red, slight bold)
+
+Implementation:
+
+- **Pure helper `formatCountdown(iso)`** returns `{ label, kind }`. Day/hour/minute resolution only (no second-level tick — that creates visible noise and demands 1s intervals). Sub-minute output clamps to "1m" so the UI never reads "expires in 0m".
+- **Companion `humanizeDuration(ms)`** for the "expired Xd ago" branch. Same ladder (d → h → m) with the same 1m clamp.
+- **30s background tick via `setInterval`** — recomputes every visible `.invite-countdown[data-expires]` cell's `textContent` + `className` without re-rendering the row. This preserves in-flight button clicks like "Copy link" → clipboard which would otherwise be destroyed by row replacement.
+- **Both camelCase + snake_case support** — the row reads `i.expiresAt || i.expires_at` so the same markup survives whichever shape the route returns.
+
+Design calls worth remembering:
+
+1. **Return `{ label, kind }` instead of a raw string.** Gives the caller both the text and the CSS class in one call; no second parser needed to categorise the string. Pattern applied also in OI-UX-104 (`labelFor`) but here it's load-bearing for the tint.
+2. **`font-variant-numeric: tabular-nums`** on `.invite-countdown`. Without it, digit glyphs shift pixel width as numbers change (12h → 13h), creating visible jitter on every tick. Tabular-nums locks digit glyphs to uniform width.
+3. **30s cadence, not 1s.** Minute-resolution UX is cheap in DOM writes (~8 cells per tick for a normal invite list) and matches the actual information change rate (minutes, not seconds).
+4. **`formatCountdown(iso || null)` on row render.** Empty-string `expires_at` is coerced to `null` so the helper's early-return "none" branch fires instead of computing "expired 56y ago" from the Unix epoch.
+5. **Tick only mutates `textContent` + `className`** — no `innerHTML` rewrite. This preserves event listeners on sibling elements (Copy/Revoke buttons) and any in-flight interaction state.
+
+Files: `src/portal/user-console.html` (~50 LOC helpers + CSS + column wiring). Zero backend change.
+
+Tests: 26 pins in `__tests__/portal/user-console-invite-countdown.test.ts` — unlike most of the pin files, this one extracts `formatCountdown` and `humanizeDuration` via `new Function(...)` and runs them against `vi.setSystemTime()` frozen clocks, so the behavior boundaries (24h/1h/0) are tested as *actual outputs*, not just structural shape. Plus 6 structural pins on the invites table column, tick wiring, 5 CSS kind classes, and regressions that existing OI-UX-104 label calls + action-button rendering still fire.
 
 ---
 
