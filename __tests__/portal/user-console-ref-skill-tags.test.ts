@@ -143,21 +143,23 @@ describe('user-console.html — create functions merge skills + user tags', () =
 describe('user-console.html — render functions split skill badges from regular tags', () => {
   const html = loadHtml();
 
-  it('renderBooks: uses renderSkillBadges(b.tags) + stripSkillTags(b.tags) in separate columns', () => {
-    // The "Used by" column uses renderSkillBadges; the "Tags" column
-    // uses stripSkillTags so skill:<id> chips don't show as raw text.
-    expect(html).toMatch(/renderBooks\s*=\s*function[\s\S]*?renderSkillBadges\(b\.tags\)/);
+  it('renderBooks: uses renderSkillBadgesEditable(b.tags,...) + stripSkillTags(b.tags) in separate columns', () => {
+    // OI-USR-405a (2026-04-23): the "Used by" column now uses the
+    // editable renderer (chips w/ × + "+ Skill" popover). The "Tags"
+    // column still uses stripSkillTags so skill:<id> chips don't
+    // show as raw text.
+    expect(html).toMatch(/renderBooks\s*=\s*function[\s\S]*?renderSkillBadgesEditable\(b\.tags,\s*['"]book['"],\s*b\.id\)/);
     expect(html).toMatch(/renderBooks\s*=\s*function[\s\S]*?stripSkillTags\(b\.tags\)/);
   });
-  it('renderChannels: renderSkillBadges(ch.tags) in a "Used by" column', () => {
-    expect(html).toMatch(/renderChannels\s*=\s*function[\s\S]*?renderSkillBadges\(ch\.tags\)/);
+  it('renderChannels: renderSkillBadgesEditable(ch.tags, "channel", ch.id) in a "Used by" column', () => {
+    expect(html).toMatch(/renderChannels\s*=\s*function[\s\S]*?renderSkillBadgesEditable\(ch\.tags,\s*['"]channel['"],\s*ch\.id\)/);
   });
-  it('renderLinks: renderSkillBadges(l.tags) + stripSkillTags(l.tags)', () => {
-    expect(html).toMatch(/renderLinks\s*=\s*function[\s\S]*?renderSkillBadges\(l\.tags\)/);
+  it('renderLinks: renderSkillBadgesEditable(l.tags, "link", l.id) + stripSkillTags(l.tags)', () => {
+    expect(html).toMatch(/renderLinks\s*=\s*function[\s\S]*?renderSkillBadgesEditable\(l\.tags,\s*['"]link['"],\s*l\.id\)/);
     expect(html).toMatch(/renderLinks\s*=\s*function[\s\S]*?stripSkillTags\(l\.tags\)/);
   });
-  it('renderNotes: renderSkillBadges inline with the title row + stripSkillTags for free-form', () => {
-    expect(html).toMatch(/renderNotes\s*=\s*function[\s\S]*?renderSkillBadges\(n\.tags\)/);
+  it('renderNotes: renderSkillBadgesEditable inline with the title row + stripSkillTags for free-form', () => {
+    expect(html).toMatch(/renderNotes\s*=\s*function[\s\S]*?renderSkillBadgesEditable\(n\.tags,\s*['"]note['"],\s*n\.id\)/);
     expect(html).toMatch(/renderNotes\s*=\s*function[\s\S]*?stripSkillTags\(n\.tags\)/);
   });
 });
