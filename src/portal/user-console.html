@@ -995,7 +995,62 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
         </div>
       </div>
       <div data-sub-section="finance.configuration" class="hidden">
-        <div class="empty-state"><div class="icon">$</div><h3>Budget editor not yet wired</h3><p>Edit budget and categories in the iOS app.</p></div>
+        <div class="panel">
+          <header>
+            <h2>Finance skill configuration</h2>
+            <span class="meta small" id="financeCfgDirtyMeta">No unsaved changes</span>
+          </header>
+          <div class="body">
+            <p class="small muted" style="margin-bottom: var(--space-4);">
+              Finance uses these to budget, categorize, and answer "can I afford this?". View = any member; edit = <strong>tenant_admin</strong>.
+            </p>
+            <div class="form-row">
+              <label for="finCfgBudget">Monthly budget</label>
+              <textarea id="finCfgBudget" rows="4" maxlength="2000" placeholder="e.g. '$4,500 monthly budget. Rent $1,800. Food $700. Transportation $400. Discretionary $600. Savings $1,000.' Inline caps are fine — no strict parsing."></textarea>
+            </div>
+            <div class="form-row">
+              <label for="finCfgSavingGoals">Saving goals</label>
+              <textarea id="finCfgSavingGoals" rows="3" maxlength="2000" placeholder="e.g. 'Emergency fund: $15k by Dec. House down payment: $40k in 18 months. Retirement: 15% of gross.'"></textarea>
+            </div>
+            <div class="form-row">
+              <label for="finCfgAffordabilityRules">Affordability rules</label>
+              <textarea id="finCfgAffordabilityRules" rows="3" maxlength="2000" placeholder="e.g. 'Never finance vacation. Car max 10% of monthly income. No subscriptions under 3-month trial.'"></textarea>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+              <div class="form-row">
+                <label for="finCfgCurrency">Primary currency</label>
+                <select id="finCfgCurrency">
+                  <option value="USD">USD · US Dollar</option>
+                  <option value="EUR">EUR · Euro</option>
+                  <option value="BRL">BRL · Brazilian Real</option>
+                  <option value="GBP">GBP · British Pound</option>
+                  <option value="JPY">JPY · Japanese Yen</option>
+                  <option value="other">Other (note below)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="finCfgDecisionStyle">Decision style</label>
+                <select id="finCfgDecisionStyle">
+                  <option value="conservative">Conservative — cash is safety</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="risk_tolerant">Risk-tolerant — opportunity first</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="finCfgExtraNotes">Extra notes</label>
+              <textarea id="finCfgExtraNotes" rows="3" maxlength="2000" placeholder="Anything else Finance should know — tax situation, dependents, upcoming large expenses."></textarea>
+            </div>
+            <div id="financeCfgMsg" class="small" style="margin-top: var(--space-3); min-height: 1em;"></div>
+            <div class="row-inline" style="margin-top: var(--space-4); justify-content: flex-end;">
+              <button class="btn ghost" id="financeCfgResetBtn" onclick="financeConfigReset()">Revert</button>
+              <button class="btn primary" id="financeCfgSaveBtn" onclick="financeConfigSave()">Save changes</button>
+            </div>
+            <p class="small muted" id="financeCfgAdminNote" style="margin-top: var(--space-3); display: none;">
+              You're in view-only mode. Ask a <strong>tenant_admin</strong> to change these settings.
+            </p>
+          </div>
+        </div>
       </div>
       <div data-sub-section="finance.dependencies" class="hidden"><div class="panel"><header><h2>Finance dependencies</h2></header><div class="body" id="financeDeps"></div></div></div>
       <div data-sub-section="finance.insights" class="hidden"><div id="financeInsights"></div></div>
@@ -1782,6 +1837,10 @@ function paintSkill(skill) {
   if (skill === 'training') {
     loadTrainingConfig();
   }
+  // OI-DATA-003c: same pattern for Finance.
+  if (skill === 'finance') {
+    loadFinanceConfig();
+  }
 }
 
 // ── Content skill config editor (OI-DATA-003) ─────────────────────
@@ -2190,6 +2249,139 @@ window.trainingConfigSave = async function() {
     toast(e.message || 'Save failed', 'error');
   } finally {
     trainingConfigUpdateDirty();
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Finance skill config editor (OI-DATA-003c)
+// ─────────────────────────────────────────────────────────────────
+// Parallel to Content/Secretary/Training editors. Same dirty-state
+// pattern, diff-only PUT, non-admin view-only mode. 6 fields
+// matching the service schema; enum defaults align with
+// FINANCE_CURRENCIES ('USD') and FINANCE_DECISION_STYLES ('balanced').
+const financeConfigBaseline = {
+  budget_monthly: '',
+  saving_goals: '',
+  affordability_rules: '',
+  primary_currency: 'USD',
+  decision_style: 'balanced',
+  extra_notes: '',
+};
+
+function financeConfigFieldIds() {
+  return {
+    budget_monthly:       'finCfgBudget',
+    saving_goals:         'finCfgSavingGoals',
+    affordability_rules:  'finCfgAffordabilityRules',
+    primary_currency:     'finCfgCurrency',
+    decision_style:       'finCfgDecisionStyle',
+    extra_notes:          'finCfgExtraNotes',
+  };
+}
+
+async function loadFinanceConfig() {
+  try {
+    const r = await fetchJson('/workspace/skills/finance/config');
+    const cfg = r.data.config || {};
+    const ids = financeConfigFieldIds();
+    for (const [field, id] of Object.entries(ids)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const val = cfg[field];
+      const str = val == null ? '' : String(val);
+      el.value = str;
+      financeConfigBaseline[field] = str;
+      if (!el.dataset.finCfgBound) {
+        el.addEventListener('input', financeConfigUpdateDirty);
+        el.dataset.finCfgBound = '1';
+      }
+    }
+    const role = (state.me && state.me.role) || 'tenant_member';
+    const isAdmin = role === 'tenant_admin';
+    for (const id of Object.values(ids)) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !isAdmin;
+    }
+    document.getElementById('financeCfgSaveBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('financeCfgResetBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('financeCfgAdminNote').style.display = isAdmin ? 'none' : '';
+    financeConfigUpdateDirty();
+    document.getElementById('financeCfgMsg').textContent = '';
+  } catch (e) {
+    toast('Could not load Finance config: ' + (e.message || 'unknown error'), 'error');
+  }
+}
+
+function financeConfigCurrent() {
+  const ids = financeConfigFieldIds();
+  const out = {};
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    out[field] = el.value;
+  }
+  return out;
+}
+
+function financeConfigUpdateDirty() {
+  const curr = financeConfigCurrent();
+  let dirty = false;
+  for (const key of Object.keys(financeConfigBaseline)) {
+    if (curr[key] !== financeConfigBaseline[key]) { dirty = true; break; }
+  }
+  const meta = document.getElementById('financeCfgDirtyMeta');
+  const save = document.getElementById('financeCfgSaveBtn');
+  const reset = document.getElementById('financeCfgResetBtn');
+  if (meta) {
+    meta.textContent = dirty ? 'Unsaved changes' : 'No unsaved changes';
+    meta.className = 'meta small ' + (dirty ? '' : 'muted');
+  }
+  if (save) save.disabled = !dirty;
+  if (reset) reset.disabled = !dirty;
+}
+
+window.financeConfigReset = function() {
+  const ids = financeConfigFieldIds();
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.value = financeConfigBaseline[field] || '';
+  }
+  financeConfigUpdateDirty();
+  document.getElementById('financeCfgMsg').textContent = '';
+};
+
+window.financeConfigSave = async function() {
+  const curr = financeConfigCurrent();
+  const patch = {};
+  for (const key of Object.keys(financeConfigBaseline)) {
+    if (curr[key] !== financeConfigBaseline[key]) patch[key] = curr[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    toast('Nothing to save.', 'error');
+    return;
+  }
+  const save = document.getElementById('financeCfgSaveBtn');
+  save.disabled = true;
+  const msg = document.getElementById('financeCfgMsg');
+  msg.textContent = '';
+  try {
+    await fetchJson('/workspace/skills/finance/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config: patch }),
+    });
+    Object.assign(financeConfigBaseline, curr);
+    financeConfigUpdateDirty();
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    toast('Finance config saved', 'success');
+    // Refresh Home so the finance.budget.set dependency flips.
+    loadHome();
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    toast(e.message || 'Save failed', 'error');
+  } finally {
+    financeConfigUpdateDirty();
   }
 };
 

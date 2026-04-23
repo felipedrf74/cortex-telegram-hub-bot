@@ -163,18 +163,39 @@ const TRAINING_SCHEMA: Record<string, FieldValidator> = {
   extra_notes:               stringField({ maxLength: 2000 }),
 };
 
-// ── Placeholder schemas for the remaining skills (v1 scope cut) ───
+// ── Finance skill schema (OI-DATA-003c, 2026-04-23) ───────────────
+//
+// Finance keeps a lightweight model of budget + categories + rules
+// and answers "can I afford this?" for other skills (Cooking meal
+// cost, Training gear purchases). Same 6-field shape as Training:
+// 3 free-text + 2 enums + extra_notes.
+//
+// Currency note: this is NOT an ISO-4217 authority — it's a display-
+// context hint to downstream skills. 6 common codes + 'other' escape
+// hatch. Full ISO handling would be a downstream feature.
+
+const FINANCE_CURRENCIES = ['USD', 'EUR', 'BRL', 'GBP', 'JPY', 'other'] as const;
+const FINANCE_DECISION_STYLES = ['conservative', 'balanced', 'risk_tolerant'] as const;
+
+const FINANCE_SCHEMA: Record<string, FieldValidator> = {
+  budget_monthly:        stringField({ maxLength: 2000 }),
+  saving_goals:          stringField({ maxLength: 2000 }),
+  affordability_rules:   stringField({ maxLength: 2000 }),
+  primary_currency:      stringField({ enumValues: FINANCE_CURRENCIES, default: 'USD' }),
+  decision_style:        stringField({ enumValues: FINANCE_DECISION_STYLES, default: 'balanced' }),
+  extra_notes:           stringField({ maxLength: 2000 }),
+};
+
+// ── Placeholder schemas for remaining skills (Cooking only now) ───
 // Empty records mean "no fields defined yet". Saves that send any
-// field to these skills will be rejected. This keeps the
-// infrastructure wired but defers per-skill UX decisions.
-// Follow-ups: OI-DATA-003c (finance), 003d (cooking).
+// field to these skills will be rejected. Follow-up: OI-DATA-003d.
 const EMPTY_SCHEMA: Record<string, FieldValidator> = {};
 
 const SCHEMAS: Record<SkillId, Record<string, FieldValidator>> = {
   content: CONTENT_SCHEMA,
   secretary: SECRETARY_SCHEMA,
   training: TRAINING_SCHEMA,
-  finance: EMPTY_SCHEMA,
+  finance: FINANCE_SCHEMA,
   cooking: EMPTY_SCHEMA,
 };
 

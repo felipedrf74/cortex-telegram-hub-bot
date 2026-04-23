@@ -83,7 +83,7 @@ describe('tenant-skill-config-service — schema registry', () => {
     expect(isSkillId(42)).toBe(false);
   });
 
-  it('Content + Secretary + Training schemas expose 6 fields each; remaining 2 have 0 (OI-DATA-003b pass)', () => {
+  it('Content + Secretary + Training + Finance schemas expose 6 fields each; Cooking has 0 (OI-DATA-003c pass)', () => {
     expect(getSkillSchemaKeys('content').sort()).toEqual([
       'auto_publish',
       'default_platform',
@@ -108,7 +108,14 @@ describe('tenant-skill-config-service — schema registry', () => {
       'preferred_training_days',
       'recovery_priority',
     ]);
-    expect(getSkillSchemaKeys('finance')).toEqual([]);
+    expect(getSkillSchemaKeys('finance').sort()).toEqual([
+      'affordability_rules',
+      'budget_monthly',
+      'decision_style',
+      'extra_notes',
+      'primary_currency',
+      'saving_goals',
+    ]);
     expect(getSkillSchemaKeys('cooking')).toEqual([]);
   });
 
@@ -251,7 +258,7 @@ describe('tenant-skill-config-service — validation', () => {
   });
 });
 
-describe('tenant-skill-config-service — empty-schema skills (finance/cooking remain; secretary promoted in OI-DATA-003a, training in OI-DATA-003b)', () => {
+describe('tenant-skill-config-service — empty-schema skills (cooking remains; secretary/training/finance promoted in 003a/b/c)', () => {
   let alice: number;
   beforeEach(() => {
     testDb = new Database(':memory:');
@@ -261,16 +268,17 @@ describe('tenant-skill-config-service — empty-schema skills (finance/cooking r
   });
   afterEach(() => testDb?.close());
 
-  // OI-DATA-003a + 003b: Secretary and Training now have real schemas.
-  // The "empty-schema skills" block only covers Finance / Cooking.
-  it('finance: GET returns empty config with no defaults', () => {
-    const row = getSkillConfig(alice, 'finance');
+  // OI-DATA-003a/b/c: Secretary, Training, Finance all have real
+  // schemas now. This block covers only Cooking — the last skill
+  // that remains empty pending OI-DATA-003d.
+  it('cooking: GET returns empty config with no defaults', () => {
+    const row = getSkillConfig(alice, 'cooking');
     expect(row.config).toEqual({});
   });
 
-  it('finance: PUT with any field rejected with a clear message', () => {
+  it('cooking: PUT with any field rejected with a clear message', () => {
     try {
-      putSkillConfig(alice, 'finance', alice, { voice_guidelines: 'x' } as any);
+      putSkillConfig(alice, 'cooking', alice, { voice_guidelines: 'x' } as any);
       throw new Error('expected throw');
     } catch (e) {
       expect((e as SkillConfigError).code).toBe('BAD_REQUEST');

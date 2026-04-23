@@ -1412,6 +1412,16 @@ export function createPortalWorkspaceRouter(): Router {
       } catch {
         trainingGoalsSet = false;
       }
+      // OI-DATA-003c: has the tenant described their monthly budget?
+      // Finance can't answer "can I afford this?" without this anchor.
+      let financeBudgetSet = false;
+      try {
+        const cfg = getSkillConfig(ctx.tenantId, 'finance');
+        const b = cfg.config.budget_monthly;
+        financeBudgetSet = typeof b === 'string' && b.trim().length > 0;
+      } catch {
+        financeBudgetSet = false;
+      }
       const membersCount = row(
         'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
         ctx.tenantId,
@@ -1527,6 +1537,18 @@ export function createPortalWorkspaceRouter(): Router {
           cta: trainingGoalsSet
             ? null
             : { label: 'Set your goals', href: '#/skills/training/configuration' },
+        },
+        {
+          // OI-DATA-003c: monthly budget is Finance's anchor. Without
+          // it, "can I afford this?" becomes guesswork.
+          id: 'finance.budget.set',
+          skillId: 'finance',
+          kind: 'setting',
+          label: 'Monthly budget',
+          status: financeBudgetSet ? 'ready' : 'missing',
+          cta: financeBudgetSet
+            ? null
+            : { label: 'Describe your budget', href: '#/skills/finance/configuration' },
         },
         {
           id: 'workspace.team.set-up',
