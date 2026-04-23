@@ -114,6 +114,48 @@ button { font-family: inherit; cursor: pointer; }
 }
 .app-bar button.switch:hover { border-color: var(--border-hover); color: var(--text-primary); }
 
+/* OI-UX-106: responsive collapse for < 768 px. Mirrors user-console.
+ * Admin is unlikely to be used heavily from a phone — owners and
+ * platform admins operate from desktops — but this keeps the
+ * emergency-access case usable. */
+.mobile-nav-toggle { display: none; }
+@media (max-width: 768px) {
+  .mobile-nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; padding: 0; flex-shrink: 0;
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font-size: 16px; cursor: pointer; line-height: 1;
+  }
+  .app-bar { padding: 0 var(--space-3); gap: var(--space-2); }
+  .app-bar .divider,
+  .app-bar .scope-pill { display: none; }
+  .app-bar .brand { font-size: 13px; }
+  .app-bar button.switch { padding: 4px 8px; font-size: 11px; }
+  .app-bar .console-switch { gap: 4px; }
+  .app-bar .search-trigger .search-label { display: none; }
+  .app-bar .search-trigger .search-kbd { display: none; }
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'bar' 'main';
+  }
+  .sidebar {
+    position: fixed; top: 56px; left: 0; bottom: 0; z-index: 50;
+    width: min(280px, 80vw);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease-out;
+    box-shadow: 4px 0 12px rgba(0, 0, 0, 0.3);
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .sidebar.mobile-open::after {
+    content: ''; position: fixed; top: 56px; left: min(280px, 80vw);
+    right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5);
+    pointer-events: none; z-index: 49;
+  }
+  /* Tenant-drawer already uses min(540px, 95vw); nothing else to do
+   * there — it naturally collapses to near-full-width on phones. */
+}
+
 /* ── Sidebar nav ─────────────────────────────────────────────────── */
 .sidebar {
   grid-area: nav;
@@ -456,6 +498,8 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
 
   <!-- App bar ---------------------------------------------- -->
   <div class="app-bar">
+    <!-- OI-UX-106: hamburger for < 768 px; hidden at desktop widths. -->
+    <button id="mobileNavToggle" class="mobile-nav-toggle" onclick="toggleMobileNav()" aria-label="Toggle navigation" aria-expanded="false">☰</button>
     <div class="brand"><span class="dot"></span> Nexus Hub</div>
     <span class="divider">·</span>
     <span class="scope-pill">ADMIN CONSOLE</span>
@@ -964,7 +1008,34 @@ function showPage(id) {
   if (id === 'users') loadPlatformAdmins();
   if (id === 'usage') loadUsage();
   if (id === 'security') loadAudit();
+  // OI-UX-106: auto-close mobile drawer after any navigation.
+  closeMobileNav();
 }
+
+// OI-UX-106: mobile nav drawer helpers. Mirrors user-console.html —
+// same behavior, same class hooks (`.sidebar.mobile-open`).
+function toggleMobileNav() {
+  const nav = document.querySelector('nav.sidebar');
+  const btn = document.getElementById('mobileNavToggle');
+  if (!nav) return;
+  const open = nav.classList.toggle('mobile-open');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+function closeMobileNav() {
+  const nav = document.querySelector('nav.sidebar');
+  const btn = document.getElementById('mobileNavToggle');
+  if (nav) nav.classList.remove('mobile-open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+window.toggleMobileNav = toggleMobileNav;
+document.addEventListener('click', (e) => {
+  const nav = document.querySelector('nav.sidebar');
+  if (!nav || !nav.classList.contains('mobile-open')) return;
+  const btn = document.getElementById('mobileNavToggle');
+  if (nav.contains(e.target)) return;
+  if (btn && btn.contains(e.target)) return;
+  closeMobileNav();
+});
 document.querySelectorAll('a.nav-item').forEach((a) => {
   a.addEventListener('click', (e) => { e.preventDefault(); showPage(a.getAttribute('data-page')); });
 });

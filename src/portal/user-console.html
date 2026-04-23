@@ -131,6 +131,65 @@ button { font-family: inherit; cursor: pointer; }
 .two-col { display: grid; grid-template-columns: 2fr 1fr; gap: var(--space-5); align-items: start; }
 @media (max-width: 1100px) { .two-col { grid-template-columns: 1fr; } }
 
+/* OI-UX-106: responsive collapse for < 768 px. iOS is the primary
+ * small-screen experience; this is a usable fallback for anyone
+ * opening the portal on a phone browser. The sidebar becomes a
+ * slide-in drawer; the app-bar tightens; dense tables get
+ * horizontal scroll so they don't cause the whole page to scroll
+ * sideways. The drawer is closed on every navigation + on outside-
+ * click (JS), and the backdrop uses pointer-events: none so taps
+ * pass through to the outside-click listener. */
+.mobile-nav-toggle { display: none; }
+@media (max-width: 768px) {
+  .mobile-nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; padding: 0; flex-shrink: 0;
+    background: var(--bg-tertiary); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font-size: 16px; cursor: pointer; line-height: 1;
+  }
+  .app-bar { padding: 0 var(--space-3); gap: var(--space-2); }
+  .app-bar .divider,
+  .app-bar .scope-pill { display: none; }
+  .app-bar .brand { font-size: 13px; }
+  .app-bar button.switch { padding: 4px 8px; font-size: 11px; }
+  .app-bar .console-switch { gap: 4px; }
+  .app-bar .search-trigger .search-label { display: none; }
+  .app-bar .search-trigger .search-kbd { display: none; }
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'bar' 'main';
+  }
+  .sidebar {
+    position: fixed; top: 56px; left: 0; bottom: 0; z-index: 50;
+    width: min(280px, 80vw);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease-out;
+    box-shadow: 4px 0 12px rgba(0, 0, 0, 0.3);
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  /* Backdrop while drawer open. pointer-events: none so clicks
+   * pass through to the document click-outside handler. */
+  .sidebar.mobile-open::after {
+    content: ''; position: fixed; top: 56px; left: min(280px, 80vw);
+    right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5);
+    pointer-events: none; z-index: 49;
+  }
+  .page { padding: var(--space-3) var(--space-3) var(--space-5); }
+  .context-strip { padding: 8px var(--space-3); flex-wrap: wrap; gap: 4px; }
+  /* Horizontally scroll dense reference tables instead of breaking
+   * layout. White-space: normal on cells so text still wraps. */
+  .page table.data {
+    display: block; overflow-x: auto;
+  }
+  .page table.data thead, .page table.data tbody, .page table.data tr {
+    display: table; width: 100%; table-layout: fixed;
+  }
+  .bulk-toolbar { flex-wrap: wrap; }
+  .kb-modal-body { grid-template-columns: 1fr; }
+  .search-modal, .kb-modal { top: 5vh; max-height: 88vh; }
+}
+
 .card {
   background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: var(--radius); padding: var(--space-5);
@@ -708,6 +767,8 @@ tr.row-selected td, .row.row-selected {
 <div id="shell" class="shell hidden">
   <!-- App bar -->
   <div class="app-bar">
+    <!-- OI-UX-106: hamburger for < 768 px; hidden at desktop widths. -->
+    <button id="mobileNavToggle" class="mobile-nav-toggle" onclick="toggleMobileNav()" aria-label="Toggle navigation" aria-expanded="false">☰</button>
     <div class="brand"><span class="dot"></span> Nexus Hub</div>
     <span class="divider">·</span>
     <span class="scope-pill">USER CONSOLE</span>
@@ -2014,7 +2075,38 @@ function showPage(id) {
   if (id === 'team') loadTeam();
   if (id === 'profile') loadProfile();
   if (id.startsWith('skill-')) paintSkill(id.slice(6));
+  // OI-UX-106: auto-close mobile drawer after any navigation. Runs
+  // on desktop too — the class just doesn't do anything above 768px.
+  closeMobileNav();
 }
+
+// OI-UX-106: mobile nav drawer helpers.
+function toggleMobileNav() {
+  const nav = document.querySelector('nav.sidebar');
+  const btn = document.getElementById('mobileNavToggle');
+  if (!nav) return;
+  const open = nav.classList.toggle('mobile-open');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+function closeMobileNav() {
+  const nav = document.querySelector('nav.sidebar');
+  const btn = document.getElementById('mobileNavToggle');
+  if (nav) nav.classList.remove('mobile-open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+window.toggleMobileNav = toggleMobileNav;
+// Click-outside closes the drawer. Safe above 768px too — the
+// class doesn't affect layout there, so we're just removing an
+// already-inert class. Guarded to skip inside-drawer + hamburger
+// clicks so they don't double-handle.
+document.addEventListener('click', (e) => {
+  const nav = document.querySelector('nav.sidebar');
+  if (!nav || !nav.classList.contains('mobile-open')) return;
+  const btn = document.getElementById('mobileNavToggle');
+  if (nav.contains(e.target)) return;
+  if (btn && btn.contains(e.target)) return;
+  closeMobileNav();
+});
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-nav]');
   if (a) { e.preventDefault(); showPage(a.getAttribute('data-nav')); return; }

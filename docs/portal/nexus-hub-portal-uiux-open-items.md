@@ -293,9 +293,33 @@ Tests: 29 structural + behavior pins in `__tests__/portal/user-console-keyboard-
 
 ---
 
-### OI-UX-106 — Responsive collapse for < 768 px [P3, UX]
+### ~~OI-UX-106 — Responsive collapse for < 768 px~~ [DONE · 2026-04-23]
 
-**What's missing.** Sidebar collapse is only at < 1024 px. Below 768 px the shell would become cramped. Spec acknowledges iOS is for small viewports, so this is low priority.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+Both consoles now ship a `@media (max-width: 768px)` block that:
+
+- **Shows a hamburger button** (`#mobileNavToggle`, `☰`) in the app-bar with `aria-label="Toggle navigation"` and `aria-expanded` state. Hidden at desktop widths via `display: none` default.
+- **Turns the sidebar into a slide-in drawer** — `position: fixed` top-left, `width: min(280px, 80vw)`, `transform: translateX(-100%)` by default, `.mobile-open` class applies `translateX(0)`. 0.2s ease-out transition so the slide is snappy but perceptible.
+- **Backdrop via pseudo-element** — `.sidebar.mobile-open::after` darkens the main area (rgba 0.5) but has `pointer-events: none` so taps pass through to the document click-outside listener.
+- **Tightens the app-bar** — hides the `.divider` + `.scope-pill`, shrinks `button.switch` padding, hides the search-trigger's `.search-label` + `.search-kbd` (so just the ⌕ icon shows).
+- **user-console only:** tightens page padding, wraps dense reference tables in `overflow-x: auto` (horizontal scroll rather than stacking — preserves column mental map for a data-heavy UX), wraps the bulk toolbar, and stacks the shortcuts-help modal body from 2 columns to 1.
+
+JS side:
+- `toggleMobileNav()` / `closeMobileNav()` — exposed on `window`. Both sync the `aria-expanded` attribute so screen readers track drawer state.
+- `showPage()` auto-closes the drawer on every navigation — one choke point so nav-item clicks, search picks, keyboard shortcuts (`g h` etc.), and deep links all Just Work without parallel handlers.
+- Document click-outside listener closes the drawer on any tap outside the sidebar + hamburger. Guarded against inside-drawer clicks (nav items already navigate) and inside-hamburger clicks (would otherwise render the toggle button unable to open the drawer — tap → open → immediately close).
+
+Design calls worth remembering:
+
+1. **`pointer-events: none` on the backdrop** lets the document click-outside listener handle close — no explicit `<div class="backdrop" onclick="close">` needed. One less element, one less handler.
+2. **Horizontal scroll on tables, not card stacking.** For 6-7 column reference tables, stacking to `label: value` pairs produces a wall of text. Horizontal scroll preserves the "Status is column 3" mental map users build up.
+3. **`closeMobileNav` is called from `showPage`, not from the click handler.** Every navigation funnels through `showPage`, so any future entry point (new keyboard shortcut, new deep link) gets auto-close for free.
+4. **iOS is the primary small-screen experience.** This responsive block is a usable fallback for anyone opening the portal on a phone browser, not the main supported path. Admin-console especially — owners operate from desktops — gets a minimal mobile treatment (drawer + app-bar, but no table scroll overrides since the existing tenant-drawer already uses `min(540px, 95vw)`).
+
+Files: `src/portal/user-console.html` (~65 LOC CSS + ~30 LOC JS + 1 line of HTML), `src/portal/admin-console.html` (~45 LOC CSS + ~30 LOC JS + 1 line of HTML).
+
+Tests: 47 structural pins in `__tests__/portal/portal-responsive-collapse.test.ts` — hamburger button shape on both consoles, `@media (max-width: 768px)` block existence, hamburger display:inline-flex inside media query, shell collapses to single column, sidebar becomes fixed-position slide-in drawer with bounded width, `pointer-events: none` on backdrop, app-bar chrome hidden, user-console-specific page-padding + table-scroll + bulk-toolbar wrap + kb-modal single-column + modal top:5vh, `toggleMobileNav` + `closeMobileNav` definitions + window exposure + aria-expanded sync, `showPage` ends with `closeMobileNav()`, document click-outside handler + inside-drawer guard + inside-hamburger guard, regression that desktop-width grid stays `260px 1fr` and default sidebar has no `position: fixed` outside the media query.
 
 ---
 
