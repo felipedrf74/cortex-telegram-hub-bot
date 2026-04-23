@@ -179,9 +179,25 @@ Follow-ups still open:
 
 ---
 
-### OI-UX-102 — Reference tag editor [P2, UX]
+### ~~OI-UX-102 — Reference tag autocomplete~~ [DONE · 2026-04-23]
 
-**What's missing.** Today the book/link/note forms accept a `tags` comma-separated input. A proper tag editor with autocomplete (pulled from existing tag set) would make tagging adopt more consistently.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
+
+Every free-form tag input on the Add forms (Books / Links / Notes — Channels has no such field today) now shows a dropdown of existing tags pulled from `state.books + state.links + state.notes + state.channels` as the user types. Skill tags (`skill:<id>`) are excluded from the pool — those are owned by the skill-picker checkbox UI and would otherwise double-offer.
+
+Design calls:
+- **Pool is recomputed per keystroke** (Map<tag, count> over 4 state arrays). Cheap enough at single-tenant scale (~hundreds of tags max), and the big win is that a freshly-saved reference's tags appear immediately in the next suggestion — no cache-invalidation bookkeeping.
+- **Ranking: prefix > substring, count DESC, alphabetical tiebreak, max 8.** Most-used tags float to the top; users narrow by typing. Empty prefix on focus shows the top 8 overall ("what am I usually tagging things with?").
+- **Comma-separated editing model preserved.** The input's "current token" is everything after the last comma (`lastIndexOf(',')`), so `react, product design, mobi` → the dropdown filters against `mobi`. Selection appends `tag, ` so the user can keep typing the next one without manual commas.
+- **Popover appended to `document.body`** (position:fixed, z-index 30) instead of wrapping the input. Wrapping would break the Notes input's `class="grow"` flex-grow hint.
+- **mousedown-before-blur race fix.** The popover fires on `mousedown` with `e.preventDefault()` so insertion lands BEFORE the input's blur→`setTimeout(hide, 150)` can hide the dropdown on slow machines.
+- **Escape closes without selection.** Keyboard escape hatch for users who triggered the popover by accident.
+
+Files: `src/portal/user-console.html` (+~140 LOC JS + ~22 LOC CSS for `.tag-ac-popover` / `.tag-ac-item`). Zero backend change. Boot hook piggybacks on the existing skill-picker `setTimeout(..., 0)` so both inits run in the same microtask batch.
+
+SECURITY: `collectTagPool` guards against non-string entries and ensures `Array.isArray` on both the source array and `row.tags`. The renderer `esc()`-wraps every tag value both in the `data-tag` attribute and the inner `<span>` — pool tags are user-controlled strings (a tag named `<script>` must not execute on render).
+
+Tests: 31 structural + behavior pins in `__tests__/portal/user-console-tag-autocomplete.test.ts` covering pool collection + skill-tag exclusion + defensive guards, `splitTagInput` (empty / single-comma / multi-comma via `lastIndexOf`), `rankTagSuggestions` (prefix-first order, already-used filter, empty-prefix top-N, count+alpha tiebreak, max 8, case-insensitive), `initTagAutocomplete` (dataset-guard idempotency, body append, fixed positioning, listeners bound, mousedown-not-click, 150ms blur delay, esc-on-innerHTML), `initAllTagAutocomplete` (3 inputs bound, no Channels bind, single shared boot hook), CSS anchors, and a regression pin that the 3 ids + `class="grow"` on noteTags survive the refactor.
 
 ---
 

@@ -287,6 +287,28 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
 }
 .skill-add-item:hover { background: var(--accent-subtle); color: var(--accent); }
 
+/* OI-UX-102: tag autocomplete popover. Lives appended to <body> at
+ * position:fixed so we don't disturb the input's flex-layout. The
+ * parent-hiding behavior (click outside → input.blur → hide) is
+ * handled in JS; CSS just styles the chrome. */
+.tag-ac-popover {
+  position: fixed; z-index: 30;
+  background: var(--bg-elevated, var(--bg-secondary));
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  max-height: 200px; overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 4px; min-width: 180px;
+  display: flex; flex-direction: column;
+}
+.tag-ac-item {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; width: 100%; padding: 6px 10px;
+  background: transparent; border: 0; border-radius: var(--radius-sm);
+  cursor: pointer; text-align: left;
+  font-family: inherit; font-size: 12px; color: var(--text);
+}
+.tag-ac-item:hover { background: var(--accent-subtle); color: var(--accent); }
+
 /* Add-form "Used by skills" checkbox group */
 .skill-picker {
   display: flex; flex-wrap: wrap; gap: var(--space-3);
@@ -2859,7 +2881,135 @@ setTimeout(() => {
   document.querySelectorAll('.skill-picker[data-skill-picker-for]').forEach((el) => {
     renderSkillPicker(el, el.getAttribute('data-skill-picker-for'));
   });
+  // OI-UX-102: wire tag autocomplete to every Add-form tags input.
+  initAllTagAutocomplete();
 }, 0);
+
+// ── OI-UX-102: tag autocomplete across reference Add forms ────────
+// We reuse the in-memory state collections populated by loadBooks /
+// loadLinks / loadNotes / loadChannels. Skill tags are excluded —
+// they're owned by the skill-picker, not free-form.
+//
+// Design: the pool is recomputed on every keystroke (O(N × avgTags)
+// across all references, ~= tiny for a single tenant). That means
+// tags become visible the moment a new reference saves — no refresh
+// bookkeeping. Ranked by usage-count so the most common tags float
+// to the top. Substring matches follow prefix matches.
+
+function collectTagPool() {
+  const pool = new Map();
+  const bump = (t) => pool.set(t, (pool.get(t) || 0) + 1);
+  const sources = [state.books, state.links, state.notes, state.channels];
+  for (const src of sources) {
+    if (!Array.isArray(src)) continue;
+    for (const row of src) {
+      if (!row || !Array.isArray(row.tags)) continue;
+      for (const t of row.tags) {
+        if (typeof t === 'string' && t && !t.startsWith('skill:')) bump(t);
+      }
+    }
+  }
+  return pool;
+}
+
+// Given a comma-separated `raw` input value, split it into the
+// "previous" section (everything up to and including the last
+// comma) and the "current" token (the text the user is typing).
+// This lets us show suggestions only for the token-in-progress.
+function splitTagInput(raw) {
+  const idx = raw.lastIndexOf(',');
+  if (idx === -1) return { previous: '', current: raw.trimStart() };
+  return { previous: raw.slice(0, idx + 1), current: raw.slice(idx + 1).trimStart() };
+}
+
+// Rank pool entries against a token `prefix`. Exclude tags already
+// listed in `previous` so we never suggest duplicates. Prefix-match
+// wins over substring-match; inside each bucket, ties break by
+// count DESC then alphabetical. Returns at most 8 to keep the UI
+// tidy — users can keep typing to narrow.
+function rankTagSuggestions(pool, prefix, previous) {
+  const alreadyUsed = new Set(
+    previous.split(',').map((s) => s.trim()).filter(Boolean),
+  );
+  const p = (prefix || '').toLowerCase();
+  const prefixMatch = [];
+  const substrMatch = [];
+  for (const [tag, count] of pool.entries()) {
+    if (alreadyUsed.has(tag)) continue;
+    const lt = tag.toLowerCase();
+    if (p === '') prefixMatch.push({ tag, count });
+    else if (lt.startsWith(p)) prefixMatch.push({ tag, count });
+    else if (lt.includes(p)) substrMatch.push({ tag, count });
+  }
+  const byCountDesc = (a, b) => b.count - a.count || a.tag.localeCompare(b.tag);
+  return [...prefixMatch.sort(byCountDesc), ...substrMatch.sort(byCountDesc)].slice(0, 8);
+}
+
+// Attach autocomplete to one input. Idempotent via dataset guard —
+// safe to call multiple times. The popover is appended to
+// document.body and positioned via getBoundingClientRect so the
+// input's parent DOM layout is not disturbed (note: noteTags uses
+// class="grow" flex-grow — wrapping would break that).
+function initTagAutocomplete(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input || input.dataset.tagAcBound === '1') return;
+  input.dataset.tagAcBound = '1';
+
+  const popover = document.createElement('div');
+  popover.className = 'tag-ac-popover';
+  popover.style.display = 'none';
+  document.body.appendChild(popover);
+
+  const position = () => {
+    const rect = input.getBoundingClientRect();
+    popover.style.top = (rect.bottom + 2) + 'px';
+    popover.style.left = rect.left + 'px';
+    popover.style.minWidth = rect.width + 'px';
+  };
+  const hide = () => { popover.style.display = 'none'; popover.innerHTML = ''; };
+  const render = () => {
+    const { previous, current } = splitTagInput(input.value);
+    const sugs = rankTagSuggestions(collectTagPool(), current, previous);
+    if (sugs.length === 0) { hide(); return; }
+    popover.innerHTML = sugs.map((s) =>
+      `<button type="button" class="tag-ac-item" data-tag="${esc(s.tag)}">` +
+      `<span>${esc(s.tag)}</span>` +
+      `<span class="muted small">${s.count}</span>` +
+      `</button>`,
+    ).join('');
+    position();
+    popover.style.display = 'block';
+  };
+
+  input.addEventListener('input', render);
+  input.addEventListener('focus', render);
+  // Delay blur so click-on-suggestion has a chance to fire first.
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+  // Esc closes without selection.
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
+
+  popover.addEventListener('mousedown', (e) => {
+    // mousedown (not click) so we run BEFORE blur fires and hides.
+    const btn = e.target.closest('button.tag-ac-item');
+    if (!btn) return;
+    e.preventDefault();
+    const tag = btn.dataset.tag;
+    const { previous } = splitTagInput(input.value);
+    const lead = previous ? (previous.endsWith(' ') ? previous : previous + ' ') : '';
+    input.value = lead + tag + ', ';
+    hide();
+    input.focus();
+  });
+}
+
+// Boot-time bind across the 3 Add forms with free-form tag fields.
+// Channels has no tags input today; if it gains one, add 'channelTags'
+// here and the pool already contains channel-row tags.
+function initAllTagAutocomplete() {
+  for (const id of ['bookTags', 'linkTags', 'noteTags']) {
+    initTagAutocomplete(id);
+  }
+}
 
 // ── Books CRUD ────────────────────────────────────────────────────
 async function loadBooks() {
