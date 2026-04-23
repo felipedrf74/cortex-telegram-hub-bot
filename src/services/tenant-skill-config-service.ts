@@ -186,17 +186,39 @@ const FINANCE_SCHEMA: Record<string, FieldValidator> = {
   extra_notes:           stringField({ maxLength: 2000 }),
 };
 
-// ── Placeholder schemas for remaining skills (Cooking only now) ───
-// Empty records mean "no fields defined yet". Saves that send any
-// field to these skills will be rejected. Follow-up: OI-DATA-003d.
-const EMPTY_SCHEMA: Record<string, FieldValidator> = {};
+// ── Cooking skill schema (OI-DATA-003d, 2026-04-23) ───────────────
+//
+// Cooking plans meals against dietary constraints, available
+// equipment, and budget. Cross-skill consumer of Finance (cost
+// context) and Training (nutrition sync when active).
+//
+// Note: dietary_restrictions is the HARD constraint (allergies can
+// be dangerous); preferences is SOFT. Home dependency gates on
+// restrictions, not preferences — Cooking can't safely plan
+// anything without knowing what the user can't eat.
 
+const COOKING_SERVING_SIZES = ['1', '2', '3', '4', '5_plus'] as const;
+const COOKING_COST_CEILINGS = ['budget', 'moderate', 'premium', 'no_limit'] as const;
+
+const COOKING_SCHEMA: Record<string, FieldValidator> = {
+  dietary_restrictions:  stringField({ maxLength: 2000 }),
+  preferences:           stringField({ maxLength: 2000 }),
+  kitchen_inventory:     stringField({ maxLength: 2000 }),
+  serving_size:          stringField({ enumValues: COOKING_SERVING_SIZES, default: '2' }),
+  meal_cost_ceiling:     stringField({ enumValues: COOKING_COST_CEILINGS, default: 'moderate' }),
+  extra_notes:           stringField({ maxLength: 2000 }),
+};
+
+// ── Schema registry ──────────────────────────────────────────────
+// All 5 skills now have real schemas (the OI-DATA-003* arc).
+// If a new skill is ever added to SkillId, the TypeScript compiler
+// will force an entry here via Record<SkillId, ...>.
 const SCHEMAS: Record<SkillId, Record<string, FieldValidator>> = {
   content: CONTENT_SCHEMA,
   secretary: SECRETARY_SCHEMA,
   training: TRAINING_SCHEMA,
   finance: FINANCE_SCHEMA,
-  cooking: EMPTY_SCHEMA,
+  cooking: COOKING_SCHEMA,
 };
 
 // Export for UI introspection / tests.

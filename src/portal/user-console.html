@@ -1074,7 +1074,63 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
         </div>
       </div>
       <div data-sub-section="cooking.configuration" class="hidden">
-        <div class="empty-state"><div class="icon">♨</div><h3>Cooking profile editor not yet wired</h3><p>Edit restrictions and preferences in the iOS app.</p></div>
+        <div class="panel">
+          <header>
+            <h2>Cooking skill configuration</h2>
+            <span class="meta small" id="cookingCfgDirtyMeta">No unsaved changes</span>
+          </header>
+          <div class="body">
+            <p class="small muted" style="margin-bottom: var(--space-4);">
+              Cooking uses these to plan meals. View = any member; edit = <strong>tenant_admin</strong>.
+              <strong>Dietary restrictions</strong> (hard constraints like allergies) must be filled for Cooking to plan safely.
+            </p>
+            <div class="form-row">
+              <label for="cokCfgRestrictions">Dietary restrictions <span class="muted small">(hard constraints — allergies, intolerances, ethical)</span></label>
+              <textarea id="cokCfgRestrictions" rows="3" maxlength="2000" placeholder="e.g. 'Tree nut allergy (severe). Lactose intolerant. No pork for religious reasons.'"></textarea>
+            </div>
+            <div class="form-row">
+              <label for="cokCfgPreferences">Preferences <span class="muted small">(soft — cuisines, spice tolerance, flavor profiles)</span></label>
+              <textarea id="cokCfgPreferences" rows="3" maxlength="2000" placeholder="e.g. 'Love Thai, Mexican, Mediterranean. Medium spice tolerance. Not a fan of overly sweet dishes.'"></textarea>
+            </div>
+            <div class="form-row">
+              <label for="cokCfgKitchenInventory">Kitchen inventory <span class="muted small">(equipment + pantry staples Cooking can lean on)</span></label>
+              <textarea id="cokCfgKitchenInventory" rows="3" maxlength="2000" placeholder="e.g. 'Gas stove, oven, stand mixer, instant pot. Staples: rice, pasta, olive oil, chicken stock. No sous vide, no air fryer.'"></textarea>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
+              <div class="form-row">
+                <label for="cokCfgServingSize">Household / serving size</label>
+                <select id="cokCfgServingSize">
+                  <option value="1">1 (just me)</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5_plus">5 or more</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="cokCfgMealCost">Meal-cost ceiling</label>
+                <select id="cokCfgMealCost">
+                  <option value="budget">Budget — keep it cheap</option>
+                  <option value="moderate">Moderate</option>
+                  <option value="premium">Premium — splurge ok</option>
+                  <option value="no_limit">No limit</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label for="cokCfgExtraNotes">Extra notes</label>
+              <textarea id="cokCfgExtraNotes" rows="3" maxlength="2000" placeholder="Anything else Cooking should know — meal prep day, fasting windows, preferred recipe sources."></textarea>
+            </div>
+            <div id="cookingCfgMsg" class="small" style="margin-top: var(--space-3); min-height: 1em;"></div>
+            <div class="row-inline" style="margin-top: var(--space-4); justify-content: flex-end;">
+              <button class="btn ghost" id="cookingCfgResetBtn" onclick="cookingConfigReset()">Revert</button>
+              <button class="btn primary" id="cookingCfgSaveBtn" onclick="cookingConfigSave()">Save changes</button>
+            </div>
+            <p class="small muted" id="cookingCfgAdminNote" style="margin-top: var(--space-3); display: none;">
+              You're in view-only mode. Ask a <strong>tenant_admin</strong> to change these settings.
+            </p>
+          </div>
+        </div>
       </div>
       <div data-sub-section="cooking.dependencies" class="hidden"><div class="panel"><header><h2>Cooking dependencies</h2></header><div class="body" id="cookingDeps"></div></div></div>
       <div data-sub-section="cooking.insights" class="hidden"><div id="cookingInsights"></div></div>
@@ -1841,6 +1897,10 @@ function paintSkill(skill) {
   if (skill === 'finance') {
     loadFinanceConfig();
   }
+  // OI-DATA-003d: same pattern for Cooking — completes the 5/5 arc.
+  if (skill === 'cooking') {
+    loadCookingConfig();
+  }
 }
 
 // ── Content skill config editor (OI-DATA-003) ─────────────────────
@@ -2382,6 +2442,139 @@ window.financeConfigSave = async function() {
     toast(e.message || 'Save failed', 'error');
   } finally {
     financeConfigUpdateDirty();
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Cooking skill config editor (OI-DATA-003d — completes the 5/5 set)
+// ─────────────────────────────────────────────────────────────────
+// Last of the per-skill editors. Same pattern as Content/Secretary/
+// Training/Finance. 6 fields matching the service schema; enum
+// defaults align with COOKING_SERVING_SIZES ('2') and
+// COOKING_COST_CEILINGS ('moderate').
+const cookingConfigBaseline = {
+  dietary_restrictions: '',
+  preferences: '',
+  kitchen_inventory: '',
+  serving_size: '2',
+  meal_cost_ceiling: 'moderate',
+  extra_notes: '',
+};
+
+function cookingConfigFieldIds() {
+  return {
+    dietary_restrictions:  'cokCfgRestrictions',
+    preferences:           'cokCfgPreferences',
+    kitchen_inventory:     'cokCfgKitchenInventory',
+    serving_size:          'cokCfgServingSize',
+    meal_cost_ceiling:     'cokCfgMealCost',
+    extra_notes:           'cokCfgExtraNotes',
+  };
+}
+
+async function loadCookingConfig() {
+  try {
+    const r = await fetchJson('/workspace/skills/cooking/config');
+    const cfg = r.data.config || {};
+    const ids = cookingConfigFieldIds();
+    for (const [field, id] of Object.entries(ids)) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const val = cfg[field];
+      const str = val == null ? '' : String(val);
+      el.value = str;
+      cookingConfigBaseline[field] = str;
+      if (!el.dataset.cokCfgBound) {
+        el.addEventListener('input', cookingConfigUpdateDirty);
+        el.dataset.cokCfgBound = '1';
+      }
+    }
+    const role = (state.me && state.me.role) || 'tenant_member';
+    const isAdmin = role === 'tenant_admin';
+    for (const id of Object.values(ids)) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !isAdmin;
+    }
+    document.getElementById('cookingCfgSaveBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('cookingCfgResetBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('cookingCfgAdminNote').style.display = isAdmin ? 'none' : '';
+    cookingConfigUpdateDirty();
+    document.getElementById('cookingCfgMsg').textContent = '';
+  } catch (e) {
+    toast('Could not load Cooking config: ' + (e.message || 'unknown error'), 'error');
+  }
+}
+
+function cookingConfigCurrent() {
+  const ids = cookingConfigFieldIds();
+  const out = {};
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    out[field] = el.value;
+  }
+  return out;
+}
+
+function cookingConfigUpdateDirty() {
+  const curr = cookingConfigCurrent();
+  let dirty = false;
+  for (const key of Object.keys(cookingConfigBaseline)) {
+    if (curr[key] !== cookingConfigBaseline[key]) { dirty = true; break; }
+  }
+  const meta = document.getElementById('cookingCfgDirtyMeta');
+  const save = document.getElementById('cookingCfgSaveBtn');
+  const reset = document.getElementById('cookingCfgResetBtn');
+  if (meta) {
+    meta.textContent = dirty ? 'Unsaved changes' : 'No unsaved changes';
+    meta.className = 'meta small ' + (dirty ? '' : 'muted');
+  }
+  if (save) save.disabled = !dirty;
+  if (reset) reset.disabled = !dirty;
+}
+
+window.cookingConfigReset = function() {
+  const ids = cookingConfigFieldIds();
+  for (const [field, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.value = cookingConfigBaseline[field] || '';
+  }
+  cookingConfigUpdateDirty();
+  document.getElementById('cookingCfgMsg').textContent = '';
+};
+
+window.cookingConfigSave = async function() {
+  const curr = cookingConfigCurrent();
+  const patch = {};
+  for (const key of Object.keys(cookingConfigBaseline)) {
+    if (curr[key] !== cookingConfigBaseline[key]) patch[key] = curr[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    toast('Nothing to save.', 'error');
+    return;
+  }
+  const save = document.getElementById('cookingCfgSaveBtn');
+  save.disabled = true;
+  const msg = document.getElementById('cookingCfgMsg');
+  msg.textContent = '';
+  try {
+    await fetchJson('/workspace/skills/cooking/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config: patch }),
+    });
+    Object.assign(cookingConfigBaseline, curr);
+    cookingConfigUpdateDirty();
+    msg.textContent = 'Saved.';
+    msg.style.color = 'var(--success)';
+    toast('Cooking config saved', 'success');
+    // Refresh Home so the cooking.restrictions.set dependency flips.
+    loadHome();
+  } catch (e) {
+    msg.textContent = e.message || 'Save failed';
+    msg.style.color = 'var(--error)';
+    toast(e.message || 'Save failed', 'error');
+  } finally {
+    cookingConfigUpdateDirty();
   }
 };
 

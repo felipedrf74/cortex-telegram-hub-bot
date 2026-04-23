@@ -83,7 +83,7 @@ describe('tenant-skill-config-service — schema registry', () => {
     expect(isSkillId(42)).toBe(false);
   });
 
-  it('Content + Secretary + Training + Finance schemas expose 6 fields each; Cooking has 0 (OI-DATA-003c pass)', () => {
+  it('All 5 skills expose 6 fields each (OI-DATA-003d completes the arc)', () => {
     expect(getSkillSchemaKeys('content').sort()).toEqual([
       'auto_publish',
       'default_platform',
@@ -116,7 +116,14 @@ describe('tenant-skill-config-service — schema registry', () => {
       'primary_currency',
       'saving_goals',
     ]);
-    expect(getSkillSchemaKeys('cooking')).toEqual([]);
+    expect(getSkillSchemaKeys('cooking').sort()).toEqual([
+      'dietary_restrictions',
+      'extra_notes',
+      'kitchen_inventory',
+      'meal_cost_ceiling',
+      'preferences',
+      'serving_size',
+    ]);
   });
 
   it('isKnownField distinguishes content fields from unknown', () => {
@@ -258,43 +265,12 @@ describe('tenant-skill-config-service — validation', () => {
   });
 });
 
-describe('tenant-skill-config-service — empty-schema skills (cooking remains; secretary/training/finance promoted in 003a/b/c)', () => {
-  let alice: number;
-  beforeEach(() => {
-    testDb = new Database(':memory:');
-    testDb.pragma('journal_mode = WAL');
-    applyMigrations(testDb);
-    alice = seedUser(testDb, 'alice@e.com');
-  });
-  afterEach(() => testDb?.close());
-
-  // OI-DATA-003a/b/c: Secretary, Training, Finance all have real
-  // schemas now. This block covers only Cooking — the last skill
-  // that remains empty pending OI-DATA-003d.
-  it('cooking: GET returns empty config with no defaults', () => {
-    const row = getSkillConfig(alice, 'cooking');
-    expect(row.config).toEqual({});
-  });
-
-  it('cooking: PUT with any field rejected with a clear message', () => {
-    try {
-      putSkillConfig(alice, 'cooking', alice, { voice_guidelines: 'x' } as any);
-      throw new Error('expected throw');
-    } catch (e) {
-      expect((e as SkillConfigError).code).toBe('BAD_REQUEST');
-      expect((e as SkillConfigError).message).toMatch(/(Unknown fields|no configurable fields)/);
-    }
-  });
-
-  it('cooking: empty PUT (no keys) also rejected (explicitly flagged as v1 scope)', () => {
-    try {
-      putSkillConfig(alice, 'cooking', alice, { anything: 'x' } as any);
-      throw new Error('expected throw');
-    } catch (e) {
-      expect((e as SkillConfigError).code).toBe('BAD_REQUEST');
-    }
-  });
-});
+// OI-DATA-003a/b/c/d: All 5 skills (Content, Secretary, Training,
+// Finance, Cooking) now have real schemas. The "empty-schema skills"
+// describe block has been removed since no skills remain empty.
+// If a new skill id is ever added to SkillId, the TypeScript compiler
+// will force an entry in SCHEMAS — the fresh-skill behavior can be
+// pinned then.
 
 describe('tenant-skill-config-service — isolation', () => {
   let alice: number;

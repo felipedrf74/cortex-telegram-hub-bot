@@ -1422,6 +1422,18 @@ export function createPortalWorkspaceRouter(): Router {
       } catch {
         financeBudgetSet = false;
       }
+      // OI-DATA-003d: has the tenant set dietary restrictions?
+      // Restrictions are HARD constraints (allergies can be dangerous)
+      // — Cooking can't safely plan anything without them. Preferences
+      // (soft) are separate and not gated here.
+      let cookingRestrictionsSet = false;
+      try {
+        const cfg = getSkillConfig(ctx.tenantId, 'cooking');
+        const dr = cfg.config.dietary_restrictions;
+        cookingRestrictionsSet = typeof dr === 'string' && dr.trim().length > 0;
+      } catch {
+        cookingRestrictionsSet = false;
+      }
       const membersCount = row(
         'SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id = ?',
         ctx.tenantId,
@@ -1549,6 +1561,19 @@ export function createPortalWorkspaceRouter(): Router {
           cta: financeBudgetSet
             ? null
             : { label: 'Describe your budget', href: '#/skills/finance/configuration' },
+        },
+        {
+          // OI-DATA-003d: dietary restrictions are HARD safety
+          // constraints. Cooking can't plan a meal without them;
+          // this dep is gated on restrictions, not preferences.
+          id: 'cooking.restrictions.set',
+          skillId: 'cooking',
+          kind: 'setting',
+          label: 'Dietary restrictions',
+          status: cookingRestrictionsSet ? 'ready' : 'missing',
+          cta: cookingRestrictionsSet
+            ? null
+            : { label: 'List restrictions', href: '#/skills/cooking/configuration' },
         },
         {
           id: 'workspace.team.set-up',
