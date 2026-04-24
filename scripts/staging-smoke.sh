@@ -46,13 +46,43 @@ PASS=0
 FAIL=0
 FAILED_TESTS=()
 
-# Read staging portal token once — saves N ssh round trips
-STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
-if [ -z "$STAGING_TOKEN" ]; then
-  echo "❌ Could not read PORTAL_TOKEN from $STAGING_DIR/.env"
-  echo "   Has staging been set up? See STAGING.md → first-time setup."
-  exit 1
+# Read staging portal auth once — saves N ssh round trips. Hardened beta
+# staging may require signed ps_ sessions, in which case the legacy
+# PORTAL_TOKEN must not be used.
+PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
+STAGING_TOKEN=""
+STAGING_SESSION=""
+if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
+  STAGING_SESSION=$(ssh "$SERVER" "
+    set -e
+    cd $STAGING_DIR
+    set -a
+    . ./.env
+    set +a
+    node dist/tools/portal-session-token.js --actor staging-smoke@nexushub.me --scope admin --ttl-ms 600000 --json \
+      | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
+  " 2>/dev/null || true)
+  if [ -z "$STAGING_SESSION" ]; then
+    echo "❌ Could not mint signed portal session from staging .env"
+    echo "   Ensure PORTAL_SESSION_SECRET is set and the deployed dist/tools/portal-session-token.js exists."
+    exit 1
+  fi
+else
+  STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
+  if [ -z "$STAGING_TOKEN" ]; then
+    echo "❌ Could not read PORTAL_TOKEN from $STAGING_DIR/.env"
+    echo "   Has staging been set up? See STAGING.md → first-time setup."
+    exit 1
+  fi
 fi
+
+portal_auth_header() {
+  if [ -n "$STAGING_SESSION" ]; then
+    printf "%s" "-H 'x-portal-session: $STAGING_SESSION'"
+  else
+    printf "%s" "-H 'Authorization: Bearer $STAGING_TOKEN'"
+  fi
+}
 
 # test_endpoint NAME URL EXPECTED_FIELD  → curls URL, JSON-parses, asserts
 # the named field exists and is non-null. Auth header is added unless URL
@@ -63,7 +93,7 @@ test_endpoint() {
   local field="$3"
   local auth_header=""
   if [[ ! "$url" =~ /health ]]; then
-    auth_header="-H 'Authorization: Bearer $STAGING_TOKEN'"
+    auth_header="$(portal_auth_header)"
   fi
 
   # Run on the server because staging is localhost-only
