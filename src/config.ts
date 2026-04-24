@@ -4,14 +4,23 @@ import dotenv from 'dotenv';
 // Load .env, but DON'T override env vars under test. Test envs are
 // deterministically set by __tests__/setup.ts + individual test
 // files; letting dotenv override them would re-clobber those values
-// whenever a developer has a local .env lying around. Vitest sets
-// NODE_ENV=test in setup.ts before any config import, so this check
-// is reliable. (2026-04-22 — previously this unconditionally ran
-// with override:true, which silently broke portal-token-strength
-// .test.ts as soon as a .env existed in the worktree root.)
+// whenever a developer has a local .env lying around. We detect
+// vitest by BOTH the NODE_ENV==='test' flag AND the VITEST runtime
+// flag (which vitest always sets to 'true'). The VITEST flag is
+// load-bearing: tests that stub NODE_ENV away from 'test' (e.g.
+// `vi.stubEnv('NODE_ENV', 'production')` to test production-guard
+// logic) would otherwise trigger dotenv override mid-test and
+// re-clobber the stubbed value from a local .env. VITEST stays
+// 'true' for the whole test run regardless of stubs, so it's the
+// reliable signal.
+// (2026-04-24 hardening — previously the check was NODE_ENV-only;
+// works on CI which has no local .env, but breaks dev worktrees
+// where a contributor's .env overrides production stubs in
+// config-runtime-validation.test.ts + user-service.test.ts.)
+const IS_VITEST_RUN = process.env.VITEST === 'true' || process.env.NODE_ENV === 'test';
 dotenv.config({
   quiet: true,
-  override: process.env.NODE_ENV !== 'test',
+  override: !IS_VITEST_RUN,
 });
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
