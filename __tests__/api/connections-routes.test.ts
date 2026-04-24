@@ -220,4 +220,89 @@ describe('Connections routes', () => {
       detail: 'WHOOP support is coming soon in this iOS release.',
     });
   });
+
+  it('returns canonical integrations[] array with one entry per provider (Gap 6)', async () => {
+    const res = await dispatchConnections(42);
+    const integrations = res.body.data.integrations;
+
+    // One row per connectable provider, including coming_soon and not_configured.
+    const providerNames = integrations.map((i: any) => i.provider).sort();
+    expect(providerNames).toEqual(
+      ['google', 'outlook', 'garmin', 'strava', 'whoop', 'fitbit', 'todoist', 'notion'].sort(),
+    );
+  });
+
+  it('includes canonical capability flags derived from the connected providers', async () => {
+    const res = await dispatchConnections(42);
+    // The default mock seeds google with gmail + calendar scopes, so both
+    // capability flags flip true and no other integration is connected.
+    expect(res.body.data.capabilities).toEqual({
+      mail: true,
+      calendar: true,
+      externalTasks: false,
+      health: false,
+    });
+    expect(res.body.data.counts.connected).toBe(1);
+  });
+
+  it('reflects Garmin needs_reauth as revoked in integrations[] (Gap 6 core)', async () => {
+    // Override the db mock so the garmin row returns status=needs_reauth —
+    // the legacy `connections[]` field hides this because it only adds
+    // garmin when status=active. The canonical integrations[] must surface
+    // revoked as a first-class state.
+    vi.doMock('../../src/services/database', () => ({
+      getDb: vi.fn(() => ({
+        prepare: vi.fn(() => ({
+          get: vi.fn(() => ({
+            garmin_email: 'felipe@example.com',
+            status: 'needs_reauth',
+            connected_at: '2026-03-01T10:00:00Z',
+            updated_at: '2026-04-20T10:00:00Z',
+          })),
+          all: vi.fn(() => []),
+          run: vi.fn(),
+        })),
+      })),
+    }));
+
+    const res = await dispatchConnections(42);
+    const garmin = res.body.data.integrations.find((i: any) => i.provider === 'garmin');
+
+    expect(garmin.state).toBe('revoked');
+    expect(garmin.reasonCode).toBe('NEEDS_REAUTH');
+  });
+
+  it('reflects Garmin mfa_pending as pending in integrations[]', async () => {
+    vi.doMock('../../src/services/database', () => ({
+      getDb: vi.fn(() => ({
+        prepare: vi.fn(() => ({
+          get: vi.fn(() => ({
+            garmin_email: 'felipe@example.com',
+            status: 'mfa_pending',
+            connected_at: '2026-04-20T10:00:00Z',
+            updated_at: '2026-04-20T10:00:00Z',
+          })),
+          all: vi.fn(() => []),
+          run: vi.fn(),
+        })),
+      })),
+    }));
+
+    const res = await dispatchConnections(42);
+    const garmin = res.body.data.integrations.find((i: any) => i.provider === 'garmin');
+
+    expect(garmin.state).toBe('pending');
+    expect(garmin.reasonCode).toBe('MFA_PENDING');
+  });
+
+  it('Gmail-only user gets outlook in integrations[] as disconnected (not missing)', async () => {
+    const res = await dispatchConnections(42);
+    const outlook = res.body.data.integrations.find((i: any) => i.provider === 'outlook');
+
+    expect(outlook).toBeDefined();
+    // Outlook OAuth config is NOT_CONFIGURED in this test's beforeEach
+    // (OUTLOOK_CLIENT_ID = ''), so the canonical state is not_configured.
+    expect(outlook.state).toBe('not_configured');
+    expect(outlook.reasonCode).toBe('NOT_CONFIGURED');
+  });
 });

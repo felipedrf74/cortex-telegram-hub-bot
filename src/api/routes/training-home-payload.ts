@@ -22,6 +22,7 @@ import type {
   WeeklyPlan,
 } from '../../services/coach-kernel/types';
 import type { CoachBriefingSnapshot } from './training-coach-briefing';
+import { isGarminActivelyIntegrated } from '../../services/integration-status';
 
 export interface TrainingHomePayloadDependencies {
   getTodaySession: (userId: number) => Promise<{ session: TrainingSessionInput | null; plan: unknown | null }>;
@@ -101,7 +102,16 @@ export async function buildTrainingHomePayload(
     weeklyAdherence: typeof week.adherence === 'number' ? week.adherence : 0,
     tomorrowSession,
     hasActivePlan: !!(today.plan || week.plan),
-    isGarminStale: coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true,
+    // Gap 6: only flag `isGarminStale` when Garmin is actually a data source
+    // for this user. The old logic tied the flag to any briefing degradation,
+    // so a Gmail-only user who never connected Garmin would still see the
+    // "Today's read is partial, waiting for Garmin to sync again" copy — a
+    // lie about an integration that was never there. `coachBriefing.degraded`
+    // can still flip from other signals (weather, Gemini outage, etc.) — see
+    // handoff note for Agent 4 on how to render non-Garmin degraded copy.
+    isGarminStale:
+      isGarminActivelyIntegrated(userId)
+      && (coachBriefing?.degraded === true || coachBriefing?.cachedOnlyMiss === true),
     kernelGuardrails: kernelContext.kernelGuardrails,
     todayOriginalPrescription: kernelContext.originalPrescription,
     todayAdaptedPrescription: kernelContext.adaptedPrescription,
