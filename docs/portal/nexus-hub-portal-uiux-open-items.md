@@ -375,7 +375,27 @@ The landing page:
 Test coverage: `__tests__/portal/invite-accept-route.test.ts` (11 pins, including: no-raw-code-in-initial-HTML, `history.replaceState` called, all 6 error codes branched, masked preview only, route wired with anti-cache + clickjacking headers).
 
 Follow-up items still open:
-- **OI-NAV-203a** — queued invitations for users who don't yet have a Nexus account (email link → sign-up path → auto-accept on first login). Today the landing page assumes the invitee has an iOS account + token.
+- ~~**OI-NAV-203a** — cold-invitee flow v1~~ **DONE 2026-04-24** (partial; follow-up for magic-link signup tracked below).
+
+  **What shipped.** A new unauthenticated `GET /invite/inspect/:code` route exposes public invite metadata (tenant name, invitee email, role, expiry, `hasAccount` flag) to the holder of the code — same disclosure level as the invite email itself. Deliberately does NOT leak the inviting user id, internal tenant id, or invite primary key. `invite-accept.html` now probes this route BEFORE asking for a JWT and branches into three contextual views:
+
+  - **`view-sign-in-prompt`** (cold invitee, email has existing account) → "Sign in to accept" with a clear hint to open iOS, sign in as `<email>`, paste the token.
+  - **`view-cold-signup`** (cold invitee, first-time user) → "Create account to accept" with iOS App Store install guidance + token paste path.
+  - **`view-error`** (invite expired / revoked / already-accepted / unknown / malformed / network error) → distinct copy per case, routed from inspect-response status without ever hitting the accept endpoint.
+
+  Uniform 200 response from `/invite/inspect/:code` even for unknown codes (returns `{ valid: false, reason: 'not_found' }`) — avoids a status-code oracle for code-guessing. `Cache-Control: no-store` on the response (credentials appear in the URL).
+
+  **What's still needed for a true magic-link signup.** The `cold-signup` view currently tells the user to install iOS + paste a token. A proper "email-me-a-link" flow requires:
+  1. Email provider integration (SMTP credentials or Resend/Postmark-style API key — not yet wired).
+  2. `magic_link_tokens` table + expiry + one-time-use enforcement.
+  3. `POST /invite/request-signup-link` (generates + sends the email) and `GET /invite/signup?token=…` (verifies, creates user, issues a web-session JWT, redirects into `/console`).
+  4. Web-session JWT issuance — distinct from the iOS JWT path, or a shared code path with a different issuer claim.
+
+  These are tracked as **OI-NAV-203b** (backlog, needs email-provider decision from product).
+
+  **Files.** `src/services/tenant-invite-service.ts` (+90 LOC — `getPublicInviteInfo` + `PublicInviteInfo` type), `src/portal/server.ts` (+30 LOC — `/invite/inspect/:code` handler with lazy require + 500-envelope catch), `src/portal/invite-accept.html` (+~180 LOC — 2 new view cards + `inspectInvite()` + `bootColdOrWarmPath()` + `renderInspectError()` + `renderExpiredOrStale()` + continue-button wiring).
+
+  **Tests.** 22 new pins across 2 files: `__tests__/portal/invite-inspect-route.test.ts` (7 service behavior + 3 structural route pins — malformed short code / not_found / valid metadata / case-insensitive hasAccount / isExpired / shape-invariant no-internal-id-leak / route registration + no-store + envelope) and `__tests__/portal/invite-accept-cold-views.test.ts` (15 structural UI pins — 2 new views + show() coverage + inspectInvite error handling + boot routing by hasAccount / isExpired / status + warm path still intact).
 - **OI-NAV-203b** — email delivery of the invite link. Backend is email-agnostic (by design); a minimal transactional-email integration is a product choice, not a UX blocker.
 
 ---

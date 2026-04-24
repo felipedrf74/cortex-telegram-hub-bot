@@ -199,6 +199,80 @@ export function getInviteByCode(code: string): InviteRow | null {
   }
 }
 
+// ─── OI-NAV-203a: public invite-inspection for cold invitees ─────────
+
+/**
+ * Public metadata for an invite, returned unauthenticated by the
+ * /invite/inspect/:code route. Exposed to anyone holding the code
+ * (which is the invitee by design). Contains enough for the cold-
+ * invitee UI to decide between "sign in to accept" (email has an
+ * existing account) and "create an account to accept" (first-time
+ * user) — without leaking tenant membership or any other tenant's
+ * data.
+ *
+ * Deliberately DOES NOT include the raw `createdBy` user id or any
+ * internal tenant ids — those would expose the inviting user's
+ * identity to an unauthenticated caller holding a guessed code.
+ * The invite code itself is the security boundary; adding inviting
+ * identity would widen the attack surface with no user benefit.
+ */
+export interface PublicInviteInfo {
+  valid: boolean;
+  /** Populated only when valid: */
+  tenantSlug?: string;
+  tenantName?: string;
+  inviteeEmail?: string;
+  role?: string;
+  expiresAt?: string | null;
+  status?: string; // 'pending' | 'accepted' | 'revoked' | 'expired'
+  /** True iff a user row already exists with the invitee's email. */
+  hasAccount?: boolean;
+  /** True iff the invite has passed its expiresAt timestamp. */
+  isExpired?: boolean;
+  /** Machine-readable reason when valid=false: 'not_found' | 'malformed'. */
+  reason?: string;
+}
+
+export function getPublicInviteInfo(code: string): PublicInviteInfo {
+  if (typeof code !== 'string' || code.length < 16) {
+    return { valid: false, reason: 'malformed' };
+  }
+  const invite = getInviteByCode(code);
+  if (!invite) return { valid: false, reason: 'not_found' };
+  try {
+    const db = getDb();
+    // Tenant display metadata — name is OK to leak to the holder of
+    // the code; it's also in the invite email body.
+    const tenantRow = db
+      .prepare('SELECT slug, display_name FROM tenants WHERE id = ?')
+      .get(invite.tenantId) as { slug: string; display_name: string } | undefined;
+    // Has-account check — lowercase-normalise to match getUserByEmail.
+    const userRow = db
+      .prepare('SELECT 1 FROM users WHERE lower(email) = lower(?) LIMIT 1')
+      .get(invite.email) as { 1: number } | undefined;
+
+    const now = Date.now();
+    const isExpired = invite.expiresAt != null
+      ? new Date(invite.expiresAt).getTime() < now
+      : false;
+
+    return {
+      valid: true,
+      tenantSlug: tenantRow?.slug ?? `tenant-${invite.tenantId}`,
+      tenantName: tenantRow?.display_name ?? tenantRow?.slug ?? 'a Nexus Hub workspace',
+      inviteeEmail: invite.email,
+      role: invite.role,
+      expiresAt: invite.expiresAt,
+      status: invite.status,
+      hasAccount: userRow !== undefined,
+      isExpired,
+    };
+  } catch (err) {
+    logger.error({ err }, 'tenant-invite-service: getPublicInviteInfo failed');
+    return { valid: false, reason: 'not_found' };
+  }
+}
+
 /**
  * Admin view: every invite (any status) for a tenant, newest first.
  * Used by GET /workspace/invites (tenant_admin only).

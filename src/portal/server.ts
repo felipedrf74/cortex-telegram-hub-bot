@@ -293,6 +293,46 @@ export function createPortalServer(bot?: any): http.Server {
   //       nx.usr.tenantId so /console lands on the right workspace.
   app.get('/invite/accept', serveShell('invite-accept.html'));
 
+  // ── /invite/inspect/:code (OI-NAV-203a, 2026-04-24) ─────────────────
+  //
+  // Unauthenticated read of invite metadata for the cold-invitee
+  // flow. Returns enough info for the landing UI to decide between
+  //   - "sign in to accept" (invitee email has an account already)
+  //   - "create an account to accept" (first-time Nexus Hub user)
+  // without requiring the invitee to first paste an iOS JWT (which
+  // a cold invitee without the iOS app installed cannot produce).
+  //
+  // Exposed to anyone holding the code, same disclosure level as
+  // the invite email itself. Does NOT leak inviting user id, other
+  // tenants' data, or any internal ids — see PublicInviteInfo for
+  // the strict subset returned.
+  app.get('/invite/inspect/:code', async (req: Request, res: Response) => {
+    try {
+      // Lazy-load to avoid pulling services into server.ts's
+      // require graph at boot — matches the existing require-in-
+      // handler pattern used elsewhere in this file.
+      const { getPublicInviteInfo } = require('../services/tenant-invite-service');
+      const code = String(req.params.code || '');
+      const info = getPublicInviteInfo(code);
+      // Response is uniformly 200 — the UI renders based on
+      // `valid` + `reason` + `isExpired` + `hasAccount`. We do NOT
+      // 404 on missing codes because the response is a well-formed
+      // "no match" envelope, and 404ing would leak code-guessing
+      // oracle info via status codes. (A 404 would be identical to
+      // "valid: false, reason: 'not_found'" from a timing standpoint,
+      // so this is a belt-and-suspenders move.)
+      res.set('Cache-Control', 'no-store');
+      res.json({ ok: true, data: info, timestamp: new Date().toISOString() });
+    } catch (e) {
+      logger.error({ err: e }, 'portal: /invite/inspect/:code failed');
+      res.status(500).json({
+        ok: false,
+        error: { code: 'INTERNAL', message: 'Failed to inspect invite' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see

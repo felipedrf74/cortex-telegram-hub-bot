@@ -160,7 +160,57 @@ button.btn.ghost:hover { border-color: var(--border-hover); color: var(--text-pr
   </div>
 
   <!-- ─────────────────────────────────────────────────────────────
-       VIEW: code present, no JWT yet
+       VIEW: cold invitee — email has no Nexus Hub account yet
+       (OI-NAV-203a, 2026-04-24)
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-cold-signup">
+    <h1>Join <span id="coldSignupTenant">the workspace</span></h1>
+    <p class="lede">This invitation is for <strong id="coldSignupEmail">—</strong>, which doesn't have a Nexus Hub account yet. Create one to accept.</p>
+    <div class="banner info">
+      <span class="icon">📱</span>
+      <div class="body">
+        <strong>Nexus Hub is iOS-first right now.</strong>
+        <p>Install the app from the App Store, sign up with <span class="mono" id="coldSignupEmail2">—</span>, then reopen this invite link to join the workspace.</p>
+      </div>
+    </div>
+    <div class="banner info">
+      <span class="icon">⌨</span>
+      <div class="body">
+        <strong>Already have iOS set up?</strong>
+        <p>Open Nexus Hub → Settings → Developer → Copy access token, then paste it below.</p>
+      </div>
+    </div>
+    <div class="form-row">
+      <label for="coldJwtInput">Access token (JWT)</label>
+      <input id="coldJwtInput" type="password" placeholder="eyJhbG…" autocomplete="off" />
+    </div>
+    <button class="btn" id="coldSignInBtn">Continue with token</button>
+    <p class="subtle">The token is stored only in this tab (<span class="mono">sessionStorage</span>) and cleared when you close the tab. (Magic-link signup without iOS is coming in a follow-up — needs email-provider wiring.)</p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: cold invitee — email DOES have an existing Nexus Hub account
+       (OI-NAV-203a, 2026-04-24)
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-sign-in-prompt">
+    <h1>Sign in to accept</h1>
+    <p class="lede">This invitation is for <strong id="signInEmail">—</strong> — the email already has a Nexus Hub account. Sign in, then we'll add you to <span id="signInTenant">the workspace</span>.</p>
+    <div class="banner info">
+      <span class="icon">🔑</span>
+      <div class="body">
+        <strong>How to sign in</strong>
+        <p>Open the Nexus Hub iOS app and sign in as <span class="mono" id="signInEmail2">—</span>, then paste the access token below.</p>
+      </div>
+    </div>
+    <div class="form-row">
+      <label for="signInJwtInput">Access token (JWT)</label>
+      <input id="signInJwtInput" type="password" placeholder="eyJhbG…" autocomplete="off" />
+    </div>
+    <button class="btn" id="signInContinueBtn">Continue with token</button>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: code present, no JWT yet (warm path — user logged into iOS)
        ────────────────────────────────────────────────────────── -->
   <div class="card hidden" id="view-need-auth">
     <h1>Accept your invitation</h1>
@@ -263,9 +313,37 @@ function maskCode(c) {
 
 // ── View switching ───────────────────────────────────────────────
 function show(viewId) {
-  ['no-code', 'need-auth', 'loading', 'success', 'error'].forEach((v) => {
-    document.getElementById('view-' + v).classList.toggle('hidden', v !== viewId);
+  [
+    'no-code', 'need-auth', 'loading', 'success', 'error',
+    // OI-NAV-203a cold-invitee views:
+    'cold-signup', 'sign-in-prompt',
+  ].forEach((v) => {
+    const el = document.getElementById('view-' + v);
+    if (el) el.classList.toggle('hidden', v !== viewId);
   });
+}
+
+// OI-NAV-203a: unauthenticated probe into the invite so we can
+// distinguish cold-invitee states BEFORE asking the user for a JWT.
+// Returns the PublicInviteInfo payload verbatim, or { valid: false,
+// reason: 'network_error' } on transport failure.
+async function inspectInvite(c) {
+  try {
+    const res = await fetch('/invite/inspect/' + encodeURIComponent(c), {
+      method: 'GET',
+      // No auth, no body.
+    });
+    if (!res.ok) {
+      return { valid: false, reason: 'network_error' };
+    }
+    const body = await res.json().catch(() => null);
+    if (!body || body.ok !== true || !body.data) {
+      return { valid: false, reason: 'network_error' };
+    }
+    return body.data;
+  } catch {
+    return { valid: false, reason: 'network_error' };
+  }
 }
 
 // ── Accept flow ──────────────────────────────────────────────────
@@ -393,12 +471,128 @@ document.getElementById('retryBtn').addEventListener('click', () => {
 // ── Helper used by a couple of buttons ───────────────────────────
 window.goToConsole = function() { location.href = '/console'; };
 
+// ── OI-NAV-203a: cold-invitee pre-check ─────────────────────────
+// When we have a code but no JWT yet, probe /invite/inspect FIRST
+// so we can branch:
+//   1. has-account + expired   → error view (expired)
+//   2. has-account + pending   → sign-in-prompt ("sign in as <email>")
+//   3. no-account + pending    → cold-signup (iOS install + token)
+//   4. invalid/revoked/missing → error view (unknown / stale)
+// Old warm-path users (JWT already in sessionStorage) skip this and
+// go straight to acceptInvite() — inspect is only useful when we
+// need to DECIDE which UI to show for an unauthenticated landing.
+async function bootColdOrWarmPath() {
+  document.getElementById('codeMask').textContent = maskCode(code);
+  const info = await inspectInvite(code);
+  if (!info || info.valid !== true) {
+    // Show the generic error view — reason is 'not_found' or 'malformed' or 'network_error'.
+    renderInspectError(info);
+    return;
+  }
+  if (info.isExpired || info.status === 'expired') {
+    renderExpiredOrStale('expired');
+    return;
+  }
+  if (info.status === 'revoked') {
+    renderExpiredOrStale('revoked');
+    return;
+  }
+  if (info.status === 'accepted') {
+    renderExpiredOrStale('already_accepted');
+    return;
+  }
+  if (info.hasAccount === true) {
+    // Existing account → sign-in prompt.
+    document.getElementById('signInEmail').textContent = info.inviteeEmail || 'your invited email';
+    document.getElementById('signInEmail2').textContent = info.inviteeEmail || '—';
+    document.getElementById('signInTenant').textContent = info.tenantName || 'the workspace';
+    show('sign-in-prompt');
+    return;
+  }
+  // No account → cold-signup view.
+  document.getElementById('coldSignupEmail').textContent = info.inviteeEmail || 'your invited email';
+  document.getElementById('coldSignupEmail2').textContent = info.inviteeEmail || '—';
+  document.getElementById('coldSignupTenant').textContent = info.tenantName || 'the workspace';
+  show('cold-signup');
+}
+
+function renderInspectError(info) {
+  const reason = (info && info.reason) || 'not_found';
+  const titleEl = document.getElementById('errorTitle');
+  const ledeEl = document.getElementById('errorLede');
+  const codeEl = document.getElementById('errorCode');
+  const msgEl = document.getElementById('errorMessage');
+  const helpEl = document.getElementById('errorHelp');
+  if (reason === 'network_error') {
+    titleEl.textContent = "We couldn't reach Nexus Hub";
+    ledeEl.textContent = 'A network error prevented us from checking your invite.';
+    codeEl.textContent = 'NETWORK_ERROR';
+    msgEl.textContent = 'Try reloading the page. If it keeps failing, ask the person who invited you.';
+    helpEl.textContent = '';
+  } else if (reason === 'malformed') {
+    titleEl.textContent = 'That invite link looks wrong';
+    ledeEl.textContent = 'The code in this link is too short to be a valid Nexus Hub invite.';
+    codeEl.textContent = 'MALFORMED';
+    msgEl.textContent = 'Open the link exactly as you received it — the ?code=… parameter must be intact.';
+    helpEl.textContent = '';
+  } else {
+    titleEl.textContent = 'Invitation not found';
+    ledeEl.textContent = "We couldn't find this invite in our system. It may have been revoked, or the code is wrong.";
+    codeEl.textContent = 'NOT_FOUND';
+    msgEl.textContent = 'Ask the person who invited you for a fresh link.';
+    helpEl.textContent = '';
+  }
+  show('error');
+}
+
+function renderExpiredOrStale(kind) {
+  const titleEl = document.getElementById('errorTitle');
+  const ledeEl = document.getElementById('errorLede');
+  const codeEl = document.getElementById('errorCode');
+  const msgEl = document.getElementById('errorMessage');
+  if (kind === 'expired') {
+    titleEl.textContent = 'This invite has expired';
+    ledeEl.textContent = 'The expiry date on this invite has passed.';
+    codeEl.textContent = 'EXPIRED';
+    msgEl.textContent = 'Ask the admin who created it to send you a fresh link.';
+  } else if (kind === 'revoked') {
+    titleEl.textContent = 'This invite was revoked';
+    ledeEl.textContent = 'The admin who created this invite cancelled it.';
+    codeEl.textContent = 'REVOKED';
+    msgEl.textContent = 'Ask them to issue a new invite if you should still have access.';
+  } else {
+    titleEl.textContent = 'Already accepted';
+    ledeEl.textContent = 'This invite was already used.';
+    codeEl.textContent = 'ALREADY_ACCEPTED';
+    msgEl.textContent = "If you're the one who accepted it, open the workspace directly.";
+  }
+  show('error');
+}
+
+// Wire up the cold-signup + sign-in-prompt continue buttons —
+// both fall back to the existing warm-path accept flow once a JWT
+// is pasted.
+document.getElementById('coldSignInBtn').addEventListener('click', () => {
+  const v = document.getElementById('coldJwtInput').value.trim();
+  if (!v) return;
+  jwt = v;
+  sessionStorage.setItem('nx.usr.jwt', jwt);
+  acceptInvite();
+});
+document.getElementById('signInContinueBtn').addEventListener('click', () => {
+  const v = document.getElementById('signInJwtInput').value.trim();
+  if (!v) return;
+  jwt = v;
+  sessionStorage.setItem('nx.usr.jwt', jwt);
+  acceptInvite();
+});
+
 // ── Boot ─────────────────────────────────────────────────────────
 if (!code) {
   show('no-code');
 } else if (!jwt) {
-  document.getElementById('codeMask').textContent = maskCode(code);
-  show('need-auth');
+  // Cold path — probe invite metadata first, then route.
+  bootColdOrWarmPath();
 } else {
   acceptInvite();
 }
