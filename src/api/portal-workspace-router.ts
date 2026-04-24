@@ -121,6 +121,28 @@ function writeWorkspaceAudit(
   }
 }
 
+// OI-DATA-005a (2026-04-24): compute which ALLOWED fields were
+// present in a PATCH body, so update-audits record WHICH keys the
+// caller touched without ever leaking the VALUES. Matches the
+// OI-DATA-003e convention used by skill-config history (keysTouched
+// but never the values — body can be long, personal, sensitive).
+//
+// `allowedKeys` is the closed set of fields the PATCH handler maps
+// to service-layer updateX inputs. Unknown keys on the body are
+// ignored (same as the service layer does). `undefined` values
+// don't count as "touched" — callers that pass `title: undefined`
+// to unset are rejected by the service anyway; we align semantics.
+function pickKeysTouched(
+  body: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): string[] {
+  const touched: string[] = [];
+  for (const k of allowedKeys) {
+    if (k in body && body[k] !== undefined) touched.push(k);
+  }
+  return touched;
+}
+
 // ── Response helpers (same shape as /owner/*) ─────────────────────
 
 function ok(res: Response, data: unknown, status = 200): void {
@@ -428,6 +450,17 @@ export function createPortalWorkspaceRouter(): Router {
         tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
         status: typeof body.status === 'string' ? (body.status as BookStatus) : undefined,
       });
+      // OI-DATA-005a (2026-04-24): audit the create. We include
+      // title + author (both user-facing, already shown in the UI)
+      // but NOT notes (can be long + personal). This mirrors the
+      // delete-audit details shape so the Activity feed can render
+      // both consistently.
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.book.create',
+        `tenant.${ctx.tenantId}.book.${book.id}`,
+        { tenantId: ctx.tenantId, bookId: book.id, title: book.title, author: book.author },
+      );
       ok(res, { book }, 201);
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -452,6 +485,19 @@ export function createPortalWorkspaceRouter(): Router {
         tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
         status: typeof body.status === 'string' ? (body.status as BookStatus) : undefined,
       });
+      // OI-DATA-005a: keysTouched but never values. `notes` is
+      // particularly sensitive (long-form personal content);
+      // recording that notes was touched is useful for the
+      // Activity feed without leaking what it contains.
+      const keysTouched = pickKeysTouched(body, ['title', 'author', 'notes', 'tags', 'status']);
+      if (keysTouched.length > 0) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.book.update',
+          `tenant.${ctx.tenantId}.book.${id}`,
+          { tenantId: ctx.tenantId, bookId: id, title: book.title, keysTouched },
+        );
+      }
       ok(res, { book });
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -528,6 +574,15 @@ export function createPortalWorkspaceRouter(): Router {
         kind: typeof body.kind === 'string' ? (body.kind as ContentKind) : undefined,
         tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
       });
+      // OI-DATA-005a: audit the create. Title + kind only — the
+      // note body is long-form personal content and never belongs
+      // in the audit log.
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.note.create',
+        `tenant.${ctx.tenantId}.note.${note.id}`,
+        { tenantId: ctx.tenantId, noteId: note.id, title: note.title, kind: note.kind },
+      );
       ok(res, { note }, 201);
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -551,6 +606,18 @@ export function createPortalWorkspaceRouter(): Router {
         kind: typeof body.kind === 'string' ? (body.kind as ContentKind) : undefined,
         tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
       });
+      // OI-DATA-005a: keysTouched only; `body` is the canonical
+      // "long-form personal content" field — recording that it
+      // was touched is useful; recording what it contains is not.
+      const keysTouched = pickKeysTouched(body, ['title', 'body', 'kind', 'tags']);
+      if (keysTouched.length > 0) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.note.update',
+          `tenant.${ctx.tenantId}.note.${id}`,
+          { tenantId: ctx.tenantId, noteId: id, title: note.title, keysTouched },
+        );
+      }
       ok(res, { note });
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -620,6 +687,16 @@ export function createPortalWorkspaceRouter(): Router {
         tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
         isFavorite: body.isFavorite === true,
       });
+      // OI-DATA-005a: audit the create. URL is user-visible
+      // metadata (already shown on the Reference Center list) so
+      // it's fine in the audit row; description is the long-form
+      // "why I saved this" content and is intentionally omitted.
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.link.create',
+        `tenant.${ctx.tenantId}.link.${link.id}`,
+        { tenantId: ctx.tenantId, linkId: link.id, title: link.title, url: link.url },
+      );
       ok(res, { link }, 201);
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -644,6 +721,15 @@ export function createPortalWorkspaceRouter(): Router {
         tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
         isFavorite: typeof body.isFavorite === 'boolean' ? body.isFavorite : undefined,
       });
+      const keysTouched = pickKeysTouched(body, ['url', 'title', 'description', 'tags', 'isFavorite']);
+      if (keysTouched.length > 0) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.link.update',
+          `tenant.${ctx.tenantId}.link.${id}`,
+          { tenantId: ctx.tenantId, linkId: id, title: link.title, keysTouched },
+        );
+      }
       ok(res, { link });
     } catch (e) {
       if (e instanceof ResourceError) {
@@ -747,6 +833,16 @@ export function createPortalWorkspaceRouter(): Router {
           tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
         },
       );
+      // OI-DATA-005a: audit the create. title + kind are
+      // user-facing metadata; URL + description are intentionally
+      // omitted from the audit details (URL can be very long,
+      // description is long-form personal content).
+      writeWorkspaceAudit(
+        ctx.userId,
+        'tenant.channel.create',
+        `tenant.${ctx.tenantId}.channel.${channel.id}`,
+        { tenantId: ctx.tenantId, channelId: channel.id, title: channel.title, kind: channel.kind },
+      );
       ok(res, { channel }, 201);
     } catch (e) {
       if (e instanceof ChannelError) return mapChannelError(res, e);
@@ -776,6 +872,15 @@ export function createPortalWorkspaceRouter(): Router {
           tags: Array.isArray(body.tags) ? (body.tags as string[]) : undefined,
         },
       );
+      const keysTouched = pickKeysTouched(body, ['title', 'url', 'handle', 'description', 'kind', 'status', 'tags']);
+      if (keysTouched.length > 0) {
+        writeWorkspaceAudit(
+          ctx.userId,
+          'tenant.channel.update',
+          `tenant.${ctx.tenantId}.channel.${id}`,
+          { tenantId: ctx.tenantId, channelId: id, title: channel.title, keysTouched },
+        );
+      }
       ok(res, { channel });
     } catch (e) {
       if (e instanceof ChannelError) return mapChannelError(res, e);
