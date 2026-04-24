@@ -123,13 +123,14 @@ describe('sendMagicLink — noop backend', () => {
   });
 });
 
-describe('sendMagicLink — reserved backends throw MailerError', () => {
+describe('sendMagicLink — reserved-but-unimplemented backends', () => {
   const originalEnv = process.env.MAGIC_LINK_MAILER;
   afterEach(() => {
     process.env.MAGIC_LINK_MAILER = originalEnv;
   });
 
-  for (const backend of ['smtp', 'resend', 'postmark']) {
+  // Resend is now IMPLEMENTED — only smtp + postmark remain reserved.
+  for (const backend of ['smtp', 'postmark']) {
     it(`throws BACKEND_UNIMPLEMENTED for '${backend}'`, async () => {
       const { sendMagicLink, MailerError } = await import('../../src/services/mailer');
       process.env.MAGIC_LINK_MAILER = backend;
@@ -148,4 +149,156 @@ describe('sendMagicLink — reserved backends throw MailerError', () => {
       }
     });
   }
+});
+
+// ─── Resend backend — OI-NAV-203c tail (2026-04-24) ─────────────
+describe('sendMagicLink — Resend backend', () => {
+  const originalMailer = process.env.MAGIC_LINK_MAILER;
+  const originalKey = process.env.RESEND_API_KEY;
+  const originalFrom = process.env.MAGIC_LINK_FROM;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    logSpy.info.mockReset();
+    logSpy.error.mockReset();
+    process.env.MAGIC_LINK_MAILER = 'resend';
+  });
+  afterEach(() => {
+    process.env.MAGIC_LINK_MAILER = originalMailer;
+    process.env.RESEND_API_KEY = originalKey;
+    process.env.MAGIC_LINK_FROM = originalFrom;
+    global.fetch = originalFetch;
+  });
+
+  it('throws BACKEND_UNIMPLEMENTED when RESEND_API_KEY is missing', async () => {
+    delete process.env.RESEND_API_KEY;
+    const { sendMagicLink, MailerError } = await import('../../src/services/mailer');
+    try {
+      await sendMagicLink({
+        to: 'u@e.com', url: 'https://x.com/a', intentLabel: 'Test', expiresAt: '2026-04-24T11:00:00Z',
+      });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(MailerError);
+      expect((e as { code: string }).code).toBe('BACKEND_UNIMPLEMENTED');
+      expect((e as { message: string }).message).toContain('RESEND_API_KEY');
+    }
+  });
+
+  it('POSTs to Resend with Bearer auth + JSON payload when key is set', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_12345';
+    process.env.MAGIC_LINK_FROM = 'Nexus Hub <welcome@nexushub.me>';
+    let captured: { url?: string; init?: RequestInit } = {};
+    global.fetch = vi.fn(async (url: any, init?: any) => {
+      captured = { url: String(url), init };
+      return new Response(JSON.stringify({ id: 'msg_test_abc' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }) as any;
+    const { sendMagicLink } = await import('../../src/services/mailer');
+    const result = await sendMagicLink({
+      to: 'felipedrf74@gmail.com',
+      url: 'https://nexushub.me/invite/accept?code=A&magic=B',
+      intentLabel: 'Welcome to Nexus Hub',
+      expiresAt: '2026-04-24T11:00:00Z',
+      tenantName: 'Nexus Hub',
+    });
+    expect(result.backend).toBe('resend');
+    expect(result.delivered).toBe(true);
+    expect(captured.url).toBe('https://api.resend.com/emails');
+    expect(captured.init?.method).toBe('POST');
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers['Authorization']).toBe('Bearer re_test_key_12345');
+    expect(headers['Content-Type']).toBe('application/json');
+    const body = JSON.parse(captured.init?.body as string);
+    expect(body.from).toBe('Nexus Hub <welcome@nexushub.me>');
+    expect(body.to).toEqual(['felipedrf74@gmail.com']);
+    expect(body.subject).toBe('Welcome to Nexus Hub');
+    // Body must include HTML + plaintext + the URL (HTML escapes & to &amp;).
+    expect(body.html).toContain('Nexus Hub');
+    expect(body.html).toContain('https://nexushub.me/invite/accept?code=A&amp;magic=B');
+    // Plaintext is not HTML-escaped.
+    expect(body.text).toContain('https://nexushub.me/invite/accept?code=A&magic=B');
+    expect(body.tags).toEqual(
+      expect.arrayContaining([
+        { name: 'intent', value: 'magic_link' },
+        { name: 'source', value: 'nexus-hub-portal' },
+      ]),
+    );
+  });
+
+  it('falls back to welcome@nexushub.me when MAGIC_LINK_FROM is unset', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_12345';
+    delete process.env.MAGIC_LINK_FROM;
+    let capturedBody: any;
+    global.fetch = vi.fn(async (_url: any, init?: any) => {
+      capturedBody = JSON.parse(init?.body as string);
+      return new Response(JSON.stringify({ id: 'msg_test' }), { status: 200 });
+    }) as any;
+    const { sendMagicLink } = await import('../../src/services/mailer');
+    await sendMagicLink({
+      to: 'u@e.com', url: 'https://x/a', intentLabel: 'T', expiresAt: '2026-04-24T11:00:00Z',
+    });
+    expect(capturedBody.from).toBe('welcome@nexushub.me');
+  });
+
+  it('HTML body escapes user-controlled strings (defense in depth)', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_12345';
+    let capturedBody: any;
+    global.fetch = vi.fn(async (_url: any, init?: any) => {
+      capturedBody = JSON.parse(init?.body as string);
+      return new Response(JSON.stringify({ id: 'msg_test' }), { status: 200 });
+    }) as any;
+    const { sendMagicLink } = await import('../../src/services/mailer');
+    await sendMagicLink({
+      to: 'u@e.com',
+      url: 'https://x/a?q=<script>',
+      intentLabel: 'Welcome <script>',
+      expiresAt: '2026-04-24T11:00:00Z',
+      tenantName: '<evil>Tenant</evil>',
+    });
+    // None of the raw `<script>` / `<evil>` should appear in the HTML body.
+    expect(capturedBody.html).not.toContain('<script>');
+    expect(capturedBody.html).not.toContain('<evil>');
+    // But the escaped forms should:
+    expect(capturedBody.html).toContain('&lt;script&gt;');
+    expect(capturedBody.html).toContain('&lt;evil&gt;');
+  });
+
+  it('surfaces Resend 4xx errors as SEND_FAILED with status + body', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_12345';
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ name: 'validation_error', message: 'The domain is not verified.' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    )) as any;
+    const { sendMagicLink, MailerError } = await import('../../src/services/mailer');
+    try {
+      await sendMagicLink({
+        to: 'u@e.com', url: 'https://x/a', intentLabel: 'T', expiresAt: '2026-04-24T11:00:00Z',
+      });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(MailerError);
+      const me = e as { code: string; message: string; details?: any };
+      expect(me.code).toBe('SEND_FAILED');
+      expect(me.message).toContain('400');
+      expect(me.details?.body?.message).toContain('not verified');
+    }
+  });
+
+  it('surfaces network errors as SEND_FAILED (not bare fetch throws)', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_12345';
+    global.fetch = vi.fn(async () => { throw new TypeError('network down'); }) as any;
+    const { sendMagicLink, MailerError } = await import('../../src/services/mailer');
+    try {
+      await sendMagicLink({
+        to: 'u@e.com', url: 'https://x/a', intentLabel: 'T', expiresAt: '2026-04-24T11:00:00Z',
+      });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(MailerError);
+      expect((e as { code: string }).code).toBe('SEND_FAILED');
+      expect((e as { message: string }).message).toContain('network');
+    }
+  });
 });
