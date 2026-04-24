@@ -56,7 +56,12 @@ vi.mock('../../src/services/finance-cache-invalidator', () => ({
 import { financeRoutes } from '../../src/api/routes/finance';
 import { config } from '../../src/config';
 import { getOrCreateUser } from '../../src/services/user-service';
-import { addTransaction, calculateAndStoreTax } from '../../src/services/finance-tracker';
+import {
+  addTransaction,
+  calculateAndStoreTax,
+  getTaxEvents,
+  getTransactions,
+} from '../../src/services/finance-tracker';
 import { analyzeInvoiceImage } from '../../src/services/invoice-filer';
 
 function applyMigrations(db: Database.Database): void {
@@ -220,6 +225,48 @@ describe('Finance API — tax routes', () => {
     expect(res.body.data.event.status).toBe('paid');
     expect(res.body.data.event.paid_at).toBeTruthy();
     expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('blocks cross-tenant reads and writes for transactions and tax events', async () => {
+    const userA = getOrCreateUser(22101, { username: 'finance-tenant-a' });
+    const userB = getOrCreateUser(22102, { username: 'finance-tenant-b' });
+    const transactionA = addTransaction(userA.id, '2024-05-04', 'income', 10000, {
+      currency: 'EUR',
+      description: 'Tenant A private client',
+    });
+    const transactionB = addTransaction(userB.id, '2024-05-05', 'expense', 42, {
+      currency: 'EUR',
+      description: 'Tenant B lunch',
+    });
+    calculateAndStoreTax(userA.id, '2024-05');
+
+    const listForB = await dispatch('GET', '/transactions?from=2024-05-01&to=2024-05-31', userB.id);
+
+    expect(listForB.statusCode).toBe(200);
+    expect(listForB.body.data.transactions.map((tx: any) => tx.id)).toEqual([transactionB.id]);
+    expect(JSON.stringify(listForB.body)).not.toContain('Tenant A private client');
+
+    const updateFromB = await dispatch('PATCH', `/transactions/${transactionA.id}`, userB.id, {
+      description: 'cross-tenant overwrite',
+      amount: 1,
+    });
+
+    expect(updateFromB.statusCode).toBe(404);
+    expect(updateFromB.body.error.code).toBe('NOT_FOUND');
+    expect(getTransactions(userA.id, { limit: 5 }).find((tx) => tx.id === transactionA.id)).toMatchObject({
+      amount: 10000,
+      description: 'Tenant A private client',
+    });
+
+    const payFromB = await dispatch('POST', '/tax/events/2024-05/pay', userB.id, {});
+
+    expect(payFromB.statusCode).toBe(404);
+    expect(payFromB.body.error.code).toBe('NOT_FOUND');
+    expect(getTaxEvents(userA.id, { year: 2024 }).find((event) => event.month === '2024-05')).toMatchObject({
+      status: 'pending',
+      paid_at: null,
+    });
+    expect(mockInvalidateFinanceDerivedCaches).not.toHaveBeenCalled();
   });
 
   it('invalidates finance-derived surfaces after adding a transaction', async () => {

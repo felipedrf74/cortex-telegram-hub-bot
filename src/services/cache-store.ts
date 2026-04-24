@@ -12,6 +12,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { isValidTenantUserId } from './tenant-scope-observability';
 
 export interface CacheStoreStats {
   initCalls: number;
@@ -123,6 +124,20 @@ export function initCacheStore(): void {
 export function userCacheKey(userId: number | undefined, base: string): string {
   if (userId == null) return base;
   return `u:${userId}:${base}`;
+}
+
+/**
+ * Build a per-user cache key for authenticated tenant data.
+ *
+ * Unlike `userCacheKey`, this rejects missing/invalid tenant scopes. Use it
+ * on app-facing API paths where a cache collision could expose another
+ * user's data.
+ */
+export function requireUserCacheKey(userId: number, base: string): string {
+  if (!isValidTenantUserId(userId)) {
+    throw new Error('Invalid tenant user id for user-scoped cache key');
+  }
+  return userCacheKey(userId, base);
 }
 
 /**

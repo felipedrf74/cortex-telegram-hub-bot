@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import type { Request } from 'express';
+import jwt from 'jsonwebtoken';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
@@ -78,6 +79,26 @@ async function dispatchRegisterInvite(body: any): Promise<MockRes> {
 }
 
 describe('Auth invite registration', () => {
+  const originalEnv = {
+    STAGING: process.env.STAGING,
+    IOS_API_ENABLED: process.env.IOS_API_ENABLED,
+    IOS_API_JWT_SECRET: process.env.IOS_API_JWT_SECRET,
+    IOS_INVITE_CODE: process.env.IOS_INVITE_CODE,
+    IOS_OWNER_CODE: process.env.IOS_OWNER_CODE,
+    OWNER_TELEGRAM_ID: process.env.OWNER_TELEGRAM_ID,
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+  };
+
+  function restoreEnv(key: keyof typeof originalEnv): void {
+    const value = originalEnv[key];
+    if (value === undefined) {
+      delete process.env[key];
+      return;
+    }
+    process.env[key] = value;
+  }
+
   beforeEach(async () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
@@ -115,6 +136,12 @@ describe('Auth invite registration', () => {
         next();
       },
     }));
+  });
+
+  afterEach(() => {
+    testDb?.close();
+    (Object.keys(originalEnv) as Array<keyof typeof originalEnv>).forEach(restoreEnv);
+    vi.resetModules();
   });
 
   it('provisions beta invite users with active max-tier sandbox access', async () => {
@@ -252,6 +279,66 @@ describe('Auth invite registration', () => {
     expect(res.body.data.accessToken).toBe('access-token');
     expect(res.body.data.user.firstName).toBe('Jaqueline');
     expect(res.body.data.user.lastName).toBe('Silva');
+  });
+
+  it('invalidates stale device refresh tokens when the same device switches accounts', async () => {
+    const userAResult = testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('tenant-a@example.com', 'Tenant A', 'en', 'email', 0.05);
+    const userBResult = testDb.prepare(`
+      INSERT INTO users (email, first_name, language, auth_provider, daily_cost_limit_usd)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('tenant-b@example.com', 'Tenant B', 'en', 'email', 0.05);
+    const userAId = Number(userAResult.lastInsertRowid);
+    const userBId = Number(userBResult.lastInsertRowid);
+    const { createAuthSessionAndRegisterDevice } = await import('../../src/services/ios-auth-session');
+
+    const sessionA = createAuthSessionAndRegisterDevice({
+      userId: userAId,
+      deviceId: 'shared-ios-device',
+      deviceName: 'Felipe iPhone',
+      pushToken: 'push-a',
+      user: { first_name: 'Tenant A', language: 'en' },
+      ipAddress: '127.0.0.1',
+    });
+    const sessionB = createAuthSessionAndRegisterDevice({
+      userId: userBId,
+      deviceId: 'shared-ios-device',
+      deviceName: 'Felipe iPhone',
+      pushToken: 'push-b',
+      user: { first_name: 'Tenant B', language: 'en' },
+      ipAddress: '127.0.0.1',
+    });
+
+    const staleRefresh = await dispatchAuth('/refresh', { refreshToken: sessionA.refreshToken });
+
+    expect(staleRefresh.statusCode).toBe(401);
+    expect(staleRefresh.body.error.code).toBe('UNAUTHORIZED');
+
+    const activeRefresh = await dispatchAuth('/refresh', { refreshToken: sessionB.refreshToken });
+
+    expect(activeRefresh.statusCode).toBe(200);
+    expect(activeRefresh.body.ok).toBe(true);
+    expect(activeRefresh.body.data.refreshToken).not.toBe(sessionB.refreshToken);
+    const decoded = jwt.verify(activeRefresh.body.data.accessToken, 'test-ios-secret') as {
+      userId: number;
+      deviceId: string;
+    };
+    expect(decoded.userId).toBe(userBId);
+    expect(decoded.deviceId).toBe('shared-ios-device');
+
+    const device = testDb.prepare(
+      'SELECT user_id, push_token, refresh_token FROM ios_devices WHERE device_id = ?',
+    ).get('shared-ios-device') as {
+      user_id: number;
+      push_token: string;
+      refresh_token: string;
+    };
+
+    expect(device.user_id).toBe(userBId);
+    expect(device.push_token).toBe('push-b');
+    expect(device.refresh_token).toBe(activeRefresh.body.data.refreshToken);
   });
 
   it('returns the authenticated user profile for session rehydration', async () => {

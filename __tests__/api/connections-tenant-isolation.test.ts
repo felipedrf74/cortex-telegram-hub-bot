@@ -1,0 +1,156 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+import type { Request } from 'express';
+
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+
+let testDb: Database.Database;
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+}));
+
+vi.mock('../../src/config', () => ({
+  config: {
+    google: { clientId: 'google-client', clientSecret: 'google-secret', refreshToken: '' },
+    outlook: { clientId: 'outlook-client', clientSecret: 'outlook-secret', tenantId: 'common', refreshToken: '' },
+    financeEncryption: { enabled: false, masterKey: '' },
+  },
+}));
+
+vi.mock('../../src/services/integration-cache-invalidator', () => ({
+  invalidateIntegrationDerivedCaches: vi.fn(),
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  },
+}));
+
+import { connectionRoutes } from '../../src/api/routes/connections';
+import { storeTokens } from '../../src/services/oauth-store';
+
+function applyMigrations(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((file) => file.endsWith('.sql')).sort();
+  for (const file of files) {
+    if (!db.prepare('SELECT 1 FROM _migrations WHERE filename = ?').get(file)) {
+      try {
+        db.exec(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+        db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(file);
+      } catch {
+        // Some unrelated migrations require tables not present in this harness.
+      }
+    }
+  }
+}
+
+interface MockRes {
+  statusCode: number;
+  body: any;
+  status(code: number): MockRes;
+  json(body: any): MockRes;
+}
+
+function mockRes(): MockRes {
+  const res: MockRes = {
+    statusCode: 200,
+    body: null,
+    status(code: number) { res.statusCode = code; return res; },
+    json(body: any) { res.body = body; return res; },
+  };
+  return res;
+}
+
+async function dispatch(userId: number): Promise<MockRes> {
+  const router = connectionRoutes();
+  const req = {
+    userId,
+    method: 'GET',
+    url: '/',
+    originalUrl: '/',
+    baseUrl: '',
+    path: '/',
+    query: {},
+    params: {},
+    headers: {},
+  } as any as Request;
+  const res = mockRes();
+
+  await new Promise<void>((resolve) => {
+    (router as any).handle(req, res, (err: any) => {
+      if (err) throw err;
+      resolve();
+    });
+    setImmediate(resolve);
+  });
+
+  return res;
+}
+
+describe('Connections API tenant isolation', () => {
+  beforeEach(() => {
+    process.env.OAUTH_ENCRYPTION_KEY = 'tenant-isolation-oauth-key-32-bytes-minimum';
+    testDb = new Database(':memory:');
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => {
+    testDb?.close();
+    delete process.env.OAUTH_ENCRYPTION_KEY;
+  });
+
+  it('returns only the authenticated user integration metadata and never token material', async () => {
+    const userA = 301;
+    const userB = 302;
+    storeTokens(userA, 'google', {
+      accessToken: 'access-secret-a',
+      refreshToken: 'refresh-secret-a',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    });
+    storeTokens(userB, 'outlook', {
+      accessToken: 'access-secret-b',
+      refreshToken: 'refresh-secret-b',
+      tokenType: 'Bearer',
+      expiresAt: null,
+      scopes: ['Mail.ReadWrite'],
+    });
+    testDb.prepare(`
+      INSERT INTO garmin_user_tokens (user_id, garmin_email, tokens_json, status)
+      VALUES (?, ?, ?, 'active')
+    `).run(userA, 'tenant-a@garmin.example', '{"refresh":"garmin-secret-a"}');
+
+    const forA = await dispatch(userA);
+    const forB = await dispatch(userB);
+
+    expect(forA.statusCode).toBe(200);
+    expect(forA.body.data.connections.map((connection: any) => connection.provider).sort()).toEqual([
+      'garmin',
+      'google',
+    ]);
+    expect(forB.statusCode).toBe(200);
+    expect(forB.body.data.connections.map((connection: any) => connection.provider)).toEqual(['outlook']);
+    expect(forB.body.data.connections.some((connection: any) => connection.provider === 'google')).toBe(false);
+    expect(forB.body.data.connections.some((connection: any) => connection.provider === 'garmin')).toBe(false);
+
+    const serializedA = JSON.stringify(forA.body);
+    const serializedB = JSON.stringify(forB.body);
+    expect(serializedA).not.toContain('access-secret-a');
+    expect(serializedA).not.toContain('refresh-secret-a');
+    expect(serializedA).not.toContain('garmin-secret-a');
+    expect(serializedB).not.toContain('access-secret-b');
+    expect(serializedB).not.toContain('refresh-secret-b');
+    expect(serializedB).not.toContain('tenant-a@garmin.example');
+    expect(serializedA).not.toContain('outlook-secret');
+  });
+});
