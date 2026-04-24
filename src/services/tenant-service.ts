@@ -694,3 +694,29 @@ export function suspendTenant(
 export function activateTenant(tenantId: number, actorUserId: number): TenantRow {
   return setTenantStatus(tenantId, 'active', actorUserId, null);
 }
+
+/**
+ * OI-ADM-302b (2026-04-24): return ids of every tenant whose
+ * lifecycle status is 'active'. This is the SINGLE tenant-
+ * iteration choke point for scheduled jobs that do per-tenant
+ * work — using this helper instead of ad-hoc `SELECT id FROM
+ * tenants` means suspended / archived / trial-expired tenants
+ * are automatically excluded from cron fan-out without touching
+ * each job individually.
+ *
+ * 'trial' status is intentionally EXCLUDED — trial tenants get
+ * a graceful read-only behavior under the context guard, and
+ * scheduled work (which often creates/mutates data) is paused
+ * until they upgrade or the trial is converted to active.
+ */
+export function listActiveTenantIds(): number[] {
+  try {
+    const rows = getDb()
+      .prepare("SELECT id FROM tenants WHERE status = 'active' ORDER BY id")
+      .all() as Array<{ id: number }>;
+    return rows.map((r) => r.id);
+  } catch (err) {
+    logger.error({ err }, 'tenant-service: listActiveTenantIds failed');
+    return [];
+  }
+}

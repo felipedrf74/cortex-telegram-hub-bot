@@ -116,11 +116,26 @@ function getOwnerUserIds(): number[] {
 
 export { getActiveUserIds, getOwnerUserIds };
 
+// OI-ADM-302b (2026-04-24): iterate ONLY owner-tier users whose
+// SOLO TENANT is also `tenants.status='active'`. Previously this
+// filtered only on user status — a tenant suspended via OI-ADM-302
+// would still see scheduled per-tenant work (invoice collection,
+// fiscal bundles, etc.) fan out to it. Joining against `tenants`
+// gives us the single choke point that honors the suspend.
+//
+// The solo-tenant convention (tenants.id == users.id) lets us match
+// by id alone; once multi-member tenants with separate ids land
+// (Phase 2), this join shifts to tenant_members.
 function getOwnerTenantIds(): number[] {
   try {
     const db = getDb();
     const rows = db.prepare(
-      "SELECT id FROM users WHERE tier = 'owner' AND status = 'active'"
+      `SELECT u.id FROM users u
+         INNER JOIN tenants t ON t.id = u.id
+        WHERE u.tier = 'owner'
+          AND u.status = 'active'
+          AND t.status = 'active'
+        ORDER BY u.id`,
     ).all() as { id: number }[];
     if (rows.length > 0) return rows.map((row) => row.id);
   } catch (err) {
