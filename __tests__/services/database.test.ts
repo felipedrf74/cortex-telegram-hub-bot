@@ -21,6 +21,14 @@ const LEGACY_DUPLICATE_MIGRATION_PREFIXES: Record<string, string[]> = {
   '022': ['022_finance_tables.sql', '022_webhook_events.sql'],
   '023': ['023_fitness_training_plans.sql', '023_onboarding.sql'],
   '024': ['024_cooking_tables.sql', '024_usage_metering.sql'],
+  // 2026-04-24: two branches concurrently numbered 076 — main's
+  // operator_alerts shipped first in prod; the portal redesign
+  // branch's tenants_and_memberships is the foundation of the
+  // tenant/workspace arc and is referenced as "migration 076" in
+  // ~40 test + comment sites. Renumbering would be a high-risk
+  // mass-refactor; listing the collision here is the sanctioned
+  // escape hatch (same pattern as the five prior entries above).
+  '076': ['076_operator_alerts.sql', '076_tenants_and_memberships.sql'],
 };
 
 function migrationFiles(): string[] {
