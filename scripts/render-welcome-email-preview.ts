@@ -4,54 +4,53 @@
  * Preview the welcome email body (the one sent on paid-tier upgrade)
  * to /tmp for visual inspection. No network, no API key needed.
  *
+ * Unlike a previous hardcoded snapshot, this script calls the *real*
+ * template renderer from src/services/mailer.ts — so "what I see in
+ * /tmp" is bit-for-bit what a real recipient will get.
+ *
  * Usage:
  *   npx ts-node scripts/render-welcome-email-preview.ts
  *   open /tmp/nexus-welcome-email-preview.html
+ *
+ * Env overrides (optional):
+ *   PREVIEW_TIER=max|pro|paid
+ *   PREVIEW_FIRST_NAME=Felipe
  */
 
 import fs from 'fs';
 
-function escapeHtml(s: string): string {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c] as string));
-}
+// Force noop backend so no network / API key is touched during preview.
+process.env.MAGIC_LINK_MAILER = 'noop';
 
-const firstName = 'Felipe';
-const tier: string = 'pro';
-const tierLabel = tier === 'max' ? 'Max' : tier === 'pro' ? 'Pro' : 'paid';
+// Import AFTER setting env (mailer reads env at call time but this is
+// defensive — other callsites may snapshot config at import time).
+import { __previewRenderTransactional } from '../src/services/mailer';
+
+const firstName = process.env.PREVIEW_FIRST_NAME || 'Felipe';
+const tier = process.env.PREVIEW_TIER || 'pro';
 // OI-WELCOME-201b (2026-04-24): CTA is a magic-login URL, not a
 // bare /console link. Clicking it in the email mints a web-session
 // JWT + redirects to /console with the user already signed in.
 const consoleUrl = 'https://nexushub.me/magic-login?token=TOKEN_A_REAL_RANDOM_BASE64URL_VALUE_GOES_HERE';
 
-const html = `<!DOCTYPE html>
-<html>
-  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 24px auto; color: #1f2937; line-height: 1.5;">
-    <h2 style="color: #111827; font-size: 20px; margin: 0 0 12px;">Welcome, ${escapeHtml(firstName)}</h2>
-    <p style="margin: 0 0 16px;">Your Nexus Hub <strong>${escapeHtml(tierLabel)}</strong> plan is active.</p>
-    <p style="margin: 24px 0;">
-      <a href="${escapeHtml(consoleUrl)}"
-         style="display: inline-block; padding: 12px 24px; background: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 500;">
-        Open your workspace
-      </a>
-    </p>
-    <h3 style="font-size: 15px; color: #111827; margin: 24px 0 8px;">What to do next</h3>
-    <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151;">
-      <li style="margin-bottom: 8px;">Open the User Console and set up your tenant (it's already created — just walk through the first-run checklist).</li>
-      <li style="margin-bottom: 8px;">Configure each of your five skills (Content, Secretary, Training, Finance, Cooking) — they read tenant-level config for context.</li>
-      <li style="margin-bottom: 8px;">Install the iOS app when you're ready — it's the primary mobile interface.</li>
-    </ol>
-    <p style="margin: 24px 0 0; font-size: 14px; color: #6b7280;">
-      If you need anything, just reply to this email — we read every message.
-    </p>
-    <p style="margin: 8px 0 0; font-size: 13px; color: #9ca3af;">— The Nexus Hub team</p>
-  </body>
-</html>
-`;
+const rendered = __previewRenderTransactional({
+  template: 'welcome.paid_upgrade',
+  to: 'preview@example.com',
+  subject: `Welcome to Nexus Hub — your ${tier === 'max' ? 'Max' : 'Pro'} plan is active`,
+  context: { firstName, tier, consoleUrl },
+});
 
-const out = '/tmp/nexus-welcome-email-preview.html';
-fs.writeFileSync(out, html);
-console.log(`[preview] Wrote welcome email HTML to ${out}`);
-console.log(`[preview] Preview: file://${out}`);
-console.log(`[preview] Simulated context: firstName="${firstName}", tier="${tier}", consoleUrl="${consoleUrl}"`);
+const htmlOut = '/tmp/nexus-welcome-email-preview.html';
+const textOut = '/tmp/nexus-welcome-email-preview.txt';
+fs.writeFileSync(htmlOut, rendered.html);
+fs.writeFileSync(textOut, rendered.text);
+// eslint-disable-next-line no-console
+console.log(`[preview] HTML → ${htmlOut}`);
+// eslint-disable-next-line no-console
+console.log(`[preview] TEXT → ${textOut}`);
+// eslint-disable-next-line no-console
+console.log(`[preview] Subject: ${rendered.subject}`);
+// eslint-disable-next-line no-console
+console.log(`[preview] Context: firstName="${firstName}", tier="${tier}"`);
+// eslint-disable-next-line no-console
+console.log(`[preview] Open with: open ${htmlOut}`);

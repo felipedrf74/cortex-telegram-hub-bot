@@ -277,8 +277,39 @@ interface RenderedBodies {
   subject: string;
   html: string;
   text: string;
-  /** Tag list for Resend analytics — e.g. [{ name: 'template', value: 'welcome.paid_upgrade' }] */
+  /** Tag list for Resend analytics — e.g. [{ name: 'template', value: 'welcome_paid_upgrade' }].
+   *  Values must be [A-Za-z0-9_-] (Resend 422s on dots/spaces/etc.) —
+   *  sanitizeResendTag enforces this at the send boundary. */
   tags: Array<{ name: string; value: string }>;
+}
+
+/**
+ * Render a feature row as a 2-column <tr> — used inside the welcome
+ * email's "What Nexus Hub does for you" block. Named + described so
+ * the feature list stays readable when the surrounding template grows.
+ * Kept at module scope (not inlined in the template string) so the
+ * 5 call-sites stay skimmable.
+ */
+function featureRow(name: string, desc: string): string {
+  return `<tr>
+                  <td style="padding: 10px 0; vertical-align: top; width: 110px;">
+                    <span class="feature-name" style="font-size: 14px; font-weight: 600; color: #111827;">${escapeHtml(name)}</span>
+                  </td>
+                  <td style="padding: 10px 0 10px 8px; vertical-align: top;">
+                    <span class="feature-desc" style="font-size: 14px; color: #6b7280; line-height: 1.5;">${escapeHtml(desc)}</span>
+                  </td>
+                </tr>`;
+}
+
+/**
+ * Internal renderer — NOT public API. Exported with the `__` prefix
+ * only so the preview script (`scripts/render-welcome-email-preview.ts`)
+ * and structural tests can invoke the exact same render path a real
+ * send would take, without sending. External callers should use
+ * `sendTransactionalEmail`.
+ */
+export function __previewRenderTransactional(input: TransactionalEmailInput): RenderedBodies {
+  return renderTransactional(input);
 }
 
 function renderTransactional(input: TransactionalEmailInput): RenderedBodies {
@@ -290,49 +321,191 @@ function renderTransactional(input: TransactionalEmailInput): RenderedBodies {
         ? input.context.consoleUrl
         : 'https://nexushub.me/console';
       const tierLabel = tier === 'max' ? 'Max' : tier === 'pro' ? 'Pro' : 'paid';
+      // Tier-specific greeting — Max users get a more premium tone.
+      const hero = tier === 'max'
+        ? `You're in — and you picked the Max plan. That means every skill is unlocked, with the highest daily quotas we offer.`
+        : `You're in. Your Pro plan is active, and your workspace is ready to set up.`;
+
+      // ── PLAINTEXT fallback ─────────────────────────────────
       const text = [
-        `Hi ${firstName},`,
+        `Welcome to Nexus Hub, ${firstName}.`,
         '',
-        `Your Nexus Hub ${tierLabel} plan is active. Here's what to do next:`,
+        hero,
         '',
-        `  1. Open your workspace: ${consoleUrl}`,
-        '  2. Configure your 5 skills (Content, Secretary, Training, Finance, Cooking) — each has its own settings under Skills.',
-        '  3. Install the iOS app for the full mobile experience (coming to the App Store).',
+        `→ Open your workspace: ${consoleUrl}`,
         '',
-        "If you need anything, just reply to this email.",
+        'What Nexus Hub does for you',
+        '',
+        '• Content — Generate scripts, posts, and research briefs in your voice.',
+        '• Secretary — Inbox triage, calendar management, task capture.',
+        '• Training — Coaching for gym, running, cycling, swim.',
+        '• Finance — Budget tracking + spend coaching.',
+        '• Cooking — Meal planning around your dietary constraints.',
+        '',
+        'Each skill reads context you configure once — no repeating yourself across sessions.',
+        '',
+        `This one-click login link expires in 24 hours. If it lapses, we'll send a fresh one the next time you visit.`,
+        '',
+        'Questions? Just reply — every email reaches a human on our team.',
         '',
         '— The Nexus Hub team',
+        '',
+        'https://nexushub.me',
       ].join('\n');
-      const html = `<!DOCTYPE html>
-<html>
-  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 24px auto; color: #1f2937; line-height: 1.5;">
-    <h2 style="color: #111827; font-size: 20px; margin: 0 0 12px;">Welcome, ${escapeHtml(firstName)}</h2>
-    <p style="margin: 0 0 16px;">Your Nexus Hub <strong>${escapeHtml(tierLabel)}</strong> plan is active.</p>
-    <p style="margin: 24px 0;">
-      <a href="${escapeHtml(consoleUrl)}"
-         style="display: inline-block; padding: 12px 24px; background: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 500;">
-        Open your workspace
-      </a>
-    </p>
-    <h3 style="font-size: 15px; color: #111827; margin: 24px 0 8px;">What to do next</h3>
-    <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151;">
-      <li style="margin-bottom: 8px;">Open the User Console and set up your tenant (it's already created — just walk through the first-run checklist).</li>
-      <li style="margin-bottom: 8px;">Configure each of your five skills (Content, Secretary, Training, Finance, Cooking) — they read tenant-level config for context.</li>
-      <li style="margin-bottom: 8px;">Install the iOS app when you're ready — it's the primary mobile interface.</li>
-    </ol>
-    <p style="margin: 24px 0 0; font-size: 14px; color: #6b7280;">
-      If you need anything, just reply to this email — we read every message.
-    </p>
-    <p style="margin: 8px 0 0; font-size: 13px; color: #9ca3af;">— The Nexus Hub team</p>
-  </body>
-</html>
-`.trim();
+
+      // ── HTML (responsive, dark-mode-aware) ─────────────────
+      // Preheader text: what the inbox preview shows next to the
+      // subject. Hidden from the visible body but indexed by every
+      // major client (Gmail, Apple Mail, Outlook). The non-breaking
+      // spaces at the end pad out any client that concatenates the
+      // next text line into the preview.
+      const preheader = `Your ${tierLabel} plan is active. One click to open your workspace.`;
+
+      const html = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <title>Welcome to Nexus Hub</title>
+  <style>
+    /* Scoped styles that support clients that honor <style>.
+       All critical layout ALSO has inline styles below so plainer
+       clients (older Outlook, Gmail mobile app) still render ok. */
+    @media (max-width: 480px) {
+      .container { width: 100% !important; padding: 16px !important; }
+      .cta-button { display: block !important; width: auto !important; }
+      .hero-title { font-size: 24px !important; }
+    }
+    @media (prefers-color-scheme: dark) {
+      .bg { background-color: #0b0f14 !important; }
+      .container { background-color: #111827 !important; }
+      .hero-title, .section-title { color: #f9fafb !important; }
+      .body-text { color: #d1d5db !important; }
+      .muted { color: #9ca3af !important; }
+      .divider { border-color: #1f2937 !important; }
+      .feature-name { color: #f3f4f6 !important; }
+      .feature-desc { color: #9ca3af !important; }
+      .tier-pill { background-color: #1e3a8a !important; color: #bfdbfe !important; }
+    }
+  </style>
+</head>
+<body class="bg" style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1f2937; line-height: 1.55;">
+
+  <!-- Preheader: indexed by inbox previews, hidden from the body. -->
+  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #f3f4f6;">
+    ${escapeHtml(preheader)}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  </div>
+
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f3f4f6;">
+    <tr>
+      <td align="center" style="padding: 32px 16px;">
+        <table role="presentation" class="container" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width: 560px; width: 100%; background-color: #ffffff; border-radius: 12px; border: 1px solid #e5e7eb; overflow: hidden;">
+
+          <!-- Header band: wordmark only, no image. -->
+          <tr>
+            <td style="padding: 24px 32px 0 32px;">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                <tr>
+                  <td align="left" style="font-size: 15px; font-weight: 700; color: #111827; letter-spacing: -0.2px;">
+                    <span style="display: inline-block; width: 8px; height: 8px; background: #3b82f6; border-radius: 50%; vertical-align: middle; margin-right: 8px;"></span>Nexus Hub
+                  </td>
+                  <td align="right" class="tier-pill" style="font-size: 11px; font-weight: 600; color: #1e3a8a; background-color: #dbeafe; padding: 4px 10px; border-radius: 999px; letter-spacing: 0.3px; text-transform: uppercase;">
+                    ${escapeHtml(tierLabel)} plan
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Hero -->
+          <tr>
+            <td style="padding: 32px 32px 8px 32px;">
+              <h1 class="hero-title" style="margin: 0 0 12px 0; font-size: 28px; line-height: 1.2; font-weight: 700; color: #111827; letter-spacing: -0.5px;">
+                Welcome, ${escapeHtml(firstName)}.
+              </h1>
+              <p class="body-text" style="margin: 0 0 24px 0; font-size: 16px; color: #374151; line-height: 1.6;">
+                ${escapeHtml(hero)}
+              </p>
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td align="center" bgcolor="#3b82f6" style="border-radius: 8px; background-color: #3b82f6; box-shadow: 0 1px 2px rgba(59, 130, 246, 0.3);">
+                    <a href="${escapeHtml(consoleUrl)}" class="cta-button"
+                       style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 8px; line-height: 1;">
+                      Open your workspace →
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <p class="muted" style="margin: 12px 0 0 0; font-size: 12px; color: #9ca3af;">
+                One-click sign-in · link expires in 24 hours
+              </p>
+            </td>
+          </tr>
+
+          <tr><td style="padding: 32px;"><hr class="divider" style="border: 0; border-top: 1px solid #e5e7eb; margin: 0;"></td></tr>
+
+          <!-- Features -->
+          <tr>
+            <td style="padding: 0 32px 8px 32px;">
+              <h2 class="section-title" style="margin: 0 0 16px 0; font-size: 13px; font-weight: 600; color: #111827; text-transform: uppercase; letter-spacing: 0.8px;">
+                What Nexus Hub does for you
+              </h2>
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                ${featureRow('Content', 'Generate scripts, posts, and research briefs in your voice.')}
+                ${featureRow('Secretary', 'Inbox triage, calendar management, and task capture — fully automated.')}
+                ${featureRow('Training', 'Coaching for gym, running, cycling, and swim — personalised to your goals.')}
+                ${featureRow('Finance', 'Budget tracking with spend coaching that respects your rules.')}
+                ${featureRow('Cooking', 'Meal planning around your dietary constraints and pantry.')}
+              </table>
+              <p class="muted" style="margin: 16px 0 0 0; font-size: 13px; color: #6b7280; line-height: 1.6;">
+                Each skill reads context you configure once — no repeating yourself across sessions.
+              </p>
+            </td>
+          </tr>
+
+          <tr><td style="padding: 32px;"><hr class="divider" style="border: 0; border-top: 1px solid #e5e7eb; margin: 0;"></td></tr>
+
+          <!-- Closing -->
+          <tr>
+            <td style="padding: 0 32px 32px 32px;">
+              <p class="body-text" style="margin: 0 0 8px 0; font-size: 14px; color: #374151; line-height: 1.6;">
+                Questions? Just reply — every email reaches a human on our team.
+              </p>
+              <p class="muted" style="margin: 16px 0 0 0; font-size: 13px; color: #9ca3af;">
+                — The Nexus Hub team
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Footer (outside card) -->
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width: 560px; width: 100%;">
+          <tr>
+            <td align="center" style="padding: 16px 16px 0 16px; font-size: 11px; color: #9ca3af; line-height: 1.6;">
+              You're getting this because your Nexus Hub ${escapeHtml(tierLabel)} plan just activated.<br>
+              <a href="https://nexushub.me" style="color: #9ca3af; text-decoration: underline;">nexushub.me</a>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
       return {
         subject: input.subject,
         html,
         text,
         tags: [
-          { name: 'template', value: 'welcome.paid_upgrade' },
+          // Resend tag values must be [A-Za-z0-9_-] — underscore, not dot.
+          // (Defended at the Resend send boundary via sanitizeResendTag,
+          // but keeping source tags compliant keeps dashboards readable.)
+          { name: 'template', value: 'welcome_paid_upgrade' },
           { name: 'tier', value: tier },
           { name: 'source', value: 'nexus-hub-portal' },
         ],
@@ -396,6 +569,22 @@ export async function sendTransactionalEmail(input: TransactionalEmailInput): Pr
   }
 }
 
+/**
+ * Sanitize a Resend tag name or value. Resend rejects (HTTP 422) any
+ * tag containing characters outside [A-Za-z0-9_-]. We replace
+ * disallowed chars with `_` so "welcome.paid_upgrade" becomes
+ * "welcome_paid_upgrade" rather than crashing the send.
+ *
+ * Defense in depth: source tags SHOULD already be clean (the
+ * renderers produce compliant values), but a malformed tag is a
+ * latent footgun — quietly normalizing it here prevents a rogue
+ * template from bricking the welcome-email pipeline for every
+ * paid-upgrade event.
+ */
+function sanitizeResendTag(s: string): string {
+  return String(s).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 256) || '_';
+}
+
 /** Generic Resend send — shared by sendMagicLink + sendTransactionalEmail. */
 async function sendViaResendGeneric(input: {
   to: string;
@@ -421,7 +610,10 @@ async function sendViaResendGeneric(input: {
     html: input.html,
     text: input.text,
     reply_to: replyTo,
-    tags: input.tags,
+    tags: input.tags.map((t) => ({
+      name: sanitizeResendTag(t.name),
+      value: sanitizeResendTag(t.value),
+    })),
   };
   let res: Response;
   try {

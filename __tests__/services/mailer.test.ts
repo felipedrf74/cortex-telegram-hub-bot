@@ -301,4 +301,34 @@ describe('sendMagicLink — Resend backend', () => {
       expect((e as { message: string }).message).toContain('network');
     }
   });
+
+  // Regression: Resend returns 422 "Tags should only contain ASCII
+  // letters, numbers, underscores, or dashes" if any tag contains a
+  // dot, space, or other char. A dotted template identifier like
+  // 'welcome.paid_upgrade' used to brick the pipeline — sanitizer
+  // now normalises these at the send boundary.
+  it('sanitizes Resend tags — dots/spaces/unicode replaced with underscores', async () => {
+    process.env.RESEND_API_KEY = 're_test_key_12345';
+    let capturedBody: any;
+    global.fetch = vi.fn(async (_url: any, init?: any) => {
+      capturedBody = JSON.parse(init?.body as string);
+      return new Response(JSON.stringify({ id: 'msg_test' }), { status: 200 });
+    }) as any;
+    const { sendTransactionalEmail } = await import('../../src/services/mailer');
+    await sendTransactionalEmail({
+      template: 'welcome.paid_upgrade',
+      to: 'u@e.com',
+      subject: 'Welcome',
+      context: { firstName: 'Felipe', tier: 'pro', consoleUrl: 'https://x/a' },
+    });
+    // Every tag value must match Resend's allowed charset.
+    for (const tag of capturedBody.tags as Array<{ name: string; value: string }>) {
+      expect(tag.name).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(tag.value).toMatch(/^[A-Za-z0-9_-]+$/);
+    }
+    // And the template tag must have been normalised (underscore, not dot).
+    const templateTag = (capturedBody.tags as Array<{ name: string; value: string }>)
+      .find((t) => t.name === 'template');
+    expect(templateTag?.value).toBe('welcome_paid_upgrade');
+  });
 });
