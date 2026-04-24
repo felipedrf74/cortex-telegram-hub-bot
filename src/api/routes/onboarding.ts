@@ -14,6 +14,7 @@ import {
   getMissingProfileFields,
   startOrResume,
 } from '../../services/onboarding';
+import { invalidateOnboardingDerivedCaches } from '../../services/onboarding-cache-invalidator';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // ─── Phase 3 Slice C — Profile detail helpers ────────────────────
@@ -285,6 +286,7 @@ export function onboardingRoutes(): Router {
 
     try {
       const result = answerStep(userId, questionnaireId, answer);
+      invalidateOnboardingDerivedCaches(userId, questionnaireId);
 
       const questionnaire = getQuestionnaire(questionnaireId);
       const totalSteps = questionnaire?.steps?.length || 1;
@@ -413,6 +415,7 @@ export function onboardingRoutes(): Router {
 
     try {
       upsertProfileField(userId, profileType, fieldKey, value);
+      invalidateOnboardingDerivedCaches(userId, profileType);
       const remaining = getMissingProfileFields(userId, profileType);
       sendSuccess(res, {
         profileType,

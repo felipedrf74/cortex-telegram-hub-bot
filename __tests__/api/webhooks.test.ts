@@ -26,21 +26,27 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
+const serviceMocks = vi.hoisted(() => ({
+  syncProvider: vi.fn().mockResolvedValue({ tasksUpserted: 0, errors: [] }),
+  invalidateTaskCaches: vi.fn(),
+}));
+
 // Mock the dependent services so the async processor doesn't crash
 vi.mock('../../src/services/database', () => ({ getDb: () => ({ prepare: () => ({ all: () => [] }) }) }));
 vi.mock('../../src/services/task-store/sync-engine', () => ({
-  syncProvider: vi.fn().mockResolvedValue({ tasksUpserted: 0, errors: [] }),
+  syncProvider: (...args: unknown[]) => serviceMocks.syncProvider(...args),
 }));
 vi.mock('../../src/services/task-store/todoist-adapter', () => ({
   findNexusUserByTodoistId: vi.fn().mockReturnValue(123),
   rememberTodoistUserMapping: vi.fn(),
 }));
-vi.mock('../../src/services/context-engine', () => ({
-  invalidateContextCache: vi.fn(),
+vi.mock('../../src/services/task-cache-invalidator', () => ({
+  invalidateTaskCaches: (...args: unknown[]) => serviceMocks.invalidateTaskCaches(...args),
 }));
 
 import {
   createWebhookRouter,
+  processTodoistEvent,
   verifyTodoistSignature,
   _resetDeliveryCacheForTests,
 } from '../../src/api/routes/webhooks';
@@ -104,6 +110,8 @@ async function postWebhook(opts: {
 
 beforeEach(() => {
   _resetDeliveryCacheForTests();
+  serviceMocks.syncProvider.mockClear();
+  serviceMocks.invalidateTaskCaches.mockClear();
 });
 
 afterEach(() => {
@@ -149,6 +157,20 @@ describe('POST /webhooks/todoist', () => {
     const res = await postWebhook({ body, signature: sig, deliveryId: 'd1' });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+
+  it('invalidates task, Home, and plan surfaces after a valid Todoist sync', async () => {
+    await processTodoistEvent({
+      event_name: 'item:updated',
+      user_id: 555,
+      event_data: { id: 'task-1' },
+    });
+
+    expect(serviceMocks.syncProvider).toHaveBeenCalledWith(123, 'todoist');
+    expect(serviceMocks.invalidateTaskCaches).toHaveBeenCalledWith({
+      userId: 123,
+      includeDerivedSurfaces: true,
+    });
   });
 
   it('returns 401 for an invalid signature', async () => {

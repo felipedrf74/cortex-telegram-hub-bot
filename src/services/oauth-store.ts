@@ -157,6 +157,17 @@ function invalidateTokenCache(userId: number, provider: OAuthProvider): void {
   _decryptedTokenCache.delete(cacheKey(userId, provider));
 }
 
+function invalidateProviderSurfaceCaches(userId: number, provider: OAuthProvider): void {
+  try {
+    // Lazy require avoids an oauth-store -> integration invalidator ->
+    // planning/context/mail cycle during module initialization.
+    const { invalidateIntegrationDerivedCaches } = require('./integration-cache-invalidator');
+    invalidateIntegrationDerivedCaches(userId, provider);
+  } catch (err) {
+    logger.debug({ err, userId, provider }, 'OAuth provider surface cache invalidation failed');
+  }
+}
+
 /**
  * Test-only: clear the entire decrypted-token cache. Exported so tests
  * can reset state between cases without touching the LRU internals.
@@ -263,6 +274,7 @@ export function storeTokens(userId: number, provider: OAuthProvider, tokens: OAu
   // of the old tokens so the next getTokens() immediately picks up the
   // new ones instead of waiting out the 10-minute TTL.
   invalidateTokenCache(userId, provider);
+  invalidateProviderSurfaceCaches(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens stored');
 }
 
@@ -355,6 +367,7 @@ export function disconnectProvider(userId: number, provider: OAuthProvider): voi
   // Blow away the cached decrypted tokens so the next getTokens() returns
   // null immediately instead of serving stale data for up to 10 minutes.
   invalidateTokenCache(userId, provider);
+  invalidateProviderSurfaceCaches(userId, provider);
   logger.info({ userId, provider }, 'OAuth tokens removed');
 }
 

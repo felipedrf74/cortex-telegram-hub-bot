@@ -204,7 +204,7 @@ describe('content-home-view-state', () => {
     const effects = viewState.reasoning?.signals.map((signal) => signal.effect).join(' ');
 
     expect(effects).toContain('Sua voz já tem 9 padrões ativos');
-    expect(effects).toContain('1 sinais já estão empurrando o próximo tema.');
+    expect(effects).toContain('1 sinal já está empurrando o próximo tema.');
     expect(effects).not.toContain('A tua voz');
     expect(effects).not.toContain('estão a empurrar');
   });

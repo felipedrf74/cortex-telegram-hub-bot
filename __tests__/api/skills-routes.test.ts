@@ -28,6 +28,10 @@ import {
   getTenantScopeAnomalies,
 } from '../../src/services/tenant-scope-observability';
 
+const cacheMocks = vi.hoisted(() => ({
+  invalidateDashboardCoordinationCaches: vi.fn(),
+}));
+
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
@@ -45,6 +49,11 @@ vi.mock('../../src/config', () => ({
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
   },
+}));
+
+vi.mock('../../src/services/coordination-cache-invalidator', () => ({
+  invalidateDashboardCoordinationCaches: (...args: unknown[]) =>
+    cacheMocks.invalidateDashboardCoordinationCaches(...args),
 }));
 
 function applyMigrations(db: Database.Database): void {
@@ -242,6 +251,7 @@ describe('Skills API — POST /override', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    cacheMocks.invalidateDashboardCoordinationCaches.mockClear();
   });
   afterEach(() => testDb?.close());
 
@@ -294,6 +304,7 @@ describe('Skills API — POST /override', () => {
     });
     expect(grantRes.statusCode).toBe(200);
     expect(grantRes.body.data.granted).toBe(true);
+    expect(cacheMocks.invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(target.id);
 
     // After: free user CAN access triathlon.gym via override
     const afterRes = await dispatch('GET', '/catalog', 2006);
@@ -367,6 +378,7 @@ describe('Skills API — DELETE /override', () => {
     });
     expect(revokeRes.statusCode).toBe(200);
     expect(revokeRes.body.data.revoked).toBe(true);
+    expect(cacheMocks.invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(target.id);
 
     // Target user should now be blocked again
     const afterRes = await dispatch('GET', '/catalog', 3004);

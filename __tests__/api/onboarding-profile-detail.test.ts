@@ -23,9 +23,14 @@ import {
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const mockInvalidateOnboardingDerivedCaches = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+}));
+
+vi.mock('../../src/services/onboarding-cache-invalidator', () => ({
+  invalidateOnboardingDerivedCaches: (...args: unknown[]) => mockInvalidateOnboardingDerivedCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -257,6 +262,7 @@ describe('PATCH /api/v1/onboarding/profile/:type/field', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    mockInvalidateOnboardingDerivedCaches.mockReset();
   });
   afterEach(() => testDb?.close());
 
@@ -275,6 +281,7 @@ describe('PATCH /api/v1/onboarding/profile/:type/field', () => {
     expect(res.body.data.profileComplete).toBe(false);
     expect(res.body.data.remainingFields).toBeInstanceOf(Array);
     expect(res.body.data.remainingFields).not.toContain('training_age');
+    expect(mockInvalidateOnboardingDerivedCaches).toHaveBeenCalledWith(2001, 'triathlon-gym');
   });
 
   it('rejects profile types outside the athlete profile set', async () => {

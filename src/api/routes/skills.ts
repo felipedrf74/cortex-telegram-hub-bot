@@ -30,6 +30,7 @@ import {
 import { getUserByTelegramId, getUserById } from '../../services/user-service';
 import { logger } from '../../utils/logger';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { invalidateDashboardCoordinationCaches } from '../../services/coordination-cache-invalidator';
 
 // ─── Response shapes ────────────────────────────────────────────────
 
@@ -227,6 +228,7 @@ export function skillsRoutes(): Router {
         grantedBy: userId,
         expiresAt,
       });
+      invalidateDashboardCoordinationCaches(target.id);
       sendSuccess(res, { granted: true, targetUserId, skillId, expiresAt: expiresAt ?? null });
     } catch (err: any) {
       logger.error({ err, targetUserId, skillId }, 'grantOverride failed');
@@ -274,6 +276,9 @@ export function skillsRoutes(): Router {
     }
 
     const removed = revokeOverride(target.id, skillId);
+    if (removed) {
+      invalidateDashboardCoordinationCaches(target.id);
+    }
     sendSuccess(res, { revoked: removed, targetUserId, skillId });
   });
 

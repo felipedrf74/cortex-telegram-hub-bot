@@ -62,6 +62,15 @@ describe('runtime config validation', () => {
     expect(config.invoices.minConfidence).toBe(0.9);
   });
 
+  it('exposes public waitlist IP salt through central config', async () => {
+    vi.stubEnv('WAITLIST_IP_SALT', 'stable-waitlist-secret');
+
+    const { config } = await loadConfigFresh();
+
+    expect(config.waitlist.ipSalt).toBe('stable-waitlist-secret');
+    expect(config.waitlist.warnOnEphemeralIpSalt).toBe(false);
+  });
+
   it('fails fast when production tries to boot with PAYWALL_ENABLED=false', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('STAGING', 'false');

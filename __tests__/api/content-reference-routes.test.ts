@@ -4,9 +4,15 @@ import Database from 'better-sqlite3';
 import type { Request } from 'express';
 
 let testDb: Database.Database;
+const mockInvalidateContentDerivedCaches = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+}));
+
+vi.mock('../../src/services/content-cache-invalidator', () => ({
+  invalidateContentDerivedCaches: (...args: unknown[]) =>
+    mockInvalidateContentDerivedCaches(...args),
 }));
 
 vi.mock('../../src/services/content-dashboard-service', () => ({
@@ -175,6 +181,7 @@ describe('content reference routes', () => {
       url: 'https://youtube.com/@nexus',
       name: 'ios:77',
     });
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
 
   it('lists channels through the content-reference state owner with user scope', async () => {
@@ -199,5 +206,6 @@ describe('content reference routes', () => {
       .get(55, 'brand_voice') as any;
     expect(row.synthesized_text).toBe('Use calm authority.');
     expect(row.owner_scope).toBe('user');
+    expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledWith(55);
   });
 });

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getLearnedPatterns: vi.fn(),
   getArtifactChain: vi.fn(),
   getRecentScripts: vi.fn(),
+  invalidateContentDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -32,6 +33,10 @@ vi.mock('../../src/services/content-learning-store', () => ({
   getLearnedPatterns: mocks.getLearnedPatterns,
   getArtifactChain: mocks.getArtifactChain,
   getRecentScripts: mocks.getRecentScripts,
+}));
+
+vi.mock('../../src/services/content-cache-invalidator', () => ({
+  invalidateContentDerivedCaches: mocks.invalidateContentDerivedCaches,
 }));
 
 import { registerContentLearningRoutes } from '../../src/api/routes/content-learning-routes';
@@ -193,6 +198,7 @@ describe('content learning routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mocks.generateAndStoreTopicCandidates).toHaveBeenCalledWith(77, 'youtube', 'manual');
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
     expect(response.body.data).toEqual(expect.objectContaining({
       format: 'youtube',
       sourceJob: 'manual',
@@ -223,6 +229,7 @@ describe('content learning routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mocks.updateFeedback).toHaveBeenCalledWith(id, 'approved');
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(41);
     expect(response.body.data).toEqual({
       feedbackId: id,
       sentiment: 'approved',
@@ -272,6 +279,7 @@ describe('content learning routes', () => {
       likes: 100,
       userId: 77,
     }));
+    expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
     expect(response.body.data).toEqual({ feedbackId: 55 });
   });
 

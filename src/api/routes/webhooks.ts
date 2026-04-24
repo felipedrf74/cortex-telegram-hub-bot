@@ -27,6 +27,10 @@ import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { webhookRateLimitMiddleware } from '../rate-limiter';
 import type { Bot } from 'grammy';
+import { getDb } from '../../services/database';
+import { syncProvider } from '../../services/task-store/sync-engine';
+import { findNexusUserByTodoistId } from '../../services/task-store/todoist-adapter';
+import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
 
 // Maximum age of a webhook delivery we'll accept. Without a timestamp window,
 // a leaked HMAC could let an attacker replay old events forever. Todoist
@@ -208,7 +212,7 @@ export function createWebhookRouter(bot?: Bot): Router {
 
     // 4. Process async — never block the response on the sync round trip
     setImmediate(() => {
-      processeTodoistEvent(payload).catch((err) => {
+      processTodoistEvent(payload).catch((err) => {
         logger.warn({ err, eventName: payload?.event_name }, 'Todoist webhook processing failed');
       });
     });
@@ -272,14 +276,13 @@ export function createWebhookRouter(bot?: Bot): Router {
  * cron sync has run), we fall back to scanning the OAuth table — slow but
  * correct, and only happens once per user per process lifetime.
  */
-async function processeTodoistEvent(payload: any): Promise<void> {
+export async function processTodoistEvent(payload: any): Promise<void> {
   const todoistUserId = Number(payload.user_id);
   if (!todoistUserId) {
     logger.warn({ payload }, 'Todoist webhook missing user_id');
     return;
   }
 
-  const { findNexusUserByTodoistId } = require('../../services/task-store/todoist-adapter');
   let nexusUserId = findNexusUserByTodoistId(todoistUserId);
 
   if (!nexusUserId) {
@@ -290,12 +293,12 @@ async function processeTodoistEvent(payload: any): Promise<void> {
     }
   }
 
-  // Trigger immediate sync + context cache invalidation
+  // Trigger immediate sync + full task-surface invalidation. Todoist webhooks
+  // change the same task truth as route/tool writes, so clearing only the AI
+  // daily context leaves Home, plan, and task list projections stale.
   try {
-    const { syncProvider } = require('../../services/task-store/sync-engine');
-    const { invalidateContextCache } = require('../../services/context-engine');
     await syncProvider(nexusUserId, 'todoist');
-    invalidateContextCache(nexusUserId);
+    invalidateTaskCaches({ userId: nexusUserId, includeDerivedSurfaces: true });
     logger.debug(
       { nexusUserId, todoistUserId, eventName: payload.event_name },
       'Todoist webhook processed',
@@ -312,10 +315,6 @@ async function processeTodoistEvent(payload: any): Promise<void> {
  */
 async function scanOAuthForTodoistUser(todoistUserId: number): Promise<number | undefined> {
   try {
-    const { getDb } = require('../../services/database');
-    const { syncProvider } = require('../../services/task-store/sync-engine');
-    const { findNexusUserByTodoistId } = require('../../services/task-store/todoist-adapter');
-
     const db = getDb();
     const rows = db.prepare(
       "SELECT user_id FROM user_oauth_tokens WHERE provider = 'todoist'",

@@ -12,7 +12,7 @@ import {
   readContentHomeIdeas,
   readContentHomePipeline,
 } from './content-home-route-utils';
-import { buildContentIntelligenceDetail, buildContentIntelligenceSummary } from './content-intelligence-route-utils';
+import { registerContentIntelligenceRoutes } from './content-intelligence-routes';
 import { registerContentLearningRoutes } from './content-learning-routes';
 import { registerContentPipelineRoutes } from './content-pipeline-routes';
 import { registerContentReferenceRoutes } from './content-reference-routes';
@@ -33,7 +33,6 @@ import {
   getContentRadarPreferences,
 } from '../../services/content-radar-preferences';
 import { getDb } from '../../services/database';
-import { getJobStatuses } from '../../portal/telemetry';
 import { getKnowledgeStats, getVoiceDna } from '../../services/content-dashboard-service';
 import { readSignals } from '../../services/intelligence-bus';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
@@ -227,98 +226,7 @@ export function contentRoutes(): Router {
     }
   });
 
-  /** GET /api/v1/content/intelligence — backstage agent summary for iOS */
-  router.get('/intelligence', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_summary')) return;
-    const language = resolveContentLanguage(req, userId);
-    const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
-    const reactionJob = jobs.get('reaction_radar');
-    const performanceJob = jobs.get('performance_agent');
-    const autoresearchJob = jobs.get('autoresearch');
-
-    const allDiscoverySignals = readSignals(
-      'ios-content-intelligence',
-      ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
-      25,
-      userId,
-      7
-    );
-    const radarPreferences = getContentRadarPreferences(userId);
-    const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
-    const optimizationSignals = readSignals(
-      'ios-content-intelligence',
-      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
-      25,
-      userId,
-      14
-    );
-
-    const voiceEntries = getVoiceDna(undefined, userId);
-    const knowledgeStats = getKnowledgeStats(undefined, userId);
-
-    sendSuccess(res, buildContentIntelligenceSummary({
-      language,
-      reactionJob,
-      performanceJob,
-      autoresearchJob,
-      discoverySignals,
-      optimizationSignals,
-      voiceEntries,
-      knowledgeStats,
-    }));
-  }));
-
-  /** GET /api/v1/content/intelligence/detail — deeper backstage view for iOS */
-  router.get('/intelligence/detail', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    if (!ensureValidContentRouteScope(res, userId, 'content_route_intelligence_detail')) return;
-    const language = resolveContentLanguage(req, userId);
-    const jobs = new Map(getJobStatuses().map((job) => [job.name, job]));
-    const reactionJob = jobs.get('reaction_radar');
-    const performanceJob = jobs.get('performance_agent');
-    const autoresearchJob = jobs.get('autoresearch');
-
-    const allDiscoverySignals = readSignals(
-      'ios-content-intelligence-detail',
-      ['reaction_opportunity', 'trending_spike', 'competitor_upload'],
-      6,
-      userId,
-      7
-    );
-    const radarPreferences = getContentRadarPreferences(userId);
-    const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
-    const optimizationSignals = readSignals(
-      'ios-content-intelligence-detail',
-      ['hook_effectiveness', 'pillar_performance', 'learning_digest', 'content_formula'],
-      6,
-      userId,
-      14
-    );
-
-    const voiceEntries = getVoiceDna(undefined, userId);
-    const knowledgeStats = getKnowledgeStats(undefined, userId);
-    const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
-    const monitoredPillars = radarPreferences.topics.length > 0
-      ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
-      : getActiveContentPillars(userId);
-    const deskItems = getContentDeskItems(userId, 3);
-
-    sendSuccess(res, buildContentIntelligenceDetail({
-      language,
-      reactionJob,
-      performanceJob,
-      autoresearchJob,
-      discoverySignals,
-      optimizationSignals,
-      voiceEntries,
-      knowledgeStats,
-      filmingRecommendation,
-      preferredTopics: radarPreferences.topics,
-      monitoredPillars,
-      deskItems,
-    }));
-  }));
+  registerContentIntelligenceRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
 
   registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
 

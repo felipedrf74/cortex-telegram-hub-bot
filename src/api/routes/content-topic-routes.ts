@@ -3,7 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendInternalError, sendSuccess } from '../response-helpers';
-import { invalidateDashboardCoordinationCaches } from '../../services/coordination-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
 import {
   addTopic,
   getFilmingRecommendation,
@@ -64,7 +64,9 @@ export function registerContentTopicRoutes(
       return;
     }
 
-    sendSuccess(res, setContentRadarPreferences(userId, topics));
+    const preferences = setContentRadarPreferences(userId, topics);
+    invalidateContentDerivedCaches(userId);
+    sendSuccess(res, preferences);
   }));
 
   /**
@@ -155,7 +157,7 @@ export function registerContentTopicRoutes(
         scheduledDate: scheduledDate ?? null,
         status: status ?? 'planned',
       });
-      invalidateDashboardCoordinationCaches(userId);
+      invalidateContentDerivedCaches(userId);
       sendSuccess(res, { topic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
@@ -208,7 +210,7 @@ export function registerContentTopicRoutes(
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
-      invalidateDashboardCoordinationCaches(userId);
+      invalidateContentDerivedCaches(userId);
       sendSuccess(res, { topic: updated });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
@@ -237,7 +239,7 @@ export function registerContentTopicRoutes(
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
-      invalidateDashboardCoordinationCaches(userId);
+      invalidateContentDerivedCaches(userId);
       sendSuccess(res, { deleted: true, id: topicId });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic delete failed');

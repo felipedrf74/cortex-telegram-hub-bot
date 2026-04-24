@@ -17,8 +17,8 @@
 
 import { Router, Request, Response } from 'express';
 import express from 'express';
-import crypto from 'crypto';
 import { getDb } from '../../services/database';
+import { hashWaitlistIpAddress } from '../../services/waitlist-ip-hash';
 import { logger } from '../../utils/logger';
 
 // ─── Rate limiting (anti-spam) ──────────────────────────────────────
@@ -80,17 +80,6 @@ function sanitizeString(value: unknown, maxLen: number): string | null {
 
 // ─── IP hashing ─────────────────────────────────────────────────────
 
-/**
- * Hash an IP with a short salt so the admin can detect bursts from the
- * same source WITHOUT the backend retaining raw IPs (GDPR-friendlier).
- *
- * The salt comes from env so rotating it invalidates every previously-
- * stored hash — useful if the salt ever leaks or if you want a clean slate.
- * Defaults to a per-process random value, which still gives burst detection
- * across requests in the same process lifetime.
- */
-const IP_SALT = process.env.WAITLIST_IP_SALT || crypto.randomBytes(16).toString('hex');
-
 function hashIp(req: Request): string {
   // Honor X-Forwarded-For if present (Cloudflare sets this when we're
   // behind a tunnel), else fall back to the direct socket IP.
@@ -100,7 +89,7 @@ function hashIp(req: Request): string {
     : typeof forwarded === 'string'
       ? forwarded.split(',')[0].trim()
       : req.socket.remoteAddress || 'unknown';
-  return crypto.createHash('sha256').update(IP_SALT + ip).digest('hex').slice(0, 16);
+  return hashWaitlistIpAddress(ip);
 }
 
 // ─── Founder slot counter ──────────────────────────────────────────

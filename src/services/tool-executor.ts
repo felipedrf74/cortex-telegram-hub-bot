@@ -14,6 +14,7 @@ import * as onboarding from './onboarding';
 import { invalidateCalendarCaches } from './calendar-cache-invalidator';
 import { invalidateCookingDerivedCaches } from './cooking-cache-invalidator';
 import { invalidateFinanceDerivedCaches } from './finance-cache-invalidator';
+import { invalidateOnboardingDerivedCaches } from './onboarding-cache-invalidator';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
 import { resolveCanonicalUserId } from './user-service';
@@ -534,6 +535,7 @@ export async function executeToolCall(
         }
 
         onboarding.upsertProfileField(userId, profileType, fieldKey, value);
+        invalidateOnboardingDerivedCaches(userId, profileType);
 
         // Report what's still pending so the coach knows when to stop
         // asking. The coach can use this to thank the user and segue

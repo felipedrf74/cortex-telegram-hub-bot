@@ -13,6 +13,7 @@ const mockGetAllVendorsDb = vi.fn();
 const mockGetFiscalCollectionSummary = vi.fn();
 const mockSendFiscalBundleNow = vi.fn();
 const mockUpdateFiscalCollectionProfile = vi.fn();
+const mockInvalidateFinanceDerivedCaches = vi.fn();
 
 vi.mock('../../src/services/invoice-collector', () => ({
   getAllVendors: (...args: unknown[]) => mockGetAllVendorsMerged(...args),
@@ -32,6 +33,11 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
 
 vi.mock('../../src/state/fiscal-collection-profiles', () => ({
   updateFiscalCollectionProfile: (...args: unknown[]) => mockUpdateFiscalCollectionProfile(...args),
+}));
+
+vi.mock('../../src/services/finance-cache-invalidator', () => ({
+  invalidateFinanceDerivedCaches: (...args: unknown[]) =>
+    mockInvalidateFinanceDerivedCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -123,6 +129,7 @@ describe('Invoices API routes', () => {
     mockGetFiscalCollectionSummary.mockReset();
     mockSendFiscalBundleNow.mockReset();
     mockUpdateFiscalCollectionProfile.mockReset();
+    mockInvalidateFinanceDerivedCaches.mockReset();
 
     mockGetFiscalCollectionSummary.mockReturnValue({
       profile: {
@@ -310,6 +317,7 @@ describe('Invoices API routes', () => {
       secondary_day: 24,
       enabled: true,
     });
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
     expect(mockGetFiscalCollectionSummary).toHaveBeenLastCalledWith(12);
   });
 
@@ -332,6 +340,37 @@ describe('Invoices API routes', () => {
       startAt: '2026-04-01T00:00:00Z',
       endAt: '2026-04-14T23:59:59Z',
     });
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('invalidates finance-derived surfaces after adding a fiscal vendor', async () => {
+    mockAddVendor.mockReturnValue({
+      id: 31,
+      name: 'Vodafone',
+      sender_pattern: 'vodafone.pt',
+      subject_patterns: 'fatura',
+      enabled: 1,
+    });
+
+    const res = await dispatch('POST', '/vendors', {
+      name: 'Vodafone',
+      senderPattern: 'vodafone.pt',
+      subjectPatterns: 'fatura',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(mockAddVendor).toHaveBeenCalledWith('Vodafone', 'vodafone.pt', 12, 'fatura');
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('invalidates finance-derived surfaces after deleting a fiscal vendor', async () => {
+    mockRemoveVendor.mockReturnValue(true);
+
+    const res = await dispatch('DELETE', '/vendors/31');
+
+    expect(res.statusCode).toBe(200);
+    expect(mockRemoveVendor).toHaveBeenCalledWith(31, 12);
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
   });
 
   it('passes the authenticated user to the legacy scan-now route', async () => {
@@ -348,5 +387,6 @@ describe('Invoices API routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(mockCollectMonthlyInvoices).toHaveBeenCalledWith(12, 2026, 4);
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(12);
   });
 });

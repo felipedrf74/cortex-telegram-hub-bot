@@ -4,6 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
+import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
 import {
   buildGeneratedTopicCandidatesResponse,
   buildLearnedPatternsResponse,
@@ -50,6 +51,7 @@ export function registerContentLearningRoutes(
     const startMs = Date.now();
     const { generateAndStoreTopicCandidates } = await import('../../services/content-workflow');
     const result = await generateAndStoreTopicCandidates(userId, format, sourceJob);
+    invalidateContentDerivedCaches(userId);
 
     sendSuccess(res, buildGeneratedTopicCandidatesResponse(result, format, sourceJob, startMs));
   }));
@@ -88,6 +90,7 @@ export function registerContentLearningRoutes(
 
     const { updateFeedback } = await import('../../services/content-workflow');
     updateFeedback(id, sentiment);
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { feedbackId: id, sentiment, title: topicRow.topic });
   }));
 
@@ -123,6 +126,7 @@ export function registerContentLearningRoutes(
 
     const { generateWeeklyPackage } = await import('../../services/content-workflow');
     const result = await generateWeeklyPackage(userId);
+    invalidateContentDerivedCaches(userId);
 
     sendSuccess(res, buildWeeklyPackageResponse(result, startMs));
   }));
@@ -188,6 +192,7 @@ export function registerContentLearningRoutes(
       userId,
     });
 
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { feedbackId: id });
   }));
 

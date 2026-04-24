@@ -339,6 +339,14 @@ export const config = {
       300000,
       { min: 1000 },
     ),
+    // Optional short-lived operator session tokens. This is the migration seam
+    // away from static shared bearer secrets: a trusted portal/session layer can
+    // mint signed sessions that carry actor + scope + expiry, while existing
+    // static tokens remain available unless PORTAL_REQUIRE_SESSION_AUTH=true.
+    sessionSecret: process.env.PORTAL_SESSION_SECRET || '',
+    sessionMaxAgeMs: optionalInt('PORTAL_SESSION_MAX_AGE_MS', 28800000, { min: 60000 }),
+    requireSessionAuth:
+      (process.env.PORTAL_REQUIRE_SESSION_AUTH || 'false') === 'true',
     // Hardening pass 2026-04-22: once scoped portal tokens exist, the
     // legacy full-access token is disabled by default. Operators who
     // still need the old token during migration must opt in explicitly.
@@ -368,6 +376,15 @@ export const config = {
     secret: process.env.WEBHOOK_SECRET || '',
     maxPayloadBytes: optionalInt('WEBHOOK_MAX_PAYLOAD', 1048576, { min: 1 }),
     eventRetentionDays: optionalInt('WEBHOOK_RETENTION_DAYS', 30, { min: 1 }),
+  },
+  // ── Public Waitlist ────────────────────────────────────────────────
+  // Salt used to hash visitor IPs before storing waitlist abuse signals.
+  // Missing salt remains backward-compatible with an ephemeral process salt,
+  // but production/staging logs a warning because cross-restart dedupe is
+  // weaker until WAITLIST_IP_SALT is configured.
+  waitlist: {
+    ipSalt: process.env.WAITLIST_IP_SALT || '',
+    warnOnEphemeralIpSalt: process.env.NODE_ENV === 'production' || IS_STAGING,
   },
   // ── Health Check ──────────────────────────────────────────────────
   health: {

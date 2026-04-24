@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { asyncHandler, sendError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
 import { getVoiceDna } from '../../services/content-dashboard-service';
+import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
 import { addChannel, getAllChannels } from '../../state/content-references';
 
 const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
@@ -62,6 +63,7 @@ export function registerContentReferenceRoutes(router: Router): void {
     const result = db.prepare(
       'INSERT OR IGNORE INTO book_library (title, author, extraction_status, user_id, owner_scope) VALUES (?, ?, ?, ?, ?)'
     ).run(title.trim(), author.trim(), 'pending', userId, 'user');
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { id: result.lastInsertRowid, title: title.trim() }, { status: 201 });
   }));
 
@@ -73,6 +75,7 @@ export function registerContentReferenceRoutes(router: Router): void {
     // Users can only delete their own books (not global ones)
     const info = db.prepare('DELETE FROM book_library WHERE id = ? AND user_id = ?').run(id, userId);
     if (info.changes === 0) { sendError(res, 'NOT_FOUND', 'Book not found or not owned by you', 404); return; }
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { removed: true });
   }));
 
@@ -93,6 +96,7 @@ export function registerContentReferenceRoutes(router: Router): void {
     const { url } = req.body;
     if (!url) { sendError(res, 'VALIDATION', 'url required', 400); return; }
     const channel = addChannel(url.trim(), 'ios', userId);
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { channel: { id: channel.id, url: channel.channel_url, name: channel.channel_name } }, { status: 201 });
   }));
 
@@ -103,6 +107,7 @@ export function registerContentReferenceRoutes(router: Router): void {
     const db = getDb();
     const info = db.prepare('DELETE FROM content_ref_channels WHERE id = ? AND user_id = ?').run(id, userId);
     if (info.changes === 0) { sendError(res, 'NOT_FOUND', 'Channel not found or not owned by you', 404); return; }
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { removed: true });
   }));
 
@@ -145,6 +150,7 @@ export function registerContentReferenceRoutes(router: Router): void {
         updated_at = datetime('now'),
         version = content_knowledge.version + 1
     `).run(category, normalizedPayload, userId);
+    invalidateContentDerivedCaches(userId);
     sendSuccess(res, { upserted: true });
   }));
 }

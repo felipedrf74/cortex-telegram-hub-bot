@@ -5,8 +5,8 @@ vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },
 }));
 
-vi.mock('../../src/services/coordination-cache-invalidator', () => ({
-  invalidateDashboardCoordinationCaches: vi.fn(),
+vi.mock('../../src/services/content-cache-invalidator', () => ({
+  invalidateContentDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/services/content-intelligence', () => ({
@@ -61,7 +61,7 @@ vi.mock('../../src/services/content-scheduler', () => ({
 }));
 
 import { registerContentTopicRoutes } from '../../src/api/routes/content-topic-routes';
-import { invalidateDashboardCoordinationCaches } from '../../src/services/coordination-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../src/services/content-cache-invalidator';
 import { getContentRadarPreferences, setContentRadarPreferences } from '../../src/services/content-radar-preferences';
 import {
   addTopic,
@@ -163,6 +163,7 @@ describe('content topic routes', () => {
     expect(write.response.statusCode).toBe(200);
     expect(setContentRadarPreferences).toHaveBeenCalledWith(77, ['hybrid', 'product']);
     expect(write.ensureValidScope).toHaveBeenCalledWith(expect.anything(), 77, 'content_route_radar_preferences_write');
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
 
   it('rejects malformed radar preference payloads before mutating state', async () => {
@@ -202,7 +203,7 @@ describe('content topic routes', () => {
       scheduledDate: '2026-04-25',
       status: 'drafting',
     });
-    expect(invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(77);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
 
   it('rejects invalid scheduledDate values before creating or updating topics', async () => {
@@ -236,7 +237,7 @@ describe('content topic routes', () => {
     });
     expect(remove.response.statusCode).toBe(200);
     expect(deleteTopic).toHaveBeenCalledWith(77, 11);
-    expect(invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(77);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
   });
 
   it('refuses topic routes without a valid authenticated user scope', async () => {

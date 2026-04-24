@@ -21,9 +21,14 @@ import path from 'path';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const mockInvalidateOnboardingDerivedCaches = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+}));
+
+vi.mock('../../src/services/onboarding-cache-invalidator', () => ({
+  invalidateOnboardingDerivedCaches: (...args: unknown[]) => mockInvalidateOnboardingDerivedCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -100,6 +105,7 @@ describe('Phase 3 Slice A — profile field helpers', () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
+    mockInvalidateOnboardingDerivedCaches.mockReset();
   });
   afterEach(() => testDb?.close());
 
@@ -263,6 +269,7 @@ describe('Phase 3 Slice A — save_athlete_profile_field tool', () => {
     expect(result.remaining_fields).toBeInstanceOf(Array);
     expect(result.remaining_fields).not.toContain('training_age');
     expect(result.profile_complete).toBe(false);
+    expect(mockInvalidateOnboardingDerivedCaches).toHaveBeenCalledWith(500, 'triathlon-gym');
   });
 
   it('marks profile_complete: true after the last field is saved', async () => {

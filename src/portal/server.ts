@@ -9,7 +9,7 @@
  *   GET  /api/snapshot  → full JSON payload for the dashboard (cached 3s)
  *   POST /api/action/:name → quick actions (refresh garmin, trigger reports, etc.)
  *
- * Auth: scoped Bearer portal credentials on /api/* routes.
+ * Auth: scoped Bearer portal credentials or signed ps_ operator sessions on /api/* routes.
  * `PORTAL_TOKEN` remains legacy-compatible only when scoped credentials are
  * absent or explicit legacy fallback is enabled.
  */

@@ -43,6 +43,7 @@ import {
 } from '../../services/fiscal-bundle';
 import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-profiles';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
 
 function splitSubjectPatterns(subjectPatterns: string | null | undefined): string[] {
   const patterns = subjectPatterns
@@ -118,6 +119,7 @@ export function invoicesRoutes(): Router {
         secondary_day: secondaryDay,
         enabled,
       });
+      invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, getFiscalCollectionSummary(userId));
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS fiscal collection profile update failed');
@@ -134,6 +136,7 @@ export function invoicesRoutes(): Router {
         startAt: req.body?.startAt,
         endAt: req.body?.endAt,
       });
+      invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS fiscal bundle send failed');
@@ -200,6 +203,7 @@ export function invoicesRoutes(): Router {
     try {
       const { userId } = req as AuthenticatedRequest;
       const vendor = addVendor(name.trim(), senderPattern.trim(), userId, subjectPatterns);
+      invalidateFinanceDerivedCaches(userId);
       logger.info({ vendorId: vendor.id, name }, 'iOS invoice vendor added');
       sendSuccess(res, { vendor }, { status: 201 });
     } catch (err: any) {
@@ -227,6 +231,7 @@ export function invoicesRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Vendor not found', 404);
         return;
       }
+      invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { removed: true, id });
     } catch (err: any) {
       logger.error({ err, id }, 'iOS invoices vendor delete failed');
@@ -264,6 +269,7 @@ export function invoicesRoutes(): Router {
     try {
       logger.info({ userId, year, month }, 'iOS on-demand invoice scan started');
       const result = await collectMonthlyInvoices(userId, year, month);
+      invalidateFinanceDerivedCaches(userId);
       logger.info(
         { userId, year, month, filed: result.totalFiled, errors: result.totalErrors },
         'iOS on-demand invoice scan complete'

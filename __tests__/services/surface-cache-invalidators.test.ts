@@ -5,6 +5,7 @@ const mockClearCacheByPrefix = vi.fn();
 const mockInvalidateDashboardCaches = vi.fn();
 const mockInvalidatePlanningCaches = vi.fn();
 const mockInvalidateDashboardCoordinationCaches = vi.fn();
+const mockInvalidateExecutiveBriefCaches = vi.fn();
 
 vi.mock('../../src/services/cache-store', () => ({
   clearCache: (...args: unknown[]) => mockClearCache(...args),
@@ -21,6 +22,7 @@ vi.mock('../../src/services/plan-cache-invalidator', () => ({
 
 vi.mock('../../src/services/coordination-cache-invalidator', () => ({
   invalidateDashboardCoordinationCaches: (...args: unknown[]) => mockInvalidateDashboardCoordinationCaches(...args),
+  invalidateExecutiveBriefCaches: (...args: unknown[]) => mockInvalidateExecutiveBriefCaches(...args),
 }));
 
 describe('surface cache invalidators', () => {
@@ -30,6 +32,7 @@ describe('surface cache invalidators', () => {
     mockInvalidateDashboardCaches.mockReset();
     mockInvalidatePlanningCaches.mockReset();
     mockInvalidateDashboardCoordinationCaches.mockReset();
+    mockInvalidateExecutiveBriefCaches.mockReset();
   });
 
   it('invalidates the full training-derived cache family together', async () => {
@@ -74,5 +77,88 @@ describe('surface cache invalidators', () => {
 
     expect(mockClearCache).toHaveBeenCalledWith('u:7:task-lists');
     expect(mockInvalidateDashboardCoordinationCaches).not.toHaveBeenCalled();
+  });
+
+  it('routes training onboarding profile writes through training-derived invalidation', async () => {
+    const { invalidateOnboardingDerivedCaches } = await import('../../src/services/onboarding-cache-invalidator');
+
+    invalidateOnboardingDerivedCaches(42, 'triathlon-running');
+
+    expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('training-home:42:');
+    expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
+    expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes diet onboarding profile writes through cooking-derived invalidation', async () => {
+    const { invalidateOnboardingDerivedCaches } = await import('../../src/services/onboarding-cache-invalidator');
+
+    invalidateOnboardingDerivedCaches(42, 'diet');
+
+    expect(mockInvalidateExecutiveBriefCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes unknown onboarding writes through executive brief invalidation', async () => {
+    const { invalidateOnboardingDerivedCaches } = await import('../../src/services/onboarding-cache-invalidator');
+
+    invalidateOnboardingDerivedCaches(42, 'homeschool');
+
+    expect(mockInvalidateExecutiveBriefCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes Google connection changes through calendar and finance surfaces', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(42, 'google');
+
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:42:calendar:');
+    expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
+    expect(mockInvalidateExecutiveBriefCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes Outlook connection changes through calendar, finance, and task surfaces', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(42, 'outlook');
+
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:42:calendar:');
+    expect(mockClearCache).toHaveBeenCalledWith('u:42:task-lists');
+    expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
+    expect(mockInvalidateExecutiveBriefCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes task-provider connection changes through task surfaces', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(42, 'todoist');
+
+    expect(mockClearCache).toHaveBeenCalledWith('u:42:task-lists');
+    expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes wearable connection changes through training surfaces', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(42, 'strava');
+
+    expect(mockClearCache).toHaveBeenCalledWith('coach-briefing:42');
+    expect(mockInvalidateDashboardCaches).toHaveBeenCalledWith(42);
+    expect(mockInvalidatePlanningCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('falls back unknown provider connection changes to executive brief invalidation', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(42, 'custom-provider');
+
+    expect(mockInvalidateExecutiveBriefCaches).toHaveBeenCalledWith(42);
+  });
+
+  it('routes content writes through dashboard coordination surfaces', async () => {
+    const { invalidateContentDerivedCaches } = await import('../../src/services/content-cache-invalidator');
+
+    invalidateContentDerivedCaches(42);
+
+    expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
   });
 });

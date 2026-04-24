@@ -2,19 +2,16 @@
 
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
-import { routeMessage, keywordMatch } from '../../router';
+import { routeMessage } from '../../router';
 import { logger } from '../../utils/logger';
 import { pushEvent } from '../../portal/telemetry';
 import { listChatMessages } from '../../services/chat-history-store';
-import { getUserLanguage, getUserById, getUserByTelegramId } from '../../services/user-service';
+import { getUserLanguage } from '../../services/user-service';
 import { acquireCostLock } from '../../services/cost-guardrail';
-import { checkTierAccess } from '../../services/skill-tiers';
-import { buildAITemporarilyBusyResponse } from '../../domains/ai-unavailable';
 import { getCurrentRequestId } from '../../utils/request-context';
 import {
   buildDefaultButtonsForChatDomain,
   getChatDomainHandler,
-  getLastChatActiveDomain,
   rememberChatActiveDomain,
   resolveChatActiveContext,
 } from './chat-message-context';
@@ -23,9 +20,6 @@ import {
   executeChatDomainHandler,
 } from './chat-message-execution';
 import { sendInternalError } from '../response-helpers';
-import {
-  isRetryableAIProviderError,
-} from './chat-content-refinement';
 import {
   persistExchange,
   syncConversationStateForShortcut,
@@ -43,6 +37,8 @@ import {
   persistChatLanguagePreference,
   sendChatQuotaExceededIfNeeded,
 } from './chat-message-request';
+import { sendChatTierRequiredIfNeeded } from './chat-message-tier-gate';
+import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degraded-response';
 
 type ChatRouteScopeGuard = (
   res: Response,
@@ -213,32 +209,7 @@ export function registerChatMessageRoutes(
       // Same two-layer check as the Telegram handler: explicit disable
       // first, then tier requirement. Fail-open on errors so a bus of
       // signal service issue never locks users out of their data.
-      try {
-        const user = getUserById(userId) || getUserByTelegramId(userId);
-        if (user) {
-          const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
-          if (!tierResult.allowed) {
-            logger.info(
-              { userId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
-              'iOS tier gate blocked message',
-            );
-            res.status(403).json({
-              error: {
-                code: 'TIER_REQUIRED',
-                message: `This feature requires the ${tierResult.requiredTier} tier. Your current tier: ${tierResult.userTier}.`,
-                details: {
-                  domain: route.domain,
-                  userTier: tierResult.userTier,
-                  requiredTier: tierResult.requiredTier,
-                },
-              },
-            });
-            return;
-          }
-        }
-      } catch (err) {
-        logger.warn({ err }, 'iOS tier gate check failed — falling through (fail-open)');
-      }
+      if (sendChatTierRequiredIfNeeded(res, userId, route.domain)) return;
 
       // Execute domain handler
       const handler = getChatDomainHandler(route.domain);
@@ -306,30 +277,7 @@ export function registerChatMessageRoutes(
       res.json(response);
     } catch (err: any) {
       const chatRequestId = getCurrentRequestId() || (req as any).requestId || `chat-${Date.now()}`;
-      if (isRetryableAIProviderError(err)) {
-        const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId) || 'secretary';
-        const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId);
-        const timestamp = new Date().toISOString();
-        const assistantMessageId = `msg-${Date.now()}`;
-        logger.warn(
-          { err, platform: 'ios', chatRequestId, userId, degradedDomain },
-          'iOS chat/message degraded after retryable AI provider failure',
-        );
-        const response = {
-          id: assistantMessageId,
-          text: degraded.text,
-          domain: degraded.domain,
-          routeMethod: 'degraded',
-          confidence: 0.1,
-          buttons: null,
-          metadata: { degraded: true, retryable: true },
-          timestamp,
-        };
-        persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response);
-        syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text);
-        res.json(response);
-        return;
-      }
+      if (await sendRetryableChatFailureResponseIfNeeded({ err, res, userId, normalizedText, chatRequestId })) return;
       pushEvent({
         ts: new Date().toISOString(),
         type: 'error',

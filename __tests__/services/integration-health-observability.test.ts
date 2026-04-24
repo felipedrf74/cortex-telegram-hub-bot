@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
 
 let testDb: Database.Database;
 
@@ -35,6 +37,10 @@ describe('integration health observability', () => {
         error_message TEXT
       );
     `);
+    testDb.exec(fs.readFileSync(
+      path.resolve(__dirname, '../../migrations/076_operator_alerts.sql'),
+      'utf8',
+    ));
     pushEvent.mockReset();
     vi.clearAllMocks();
   });
@@ -92,6 +98,20 @@ describe('integration health observability', () => {
       }),
       'Integration health degraded after repeated probe failures',
     );
+    const alert = testDb.prepare('SELECT * FROM operator_alerts').get() as any;
+    expect(alert).toMatchObject({
+      severity: 'warning',
+      source: 'integration_health',
+      dedupe_key: 'integration:google:degraded',
+      title: 'Integração google degradada',
+      detail: 'invalid_grant',
+      status: 'open',
+      occurrence_count: 1,
+    });
+    expect(JSON.parse(alert.metadata_json)).toMatchObject({
+      provider: 'google',
+      failureStreak: threshold,
+    });
   });
 
   it('does not emit repeated degradation events after the threshold has already been crossed', async () => {
@@ -124,5 +144,7 @@ describe('integration health observability', () => {
     await mod.runHealthProbes();
 
     expect(pushEvent).not.toHaveBeenCalled();
+    const alerts = testDb.prepare('SELECT * FROM operator_alerts').all();
+    expect(alerts).toHaveLength(0);
   });
 });

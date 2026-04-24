@@ -11,9 +11,14 @@ import {
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const mockInvalidateOnboardingDerivedCaches = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
+}));
+
+vi.mock('../../src/services/onboarding-cache-invalidator', () => ({
+  invalidateOnboardingDerivedCaches: (...args: unknown[]) => mockInvalidateOnboardingDerivedCaches(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -100,6 +105,7 @@ describe('Onboarding questionnaire start flow', () => {
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
     clearTenantScopeAnomaliesForTests();
+    mockInvalidateOnboardingDerivedCaches.mockReset();
   });
 
   afterEach(() => {
@@ -156,5 +162,6 @@ describe('Onboarding questionnaire start flow', () => {
     expect(session).not.toBeNull();
     expect(session?.current_step).toBe(1);
     expect(session?.answers.experience_level).toBe('Intermediate (1-3 years)');
+    expect(mockInvalidateOnboardingDerivedCaches).toHaveBeenCalledWith(1402, 'fitness');
   });
 });

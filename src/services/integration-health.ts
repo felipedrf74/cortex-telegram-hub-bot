@@ -32,6 +32,7 @@
 import { logger } from '../utils/logger';
 import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
+import { recordOperatorAlert } from './operator-alerts';
 
 export type ProbeStatus = 'ok' | 'fail' | 'skipped';
 
@@ -141,6 +142,19 @@ function emitRepeatedFailureSignals(results: ProbeResult[]): void {
       type: 'error',
       summary: `Integration ${result.provider} degraded (${streak} fails)`,
       detail: result.errorMessage ?? 'Probe failed repeatedly',
+    });
+    recordOperatorAlert({
+      severity: 'warning',
+      source: 'integration_health',
+      dedupeKey: `integration:${result.provider}:degraded`,
+      title: `Integração ${result.provider} degradada`,
+      detail: result.errorMessage ?? `A integração ${result.provider} falhou ${streak} vezes seguidas.`,
+      metadata: {
+        provider: result.provider,
+        status: result.status,
+        failureStreak: streak,
+        latencyMs: result.latencyMs,
+      },
     });
   }
 }

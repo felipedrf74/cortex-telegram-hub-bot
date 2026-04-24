@@ -9,8 +9,8 @@ vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
 }));
 
-vi.mock('../../src/services/coordination-cache-invalidator', () => ({
-  invalidateDashboardCoordinationCaches: vi.fn(),
+vi.mock('../../src/services/content-cache-invalidator', () => ({
+  invalidateContentDerivedCaches: vi.fn(),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -18,7 +18,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { registerContentPipelineRoutes } from '../../src/api/routes/content-pipeline-routes';
-import { invalidateDashboardCoordinationCaches } from '../../src/services/coordination-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../src/services/content-cache-invalidator';
 
 interface MockRes {
   statusCode: number;
@@ -160,7 +160,7 @@ describe('content pipeline routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.data).toEqual({ advanced: true, newStage: 'scripted' });
     expect(testDb.prepare('SELECT stage FROM content_ideas WHERE id = ?').get(id)).toEqual({ stage: 'scripted' });
-    expect(invalidateDashboardCoordinationCaches).toHaveBeenCalledWith(41);
+    expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(41);
   });
 
   it('does not report success or mutate global seed ideas', async () => {
@@ -171,7 +171,7 @@ describe('content pipeline routes', () => {
     expect(response.statusCode).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
     expect(testDb.prepare('SELECT stage FROM content_ideas WHERE id = ?').get(id)).toEqual({ stage: 'ideas' });
-    expect(invalidateDashboardCoordinationCaches).not.toHaveBeenCalled();
+    expect(invalidateContentDerivedCaches).not.toHaveBeenCalled();
   });
 
   it('rejects ideas owned by another user', async () => {
@@ -181,6 +181,6 @@ describe('content pipeline routes', () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
-    expect(invalidateDashboardCoordinationCaches).not.toHaveBeenCalled();
+    expect(invalidateContentDerivedCaches).not.toHaveBeenCalled();
   });
 });

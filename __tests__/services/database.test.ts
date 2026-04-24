@@ -1,11 +1,11 @@
 /**
  * Database & Migration Tests
- * 
+ *
  * Tests that:
  * - Database initializes correctly with in-memory SQLite
  * - All 18+ migrations apply without errors
  * - Core CRUD operations work on key tables
- * - Migration sequence has no gaps
+ * - Migration sequence stays append-only and duplicate prefixes are explicit
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -14,6 +14,24 @@ import fs from 'fs';
 import path from 'path';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+
+const LEGACY_DUPLICATE_MIGRATION_PREFIXES: Record<string, string[]> = {
+  '008': ['008_api_cache.sql', '008_email_log.sql'],
+  '009': ['009_api_usage_provider.sql', '009_job_history.sql'],
+  '022': ['022_finance_tables.sql', '022_webhook_events.sql'],
+  '023': ['023_fitness_training_plans.sql', '023_onboarding.sql'],
+  '024': ['024_cooking_tables.sql', '024_usage_metering.sql'],
+};
+
+function migrationFiles(): string[] {
+  return fs.readdirSync(MIGRATIONS_DIR)
+    .filter(f => f.endsWith('.sql'))
+    .sort();
+}
+
+function migrationPrefix(file: string): string | null {
+  return file.match(/^(\d{3})_[a-z0-9_]+\.sql$/)?.[1] ?? null;
+}
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -31,9 +49,7 @@ function applyMigrations(db: Database.Database): string[] {
     );
   `);
 
-  const files = fs.readdirSync(MIGRATIONS_DIR)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
+  const files = migrationFiles();
 
   const applied: string[] = [];
   for (const file of files) {
@@ -74,13 +90,39 @@ describe('Database Migrations', () => {
   });
 
   it('migration filenames follow non-decreasing numbering', () => {
-    const files = fs.readdirSync(MIGRATIONS_DIR).filter(f => f.endsWith('.sql')).sort();
+    const files = migrationFiles();
     let prevNum = 0;
     for (const file of files) {
       const num = parseInt(file.match(/^(\d+)/)?.[1] || '0', 10);
       expect(num).toBeGreaterThanOrEqual(prevNum);
       prevNum = num;
     }
+  });
+
+  it('migration filenames use a three-digit numeric prefix and descriptive suffix', () => {
+    const invalidFiles = migrationFiles().filter(file => migrationPrefix(file) === null);
+    expect(invalidFiles).toEqual([]);
+  });
+
+  it('does not add new duplicate migration prefixes without an explicit legacy exception', () => {
+    const groups = new Map<string, string[]>();
+    for (const file of migrationFiles()) {
+      const prefix = migrationPrefix(file);
+      expect(prefix).not.toBeNull();
+      if (!prefix) continue;
+      const existing = groups.get(prefix) ?? [];
+      existing.push(file);
+      groups.set(prefix, existing);
+    }
+
+    const duplicates = [...groups.entries()]
+      .filter(([, files]) => files.length > 1)
+      .reduce<Record<string, string[]>>((acc, [prefix, files]) => {
+        acc[prefix] = files;
+        return acc;
+      }, {});
+
+    expect(duplicates).toEqual(LEGACY_DUPLICATE_MIGRATION_PREFIXES);
   });
 
   it('creates _migrations tracking table', () => {
@@ -234,7 +276,7 @@ describe('Database CRUD Operations', () => {
 
     it('enforces unique title+author constraint', () => {
       db.prepare('INSERT INTO book_library (title, author) VALUES (?, ?)').run('The Law', 'Bastiat');
-      
+
       expect(() => {
         db.prepare('INSERT INTO book_library (title, author) VALUES (?, ?)').run('The Law', 'Bastiat');
       }).toThrow();

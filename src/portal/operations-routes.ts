@@ -8,6 +8,13 @@ import { getSpendByProvider } from '../services/cost-guardrail';
 import { getFastpathMetrics, getFastpathPatterns } from '../services/secretary-fastpath';
 import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
+import {
+  acknowledgeOperatorAlert,
+  listOperatorAlerts,
+  resolveOperatorAlert,
+  type OperatorAlertStatus,
+} from '../services/operator-alerts';
+import { extractPortalActorHint, getPortalAuthContext } from '../api/secret-guards';
 import { sendPortalInternalError } from './http';
 
 interface PortalOperationsRouteDeps {
@@ -18,6 +25,22 @@ function getActiveProviderForRoute(deps: PortalOperationsRouteDeps): { getProvid
   if (deps.getActiveProvider) return deps.getActiveProvider();
   const { getActiveProvider } = require('../services/provider-registry');
   return getActiveProvider();
+}
+
+function parseAlertStatus(value: unknown): OperatorAlertStatus | 'all' | undefined {
+  if (value === 'open' || value === 'acknowledged' || value === 'resolved' || value === 'all') {
+    return value;
+  }
+  return undefined;
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  const parsed = typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function portalActor(req: Request): string | undefined {
+  return getPortalAuthContext(req)?.actorHint ?? extractPortalActorHint(req);
 }
 
 export function registerPortalOperationsRoutes(app: Express, deps: PortalOperationsRouteDeps = {}): void {
@@ -101,6 +124,47 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
       const summary = getTaskExecutionSummary(7);
       const recent = getRecentExecutions(20);
       res.json({ ok: true, summary, recent });
+    } catch (err) {
+      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
+    }
+  });
+
+  app.get('/api/operator-alerts', (req: Request, res: Response) => {
+    try {
+      const status = parseAlertStatus(req.query?.status);
+      const limit = parsePositiveInteger(req.query?.limit) ?? 50;
+      res.json({
+        ok: true,
+        alerts: listOperatorAlerts({ status, limit }),
+      });
+    } catch (err) {
+      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
+    }
+  });
+
+  app.post('/api/operator-alerts/:id/ack', (req: Request, res: Response) => {
+    try {
+      const id = parsePositiveInteger(req.params?.id);
+      if (!id) {
+        res.status(400).json({ ok: false, message: 'Invalid alert id' });
+        return;
+      }
+      const ok = acknowledgeOperatorAlert(id, portalActor(req));
+      res.status(ok ? 200 : 404).json({ ok });
+    } catch (err) {
+      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
+    }
+  });
+
+  app.post('/api/operator-alerts/:id/resolve', (req: Request, res: Response) => {
+    try {
+      const id = parsePositiveInteger(req.params?.id);
+      if (!id) {
+        res.status(400).json({ ok: false, message: 'Invalid alert id' });
+        return;
+      }
+      const ok = resolveOperatorAlert(id, portalActor(req));
+      res.status(ok ? 200 : 404).json({ ok });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }

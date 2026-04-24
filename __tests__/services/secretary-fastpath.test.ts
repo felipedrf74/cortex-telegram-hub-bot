@@ -704,6 +704,8 @@ describe('secretary-fastpath / bilingual — EN', () => {
     vi.mocked(mailPressure.isAnyMailConfiguredForUser).mockReturnValue(false);
     const result = await tryFastpath(UID, 'unread emails');
     expect(result.response!.text).toContain('Email not configured');
+    expect(result.response!.text).toContain('Settings > Connections');
+    expect(result.response!.text).not.toContain('/settings');
     expect(result.response!.text).not.toContain('Email não configurado');
   });
 

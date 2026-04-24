@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendError, sendInternalError, sendSuccess } from '../response-helpers';
 import { getDb } from '../../services/database';
-import { invalidateDashboardCoordinationCaches } from '../../services/coordination-cache-invalidator';
+import { invalidateContentDerivedCaches } from '../../services/content-cache-invalidator';
 import { logger } from '../../utils/logger';
 
 const CONTENT_PIPELINE_STAGE_ORDER = ['ideas', 'scripted', 'filmed', 'editing', 'published'] as const;
@@ -150,7 +150,7 @@ export function registerContentPipelineRoutes(router: Router): void {
         sendError(res, 'CONFLICT', 'Idea could not be advanced; refresh and try again', 409);
         return;
       }
-      invalidateDashboardCoordinationCaches(userId);
+      invalidateContentDerivedCaches(userId);
 
       sendSuccess(res, { advanced: true, newStage: nextStage });
     } catch (err: any) {

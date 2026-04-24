@@ -478,7 +478,12 @@ function buildReasoning(
     signals.push({
       id: 'discovery',
       title: t(language, 'Descoberta', 'Discovery'),
-      effect: tPT(language, `${count} sinais já estão a empurrar o próximo tema.`, `${count} sinais já estão empurrando o próximo tema.`, `${count} signals are already pushing the next topic.`),
+      effect: tPT(
+        language,
+        count === 1 ? '1 sinal já está a empurrar o próximo tema.' : `${count} sinais já estão a empurrar o próximo tema.`,
+        count === 1 ? '1 sinal já está empurrando o próximo tema.' : `${count} sinais já estão empurrando o próximo tema.`,
+        count === 1 ? '1 signal is already pushing the next topic.' : `${count} signals are already pushing the next topic.`,
+      ),
       detail: null,
       tone: 'opportunity',
     });
@@ -525,7 +530,12 @@ function buildReasoning(
     signals.push({
       id: 'optimization',
       title: t(language, 'Otimização', 'Optimization'),
-      effect: tPT(language, `${snapshot.optimizationSignals} sinais já estão a afinar o que repetir.`, `${snapshot.optimizationSignals} sinais já estão refinando o que repetir.`, `${snapshot.optimizationSignals} signals are already refining what to repeat.`),
+      effect: tPT(
+        language,
+        snapshot.optimizationSignals === 1 ? '1 sinal já está a afinar o que repetir.' : `${snapshot.optimizationSignals} sinais já estão a afinar o que repetir.`,
+        snapshot.optimizationSignals === 1 ? '1 sinal já está refinando o que repetir.' : `${snapshot.optimizationSignals} sinais já estão refinando o que repetir.`,
+        snapshot.optimizationSignals === 1 ? '1 signal is already refining what to repeat.' : `${snapshot.optimizationSignals} signals are already refining what to repeat.`,
+      ),
       detail: null,
       tone: 'supportive',
     });

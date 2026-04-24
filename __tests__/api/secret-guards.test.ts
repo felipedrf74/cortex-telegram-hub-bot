@@ -9,6 +9,9 @@ let portalAdminRequireActor = false;
 let portalAdminActorAllowlist: string[] = [];
 let portalAdminActorSignatureSecret = '';
 let portalAdminActorSignatureToleranceMs = 300000;
+let portalSessionSecret = '';
+let portalSessionMaxAgeMs = 28800000;
+let portalRequireSessionAuth = false;
 let portalAllowLegacyFallback = false;
 let portalAllowLocalBypass = false;
 let healthAllowUnauthenticatedDetailed = false;
@@ -25,6 +28,9 @@ vi.mock('../../src/config', () => ({
         adminActorAllowlist: portalAdminActorAllowlist,
         adminActorSignatureSecret: portalAdminActorSignatureSecret,
         adminActorSignatureToleranceMs: portalAdminActorSignatureToleranceMs,
+        sessionSecret: portalSessionSecret,
+        sessionMaxAgeMs: portalSessionMaxAgeMs,
+        requireSessionAuth: portalRequireSessionAuth,
         allowLegacyFallback: portalAllowLegacyFallback,
         allowLocalBypass: portalAllowLocalBypass,
       };
@@ -85,6 +91,9 @@ describe('secret guards portal scope enforcement', () => {
     portalAdminActorAllowlist = [];
     portalAdminActorSignatureSecret = '';
     portalAdminActorSignatureToleranceMs = 300000;
+    portalSessionSecret = '';
+    portalSessionMaxAgeMs = 28800000;
+    portalRequireSessionAuth = false;
     portalAllowLegacyFallback = false;
     portalAllowLocalBypass = false;
     healthAllowUnauthenticatedDetailed = false;
@@ -264,6 +273,242 @@ describe('secret guards portal scope enforcement', () => {
       actorHint: 'operator@nexushub.me',
       actorRequired: true,
       actorAllowlistConfigured: false,
+    });
+  });
+
+  it('accepts a signed portal session token for admin routes', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    portalAdminActorAllowlist = ['operator@nexushub.me'];
+    const {
+      createPortalSessionToken,
+      getPortalAuthContext,
+      requirePortalAdminToken,
+    } = await import('../../src/api/secret-guards');
+
+    const nowMs = Date.now();
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'operator@nexushub.me',
+      scope: 'admin',
+      ttlMs: 60000,
+      nowMs,
+      jti: 'session-1',
+    });
+    const req = createRequest('POST', undefined, { 'x-portal-session': sessionToken });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalAdminToken(req, res as unknown as Response, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.body).toBeNull();
+    expect(getPortalAuthContext(req)).toMatchObject({
+      requiredScope: 'admin',
+      matchedCredential: 'session',
+      actorHint: 'operator@nexushub.me',
+      actorRequired: true,
+      actorAllowlistConfigured: true,
+      sessionScope: 'admin',
+      sessionSignatureVerified: true,
+    });
+    expect(getPortalAuthContext(req)?.sessionExpiresAt).toBeGreaterThan(nowMs);
+  });
+
+  it('allows signed portal sessions through bearer authorization for scoped reads', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const {
+      createPortalSessionToken,
+      getPortalAuthContext,
+      requirePortalToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'reader@nexushub.me',
+      scope: 'read',
+      ttlMs: 60000,
+    });
+    const req = createRequest('GET', `Bearer ${sessionToken}`);
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalToken(req, res as unknown as Response, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(getPortalAuthContext(req)).toMatchObject({
+      requiredScope: 'read',
+      matchedCredential: 'session',
+      actorHint: 'reader@nexushub.me',
+      sessionScope: 'read',
+    });
+  });
+
+  it('rejects signed portal sessions that do not satisfy the required scope', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const {
+      createPortalSessionToken,
+      requirePortalAdminToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'operator@nexushub.me',
+      scope: 'write',
+      ttlMs: 60000,
+    });
+    const req = createRequest('POST', undefined, { 'x-portal-session': sessionToken });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalAdminToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid portal admin token',
+      },
+    });
+  });
+
+  it('rejects signed admin sessions from actors outside the configured allowlist', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    portalAdminActorAllowlist = ['felipe@nexushub.me'];
+    const {
+      createPortalSessionToken,
+      requirePortalAdminToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'unknown@nexushub.me',
+      scope: 'admin',
+      ttlMs: 60000,
+    });
+    const req = createRequest('POST', undefined, { 'x-portal-session': sessionToken });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalAdminToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid portal admin token',
+      },
+    });
+  });
+
+  it('rejects signed portal sessions whose lifetime exceeds the configured maximum', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    portalSessionMaxAgeMs = 60000;
+    const {
+      createPortalSessionToken,
+      requirePortalToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'reader@nexushub.me',
+      scope: 'read',
+      ttlMs: 120000,
+    });
+    const req = createRequest('GET', undefined, { 'x-portal-session': sessionToken });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid portal token',
+      },
+    });
+  });
+
+  it('rejects expired signed portal sessions', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const {
+      createPortalSessionToken,
+      requirePortalToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'reader@nexushub.me',
+      scope: 'read',
+      ttlMs: 1000,
+      nowMs: Date.now() - 10000,
+    });
+    const req = createRequest('GET', undefined, { 'x-portal-session': sessionToken });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid portal token',
+      },
+    });
+  });
+
+  it('enforces signed sessions when static portal auth is disabled by policy', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    portalRequireSessionAuth = true;
+    portalAdminTokenValue = 'portal-admin-token';
+    const {
+      createPortalSessionToken,
+      getPortalAuthContext,
+      requirePortalAdminToken,
+    } = await import('../../src/api/secret-guards');
+
+    const staticReq = createRequest('POST', 'Bearer portal-admin-token');
+    const staticRes = createMockResponse();
+    const staticNext = vi.fn() as unknown as NextFunction;
+
+    requirePortalAdminToken(staticReq, staticRes as unknown as Response, staticNext);
+
+    expect(staticNext).not.toHaveBeenCalled();
+    expect(staticRes.statusCode).toBe(401);
+    expect(staticRes.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid portal session',
+      },
+    });
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'operator@nexushub.me',
+      scope: 'admin',
+      ttlMs: 60000,
+    });
+    const sessionReq = createRequest('POST', undefined, { 'x-portal-session': sessionToken });
+    const sessionRes = createMockResponse();
+    const sessionNext = vi.fn() as unknown as NextFunction;
+
+    requirePortalAdminToken(sessionReq, sessionRes as unknown as Response, sessionNext);
+
+    expect(sessionNext).toHaveBeenCalledOnce();
+    expect(getPortalAuthContext(sessionReq)).toMatchObject({
+      matchedCredential: 'session',
+      actorHint: 'operator@nexushub.me',
+      sessionScope: 'admin',
     });
   });
 
