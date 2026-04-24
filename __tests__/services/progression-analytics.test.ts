@@ -15,7 +15,7 @@
  *      to show.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { afterAll, describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -24,6 +24,20 @@ import { DateTime } from 'luxon';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+
+// OI-TEST-POL (2026-04-24): under vitest's singleFork pool, a vi.mock
+// without a matching doUnmock lingers into the next test file. The
+// `() => testDb` closure keeps its reference to OUR testDb — which
+// gets closed by afterEach — so any later file that transitively
+// imports `services/database` via user-service or oauth-store sees a
+// poisoned `getDb()` path. The global afterAll in setup.ts does the
+// same cleanup; we duplicate it explicitly here because this file is
+// the historical polluter documented in the session notes.
+afterAll(() => {
+  vi.doUnmock('../../src/services/database');
+  vi.doUnmock('../../src/utils/logger');
+  vi.resetModules();
+});
 
 vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), child: vi.fn().mockReturnThis() },

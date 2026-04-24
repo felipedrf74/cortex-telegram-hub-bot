@@ -21,6 +21,19 @@ process.env.INVOICE_FILING_ENABLED = 'false';
 process.env.GARMIN_COACH_ENABLED = 'false';
 process.env.CONTENT_ENGINE_ENABLED = 'false';
 process.env.TODO_DIGEST_ENABLED = 'false';
+// OI-TEST-POL (2026-04-24): explicitly set OWNER_TELEGRAM_ID to empty
+// so .env's OWNER_TELEGRAM_ID=1 doesn't leak into tests via
+// dotenv.config({ override: !IS_VITEST_RUN }). Under vitest, override
+// is false, meaning dotenv doesn't overwrite — but it DOES still set
+// vars that aren't currently in process.env. By pre-setting to empty
+// here (BEFORE config.ts is ever imported), we prevent dotenv from
+// ever introducing the value. Tests that genuinely need the env var
+// use `vi.stubEnv('OWNER_TELEGRAM_ID', '111111')`, which the global
+// afterEach below unstubs. Without this, user-service.test.ts's
+// seedOwnerUser tests failed in full-suite runs because they expect
+// either no env-configured owner (null) or a specific one — but
+// dotenv had quietly injected '1'.
+process.env.OWNER_TELEGRAM_ID = '';
 // iOS defaults — any test that needs JWT auth gets a usable secret
 // out of the box. Tests that need different values override + call
 // `vi.resetModules()` (see auth-routes.test.ts for the pattern).
@@ -96,6 +109,73 @@ vi.mock('pino', () => {
     child: vi.fn().mockReturnThis(),
   };
   return { default: () => logger };
+});
+
+// ─── Global per-file cleanup (OI-TEST-POL, 2026-04-24) ──────────────
+//
+// vitest.config.ts sets `poolOptions.forks.singleFork: true` — every
+// test file runs in ONE long-lived process. That's a huge speedup
+// over fork-per-file (390 files × fork-overhead would take minutes
+// just spinning up processes), but it means:
+//
+//   - `vi.mock(...)` calls without matching `vi.doUnmock` linger in
+//     the registry after a test file finishes, polluting downstream
+//     files that import the same module
+//   - module-scoped `testDb` captured by a mock factory survives
+//     the file that owns it; by the time a later file runs, that
+//     testDb has been closed by the owner's afterEach and any
+//     `getDb()` call on the inherited mock throws
+//   - env stubs via `vi.stubEnv` stick around unless explicitly
+//     unstubbed
+//
+// The historically-manifested failures were 1–4 pollution-flakes in
+// `oauth-store.test.ts` / `user-service.test.ts` > seedOwnerUser,
+// nondeterministic across runs, which forced every commit to use
+// `--no-verify`.
+//
+// This global `afterEach` + `afterAll` pair forces the two common
+// leak sources to be cleaned after every test and every file, so an
+// individual test file no longer has to remember to unmount its
+// mocks. Files that ALREADY have their own `afterAll` cleanup
+// (e.g. portal-owner-router.test.ts) are unaffected — doUnmock is
+// idempotent.
+//
+// We deliberately DO NOT call `vi.restoreAllMocks()` or
+// `vi.clearAllMocks()` here — those reset the spies/stubs on mocks
+// declared in setup.ts (Anthropic SDK, Grammy, pino) which every
+// subsequent file relies on. We only clean up STATE leaked by
+// the test body, not the setup-file-level mocks themselves.
+import { afterAll, afterEach } from 'vitest';
+
+afterEach(() => {
+  // Undo any `vi.stubEnv(...)` calls the test made. Safe no-op if
+  // the file didn't use stubEnv.
+  vi.unstubAllEnvs();
+});
+
+afterAll(() => {
+  // Unmount the two most-commonly-mocked modules:
+  //   - services/database: mocked in ~70 files via `() => testDb`
+  //     closures where testDb gets closed in afterEach
+  //   - utils/logger: mocked in ~100 files to silence output
+  //
+  // We deliberately DO NOT unmount `../../src/config` here. A prior
+  // iteration of this hook DID unmount config, and the full-suite
+  // failure count went up, not down — some test files' hoisted
+  // vi.mock('../../src/config') factories don't re-register cleanly
+  // after a global doUnmock (root cause still under investigation;
+  // tracked as a follow-up). The database+logger pair empirically
+  // reduces the flake count without introducing regressions.
+  //
+  // If a downstream file needs database/logger mocked with different
+  // factories, its own vi.mock at the top will re-register — this
+  // cleanup just makes sure the registry doesn't carry a stale
+  // closure into the next file.
+  vi.doUnmock('../../src/services/database');
+  vi.doUnmock('../../src/utils/logger');
+  // Flush the module cache so later files re-import with the
+  // fresh mock registry.
+  vi.resetModules();
 });
 
 // ─── Global test utilities ──────────────────────────────────────────

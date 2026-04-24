@@ -78,17 +78,23 @@ async function dispatchRegisterInvite(body: any): Promise<MockRes> {
 }
 
 describe('Auth invite registration', () => {
+  // OI-TEST-POL (2026-04-24): direct process.env assignment without
+  // cleanup poisoned later test files — user-service.test.ts's
+  // seedOwnerUser tests assumed OWNER_TELEGRAM_ID was unset, but
+  // this block left '991122' on the process after running. Switched
+  // to vi.stubEnv which setup.ts's global afterEach unstubs
+  // automatically.
   beforeEach(async () => {
     testDb = new Database(':memory:');
     testDb.pragma('journal_mode = WAL');
     applyMigrations(testDb);
 
-    process.env.STAGING = 'true';
-    process.env.IOS_API_ENABLED = 'true';
-    process.env.IOS_API_JWT_SECRET = 'test-ios-secret';
-    process.env.IOS_INVITE_CODE = 'LOCALBETA_TEST';
-    process.env.IOS_OWNER_CODE = 'LOCALOWNER_TEST';
-    process.env.OWNER_TELEGRAM_ID = '991122';
+    vi.stubEnv('STAGING', 'true');
+    vi.stubEnv('IOS_API_ENABLED', 'true');
+    vi.stubEnv('IOS_API_JWT_SECRET', 'test-ios-secret');
+    vi.stubEnv('IOS_INVITE_CODE', 'LOCALBETA_TEST');
+    vi.stubEnv('IOS_OWNER_CODE', 'LOCALOWNER_TEST');
+    vi.stubEnv('OWNER_TELEGRAM_ID', '991122');
 
     vi.resetModules();
 
@@ -213,8 +219,10 @@ describe('Auth invite registration', () => {
   });
 
   it('starts Google web sign-in with a one-time iOS auth state', async () => {
-    process.env.GOOGLE_CLIENT_ID = 'google-web-client';
-    process.env.GOOGLE_CLIENT_SECRET = 'google-secret';
+    // OI-TEST-POL (2026-04-24): use stubEnv so the global afterEach
+    // unstubs automatically between tests and files.
+    vi.stubEnv('GOOGLE_CLIENT_ID', 'google-web-client');
+    vi.stubEnv('GOOGLE_CLIENT_SECRET', 'google-secret');
 
     const res = await dispatchAuth('/register/google/start', {
       deviceId: 'ios-device-google-start',
