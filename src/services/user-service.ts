@@ -13,6 +13,12 @@ import { logger } from '../utils/logger';
 import crypto from 'crypto';
 import type { Lang } from '../utils/i18n';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
+// OI-WELCOME-201d (2026-04-24): eager import (was lazy-require
+// before). welcome-email-service does NOT import user-service back
+// — confirmed via grep — so there's no dependency cycle. Eager
+// import makes the welcome-email hook testable under vitest's
+// vi.mock (require() would bypass mock intercept).
+import { fireWelcomeEmailInBackground } from './welcome-email-service';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -537,7 +543,31 @@ export function setUserStatusById(userId: number, status: 'active' | 'suspended'
   logger.info({ userId, status }, 'User status updated (by id)');
 }
 
-export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'max' | 'owner'): void {
+/**
+ * Canonical tier-update path — writes tier + daily limits on the
+ * users row (keyed by internal `users.id`) and fires the welcome
+ * email hook (idempotent) on paid-tier transitions.
+ *
+ * OI-WELCOME-201d (2026-04-24): extracted from `setUserTier(telegramId)`
+ * so the Stripe + Apple purchase handlers can call tier-update
+ * without depending on `telegram_id`. Telegram is being
+ * decommissioned; tenant + user IDs are the single source of
+ * truth going forward.
+ *
+ * Idempotency contract:
+ *   - The UPDATE is unconditional — callers that only want a
+ *     "change if different" can check users.tier first.
+ *   - The welcome-email hook is internally guarded by an
+ *     audit-trail idempotency check (see welcome-email-service).
+ *     Calling this 10 times with tier='pro' triggers 10 UPDATEs
+ *     but AT MOST ONE welcome email per (user, template) pair.
+ */
+export function setUserTierById(userId: number, tier: 'free' | 'pro' | 'max' | 'owner'): void {
+  if (!Number.isFinite(userId) || userId <= 0) {
+    logger.warn({ userId, tier }, 'setUserTierById: invalid userId; skipping');
+    return;
+  }
+
   const db = getDb();
   const limits = tier === 'owner'
     ? { messages: 0, tokens: 0, cost: 0 }
@@ -549,27 +579,109 @@ export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'max' | '
 
   db.prepare(`
     UPDATE users SET tier = ?, daily_message_limit = ?, daily_token_limit = ?, daily_cost_limit_usd = ?
-    WHERE telegram_id = ?
-  `).run(tier, limits.messages, limits.tokens, limits.cost, telegramId);
-  logger.info({ telegramId, tier }, 'User tier updated');
+    WHERE id = ?
+  `).run(tier, limits.messages, limits.tokens, limits.cost, userId);
+  logger.info({ userId, tier }, 'User tier updated');
 
   // OI-WELCOME-201 (2026-04-24): fire welcome email on first
   // paid-tier transition. The service is idempotent — if the user
   // already got one, or has no email, or the mailer is down, it
   // silently no-ops. Never blocks the tier update.
   if (tier === 'pro' || tier === 'max') {
-    const user = db.prepare('SELECT id FROM users WHERE telegram_id = ?').get(telegramId) as { id: number } | undefined;
-    if (user) {
-      // Lazy-require to avoid a hard dep cycle if welcome-email
-      // service ever needs to call back into user-service.
-      try {
-        const { fireWelcomeEmailInBackground } = require('./welcome-email-service');
-        fireWelcomeEmailInBackground(user.id);
-      } catch (hookErr) {
-        logger.warn({ err: hookErr, telegramId, tier }, 'setUserTier: welcome-email hook failed to fire (non-fatal)');
-      }
+    try {
+      fireWelcomeEmailInBackground(userId);
+    } catch (hookErr) {
+      logger.warn({ err: hookErr, userId, tier }, 'setUserTierById: welcome-email hook failed to fire (non-fatal)');
     }
   }
+}
+
+/**
+ * OI-WELCOME-201d (2026-04-24): bridge purchase events → tier column.
+ *
+ * Reads the user's latest `subscriptions` row and writes the derived
+ * tier onto `users.tier` if it differs, firing the welcome-email
+ * hook as a side effect of the first-time paid transition. Safe to
+ * call from every Stripe / Apple webhook handler — if the tier
+ * already matches, it's a no-op (no UPDATE, no welcome email).
+ *
+ * Tier derivation rules (intentionally narrower than
+ * getEffectiveEntitlement — env-configured owner + paywall-disabled
+ * bypass belong at the entitlement layer, not here):
+ *
+ *   - status ∈ ('active', 'trialing') + plan ∈ ('pro','max')
+ *         → that plan
+ *   - anything else (canceled, past_due, expired, no row)
+ *         → 'free'
+ *
+ * Renewals (DID_RENEW, Stripe invoice.paid firing
+ * handleSubscriptionUpdated on a row already at tier='pro') are
+ * naturally handled: the derived tier matches the current tier,
+ * the diff check short-circuits, no welcome email is sent — which
+ * is exactly the desired behavior (welcome once per onboarding,
+ * not once per billing cycle).
+ *
+ * Returns the post-sync tier so callers can log it.
+ */
+export function syncUserTierFromSubscription(userId: number): 'free' | 'pro' | 'max' | 'owner' | null {
+  if (!Number.isFinite(userId) || userId <= 0) return null;
+
+  const db = getDb();
+
+  // Read the current users.tier + the latest subscription row.
+  const userRow = db.prepare('SELECT tier FROM users WHERE id = ?').get(userId) as { tier: string } | undefined;
+  if (!userRow) {
+    logger.warn({ userId }, 'syncUserTierFromSubscription: user not found');
+    return null;
+  }
+  // 'owner' is a sticky tier — an owner who buys a Pro subscription
+  // (e.g. for testing) shouldn't be demoted. Matches
+  // getEffectiveEntitlement's rule-1 precedence.
+  if (userRow.tier === 'owner') return 'owner';
+
+  const sub = db.prepare(
+    'SELECT plan, status FROM subscriptions WHERE user_id = ?',
+  ).get(userId) as { plan: string; status: string } | undefined;
+
+  const isActive = sub?.status === 'active' || sub?.status === 'trialing';
+  const derivedTier: 'free' | 'pro' | 'max' = isActive && (sub!.plan === 'pro' || sub!.plan === 'max')
+    ? sub!.plan
+    : 'free';
+
+  // Short-circuit when tier already matches — keeps the welcome
+  // email firing exactly once per onboarding (not on every
+  // renewal), and avoids spurious UPDATEs that touch
+  // daily_*_limit columns the admin may have tuned.
+  if (userRow.tier === derivedTier) {
+    logger.debug({ userId, tier: derivedTier }, 'syncUserTierFromSubscription: no change');
+    return derivedTier;
+  }
+
+  setUserTierById(userId, derivedTier);
+  return derivedTier;
+}
+
+/**
+ * @deprecated Telegram is being decommissioned (2026-04-24).
+ * Prefer `setUserTierById(userId, tier)` — tenant + user IDs are
+ * the single source of truth.
+ *
+ * Kept as a thin Telegram→userId shim so legacy callers (Telegram
+ * admin commands + their tests) still work during the transition.
+ * Resolves telegram_id → users.id and delegates to setUserTierById.
+ */
+export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'max' | 'owner'): void {
+  const db = getDb();
+  const user = db.prepare('SELECT id FROM users WHERE telegram_id = ?').get(telegramId) as { id: number } | undefined;
+  if (!user) {
+    // Matches pre-refactor behavior: the UPDATE used to silently
+    // no-op on a missing row. Log a diagnostic warning (not an
+    // error — tests and the Telegram-flow admin commands rely on
+    // this being a no-op for unseeded users).
+    logger.warn({ telegramId, tier }, 'setUserTier(telegramId): no user found; call is a no-op');
+    return;
+  }
+  setUserTierById(user.id, tier);
 }
 
 export function setUserLimits(telegramId: number, limits: {

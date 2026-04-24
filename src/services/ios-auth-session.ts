@@ -8,6 +8,10 @@ import { logger } from '../utils/logger';
 import { logAudit } from './audit-trail';
 import { getStoredDailyCostLimitUsdForTier } from './plan-quotas';
 import type { User } from './user-service';
+// OI-WELCOME-201d (2026-04-24): eager import (was lazy-require).
+// Same reasoning as user-service — no dep cycle and makes the hook
+// testable under vi.mock.
+import { fireWelcomeEmailInBackground } from './welcome-email-service';
 
 export interface AuthSessionPayload {
   accessToken: string;
@@ -116,11 +120,11 @@ export function grantBetaSandboxAccess(userId: number): void {
   // entry via invite code. Idempotent + background — never blocks
   // the grant transaction.
   try {
-    const { fireWelcomeEmailInBackground } = require('./welcome-email-service');
     fireWelcomeEmailInBackground(userId);
   } catch (hookErr) {
-    // Non-fatal — logger in this module is imported elsewhere; keep
-    // this silent-on-failure so the grant always completes.
+    // Non-fatal — keep this silent-on-failure so the grant always
+    // completes even if the welcome pipeline throws synchronously.
+    logger.warn({ err: hookErr, userId }, 'ios-auth-session: welcome-email hook failed (non-fatal)');
   }
 
   db.prepare(`

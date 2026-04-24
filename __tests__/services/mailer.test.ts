@@ -43,6 +43,12 @@ describe('resolveBackend', () => {
   it('falls back to noop under vitest (no log spam)', async () => {
     const { resolveBackend } = await import('../../src/services/mailer');
     process.env.VITEST = 'true';
+    // OI-WELCOME-201d: dotenv may leave MAGIC_LINK_MAILER='resend'
+    // in process.env (it's now wired in .env for the production
+    // send path). The `resolveBackend(undefined)` assertion tests
+    // the parameter-default code path; clear the env so the
+    // default actually resolves to undefined.
+    delete process.env.MAGIC_LINK_MAILER;
     expect(resolveBackend('')).toBe('noop');
     expect(resolveBackend(undefined)).toBe('noop');
   });
@@ -50,6 +56,7 @@ describe('resolveBackend', () => {
   it('falls back to console outside vitest when unset', async () => {
     const { resolveBackend } = await import('../../src/services/mailer');
     delete process.env.VITEST;
+    delete process.env.MAGIC_LINK_MAILER;   // same reasoning
     expect(resolveBackend('')).toBe('console');
     expect(resolveBackend(null)).toBe('console');
   });

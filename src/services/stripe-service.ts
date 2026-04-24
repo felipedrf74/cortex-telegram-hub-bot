@@ -15,6 +15,12 @@ import StripeLib from 'stripe';
 import { config } from '../config';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+// OI-WELCOME-201d (2026-04-24): bridge purchase events → users.tier
+// so the welcome email fires on first-time paid transitions from
+// both Stripe + Apple paths. Imported via normal ESM (no cycle —
+// user-service only reads subscriptions via getDb, never calls
+// back into stripe-service).
+import { syncUserTierFromSubscription } from './user-service';
 
 // Stripe v17+ uses a different export shape. The namespace for types
 // is accessed via the default export's type definitions.
@@ -193,6 +199,12 @@ export function handleCheckoutCompleted(session: any): void {
   `).run(userId, subscriptionId, customerId || null);
 
   logger.info({ userId, subscriptionId, customerId }, 'Stripe checkout completed — subscription activated');
+
+  // OI-WELCOME-201d: sync users.tier from the just-written
+  // subscription row so the welcome-email hook can fire.
+  // Idempotent: the sync no-ops when tier already matches (covers
+  // double-delivery of the webhook and any subsequent renewal).
+  syncUserTierFromSubscription(userId);
 }
 
 export function handleSubscriptionUpdated(subscription: any): void {
@@ -230,6 +242,13 @@ export function handleSubscriptionUpdated(subscription: any): void {
   `).run(userId, plan, period, status, subscription.id, periodStart, periodEnd, cancelAtEnd);
 
   logger.info({ userId, plan, period, status, subId: subscription.id }, 'Stripe subscription updated');
+
+  // OI-WELCOME-201d: sync tier. For renewals (status stays 'active',
+  // plan unchanged) this is a cheap no-op thanks to the same-tier
+  // short-circuit in syncUserTierFromSubscription. For a first-ever
+  // activation that lands here before handleCheckoutCompleted this
+  // is where the welcome email actually fires.
+  syncUserTierFromSubscription(userId);
 }
 
 export function handleSubscriptionDeleted(subscription: any): void {
@@ -286,6 +305,10 @@ export function handleAppleTransaction(
   `).run(userId, plan, period, originalTransactionId, expiresDate);
 
   logger.info({ userId, productId, originalTransactionId }, 'Apple IAP transaction verified — subscription active');
+
+  // OI-WELCOME-201d: mirror the Stripe path — sync tier so the
+  // welcome email fires on first-time App Store purchase.
+  syncUserTierFromSubscription(userId);
 }
 
 function resolveAppleProduct(productId: string): { plan: string; period: string } {
@@ -381,6 +404,27 @@ export function handleAppleNotification(
     newStatus,
     originalTransactionId,
   }, 'Apple Server Notification processed');
+
+  // OI-WELCOME-201d: Apple server notifications don't carry the
+  // internal userId — resolve it from the subscriptions row we
+  // just updated (keyed on provider_subscription_id which IS the
+  // originalTransactionId). This handles first-time SUBSCRIBED
+  // notifications (welcome email fires) AND renewal DID_RENEW
+  // (no-op via same-tier short-circuit).
+  const subRow = db.prepare(
+    "SELECT user_id FROM subscriptions WHERE provider_subscription_id = ? AND provider = 'apple'",
+  ).get(String(originalTransactionId)) as { user_id: number } | undefined;
+  if (subRow?.user_id) {
+    syncUserTierFromSubscription(subRow.user_id);
+  } else {
+    // Not fatal — the sub row may not exist yet if this notification
+    // beat the StoreKit verify call (rare but possible). Next
+    // renewal/verify will converge.
+    logger.warn(
+      { originalTransactionId, notificationType },
+      'Apple notification: no matching subscription row for tier sync (will converge on next verify)',
+    );
+  }
 
   return true;
 }
