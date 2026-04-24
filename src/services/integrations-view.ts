@@ -161,3 +161,113 @@ export function listUserIntegrations(userId: number): IntegrationStatus[] {
     };
   });
 }
+
+// ════════════════════════════════════════════════════════════════
+// OI-ADM-305 (2026-04-24) — platform-wide integration health view.
+// ════════════════════════════════════════════════════════════════
+//
+// Used by GET /owner/integrations on the Admin Console. Mirrors
+// listUserIntegrations's per-provider shape but swaps the
+// per-user oauth row for PLATFORM-level aggregates:
+//
+//   - connectedUserCount: how many users currently have a token row
+//     for this provider. Gives a one-glance "provider adoption"
+//     number for the admin.
+//   - recentFailures24h: how many probe results in integration_health
+//     came back 'fail' in the last 24h (NOT the latest — the
+//     trend). A provider that's "ok" right now but failed 12
+//     times in the last 12 hours is worth an admin's eyeballs.
+//
+// Health fields themselves (status / checkedAt / error) match the
+// per-user shape byte-for-byte so the UI can share rendering
+// helpers between the two surfaces.
+
+export interface PlatformIntegrationStatus {
+  provider: IntegrationProvider;
+  connectedUserCount: number;
+  recentFailures24h: number;
+  healthStatus: ProbeStatus | 'unknown';
+  healthCheckedAt: string | null;
+  healthError: string | null;
+}
+
+interface ConnectedCountRow {
+  provider: string;
+  cnt: number;
+}
+
+interface FailuresRow {
+  provider: string;
+  cnt: number;
+}
+
+/**
+ * Single SELECT that returns { provider → count } for every
+ * provider currently present in user_oauth_tokens. Providers with
+ * zero users just don't appear in the result; the caller merges
+ * against ALL_PROVIDERS to render 0 for absentees.
+ */
+function readConnectedCountsByProvider(): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT provider, COUNT(DISTINCT user_id) AS cnt
+       FROM user_oauth_tokens
+       GROUP BY provider`,
+    ).all() as ConnectedCountRow[];
+    for (const r of rows) out.set(r.provider, r.cnt || 0);
+  } catch (err) {
+    logger.warn({ err }, 'integrations-view: connected-counts query failed — defaulting to 0');
+  }
+  return out;
+}
+
+/**
+ * Count probe failures in the last 24h per provider. Uses
+ * integration_health.ts (not status='ok') so we catch 'fail' AND
+ * any future non-ok statuses without a schema update. Excludes
+ * 'skipped' (= "not configured, didn't probe") because that's
+ * not a failure — it's an admin-action-required state and deserves
+ * its own affordance later.
+ */
+function readRecentFailuresByProvider(): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT provider, COUNT(*) AS cnt
+       FROM integration_health
+       WHERE status = 'fail'
+         AND ts >= datetime('now', '-24 hours')
+       GROUP BY provider`,
+    ).all() as FailuresRow[];
+    for (const r of rows) out.set(r.provider, r.cnt || 0);
+  } catch (err) {
+    logger.warn({ err }, 'integrations-view: recent-failures query failed — defaulting to 0');
+  }
+  return out;
+}
+
+/**
+ * Platform-wide integration rollup. Returns ALL_PROVIDERS.length
+ * rows in the same stable order as listUserIntegrations so the
+ * Admin Console UI can render the same column layout.
+ */
+export function listPlatformIntegrations(): PlatformIntegrationStatus[] {
+  const connectedByProvider = readConnectedCountsByProvider();
+  const failuresByProvider = readRecentFailuresByProvider();
+  const healthByProvider = getLatestHealthByProvider();
+
+  return ALL_PROVIDERS.map((provider) => {
+    const health = healthByProvider[provider];
+    return {
+      provider,
+      connectedUserCount: connectedByProvider.get(provider) ?? 0,
+      recentFailures24h: failuresByProvider.get(provider) ?? 0,
+      healthStatus: (health?.status ?? 'unknown') as ProbeStatus | 'unknown',
+      healthCheckedAt: health?.ts ?? null,
+      healthError: health?.errorMessage ?? null,
+    };
+  });
+}

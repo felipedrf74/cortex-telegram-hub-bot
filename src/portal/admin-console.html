@@ -743,15 +743,20 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
       </div>
     </section>
 
-    <!-- ═ Integrations ═══════════════════════════════════════════ -->
+    <!-- ═ Integrations (OI-ADM-305, 2026-04-24) ═══════════════════ -->
+    <!-- Platform-wide integration health dashboard. Populated by
+         GET /owner/integrations. Mirrors the User Console's
+         Integrations page layout (OI-USR-403) but shows operator-
+         level aggregates: connected-user counts, latest platform
+         probe status, and 24h failure trend per provider.
+         Connect/disconnect actions still live on iOS — this view
+         is read-only. -->
     <section class="page hidden" data-page="integrations">
       <h1>Integrations</h1>
-      <p class="subtitle">Connected providers and ingestion health.</p>
-      <div class="empty-state">
-        <div class="icon">⚙</div>
-        <h3>Provider health lives in the legacy portal</h3>
-        <p>AI provider health, rate-limit status, and webhook stats are in <strong>Operations → Legacy Portal → AI &amp; Providers</strong>.</p>
-        <button class="btn" onclick="location.href='/portal'">Open provider health →</button>
+      <p class="subtitle">Platform-wide provider health + adoption. Read-only — connect/disconnect happens per-user on iOS.</p>
+      <div class="panel">
+        <header><h2>Provider health</h2><span class="meta" id="ownerIntegrationsMeta">—</span></header>
+        <div id="ownerIntegrationsTable"></div>
       </div>
     </section>
 
@@ -1146,6 +1151,7 @@ function showPage(id) {
   if (id === 'users') loadPlatformAdmins();
   if (id === 'usage') loadUsage();
   if (id === 'security') loadAudit();
+  if (id === 'integrations') loadOwnerIntegrations();
   // OI-UX-106: auto-close mobile drawer after any navigation.
   closeMobileNav();
 }
@@ -1617,6 +1623,66 @@ async function loadUsage() {
     c.innerHTML = `<div class="error-banner">${esc(e.message)}</div>`;
   }
 }
+// ── Integrations (OI-ADM-305, 2026-04-24) ─────────────────────
+// Platform-wide integration dashboard. Reads GET /owner/integrations
+// which returns the same stable 8-provider list as the User Console
+// (OI-USR-403) but with operator-level aggregates:
+//   - connectedUserCount: adoption signal
+//   - recentFailures24h: trend signal (catches providers that
+//     passed the latest probe but have been flapping)
+//   - healthStatus / healthError: current probe state
+// Read-only — connect/disconnect still happens per-user on iOS.
+async function loadOwnerIntegrations() {
+  const el = document.getElementById('ownerIntegrationsTable');
+  const meta = document.getElementById('ownerIntegrationsMeta');
+  if (!el) return;
+  el.innerHTML = '<div class="sk-row w-90 skeleton"></div><div class="sk-row w-60 skeleton"></div>';
+  try {
+    const r = await fetchJson('/owner/integrations');
+    const rows = Array.isArray(r?.data?.integrations) ? r.data.integrations : [];
+    const totalConnected = rows.reduce((n, x) => n + (x.connectedUserCount || 0), 0);
+    if (meta) meta.textContent = `${totalConnected} total user-connections across ${rows.length} providers`;
+    if (rows.length === 0) {
+      el.innerHTML = '<div class="empty-state"><h3>No providers configured</h3><p>This table fills as providers are wired up in integration-health.ts.</p></div>';
+      return;
+    }
+    el.innerHTML = `<table class="data">
+      <thead><tr><th>Provider</th><th class="right">Connected users</th><th class="right">Failures (24h)</th><th>Platform health</th><th>Last checked</th></tr></thead>
+      <tbody>${rows.map((x) => renderOwnerIntegrationRow(x)).join('')}</tbody>
+    </table>
+    <p class="small muted" style="margin-top: var(--space-3);">Failure count is probes that returned <code>fail</code> in the last 24 hours. A provider that's currently <code>ok</code> but has many recent failures is flapping and worth investigating.</p>`;
+  } catch (e) {
+    el.innerHTML = `<div class="error-banner">Failed to load integrations: ${esc(e.message || 'unknown')}</div>`;
+  }
+}
+
+function renderOwnerIntegrationRow(x) {
+  const healthPillClass =
+    x.healthStatus === 'ok' ? 'ready'
+    : x.healthStatus === 'fail' ? 'danger'
+    : x.healthStatus === 'skipped' ? 'info'
+    : 'unknown';
+  const healthPill = `<span class="pill ${healthPillClass}">${esc(x.healthStatus || 'unknown')}</span>`;
+  const healthExtra = x.healthError
+    ? `<div class="small muted" title="${esc(x.healthError)}" style="margin-top: 2px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(x.healthError)}</div>`
+    : '';
+  // Highlight a non-zero failure count visually — admins should
+  // notice "this provider has been flapping" at a glance.
+  const failureCell = (x.recentFailures24h || 0) > 0
+    ? `<td class="right mono"><strong style="color: var(--danger, #b91c1c);">${esc(String(x.recentFailures24h))}</strong></td>`
+    : `<td class="right mono muted">0</td>`;
+  const lastChecked = x.healthCheckedAt
+    ? esc(String(x.healthCheckedAt).slice(0, 16).replace('T', ' '))
+    : '<span class="muted">—</span>';
+  return `<tr>
+    <td><strong>${esc(x.provider)}</strong></td>
+    <td class="right mono">${esc(String(x.connectedUserCount || 0))}</td>
+    ${failureCell}
+    <td>${healthPill}${healthExtra}</td>
+    <td class="small muted">${lastChecked}</td>
+  </tr>`;
+}
+
 // (Legacy loadSecurity removed 2026-04-22: the Security page is now
 // backed by the full /owner/audit filtered viewer — see loadAudit.)
 async function loadFooter() {

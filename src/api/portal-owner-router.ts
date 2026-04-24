@@ -65,6 +65,8 @@ import {
   type PlatformRole,
 } from '../services/tenant-service';
 import { getDb } from '../services/database';
+// OI-ADM-305 (2026-04-24): platform-wide integration health view.
+import { listPlatformIntegrations } from '../services/integrations-view';
 
 // ── Response helpers (local — avoids coupling to /api/v1 response-helpers) ─
 
@@ -557,6 +559,26 @@ export function createPortalOwnerRouter(): Router {
     } catch (dbErr) {
       logger.error({ err: dbErr }, 'portal-owner-router: /usage failed');
       err(res, 500, 'INTERNAL', 'Failed to compute usage');
+    }
+  });
+
+  // ── GET /owner/integrations ────────────────────────────────────
+  // OI-ADM-305 (2026-04-24): platform-wide integration health
+  // dashboard. Mirrors /workspace/integrations (OI-DATA-007) but
+  // shows the OPERATOR view — per-provider aggregates across ALL
+  // users, plus the latest platform-level probe status and a
+  // 24h failure count to surface trending issues.
+  //
+  // Auth: inherited /owner/* chain (rate limit → portal-token →
+  // resolvePlatformAdmin). No additional write-role gate — this
+  // is read-only telemetry, fine for platform_readonly too.
+  router.get('/integrations', (_req: Request, res: Response) => {
+    try {
+      const integrations = listPlatformIntegrations();
+      ok(res, { integrations });
+    } catch (dbErr) {
+      logger.error({ err: dbErr }, 'portal-owner-router: /integrations failed');
+      err(res, 500, 'INTERNAL', 'Failed to load integration health');
     }
   });
 
