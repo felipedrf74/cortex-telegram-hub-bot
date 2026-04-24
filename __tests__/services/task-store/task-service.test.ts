@@ -36,10 +36,14 @@ function applyMigrations(db: Database.Database): void {
 }
 
 let testDb: Database.Database;
+const mockInvalidateTaskCaches = vi.fn();
 
 vi.mock('../../../src/services/database', () => ({ getDb: () => testDb }));
 vi.mock('../../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+vi.mock('../../../src/services/task-cache-invalidator', () => ({
+  invalidateTaskCaches: (...args: unknown[]) => mockInvalidateTaskCaches(...args),
 }));
 
 import {
@@ -98,6 +102,7 @@ beforeEach(() => {
   testDb = createTestDb();
   applyMigrations(testDb);
   _resetAdaptersForTests();
+  mockInvalidateTaskCaches.mockReset();
 });
 
 // ── createTask ─────────────────────────────────────────────────────
@@ -113,6 +118,11 @@ describe('createTask', () => {
     const stored = listTasks(USER_ID);
     expect(stored).toHaveLength(1);
     expect(stored[0].provider).toBe('nexus');
+    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
+      userId: USER_ID,
+      listIds: expect.any(Array),
+      includeDerivedSurfaces: true,
+    });
   });
 
   it('writes to the registered default provider when available', async () => {
@@ -124,6 +134,11 @@ describe('createTask', () => {
 
     expect(adapter.spies.createTask).toHaveBeenCalledOnce();
     expect(task.provider).toBe('todoist');
+    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
+      userId: USER_ID,
+      listIds: expect.any(Array),
+      includeDerivedSurfaces: true,
+    });
   });
 
   it('falls back to local when adapter is registered but disconnected', async () => {
@@ -155,6 +170,11 @@ describe('completeTask', () => {
     const fresh = getTask(task.id!)!;
     expect(fresh.status).toBe('completed');
     expect(fresh.completedAt).toBeTruthy();
+    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
+      userId: USER_ID,
+      listIds: expect.any(Array),
+      includeDerivedSurfaces: true,
+    });
   });
 
   it('routes through the adapter for provider tasks', async () => {
@@ -200,6 +220,11 @@ describe('deleteTask', () => {
 
     const remaining = listTasks(USER_ID);
     expect(remaining).toHaveLength(0);
+    expect(mockInvalidateTaskCaches).toHaveBeenLastCalledWith({
+      userId: USER_ID,
+      listIds: expect.any(Array),
+      includeDerivedSurfaces: true,
+    });
   });
 
   it('routes through the adapter for provider tasks', async () => {

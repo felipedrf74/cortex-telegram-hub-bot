@@ -244,26 +244,30 @@ describe('portal-hardening: no localStorage or URL token', () => {
 
 describe('portal-hardening: server.ts identity migration', () => {
   const serverPath = path.resolve(__dirname, '../../src/portal/server.ts');
+  const adminDataRoutesPath = path.resolve(__dirname, '../../src/portal/admin-data-routes.ts');
+  const userSkillRoutesPath = path.resolve(__dirname, '../../src/portal/user-skill-routes.ts');
   const serverExists = fs.existsSync(serverPath);
+  const routeSource = [
+    fs.existsSync(serverPath) ? fs.readFileSync(serverPath, 'utf8') : '',
+    fs.existsSync(adminDataRoutesPath) ? fs.readFileSync(adminDataRoutesPath, 'utf8') : '',
+    fs.existsSync(userSkillRoutesPath) ? fs.readFileSync(userSkillRoutesPath, 'utf8') : '',
+  ].join('\n');
 
   it.skipIf(!serverExists)('data-summary route uses :userId param', () => {
-    const source = fs.readFileSync(serverPath, 'utf8');
     // After migration, the route should be /api/users/:userId/data-summary
-    expect(source).toContain("'/api/users/:userId/data-summary'");
+    expect(routeSource).toContain("'/api/users/:userId/data-summary'");
     // And NOT the old telegramId version
-    expect(source).not.toContain("'/api/users/:telegramId/data-summary'");
+    expect(routeSource).not.toContain("'/api/users/:telegramId/data-summary'");
   });
 
   it.skipIf(!serverExists)('skills routes use :userId param', () => {
-    const source = fs.readFileSync(serverPath, 'utf8');
-    expect(source).toContain("'/api/users/:userId/skills'");
-    expect(source).not.toContain("'/api/users/:telegramId/skills'");
+    expect(routeSource).toContain("'/api/users/:userId/skills'");
+    expect(routeSource).not.toContain("'/api/users/:telegramId/skills'");
   });
 
   it.skipIf(!serverExists)('no active :telegramId route params remain', () => {
-    const source = fs.readFileSync(serverPath, 'utf8');
     // Count actual route definitions (not comments)
-    const lines = source.split('\n');
+    const lines = routeSource.split('\n');
     const activeRoutes = lines.filter(line => {
       const trimmed = line.trim();
       // Skip comment-only lines

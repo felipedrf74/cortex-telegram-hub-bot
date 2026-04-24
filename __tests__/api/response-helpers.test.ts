@@ -15,6 +15,7 @@ import {
   apiPaginated,
   sendSuccess,
   sendError,
+  sendInternalError,
   asyncHandler,
 } from '../../src/api/response-helpers';
 
@@ -113,6 +114,23 @@ describe('sendError (express helper)', () => {
     const res = mockResponse();
     sendError(res, 'NOT_FOUND', 'no such id', 404);
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+});
+
+describe('sendInternalError (express helper)', () => {
+  it('emits a stable internal error envelope without leaking exception text', () => {
+    const res = mockResponse();
+    sendInternalError(res, 'Unable to load dashboard right now.');
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ok: false,
+        error: {
+          code: 'INTERNAL',
+          message: 'Unable to load dashboard right now.',
+        },
+      }),
+    );
   });
 });
 

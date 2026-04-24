@@ -3,7 +3,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { sendSuccess, sendError } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import {
   answerStep,
   getAllQuestionnaires,
@@ -147,7 +147,40 @@ export function onboardingRoutes(): Router {
       sendSuccess(res, { questionnaires });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding/pending failed');
-      sendSuccess(res, { questionnaires: [] });
+      sendSuccess(res, {
+        questionnaires: [],
+        status: 'degraded',
+        warningCodes: ['ONBOARDING_PENDING_UNAVAILABLE'],
+        warnings: ['Unable to load pending onboarding right now.'],
+      });
+    }
+  });
+
+  /** GET /api/v1/onboarding/profile */
+  router.get('/profile', async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    try {
+      const allQuestionnaires = getAllQuestionnaires() || [];
+      const profiles = allQuestionnaires
+        .map((q: any) => {
+          const profile = getProfile(userId, q.id);
+          if (!profile) return null;
+          return {
+            type: q.id, data: profile.data || {},
+            completedAt: profile.updated_at || null,
+          };
+        })
+        .filter(Boolean);
+
+      sendSuccess(res, { profiles });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS profile fetch failed');
+      sendSuccess(res, {
+        profiles: [],
+        status: 'degraded',
+        warningCodes: ['ONBOARDING_PROFILE_UNAVAILABLE'],
+        warnings: ['Unable to load onboarding profiles right now.'],
+      });
     }
   });
 
@@ -185,7 +218,7 @@ export function onboardingRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding questionnaire fetch failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch questionnaire', 500);
+      sendInternalError(res, 'Unable to load questionnaire right now.');
     }
   });
 
@@ -235,7 +268,7 @@ export function onboardingRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId, questionnaireId }, 'iOS onboarding start failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to start questionnaire', 500);
+      sendInternalError(res, 'Unable to start questionnaire right now.');
     }
   });
 
@@ -271,30 +304,7 @@ export function onboardingRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS onboarding answer failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to record answer', 500);
-    }
-  });
-
-  /** GET /api/v1/onboarding/profile */
-  router.get('/profile', async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
-    try {
-      const allQuestionnaires = getAllQuestionnaires() || [];
-      const profiles = allQuestionnaires
-        .map((q: any) => {
-          const profile = getProfile(userId, q.id);
-          if (!profile) return null;
-          return {
-            type: q.id, data: profile.data || {},
-            completedAt: profile.updated_at || null,
-          };
-        })
-        .filter(Boolean);
-
-      sendSuccess(res, { profiles });
-    } catch (err: any) {
-      logger.error({ err }, 'iOS profile fetch failed');
-      sendSuccess(res, { profiles: [] });
+      sendInternalError(res, 'Unable to save onboarding progress right now.');
     }
   });
 
@@ -321,7 +331,7 @@ export function onboardingRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS onboarding/profile/detail failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to load profile detail', 500);
+      sendInternalError(res, 'Unable to load athlete profile right now.');
     }
   });
 
@@ -413,7 +423,7 @@ export function onboardingRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId, profileType, fieldKey }, 'PATCH profile field failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update profile field', 500);
+      sendInternalError(res, 'Unable to update the athlete profile right now.');
     }
   });
 

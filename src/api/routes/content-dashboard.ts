@@ -11,7 +11,7 @@
  *   1. The portal-token middleware in `src/portal/server.ts` skips it
  *      (everything under `/v1/*` is excluded from that middleware).
  *   2. We can attach our OWN portal-token verification here, which means
- *      the admin portal (which sends `Authorization: Bearer <PORTAL_TOKEN>`)
+ *      the admin portal (which sends a portal read or full-access bearer token)
  *      and nothing else can reach it.
  *
  * This route must be mounted BEFORE the iOS JWT `authMiddleware` in
@@ -23,8 +23,7 @@
  * goes through the AI pipeline.
  */
 
-import { Router, Request, Response, NextFunction } from 'express';
-import { config } from '../../config';
+import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { getJobStatuses } from '../../portal/telemetry';
@@ -36,6 +35,8 @@ import {
   getActiveSignalCount,
 } from '../../services/intelligence-bus';
 import { CronExpressionParser } from 'cron-parser';
+import { sendInternalError } from '../response-helpers';
+import { requirePortalToken } from '../secret-guards';
 
 // ─── Static registries ──────────────────────────────────────────────
 
@@ -441,32 +442,16 @@ function nextFireAtIso(expr: string): string | null {
 // ─── Route ──────────────────────────────────────────────────────────
 
 /**
- * Middleware: require portal token on every request to this sub-router.
+ * Middleware: require a portal read-capable token on every request to this
+ * sub-router.
  *
  * The parent iOS router skips `authMiddleware` for us (see `router.ts`
  * where this sub-router is mounted BEFORE the JWT middleware), and the
  * portal-token middleware in `server.ts` explicitly bypasses `/v1/*` —
- * so we have to verify the token ourselves. In dev mode (no token
- * configured) we allow anonymous access for local preview.
+ * so we have to verify the token ourselves. Local unauthenticated
+ * preview is now explicit opt-in via PORTAL_ALLOW_LOCAL_BYPASS=true
+ * and only on loopback in non-production runtimes.
  */
-function requirePortalToken(req: Request, res: Response, next: NextFunction): void {
-  const portalToken = config.portal.token;
-  if (!portalToken) {
-    // No token — only allow from localhost (matches main portal + content-admin-write)
-    const ip = req.ip || req.socket.remoteAddress || '';
-    const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.');
-    if (isLocal) { next(); return; }
-    res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'PORTAL_TOKEN not set' } });
-    return;
-  }
-  const auth = req.headers.authorization || '';
-  if (auth !== `Bearer ${portalToken}`) {
-    res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Invalid portal token' } });
-    return;
-  }
-  next();
-}
-
 export function contentDashboardRoutes(): Router {
   const router = Router();
 
@@ -478,10 +463,7 @@ export function contentDashboardRoutes(): Router {
       res.json(payload);
     } catch (err: any) {
       logger.error({ err }, 'Content dashboard: build failed');
-      res.status(500).json({
-        ok: false,
-        error: { code: 'INTERNAL', message: err?.message || 'Failed to build content dashboard' },
-      });
+      sendInternalError(res, 'Failed to build content dashboard');
     }
   });
 

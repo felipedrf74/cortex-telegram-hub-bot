@@ -406,7 +406,7 @@ describe('content-notifications: structural', () => {
 
   it('portal has admin notification endpoint', () => {
     const portalSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'),
+      path.resolve(__dirname, '../../src/portal/document-routes.ts'),
       'utf8',
     );
     expect(portalSource).toContain("'/api/notifications'");

@@ -4,14 +4,14 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { getCached, setCache, clearCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
-import { sendSuccess, sendError } from '../response-helpers';
+import { getCached, setCache, getCachedSWR, setCacheSWR, userCacheKey } from '../../services/cache-store';
+import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import * as microsoftTodo from '../../services/microsoft-todo';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { resolveTaskCreationList } from '../../services/task-store/task-list-resolution';
 import { getOwnerBootstrapUser } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -116,7 +116,7 @@ export function taskRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch lists', 500);
+      sendInternalError(res, 'Failed to fetch lists');
     }
   });
 
@@ -135,14 +135,11 @@ export function taskRoutes(): Router {
       }
       const todo = getTodo(req);
       const result = await todo.createList(name.trim());
-      // Invalidate lists cache
-      const cacheKey = userId ? `u:${userId}:task-lists` : 'task-lists';
-      const { clearCache } = require('../../services/cache-store');
-      clearCache(cacheKey);
+      invalidateTaskCaches({ userId, includeDerivedSurfaces: false });
       sendSuccess(res, result.data, { status: 201 });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/lists POST failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to create list', 500);
+      sendInternalError(res, 'Failed to create list');
     }
   });
 
@@ -224,7 +221,7 @@ export function taskRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/filtered failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch tasks', 500);
+      sendInternalError(res, 'Failed to fetch tasks');
     }
   });
 
@@ -278,7 +275,7 @@ export function taskRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks/list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch list tasks', 500);
+      sendInternalError(res, 'Failed to fetch list tasks');
     }
   });
 
@@ -296,7 +293,7 @@ export function taskRoutes(): Router {
       );
     } catch (err: any) {
       logger.error({ err }, 'iOS task detail failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch task detail', 500);
+      sendInternalError(res, 'Failed to fetch task detail');
     }
   });
 
@@ -333,12 +330,12 @@ export function taskRoutes(): Router {
 
       if (!result?.success) {
         logger.error({ err: result?.error, list: list.displayName }, 'iOS tasks create failed at MS Graph');
-        sendError(res, 'CREATE_FAILED', result?.error || 'Failed to create task in Microsoft To Do', 500);
+        sendInternalError(res, 'Failed to create task in Microsoft To Do', { code: 'CREATE_FAILED' });
         return;
       }
 
       // Invalidate task caches (new task changes list contents)
-      invalidateTaskCaches(list.id, userId);
+      invalidateTaskRouteCaches(list.id, userId);
 
       sendSuccess(
         res,
@@ -347,7 +344,7 @@ export function taskRoutes(): Router {
       );
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks create failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to create task', 500);
+      sendInternalError(res, 'Failed to create task');
     }
   });
 
@@ -367,14 +364,14 @@ export function taskRoutes(): Router {
       const result = await todo.updateTask(listId, taskId, updates, listName);
       const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
 
-      invalidateTaskCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, (req as any).userId);
       sendSuccess(
         res,
         { task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }) },
       );
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update task', 500);
+      sendInternalError(res, 'Failed to update task');
     }
   });
 
@@ -389,11 +386,11 @@ export function taskRoutes(): Router {
       const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
       const normalizedTask = normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName });
 
-      invalidateTaskCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, (req as any).userId);
       sendSuccess(res, { task: normalizedTask, message: `✅ Completed: ${normalizedTask.title || 'task'}` });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks complete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to complete task', 500);
+      sendInternalError(res, 'Failed to complete task');
     }
   });
 
@@ -422,7 +419,7 @@ export function taskRoutes(): Router {
         .api(`/me/todo/lists/${listId}/tasks/${taskId}/checklistItems/${itemId}`)
         .patch({ isChecked });
 
-      invalidateTaskCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, (req as any).userId);
       const task = await resolveTaskDetail(getTodo(req), listId, taskId, listName, { id: taskId, listId, listName });
 
       sendSuccess(res, {
@@ -435,7 +432,7 @@ export function taskRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS checklist toggle failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to toggle checklist item', 500);
+      sendInternalError(res, 'Failed to toggle checklist item');
     }
   });
 
@@ -459,11 +456,11 @@ export function taskRoutes(): Router {
       const listName = await resolveTaskListName(todo, listId, (req as any).userId);
       const created = await todo.addChecklistItem(listId, taskId, displayName);
       if (!created?.success || !created.data) {
-        sendError(res, 'INTERNAL', created?.error || 'Failed to add checklist item', 500);
+        sendInternalError(res, 'Failed to add checklist item');
         return;
       }
 
-      invalidateTaskCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, (req as any).userId);
       const task = await resolveTaskDetail(todo, listId, taskId, listName, { id: taskId, listId, listName });
 
       sendSuccess(
@@ -476,7 +473,7 @@ export function taskRoutes(): Router {
       );
     } catch (err: any) {
       logger.error({ err }, 'iOS checklist add failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to add checklist item', 500);
+      sendInternalError(res, 'Failed to add checklist item');
     }
   });
 
@@ -535,13 +532,13 @@ export function taskRoutes(): Router {
       // Step 4: Delete from source list
       await client.api(`/me/todo/lists/${listId}/tasks/${taskId}`).delete();
 
-      invalidateTaskCaches(listId, (req as any).userId);
-      invalidateTaskCaches(targetListId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(targetListId, (req as any).userId);
 
       sendSuccess(res, { task: newTask, movedFrom: listId, movedTo: targetListId });
     } catch (err: any) {
       logger.error({ err }, 'iOS task move failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to move task', 500);
+      sendInternalError(res, 'Failed to move task');
     }
   });
 
@@ -552,11 +549,11 @@ export function taskRoutes(): Router {
       const { listId, taskId } = req.params;
 
       await todo.deleteTask(listId, taskId);
-      invalidateTaskCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, (req as any).userId);
       sendSuccess(res, { deleted: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete task', 500);
+      sendInternalError(res, 'Failed to delete task');
     }
   });
 
@@ -591,21 +588,12 @@ function normalizeTaskDto(
 
 /** Invalidate task caches after mutations (create, update, complete, delete).
  * Clears both user-specific and legacy (owner) keys for backward compat. */
-function invalidateTaskCaches(listId?: string, userId?: number): void {
-  const prefixes = userId ? [`u:${userId}:`, ''] : [''];
-  for (const p of prefixes) {
-    clearCache(`${p}task-lists`);
-    clearCache(`${p}fastpath:pending-tasks`);
-    clearCache(`${p}tasks-filtered:all`);
-    clearCache(`${p}tasks-filtered:overdue`);
-    clearCache(`${p}tasks-filtered:dueToday`);
-    if (listId) {
-      clearCache(`${p}tasks:${listId}:all`);
-      clearCache(`${p}tasks:${listId}:notStarted`);
-      clearCache(`${p}tasks:${listId}:completed`);
-    }
-  }
-  invalidatePlanningCaches(userId);
+function invalidateTaskRouteCaches(listId?: string, userId?: number): void {
+  invalidateTaskCaches({
+    userId,
+    listIds: listId ? [listId] : [],
+    includeDerivedSurfaces: true,
+  });
   // Re-warm cache in background after mutation
   setTimeout(() => warmTaskCache().catch(() => {}), 1000);
 }

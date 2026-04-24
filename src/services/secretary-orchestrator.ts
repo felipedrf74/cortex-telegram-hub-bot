@@ -1178,7 +1178,7 @@ function chooseNextBestAction(opts: {
   const contentWindow = protectedBlocks.find((block) => block.type === 'content')?.windowLabel ?? null;
   const topBlocker = blockers[0] ?? null;
 
-  if (signals.hasFinancePressure) {
+  if (shouldPrioritizeFinanceFirst({ signals, topBlocker })) {
     return {
       kind: 'finance_first',
       title: text(language, 'Fecha o bloco administrativo primeiro.', 'Feche o bloco administrativo primeiro.', 'Handle the admin block first.'),
@@ -1561,6 +1561,21 @@ function hasMeaningfulFinancePressure(dayFinance: WeeklyPlanDay['finance'] | nul
   if (hardPressure) return true;
   if (softContextOnly) return false;
   return /\b(finance|admin|budget|orçamento|finanças|administra)\b/i.test(joined);
+}
+
+function shouldPrioritizeFinanceFirst(opts: {
+  signals: DerivedDaySignals;
+  topBlocker: BlockerCardModel | null;
+}): boolean {
+  const { signals, topBlocker } = opts;
+  if (!signals.hasFinancePressure) return false;
+
+  // Finance should not trump the cases where the day is already constrained by
+  // travel, recovery, or a genuine delivery collision with a real ship window.
+  if (signals.isTravelDay || signals.needsRecoveryProtection) return false;
+  if (topBlocker?.kind === 'deadline_collision' && signals.hasContentWindow) return false;
+
+  return true;
 }
 
 function dedupeSkills(values: Array<SecretarySkillId | null | undefined>): SecretarySkillId[] {

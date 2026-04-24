@@ -11,6 +11,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockGetTaskProviderForUser = vi.fn();
 const mockResolveCanonicalUserId = vi.fn();
+const mockInvalidateCalendarCaches = vi.fn();
+const mockInvalidateFinanceDerivedCaches = vi.fn();
+const mockInvalidateCookingDerivedCaches = vi.fn();
 
 // ─── Mock all external services ──────────────────────────────────────
 
@@ -34,19 +37,38 @@ vi.mock('../../src/services/microsoft-todo', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   isAnyCalendarConfigured: vi.fn(),
+  hasConnectedCalendarForUser: vi.fn(),
   getEvents: vi.fn(),
   createEvent: vi.fn(),
   updateEvent: vi.fn(),
   deleteEvent: vi.fn(),
 }));
 
+vi.mock('../../src/services/calendar-cache-invalidator', () => ({
+  invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
+}));
+
+vi.mock('../../src/services/finance-cache-invalidator', () => ({
+  invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
+}));
+
+vi.mock('../../src/services/cooking-cache-invalidator', () => ({
+  invalidateCookingDerivedCaches: (...args: unknown[]) => mockInvalidateCookingDerivedCaches(...args),
+}));
+
 vi.mock('../../src/services/outlook-mail', () => ({
   isOutlookMailConfigured: vi.fn(),
+  isOutlookMailConfiguredForUser: vi.fn(),
   searchEmails: vi.fn(),
+  searchEmailsForUser: vi.fn(),
   readEmail: vi.fn(),
+  readEmailForUser: vi.fn(),
   sendEmail: vi.fn(),
+  sendEmailForUser: vi.fn(),
   replyToEmail: vi.fn(),
+  replyToEmailForUser: vi.fn(),
   getUnreadEmails: vi.fn(),
+  getUnreadEmailsForUser: vi.fn(),
 }));
 
 vi.mock('../../src/state/reminders', () => ({
@@ -97,6 +119,7 @@ import { executeToolCall } from '../../src/services/tool-executor';
 import * as msTodo from '../../src/services/microsoft-todo';
 import * as unifiedCal from '../../src/services/unified-calendar';
 import * as outlookMail from '../../src/services/outlook-mail';
+import * as cookingChef from '../../src/services/cooking-chef';
 import { setReminder } from '../../src/state/reminders';
 import { saveNote, searchNotes } from '../../src/state/notes';
 import { setSharedMemory, removeSharedMemory } from '../../src/state/shared-memory';
@@ -118,6 +141,9 @@ beforeEach(() => {
   );
   mockGetTaskProviderForUser.mockReset();
   mockGetTaskProviderForUser.mockReturnValue(mockTodo);
+  mockInvalidateCalendarCaches.mockReset();
+  mockInvalidateFinanceDerivedCaches.mockReset();
+  mockInvalidateCookingDerivedCaches.mockReset();
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -533,6 +559,7 @@ describe('executeToolCall — Calendar', () => {
   describe('when configured', () => {
     beforeEach(() => {
       mockCal.isAnyCalendarConfigured.mockReturnValue(true);
+      mockCal.hasConnectedCalendarForUser.mockReturnValue(true);
     });
 
     it('get_calendar_events — delegates with date range', async () => {
@@ -544,14 +571,28 @@ describe('executeToolCall — Calendar', () => {
         end_date: '2026-04-06',
       });
       expect(result).toEqual(events);
-      expect(mockCal.getEvents).toHaveBeenCalledWith('2026-03-30', '2026-04-06');
+      expect(mockCal.getEvents).toHaveBeenCalledWith('2026-03-30', '2026-04-06', undefined);
+    });
+
+    it('get_calendar_events — preserves tenant scope when user context exists', async () => {
+      const events = [{ id: 'evt1', title: 'Scoped standup' }];
+      mockCal.getEvents.mockResolvedValue(events as any);
+
+      const result = await execAsUser('get_calendar_events', {
+        start_date: '2026-03-30',
+        end_date: '2026-04-06',
+      });
+
+      expect(result).toEqual(events);
+      expect(mockCal.hasConnectedCalendarForUser).toHaveBeenCalledWith(AUTH_USER_ID);
+      expect(mockCal.getEvents).toHaveBeenCalledWith('2026-03-30', '2026-04-06', AUTH_USER_ID);
     });
 
     it('create_calendar_event — delegates with event data and source', async () => {
       const created = { id: 'evt2', title: 'Swim session' };
       mockCal.createEvent.mockResolvedValue(created as any);
 
-      await executeToolCall('create_calendar_event', {
+      const result = await executeToolCall('create_calendar_event', {
         title: 'Swim session',
         start: '2026-04-01T06:00:00',
         end: '2026-04-01T07:00:00',
@@ -559,6 +600,7 @@ describe('executeToolCall — Calendar', () => {
         categories: ['sport'],
         calendar_source: 'google',
       });
+      expect(result).toEqual(created);
       expect(mockCal.createEvent).toHaveBeenCalledWith(
         {
           title: 'Swim session',
@@ -572,22 +614,25 @@ describe('executeToolCall — Calendar', () => {
         'google',
         undefined,
       );
+      expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
     });
 
     describe('update_calendar_event', () => {
       it('uses explicit calendar_source when provided', async () => {
         mockCal.updateEvent.mockResolvedValue({ id: 'evt1' } as any);
 
-        await executeToolCall('update_calendar_event', {
+        const result = await executeToolCall('update_calendar_event', {
           event_id: 'evt1',
           new_title: 'Renamed',
           calendar_source: 'outlook',
         });
+        expect(result).toEqual({ id: 'evt1' });
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'evt1', new_title: 'Renamed' }),
           'outlook',
           undefined,
         );
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
       });
 
       it('auto-detects outlook source from AAMk event_id prefix', async () => {
@@ -602,6 +647,7 @@ describe('executeToolCall — Calendar', () => {
           'outlook',
           undefined,
         );
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
       });
 
       it('auto-detects google source for non-AAMk event_id', async () => {
@@ -616,6 +662,7 @@ describe('executeToolCall — Calendar', () => {
           'google',
           undefined,
         );
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
       });
     });
 
@@ -629,6 +676,7 @@ describe('executeToolCall — Calendar', () => {
         });
         expect(result).toEqual({ success: true, message: 'Event deleted' });
         expect(mockCal.deleteEvent).toHaveBeenCalledWith('evt1', 'google', undefined);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
       });
 
       it('auto-detects outlook source from AAMk prefix', async () => {
@@ -636,6 +684,7 @@ describe('executeToolCall — Calendar', () => {
 
         await executeToolCall('delete_calendar_event', { event_id: 'AAMkXYZ' });
         expect(mockCal.deleteEvent).toHaveBeenCalledWith('AAMkXYZ', 'outlook', undefined);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
       });
     });
   });
@@ -740,6 +789,7 @@ describe('executeToolCall — Outlook Email', () => {
   describe('when configured', () => {
     beforeEach(() => {
       mockMail.isOutlookMailConfigured.mockReturnValue(true);
+      mockMail.isOutlookMailConfiguredForUser.mockReturnValue(true);
     });
 
     it('search_outlook_emails — delegates with query and max_results', async () => {
@@ -749,6 +799,17 @@ describe('executeToolCall — Outlook Email', () => {
       const result = await executeToolCall('search_outlook_emails', { query: 'Invoice', max_results: 5 });
       expect(result).toEqual(emails);
       expect(mockMail.searchEmails).toHaveBeenCalledWith('Invoice', 5);
+    });
+
+    it('search_outlook_emails — preserves tenant scope when user context exists', async () => {
+      const emails = [{ id: 'msg1', subject: 'Invoice' }];
+      mockMail.searchEmailsForUser.mockResolvedValue(emails as any);
+
+      const result = await execAsUser('search_outlook_emails', { query: 'Invoice', max_results: 5 });
+
+      expect(result).toEqual(emails);
+      expect(mockMail.isOutlookMailConfiguredForUser).toHaveBeenCalledWith(AUTH_USER_ID);
+      expect(mockMail.searchEmailsForUser).toHaveBeenCalledWith(AUTH_USER_ID, 'Invoice', 5);
     });
 
     it('search_outlook_emails — defaults max_results to 10 when not provided', async () => {
@@ -765,6 +826,16 @@ describe('executeToolCall — Outlook Email', () => {
       const result = await executeToolCall('read_outlook_email', { message_id: 'msg1' });
       expect(result).toEqual(email);
       expect(mockMail.readEmail).toHaveBeenCalledWith('msg1');
+    });
+
+    it('read_outlook_email — uses user-scoped mailbox when context exists', async () => {
+      const email = { id: 'msg1', subject: 'Invoice', body: '<html>' };
+      mockMail.readEmailForUser.mockResolvedValue(email as any);
+
+      const result = await execAsUser('read_outlook_email', { message_id: 'msg1' });
+
+      expect(result).toEqual(email);
+      expect(mockMail.readEmailForUser).toHaveBeenCalledWith(AUTH_USER_ID, 'msg1');
     });
 
     it('send_outlook_email — returns success message with recipient', async () => {
@@ -785,6 +856,24 @@ describe('executeToolCall — Outlook Email', () => {
       });
     });
 
+    it('send_outlook_email — uses user-scoped mailbox when context exists', async () => {
+      mockMail.sendEmailForUser.mockResolvedValue(undefined);
+
+      const result = await execAsUser('send_outlook_email', {
+        to: 'coach@team.com',
+        subject: 'Training update',
+        body: 'Week 12 done',
+      });
+
+      expect(result).toEqual({ success: true, message: 'Email sent to coach@team.com' });
+      expect(mockMail.sendEmailForUser).toHaveBeenCalledWith(AUTH_USER_ID, {
+        to: 'coach@team.com',
+        subject: 'Training update',
+        body: 'Week 12 done',
+        cc: undefined,
+      });
+    });
+
     it('reply_outlook_email — returns { success: true, message: "Reply sent" }', async () => {
       mockMail.replyToEmail.mockResolvedValue(undefined);
 
@@ -796,6 +885,21 @@ describe('executeToolCall — Outlook Email', () => {
       expect(mockMail.replyToEmail).toHaveBeenCalledWith({ messageId: 'msg1', body: 'Thanks!' });
     });
 
+    it('reply_outlook_email — uses user-scoped mailbox when context exists', async () => {
+      mockMail.replyToEmailForUser.mockResolvedValue(undefined);
+
+      const result = await execAsUser('reply_outlook_email', {
+        message_id: 'msg1',
+        body: 'Thanks!',
+      });
+
+      expect(result).toEqual({ success: true, message: 'Reply sent' });
+      expect(mockMail.replyToEmailForUser).toHaveBeenCalledWith(AUTH_USER_ID, {
+        messageId: 'msg1',
+        body: 'Thanks!',
+      });
+    });
+
     it('get_outlook_unread — returns unread_count and recent_unread', async () => {
       const emails = [{ id: 'msg1', subject: 'New lead' }];
       mockMail.getUnreadEmails.mockResolvedValue({ count: 3, emails } as any);
@@ -803,6 +907,16 @@ describe('executeToolCall — Outlook Email', () => {
       const result = await executeToolCall('get_outlook_unread', { max_results: 5 });
       expect(result).toEqual({ unread_count: 3, recent_unread: emails });
       expect(mockMail.getUnreadEmails).toHaveBeenCalledWith(5);
+    });
+
+    it('get_outlook_unread — uses user-scoped mailbox when context exists', async () => {
+      const emails = [{ id: 'msg1', subject: 'New lead' }];
+      mockMail.getUnreadEmailsForUser.mockResolvedValue({ count: 3, emails } as any);
+
+      const result = await execAsUser('get_outlook_unread', { max_results: 5 });
+
+      expect(result).toEqual({ unread_count: 3, recent_unread: emails });
+      expect(mockMail.getUnreadEmailsForUser).toHaveBeenCalledWith(AUTH_USER_ID, 5);
     });
 
     it('get_outlook_unread — defaults max_results to 10', async () => {
@@ -863,6 +977,10 @@ describe('executeToolCall — Shared Memory', () => {
 describe('executeToolCall — Finance', () => {
   beforeEach(() => {
     mockFinance.addTransaction.mockReset();
+    mockFinance.deleteTransaction.mockReset();
+    mockFinance.calculateAndStoreTax.mockReset();
+    mockFinance.calculateMonthlyTax.mockReset();
+    mockFinance.markTaxPaid.mockReset();
   });
 
   it('preserves a user-specified currency when logging a transaction', async () => {
@@ -903,6 +1021,103 @@ describe('executeToolCall — Finance', () => {
       amount: 28,
       currency: 'EUR',
     });
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(7077);
+  });
+
+  it('invalidates finance-derived surfaces after deleting a transaction', async () => {
+    mockFinance.deleteTransaction.mockReturnValue(true);
+
+    const result = await execAsUser('finance_delete_transaction', { transaction_id: 88 });
+
+    expect(result).toEqual({ success: true });
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+  });
+
+  it('invalidates finance-derived surfaces after calculating tax', async () => {
+    mockFinance.calculateAndStoreTax.mockReturnValue({
+      month: '2026-04',
+      gross_income: 2500,
+      deductions: 200,
+    } as any);
+    mockFinance.calculateMonthlyTax.mockReturnValue({
+      effectiveRate: 12.5,
+      bracket: 'mid',
+    } as any);
+
+    const result = await execAsUser('finance_calculate_tax', { month: '2026-04' });
+
+    expect(result).toMatchObject({
+      month: '2026-04',
+      effectiveRate: 12.5,
+      bracket: 'mid',
+    });
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+  });
+
+  it('invalidates finance-derived surfaces after marking tax paid', async () => {
+    mockFinance.markTaxPaid.mockReturnValue(true);
+
+    const result = await execAsUser('finance_mark_tax_paid', { month: '2026-04' });
+
+    expect(result).toEqual({ success: true, month: '2026-04', status: 'paid' });
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Cooking tools
+// ═══════════════════════════════════════════════════════════════════
+
+describe('executeToolCall — Cooking', () => {
+  it('invalidates cooking-derived surfaces after setting a meal', async () => {
+    const setMealSpy = vi.spyOn(cookingChef, 'setMealPlan');
+    setMealSpy.mockReturnValue({
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Salmon bowl',
+    } as any);
+
+    const result = await execAsUser('cooking_set_meal', {
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Salmon bowl',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      date: '2026-04-15',
+      meal_type: 'dinner',
+      title: 'Salmon bowl',
+    });
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+    setMealSpy.mockRestore();
+  });
+
+  it('invalidates cooking-derived surfaces after deleting a meal', async () => {
+    const deleteMealSpy = vi.spyOn(cookingChef, 'deleteMealPlan');
+    deleteMealSpy.mockReturnValue(true);
+
+    const result = await execAsUser('cooking_delete_meal', {
+      date: '2026-04-15',
+      meal_type: 'dinner',
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+    deleteMealSpy.mockRestore();
+  });
+
+  it('invalidates cooking-derived surfaces after regenerating the shopping list', async () => {
+    const generateSpy = vi.spyOn(cookingChef, 'generateShoppingList');
+    generateSpy.mockReturnValue({ items: [{ name: 'Eggs' }] } as any);
+
+    const result = await execAsUser('cooking_generate_shopping_list', {
+      week_start: '2026-04-13',
+    });
+
+    expect(result).toEqual({ items: [{ name: 'Eggs' }] });
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(AUTH_USER_ID);
+    generateSpy.mockRestore();
   });
 });
 
@@ -916,15 +1131,15 @@ describe('executeToolCall — error handling', () => {
     expect(result).toEqual({ error: 'Unknown tool: make_coffee' });
   });
 
-  it('catches thrown errors and returns { error: "Tool execution failed: ..." }', async () => {
+  it('catches thrown errors without returning raw provider text', async () => {
     mockTodo.isOutlookTodoConfigured.mockReturnValue(true);
     mockTodo.getLists.mockRejectedValue(new Error('Network timeout'));
 
     const result = await execAsUser('ms_todo_get_lists');
-    expect(result).toEqual({ error: 'Tool execution failed: Network timeout' });
+    expect(result).toEqual({ error: 'Tool execution failed' });
   });
 
-  it('catches calendar errors and wraps the message', async () => {
+  it('catches calendar errors without leaking token or provider details', async () => {
     mockCal.isAnyCalendarConfigured.mockReturnValue(true);
     mockCal.getEvents.mockRejectedValue(new Error('Token expired'));
 
@@ -932,6 +1147,6 @@ describe('executeToolCall — error handling', () => {
       start_date: '2026-03-30',
       end_date: '2026-04-06',
     });
-    expect(result).toEqual({ error: 'Tool execution failed: Token expired' });
+    expect(result).toEqual({ error: 'Tool execution failed' });
   });
 });

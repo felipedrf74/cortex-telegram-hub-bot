@@ -64,8 +64,17 @@ CONTENT_ENGINE_PORT=8101
 # Database lives inside the staging install — fully isolated
 DATABASE_PATH=/home/dominguez/telegram-hub-bot-staging/data/bot.db
 
-# Different portal token so the staging admin panel uses a separate password
-PORTAL_TOKEN=<a different random string than prod>
+# Separate portal credentials from prod. Prefer the scoped split:
+PORTAL_READ_TOKEN=<random read token>
+PORTAL_WRITE_TOKEN=<random write token>
+# Optional but recommended for founder/plan/user-admin mutations:
+PORTAL_ADMIN_TOKEN=<random admin token>
+# Optional actor-aware admin hardening. When enabled, admin mutations must
+# include x-portal-actor/x-admin-actor/x-operator-email matching the allowlist.
+PORTAL_ADMIN_ACTORS=felipe@nexushub.me
+PORTAL_ADMIN_REQUIRE_ACTOR=true
+# Leave PORTAL_TOKEN empty unless you are deliberately using the legacy mode.
+PORTAL_TOKEN=
 ```
 
 **Telegram bot token** — pick ONE of these two options:

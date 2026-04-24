@@ -206,6 +206,33 @@ The admin can manage plan caps and entitlement via:
 - `PUT /api/users/:userId/limits` — per-user override on daily caps,
   audited.
 
-All portal admin routes require `access_level === 'admin'` via
-`requireAdmin` middleware. All mutations write to `audit_trail` so a
-security review can reconstruct "who changed what, when."
+Portal API routes use scoped bearer credentials:
+
+- read routes accept `PORTAL_READ_TOKEN`, `PORTAL_WRITE_TOKEN`, or
+  `PORTAL_ADMIN_TOKEN`.
+- ordinary write routes accept `PORTAL_WRITE_TOKEN` or `PORTAL_ADMIN_TOKEN`.
+- sensitive admin routes require `PORTAL_ADMIN_TOKEN` through
+  `requirePortalAdminToken`.
+
+Legacy `PORTAL_TOKEN` is accepted only when no scoped tokens are configured,
+or when `PORTAL_ALLOW_LEGACY_FALLBACK=true` is deliberately enabled during a
+migration. Remote admin mutations fail closed without a dedicated admin token
+unless explicit legacy fallback or loopback-only local bypass is active.
+
+Actor-aware admin hardening is available through:
+
+- `PORTAL_ADMIN_REQUIRE_ACTOR=true` — require a valid
+  `x-portal-actor`, `x-admin-actor`, or `x-operator-email` header.
+- `PORTAL_ADMIN_ACTORS=alice@example.com,bob@example.com` — require the
+  actor header to match the allowlist for sensitive admin mutations.
+- `PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET=<random secret>` — require the actor
+  hint to be signed by a trusted gateway/session layer. Requests must include
+  `x-portal-actor`, `x-portal-actor-timestamp` (Unix milliseconds), and
+  `x-portal-actor-signature` as `sha256=<HMAC_SHA256(actor.timestamp)>`.
+- `PORTAL_ADMIN_ACTOR_SIGNATURE_TOLERANCE_MS=300000` — optional timestamp
+  skew tolerance for signed actor headers.
+
+All audited admin mutations write to `audit_trail` with portal credential
+metadata and the sanitized actor hint when present, so a security review can
+reconstruct "who changed what, when" more reliably than with anonymous shared
+tokens alone.

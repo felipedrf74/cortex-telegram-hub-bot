@@ -258,6 +258,19 @@ describe('Task routes sync provider metadata', () => {
     ]);
   });
 
+  it('does not leak raw provider errors when listing task lists fails', async () => {
+    providerApi.getLists.mockRejectedValueOnce(new Error('graph token exploded with tenant internals'));
+
+    const res = await dispatch('GET', '/lists');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to fetch lists');
+    expect(JSON.stringify(res.body)).not.toContain('graph token exploded');
+    expect(mockLoggerError).toHaveBeenCalled();
+  });
+
   it('includes nexus syncProvider on filtered task responses when using native storage', async () => {
     mockResolveTaskProvider.mockReturnValue('nexus');
     providerApi.getAllPendingTasks.mockResolvedValue({
@@ -306,6 +319,7 @@ describe('Task routes sync provider metadata', () => {
         syncProvider: 'ms_todo',
       }),
     );
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:12:');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:week:u:12:');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith('plan:today:u:12:');
   });

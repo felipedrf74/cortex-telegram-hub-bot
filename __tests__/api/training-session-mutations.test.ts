@@ -1,0 +1,126 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  getTrainingWeeklyAdherenceRate,
+  resolveTrainingMutationSession,
+  type TrainingSessionMutationDeps,
+} from '../../src/api/routes/training-session-mutations';
+
+function buildDeps(overrides: Partial<TrainingSessionMutationDeps> = {}): TrainingSessionMutationDeps {
+  return {
+    getActivePlan: vi.fn(() => ({ id: 44, user_id: 12 })),
+    getCurrentWeek: vi.fn(() => ({ id: 78 })),
+    getSessionsForWeek: vi.fn(() => [
+      {
+        id: 321,
+        plan_id: 44,
+        day_of_week: new Date().toLocaleDateString('en-US', { weekday: 'long' }),
+        status: 'pending',
+      },
+    ]),
+    getSessionById: vi.fn(() => ({ id: 321, plan_id: 44 })),
+    getPlanById: vi.fn(() => ({ id: 44, user_id: 12 })),
+    getWeeklyAdherence: vi.fn(() => ({ adherenceRate: 40 })),
+    ...overrides,
+  };
+}
+
+describe('training-session-mutations', () => {
+  it('resolves an explicit numeric session id and verifies ownership', () => {
+    const deps = buildDeps();
+
+    const result = resolveTrainingMutationSession(12, '321', deps);
+
+    expect(result).toEqual({
+      kind: 'resolved',
+      rowId: 321,
+      session: { id: 321, plan_id: 44 },
+      plan: { id: 44, user_id: 12 },
+    });
+  });
+
+  it('resolves today session from the active week when sessionId is today', () => {
+    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const deps = buildDeps({
+      getSessionsForWeek: vi.fn(() => [
+        { id: 111, plan_id: 44, day_of_week: todayName, status: 'completed' },
+        { id: 222, plan_id: 44, day_of_week: todayName, status: 'pending' },
+      ]),
+      getSessionById: vi.fn((sessionId: number) => ({ id: sessionId, plan_id: 44 })),
+    });
+
+    const result = resolveTrainingMutationSession(12, 'today', deps);
+
+    expect(result).toMatchObject({
+      kind: 'resolved',
+      rowId: 222,
+    });
+  });
+
+  it('treats skipped sessions as unavailable when excludeSkippedSessions is enabled', () => {
+    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const deps = buildDeps({
+      getSessionsForWeek: vi.fn(() => [
+        { id: 111, plan_id: 44, day_of_week: todayName, status: 'completed' },
+        { id: 222, plan_id: 44, day_of_week: todayName, status: 'skipped' },
+      ]),
+    });
+
+    const result = resolveTrainingMutationSession(12, 'today', deps, {
+      excludeSkippedSessions: true,
+    });
+
+    expect(result).toEqual({ kind: 'no_active_session' });
+  });
+
+  it('returns not_found when the row id does not resolve to a session', () => {
+    const deps = buildDeps({
+      getSessionById: vi.fn(() => null),
+    });
+
+    const result = resolveTrainingMutationSession(12, '999', deps);
+
+    expect(result).toEqual({ kind: 'not_found', rowId: 999 });
+  });
+
+  it('returns forbidden when the session belongs to another user plan', () => {
+    const deps = buildDeps({
+      getSessionById: vi.fn(() => ({ id: 999, plan_id: 88 })),
+      getPlanById: vi.fn(() => ({ id: 88, user_id: 77 })),
+    });
+
+    const result = resolveTrainingMutationSession(12, '999', deps);
+
+    expect(result).toEqual({
+      kind: 'forbidden',
+      rowId: 999,
+      session: { id: 999, plan_id: 88 },
+    });
+  });
+
+  it('normalizes weekly adherence percentage objects to a 0-1 value', () => {
+    const deps = buildDeps({
+      getWeeklyAdherence: vi.fn(() => ({ adherenceRate: 55 })),
+    });
+
+    expect(getTrainingWeeklyAdherenceRate(12, deps)).toBe(0.55);
+  });
+
+  it('returns numeric weekly adherence unchanged when already normalized', () => {
+    const deps = buildDeps({
+      getWeeklyAdherence: vi.fn(() => 0.4),
+    });
+
+    expect(getTrainingWeeklyAdherenceRate(12, deps)).toBe(0.4);
+  });
+
+  it('returns null when adherence lookup throws', () => {
+    const deps = buildDeps({
+      getWeeklyAdherence: vi.fn(() => {
+        throw new Error('db unavailable');
+      }),
+    });
+
+    expect(getTrainingWeeklyAdherenceRate(12, deps)).toBeNull();
+  });
+});

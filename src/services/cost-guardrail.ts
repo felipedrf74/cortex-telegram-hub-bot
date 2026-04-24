@@ -64,11 +64,6 @@ function todayKey(): string {
 // No free tier — unsubscribed users are blocked from AI entirely.
 const DEFAULT_DAILY_CAP_USD = parseFloat(process.env.PER_USER_DAILY_USD_CAP || '0.00');
 
-// ── Beta mode (paywall bypass) ─────────────────────────────────────
-// When PAYWALL_ENABLED=false, ALL users get owner-level access ($100/day).
-// Toggle via env var or the portal. Set to 'true' when subscriptions go live.
-const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
-
 export interface DailyQuotaStatus {
   over: boolean;
   spentUsd: number;
@@ -99,7 +94,7 @@ function getQuotaResetAt(now = new Date()): string {
 function resolvePlanFromSubscriptionState(userId: number): BillingPlan {
   const db = getDb();
 
-  if (!PAYWALL_ENABLED) {
+  if (!config.billing.paywallEnabled) {
     return 'beta';
   }
 

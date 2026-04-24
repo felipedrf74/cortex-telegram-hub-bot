@@ -3,7 +3,7 @@
 import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
-import { apiSuccess, sendError } from '../response-helpers';
+import { apiSuccess, sendError, sendInternalError } from '../response-helpers';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { composeWeeklyPlan } from '../../services/weekly-plan-orchestrator';
 import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
@@ -40,7 +40,7 @@ export function planRoutes(): Router {
       const data = await composeWeeklyPlan({ userId, weekStart });
       sendEtagged(res, req, data);
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Failed to build weekly plan', 500);
+      sendInternalError(res, 'Unable to load the weekly plan right now.');
     }
   });
 
@@ -53,7 +53,7 @@ export function planRoutes(): Router {
       const data = await composeDailyBrief({ userId, date });
       sendEtagged(res, req, data);
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Failed to build daily brief', 500);
+      sendInternalError(res, 'Unable to load the daily plan right now.');
     }
   });
 
@@ -73,7 +73,7 @@ export function planRoutes(): Router {
       const today = await composeDailyBrief({ userId, date, forceRefresh: true });
       res.json(apiSuccess({ week, today }));
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Failed to recompute plan', 500);
+      sendInternalError(res, 'Unable to recompute the plan right now.');
     }
   });
 
@@ -100,7 +100,7 @@ export function planRoutes(): Router {
         conflicts: data.conflicts,
       }));
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Failed to explain weekly plan', 500);
+      sendInternalError(res, 'Unable to explain the weekly plan right now.');
     }
   });
 

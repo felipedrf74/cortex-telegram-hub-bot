@@ -46,6 +46,7 @@ import { runWithContext } from '../utils/request-context';
 import { getOwnerBootstrapTarget, getUserById } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
+import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -580,7 +581,7 @@ export function startScheduler(bot?: any): void {
   //   - durable notifications (content-notification-store)
   //   - APNs push
   //   - portal events / telemetry
-  const telegramEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && bot;
+  const telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
   const safeSend = async (userId: number, message: string, opts?: any) => {
     if (!telegramEnabled) return;
     try { await safeSend(userId, message, opts); } catch {}
@@ -603,7 +604,7 @@ export function startScheduler(bot?: any): void {
   // report flows. The durable report + APNs path is the primary delivery.
   // Set TELEGRAM_LEGACY_DELIVERY=true to keep Telegram delivery active
   // (e.g., during beta while some users still use Telegram).
-  const telegramLegacyEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true';
+  const telegramLegacyEnabled = isTelegramLegacyDeliveryEnabled();
   const dailyCron = (() => {
     const [h, m] = config.todo.digestTime.split(':').map(Number);
     return `${m ?? 0} ${h ?? 8} * * *`;
@@ -1585,7 +1586,7 @@ export function startScheduler(bot?: any): void {
 // ── Exported for portal quick actions ─────────────────────────────────
 
 export async function sendDailyBriefing(bot?: any): Promise<void> {
-  const _telegramEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && bot;
+  const _telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
   const safeSend = async (userId: number, msg: string, opts?: any) => {
     if (!_telegramEnabled) return;
     try { await bot.api.sendMessage(userId, msg, opts); } catch {}
@@ -1611,7 +1612,7 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
     }
 
     // Legacy Telegram delivery (gated by TELEGRAM_LEGACY_DELIVERY env)
-    if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && target.telegramId) {
+    if (isTelegramLegacyDeliveryEnabled() && target.telegramId) {
       try {
         for (const chunk of chunks) {
           await safeSend(target.telegramId, chunk, { parse_mode: 'HTML' });
@@ -1624,7 +1625,7 @@ export async function sendDailyBriefing(bot?: any): Promise<void> {
 }
 
 async function sendWeeklyReview(bot?: any): Promise<void> {
-  const _telegramEnabled = process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && bot;
+  const _telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
   const safeSend = async (userId: number, msg: string, opts?: any) => {
     if (!_telegramEnabled) return;
     try { await bot.api.sendMessage(userId, msg, opts); } catch {}
@@ -1647,7 +1648,7 @@ async function sendWeeklyReview(bot?: any): Promise<void> {
     }
 
     // Legacy Telegram delivery (gated)
-    if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && target.telegramId) try {
+    if (isTelegramLegacyDeliveryEnabled() && target.telegramId) try {
       await safeSend(target.telegramId, payload.message, { parse_mode: 'HTML' });
     } catch (err) {
       logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send weekly review');

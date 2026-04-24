@@ -158,6 +158,30 @@ export function sendError(
 }
 
 /**
+ * Convenience: send a stable, client-safe internal error envelope.
+ *
+ * Routes should log or capture the underlying exception separately and then
+ * respond with a user-facing message that does not leak internal details.
+ */
+export function sendInternalError(
+  res: Response,
+  message = 'Internal server error',
+  options?: {
+    code?: string;
+    status?: number;
+    details?: Record<string, unknown>;
+  },
+): void {
+  sendError(
+    res,
+    options?.code ?? 'INTERNAL',
+    message,
+    options?.status ?? 500,
+    options?.details,
+  );
+}
+
+/**
  * Convenience: wrap an async handler so any thrown error becomes a
  * standardized 500 response. Eliminates the boilerplate try/catch in
  * every route, while still letting routes throw with a specific code/status

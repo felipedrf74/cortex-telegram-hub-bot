@@ -4,7 +4,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
-import { sendSuccess, sendError } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { getRuntimeStatus } from '../../services/runtime-status';
 import { normalizeLangHeader } from '../../services/secretary-fastpath';
 import { setUserLanguage } from '../../services/user-service';
@@ -60,7 +60,8 @@ export function settingsRoutes(): Router {
         lastMessageAt: runtime.lastMessageAt,
       });
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Status fetch failed', 500);
+      logger.error({ err }, 'iOS settings status failed');
+      sendInternalError(res, 'Unable to load runtime status right now.');
     }
   });
 
@@ -85,33 +86,6 @@ export function settingsRoutes(): Router {
     } catch {
       sendSuccess(res, { connections: [] });
     }
-    return;
-
-    // Dead code below — kept for reference, never reached
-    try {
-      const connections: { name: string; status: string; lastSync: string | null }[] = [];
-      try {
-        const { isOutlookTodoConfigured } = require('../../services/microsoft-todo');
-        connections.push({
-          name: 'Microsoft To Do',
-          status: isOutlookTodoConfigured() ? 'connected' : 'disconnected',
-          lastSync: null,
-        });
-      } catch { connections.push({ name: 'Microsoft To Do', status: 'unavailable', lastSync: null }); }
-
-      try {
-        const { isGarminConfigured } = require('../../services/garmin');
-        connections.push({
-          name: 'Garmin Connect',
-          status: isGarminConfigured() ? 'connected' : 'disconnected',
-          lastSync: null,
-        });
-      } catch { connections.push({ name: 'Garmin Connect', status: 'unavailable', lastSync: null }); }
-
-      sendSuccess(res, { connections });
-    } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Connections fetch failed', 500);
-    }
   });
 
   /** POST /api/v1/settings/language */
@@ -131,7 +105,7 @@ export function settingsRoutes(): Router {
       sendSuccess(res, { language: normalizedLanguage });
     } catch (err: any) {
       logger.error({ err }, 'iOS set language failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to set language', 500);
+      sendInternalError(res, 'Unable to save language right now.');
     }
   });
 
@@ -171,7 +145,7 @@ export function settingsRoutes(): Router {
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'iOS push-token update failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update push token', 500);
+      sendInternalError(res, 'Unable to update the push token right now.');
     }
   });
 
@@ -250,7 +224,7 @@ export function settingsRoutes(): Router {
       sendSuccess(res, userData);
     } catch (err: any) {
       logger.error({ err }, 'iOS data export failed');
-      sendError(res, 'INTERNAL', err?.message || 'Data export failed', 500);
+      sendInternalError(res, 'Unable to export account data right now.');
     }
   });
 
@@ -306,7 +280,7 @@ export function settingsRoutes(): Router {
       sendSuccess(res, { deleted: true, message: 'All data has been permanently deleted.' });
     } catch (err: any) {
       logger.error({ err }, 'iOS account deletion failed');
-      sendError(res, 'INTERNAL', err?.message || 'Account deletion failed', 500);
+      sendInternalError(res, 'Unable to delete the account right now.');
     }
   });
 
@@ -325,7 +299,8 @@ export function settingsRoutes(): Router {
       const prefs = getPushPreferences(userId);
       sendSuccess(res, { preferences: prefs });
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Failed to load preferences', 500);
+      logger.error({ err }, 'iOS push preferences load failed');
+      sendInternalError(res, 'Unable to load push preferences right now.');
     }
   });
 
@@ -350,7 +325,8 @@ export function settingsRoutes(): Router {
       setPushPreference(userId, category, enabled);
       sendSuccess(res, { category, enabled });
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Failed to save preference', 500);
+      logger.error({ err }, 'iOS push preferences save failed');
+      sendInternalError(res, 'Unable to save push preferences right now.');
     }
   };
   router.put('/push-preferences', pushPrefHandler);

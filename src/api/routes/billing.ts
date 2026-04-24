@@ -308,7 +308,7 @@ export function billingRoutes(): Router {
       sendSuccess(res, status);
     } catch (err: any) {
       logger.error({ err, userId }, 'Apple transaction verification failed');
-      sendError(res, 'VERIFICATION_FAILED', err.message || 'Failed to verify Apple transaction', 400);
+      sendError(res, 'VERIFICATION_FAILED', 'Failed to verify Apple transaction', 400);
     }
   }));
 

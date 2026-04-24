@@ -67,6 +67,7 @@ export interface JobStatus {
 }
 
 const jobMap = new Map<string, JobStatus>();
+const inFlightJobs = new Set<string>();
 
 export function registerJob(name: string, label: string, cronExpression: string, domain: JobDomain = 'system'): void {
   jobMap.set(name, {
@@ -142,7 +143,19 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
           return;
         }
 
+        if (inFlightJobs.has(name)) {
+          logger.warn({ job: name }, 'Cron job skipped — previous invocation still running');
+          pushEvent({
+            ts: new Date().toISOString(),
+            type: 'job',
+            summary: `${status.label}: skipped overlap`,
+            detail: 'Previous invocation still running; skipped this tick to avoid duplicate work.',
+          });
+          return;
+        }
+
         const startIso = new Date().toISOString();
+        inFlightJobs.add(name);
         status.lastRunAt = startIso;
         status.lastResult = 'running';
         status.lastError = null;
@@ -182,6 +195,8 @@ export function wrapJob(name: string, fn: () => Promise<JobResult>): () => Promi
             _failureNotifier(status.label, status.lastError ?? 'unknown error').catch(() => {});
           }
           throw err; // re-throw so existing catch blocks in scheduler still fire
+        } finally {
+          inFlightJobs.delete(name);
         }
       },
     );
@@ -269,6 +284,23 @@ export function setDbProvider(fn: DbProvider): void {
   _getDb = fn;
 }
 
+export function _resetTelemetryForTests(): void {
+  ring.fill(null);
+  ringHead = 0;
+  ringCount = 0;
+  jobMap.clear();
+  inFlightJobs.clear();
+  _jobEnabledChecker = null;
+  _failureNotifier = null;
+  _bot = null;
+  _isRestarting = false;
+  _botPollingActive = false;
+  _lastMessageAt = null;
+  _lastGarminRefreshAt = null;
+  _lastGarminRefreshOk = false;
+  _getDb = null;
+}
+
 /** Seed lastRunAt for all registered jobs from job_history. Call after DB init. */
 export function seedJobLastRunFromHistory(): void {
   if (!_getDb) return;
@@ -304,7 +336,12 @@ function persistJobRun(jobName: string, result: string, durationMs: number | nul
       INSERT INTO job_history (job_name, result, duration_ms, error_message)
       VALUES (?, ?, ?, ?)
     `).run(jobName, result, durationMs, errorMessage ?? null);
-  } catch {
-    // table may not exist yet — swallow
+  } catch (err: any) {
+    const message = err?.message ?? String(err);
+    if (/no such table/i.test(message)) {
+      logger.debug({ jobName, result, err: message }, 'job_history persist skipped — table unavailable');
+      return;
+    }
+    logger.warn({ jobName, result, err: message }, 'job_history persist failed');
   }
 }

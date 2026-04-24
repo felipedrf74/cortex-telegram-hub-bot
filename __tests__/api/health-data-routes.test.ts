@@ -148,6 +148,26 @@ describe('Health data routes', () => {
     expect(summary.workoutsCount).toBe(1);
   });
 
+  it('invalidates dashboard home cache after syncing health data', async () => {
+    testDb.prepare(`
+      INSERT INTO api_cache (cache_key, value_json, expires_at)
+      VALUES (?, ?, datetime('now', '+1 hour'))
+    `).run('dashboard-home:62:pt-BR', JSON.stringify({ stale: true }));
+
+    const res = await dispatch('POST', '/sync', {
+      date: '2026-04-16',
+      hrvMs: 72,
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    const staleRow = testDb.prepare(
+      'SELECT cache_key FROM api_cache WHERE cache_key = ?',
+    ).get('dashboard-home:62:pt-BR');
+
+    expect(staleRow).toBeUndefined();
+  });
+
   it('fails closed on invalid tenant scope before syncing health data', async () => {
     const res = await dispatch('POST', '/sync', {
       date: '2026-04-16',
@@ -165,5 +185,17 @@ describe('Health data routes', () => {
         userId: 0,
       }),
     ]);
+  });
+
+  it('sanitizes latest-query failures instead of leaking database internals', async () => {
+    testDb.close();
+
+    const res = await dispatch('GET', '/latest');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Query failed');
+    expect(JSON.stringify(res.body)).not.toContain('database');
   });
 });

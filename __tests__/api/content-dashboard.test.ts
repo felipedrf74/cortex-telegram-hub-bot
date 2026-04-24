@@ -9,8 +9,9 @@
  * every SELECT in the handler is exercised against the actual schema.
  *
  * Covered behaviour:
- *   - Auth: requires `Authorization: Bearer <PORTAL_TOKEN>` when set;
- *           open in dev mode (no token configured).
+ *   - Auth: requires `Authorization: Bearer <PORTAL_TOKEN>` when set.
+ *   - Empty token is NOT enough to open the route; local preview is
+ *     explicit via PORTAL_ALLOW_LOCAL_BYPASS=true.
  *   - Shape: returns the expected top-level keys.
  *   - Books: reflects seeded book_library rows with their status totals.
  *   - Pipeline: reflects seeded content_pipeline rows + stage bucketing.
@@ -58,6 +59,9 @@ function applyMigrations(db: Database.Database): void {
 
 let testDb: Database.Database;
 let portalTokenValue = '';
+let portalReadTokenValue = '';
+let portalWriteTokenValue = '';
+let portalAllowLocalBypass = false;
 
 // ── Mocks ────────────────────────────────────────────────────────────
 // NOTE: every mock below must be defined BEFORE the unit under test is
@@ -74,13 +78,18 @@ vi.mock('../../src/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-// Provide a config with a togglable portal token. The route reads
-// `config.portal.token` at every request, so we can change
-// `portalTokenValue` per-test.
+// Provide a config with togglable portal auth state. The route reads
+// `config.portal` at every request, so we can change both token and
+// local-bypass state per test.
 vi.mock('../../src/config', () => ({
   config: {
     get portal() {
-      return { token: portalTokenValue };
+      return {
+        token: portalTokenValue,
+        readToken: portalReadTokenValue,
+        writeToken: portalWriteTokenValue,
+        allowLocalBypass: portalAllowLocalBypass,
+      };
     },
     app: {
       timezone: 'Europe/Lisbon',
@@ -345,13 +354,17 @@ describe('content-dashboard route', () => {
     testDb = createTestDb();
     applyMigrations(testDb);
     portalTokenValue = '';
+    portalReadTokenValue = '';
+    portalWriteTokenValue = '';
+    portalAllowLocalBypass = false;
   });
 
   afterEach(() => {
     testDb.close();
   });
 
-  it('returns a fully populated payload in dev mode (no token)', async () => {
+  it('returns a fully populated payload when explicit loopback bypass is enabled', async () => {
+    portalAllowLocalBypass = true;
     seedBooks();
     seedPipeline();
     seedYouTube();
@@ -476,8 +489,48 @@ describe('content-dashboard route', () => {
     expect(goodAuth.body.books.total).toBe(3);
   });
 
-  it('is unauthenticated when no portal token is configured (dev mode)', async () => {
+  it('accepts a scoped read token for the dashboard and rejects a write-only mismatch', async () => {
     portalTokenValue = '';
+    portalReadTokenValue = 'test-read-secret';
+    portalWriteTokenValue = 'test-write-secret';
+    seedBooks();
+
+    const { contentDashboardRoutes } = await import('../../src/api/routes/content-dashboard');
+    const app = express();
+    app.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+
+    const withReadToken = await fetchJson(app, '/api/v1/admin/content-dashboard', {
+      Authorization: 'Bearer test-read-secret',
+    });
+    expect(withReadToken.status).toBe(200);
+    expect(withReadToken.body.ok).toBe(true);
+
+    const withWriteToken = await fetchJson(app, '/api/v1/admin/content-dashboard', {
+      Authorization: 'Bearer test-write-secret',
+    });
+    expect(withWriteToken.status).toBe(200);
+    expect(withWriteToken.body.ok).toBe(true);
+
+    const badAuth = await fetchJson(app, '/api/v1/admin/content-dashboard', {
+      Authorization: 'Bearer wrong-token',
+    });
+    expect(badAuth.status).toBe(401);
+  });
+
+  it('rejects access when no portal token is configured and bypass is disabled', async () => {
+    portalTokenValue = '';
+    const { contentDashboardRoutes } = await import('../../src/api/routes/content-dashboard');
+    const app = express();
+    app.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+
+    const res = await fetchJson(app, '/api/v1/admin/content-dashboard');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+  });
+
+  it('allows loopback preview only when explicit local bypass is enabled', async () => {
+    portalTokenValue = '';
+    portalAllowLocalBypass = true;
     const { contentDashboardRoutes } = await import('../../src/api/routes/content-dashboard');
     const app = express();
     app.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
@@ -485,6 +538,25 @@ describe('content-dashboard route', () => {
     const res = await fetchJson(app, '/api/v1/admin/content-dashboard');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+
+  it('sanitizes dashboard build failures instead of leaking database internals', async () => {
+    portalTokenValue = 'test-secret-123';
+    testDb.close();
+
+    const { contentDashboardRoutes } = await import('../../src/api/routes/content-dashboard');
+    const app = express();
+    app.use('/api/v1/admin/content-dashboard', contentDashboardRoutes());
+
+    const res = await fetchJson(app, '/api/v1/admin/content-dashboard', {
+      Authorization: 'Bearer test-secret-123',
+    });
+
+    expect(res.status).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to build content dashboard');
+    expect(JSON.stringify(res.body)).not.toContain('database');
   });
 
   it('returns empty sections gracefully when the database is empty', async () => {

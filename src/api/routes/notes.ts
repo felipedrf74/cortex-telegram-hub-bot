@@ -12,7 +12,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { saveNote, searchNotes, updateNote, deleteNote, getNoteById } from '../../state/notes';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function notesRoutes(): Router {
@@ -52,7 +52,7 @@ export function notesRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS notes list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch notes', 500);
+      sendInternalError(res, 'Failed to fetch notes');
     }
   }));
 
@@ -80,7 +80,7 @@ export function notesRoutes(): Router {
       sendSuccess(res, { note: formatNote(note) }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS notes create failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to save note', 500);
+      sendInternalError(res, 'Failed to save note');
     }
   }));
 
@@ -131,7 +131,7 @@ export function notesRoutes(): Router {
       sendSuccess(res, { note: formatNote(updated) });
     } catch (err: any) {
       logger.error({ err, userId, noteId }, 'iOS notes update failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update note', 500);
+      sendInternalError(res, 'Failed to update note');
     }
   }));
 
@@ -159,7 +159,7 @@ export function notesRoutes(): Router {
       sendSuccess(res, { deleted: true, id: noteId });
     } catch (err: any) {
       logger.error({ err, userId, noteId }, 'iOS notes delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete note', 500);
+      sendInternalError(res, 'Failed to delete note');
     }
   }));
 

@@ -17,7 +17,7 @@ import {
   getUsageRange,
   checkQuota,
 } from '../../services/usage-metering';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function usageRoutes(): Router {
@@ -61,7 +61,7 @@ export function usageRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS usage fetch failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch usage', 500);
+      sendInternalError(res, 'Failed to fetch usage');
     }
   }));
 
@@ -102,7 +102,7 @@ export function usageRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId, startDate, endDate }, 'iOS usage range fetch failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch usage range', 500);
+      sendInternalError(res, 'Failed to fetch usage range');
     }
   }));
 
@@ -123,7 +123,7 @@ export function usageRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS usage/today fetch failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch today usage', 500);
+      sendInternalError(res, 'Failed to fetch today usage');
     }
   }));
 

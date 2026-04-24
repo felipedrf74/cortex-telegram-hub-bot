@@ -57,6 +57,7 @@ describe('garmin-session-store cache invalidation', () => {
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expect(mockClearCache).toHaveBeenCalledWith('training-summary:86');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard:86:');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:86:');
   });
 
   it('clears readiness and dashboard caches when Garmin needs reauth', async () => {
@@ -67,6 +68,7 @@ describe('garmin-session-store cache invalidation', () => {
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expect(mockClearCache).toHaveBeenCalledWith('training-summary:86');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard:86:');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:86:');
     expect(mockCreateAndPushNotification).toHaveBeenCalled();
   });
 
@@ -78,6 +80,7 @@ describe('garmin-session-store cache invalidation', () => {
     expect(mockClearCache).toHaveBeenCalledWith('readiness:86');
     expect(mockClearCache).toHaveBeenCalledWith('training-summary:86');
     expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard:86:');
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:86:');
   });
 
   it('falls back to the canonical owner bootstrap user when no request user is present', async () => {

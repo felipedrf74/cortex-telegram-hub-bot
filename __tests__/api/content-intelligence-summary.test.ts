@@ -143,6 +143,10 @@ async function dispatch(url: string, userId: number, headers: Record<string, str
   return response;
 }
 
+function daysAgoIso(daysAgo: number): string {
+  return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+}
+
 describe('Content API — intelligence summary', () => {
   beforeEach(() => {
     mockJobs = [
@@ -191,6 +195,8 @@ describe('Content API — intelligence summary', () => {
   it('returns discovery, voice, and optimization status for the iOS content landing', async () => {
     const user = getOrCreateUser(47001, { username: 'creator-content' });
     setUserLanguage(user.id, 'pt-PT');
+    const recentDiscoveryAt = daysAgoIso(2);
+    const recentOptimizationAt = daysAgoIso(3);
 
     testDb.prepare(`
       INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, version, updated_at)
@@ -207,9 +213,9 @@ describe('Content API — intelligence summary', () => {
       VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
     `);
 
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'Tariff shift explainer' }), 'urgent', '2026-04-14T08:05:00.000Z');
-    insertSignal.run('performance-agent', 'pillar_performance', JSON.stringify({ pillar: 'training' }), 'normal', '2026-04-13T06:30:00.000Z');
-    insertSignal.run('performance-agent', 'learning_digest', JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }), 'normal', '2026-04-13T06:35:00.000Z');
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'Tariff shift explainer' }), 'urgent', recentDiscoveryAt);
+    insertSignal.run('performance-agent', 'pillar_performance', JSON.stringify({ pillar: 'training' }), 'normal', recentOptimizationAt);
+    insertSignal.run('performance-agent', 'learning_digest', JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }), 'normal', recentOptimizationAt);
 
     const response = await dispatch('/intelligence', user.id);
 
@@ -254,19 +260,22 @@ describe('Content API — intelligence summary', () => {
   it('filters discovery counts through creator radar preferences when present', async () => {
     const user = getOrCreateUser(47003, { username: 'creator-filtered-radar' });
     setUserLanguage(user.id, 'pt-BR');
+    const recentPreferenceAt = daysAgoIso(1);
+    const recentFitnessSignalAt = daysAgoIso(1);
+    const recentPoliticsSignalAt = daysAgoIso(1);
 
     testDb.prepare(`
       INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
       VALUES (?, ?, ?)
-    `).run(user.id, JSON.stringify(['fitness']), '2026-04-16T11:00:00.000Z');
+    `).run(user.id, JSON.stringify(['fitness']), recentPreferenceAt);
 
     const insertSignal = testDb.prepare(`
       INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
       VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
     `);
 
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'fitness reaction angle' }), 'urgent', '2026-04-16T08:05:00.000Z');
-    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'politics reaction angle' }), 'urgent', '2026-04-16T08:10:00.000Z');
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'fitness reaction angle' }), 'urgent', recentFitnessSignalAt);
+    insertSignal.run('reaction-radar', 'reaction_opportunity', JSON.stringify({ title: 'politics reaction angle' }), 'urgent', recentPoliticsSignalAt);
 
     const response = await dispatch('/intelligence', user.id);
 

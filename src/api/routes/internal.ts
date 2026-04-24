@@ -15,16 +15,29 @@ import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { sendError } from '../response-helpers';
+import { secureSecretMatches } from '../secret-guards';
+import {
+  internalAiCompleteRateLimitMiddleware,
+  internalRateLimitMiddleware,
+} from '../rate-limiter';
+import { getOwnerBootstrapTarget } from '../../services/user-service';
+import { getPerformanceSummary } from '../../services/content-learning-store';
+import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
 
 export function internalRoutes(): Router {
   const router = Router();
+
+  // Abuse protection comes BEFORE shared-secret validation so bad callers
+  // cannot brute-force the secret or flood the expensive internal proxy
+  // endpoints without spending a bounded IP budget.
+  router.use(internalRateLimitMiddleware);
 
   // ── Shared-secret auth gate ───────────────────────────────────────
   const secret = process.env.INTERNAL_API_SECRET || '';
 
   router.use((req: Request, res: Response, next) => {
     const provided = req.headers['x-internal-secret'] as string | undefined;
-    if (!secret || provided !== secret) {
+    if (!secret || !secureSecretMatches(secret, provided)) {
       // Canonical error envelope. Python content-engine only checks
       // status code and logs raw response text, so the body shape here
       // only needs to match the iOS contract used everywhere else.
@@ -113,7 +126,7 @@ export function internalRoutes(): Router {
       res.json({ ok: true, costUsd: cost });
     } catch (err: any) {
       logger.error({ err }, 'Internal report-usage failed');
-      sendError(res, 'INTERNAL', err?.message || 'internal error', 500);
+      sendError(res, 'INTERNAL', 'Internal report-usage failure', 500);
     }
   });
 
@@ -135,7 +148,7 @@ export function internalRoutes(): Router {
   // }
   //
   // Response: { text: string, provider: string }
-  router.post('/ai-complete', async (req: Request, res: Response) => {
+  router.post('/ai-complete', internalAiCompleteRateLimitMiddleware, async (req: Request, res: Response) => {
     try {
       const {
         prompt, system = '', category,
@@ -182,7 +195,7 @@ export function internalRoutes(): Router {
       res.json({ text, provider });
     } catch (err: any) {
       logger.error({ err }, 'Internal ai-complete failed');
-      sendError(res, 'AI_COMPLETE_FAILED', err?.message || 'AI completion failed', 500);
+      sendError(res, 'AI_COMPLETE_FAILED', 'AI completion failed', 500);
     }
   });
 
@@ -191,7 +204,7 @@ export function internalRoutes(): Router {
   // Lets the Python engine check whether Anthropic is enabled before
   // making a call. Mirrors the kill switch in anthropic-hook.ts.
   router.get('/anthropic-enabled', (_req: Request, res: Response) => {
-    res.json({ enabled: process.env.ANTHROPIC_ENABLED === 'true' });
+    res.json({ enabled: isAnthropicRuntimeEnabled() });
   });
 
   // ── GET /api/v1/internal/performance-summary ──────────────────────
@@ -201,9 +214,12 @@ export function internalRoutes(): Router {
   router.get('/performance-summary', (req: Request, res: Response) => {
     try {
       const days = parseInt(req.query.days as string, 10) || 30;
-      const { getPerformanceSummary } = require('../../services/content-learning-store');
-      // userId=1 for owner (content-engine serves the owner only)
-      const summary = getPerformanceSummary(1, days);
+      const ownerTarget = getOwnerBootstrapTarget();
+      if (!ownerTarget?.tenantId) {
+        sendError(res, 'SERVICE_UNAVAILABLE', 'Owner bootstrap target unavailable', 503);
+        return;
+      }
+      const summary = getPerformanceSummary(ownerTarget.tenantId, days);
       res.json({
         entries: summary.entries.map((e: any) => ({
           views: e.views,
@@ -222,7 +238,7 @@ export function internalRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'Internal performance-summary failed');
-      sendError(res, 'INTERNAL', err?.message || 'internal error', 500);
+      sendError(res, 'INTERNAL', 'Internal performance-summary failure', 500);
     }
   });
 

@@ -5,8 +5,7 @@ import { logger } from '../utils/logger';
 import { getCurrentContext } from '../utils/request-context';
 import { getOwnerBootstrapUser, getUserById, getUserByTelegramId } from './user-service';
 import { createAndPushNotification } from './content-notification-store';
-import { clearCache, clearCacheByPrefix } from './cache-store';
-import { invalidatePlanningCaches } from './plan-cache-invalidator';
+import { invalidateTrainingDerivedCaches } from './training-cache-invalidator';
 
 export interface GarminSessionRecord {
   userId: number;
@@ -113,11 +112,7 @@ export function getLegacyGarminTokenBlob(userId: number): LegacyTokenBlob | null
 }
 
 function invalidateGarminDerivedCaches(userId: number): void {
-  clearCache(`readiness:${userId}`);
-  clearCache(`dashboard-readiness:${userId}`);
-  clearCache(`training-summary:${userId}`);
-  clearCacheByPrefix(`dashboard:${userId}:`);
-  invalidatePlanningCaches(userId);
+  invalidateTrainingDerivedCaches(userId);
 }
 
 export function upsertGarminSession(

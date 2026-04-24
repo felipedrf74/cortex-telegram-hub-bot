@@ -22,7 +22,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 const DEFAULT_LIMIT = 50;
@@ -113,7 +113,7 @@ export function auditTrailRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'Audit trail self-service query failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch audit trail', 500);
+      sendInternalError(res, 'Failed to fetch audit trail');
     }
   }));
 

@@ -265,12 +265,19 @@ describe('script-pipeline: formatScriptToText', () => {
 
 describe('script-pipeline: iOS API route', () => {
   it('POST /script route uses getScript, not handleContent', () => {
-    const routeSource = require('fs').readFileSync(
+    const parentRouteSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
       'utf8',
     );
+    const routeSource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content-script-routes.ts'),
+      'utf8',
+    );
 
-    // The new route should import getScript
+    // The parent route should delegate script handling to the extracted module.
+    expect(parentRouteSource).toContain('registerContentScriptRoutes');
+
+    // The extracted route should import getScript
     expect(routeSource).toContain('getScript');
 
     // The old pattern: handleContent(prompt, userId) for scripts
@@ -295,28 +302,28 @@ describe('script-pipeline: iOS API route', () => {
   });
 
   it('iOS /script route returns structured fields', () => {
-    const routeSource = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+    const routeUtilitySource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content-script-route-utils.ts'),
       'utf8',
     );
 
-    // The /script route should return these structured fields
-    // (they appear in the sendSuccess call after getScript)
-    expect(routeSource).toContain('topic: result.topic');
-    expect(routeSource).toContain('script: result.script');
-    expect(routeSource).toContain('hook: result.hook');
-    expect(routeSource).toContain('titleOptions:');
-    expect(routeSource).toContain('sourcesUsed:');
-    expect(routeSource).toContain('estimatedDuration:');
-    expect(routeSource).toContain('renderMode: targetRenderMode');
-    expect(routeSource).toContain('durationMs:');
-    expect(routeSource).toContain('degraded: result.degraded ?? false');
-    expect(routeSource).toContain('warnings: result.warnings ?? []');
+    // The /script route delegates structured response shaping to
+    // content-script-route-utils.ts after the route extraction pass.
+    expect(routeUtilitySource).toContain('topic: result.topic');
+    expect(routeUtilitySource).toContain('script: result.script');
+    expect(routeUtilitySource).toContain('hook: result.hook');
+    expect(routeUtilitySource).toContain('titleOptions:');
+    expect(routeUtilitySource).toContain('sourcesUsed:');
+    expect(routeUtilitySource).toContain('estimatedDuration:');
+    expect(routeUtilitySource).toContain('renderMode,');
+    expect(routeUtilitySource).toContain('durationMs:');
+    expect(routeUtilitySource).toContain('degraded: result.degraded ?? false');
+    expect(routeUtilitySource).toContain('warnings: result.warnings ?? []');
   });
 
   it('iOS /script route validates topic parameter', () => {
     const routeSource = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+      require('path').resolve(__dirname, '../../src/api/routes/content-script-routes.ts'),
       'utf8',
     );
 
@@ -326,13 +333,17 @@ describe('script-pipeline: iOS API route', () => {
 
   it('iOS /script route validates explicit YouTube and short presets', () => {
     const routeSource = require('fs').readFileSync(
-      require('path').resolve(__dirname, '../../src/api/routes/content.ts'),
+      require('path').resolve(__dirname, '../../src/api/routes/content-script-routes.ts'),
+      'utf8',
+    );
+    const durationUtilitySource = require('fs').readFileSync(
+      require('path').resolve(__dirname, '../../src/api/routes/content-script-utils.ts'),
       'utf8',
     );
 
     expect(routeSource).toContain('targetDurationSeconds');
-    expect(routeSource).toContain('Reel duration must be one of 15, 30, 45, or 60 seconds');
-    expect(routeSource).toContain('YouTube duration must be one of 8, 10, or 15 minutes');
+    expect(durationUtilitySource).toContain('Reel duration must be one of 15, 30, 45, or 60 seconds');
+    expect(durationUtilitySource).toContain('YouTube duration must be one of 8, 10, or 15 minutes');
   });
 });
 

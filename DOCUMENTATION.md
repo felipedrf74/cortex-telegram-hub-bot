@@ -40,7 +40,7 @@ The iOS app uses on-device NLP (SmartFastpath) to route messages before they rea
 
 The repository name (`cortex-telegram-hub-bot`) and some internal paths reflect the project's Telegram-bot origins. The product has evolved into a multi-surface iOS-first system. The backend serves:
 - iOS app via `/api/v1/*` (JWT auth, per-user scoping)
-- Portal hub via `/api/*` (portal token auth)
+- Portal hub via `/api/*` (scoped portal bearer auth: read/write/admin tokens)
 - Telegram bot via Grammy long-polling (legacy adapter)
 
 ---

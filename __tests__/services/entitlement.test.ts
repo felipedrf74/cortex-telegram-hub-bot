@@ -181,7 +181,7 @@ describe('getEffectiveEntitlement', () => {
     expect(ent.dailyCostCapUsd).toBe(FREE_DAILY_COST_CAP_USD);
   });
 
-  it('respects PAYWALL_ENABLED=false as a beta bypass (all users get owner tier)', async () => {
+  it('keeps the beta bypass available in test/dev runtimes without normalizing it as production behavior', async () => {
     process.env.PAYWALL_ENABLED = 'false';
     // Re-import to pick up the env flip — simplest is a fresh require.
     vi.resetModules();
@@ -189,6 +189,7 @@ describe('getEffectiveEntitlement', () => {
       const mod = await import('../../src/services/entitlement');
       const ent = mod.getEffectiveEntitlement(99);
       expect(ent.plan).toBe('owner');
+      expect(ent.subscriptionProvider).toBe('paywall_disabled');
       expect(ent.dailyCostCapUsd).toBeGreaterThan(FREE_DAILY_COST_CAP_USD);
     } finally {
       // ALWAYS restore — otherwise the leaked env flips subsequent

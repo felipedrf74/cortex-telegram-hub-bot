@@ -102,7 +102,7 @@ export type PatternCategory = typeof PATTERN_CATEGORIES[number];
 
 export function addChannel(
   channelUrl: string,
-  addedVia: 'manual' | 'portal' | 'bot' = 'manual',
+  addedVia: 'manual' | 'portal' | 'bot' | 'ios' = 'manual',
   userId: number = 0,
 ): ContentRefChannel {
   const db = getDb();

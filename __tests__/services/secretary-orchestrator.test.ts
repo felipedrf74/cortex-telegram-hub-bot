@@ -191,6 +191,56 @@ describe('secretary-orchestrator', () => {
     expect(result.crossSkillImpacts.map((impact) => impact.skillId)).toEqual(expect.arrayContaining(['training', 'content', 'cooking']));
   });
 
+  it('does not let finance pressure override a recovery-protected day', () => {
+    const recoveryWithAdminDay = makeDay({
+      training: {
+        title: 'Recovery spin',
+        type: 'ride',
+        status: 'adjusted',
+        durationMinutes: 35,
+        intensity: 'Light',
+        reason: 'Recovery is low, so keep the day lighter and avoid extra friction.',
+        decisions: [],
+      },
+      content: {
+        status: 'scheduled',
+        title: 'Fechar publicação leve',
+        note: 'There is still a small creative slot later.',
+        blockStart: '2026-04-20T15:00:00.000Z',
+        blockEnd: '2026-04-20T16:00:00.000Z',
+        decisions: [],
+      },
+      finance: {
+        budgetNote: 'Finance/admin needs the first protected slot today.',
+        taxNote: 'Tax payment is due today.',
+        subscriptionNote: null,
+        decisions: [],
+      },
+      secretary: {
+        ...makeDay().secretary,
+        focusBlock: {
+          start: '2026-04-20T10:00:00.000Z',
+          end: '2026-04-20T11:00:00.000Z',
+          note: 'Only light admin or writing should happen here.',
+        },
+        calendarEventCount: 3,
+      },
+    });
+
+    const result = buildSecretaryCoordination(makeInput({
+      day: recoveryWithAdminDay,
+      weekPlan: {
+        days: [recoveryWithAdminDay],
+        conflicts: [],
+        variant: 'conservative',
+      },
+    }));
+
+    expect(result.dayOrchestration.posture).toBe('recovery_protected_day');
+    expect(result.nextBestAction?.kind).toBe('lighten_day');
+    expect(result.nextBestAction?.affectedSkills).toEqual(expect.arrayContaining(['training', 'content', 'secretary']));
+  });
+
   it('stays coherent for a content-only user without assuming other skills', () => {
     const contentOnlyDay = makeDay({
       training: {
@@ -336,6 +386,80 @@ describe('secretary-orchestrator', () => {
 
     expect(result.blockers[0]?.kind).toBe('deadline_collision');
     expect(result.suggestedMoves[0]?.targetWindow).toBe('14:30–16:00');
+    expect(result.nextBestAction?.kind).toBe('ship_content');
+    expect(result.nextBestAction?.targetWindow).toBe('14:30–16:00');
+  });
+
+  it('does not let finance pressure steal the next action from a real shipping collision', () => {
+    const financeAndDeadlineDay = makeDay({
+      training: {
+        title: '',
+        type: 'none',
+        status: 'gated',
+        durationMinutes: null,
+        intensity: null,
+        reason: '',
+        decisions: [],
+      },
+      content: {
+        status: 'scheduled',
+        title: 'Fechar roteiro e publicar recap',
+        note: 'This is still the only useful shipping slot of the day.',
+        blockStart: '2026-04-20T13:30:00.000Z',
+        blockEnd: '2026-04-20T15:00:00.000Z',
+        decisions: [],
+      },
+      finance: {
+        budgetNote: 'Admin needs a reliable slot today.',
+        taxNote: 'Tax follow-up is due today.',
+        subscriptionNote: null,
+        decisions: [],
+      },
+      secretary: {
+        ...makeDay().secretary,
+        focusBlock: null,
+        pendingTasks: 5,
+        overdueTasks: 1,
+        tasksDueOnDate: 3,
+        mailUnreadTotal: 9,
+        calendarEventCount: 4,
+        fragmented: true,
+        criticalMeetingCount: 1,
+        busy: true,
+      },
+    });
+
+    const result = buildSecretaryCoordination(makeInput({
+      day: financeAndDeadlineDay,
+      conflicts: [
+        {
+          id: 'deadline-finance-1',
+          date: '2026-04-20',
+          target: 'publishing-window',
+          signalIds: [1 as any],
+          signalTypes: ['publishing_commitment'],
+          meshPriority: 1,
+          message: 'A entrega de conteúdo está a competir com a única janela útil da tarde.',
+        },
+      ],
+      weekPlan: {
+        days: [financeAndDeadlineDay],
+        conflicts: [
+          {
+            id: 'deadline-finance-1',
+            date: '2026-04-20',
+            target: 'publishing-window',
+            signalIds: [1 as any],
+            signalTypes: ['publishing_commitment'],
+            meshPriority: 1,
+            message: 'A entrega de conteúdo está a competir com a única janela útil da tarde.',
+          },
+        ],
+        variant: 'push',
+      },
+    }));
+
+    expect(result.blockers[0]?.kind).toBe('deadline_collision');
     expect(result.nextBestAction?.kind).toBe('ship_content');
     expect(result.nextBestAction?.targetWindow).toBe('14:30–16:00');
   });

@@ -23,8 +23,8 @@
 import { Router, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
-import { clearCache, clearCacheByPrefix } from '../../services/cache-store';
+import { invalidateTrainingDerivedCaches } from '../../services/training-cache-invalidator';
+import { sendInternalError as sendApiInternalError } from '../response-helpers';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import type Database from 'better-sqlite3';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
@@ -67,6 +67,10 @@ function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
 
 function sendError(res: Response, code: string, message: string, status = 400): void {
   res.status(status).json({ ok: false, error: { code, message } });
+}
+
+function sendInternalError(res: Response, message: string): void {
+  sendApiInternalError(res, message);
 }
 
 function prepareAppleHealthUpsert(db: Database.Database): Database.Statement {
@@ -268,15 +272,11 @@ export function healthDataRoutes(): Router {
         'Apple Health data synced',
       );
 
-      clearCache(`readiness:${userId}`);
-      clearCache(`dashboard-readiness:${userId}`);
-      clearCache(`training-summary:${userId}`);
-      clearCacheByPrefix(`dashboard:${userId}:`);
-      invalidatePlanningCaches(userId);
+      invalidateTrainingDerivedCaches(userId);
       sendSuccess(res, { date: payload.date, typesUpserted });
     } catch (err: any) {
       logger.error({ err, userId }, 'Health data sync failed');
-      sendError(res, 'INTERNAL', err?.message || 'Sync failed', 500);
+      sendInternalError(res, 'Sync failed');
     }
   });
 
@@ -297,7 +297,7 @@ export function healthDataRoutes(): Router {
       sendSuccess(res, { types: rows });
     } catch (err: any) {
       logger.error({ err, userId }, 'Health data latest query failed');
-      sendError(res, 'INTERNAL', err?.message || 'Query failed', 500);
+      sendInternalError(res, 'Query failed');
     }
   });
 

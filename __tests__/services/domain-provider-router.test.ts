@@ -1,13 +1,36 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => ({
+    prepare: () => ({
+      get: () => undefined,
+      run: vi.fn(),
+    }),
+  }),
+}));
+
 import {
   getProviderForDomain,
   getFallbackForDomain,
   getDomainProviderConfig,
+  initDomainRouting,
+  isSimpleSecretaryQuery,
 } from '../../src/services/domain-provider-router';
 
 describe('Domain Provider Router', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.GEMINI_ROUTING_ENABLED;
+    delete process.env.GEMINI_INCLUDE_SECRETARY;
+    delete process.env.GEMINI_DOMAINS;
+    delete process.env.SECRETARY_HAIKU_ROUTING_ENABLED;
+    initDomainRouting();
+  });
+
   describe('getProviderForDomain', () => {
     // April 2026 revision — no Claude models as primary ANYWHERE.
     // Every domain (including secretary, which previously used Sonnet for
@@ -19,6 +42,30 @@ describe('Domain Provider Router', () => {
       expect(getProviderForDomain('content')).toBe('gemini');
       expect(getProviderForDomain('finance')).toBe('gemini');
       expect(getProviderForDomain('cooking')).toBe('gemini');
+    });
+
+    it('re-applies env overrides without leaking prior in-memory state', () => {
+      process.env.GEMINI_ROUTING_ENABLED = 'false';
+      process.env.GEMINI_INCLUDE_SECRETARY = 'false';
+      initDomainRouting();
+
+      expect(getProviderForDomain('triathlon')).toBe('anthropic');
+      expect(getProviderForDomain('secretary')).toBe('anthropic');
+
+      delete process.env.GEMINI_ROUTING_ENABLED;
+      delete process.env.GEMINI_INCLUDE_SECRETARY;
+      initDomainRouting();
+
+      expect(getProviderForDomain('triathlon')).toBe('gemini');
+      expect(getProviderForDomain('secretary')).toBe('openai');
+    });
+
+    it('lets env narrow the gemini domain allowlist', () => {
+      process.env.GEMINI_DOMAINS = 'content';
+      initDomainRouting();
+
+      expect(getProviderForDomain('content')).toBe('gemini');
+      expect(getProviderForDomain('finance')).toBe('anthropic');
     });
   });
 
@@ -54,6 +101,18 @@ describe('Domain Provider Router', () => {
         expect(entry).toHaveProperty('fallback');
         expect(entry).toHaveProperty('geminiEnabled');
       }
+    });
+  });
+
+  describe('isSimpleSecretaryQuery', () => {
+    it('only enables the simple secretary fastpath when explicitly opted in', () => {
+      expect(isSimpleSecretaryQuery('/agenda')).toBe(false);
+
+      process.env.SECRETARY_HAIKU_ROUTING_ENABLED = 'true';
+      initDomainRouting();
+
+      expect(isSimpleSecretaryQuery('/agenda')).toBe(true);
+      expect(isSimpleSecretaryQuery('write me a full weekly plan')).toBe(false);
     });
   });
 });

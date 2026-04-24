@@ -22,6 +22,7 @@ const mockRuntimeStatus = vi.fn(() => ({
   lastMessageAt: null,
 }));
 const mockDashboardDbAll = vi.fn(() => []);
+const mockGetAllPendingTasks = vi.fn();
 const mockGetDailyQuotaStatus = vi.fn(() => ({
   over: false,
   spentUsd: 0.12,
@@ -75,6 +76,12 @@ vi.mock('../../src/services/daily-brief-orchestrator', () => ({
   composeDailyBrief: (...args: unknown[]) => mockComposeDailyBrief(...args),
 }));
 
+vi.mock('../../src/services/task-store/task-router', () => ({
+  getTaskProviderForUser: () => ({
+    getAllPendingTasks: (...args: unknown[]) => mockGetAllPendingTasks(...args),
+  }),
+}));
+
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
     prepare: (sql: string) => ({
@@ -95,7 +102,11 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
-import { dashboardRoutes, queryContentPipelineCounts } from '../../src/api/routes/dashboard';
+import { dashboardRoutes } from '../../src/api/routes/dashboard';
+import {
+  mapDashboardTask,
+  queryContentPipelineCounts,
+} from '../../src/api/routes/dashboard-data-fetchers';
 
 interface MockRes {
   statusCode: number;
@@ -168,6 +179,7 @@ describe('Dashboard API route', () => {
     mockGetUserById.mockReset();
     mockRuntimeStatus.mockReset();
     mockDashboardDbAll.mockReset();
+    mockGetAllPendingTasks.mockReset();
 
     mockGetCached.mockReturnValue(null);
     mockGetCachedSWR.mockReturnValue(null);
@@ -184,6 +196,7 @@ describe('Dashboard API route', () => {
       lastMessageAt: null,
     });
     mockDashboardDbAll.mockReturnValue([]);
+    mockGetAllPendingTasks.mockResolvedValue({ success: false, data: null });
     mockComposeDailyBrief.mockResolvedValue({
       creativeCopy: {
         headline: 'Hoje protegemos recuperação para sustentar consistência.',
@@ -274,6 +287,71 @@ describe('Dashboard API route', () => {
       id: 'evt-1',
       source: 'outlook',
       color: '#8E44AD',
+    });
+  });
+
+  it('sanitizes malformed dashboard event and task rows before returning them to iOS', async () => {
+    mockOutlookCalendarConfigured.mockReturnValue(true);
+    mockOutlookCalendarEvents.mockResolvedValue([
+      {
+        id: null,
+        summary: 42,
+        start: { raw: 'invalid' },
+        end: undefined,
+        categories: [99],
+        color: 1234,
+      },
+    ]);
+    mockGetAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: null,
+          title: 77,
+          body: { content: 123 },
+          importance: 'urgent',
+          status: '',
+          dueDateTime: { dateTime: 999 },
+          listId: 55,
+          listName: false,
+          createdDateTime: 321,
+        },
+      ],
+    });
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.calendar.today[0]).toEqual({
+      id: 'outlook:42::',
+      title: '42',
+      start: '',
+      end: '',
+      source: 'outlook',
+      category: '99',
+      color: '1234',
+    });
+    expect(mapDashboardTask({
+      id: null,
+      title: 77,
+      body: { content: 123 },
+      importance: 'urgent',
+      status: '',
+      dueDateTime: { dateTime: 999 },
+      listId: 55,
+      listName: false,
+      createdDateTime: 321,
+    })).toMatchObject({
+      id: 'task:77:999',
+      title: '77',
+      body: '123',
+      importance: 'normal',
+      status: 'notStarted',
+      dueDateTime: '999',
+      listId: '55',
+      listName: 'false',
+      createdDateTime: '321',
     });
   });
 
@@ -375,6 +453,21 @@ describe('Dashboard API route', () => {
     expect(res.body.data.coordinatedDecision.protectedLater).toBeTruthy();
     expect(res.body.data.skillQueue[0]?.domain).toBe('training');
     expect(res.body.data.skillQueue[0]?.whyNow).toBeTruthy();
+  });
+
+  it('returns a client-safe error when the home dashboard aggregation throws unexpectedly', async () => {
+    mockGetUserById.mockImplementation(() => {
+      throw new Error('users lookup failed: leaked internal detail');
+    });
+
+    const res = await dispatch(4, {}, '/home');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toEqual({
+      code: 'INTERNAL',
+      message: 'Unable to load the home briefing right now.',
+    });
   });
 
   it('surfaces missing wearable integration honestly in dashboard and home meta', async () => {

@@ -132,4 +132,16 @@ describe('Wearable routes', () => {
       }),
     ]);
   });
+
+  it('sanitizes wearable summary failures instead of leaking provider internals', async () => {
+    mockGetDailySummary.mockRejectedValueOnce(new Error('garmin adapter exploded for tenant 14'));
+
+    const res = await dispatch(14, '/summary?date=2026-04-16');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('WEARABLE_FETCH_FAILED');
+    expect(res.body.error.message).toBe('Failed to fetch wearable summary');
+    expect(JSON.stringify(res.body)).not.toContain('garmin adapter exploded');
+  });
 });

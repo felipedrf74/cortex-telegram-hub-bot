@@ -5,6 +5,8 @@ import { buildEditorialCoordinationSignals } from '../agents/editorial-coordinat
 import { config } from '../config';
 import { getCached, setCache } from './cache-store';
 import {
+  createEmptySecretaryMeshContext,
+  createEmptyTrainingMeshContext,
   readContentMeshContext,
   readCookingMeshContext,
   readFinanceMeshContext,
@@ -33,6 +35,7 @@ import {
   type ConflictNote,
   type MeshDirective,
 } from './conflict-resolver';
+import { formatCurrencyAmount } from './finance-tracker';
 import { logger } from '../utils/logger';
 import { getUserById, type User } from './user-service';
 import { getWeeksForPlan, getWeeklyAdherence, type TrainingSession } from './training-plans';
@@ -167,6 +170,30 @@ function buildEmptyWeeklyPlanDay(date: string): WeeklyPlanDay {
   };
 }
 
+async function loadMeshContextOrFallback<T>(opts: {
+  label: string;
+  userId: number;
+  weekStart: string;
+  loader: Promise<T>;
+  fallback: T;
+}): Promise<{ value: T; degraded: boolean }> {
+  try {
+    return {
+      value: await opts.loader,
+      degraded: false,
+    };
+  } catch (err) {
+    logger.warn(
+      { err, userId: opts.userId, weekStart: opts.weekStart, label: opts.label },
+      'weekly plan mesh context failed — falling back to empty context',
+    );
+    return {
+      value: opts.fallback,
+      degraded: true,
+    };
+  }
+}
+
 function buildEmptyWeeklyPlanResponse(opts: {
   userId: number;
   weekStart?: string;
@@ -234,27 +261,78 @@ export async function composeWeeklyPlan(opts: {
   const degradedQuota = isUserOverDailyCap(opts.userId);
   const garminStale = isGarminMarkedStale(opts.userId);
 
-  const [training, secretary, cooking, content, finance] = await Promise.all([
-    readTrainingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
-    readSecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+  const [trainingLoad, secretaryLoad, cookingLoad, contentLoad, financeLoad] = await Promise.all([
+    loadMeshContextOrFallback({
+      label: 'training',
+      userId: opts.userId,
+      weekStart: window.weekStart,
+      loader: readTrainingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      fallback: createEmptyTrainingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+    }),
+    loadMeshContextOrFallback({
+      label: 'secretary',
+      userId: opts.userId,
+      weekStart: window.weekStart,
+      loader: readSecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      fallback: createEmptySecretaryMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+    }),
     gatedSkills.includes('cooking')
-      ? Promise.resolve<CookingMeshContext | null>(null)
-      : readCookingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      ? Promise.resolve<{ value: CookingMeshContext | null; degraded: boolean }>({ value: null, degraded: false })
+      : loadMeshContextOrFallback<CookingMeshContext | null>({
+          label: 'cooking',
+          userId: opts.userId,
+          weekStart: window.weekStart,
+          loader: readCookingMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+          fallback: null,
+        }),
     gatedSkills.includes('content')
-      ? Promise.resolve<ContentMeshContext | null>(null)
-      : readContentMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      ? Promise.resolve<{ value: ContentMeshContext | null; degraded: boolean }>({ value: null, degraded: false })
+      : loadMeshContextOrFallback<ContentMeshContext | null>({
+          label: 'content',
+          userId: opts.userId,
+          weekStart: window.weekStart,
+          loader: readContentMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+          fallback: null,
+        }),
     gatedSkills.includes('finance')
-      ? Promise.resolve<FinanceMeshContext | null>(null)
-      : readFinanceMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+      ? Promise.resolve<{ value: FinanceMeshContext | null; degraded: boolean }>({ value: null, degraded: false })
+      : loadMeshContextOrFallback<FinanceMeshContext | null>({
+          label: 'finance',
+          userId: opts.userId,
+          weekStart: window.weekStart,
+          loader: readFinanceMeshContext({ userId: opts.userId, weekStart: window.weekStart }),
+          fallback: null,
+        }),
   ]);
+  const training = trainingLoad.value;
+  const secretary = secretaryLoad.value;
+  const cooking = cookingLoad.value;
+  const content = contentLoad.value;
+  const finance = financeLoad.value;
+  let orchestrationDegraded =
+    degradedQuota.over
+    || trainingLoad.degraded
+    || secretaryLoad.degraded
+    || cookingLoad.degraded
+    || contentLoad.degraded
+    || financeLoad.degraded;
 
-  const meshSignals = await syncDerivedSignals(opts.userId, [
-    ...training.derivedSignals,
-    ...secretary.derivedSignals,
-    ...(cooking ? buildCookingMeshSignals(cooking, training, secretary, content) : []),
-    ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
-    ...(finance ? finance.derivedSignals : []),
-  ]);
+  let meshSignals = new Map<SignalType, AgentSignal[]>();
+  try {
+    meshSignals = await syncDerivedSignals(opts.userId, [
+      ...training.derivedSignals,
+      ...secretary.derivedSignals,
+      ...(cooking ? buildCookingMeshSignals(cooking, training, secretary, content) : []),
+      ...(content ? [...content.derivedSignals, ...buildEditorialCoordinationSignals({ content, secretary, training }).signals] : []),
+      ...(finance ? finance.derivedSignals : []),
+    ]);
+  } catch (err) {
+    orchestrationDegraded = true;
+    logger.warn(
+      { err, userId: opts.userId, weekStart: window.weekStart },
+      'weekly plan signal sync failed — continuing without synced mesh signals',
+    );
+  }
 
   const variant = resolveAggressivenessVariant(training, garminStale);
   const directives = buildDirectiveSet({
@@ -285,7 +363,7 @@ export async function composeWeeklyPlan(opts: {
     weekEnd: window.weekEnd,
     generatedAt: new Date().toISOString(),
     variant,
-    degraded: degradedQuota.over,
+    degraded: orchestrationDegraded,
     gated: { skills: gatedSkills },
     garmin_stale: garminStale,
     conflicts: resolution.conflicts,
@@ -332,6 +410,8 @@ function buildCookingMeshSignals(
         dates: riskyDates,
         reason: fuelingSupport?.hardDatesMissingMeals.length
           ? 'A harder training day still lacks meal support.'
+          : executionReadiness?.prepPressureDates.length
+            ? `Meal execution is already under prep pressure on ${executionReadiness.prepPressureDates.join(', ')}.`
           : 'Training is scheduled but meals are missing on those days.',
       },
     });
@@ -345,9 +425,13 @@ function buildCookingMeshSignals(
     payload: {
       date: batchCookDate,
       reason: executionReadiness?.status === 'at_risk'
-        ? 'Meal execution is at risk this week — use the lightest day to prep ahead.'
+        ? executionReadiness.prepPressureDates.length > 0
+          ? `Meal execution is at risk this week, especially around ${executionReadiness.prepPressureDates.join(', ')} — use the lightest day to prep ahead.`
+          : 'Meal execution is at risk this week — use the lightest day to prep ahead.'
         : executionReadiness?.status === 'partial'
-          ? 'Meal coverage still needs cleanup, so use the lightest day to prep ahead.'
+          ? executionReadiness.prepPressureDates.length > 0
+            ? `Meal coverage still needs cleanup and prep pressure already lands on ${executionReadiness.prepPressureDates.join(', ')}.`
+            : 'Meal coverage still needs cleanup, so use the lightest day to prep ahead.'
           : 'Lowest planned training load this week.',
     },
   });
@@ -550,7 +634,9 @@ function buildDirectiveSet(opts: {
         date,
         target: 'meal-coverage',
         domain: 'cooking',
-        summary: 'Training is scheduled but meal coverage is still missing.',
+        summary: typeof signal.payload.reason === 'string'
+          ? signal.payload.reason
+          : 'Training is scheduled but meal coverage is still missing.',
         action: 'cover-fueling',
         signalType: signal.signal_type,
         signalId: signal.id,
@@ -566,15 +652,17 @@ function buildDirectiveSet(opts: {
     }
 
     directives.push({
-      id: `batch-cook:${signal.id}:${date}`,
-      date,
-      target: 'meal-prep',
-      domain: 'cooking',
-      summary: 'Use this lighter day to batch-cook for the rest of the week.',
-      action: 'batch-cook',
-      signalType: signal.signal_type,
-      signalId: signal.id,
-      meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
+        id: `batch-cook:${signal.id}:${date}`,
+        date,
+        target: 'meal-prep',
+        domain: 'cooking',
+        summary: typeof signal.payload.reason === 'string'
+          ? signal.payload.reason
+          : 'Use this lighter day to batch-cook for the rest of the week.',
+        action: 'batch-cook',
+        signalType: signal.signal_type,
+        signalId: signal.id,
+        meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
     });
   }
 
@@ -672,7 +760,117 @@ function buildDirectiveSet(opts: {
     });
   }
 
+  for (const signal of opts.meshSignals.get('content_capture_opportunity') ?? []) {
+    if (signal.source_agent !== 'mesh.editorial-coordinator') {
+      continue;
+    }
+
+    const date = typeof signal.payload.date === 'string' ? signal.payload.date : null;
+    if (!date) {
+      continue;
+    }
+
+    const title = typeof signal.payload.title === 'string' ? signal.payload.title : 'Content execution';
+    const angle = typeof signal.payload.angle === 'string' ? signal.payload.angle : null;
+    const reason = typeof signal.payload.reason === 'string' ? signal.payload.reason : null;
+
+    directives.push({
+      id: `content-capture:${signal.id}:${date}`,
+      date,
+      target: 'content-execution',
+      domain: 'content',
+      summary: reason ?? defaultContentExecutionSummary(angle, title),
+      action: normalizeContentExecutionAction(angle),
+      signalType: signal.signal_type,
+      signalId: signal.id,
+      meshPriority: signal.meshPriority ?? defaultMeshPriorityForSignal(signal.signal_type),
+    });
+  }
+
   return directives;
+}
+
+function normalizeContentExecutionAction(angle: string | null): string {
+  switch (angle) {
+    case 'reaction_window':
+    case 'script_ready':
+    case 'publish_ready':
+    case 'film_window':
+      return angle;
+    default:
+      return 'content_execution';
+  }
+}
+
+function defaultContentExecutionSummary(angle: string | null, title: string): string {
+  switch (angle) {
+    case 'reaction_window':
+      return `Reaction window is live for ${title}.`;
+    case 'script_ready':
+      return `Script is ready for ${title} — move it into execution.`;
+    case 'publish_ready':
+      return `Content is ready to ship for ${title}.`;
+    case 'film_window':
+      return `Capture window is open for ${title}.`;
+    default:
+      return `Content execution window is open for ${title}.`;
+  }
+}
+
+function contentExecutionTitle(action: string | null, hasFilmingBlock: boolean): string {
+  switch (action) {
+    case 'reaction_window':
+      return hasFilmingBlock ? 'Capture + reaction window' : 'Reaction content window';
+    case 'script_ready':
+      return 'Script ready to move';
+    case 'publish_ready':
+      return 'Ready to ship';
+    case 'publish':
+      return hasFilmingBlock ? 'Capture + publishing day' : 'Publishing commitment';
+    case 'film_window':
+      return hasFilmingBlock ? 'Capture window protected' : 'Content execution window';
+    default:
+      return hasFilmingBlock ? 'Capture + content execution' : 'Content execution window';
+  }
+}
+
+function secretaryContentExecutionSequenceStep(directive: MeshDirective): string {
+  switch (directive.action) {
+    case 'reaction_window':
+      return 'Protect a fast reaction slot while the context is still fresh.';
+    case 'script_ready':
+      return 'Protect a short production slot so the ready script actually moves this week.';
+    case 'film_window':
+      return 'Protect a real capture slot while the content window is still usable.';
+    default:
+      return 'Reserve a real publish/delivery slot so content ships deliberately instead of becoming leftover work.';
+  }
+}
+
+function secretaryContentPrimarySequenceStep(directive: MeshDirective): string {
+  switch (directive.action) {
+    case 'reaction_window':
+      return 'Use the filming or reaction block only after the core execution slot is protected.';
+    case 'script_ready':
+      return 'Use the filming or sponsor block only after the ready-script execution slot is protected.';
+    case 'film_window':
+      return 'Use the filming block only after the content execution slot is protected.';
+    default:
+      return 'Use the filming or sponsor block only after the publish/delivery commitment is protected.';
+  }
+}
+
+function secretaryContentExecutionTradeoffLabel(directive: MeshDirective): string {
+  switch (directive.action) {
+    case 'reaction_window':
+      return 'the reaction window still needs a real slot';
+    case 'script_ready':
+      return 'the ready script still needs a real execution slot';
+    case 'film_window':
+      return 'the capture window still needs a real slot';
+    default:
+      return 'publishing still needs a real slot';
+  }
 }
 
 function buildPlanDay(opts: {
@@ -1012,16 +1210,21 @@ function buildContentItem(
   }
 
   if (contentExecutionDirective) {
+    const contentExecutionAction = contentExecutionDirective.action ?? null;
     const hasFilmingBlock = primaryDirective?.domain === 'content'
       && primaryDirective.action === 'shoot'
       && Boolean(filmingToday);
     const noteParts = [
       contentExecutionDirective.summary,
       hasFilmingBlock
-        ? 'Use the filming block as the capture pass, then finish the publishing handoff the same day.'
+        ? contentExecutionAction === 'reaction_window'
+          ? 'Use the protected capture block while the reaction window is still fresh.'
+          : 'Use the filming block as the capture pass, then finish the publishing handoff the same day.'
         : filmingToday?.reason,
       primaryDirective?.domain === 'finance'
-        ? 'Finance/admin still takes the first protected slot, so content should ship after that block.'
+        ? contentExecutionAction === 'publish' || contentExecutionAction === 'publish_ready'
+          ? 'Finance/admin still takes the first protected slot, so content should ship after that block.'
+          : 'Finance/admin still takes the first protected slot, so content should move after that block.'
         : null,
       deferredPrimaryDirective?.domain === 'content'
         ? `${deferredPrimaryDirective.summary} should stay visible after the protected slot.`
@@ -1033,7 +1236,7 @@ function buildContentItem(
 
     return {
       status: 'scheduled',
-      title: hasFilmingBlock ? 'Capture + publishing day' : 'Publishing commitment',
+      title: contentExecutionTitle(contentExecutionAction, hasFilmingBlock),
       note: noteParts.join(' '),
       blockStart: filmingToday?.blockStart ?? null,
       blockEnd: filmingToday?.blockEnd ?? null,
@@ -1238,13 +1441,13 @@ function buildSecretarySequence(opts: {
   }
 
   if (opts.contentExecutionDirective) {
-    steps.push('Reserve a real publish/delivery slot so content ships deliberately instead of becoming leftover work.');
+    steps.push(secretaryContentExecutionSequenceStep(opts.contentExecutionDirective));
   }
 
   if (opts.primaryDirective?.domain === 'content') {
     steps.push(
       opts.contentExecutionDirective
-        ? 'Use the filming or sponsor block only after the publish/delivery commitment is protected.'
+        ? secretaryContentPrimarySequenceStep(opts.contentExecutionDirective)
         : 'Use the filming or sponsor block only after training and core obligations are protected.',
     );
   }
@@ -1273,14 +1476,17 @@ function buildSecretaryTradeoffNote(opts: {
   spendingDirective?: MeshDirective;
   deferredPrimaryDirective?: MeshDirective;
 }): string | null {
+  const contentPressure = opts.contentExecutionDirective
+    ? secretaryContentExecutionTradeoffLabel(opts.contentExecutionDirective)
+    : null;
   if (opts.availabilityDirective?.action === 'travel' && opts.trainingProtectionDirective) {
     return 'Travel compresses the day, so training needs protection first and everything optional should stay secondary.';
   }
   if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.contentExecutionDirective && opts.primaryDirective?.domain === 'content') {
-    return 'Training is the anchor, meals need closing before it, publishing still needs a real slot, and filming should only use whatever bandwidth remains after all three are protected.';
+    return `Training is the anchor, meals need closing before it, ${contentPressure}, and filming should only use whatever bandwidth remains after all three are protected.`;
   }
   if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.contentExecutionDirective) {
-    return 'The day should sequence around training first, then meal support, then the publishing commitment before anything lower-value expands.';
+    return `The day should sequence around training first, then meal support, then ${contentPressure} before anything lower-value expands.`;
   }
   if (opts.trainingProtectionDirective && opts.mealCoverageDirective && opts.primaryDirective?.domain === 'content') {
     return 'Training is the anchor, meals need closing before it, and content should only use whatever bandwidth remains after both are protected.';
@@ -1298,7 +1504,7 @@ function buildSecretaryTradeoffNote(opts: {
     return 'Finance keeps the first protected slot, but content is still a real obligation and should be the next block instead of disappearing from the day.';
   }
   if (opts.contentExecutionDirective && opts.spendingDirective) {
-    return 'Content still needs a real shipping slot today, but keep the production path lean and low-friction this week.';
+    return `${capitalizeFirstLetter(contentPressure ?? 'content still needs a real protected slot')}, but keep the production path lean and low-friction this week.`;
   }
   if (opts.primaryDirective?.domain === 'content' && opts.spendingDirective) {
     return 'Content can still happen, but only in a lower-friction way that respects the tighter budget week.';
@@ -1310,6 +1516,10 @@ function compactDirectives(directives: Array<MeshDirective | undefined>): PlanDe
   return directives
     .filter((directive): directive is MeshDirective => Boolean(directive))
     .map((directive) => directiveDecision(directive));
+}
+
+function capitalizeFirstLetter(value: string): string {
+  return value.length > 0 ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
 }
 
 function dedupeStrings(values: string[]): string[] {
@@ -1324,12 +1534,19 @@ function buildFinanceItem(
   deferredPrimaryDirective?: MeshDirective,
 ): WeeklyPlanFinanceItem {
   const budget = readBudgetSignal(finance);
-  const budgetRatio = finance.monthlySummary.totalIncome > 0
-    ? (finance.monthlySummary.totalIncome - finance.monthlySummary.totalExpenses) / finance.monthlySummary.totalIncome
-    : 0;
+  const budgetRatio = budget?.remainingRatio
+    ?? finance.budgetView.projectedRemainingRatio
+    ?? finance.budgetView.currentRemainingRatio
+    ?? null;
   const nearestPending = finance.taxEvents.find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
   const renewalDate = finance.subscription.currentPeriodEnd
     ? DateTime.fromISO(finance.subscription.currentPeriodEnd).toISODate()
+    : null;
+  const recurringPressure = finance.budgetView.recurringExpenseEstimate > 0
+    ? `Recurring commitments still likely this month add ${formatCurrencyAmount(finance.budgetView.basisCurrency, finance.budgetView.recurringExpenseEstimate)} of pressure.`
+    : null;
+  const mixedCurrencyBudgetNote = finance.budgetView.integrity === 'mixed_currency'
+    ? `Budget headroom is provisional because ${finance.budgetView.currencies.join(', ')} are mixed this month.`
     : null;
 
   return {
@@ -1337,7 +1554,9 @@ function buildFinanceItem(
       ?? (budget
         ? `Budget mode is ${budget.budgetMode}; grocery mode is ${budget.groceryMode}; training spend mode is ${budget.trainingSpendMode}; content spend mode is ${budget.contentSpendMode}.`
         : null)
-      ?? (budgetRatio <= 0.25
+      ?? mixedCurrencyBudgetNote
+      ?? recurringPressure
+      ?? (budgetRatio != null && budgetRatio <= 0.25
         ? 'Budget headroom is tight this month, so keep discretionary spend conservative.'
         : null),
     taxNote: nearestPending && taxReminderDate(nearestPending.month) === date
@@ -1375,10 +1594,27 @@ function readFuelingSupportSignal(cooking: CookingMeshContext): {
   return { status, trainingDatesMissingMeals, hardDatesMissingMeals };
 }
 
-function readMealExecutionReadinessSignal(cooking: CookingMeshContext): { status: string } | null {
+function readMealExecutionReadinessSignal(cooking: CookingMeshContext): {
+  status: string;
+  prepPressureDates: string[];
+  constrainedMealDates: string[];
+  highEffortMealCount: number;
+} | null {
   const signal = cooking.derivedSignals.find((entry) => entry.signalType === 'meal_execution_readiness');
   const status = signal?.payload.status;
-  return typeof status === 'string' ? { status } : null;
+  if (typeof status !== 'string') return null;
+  return {
+    status,
+    prepPressureDates: Array.isArray(signal?.payload.prepPressureDates)
+      ? signal.payload.prepPressureDates.filter((value): value is string => typeof value === 'string')
+      : [],
+    constrainedMealDates: Array.isArray(signal?.payload.constrainedMealDates)
+      ? signal.payload.constrainedMealDates.filter((value): value is string => typeof value === 'string')
+      : [],
+    highEffortMealCount: typeof signal?.payload.highEffortMealCount === 'number'
+      ? signal.payload.highEffortMealCount
+      : 0,
+  };
 }
 
 function readBudgetSignal(finance: FinanceMeshContext): {
@@ -1386,6 +1622,10 @@ function readBudgetSignal(finance: FinanceMeshContext): {
   groceryMode: string;
   trainingSpendMode: string;
   contentSpendMode: string;
+  remainingRatio: number | null;
+  integrity: string | null;
+  recurringExpenseEstimate: number;
+  recurringExpenseCount: number;
 } | null {
   const signal = finance.derivedSignals.find((entry) => entry.signalType === 'budget_remaining');
   const budgetMode = signal?.payload.budgetMode;
@@ -1398,9 +1638,40 @@ function readBudgetSignal(finance: FinanceMeshContext): {
     || typeof trainingSpendMode !== 'string'
     || typeof contentSpendMode !== 'string'
   ) {
+    if (finance.budgetView.integrity === 'mixed_currency' || finance.budgetView.recurringExpenseEstimate > 0) {
+      return {
+        budgetMode: 'provisional',
+        groceryMode: 'cost_aware',
+        trainingSpendMode: 'selective',
+        contentSpendMode: 'selective',
+        remainingRatio: finance.budgetView.projectedRemainingRatio ?? finance.budgetView.currentRemainingRatio,
+        integrity: finance.budgetView.integrity,
+        recurringExpenseEstimate: finance.budgetView.recurringExpenseEstimate,
+        recurringExpenseCount: finance.budgetView.recurringExpenseCount,
+      };
+    }
     return null;
   }
-  return { budgetMode, groceryMode, trainingSpendMode, contentSpendMode };
+  return {
+    budgetMode,
+    groceryMode,
+    trainingSpendMode,
+    contentSpendMode,
+    remainingRatio: typeof signal?.payload.projectedRemainingRatio === 'number'
+      ? signal.payload.projectedRemainingRatio
+      : typeof signal?.payload.remainingRatio === 'number'
+        ? signal.payload.remainingRatio
+        : finance.budgetView.projectedRemainingRatio ?? finance.budgetView.currentRemainingRatio,
+    integrity: typeof signal?.payload.integrity === 'string'
+      ? signal.payload.integrity
+      : finance.budgetView.integrity,
+    recurringExpenseEstimate: typeof signal?.payload.recurringExpenseEstimate === 'number'
+      ? signal.payload.recurringExpenseEstimate
+      : finance.budgetView.recurringExpenseEstimate,
+    recurringExpenseCount: typeof signal?.payload.recurringExpenseCount === 'number'
+      ? signal.payload.recurringExpenseCount
+      : finance.budgetView.recurringExpenseCount,
+  };
 }
 
 function buildDayHeadline(
@@ -1419,6 +1690,12 @@ function buildDayHeadline(
   if (content?.status === 'scheduled') {
     return content.title === 'Publishing commitment' || content.title === 'Capture + publishing day'
       ? 'Content is due today, so protect a clean shipping block.'
+      : content.title === 'Reaction content window' || content.title === 'Capture + reaction window'
+        ? 'A timely content window is live, so protect a fast execution block.'
+        : content.title === 'Script ready to move'
+          ? 'A script is already ready, so protect a clean execution block.'
+          : content.title === 'Ready to ship'
+            ? 'Content is ready to ship, so protect a clean delivery block.'
       : 'Energy and calendar line up well for filming here.';
   }
   if (training.status === 'adjusted') {

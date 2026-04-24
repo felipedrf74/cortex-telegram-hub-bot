@@ -1,6 +1,6 @@
 {
   "name": "@nexushub/core",
-  "version": "4.14.60",
+  "version": "4.14.61",
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
@@ -32,6 +32,10 @@
   "author": "Felipe Dominguez",
   "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20 <26",
+    "npm": ">=10"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/msal-node": "^5.0.6",

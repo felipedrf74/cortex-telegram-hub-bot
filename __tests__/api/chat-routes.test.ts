@@ -39,6 +39,8 @@ const mockHandleSecretary = vi.fn(async () => ({ text: 'Scheduled.', domain: 'se
 const mockGetScript = vi.fn();
 const mockGetActiveContentPillars = vi.fn(() => []);
 const mockGetContentDeskItems = vi.fn(() => []);
+const mockGetNextContentExecutionHint = vi.fn(async () => null);
+const mockGetRankedContentSignals = vi.fn(() => []);
 const mockLocalizeFilmingRecommendation = vi.fn((value) => value);
 const mockGetFilmingRecommendation = vi.fn(async () => null);
 const mockGetUpcomingTopicCount = vi.fn(() => 0);
@@ -72,6 +74,24 @@ const mockGetMonthlySummary = vi.fn(() => ({
   totalDeductions: 0,
   netIncome: 0,
   transactionCount: 0,
+}));
+const mockGetMonthlyBudgetView = vi.fn(() => ({
+  month: '2026-04',
+  basisCurrency: 'EUR',
+  currencies: ['EUR'],
+  integrity: 'reliable',
+  affordability: 'unknown',
+  incomeInBasisCurrency: 0,
+  expensesInBasisCurrency: 0,
+  currentRemainingInBasisCurrency: 0,
+  currentRemainingRatio: 0,
+  projectedExpensesInBasisCurrency: 0,
+  projectedRemainingInBasisCurrency: 0,
+  projectedRemainingRatio: 0,
+  recurringExpenseEstimate: 0,
+  recurringExpenseCount: 0,
+  recurringExpenses: [],
+  notes: [],
 }));
 const mockGetTaxEvents = vi.fn(() => []);
 const mockCalculateMonthlyTax = vi.fn(() => ({
@@ -114,10 +134,26 @@ const mockApplyCoachRecommendations = vi.fn(async () => ({
   count: 0,
   appliedRecommendations: [],
 }));
+const mockClearChatHistory = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
 }));
+
+vi.mock('../../src/services/chat-history-store', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/chat-history-store')>(
+    '../../src/services/chat-history-store',
+  );
+
+  return {
+    ...actual,
+    clearChatHistory: (...args: Parameters<typeof actual.clearChatHistory>) => {
+      const override = mockClearChatHistory.getMockImplementation();
+      if (override) return override(...args);
+      return actual.clearChatHistory(...args);
+    },
+  };
+});
 
 vi.mock('../../src/router', () => ({
   routeMessage: (...args: unknown[]) => mockRouteMessage(...args),
@@ -201,6 +237,8 @@ vi.mock('../../src/services/content-engine', () => ({
 vi.mock('../../src/services/content-intelligence', () => ({
   getActiveContentPillars: (...args: unknown[]) => mockGetActiveContentPillars(...args),
   getContentDeskItems: (...args: unknown[]) => mockGetContentDeskItems(...args),
+  getNextContentExecutionHint: (...args: unknown[]) => mockGetNextContentExecutionHint(...args),
+  getRankedContentSignals: (...args: unknown[]) => mockGetRankedContentSignals(...args),
   localizeFilmingRecommendation: (...args: unknown[]) => mockLocalizeFilmingRecommendation(...args),
 }));
 
@@ -229,8 +267,10 @@ vi.mock('../../src/services/stripe-service', () => ({
 
 vi.mock('../../src/services/finance-tracker', () => ({
   getMonthlySummary: (...args: unknown[]) => mockGetMonthlySummary(...args),
+  getMonthlyBudgetView: (...args: unknown[]) => mockGetMonthlyBudgetView(...args),
   getTaxEvents: (...args: unknown[]) => mockGetTaxEvents(...args),
   calculateMonthlyTax: (...args: unknown[]) => mockCalculateMonthlyTax(...args),
+  formatCurrencyAmount: (currency: string, amount: number) => `${currency} ${amount.toFixed(2)}`,
 }));
 
 vi.mock('../../src/services/fiscal-bundle', () => ({
@@ -372,6 +412,8 @@ describe('Chat API routes', () => {
     mockGetScript.mockReset();
     mockGetActiveContentPillars.mockReset();
     mockGetContentDeskItems.mockReset();
+    mockGetNextContentExecutionHint.mockReset();
+    mockGetRankedContentSignals.mockReset();
     mockLocalizeFilmingRecommendation.mockReset();
     mockGetFilmingRecommendation.mockReset();
     mockGetUpcomingTopicCount.mockReset();
@@ -382,6 +424,7 @@ describe('Chat API routes', () => {
     mockGetFilingsForMonth.mockReset();
     mockGetSubscriptionStatus.mockReset();
     mockGetMonthlySummary.mockReset();
+    mockGetMonthlyBudgetView.mockReset();
     mockGetTaxEvents.mockReset();
     mockCalculateMonthlyTax.mockReset();
     mockGetFiscalCollectionSummary.mockReset();
@@ -389,6 +432,7 @@ describe('Chat API routes', () => {
     mockStoreCallback.mockReset();
     mockGetLastCoachState.mockReset();
     mockApplyCoachRecommendations.mockReset();
+    mockClearChatHistory.mockReset();
 
     mockTryDeterministicChatCommand.mockResolvedValue(null);
     mockKeywordMatch.mockReturnValue(null);
@@ -427,6 +471,8 @@ describe('Chat API routes', () => {
     });
     mockGetActiveContentPillars.mockReturnValue([]);
     mockGetContentDeskItems.mockReturnValue([]);
+    mockGetNextContentExecutionHint.mockResolvedValue(null);
+    mockGetRankedContentSignals.mockReturnValue([]);
     mockLocalizeFilmingRecommendation.mockImplementation((value) => value);
     mockGetFilmingRecommendation.mockResolvedValue(null);
     mockGetUpcomingTopicCount.mockReturnValue(0);
@@ -460,6 +506,24 @@ describe('Chat API routes', () => {
       totalDeductions: 0,
       netIncome: 0,
       transactionCount: 0,
+    });
+    mockGetMonthlyBudgetView.mockReturnValue({
+      month: '2026-04',
+      basisCurrency: 'EUR',
+      currencies: ['EUR'],
+      integrity: 'reliable',
+      affordability: 'unknown',
+      incomeInBasisCurrency: 0,
+      expensesInBasisCurrency: 0,
+      currentRemainingInBasisCurrency: 0,
+      currentRemainingRatio: 0,
+      projectedExpensesInBasisCurrency: 0,
+      projectedRemainingInBasisCurrency: 0,
+      projectedRemainingRatio: 0,
+      recurringExpenseEstimate: 0,
+      recurringExpenseCount: 0,
+      recurringExpenses: [],
+      notes: [],
     });
     mockGetTaxEvents.mockReturnValue([]);
     mockCalculateMonthlyTax.mockReturnValue({
@@ -647,6 +711,42 @@ describe('Chat API routes', () => {
     ]);
   });
 
+  it('sanitizes clear-history failures instead of leaking the raw exception', async () => {
+    mockClearChatHistory.mockImplementationOnce(() => {
+      throw new Error('sqlite busy while clearing tenant 7001 history');
+    });
+
+    const clearRes = await dispatch('DELETE', '/history', 7001);
+
+    expect(clearRes.statusCode).toBe(500);
+    expect(clearRes.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'CHAT_HISTORY_CLEAR_FAILED',
+        message: 'Failed to clear chat history',
+      },
+    });
+    expect(JSON.stringify(clearRes.body)).not.toContain('sqlite busy while clearing tenant 7001 history');
+  });
+
+  it('sanitizes unexpected message-route failures instead of leaking provider details', async () => {
+    mockRouteMessage.mockRejectedValueOnce(new Error('provider timeout for tenant 7001 while calling model'));
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'help me plan today',
+    });
+
+    expect(messageRes.statusCode).toBe(500);
+    expect(messageRes.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'INTERNAL',
+        message: 'Failed to process message',
+      },
+    });
+    expect(JSON.stringify(messageRes.body)).not.toContain('provider timeout for tenant 7001 while calling model');
+  });
+
   it('persists attachment-driven replies and marks them as attachment routes', async () => {
     mockClassifyAndExtractImage.mockResolvedValue({
       type: 'invoice',
@@ -758,6 +858,22 @@ describe('Chat API routes', () => {
       code: 'BAD_REQUEST',
       message: 'callbackData é obrigatório',
     });
+  });
+
+  it('returns a client-safe localized callback error instead of leaking internal details', async () => {
+    mockGetUserLanguage.mockReturnValue('pt-BR');
+    mockTryDeterministicChatCommand.mockRejectedValueOnce(new Error('database password mismatch'));
+
+    const callbackRes = await dispatch('POST', '/callback', 7003, {
+      callbackData: 'cmd:/day',
+    });
+
+    expect(callbackRes.statusCode, JSON.stringify(callbackRes.body)).toBe(500);
+    expect(callbackRes.body.error).toMatchObject({
+      code: 'INTERNAL',
+      message: 'Falha ao processar a ação.',
+    });
+    expect(JSON.stringify(callbackRes.body)).not.toContain('database password mismatch');
   });
 
   it('returns inline buttons for deterministic fast-path responses and persists them', async () => {
@@ -1175,6 +1291,7 @@ describe('Chat API routes', () => {
     expect(refineRes.body.metadata).toMatchObject({
       type: 'content_refine_fallback',
       degraded: true,
+      warnings: ['content_refine_unavailable'],
     });
   });
 
@@ -1200,6 +1317,7 @@ describe('Chat API routes', () => {
       type: 'content_script_unavailable',
       degraded: true,
       format: 'Reel',
+      warnings: ['content_engine_unavailable'],
     });
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
   });
@@ -1372,6 +1490,56 @@ describe('Chat API routes', () => {
       deskReadyCount: 1,
     });
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a reaction-window content priority when nothing is publish-ready yet', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'content',
+      method: 'keyword',
+      confidence: 0.92,
+      strippedMessage: 'what should i publish next?',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+    mockGetTopics.mockReturnValue([]);
+    mockGetContentDeskItems.mockReturnValue([]);
+    mockGetRankedContentSignals.mockReturnValue([
+      {
+        type: 'reaction_opportunity',
+        title: 'Creators are debating carb myths again',
+        summary: 'This is moving quickly and still has room for a strong response.',
+        priority: 'urgent',
+        relevanceScore: 0.93,
+        confidence: 0.81,
+      },
+    ]);
+    mockGetNextContentExecutionHint.mockResolvedValue({
+      mode: 'reaction_window',
+      title: 'Creators are debating carb myths again',
+      summary: 'This is moving quickly and still has room for a strong response.',
+      scheduledDate: null,
+      confidence: 'high',
+      sourceType: 'reaction_opportunity',
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: 'what should i publish next?',
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.domain).toBe('content');
+    expect(messageRes.body.routeMethod).toBe('content-intelligence-shortcut');
+    expect(messageRes.body.text).toContain('react while this window is still fresh');
+    expect(messageRes.body.text).toContain('Creators are debating carb myths again');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'content_next_publish_snapshot',
+      nextTopic: null,
+      deskReadyCount: 0,
+      candidateMode: 'reaction_window',
+      candidateTitle: 'Creators are debating carb myths again',
+      confidence: 'high',
+      sourceType: 'reaction_opportunity',
+      topSignalType: 'reaction_opportunity',
+    });
   });
 
   it('returns the best recent content performance from the deterministic content shortcut', async () => {
@@ -1597,6 +1765,24 @@ describe('Chat API routes', () => {
       netIncome: 1500,
       transactionCount: 8,
     });
+    mockGetMonthlyBudgetView.mockReturnValue({
+      month: '2026-04',
+      basisCurrency: 'EUR',
+      currencies: ['EUR'],
+      integrity: 'reliable',
+      affordability: 'comfortable',
+      incomeInBasisCurrency: 2400,
+      expensesInBasisCurrency: 900,
+      currentRemainingInBasisCurrency: 1500,
+      currentRemainingRatio: 0.63,
+      projectedExpensesInBasisCurrency: 1000,
+      projectedRemainingInBasisCurrency: 1400,
+      projectedRemainingRatio: 0.58,
+      recurringExpenseEstimate: 100,
+      recurringExpenseCount: 2,
+      recurringExpenses: [],
+      notes: [],
+    });
 
     const messageRes = await dispatch('POST', '/message', 7001, {
       text: "what's my budget remaining this month?",
@@ -1606,6 +1792,7 @@ describe('Chat API routes', () => {
     expect(messageRes.body.domain).toBe('finance');
     expect(messageRes.body.routeMethod).toBe('finance-state-shortcut');
     expect(messageRes.body.text).toContain('Remaining');
+    expect(messageRes.body.text).toContain('recurring commitments');
     expect(messageRes.body.text).toContain('1,500');
     expect(messageRes.body.metadata).toMatchObject({
       type: 'finance_budget_snapshot',
@@ -1613,7 +1800,62 @@ describe('Chat API routes', () => {
       totalExpenses: 900,
       remaining: 1500,
       remainingRatio: 63,
+      integrity: 'reliable',
+      basisCurrency: 'EUR',
+      recurringExpenseEstimate: 100,
+      recurringExpenseCount: 2,
       derived: true,
+    });
+  });
+
+  it('warns when the month mixes currencies instead of pretending budget headroom is reliable', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'finance',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: "what's my budget remaining this month?",
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+    mockGetMonthlySummary.mockReturnValue({
+      month: '2026-04',
+      totalIncome: 2400,
+      totalExpenses: 900,
+      totalDeductions: 0,
+      netIncome: 1500,
+      transactionCount: 8,
+    });
+    mockGetMonthlyBudgetView.mockReturnValue({
+      month: '2026-04',
+      basisCurrency: 'EUR',
+      currencies: ['EUR', 'BRL'],
+      integrity: 'mixed_currency',
+      affordability: 'unknown',
+      incomeInBasisCurrency: 2400,
+      expensesInBasisCurrency: 550,
+      currentRemainingInBasisCurrency: null,
+      currentRemainingRatio: null,
+      projectedExpensesInBasisCurrency: null,
+      projectedRemainingInBasisCurrency: null,
+      projectedRemainingRatio: null,
+      recurringExpenseEstimate: 0,
+      recurringExpenseCount: 0,
+      recurringExpenses: [],
+      notes: ['Mixed currencies are logged this month.'],
+    });
+
+    const messageRes = await dispatch('POST', '/message', 7001, {
+      text: "what's my budget remaining this month?",
+    });
+
+    expect(messageRes.statusCode, JSON.stringify(messageRes.body)).toBe(200);
+    expect(messageRes.body.text).toContain('mixed currencies');
+    expect(messageRes.body.text).toContain('normalize or separate');
+    expect(messageRes.body.metadata).toMatchObject({
+      type: 'finance_budget_snapshot',
+      integrity: 'mixed_currency',
+      remainingRatio: null,
+      currencies: ['EUR', 'BRL'],
+      derived: false,
     });
   });
 
@@ -1734,6 +1976,24 @@ describe('Chat API routes', () => {
       netIncome: 1620,
       transactionCount: 6,
     });
+    mockGetMonthlyBudgetView.mockReturnValue({
+      month: '2026-04',
+      basisCurrency: 'EUR',
+      currencies: ['EUR'],
+      integrity: 'reliable',
+      affordability: 'controlled',
+      incomeInBasisCurrency: 2400,
+      expensesInBasisCurrency: 780,
+      currentRemainingInBasisCurrency: 1620,
+      currentRemainingRatio: 0.68,
+      projectedExpensesInBasisCurrency: 960,
+      projectedRemainingInBasisCurrency: 1440,
+      projectedRemainingRatio: 0.6,
+      recurringExpenseEstimate: 180,
+      recurringExpenseCount: 3,
+      recurringExpenses: [],
+      notes: [],
+    });
 
     const messageRes = await dispatch('POST', '/message', 7001, {
       text: 'how much did i spend this month?',
@@ -1743,12 +2003,15 @@ describe('Chat API routes', () => {
     expect(messageRes.body.domain).toBe('finance');
     expect(messageRes.body.routeMethod).toBe('finance-state-shortcut');
     expect(messageRes.body.text).toContain('Total spending');
+    expect(messageRes.body.text).toContain('recurring commitments');
     expect(messageRes.body.text).toContain('780');
     expect(messageRes.body.metadata).toMatchObject({
       type: 'finance_monthly_spend_snapshot',
       month: '2026-04',
       totalExpenses: 780,
       transactionCount: 6,
+      recurringExpenseEstimate: 180,
+      recurringExpenseCount: 3,
     });
   });
 

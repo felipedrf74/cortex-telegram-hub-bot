@@ -302,6 +302,33 @@ describe('Skills API — POST /override', () => {
     expect(afterGym.accessible).toBe(true);
     expect(afterGym.accessReason).toBe('override');
   });
+
+  it('sanitizes override grant failures instead of leaking persistence internals', async () => {
+    getOrCreateUser(2007, { username: 'owner' });
+    setUserTier(2007, 'owner');
+    getOrCreateUser(2008, { username: 'target' });
+
+    const originalPrepare = testDb.prepare.bind(testDb);
+    const prepareSpy = vi.spyOn(testDb, 'prepare').mockImplementation(((sql: string) => {
+      if (sql.includes('INSERT INTO user_skill_tier_overrides')) {
+        throw new Error('skill override sqlite exploded');
+      }
+      return originalPrepare(sql);
+    }) as typeof testDb.prepare);
+
+    const res = await dispatch('POST', '/override', 2007, {
+      targetUserId: 2008,
+      skillId: 'triathlon.gym',
+    });
+
+    prepareSpy.mockRestore();
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to grant override');
+    expect(JSON.stringify(res.body)).not.toContain('skill override sqlite exploded');
+  });
 });
 
 // ─── DELETE /override ───────────────────────────────────────────────

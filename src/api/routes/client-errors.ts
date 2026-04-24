@@ -20,7 +20,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // Hard size caps — keep in sync with the iOS reporter so it can pre-truncate.
@@ -130,7 +130,7 @@ export function clientErrorsRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'Failed to persist client error');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to persist client error', 500);
+      sendInternalError(res, 'Failed to persist client error');
     }
   }));
 

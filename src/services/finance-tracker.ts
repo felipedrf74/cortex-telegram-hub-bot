@@ -132,6 +132,38 @@ export interface MonthlySummary {
   transactionCount: number;
 }
 
+export type BudgetViewIntegrity = 'reliable' | 'mixed_currency' | 'no_income';
+export type BudgetAffordability = 'tight' | 'controlled' | 'comfortable' | 'unknown';
+
+export interface RecurringExpenseForecast {
+  fingerprint: string;
+  label: string;
+  currency: string;
+  monthlyEstimate: number;
+  monthCount: number;
+  lastSeenDate: string;
+  alreadyLoggedThisMonth: boolean;
+}
+
+export interface MonthlyBudgetView {
+  month: string;
+  basisCurrency: string;
+  currencies: string[];
+  integrity: BudgetViewIntegrity;
+  affordability: BudgetAffordability;
+  incomeInBasisCurrency: number;
+  expensesInBasisCurrency: number;
+  currentRemainingInBasisCurrency: number | null;
+  currentRemainingRatio: number | null;
+  projectedExpensesInBasisCurrency: number | null;
+  projectedRemainingInBasisCurrency: number | null;
+  projectedRemainingRatio: number | null;
+  recurringExpenseEstimate: number;
+  recurringExpenseCount: number;
+  recurringExpenses: RecurringExpenseForecast[];
+  notes: string[];
+}
+
 const PLANNING_CURRENCY_CONVERSION_FROM_BRL: Record<string, number> = {
   BRL: 1,
   EUR: 0.18,
@@ -186,6 +218,236 @@ export function convertPlanningEstimateFromBrl(amountBrl: number, currency: stri
 export function formatCurrencyAmount(currency: string, amount: number): string {
   const rounded = Math.round(amount * 100) / 100;
   return `${currency.toUpperCase()} ${rounded.toFixed(2)}`;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function monthBounds(month: string): { startDate: string; endDate: string } {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const nextMonth = monthNumber === 12
+    ? `${year + 1}-01`
+    : `${year}-${String(monthNumber + 1).padStart(2, '0')}`;
+  return {
+    startDate: `${month}-01`,
+    endDate: `${nextMonth}-01`,
+  };
+}
+
+function normalizeCurrencyCode(currency: string | null | undefined): string {
+  const normalized = currency?.trim().toUpperCase();
+  return normalized && normalized.length > 0 ? normalized : 'BRL';
+}
+
+function normalizeRecurringFingerprint(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b\d+\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized.length >= 3 ? normalized : null;
+}
+
+function looksLikeRecurringCommitment(label: string): boolean {
+  return /\b(?:assinatura|subscription|rent|renda|aluguel|lease|mortgage|insurance|seguro|internet|wifi|phone|telecom|electric|electricity|water|gas|hosting|github|gym|academia|spotify|netflix|apple|icloud|google|workspace|software|saas|cloud|aws|azure|contador|accountant|contabilista|loan|prestacao)\b/i.test(label);
+}
+
+function recurringLabelForRow(row: {
+  description?: string | null;
+  subcategory?: string | null;
+}): string | null {
+  return normalizeRecurringFingerprint(row.description)
+    ?? normalizeRecurringFingerprint(row.subcategory)
+    ?? null;
+}
+
+function detectRecurringExpenses(opts: {
+  userId: number;
+  month: string;
+  basisCurrency: string;
+}): RecurringExpenseForecast[] {
+  const db = getDb();
+  const { endDate } = monthBounds(opts.month);
+  const [year, monthNumber] = opts.month.split('-').map(Number);
+  const historyStart = monthNumber <= 3
+    ? `${year - 1}-${String(monthNumber + 9).padStart(2, '0')}-01`
+    : `${year}-${String(monthNumber - 3).padStart(2, '0')}-01`;
+  const rows = db.prepare(`
+    SELECT date, amount, currency, subcategory, description
+    FROM finance_transactions
+    WHERE user_id = ?
+      AND category = 'expense'
+      AND date >= ?
+      AND date < ?
+  `).all(opts.userId, historyStart, endDate) as Array<{
+    date: string;
+    amount: number;
+    currency: string | null;
+    subcategory: string | null;
+    description: string | null;
+  }>;
+
+  const byFingerprint = new Map<string, Array<{
+    month: string;
+    amount: number;
+    date: string;
+  }>>();
+
+  for (const row of rows) {
+    const currency = normalizeCurrencyCode(row.currency);
+    if (currency !== opts.basisCurrency) continue;
+    const fingerprint = recurringLabelForRow(row);
+    if (!fingerprint) continue;
+    const entries = byFingerprint.get(fingerprint) ?? [];
+    entries.push({
+      month: row.date.slice(0, 7),
+      amount: row.amount,
+      date: row.date,
+    });
+    byFingerprint.set(fingerprint, entries);
+  }
+
+  const recurring: RecurringExpenseForecast[] = [];
+  for (const [fingerprint, entries] of byFingerprint.entries()) {
+    const months = [...new Set(entries.map((entry) => entry.month))];
+    if (months.length < 2) continue;
+    const averageAmount = entries.reduce((sum, entry) => sum + entry.amount, 0) / entries.length;
+    const maxDeviation = Math.max(...entries.map((entry) => Math.abs(entry.amount - averageAmount)));
+    const stableAmount = maxDeviation <= Math.max(5, averageAmount * 0.15);
+    const recurringSignal = looksLikeRecurringCommitment(fingerprint) || months.length >= 3;
+    if (!stableAmount || !recurringSignal) continue;
+
+    const label = fingerprint
+      .split(' ')
+      .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+      .join(' ');
+    const lastSeenDate = entries
+      .map((entry) => entry.date)
+      .sort()
+      .at(-1)!;
+    recurring.push({
+      fingerprint,
+      label,
+      currency: opts.basisCurrency,
+      monthlyEstimate: roundMoney(averageAmount),
+      monthCount: months.length,
+      lastSeenDate,
+      alreadyLoggedThisMonth: months.includes(opts.month),
+    });
+  }
+
+  return recurring
+    .sort((left, right) => right.monthlyEstimate - left.monthlyEstimate)
+    .slice(0, 8);
+}
+
+export function getMonthlyBudgetView(userId: number, month: string): MonthlyBudgetView {
+  const db = getDb();
+  const { startDate, endDate } = monthBounds(month);
+  const preferredCurrency = getPreferredCurrencyForUser(userId);
+  const rows = db.prepare(`
+    SELECT category, amount, currency, date
+    FROM finance_transactions
+    WHERE user_id = ?
+      AND date >= ?
+      AND date < ?
+  `).all(userId, startDate, endDate) as Array<{
+    category: string;
+    amount: number;
+    currency: string | null;
+    date: string;
+  }>;
+
+  const incomeCurrencies = new Set<string>();
+  const expenseCurrencies = new Set<string>();
+  for (const row of rows) {
+    const currency = normalizeCurrencyCode(row.currency);
+    if (row.category === 'income') incomeCurrencies.add(currency);
+    else if (row.category !== 'deduction') expenseCurrencies.add(currency);
+  }
+
+  const relevantCurrencies = [...new Set([...incomeCurrencies, ...expenseCurrencies])];
+  const basisCurrency = relevantCurrencies.length === 1
+    ? relevantCurrencies[0]!
+    : preferredCurrency;
+  const incomeInBasisCurrency = roundMoney(rows
+    .filter((row) => row.category === 'income' && normalizeCurrencyCode(row.currency) === basisCurrency)
+    .reduce((sum, row) => sum + row.amount, 0));
+  const expensesInBasisCurrency = roundMoney(rows
+    .filter((row) => row.category !== 'income' && row.category !== 'deduction' && normalizeCurrencyCode(row.currency) === basisCurrency)
+    .reduce((sum, row) => sum + row.amount, 0));
+  const mixedCurrency = relevantCurrencies.length > 1;
+  const recurringExpenses = detectRecurringExpenses({ userId, month, basisCurrency });
+  const recurringExpenseEstimate = roundMoney(recurringExpenses
+    .filter((entry) => !entry.alreadyLoggedThisMonth)
+    .reduce((sum, entry) => sum + entry.monthlyEstimate, 0));
+  const projectedExpensesInBasisCurrency = mixedCurrency
+    ? null
+    : roundMoney(expensesInBasisCurrency + recurringExpenseEstimate);
+  const currentRemainingInBasisCurrency = mixedCurrency
+    ? null
+    : roundMoney(Math.max(incomeInBasisCurrency - expensesInBasisCurrency, 0));
+  const projectedRemainingInBasisCurrency = mixedCurrency || projectedExpensesInBasisCurrency == null
+    ? null
+    : roundMoney(Math.max(incomeInBasisCurrency - projectedExpensesInBasisCurrency, 0));
+  const currentRemainingRatio = !mixedCurrency && incomeInBasisCurrency > 0
+    ? roundMoney(currentRemainingInBasisCurrency! / incomeInBasisCurrency)
+    : null;
+  const projectedRemainingRatio = !mixedCurrency && incomeInBasisCurrency > 0 && projectedRemainingInBasisCurrency != null
+    ? roundMoney(projectedRemainingInBasisCurrency / incomeInBasisCurrency)
+    : null;
+
+  let integrity: BudgetViewIntegrity = 'reliable';
+  let affordability: BudgetAffordability = 'unknown';
+  const notes: string[] = [];
+
+  if (mixedCurrency) {
+    integrity = 'mixed_currency';
+    notes.push(
+      `Mixed currencies are logged this month (${relevantCurrencies.join(', ')}), so budget headroom is not reliable until those amounts are normalized.`,
+    );
+  } else if (incomeInBasisCurrency <= 0) {
+    integrity = 'no_income';
+    notes.push(`No income is logged in ${basisCurrency} for ${month}, so affordability stays provisional.`);
+  }
+
+  if (recurringExpenseEstimate > 0) {
+    notes.push(
+      `Recurring expense pressure still likely this month: ${formatCurrencyAmount(basisCurrency, recurringExpenseEstimate)} across ${recurringExpenses.filter((entry) => !entry.alreadyLoggedThisMonth).length} pending commitment(s).`,
+    );
+  }
+
+  if (projectedRemainingRatio != null) {
+    affordability = projectedRemainingRatio <= 0.15
+      ? 'tight'
+      : projectedRemainingRatio <= 0.3
+        ? 'controlled'
+        : 'comfortable';
+  }
+
+  return {
+    month,
+    basisCurrency,
+    currencies: relevantCurrencies.length > 0 ? relevantCurrencies : [basisCurrency],
+    integrity,
+    affordability,
+    incomeInBasisCurrency,
+    expensesInBasisCurrency,
+    currentRemainingInBasisCurrency,
+    currentRemainingRatio,
+    projectedExpensesInBasisCurrency,
+    projectedRemainingInBasisCurrency,
+    projectedRemainingRatio,
+    recurringExpenseEstimate,
+    recurringExpenseCount: recurringExpenses.filter((entry) => !entry.alreadyLoggedThisMonth).length,
+    recurringExpenses,
+    notes,
+  };
 }
 
 // ── Brazilian Tax Tables (2024 — Carnê-Leão / IRPF Progressivo) ───

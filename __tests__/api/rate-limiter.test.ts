@@ -12,6 +12,8 @@ import type { Request, Response, NextFunction } from 'express';
 import {
   rateLimitMiddleware,
   webhookRateLimitMiddleware,
+  internalRateLimitMiddleware,
+  internalAiCompleteRateLimitMiddleware,
   _resetRateLimiterForTests,
 } from '../../src/api/rate-limiter';
 
@@ -199,5 +201,65 @@ describe('webhookRateLimitMiddleware', () => {
     );
     expect((fresh as any).statusCode).toBe(200);
     expect((fresh as any).headers['X-RateLimit-Remaining']).toBe(119);
+  });
+});
+
+describe('internal shared-secret rate limiting', () => {
+  beforeEach(() => {
+    _resetRateLimiterForTests();
+  });
+
+  it('keys internal traffic by IP and tags the general internal bucket', () => {
+    const res = mockRes();
+    const next = vi.fn();
+    internalRateLimitMiddleware(mockReq({ ip: '203.0.113.44' }), res, next as NextFunction);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect((res as any).headers['X-RateLimit-Bucket']).toBe('internal');
+    expect((res as any).headers['X-RateLimit-Limit']).toBe(180);
+  });
+
+  it('throttles general internal traffic after the configured budget', () => {
+    const next = vi.fn();
+    const ip = '203.0.113.45';
+
+    for (let i = 0; i < 180; i++) {
+      const res = mockRes();
+      internalRateLimitMiddleware(mockReq({ ip }), res, next as NextFunction);
+      expect((res as any).statusCode).toBe(200);
+    }
+
+    const blocked = mockRes();
+    internalRateLimitMiddleware(mockReq({ ip }), blocked, next as NextFunction);
+    expect((blocked as any).statusCode).toBe(429);
+    expect((blocked as any).headers['X-RateLimit-Bucket']).toBe('internal');
+    expect((blocked as any).headers['Retry-After']).toBe(60);
+  });
+
+  it('uses a tighter dedicated bucket for internal ai-complete traffic', () => {
+    const res = mockRes();
+    const next = vi.fn();
+    internalAiCompleteRateLimitMiddleware(mockReq({ ip: '203.0.113.46' }), res, next as NextFunction);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect((res as any).headers['X-RateLimit-Bucket']).toBe('internal-ai');
+    expect((res as any).headers['X-RateLimit-Limit']).toBe(60);
+  });
+
+  it('throttles internal ai-complete traffic after the tighter budget', () => {
+    const next = vi.fn();
+    const ip = '203.0.113.47';
+
+    for (let i = 0; i < 60; i++) {
+      const res = mockRes();
+      internalAiCompleteRateLimitMiddleware(mockReq({ ip }), res, next as NextFunction);
+      expect((res as any).statusCode).toBe(200);
+    }
+
+    const blocked = mockRes();
+    internalAiCompleteRateLimitMiddleware(mockReq({ ip }), blocked, next as NextFunction);
+    expect((blocked as any).statusCode).toBe(429);
+    expect((blocked as any).headers['X-RateLimit-Bucket']).toBe('internal-ai');
+    expect((blocked as any).headers['Retry-After']).toBe(60);
   });
 });

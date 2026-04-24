@@ -430,7 +430,7 @@ function parseShoppingList(row: any): ShoppingList {
   };
 }
 
-function classifyIngredientAisle(name: string): string {
+export function classifyIngredientAisle(name: string): string {
   const lower = name.trim().toLowerCase();
   if (!lower) return 'other';
 

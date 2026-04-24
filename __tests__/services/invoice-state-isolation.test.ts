@@ -65,6 +65,17 @@ describe('invoice state isolation', () => {
     expect(getActiveVendors(11)).toEqual([]);
   });
 
+  it('normalizes sender patterns so equivalent casing does not create duplicate vendors', () => {
+    const initial = addVendor('Via Verde', 'ViaVerde.PT', 11, ' Fatura , Recibo ');
+    const updated = addVendor('Via Verde', 'viaverde.pt', 11, 'fatura,recibo');
+
+    expect(updated.id).toBe(initial.id);
+    expect(updated.sender_pattern).toBe('viaverde.pt');
+    expect(updated.subject_patterns).toBe('fatura,recibo');
+    expect(vendorExists('VIAVERDE.PT', 11)).toBe(true);
+    expect(getActiveVendors(11)).toHaveLength(1);
+  });
+
   it('scopes invoice duplicate and monthly filing queries by canonical user id', () => {
     recordFiling({
       vendor: 'Amazon.es',

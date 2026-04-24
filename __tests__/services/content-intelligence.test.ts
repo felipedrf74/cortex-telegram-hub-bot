@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockAll = vi.fn();
 const mockGetUnreadNotifications = vi.fn();
+const mockReadRankedSignals = vi.fn();
+const mockGetFilmingRecommendation = vi.fn();
+const mockGetTopics = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
@@ -13,6 +16,15 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/services/content-notification-store', () => ({
   getUnreadNotifications: (...args: unknown[]) => mockGetUnreadNotifications(...args),
+}));
+
+vi.mock('../../src/services/intelligence-bus', () => ({
+  readRankedSignals: (...args: unknown[]) => mockReadRankedSignals(...args),
+}));
+
+vi.mock('../../src/services/content-scheduler', () => ({
+  getFilmingRecommendation: (...args: unknown[]) => mockGetFilmingRecommendation(...args),
+  getTopics: (...args: unknown[]) => mockGetTopics(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -27,12 +39,21 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
-import { getActiveContentPillars, getContentDeskItems, localizeFilmingRecommendation } from '../../src/services/content-intelligence';
+import {
+  getActiveContentPillars,
+  getContentDeskItems,
+  getNextContentExecutionHint,
+  getRankedContentSignals,
+  localizeFilmingRecommendation,
+} from '../../src/services/content-intelligence';
 
 describe('content-intelligence', () => {
   beforeEach(() => {
     mockAll.mockReset();
     mockGetUnreadNotifications.mockReset();
+    mockReadRankedSignals.mockReset();
+    mockGetFilmingRecommendation.mockReset();
+    mockGetTopics.mockReset();
     clearTenantScopeAnomaliesForTests();
   });
 
@@ -83,5 +104,75 @@ describe('content-intelligence', () => {
     expect(localized?.reason).toBe('Só há treino leve planejado, por isso deve ser mais fácil filmar bem.');
     expect(localized?.reasons).toContain('O calendário parece leve, o que é bom para um bloco de filmagem focado.');
     expect(localized?.calendarReservationMessage).toBe('Conecte o Google Calendar ou o Outlook nas Configurações para reservar este bloco de filmagem.');
+  });
+
+  it('fails closed on invalid tenant scope for ranked content signals', () => {
+    expect(getRankedContentSignals(0)).toEqual([]);
+    expect(mockReadRankedSignals).not.toHaveBeenCalled();
+    expect(getTenantScopeAnomalies()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          layer: 'delivery',
+          operation: 'get_ranked_content_signals',
+          reason: 'invalid_user_scope',
+          userId: 0,
+        }),
+      ]),
+    );
+  });
+
+  it('prefers a ready scheduled topic for the next execution hint', async () => {
+    const hint = await getNextContentExecutionHint(7001, {
+      topics: [
+        {
+          id: 21,
+          user_id: 7001,
+          title: 'Race-week fueling mistakes',
+          notes: null,
+          scheduled_date: '2026-04-25',
+          status: 'ready',
+          created_at: '2026-04-20T10:00:00.000Z',
+          updated_at: '2026-04-20T10:00:00.000Z',
+        },
+      ],
+      deskItems: [],
+      rankedSignals: [],
+      filmingRecommendation: null,
+      pillars: [],
+    });
+
+    expect(hint).toMatchObject({
+      mode: 'publish_ready',
+      title: 'Race-week fueling mistakes',
+      scheduledDate: '2026-04-25',
+      confidence: 'high',
+      sourceType: 'topic_ready',
+    });
+  });
+
+  it('falls back to a reaction window when nothing is publish-ready', async () => {
+    const hint = await getNextContentExecutionHint(7001, {
+      topics: [],
+      deskItems: [],
+      rankedSignals: [
+        {
+          type: 'reaction_opportunity',
+          title: 'Creators are debating carb myths again',
+          summary: 'This angle is gaining speed and still has room for a fast response.',
+          priority: 'urgent',
+          relevanceScore: 0.94,
+          confidence: 0.82,
+        },
+      ],
+      filmingRecommendation: null,
+      pillars: [],
+    });
+
+    expect(hint).toMatchObject({
+      mode: 'reaction_window',
+      title: 'Creators are debating carb myths again',
+      confidence: 'high',
+      sourceType: 'reaction_opportunity',
+    });
   });
 });

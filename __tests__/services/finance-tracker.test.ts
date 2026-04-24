@@ -74,6 +74,7 @@ import {
   addTransaction,
   getTransactions,
   deleteTransaction,
+  getMonthlyBudgetView,
   getMonthlySummary,
   calculateAndStoreTax,
   getTaxEvents,
@@ -430,6 +431,69 @@ describe('getAnnualTaxSummary', () => {
     const s2 = getAnnualTaxSummary(2, 2024);
     expect(s1.totalGrossIncome).toBe(15000);
     expect(s2.totalGrossIncome).toBe(5000);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// MONTHLY BUDGET VIEW TESTS
+// ═══════════════════════════════════════════════════════════════════
+
+describe('getMonthlyBudgetView', () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+    applyMigrations(testDb);
+  });
+
+  afterEach(() => { testDb.close(); });
+
+  it('marks mixed-currency months as provisional instead of inventing a fake budget ratio', () => {
+    addTransaction(1, '2024-06-02', 'income', 3200, { currency: 'EUR' });
+    addTransaction(1, '2024-06-05', 'expense', 187, { currency: 'EUR', description: 'Groceries' });
+    addTransaction(1, '2024-06-08', 'expense', 240, { currency: 'BRL', description: 'Taxi Brasil' });
+
+    const view = getMonthlyBudgetView(1, '2024-06');
+
+    expect(view.integrity).toBe('mixed_currency');
+    expect(view.currentRemainingRatio).toBeNull();
+    expect(view.projectedRemainingRatio).toBeNull();
+    expect(view.currencies).toEqual(expect.arrayContaining(['EUR', 'BRL']));
+    expect(view.notes.join(' ')).toContain('Mixed currencies');
+  });
+
+  it('projects still-missing recurring commitments into remaining budget', () => {
+    addTransaction(1, '2024-03-01', 'income', 3000, { currency: 'EUR' });
+    addTransaction(1, '2024-03-04', 'expense', 45, {
+      currency: 'EUR',
+      subcategory: 'software',
+      description: 'Spotify Subscription',
+    });
+    addTransaction(1, '2024-04-01', 'income', 3000, { currency: 'EUR' });
+    addTransaction(1, '2024-04-04', 'expense', 45, {
+      currency: 'EUR',
+      subcategory: 'software',
+      description: 'Spotify Subscription',
+    });
+    addTransaction(1, '2024-05-01', 'income', 3000, { currency: 'EUR' });
+    addTransaction(1, '2024-05-04', 'expense', 45, {
+      currency: 'EUR',
+      subcategory: 'software',
+      description: 'Spotify Subscription',
+    });
+    addTransaction(1, '2024-06-01', 'income', 3000, { currency: 'EUR' });
+    addTransaction(1, '2024-06-08', 'expense', 600, {
+      currency: 'EUR',
+      subcategory: 'groceries',
+      description: 'Groceries',
+    });
+
+    const view = getMonthlyBudgetView(1, '2024-06');
+
+    expect(view.integrity).toBe('reliable');
+    expect(view.currentRemainingRatio).toBe(0.8);
+    expect(view.recurringExpenseCount).toBe(1);
+    expect(view.recurringExpenseEstimate).toBe(45);
+    expect(view.projectedRemainingRatio).toBe(0.79);
+    expect(view.notes.join(' ')).toContain('Recurring expense pressure');
   });
 });
 

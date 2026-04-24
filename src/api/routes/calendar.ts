@@ -27,9 +27,9 @@ import {
   hasWritableCalendarForUser,
   type CalendarSource,
 } from '../../services/unified-calendar';
-import { getCached, setCache, clearCache, clearCacheByPrefix } from '../../services/cache-store';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { getCached, setCache } from '../../services/cache-store';
+import { invalidateCalendarCaches } from '../../services/calendar-cache-invalidator';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
@@ -77,7 +77,7 @@ export function calendarRoutes(): Router {
       sendSuccess(res, { events: formatted });
     } catch (err: any) {
       logger.error({ err }, 'iOS calendar/events failed');
-      sendError(res, 'CALENDAR_FETCH_FAILED', err?.message || 'Failed to fetch calendar events', 500);
+      sendInternalError(res, 'Failed to fetch calendar events', { code: 'CALENDAR_FETCH_FAILED' });
     }
   }));
 
@@ -97,11 +97,9 @@ export function calendarRoutes(): Router {
    * as their primary), else Google. The client can force a specific
    * source via the `source` field.
    *
-   * Cache: invalidates the `calendar:today:*` and `calendar:events:*`
-   * keys that overlap the new event so the dashboard reflects the new
-   * event on the next poll. Full-prefix invalidation isn't supported by
-   * cache-store yet, so we just kill today's cache (the most common
-   * target) and let range caches expire naturally via TTL.
+   * Cache: invalidates all user-scoped calendar keys plus dashboard/home
+   * projections that derive from calendar truth, so the next poll sees the
+   * mutation without waiting for TTL expiry.
    */
   router.post('/events', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
@@ -183,7 +181,7 @@ export function calendarRoutes(): Router {
       sendSuccess(res, { event: formatEvent(event) });
     } catch (err: any) {
       logger.error({ err, body }, 'iOS calendar event create failed');
-      sendError(res, 'CALENDAR_CREATE_FAILED', err?.message || 'Failed to create event', 500);
+      sendInternalError(res, 'Failed to create event', { code: 'CALENDAR_CREATE_FAILED' });
     }
   }));
 
@@ -267,7 +265,7 @@ export function calendarRoutes(): Router {
       sendSuccess(res, { event: formatEvent(event) });
     } catch (err: any) {
       logger.error({ err, eventId, source }, 'iOS calendar event update failed');
-      sendError(res, 'CALENDAR_UPDATE_FAILED', err?.message || 'Failed to update event', 500);
+      sendInternalError(res, 'Failed to update event', { code: 'CALENDAR_UPDATE_FAILED' });
     }
   }));
 
@@ -303,7 +301,7 @@ export function calendarRoutes(): Router {
       sendSuccess(res, { deleted: true, eventId, source });
     } catch (err: any) {
       logger.error({ err, eventId, source }, 'iOS calendar event delete failed');
-      sendError(res, 'CALENDAR_DELETE_FAILED', err?.message || 'Failed to delete event', 500);
+      sendInternalError(res, 'Failed to delete event', { code: 'CALENDAR_DELETE_FAILED' });
     }
   }));
 
@@ -334,7 +332,7 @@ export function calendarRoutes(): Router {
       sendSuccess(res, { events: formatted, date: todayDateString() });
     } catch (err: any) {
       logger.error({ err }, 'iOS calendar/today failed');
-      sendError(res, 'CALENDAR_FETCH_FAILED', err?.message || 'Failed to fetch today\'s events', 500);
+      sendInternalError(res, 'Failed to fetch today\'s events', { code: 'CALENDAR_FETCH_FAILED' });
     }
   }));
 
@@ -362,7 +360,7 @@ export function calendarRoutes(): Router {
       sendSuccess(res, { focusRecommendation, durationMinutes, horizonDays });
     } catch (err: any) {
       logger.error({ err }, 'iOS calendar/focus-recommendation failed');
-      sendError(res, 'FOCUS_RECOMMENDATION_FAILED', err?.message || 'Failed to build focus recommendation', 500);
+      sendInternalError(res, 'Failed to build focus recommendation', { code: 'FOCUS_RECOMMENDATION_FAILED' });
     }
   }));
 
@@ -395,15 +393,6 @@ function parseCalendarSource(value?: string): CalendarSource | null {
     return value;
   }
   return null;
-}
-
-function invalidateCalendarCaches(userId?: number): void {
-  if (userId != null) {
-    clearCacheByPrefix(`u:${userId}:calendar:`);
-  }
-  clearCacheByPrefix('calendar:');
-  clearCache(`calendar:today:${todayDateString()}`);
-  invalidatePlanningCaches(userId);
 }
 
 function parseRange(startQ?: string, endQ?: string): { start: string; end: string } {

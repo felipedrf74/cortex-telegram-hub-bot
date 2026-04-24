@@ -148,6 +148,45 @@ describe('plan routes', () => {
         secretary: { focusBlock: null, pendingTasks: 0, overdueTasks: 0, travel: false, busy: false, decisions: [] },
         finance: null,
       },
+      coordination: {
+        topPriority: 'Protect the first deep-work block.',
+        executionOrder: ['Protect the first deep-work block.'],
+        watchouts: [],
+        handoffs: [],
+        confidence: 'high',
+        dayOrchestration: {
+          posture: 'deep_work_day',
+          title: 'Protect the morning block first.',
+          summary: 'Keep the first half of the day free of admin drift.',
+          confidence: 'high',
+          mainThing: 'Ship the main block before admin',
+          reasons: ['Calendar pressure is still low before lunch.'],
+          affectedSkills: ['secretary'],
+        },
+        weekOrchestration: {
+          posture: 'consistency',
+          title: 'This week protects consistency first.',
+          summary: 'Reduce randomness today so the week keeps margin.',
+          confidence: 'high',
+          reasons: [],
+          affectedSkills: ['secretary'],
+        },
+        nextBestAction: {
+          kind: 'protect_focus',
+          title: 'Protect 09:00-10:30',
+          summary: 'Lock the first focus block before reactive work expands.',
+          whyNow: 'This keeps the week executable.',
+          targetWindow: '09:00-10:30',
+          urgency: 'today',
+          confidence: 'high',
+          affectedSkills: ['secretary'],
+        },
+        blockers: [],
+        suggestedMoves: [],
+        protectedBlocks: [],
+        risks: [],
+        crossSkillImpacts: [],
+      },
     });
     mockGetUserById.mockReturnValue({ id: 12, tier: 'max' });
   });
@@ -158,6 +197,20 @@ describe('plan routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
     expect(response.body.data.weekStart).toBe('2026-04-13');
+  });
+
+  it('returns the daily plan route with stable coordination data and honors If-None-Match', async () => {
+    const first = await dispatch('GET', '/today');
+    const second = await dispatch('GET', '/today', {
+      headers: { 'if-none-match': first.headers.ETag },
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.body.ok).toBe(true);
+    expect(first.body.data.date).toBe('2026-04-14');
+    expect(first.body.data.coordination.dayOrchestration.title).toBe('Protect the morning block first.');
+    expect(first.headers.ETag).toBeTruthy();
+    expect(second.statusCode).toBe(304);
   });
 
   it('fails closed on invalid tenant scope before composing the weekly plan', async () => {
@@ -172,6 +225,24 @@ describe('plan routes', () => {
       expect.objectContaining({
         layer: 'delivery',
         operation: 'plan_route_week',
+        reason: 'invalid_user_scope',
+        userId: 0,
+      }),
+    ]);
+  });
+
+  it('fails closed on invalid tenant scope before composing the daily brief', async () => {
+    const response = await dispatch('GET', '/today', { userId: 0 });
+
+    expect(response.statusCode, JSON.stringify(response.body)).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(mockComposeDailyBrief).not.toHaveBeenCalled();
+
+    expect(getTenantScopeAnomalies(1)).toEqual([
+      expect.objectContaining({
+        layer: 'delivery',
+        operation: 'plan_route_today',
         reason: 'invalid_user_scope',
         userId: 0,
       }),
@@ -196,6 +267,19 @@ describe('plan routes', () => {
     expect(first.statusCode).toBe(200);
     expect(first.headers.ETag).toBeTruthy();
     expect(second.statusCode).toBe(304);
+  });
+
+  it('returns a client-safe error when the daily plan build throws unexpectedly', async () => {
+    mockComposeDailyBrief.mockRejectedValueOnce(new Error('raw planner failure leaked from composeDailyBrief'));
+
+    const response = await dispatch('GET', '/today');
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error).toEqual({
+      code: 'INTERNAL',
+      message: 'Unable to load the daily plan right now.',
+    });
   });
 
   it('clears both caches and recomputes week + today on recompute', async () => {

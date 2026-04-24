@@ -152,6 +152,21 @@ describe('Invoices API routes', () => {
     expect(mockGetFiscalCollectionSummary).toHaveBeenCalledWith(12);
   });
 
+  it('returns a client-safe message when the fiscal collection summary fails unexpectedly', async () => {
+    mockGetFiscalCollectionSummary.mockImplementation(() => {
+      throw new Error('sqlite busy: invoice_profile corrupted');
+    });
+
+    const res = await dispatch('GET', '/profile');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toEqual({
+      code: 'INTERNAL',
+      message: 'Unable to load fiscal collection profile right now.',
+    });
+  });
+
   it('fails closed on invalid tenant scope before loading the fiscal profile', async () => {
     const res = await dispatch('GET', '/profile', 0);
 
@@ -167,6 +182,103 @@ describe('Invoices API routes', () => {
         userId: 0,
       }),
     ]);
+  });
+
+  it('lists only user-scoped invoice vendors for the app-facing fiscal UI', async () => {
+    mockGetAllVendorsMerged.mockReturnValue([
+      {
+        name: 'Santander Consumer',
+        senderPatterns: ['santanderconsumer.pt'],
+        subjectPatterns: ['fatura'],
+        builtin: true,
+      },
+    ]);
+    mockGetAllVendorsDb.mockReturnValue([
+      {
+        id: 91,
+        name: 'Jaqueline Energia',
+        sender_pattern: 'energia.example',
+        subject_patterns: 'fatura,recibo',
+        enabled: 1,
+        created_at: '2026-04-22T10:00:00.000Z',
+      },
+      {
+        id: 92,
+        name: 'Disabled Vendor',
+        sender_pattern: 'disabled.example',
+        subject_patterns: null,
+        enabled: 0,
+        created_at: '2026-04-22T11:00:00.000Z',
+      },
+    ]);
+
+    const res = await dispatch('GET', '/vendors', 44);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockGetAllVendorsDb).toHaveBeenCalledWith(44);
+    expect(mockGetAllVendorsMerged).not.toHaveBeenCalled();
+    expect(res.body.data).toEqual({
+      active: [
+        {
+          name: 'Jaqueline Energia',
+          senderPatterns: ['energia.example'],
+          subjectPatterns: ['fatura', 'recibo'],
+          builtin: false,
+        },
+      ],
+      dbRows: [
+        {
+          id: 91,
+          name: 'Jaqueline Energia',
+          sender_pattern: 'energia.example',
+          subject_patterns: 'fatura,recibo',
+          enabled: 1,
+          created_at: '2026-04-22T10:00:00.000Z',
+        },
+        {
+          id: 92,
+          name: 'Disabled Vendor',
+          sender_pattern: 'disabled.example',
+          subject_patterns: null,
+          enabled: 0,
+          created_at: '2026-04-22T11:00:00.000Z',
+        },
+      ],
+      builtinCount: 0,
+      customCount: 2,
+    });
+  });
+
+  it('does not expose legacy global built-in invoice vendors to users with no configured rules', async () => {
+    mockGetAllVendorsMerged.mockReturnValue([
+      {
+        name: 'Santander Consumer',
+        senderPatterns: ['santanderconsumer.pt'],
+        subjectPatterns: ['fatura'],
+        builtin: true,
+      },
+      {
+        name: 'NOS Empresas',
+        senderPatterns: ['nos.pt'],
+        subjectPatterns: ['fatura'],
+        builtin: true,
+      },
+    ]);
+    mockGetAllVendorsDb.mockReturnValue([]);
+
+    const res = await dispatch('GET', '/vendors', 99);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockGetAllVendorsDb).toHaveBeenCalledWith(99);
+    expect(mockGetAllVendorsMerged).not.toHaveBeenCalled();
+    expect(res.body.data).toEqual({
+      active: [],
+      dbRows: [],
+      builtinCount: 0,
+      customCount: 0,
+    });
   });
 
   it('validates profile updates before touching the state layer', async () => {

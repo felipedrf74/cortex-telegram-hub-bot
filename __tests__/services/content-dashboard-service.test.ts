@@ -298,19 +298,21 @@ describe('content-dashboard-service: sprint mode', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-dashboard-service: no raw SQL duplication', () => {
+  const portalContentRoutesPath = path.resolve(__dirname, '../../src/portal/content-routes.ts');
+
   it('portal GET /api/books uses getBooks from service', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'),
+      portalContentRoutesPath,
       'utf8',
     );
     // Should use canonical service
-    expect(source).toContain("require('../services/content-dashboard-service')");
+    expect(source).toContain("from '../services/content-dashboard-service'");
     expect(source).toContain('getBooks');
   });
 
   it('portal GET /api/content-knowledge uses getVoiceDna from service', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'),
+      portalContentRoutesPath,
       'utf8',
     );
     expect(source).toContain('getVoiceDna');
@@ -318,7 +320,7 @@ describe('content-dashboard-service: no raw SQL duplication', () => {
 
   it('portal POST /api/override/sprint uses toggleSprintMode from service', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'),
+      portalContentRoutesPath,
       'utf8',
     );
     expect(source).toContain('toggleSprintMode');

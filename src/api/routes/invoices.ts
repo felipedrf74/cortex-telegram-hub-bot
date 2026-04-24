@@ -16,7 +16,7 @@
  * Mount point: `/api/v1/invoices`
  *
  * Endpoints:
- *   GET    /vendors                 — list merged builtin + user vendors
+ *   GET    /vendors                 — list user-scoped configured vendors
  *   POST   /vendors                 — add or re-enable a custom vendor
  *   DELETE /vendors/:id             — soft-delete (disable) a custom vendor
  *   POST   /scan-now                — trigger on-demand monthly collection
@@ -29,19 +29,38 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
-import { getAllVendors as getAllVendorsMerged, collectMonthlyInvoices } from '../../services/invoice-collector';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
+import { collectMonthlyInvoices } from '../../services/invoice-collector';
 import {
   addVendor,
   removeVendor,
   getAllVendors as getAllVendorsDb,
 } from '../../state/invoice-vendors';
+import type { InvoiceVendor } from '../../domains/types';
 import {
   getFiscalCollectionSummary,
   sendFiscalBundleNow,
 } from '../../services/fiscal-bundle';
 import { updateFiscalCollectionProfile } from '../../state/fiscal-collection-profiles';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+
+function splitSubjectPatterns(subjectPatterns: string | null | undefined): string[] {
+  const patterns = subjectPatterns
+    ?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return patterns?.length ? patterns : ['fatura'];
+}
+
+function toUserScopedVendorConfig(row: InvoiceVendor) {
+  return {
+    name: row.name,
+    senderPatterns: [row.sender_pattern],
+    subjectPatterns: splitSubjectPatterns(row.subject_patterns),
+    builtin: false,
+  };
+}
 
 export function invoicesRoutes(): Router {
   const router = Router();
@@ -62,7 +81,7 @@ export function invoicesRoutes(): Router {
       sendSuccess(res, summary);
     } catch (err: any) {
       logger.error({ err }, 'iOS fiscal collection profile failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to load fiscal collection profile', 500);
+      sendInternalError(res, 'Unable to load fiscal collection profile right now.');
     }
   }));
 
@@ -102,7 +121,7 @@ export function invoicesRoutes(): Router {
       sendSuccess(res, getFiscalCollectionSummary(userId));
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS fiscal collection profile update failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update fiscal collection profile', 500);
+      sendInternalError(res, 'Unable to update fiscal collection profile right now.');
     }
   }));
 
@@ -118,7 +137,7 @@ export function invoicesRoutes(): Router {
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS fiscal bundle send failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to send fiscal bundle', 500);
+      sendInternalError(res, 'Unable to send the fiscal bundle right now.');
     }
   }));
 
@@ -127,36 +146,33 @@ export function invoicesRoutes(): Router {
   /**
    * GET /api/v1/invoices/vendors
    *
-   * Returns the MERGED list (builtin + user-added + disabled). The iOS
-   * UI differentiates the three by:
-   *   - `builtin: true`   — cannot be edited/deleted
-   *   - `builtin: false`  — user-added, editable + deletable
-   *   - `enabled: false`  — previously added but soft-deleted
+   * Returns only the authenticated user's configured vendor rows.
    *
-   * Builtins never appear in the `invoice_vendors` table, so they have
-   * no `id` — the iOS client should not assume every row has one.
+   * The collector still has legacy built-in recognizers, but the app-facing
+   * management surface must not expose global defaults as if they belonged to
+   * every tenant. That previously made owner-specific fiscal vendors visible
+   * to unrelated accounts.
    */
   router.get('/vendors', asyncHandler(async (req, res: Response) => {
     try {
-      const userId = (req as any).userId;
+      const { userId } = req as AuthenticatedRequest;
 
-      // Builtins + currently-enabled custom vendors (what the collector
-      // actually uses when it runs).
-      const active = getAllVendorsMerged(userId);
-
-      // Also pull the raw DB rows so the UI can show disabled vendors
+      // Pull the raw DB rows so the UI can show disabled vendors
       // (for re-enable) — these include `id` and `enabled` fields.
       const dbRows = getAllVendorsDb(userId);
+      const active = dbRows
+        .filter((row) => row.enabled === 1)
+        .map(toUserScopedVendorConfig);
 
       sendSuccess(res, {
-        active,                  // what the collector uses right now
-        dbRows,                  // full DB inventory for admin management
-        builtinCount: active.filter(v => v.builtin).length,
+        active,                  // enabled user-scoped rules visible to iOS
+        dbRows,                  // full user-scoped DB inventory for management
+        builtinCount: 0,
         customCount: dbRows.length,
       });
     } catch (err: any) {
       logger.error({ err }, 'iOS invoices vendors list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch vendors', 500);
+      sendInternalError(res, 'Unable to load invoice vendors right now.');
     }
   }));
 
@@ -188,7 +204,7 @@ export function invoicesRoutes(): Router {
       sendSuccess(res, { vendor }, { status: 201 });
     } catch (err: any) {
       logger.error({ err }, 'iOS invoices vendor create failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to add vendor', 500);
+      sendInternalError(res, 'Unable to add the invoice vendor right now.');
     }
   }));
 
@@ -214,7 +230,7 @@ export function invoicesRoutes(): Router {
       sendSuccess(res, { removed: true, id });
     } catch (err: any) {
       logger.error({ err, id }, 'iOS invoices vendor delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete vendor', 500);
+      sendInternalError(res, 'Unable to delete the invoice vendor right now.');
     }
   }));
 
@@ -255,7 +271,7 @@ export function invoicesRoutes(): Router {
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err, userId, year, month }, 'iOS on-demand invoice scan failed');
-      sendError(res, 'INTERNAL', err?.message || 'Invoice scan failed', 500);
+      sendInternalError(res, 'Unable to run the invoice scan right now.');
     }
   }));
 

@@ -21,7 +21,7 @@
     "movementPattern": "pull",
     "equipment": ["pullup_bar"],
     "fatigueCost": "medium",
-    "substitutions": ["lat_pulldown", "ring_row"]
+    "substitutions": ["lat_pulldown", "one_arm_dumbbell_row", "ring_row"]
   },
   {
     "id": "bench_press",
@@ -29,7 +29,7 @@
     "movementPattern": "push",
     "equipment": ["barbell", "bench"],
     "fatigueCost": "medium",
-    "substitutions": ["push_up", "dumbbell_bench_press"]
+    "substitutions": ["dumbbell_bench_press", "push_up"]
   },
   {
     "id": "split_squat",
@@ -62,6 +62,133 @@
     "equipment": [],
     "fatigueCost": "low",
     "substitutions": ["worlds_greatest_stretch", "cossack_squat"]
+  },
+  {
+    "id": "goblet_squat",
+    "name": "Goblet Squat",
+    "movementPattern": "squat",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["split_squat", "cossack_squat"]
+  },
+  {
+    "id": "single_leg_rdl",
+    "name": "Single-Leg Romanian Deadlift",
+    "movementPattern": "hinge",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["hip_hinge_band", "hip_airplane"]
+  },
+  {
+    "id": "hip_hinge_band",
+    "name": "Banded Hip Hinge",
+    "movementPattern": "hinge",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["single_leg_rdl"]
+  },
+  {
+    "id": "lat_pulldown",
+    "name": "Lat Pulldown",
+    "movementPattern": "pull",
+    "equipment": ["lat_pulldown"],
+    "fatigueCost": "medium",
+    "substitutions": ["one_arm_dumbbell_row", "ring_row"]
+  },
+  {
+    "id": "one_arm_dumbbell_row",
+    "name": "One-Arm Dumbbell Row",
+    "movementPattern": "pull",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["ring_row"]
+  },
+  {
+    "id": "ring_row",
+    "name": "Ring Row",
+    "movementPattern": "pull",
+    "equipment": ["pullup_bar"],
+    "fatigueCost": "low",
+    "substitutions": ["one_arm_dumbbell_row"]
+  },
+  {
+    "id": "push_up",
+    "name": "Push-Up",
+    "movementPattern": "push",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["dumbbell_bench_press"]
+  },
+  {
+    "id": "dumbbell_bench_press",
+    "name": "Dumbbell Bench Press",
+    "movementPattern": "push",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["push_up"]
+  },
+  {
+    "id": "step_up",
+    "name": "Step-Up",
+    "movementPattern": "single_leg",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["lunging_iso_hold", "split_squat"]
+  },
+  {
+    "id": "lunging_iso_hold",
+    "name": "Lunge Iso Hold",
+    "movementPattern": "single_leg",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["step_up"]
+  },
+  {
+    "id": "hollow_hold",
+    "name": "Hollow Hold",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["dead_bug", "bear_crawl"]
+  },
+  {
+    "id": "bear_crawl",
+    "name": "Bear Crawl",
+    "movementPattern": "core",
+    "equipment": [],
+    "fatigueCost": "medium",
+    "substitutions": ["dead_bug", "hollow_hold"]
+  },
+  {
+    "id": "suitcase_carry",
+    "name": "Suitcase Carry",
+    "movementPattern": "carry",
+    "equipment": ["dumbbells"],
+    "fatigueCost": "medium",
+    "substitutions": ["sandbag_hold"]
+  },
+  {
+    "id": "sandbag_hold",
+    "name": "Sandbag Hold",
+    "movementPattern": "carry",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["suitcase_carry"]
+  },
+  {
+    "id": "worlds_greatest_stretch",
+    "name": "World's Greatest Stretch",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["hip_airplane", "cossack_squat"]
+  },
+  {
+    "id": "cossack_squat",
+    "name": "Cossack Squat",
+    "movementPattern": "mobility",
+    "equipment": [],
+    "fatigueCost": "low",
+    "substitutions": ["worlds_greatest_stretch", "split_squat"]
   }
 ]
-

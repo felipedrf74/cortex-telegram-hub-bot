@@ -28,7 +28,16 @@ import {
   type SignalType, type AgentSignal, type MeshPriority, type SignalPriority,
 } from './intelligence-bus';
 import { config } from '../config';
-import { getMealPlan, getShoppingList, type MealPlan, type ShoppingList } from './cooking-chef';
+import {
+  classifyIngredientAisle,
+  getMealPlan,
+  getRecipeById,
+  getShoppingList,
+  type Ingredient,
+  type MealPlan,
+  type ShoppingItem,
+  type ShoppingList,
+} from './cooking-chef';
 import { getUnreadNotifications, type ContentNotification } from './content-notification-store';
 import {
   getFilmingRecommendation,
@@ -39,12 +48,24 @@ import {
 } from './content-scheduler';
 import { getKnowledgeStats, getVoiceDna } from './content-dashboard-service';
 import {
+  getActiveContentPillars,
+  getContentDeskItems,
+  getNextContentExecutionHint,
+  getRankedContentSignals,
+  type ContentDeskItem,
+  type ContentExecutionHint,
+  type ContentPillarSummary,
+  type ContentSignalDigest,
+} from './content-intelligence';
+import {
   convertPlanningEstimateFromBrl,
   getPreferredCurrencyForUser,
   getAnnualTaxSummary,
+  getMonthlyBudgetView,
   getMonthlySummary,
   getTaxEvents,
   type AnnualTaxSummary,
+  type MonthlyBudgetView,
   type MonthlySummary,
   type TaxEvent,
 } from './finance-tracker';
@@ -196,6 +217,10 @@ export interface ContentMeshContext {
   }>;
   filmingRecommendation: ContentFilmingRecommendation | null;
   unreadNotifications: ContentNotification[];
+  deskItems: ContentDeskItem[];
+  monitoredPillars: ContentPillarSummary[];
+  recentSignals: ContentSignalDigest[];
+  nextExecution: ContentExecutionHint | null;
   voiceDnaEntries: ReturnType<typeof getVoiceDna>;
   knowledgeStats: ReturnType<typeof getKnowledgeStats>;
   derivedSignals: MeshSignalDraft[];
@@ -222,6 +247,7 @@ export interface FinanceMeshContext {
   weekEnd: string;
   month: string;
   monthlySummary: MonthlySummary;
+  budgetView: MonthlyBudgetView;
   taxEvents: TaxEvent[];
   annualSummary: AnnualTaxSummary;
   subscription: SubscriptionStatus;
@@ -255,7 +281,7 @@ function reportInvalidMeshScope(operation: string, userId: number | null | undef
   });
 }
 
-function emptyTrainingMeshContext(opts: { userId: number; weekStart?: string }): TrainingMeshContext {
+export function createEmptyTrainingMeshContext(opts: { userId: number; weekStart?: string }): TrainingMeshContext {
   const window = resolveWeekWindow(opts.weekStart);
   return {
     userId: opts.userId,
@@ -275,7 +301,7 @@ function emptyTrainingMeshContext(opts: { userId: number; weekStart?: string }):
   };
 }
 
-function emptyCookingMeshContext(opts: { userId: number; weekStart?: string }): CookingMeshContext {
+export function createEmptyCookingMeshContext(opts: { userId: number; weekStart?: string }): CookingMeshContext {
   const window = resolveWeekWindow(opts.weekStart);
   return {
     userId: opts.userId,
@@ -287,7 +313,7 @@ function emptyCookingMeshContext(opts: { userId: number; weekStart?: string }): 
   };
 }
 
-function emptyContentMeshContext(opts: { userId: number; weekStart?: string }): ContentMeshContext {
+export function createEmptyContentMeshContext(opts: { userId: number; weekStart?: string }): ContentMeshContext {
   const window = resolveWeekWindow(opts.weekStart);
   return {
     userId: opts.userId,
@@ -297,6 +323,10 @@ function emptyContentMeshContext(opts: { userId: number; weekStart?: string }): 
     scheduledTopics: [],
     filmingRecommendation: null,
     unreadNotifications: [],
+    deskItems: [],
+    monitoredPillars: [],
+    recentSignals: [],
+    nextExecution: null,
     voiceDnaEntries: [],
     knowledgeStats: {
       categories: [],
@@ -306,7 +336,7 @@ function emptyContentMeshContext(opts: { userId: number; weekStart?: string }): 
   };
 }
 
-function emptySecretaryMeshContext(opts: { userId: number; weekStart?: string }): SecretaryMeshContext {
+export function createEmptySecretaryMeshContext(opts: { userId: number; weekStart?: string }): SecretaryMeshContext {
   const window = resolveWeekWindow(opts.weekStart);
   return {
     userId: opts.userId,
@@ -323,7 +353,7 @@ function emptySecretaryMeshContext(opts: { userId: number; weekStart?: string })
   };
 }
 
-function emptyFinanceMeshContext(opts: { userId: number; weekStart?: string }): FinanceMeshContext {
+export function createEmptyFinanceMeshContext(opts: { userId: number; weekStart?: string }): FinanceMeshContext {
   const window = resolveWeekWindow(opts.weekStart);
   const month = window.start.toFormat('yyyy-MM');
   const year = window.start.year;
@@ -339,6 +369,24 @@ function emptyFinanceMeshContext(opts: { userId: number; weekStart?: string }): 
       totalDeductions: 0,
       netIncome: 0,
       transactionCount: 0,
+    },
+    budgetView: {
+      month,
+      basisCurrency: 'EUR',
+      currencies: ['EUR'],
+      integrity: 'no_income',
+      affordability: 'unknown',
+      incomeInBasisCurrency: 0,
+      expensesInBasisCurrency: 0,
+      currentRemainingInBasisCurrency: null,
+      currentRemainingRatio: null,
+      projectedExpensesInBasisCurrency: null,
+      projectedRemainingInBasisCurrency: null,
+      projectedRemainingRatio: null,
+      recurringExpenseEstimate: 0,
+      recurringExpenseCount: 0,
+      recurringExpenses: [],
+      notes: [],
     },
     taxEvents: [],
     annualSummary: {
@@ -688,7 +736,7 @@ export async function readTrainingMeshContext(opts: {
 }): Promise<TrainingMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_training_mesh_context', opts.userId, opts.weekStart);
-    return emptyTrainingMeshContext(opts);
+    return createEmptyTrainingMeshContext(opts);
   }
 
   const window = resolveWeekWindow(opts.weekStart);
@@ -900,7 +948,7 @@ export async function readCookingMeshContext(opts: {
 }): Promise<CookingMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_cooking_mesh_context', opts.userId, opts.weekStart);
-    return emptyCookingMeshContext(opts);
+    return createEmptyCookingMeshContext(opts);
   }
 
   const window = resolveWeekWindow(opts.weekStart);
@@ -919,13 +967,50 @@ export async function readCookingMeshContext(opts: {
     logger.debug({ err, userId: opts.userId }, 'Mesh: shopping list unavailable');
   }
 
+  const mealProfiles = meals.map((meal) => buildCookingMealProfile(opts.userId, meal));
+  const [calendarEvents, focusBlock] = await Promise.all([
+    safelyAsync(
+      () => getEvents(window.start.toUTC().toISO()!, window.end.toUTC().toISO()!, opts.userId),
+      [] as UnifiedCalendarEvent[],
+    ),
+    safelyAsync(
+      () => getFocusBlockRecommendation(opts.userId, { horizonDays: 7 }),
+      null as FocusBlockRecommendation | null,
+    ),
+  ]);
+
   const coveredDays = new Set(meals.map((meal) => meal.date));
   const missingDates = weekIsoDates(window.start).filter((date) => !coveredDays.has(date));
-  const aisleCount = new Set(shoppingList?.items.map((item) => item.aisle).filter(Boolean) ?? []).size;
-  const estimatedSpendBrl = Math.round(((shoppingList?.items.length ?? 0) * 18.5) * 100) / 100;
+  const busyDates = new Set(summarizeBusyDates(calendarEvents));
+  const fragmentedDates = new Set(summarizeCalendarFragmentation(calendarEvents).fragmentedDates);
+  const travelDates = new Set(extractTravelDates(calendarEvents));
+  const focusDate = focusBlock?.date ?? null;
+  const constrainedDates = new Set<string>([
+    ...busyDates,
+    ...fragmentedDates,
+    ...travelDates,
+    ...(focusDate ? [focusDate] : []),
+  ]);
+  const prepPressureDates = uniqueStrings(
+    mealProfiles
+      .filter((profile) => constrainedDates.has(profile.date) && (!profile.hasLinkedRecipe || profile.isHighEffort))
+      .map((profile) => profile.date),
+  );
+  const constrainedMealDates = uniqueStrings(
+    meals
+      .map((meal) => meal.date)
+      .filter((date) => constrainedDates.has(date)),
+  );
+  const shoppingForecastSource = deriveShoppingForecastSource(shoppingList?.items ?? [], mealProfiles, meals.length);
+  const aisleCount = new Set(shoppingForecastSource.items.map((item) => normalizeShoppingAisle(item.aisle)).filter(Boolean)).size;
+  const estimatedSpendBrl = estimateShoppingSpendBrl(shoppingForecastSource.items);
   const preferredCurrency = getPreferredCurrencyForUser(opts.userId);
   const estimatedSpend = convertPlanningEstimateFromBrl(estimatedSpendBrl, preferredCurrency);
   const shoppingReady = (shoppingList?.items.length ?? 0) > 0;
+  const manualMealCount = mealProfiles.filter((profile) => !profile.hasLinkedRecipe).length;
+  const highEffortMealCount = mealProfiles.filter((profile) => profile.isHighEffort).length;
+  const totalPrepMinutes = mealProfiles.reduce((sum, profile) => sum + profile.prepMinutes, 0);
+  const totalCookMinutes = mealProfiles.reduce((sum, profile) => sum + profile.cookMinutes, 0);
 
   const activePlanMatch = findActivePlanForWeek(opts.userId, window.start);
   const trainingSessions = activePlanMatch?.week ? getSessionsForWeek(activePlanMatch.week.id) : [];
@@ -952,11 +1037,13 @@ export async function readCookingMeshContext(opts: {
     : hardDatesMissingMeals.length > 0
       ? 'at_risk'
       : trainingDatesMissingMeals.length > 0 || !shoppingReady
-        ? 'partial'
+      ? 'partial'
         : 'ready';
   const mealExecutionStatus = missingDates.length >= 3 && !shoppingReady
     ? 'at_risk'
-    : missingDates.length > 0 || !shoppingReady
+    : prepPressureDates.length >= 2
+      ? 'at_risk'
+      : missingDates.length > 0 || !shoppingReady || prepPressureDates.length > 0 || manualMealCount > 0
       ? 'partial'
       : 'ready';
 
@@ -1010,6 +1097,13 @@ export async function readCookingMeshContext(opts: {
           shoppingReady,
           shoppingItemCount: shoppingList?.items.length ?? 0,
           coveredDayCount: coveredDays.size,
+          constrainedMealDates,
+          prepPressureDates,
+          manualMealCount,
+          highEffortMealCount,
+          totalPrepMinutes,
+          totalCookMinutes,
+          focusDate,
         },
       },
       {
@@ -1022,12 +1116,112 @@ export async function readCookingMeshContext(opts: {
           estimatedSpendBrl,
           estimatedSpend,
           currency: preferredCurrency,
-          itemCount: shoppingList?.items.length ?? 0,
+          itemCount: shoppingForecastSource.items.length,
           aisleCount,
+          source: shoppingForecastSource.source,
+          confidence: shoppingForecastSource.confidence,
         },
       },
     ],
   };
+}
+
+interface CookingMealProfile {
+  date: string;
+  hasLinkedRecipe: boolean;
+  prepMinutes: number;
+  cookMinutes: number;
+  isHighEffort: boolean;
+  ingredients: Ingredient[];
+}
+
+function buildCookingMealProfile(userId: number, meal: MealPlan): CookingMealProfile {
+  if (!meal.recipe_id) {
+    return {
+      date: meal.date,
+      hasLinkedRecipe: false,
+      prepMinutes: 0,
+      cookMinutes: 0,
+      isHighEffort: false,
+      ingredients: [],
+    };
+  }
+
+  const recipe = safely(() => getRecipeById(userId, meal.recipe_id!), null);
+  const prepMinutes = recipe?.prep_time_min ?? 0;
+  const cookMinutes = recipe?.cook_time_min ?? 0;
+  const totalMinutes = prepMinutes + cookMinutes;
+
+  return {
+    date: meal.date,
+    hasLinkedRecipe: Boolean(recipe),
+    prepMinutes,
+    cookMinutes,
+    isHighEffort: prepMinutes >= 20 || totalMinutes >= 45,
+    ingredients: recipe?.ingredients ?? [],
+  };
+}
+
+function deriveShoppingForecastSource(
+  shoppingItems: ShoppingItem[],
+  mealProfiles: CookingMealProfile[],
+  mealCount: number,
+): {
+  source: 'shopping_list' | 'recipe_ingredients' | 'meal_count_fallback';
+  confidence: 'high' | 'medium' | 'low';
+  items: Array<{ aisle: string }>;
+} {
+  if (shoppingItems.length > 0) {
+    return {
+      source: 'shopping_list',
+      confidence: 'high',
+      items: shoppingItems.map((item) => ({ aisle: item.aisle })),
+    };
+  }
+
+  const ingredientItems = mealProfiles.flatMap((profile) =>
+    profile.ingredients.map((ingredient) => ({
+      aisle: classifyIngredientAisle(ingredient.name),
+    })),
+  );
+  if (ingredientItems.length > 0) {
+    return {
+      source: 'recipe_ingredients',
+      confidence: 'medium',
+      items: ingredientItems,
+    };
+  }
+
+  return {
+    source: 'meal_count_fallback',
+    confidence: mealCount > 0 ? 'low' : 'high',
+    items: Array.from({ length: mealCount * 3 }, () => ({ aisle: 'other' })),
+  };
+}
+
+function estimateShoppingSpendBrl(items: Array<{ aisle: string }>): number {
+  const spendByAisle: Record<string, number> = {
+    produce: 8,
+    protein: 24,
+    dairy: 10,
+    bakery: 6,
+    pantry: 5,
+    frozen: 9,
+    beverages: 6,
+    household: 7,
+    other: 6,
+  };
+
+  const total = items.reduce((sum, item) => {
+    const aisle = normalizeShoppingAisle(item.aisle);
+    return sum + (spendByAisle[aisle] ?? spendByAisle.other);
+  }, 0);
+
+  return roundTo(total, 2);
+}
+
+function normalizeShoppingAisle(value: string | null | undefined): string {
+  return String(value ?? '').trim().toLowerCase();
 }
 
 export async function readContentMeshContext(opts: {
@@ -1036,7 +1230,7 @@ export async function readContentMeshContext(opts: {
 }): Promise<ContentMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_content_mesh_context', opts.userId, opts.weekStart);
-    return emptyContentMeshContext(opts);
+    return createEmptyContentMeshContext(opts);
   }
 
   const window = resolveWeekWindow(opts.weekStart);
@@ -1047,21 +1241,39 @@ export async function readContentMeshContext(opts: {
 
   const filmingRecommendation = filmingResult.status === 'fulfilled' ? filmingResult.value : null;
   const unreadNotifications = safely(() => getUnreadNotifications(opts.userId, 10), []);
+  const deskItems = safely(() => getContentDeskItems(opts.userId, 4), []);
+  const monitoredPillars = safely(() => getActiveContentPillars(opts.userId), []);
+  const recentSignals = safely(() => getRankedContentSignals(opts.userId, 6), []);
   const upcomingTopicCount = safely(() => getUpcomingTopicCount(opts.userId, 14), 0);
-  const scheduledTopics = safely(
+  const topics = safely(
     () => getTopics(opts.userId, {
       includeTerminal: false,
-      scheduledOnly: true,
-      from: window.weekStart,
-      to: window.weekEnd,
-      limit: 20,
-    }).map((topic) => ({
+      limit: 100,
+    }),
+    [],
+  );
+  const scheduledTopics = safely(
+    () => topics
+      .filter((topic) => topic.scheduled_date != null)
+      .filter((topic) => topic.scheduled_date! >= window.weekStart && topic.scheduled_date! <= window.weekEnd)
+      .slice(0, 20)
+      .map((topic) => ({
       id: topic.id,
       title: topic.title,
       scheduledDate: topic.scheduled_date ?? window.weekStart,
       status: topic.status,
     })),
     [],
+  );
+  const nextExecution = await safelyAsync(
+    () => getNextContentExecutionHint(opts.userId, {
+      topics,
+      deskItems,
+      rankedSignals: recentSignals,
+      filmingRecommendation,
+      pillars: monitoredPillars,
+    }),
+    null,
   );
   const voiceDnaEntries = safely(() => getVoiceDna(undefined, opts.userId), []);
   const knowledgeStats = safely(() => getKnowledgeStats(undefined, opts.userId), {
@@ -1070,6 +1282,8 @@ export async function readContentMeshContext(opts: {
   });
 
   const derivedSignals: MeshSignalDraft[] = [];
+  const readyTopicCount = topics.filter((topic) => topic.status === 'ready').length;
+  const draftingTopicCount = topics.filter((topic) => topic.status === 'drafting').length;
   if (upcomingTopicCount > 0) {
     derivedSignals.push({
       sourceAgent: 'mesh.content-context',
@@ -1089,6 +1303,13 @@ export async function readContentMeshContext(opts: {
         })),
         nextDate: scheduledTopics[0]?.scheduledDate ?? null,
         nextTopicTitle: scheduledTopics[0]?.title ?? null,
+        readyTopicCount,
+        draftingTopicCount,
+        deskReadyCount: deskItems.length,
+        nextExecutionMode: nextExecution?.mode ?? null,
+        nextExecutionTitle: nextExecution?.title ?? null,
+        topSignalType: recentSignals[0]?.type ?? null,
+        topSignalTitle: recentSignals[0]?.title ?? null,
       },
     });
   }
@@ -1101,6 +1322,10 @@ export async function readContentMeshContext(opts: {
     scheduledTopics,
     filmingRecommendation,
     unreadNotifications,
+    deskItems,
+    monitoredPillars,
+    recentSignals,
+    nextExecution,
     voiceDnaEntries,
     knowledgeStats,
     derivedSignals,
@@ -1113,7 +1338,7 @@ export async function readSecretaryMeshContext(opts: {
 }): Promise<SecretaryMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_secretary_mesh_context', opts.userId, opts.weekStart);
-    return emptySecretaryMeshContext(opts);
+    return createEmptySecretaryMeshContext(opts);
   }
 
   const window = resolveWeekWindow(opts.weekStart);
@@ -1265,7 +1490,7 @@ export async function readFinanceMeshContext(opts: {
 }): Promise<FinanceMeshContext> {
   if (!isValidTenantUserId(opts.userId)) {
     reportInvalidMeshScope('read_finance_mesh_context', opts.userId, opts.weekStart);
-    return emptyFinanceMeshContext(opts);
+    return createEmptyFinanceMeshContext(opts);
   }
 
   const window = resolveWeekWindow(opts.weekStart);
@@ -1278,6 +1503,25 @@ export async function readFinanceMeshContext(opts: {
     totalDeductions: 0,
     netIncome: 0,
     transactionCount: 0,
+  });
+  const preferredCurrency = getPreferredCurrencyForUser(opts.userId);
+  const budgetView = safely(() => getMonthlyBudgetView(opts.userId, month), {
+    month,
+    basisCurrency: preferredCurrency,
+    currencies: [preferredCurrency],
+    integrity: 'no_income' as const,
+    affordability: 'unknown' as const,
+    incomeInBasisCurrency: 0,
+    expensesInBasisCurrency: 0,
+    currentRemainingInBasisCurrency: null,
+    currentRemainingRatio: null,
+    projectedExpensesInBasisCurrency: null,
+    projectedRemainingInBasisCurrency: null,
+    projectedRemainingRatio: null,
+    recurringExpenseEstimate: 0,
+    recurringExpenseCount: 0,
+    recurringExpenses: [],
+    notes: [],
   });
   const taxEvents = safely(() => getTaxEvents(opts.userId, { year, limit: 24 }), []);
   const annualSummary = safely(() => getAnnualTaxSummary(opts.userId, year), {
@@ -1304,19 +1548,21 @@ export async function readFinanceMeshContext(opts: {
     isPro: false,
   });
 
-  const remainingRatio = monthlySummary.totalIncome > 0
-    ? Math.max((monthlySummary.totalIncome - monthlySummary.totalExpenses) / monthlySummary.totalIncome, 0)
-    : 0;
+  const remainingRatio = budgetView.projectedRemainingRatio ?? budgetView.currentRemainingRatio;
   const nearestPending = taxEvents.find((event) => String(event.status).toLowerCase() !== 'paid') ?? null;
   const renewalDueSoon = subscription.currentPeriodEnd
     ? DateTime.fromISO(subscription.currentPeriodEnd).diffNow('days').days <= 10
     : false;
-  const budgetConstraints = deriveBudgetConstraints(remainingRatio, {
-    renewalDueSoon,
-    hasPendingTax: Boolean(nearestPending),
-  });
-  const derivedSignals: MeshSignalDraft[] = [
-    {
+  const budgetConstraints = remainingRatio != null
+    ? deriveBudgetConstraints(remainingRatio, {
+      renewalDueSoon,
+      hasPendingTax: Boolean(nearestPending),
+    })
+    : null;
+  const derivedSignals: MeshSignalDraft[] = [];
+
+  if (budgetConstraints && remainingRatio != null) {
+    derivedSignals.push({
       sourceAgent: 'mesh.finance-context',
       signalType: 'budget_remaining',
       meshPriority: remainingRatio <= 0.25 ? 2 : 3,
@@ -1325,9 +1571,16 @@ export async function readFinanceMeshContext(opts: {
       payload: {
         month,
         remainingRatio: roundTo(remainingRatio, 2),
+        currentRemainingRatio: budgetView.currentRemainingRatio,
+        projectedRemainingRatio: budgetView.projectedRemainingRatio,
         totalIncome: monthlySummary.totalIncome,
         totalExpenses: monthlySummary.totalExpenses,
         totalDeductions: monthlySummary.totalDeductions,
+        basisCurrency: budgetView.basisCurrency,
+        integrity: budgetView.integrity,
+        affordability: budgetView.affordability,
+        recurringExpenseEstimate: budgetView.recurringExpenseEstimate,
+        recurringExpenseCount: budgetView.recurringExpenseCount,
         budgetMode: budgetConstraints.budgetMode,
         groceryMode: budgetConstraints.groceryMode,
         trainingSpendMode: budgetConstraints.trainingSpendMode,
@@ -1335,8 +1588,22 @@ export async function readFinanceMeshContext(opts: {
         supplementMode: budgetConstraints.supplementMode,
         subscriptionMode: budgetConstraints.subscriptionMode,
       },
-    },
-  ];
+    });
+  } else if (budgetView.integrity === 'mixed_currency') {
+    derivedSignals.push({
+      sourceAgent: 'mesh.finance-context',
+      signalType: 'expense_anomaly',
+      meshPriority: 4,
+      priority: 'background',
+      expiresAt: endOfDayIso(window.end),
+      payload: {
+        month,
+        reason: 'mixed_currency_budget',
+        currencies: budgetView.currencies,
+        notes: budgetView.notes,
+      },
+    });
+  }
 
   if (nearestPending) {
     derivedSignals.push({
@@ -1368,7 +1635,10 @@ export async function readFinanceMeshContext(opts: {
     });
   }
 
-  if (monthlySummary.totalIncome > 0 && monthlySummary.totalExpenses > monthlySummary.totalIncome * 0.85) {
+  if (budgetView.integrity === 'reliable'
+      && budgetView.incomeInBasisCurrency > 0
+      && budgetView.projectedExpensesInBasisCurrency != null
+      && budgetView.projectedExpensesInBasisCurrency > budgetView.incomeInBasisCurrency * 0.85) {
     derivedSignals.push({
       sourceAgent: 'mesh.finance-context',
       signalType: 'expense_anomaly',
@@ -1377,9 +1647,10 @@ export async function readFinanceMeshContext(opts: {
       expiresAt: endOfDayIso(window.end),
       payload: {
         month,
-        totalIncome: monthlySummary.totalIncome,
-        totalExpenses: monthlySummary.totalExpenses,
-        ratio: roundTo(monthlySummary.totalExpenses / monthlySummary.totalIncome, 2),
+        totalIncome: budgetView.incomeInBasisCurrency,
+        totalExpenses: budgetView.projectedExpensesInBasisCurrency,
+        ratio: roundTo(budgetView.projectedExpensesInBasisCurrency / budgetView.incomeInBasisCurrency, 2),
+        basisCurrency: budgetView.basisCurrency,
       },
     });
   }
@@ -1390,6 +1661,7 @@ export async function readFinanceMeshContext(opts: {
     weekEnd: window.weekEnd,
     month,
     monthlySummary,
+    budgetView,
     taxEvents,
     annualSummary,
     subscription,
@@ -1737,6 +2009,14 @@ function taxReminderDate(month: string): string {
 function safely<T>(fn: () => T, fallback: T): T {
   try {
     return fn();
+  } catch {
+    return fallback;
+  }
+}
+
+async function safelyAsync<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fn();
   } catch {
     return fallback;
   }

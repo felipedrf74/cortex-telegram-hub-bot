@@ -250,4 +250,77 @@ describe('daily-brief-orchestrator', () => {
     expect(result.coordination.topPriority).toBe('cached');
     expect(mockComposeWeeklyPlan).not.toHaveBeenCalled();
   });
+
+  it('returns a degraded runtime fallback when weekly-plan composition fails', async () => {
+    mockComposeWeeklyPlan.mockRejectedValueOnce(new Error('weekly compose failed'));
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 12,
+      date: '2026-04-15',
+      language: 'pt-PT',
+      forceRefresh: true,
+    });
+
+    expect(result.degraded).toBe(true);
+    expect(result.date).toBe('2026-04-15');
+    expect(result.day.date).toBe('2026-04-15');
+    expect(result.day.headline).toContain('temporariamente indisponível');
+    expect(result.coordination.dayOrchestration.title).toBe('Orquestração diária temporariamente indisponível.');
+    expect(result.coordination.weekOrchestration.title).toBe('Orquestração semanal temporariamente indisponível.');
+  });
+
+  it('keeps the requested target date when the weekly plan does not include that day', async () => {
+    mockComposeWeeklyPlan.mockResolvedValue({
+      degraded: false,
+      gated: { skills: [] },
+      garmin_stale: false,
+      creativeCopy: { headline: 'Balanced week', note: 'Stay steady.' },
+      conflicts: [],
+      days: [
+        {
+          date: '2026-04-14',
+          weekday: 'Tuesday',
+          headline: 'Carry on.',
+          training: {
+            title: 'Easy run',
+            type: 'run',
+            status: 'planned',
+            durationMinutes: 40,
+            intensity: 'Easy',
+            reason: 'Normal day.',
+            decisions: [],
+          },
+          meals: [],
+          content: null,
+          secretary: {
+            focusBlock: null,
+            pendingTasks: 0,
+            overdueTasks: 0,
+            travel: false,
+            busy: false,
+            priorityNote: null,
+            sequence: [],
+            tradeoffNote: null,
+            decisions: [],
+          },
+          finance: null,
+        },
+      ],
+    });
+
+    const { composeDailyBrief } = await import('../../src/services/daily-brief-orchestrator');
+    const result = await composeDailyBrief({
+      userId: 12,
+      date: '2026-04-15',
+      language: 'en-US',
+      forceRefresh: true,
+    });
+
+    expect(result.date).toBe('2026-04-15');
+    expect(result.day.date).toBe('2026-04-15');
+    expect(result.day.weekday).toBe('Wednesday');
+    expect(result.degraded).toBe(true);
+    expect(result.coordination.dayOrchestration.title).toBe('Daily orchestration temporarily unavailable.');
+  });
 });

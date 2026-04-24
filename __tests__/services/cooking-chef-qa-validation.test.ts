@@ -430,8 +430,11 @@ describe('QA: Cooking prompt file', () => {
     expect(fs.existsSync(promptPath)).toBe(true);
     const content = fs.readFileSync(promptPath, 'utf-8');
     expect(content.length).toBeGreaterThan(100);
-    // Should mention carnivore diet (per user profile)
+    // Must still support carnivore-fluent planning without hard-locking
+    // the whole skill to one dietary approach.
     expect(content.toLowerCase()).toContain('carnivore');
+    expect(content.toLowerCase()).toContain('budget');
+    expect(content.toLowerCase()).toContain('calendar');
   });
 
   it('prompt has transport-agnostic formatting rules', () => {

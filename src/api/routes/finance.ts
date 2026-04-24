@@ -26,14 +26,15 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getDb } from '../../services/database';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
+import { invalidateFinanceDerivedCaches } from '../../services/finance-cache-invalidator';
 import { config } from '../../config';
 import {
   addTransaction,
   getTransactions,
   deleteTransaction,
+  getMonthlyBudgetView,
   getMonthlySummary,
   getPreferredCurrencyForUser,
   getTaxEvents,
@@ -79,7 +80,7 @@ export function financeRoutes(): Router {
       sendSuccess(res, { transactions: txs, count: txs.length });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance transactions list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch transactions', 500);
+      sendInternalError(res, 'Failed to fetch transactions');
     }
   }));
 
@@ -111,12 +112,12 @@ export function financeRoutes(): Router {
         currency,
         receiptRef,
       });
-      invalidatePlanningCaches(userId);
+      invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId: tx.id, category, amount }, 'iOS transaction added');
       sendSuccess(res, { transaction: tx }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance transaction create failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to add transaction', 500);
+      sendInternalError(res, 'Failed to add transaction');
     }
   }));
 
@@ -198,12 +199,12 @@ export function financeRoutes(): Router {
         'SELECT * FROM finance_transactions WHERE id = ?'
       ).get(txId) as any;
 
-      invalidatePlanningCaches(userId);
+      invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId }, 'iOS finance transaction updated');
       sendSuccess(res, { transaction: updated });
     } catch (err: any) {
       logger.error({ err, userId, txId }, 'iOS finance transaction update failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update transaction', 500);
+      sendInternalError(res, 'Failed to update transaction');
     }
   }));
 
@@ -225,11 +226,11 @@ export function financeRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Transaction not found or not owned by user', 404);
         return;
       }
-      invalidatePlanningCaches(userId);
+      invalidateFinanceDerivedCaches(userId);
       sendSuccess(res, { deleted: true, id: txId });
     } catch (err: any) {
       logger.error({ err, userId, txId }, 'iOS finance transaction delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete transaction', 500);
+      sendInternalError(res, 'Failed to delete transaction');
     }
   }));
 
@@ -257,6 +258,7 @@ export function financeRoutes(): Router {
 
     try {
       const summary = getMonthlySummary(userId, month);
+      const budgetView = getMonthlyBudgetView(userId, month);
       const preferredCurrency = getPreferredCurrencyForUser(userId);
 
       // Precompute the tax breakdown so the iOS KPI card can show it
@@ -264,10 +266,10 @@ export function financeRoutes(): Router {
       // the backend persists via calculateAndStoreTax.
       const taxBreakdown = calculateMonthlyTax(summary.totalIncome, summary.totalDeductions);
 
-      sendSuccess(res, { summary, tax: taxBreakdown, preferredCurrency });
+      sendSuccess(res, { summary, budgetView, tax: taxBreakdown, preferredCurrency });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance monthly-summary failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch monthly summary', 500);
+      sendInternalError(res, 'Failed to fetch monthly summary');
     }
   }));
 
@@ -289,7 +291,7 @@ export function financeRoutes(): Router {
       sendSuccess(res, { events, count: events.length });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS finance tax events list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch tax events', 500);
+      sendInternalError(res, 'Failed to fetch tax events');
     }
   }));
 
@@ -314,7 +316,7 @@ export function financeRoutes(): Router {
       sendSuccess(res, { summary });
     } catch (err: any) {
       logger.error({ err, userId, year }, 'iOS finance annual tax summary failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch annual tax summary', 500);
+      sendInternalError(res, 'Failed to fetch annual tax summary');
     }
   }));
 
@@ -339,12 +341,12 @@ export function financeRoutes(): Router {
 
     try {
       const event = calculateAndStoreTax(userId, month);
-      invalidatePlanningCaches(userId);
+      invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, month, taxDue: event.tax_due }, 'iOS tax event calculated');
       sendSuccess(res, { event });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax calculate failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to calculate tax', 500);
+      sendInternalError(res, 'Failed to calculate tax');
     }
   }));
 
@@ -372,16 +374,16 @@ export function financeRoutes(): Router {
         .find((candidate) => candidate.month === month);
 
       if (!event) {
-        sendError(res, 'INTERNAL', 'Tax event updated but could not be reloaded', 500);
+        sendInternalError(res, 'Tax event updated but could not be reloaded');
         return;
       }
-      invalidatePlanningCaches(userId);
+      invalidateFinanceDerivedCaches(userId);
 
       logger.info({ userId, month }, 'iOS tax event marked paid');
       sendSuccess(res, { updated: true, event });
     } catch (err: any) {
       logger.error({ err, userId, month }, 'iOS finance tax pay failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to mark tax event as paid', 500);
+      sendInternalError(res, 'Failed to mark tax event as paid');
     }
   }));
 
@@ -557,7 +559,7 @@ export function financeRoutes(): Router {
         });
         return;
       }
-      sendError(res, 'INTERNAL', err?.message || 'Receipt parsing failed', 500);
+      sendInternalError(res, 'Receipt parsing failed');
     } finally {
       releaseCostLock();
     }

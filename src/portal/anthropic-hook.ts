@@ -12,6 +12,7 @@ import { getDb } from '../services/database';
 import { pushEvent } from './telemetry';
 import { logger } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
+import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from '../services/runtime-flags';
 
 // ─── Per-million-token pricing (update when Anthropic changes rates) ─
 
@@ -81,7 +82,7 @@ export async function trackedCreate(
   options?: { userId?: number; isUserMessage?: boolean; timeoutMs?: number },
 ): Promise<Anthropic.Message> {
   // ── Kill switch — see the doc block above ──
-  if (process.env.ANTHROPIC_ENABLED !== 'true') {
+  if (!isAnthropicRuntimeEnabled()) {
     const msg =
       `[anthropic-hook] Anthropic API is disabled. ` +
       `Set ANTHROPIC_ENABLED=true to re-enable. Blocked call: category=${category}, ` +
@@ -104,7 +105,7 @@ export async function trackedCreate(
   const useStreaming = isSonnet || isLargeRequest;
 
   // Timeout: use caller override, or auto-scale for streaming/large requests (90s), default 30s
-  const defaultTimeout = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+  const defaultTimeout = getAICallTimeoutMs();
   const AI_CALL_TIMEOUT_MS = options?.timeoutMs ?? (useStreaming ? Math.max(defaultTimeout, 90_000) : defaultTimeout);
 
   let response: Anthropic.Message;

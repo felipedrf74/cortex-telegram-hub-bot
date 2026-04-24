@@ -27,6 +27,8 @@ import type { AuthenticatedRequest } from './auth-middleware';
 
 const userRequestLog = new Map<number, number[]>();
 const ipRequestLog = new Map<string, number[]>();
+const internalRequestLog = new Map<string, number[]>();
+const internalAiRequestLog = new Map<string, number[]>();
 
 const WINDOW_MS = 60 * 1000; // 1 minute
 
@@ -39,6 +41,25 @@ const USER_MAX_REQUESTS = config.ios?.rateLimit || 60;
 // 30 reqs/min/IP still allows burst legitimate traffic but caps
 // credential-stuffing at roughly 1 attempt every 2 seconds.
 const UNAUTH_MAX_REQUESTS = Math.min(USER_MAX_REQUESTS, 30);
+// Internal shared-secret routes are service-to-service and should not be
+// user-facing hot paths, but we keep the defaults generous enough to avoid
+// choking the Python engine during legitimate batches. The important win is
+// that abuse now burns a bounded IP budget instead of getting unlimited
+// shared-secret guesses.
+const INTERNAL_MAX_REQUESTS = optionalIntWithFallback(
+  process.env.INTERNAL_API_RATE_LIMIT,
+  180,
+);
+const INTERNAL_AI_MAX_REQUESTS = optionalIntWithFallback(
+  process.env.INTERNAL_AI_COMPLETE_RATE_LIMIT,
+  60,
+);
+
+function optionalIntWithFallback(raw: string | undefined, fallback: number): number {
+  if (!raw || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function extractClientIp(req: Request): string {
   // Express `req.ip` respects `trust proxy`. When behind the
@@ -183,9 +204,72 @@ export function webhookRateLimitMiddleware(req: Request, res: Response, next: Ne
   next();
 }
 
+function applyIpBucketLimit(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  bucket: Map<string, number[]>,
+  limit: number,
+  bucketName: string,
+  message: string,
+): void {
+  const ip = extractClientIp(req);
+  const now = Date.now();
+  const requests = bucket.get(ip) || [];
+  const inWindow = requests.filter((ts) => now - ts < WINDOW_MS);
+  inWindow.push(now);
+  bucket.set(ip, inWindow);
+
+  res.setHeader('X-RateLimit-Limit', limit);
+  res.setHeader('X-RateLimit-Remaining', Math.max(0, limit - inWindow.length));
+  res.setHeader('X-RateLimit-Reset', Math.ceil((now + WINDOW_MS) / 1000));
+  res.setHeader('X-RateLimit-Bucket', bucketName);
+
+  if (inWindow.length > limit) {
+    const retryAfter = Math.ceil(WINDOW_MS / 1000);
+    res.setHeader('Retry-After', retryAfter);
+    res.status(429).json({
+      error: {
+        code: 'RATE_LIMITED',
+        message,
+        retryAfter,
+      },
+    });
+    return;
+  }
+
+  next();
+}
+
+export function internalRateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  applyIpBucketLimit(
+    req,
+    res,
+    next,
+    internalRequestLog,
+    INTERNAL_MAX_REQUESTS,
+    'internal',
+    'Too many internal requests from this IP.',
+  );
+}
+
+export function internalAiCompleteRateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  applyIpBucketLimit(
+    req,
+    res,
+    next,
+    internalAiRequestLog,
+    INTERNAL_AI_MAX_REQUESTS,
+    'internal-ai',
+    'Too many internal AI completion requests from this IP.',
+  );
+}
+
 /** Test-only: clear both buckets between test cases. */
 export function _resetRateLimiterForTests(): void {
   userRequestLog.clear();
   ipRequestLog.clear();
   webhookRequestLog.clear();
+  internalRequestLog.clear();
+  internalAiRequestLog.clear();
 }

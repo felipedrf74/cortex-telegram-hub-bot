@@ -143,6 +143,10 @@ async function dispatch(url: string, userId: number, headers: Record<string, str
   return response;
 }
 
+function daysAgoIso(daysAgo: number): string {
+  return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+}
+
 describe('Content API — intelligence detail', () => {
   beforeEach(() => {
     testDb = new Database(':memory:');
@@ -159,6 +163,8 @@ describe('Content API — intelligence detail', () => {
   it('returns drill-in discovery, script, schedule, and optimization detail for iOS', async () => {
     const user = getOrCreateUser(57001, { username: 'content-deep-dive' });
     setUserLanguage(user.id, 'pt-PT');
+    const recentDiscoveryAt = daysAgoIso(2);
+    const recentOptimizationAt = daysAgoIso(3);
 
     testDb.prepare(`
       INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, version, updated_at)
@@ -214,21 +220,21 @@ describe('Content API — intelligence detail', () => {
       'reaction_opportunity',
       JSON.stringify({ title: 'Tariff shift explainer', summary: 'Macro topic is climbing fast.' }),
       'urgent',
-      '2026-04-14T08:05:00.000Z'
+      recentDiscoveryAt
     );
     insertSignal.run(
       'performance-agent',
       'pillar_performance',
       JSON.stringify({ pillar: 'training', summary: 'Training is outperforming other pillars this week.' }),
       'normal',
-      '2026-04-13T06:30:00.000Z'
+      recentOptimizationAt
     );
     insertSignal.run(
       'performance-agent',
       'learning_digest',
       JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }),
       'normal',
-      '2026-04-13T06:35:00.000Z'
+      recentOptimizationAt
     );
 
     const response = await dispatch('/intelligence/detail', user.id);
@@ -284,11 +290,14 @@ describe('Content API — intelligence detail', () => {
   it('applies creator radar preferences and english response language from X-Language', async () => {
     const user = getOrCreateUser(57002, { username: 'content-english-radar' });
     setUserLanguage(user.id, 'pt-BR');
+    const recentPreferenceAt = daysAgoIso(1);
+    const recentFitnessSignalAt = daysAgoIso(1);
+    const recentPoliticsSignalAt = daysAgoIso(1);
 
     testDb.prepare(`
       INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
       VALUES (?, ?, ?)
-    `).run(user.id, JSON.stringify(['fitness', 'training consistency']), '2026-04-16T11:00:00.000Z');
+    `).run(user.id, JSON.stringify(['fitness', 'training consistency']), recentPreferenceAt);
 
     const insertSignal = testDb.prepare(`
       INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
@@ -300,14 +309,14 @@ describe('Content API — intelligence detail', () => {
       'reaction_opportunity',
       JSON.stringify({ title: 'fitness', summary: 'Janela de reação ativa: treino com forte gancho' }),
       'urgent',
-      '2026-04-16T10:00:00.000Z'
+      recentFitnessSignalAt
     );
     insertSignal.run(
       'reaction-radar',
       'reaction_opportunity',
       JSON.stringify({ title: 'politics', summary: 'Janela de reação ativa: debate fiscal' }),
       'urgent',
-      '2026-04-16T09:00:00.000Z'
+      recentPoliticsSignalAt
     );
 
     const response = await dispatch('/intelligence/detail', user.id, { 'x-language': 'en-US' });

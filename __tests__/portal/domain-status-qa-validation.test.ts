@@ -15,95 +15,91 @@ import fs from 'fs';
 import path from 'path';
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const snapshotBuilderPath = path.join(ROOT, 'src', 'portal', 'snapshot-builder.ts');
+const snapshotStatementsPath = path.join(ROOT, 'src', 'portal', 'snapshot-statements.ts');
 
-describe('Domain Status — SnapshotResponse type', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+describe('Domain Status — PortalSnapshotResponse type', () => {
+  const snapshotBuilderTs = fs.readFileSync(snapshotBuilderPath, 'utf-8');
 
-  it('domainStatus field exists in SnapshotResponse', () => {
-    expect(serverTs).toContain('domainStatus:');
+  it('domainStatus field exists in PortalSnapshotResponse', () => {
+    expect(snapshotBuilderTs).toContain('domainStatus:');
   });
 
   it('domainStatus has domain string field', () => {
-    expect(serverTs).toContain('domain: string');
+    expect(snapshotBuilderTs).toContain('domain: string');
   });
 
   it('domainStatus has label string field', () => {
-    expect(serverTs).toContain('label: string');
+    expect(snapshotBuilderTs).toContain('label: string');
   });
 
   it('domainStatus has active boolean field', () => {
-    expect(serverTs).toContain('active: boolean');
+    expect(snapshotBuilderTs).toContain('active: boolean');
   });
 
   it('domainStatus has messagesToday number field', () => {
-    expect(serverTs).toContain('messagesToday: number');
+    expect(snapshotBuilderTs).toContain('messagesToday: number');
   });
 
   it('domainStatus has totalMessages number field', () => {
-    expect(serverTs).toContain('totalMessages: number');
+    expect(snapshotBuilderTs).toContain('totalMessages: number');
   });
 
   it('domainStatus has lastMessageAt nullable string field', () => {
-    expect(serverTs).toContain('lastMessageAt: string | null');
+    expect(snapshotBuilderTs).toContain('lastMessageAt: string | null');
   });
 
   it('domainStatus has details record field', () => {
-    expect(serverTs).toContain('details: Record<string, string | number | boolean>');
+    expect(snapshotBuilderTs).toContain('details: Record<string, string | number | boolean>');
   });
 });
 
-describe('Domain Status — server.ts domain definitions', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+describe('Domain Status — snapshot builder domain definitions', () => {
+  const snapshotBuilderTs = fs.readFileSync(snapshotBuilderPath, 'utf-8');
 
   it('defines Secretary domain', () => {
-    expect(serverTs).toContain("domain: 'secretary'");
-    expect(serverTs).toContain("label: 'Secretary'");
+    expect(snapshotBuilderTs).toContain("domain: 'secretary'");
+    expect(snapshotBuilderTs).toContain("label: 'Secretary'");
   });
 
   it('defines Triathlon domain', () => {
-    expect(serverTs).toContain("domain: 'triathlon'");
-    expect(serverTs).toContain("label: 'Triathlon'");
+    expect(snapshotBuilderTs).toContain("domain: 'triathlon'");
+    expect(snapshotBuilderTs).toContain("label: 'Triathlon'");
   });
 
   it('defines Content Creator domain', () => {
-    expect(serverTs).toContain("domain: 'content'");
-    expect(serverTs).toContain("label: 'Content Creator'");
+    expect(snapshotBuilderTs).toContain("domain: 'content'");
+    expect(snapshotBuilderTs).toContain("label: 'Content Creator'");
   });
 
   it('Secretary domain tracks graphConnected and garminConnected', () => {
     // Find secretary domain block
-    const secretaryIdx = serverTs.indexOf("domain: 'secretary'");
-    const nextDomainIdx = serverTs.indexOf("domain: 'triathlon'");
-    const secretaryBlock = serverTs.slice(secretaryIdx, nextDomainIdx);
+    const secretaryIdx = snapshotBuilderTs.indexOf("domain: 'secretary'");
+    const nextDomainIdx = snapshotBuilderTs.indexOf("domain: 'triathlon'");
+    const secretaryBlock = snapshotBuilderTs.slice(secretaryIdx, nextDomainIdx);
     expect(secretaryBlock).toContain('graphConnected');
     expect(secretaryBlock).toContain('garminConnected');
   });
 
   it('Triathlon domain tracks garminConnected', () => {
-    const triIdx = serverTs.indexOf("domain: 'triathlon'");
-    const nextIdx = serverTs.indexOf("domain: 'content'");
-    const triBlock = serverTs.slice(triIdx, nextIdx);
+    const triIdx = snapshotBuilderTs.indexOf("domain: 'triathlon'");
+    const nextIdx = snapshotBuilderTs.indexOf("domain: 'content'");
+    const triBlock = snapshotBuilderTs.slice(triIdx, nextIdx);
     expect(triBlock).toContain('garminConnected');
   });
 
   it('Content Creator domain tracks activeAgents and activeSignals', () => {
-    const contentIdx = serverTs.indexOf("domain: 'content'");
-    const contentBlock = serverTs.slice(contentIdx, contentIdx + 500);
+    const contentIdx = snapshotBuilderTs.indexOf("domain: 'content'");
+    const contentBlock = snapshotBuilderTs.slice(contentIdx, contentIdx + 500);
     expect(contentBlock).toContain('activeAgents');
     expect(contentBlock).toContain('activeSignals');
   });
 
   it('all domains are set to active: true', () => {
     // There should be exactly 5 occurrences of active: true for domains
-    const domainBlock = serverTs.slice(
-      serverTs.indexOf('domainStatus = ['),
-      serverTs.indexOf('];', serverTs.indexOf('domainStatus = [')),
+    const domainBlock = snapshotBuilderTs.slice(
+      snapshotBuilderTs.indexOf('domainStatus = ['),
+      snapshotBuilderTs.indexOf('];', snapshotBuilderTs.indexOf('domainStatus = [')),
     );
     const activeMatches = domainBlock.match(/active: true/g) || [];
     expect(activeMatches.length).toBe(5);
@@ -111,29 +107,26 @@ describe('Domain Status — server.ts domain definitions', () => {
 });
 
 describe('Domain Status — SQL queries', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+  const snapshotStatementsTs = fs.readFileSync(snapshotStatementsPath, 'utf-8');
 
   it('defines domainMessagesToday prepared statement', () => {
-    expect(serverTs).toContain('domainMessagesToday');
+    expect(snapshotStatementsTs).toContain('domainMessagesToday');
   });
 
   it('domainMessagesToday filters by today', () => {
-    expect(serverTs).toContain("created_at >= date('now')");
+    expect(snapshotStatementsTs).toContain("created_at >= date('now')");
   });
 
   it('domainMessagesToday groups by domain', () => {
-    expect(serverTs).toContain('GROUP BY domain');
+    expect(snapshotStatementsTs).toContain('GROUP BY domain');
   });
 
   it('defines domainMessagesTotal prepared statement', () => {
-    expect(serverTs).toContain('domainMessagesTotal');
+    expect(snapshotStatementsTs).toContain('domainMessagesTotal');
   });
 
   it('domainMessagesTotal retrieves MAX(created_at) as last_at', () => {
-    expect(serverTs).toContain('MAX(created_at) as last_at');
+    expect(snapshotStatementsTs).toContain('MAX(created_at) as last_at');
   });
 });
 
@@ -225,26 +218,23 @@ describe('Domain Status — JS rendering logic', () => {
 });
 
 describe('Domain Status — error handling', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+  const snapshotBuilderTs = fs.readFileSync(snapshotBuilderPath, 'utf-8');
 
   it('wraps domain status query in try/catch', () => {
     // The domain status section should be inside a try block
-    const domainIdx = serverTs.indexOf('Domain handler status');
-    const blockAfter = serverTs.slice(domainIdx, domainIdx + 2000);
+    const domainIdx = snapshotBuilderTs.indexOf('Domain handler status');
+    const blockAfter = snapshotBuilderTs.slice(domainIdx, domainIdx + 2000);
     expect(blockAfter).toContain('try {');
     expect(blockAfter).toContain('catch');
   });
 
   it('initializes domainStatus as empty array before try block', () => {
-    expect(serverTs).toContain("domainStatus: SnapshotResponse['domainStatus'] = []");
+    expect(snapshotBuilderTs).toContain("domainStatus: PortalSnapshotResponse['domainStatus'] = []");
   });
 
   it('handles missing agent stats gracefully with inner try/catch', () => {
-    const domainIdx = serverTs.indexOf('Active agent count');
-    const blockAfter = serverTs.slice(domainIdx, domainIdx + 500);
+    const domainIdx = snapshotBuilderTs.indexOf('Active agent count');
+    const blockAfter = snapshotBuilderTs.slice(domainIdx, domainIdx + 500);
     expect(blockAfter).toContain('try {');
     expect(blockAfter).toContain('catch');
   });

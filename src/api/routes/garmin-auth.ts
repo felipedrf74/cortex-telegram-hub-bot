@@ -13,7 +13,7 @@
 import { Router, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import type { AuthenticatedRequest } from '../auth-middleware';
 import {
   clearGarminSession,
@@ -99,7 +99,7 @@ export function garminAuthRoutes(): Router {
       sendSuccess(res, result);
     } catch (err: any) {
       logger.error({ err, userId }, 'Garmin login failed');
-      sendError(res, 'AUTH_FAILED', err?.message || 'Garmin login failed', 401);
+      sendError(res, 'AUTH_FAILED', 'Garmin login failed', 401);
     }
   }));
 
@@ -121,7 +121,7 @@ export function garminAuthRoutes(): Router {
         return;
       } catch (err: any) {
         logger.error({ err, userId }, 'Garmin manual reauth failed');
-        sendError(res, 'AUTH_FAILED', err?.message || 'Garmin re-authentication failed', 401);
+        sendError(res, 'AUTH_FAILED', 'Garmin re-authentication failed', 401);
         return;
       }
     }
@@ -199,7 +199,7 @@ export function garminAuthRoutes(): Router {
       sendSuccess(res, { verified: true, connected: true });
     } catch (err: any) {
       logger.error({ err, userId }, 'Garmin MFA verification failed');
-      sendError(res, 'VERIFY_FAILED', err?.message || 'Verification failed', 400);
+      sendError(res, 'VERIFY_FAILED', 'Verification failed', 400);
     }
   }));
 
@@ -237,7 +237,7 @@ export function garminAuthRoutes(): Router {
       clearGarminSession(userId);
       sendSuccess(res, { disconnected: true });
     } catch (err: any) {
-      sendError(res, 'INTERNAL', err?.message || 'Disconnect failed', 500);
+      sendInternalError(res, 'Disconnect failed');
     }
   });
 

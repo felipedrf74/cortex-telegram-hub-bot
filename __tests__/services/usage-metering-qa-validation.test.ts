@@ -340,11 +340,11 @@ describe('QA: Anthropic hook metering integration', () => {
 // ── Portal snapshot integration ───────────────────────────────────
 
 describe('QA: Portal snapshot includes metering', () => {
-  it('SnapshotResponse type includes usageMetering field', () => {
-    const serverSource = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
+  it('PortalSnapshotResponse type includes usageMetering field', () => {
+    const snapshotBuilderSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/portal/snapshot-builder.ts'), 'utf-8',
     );
-    expect(serverSource).toContain('usageMetering');
+    expect(snapshotBuilderSource).toContain('usageMetering');
   });
 });
 

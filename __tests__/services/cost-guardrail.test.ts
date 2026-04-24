@@ -23,6 +23,7 @@ vi.mock('../../src/config', () => ({
   config: {
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
+    billing: { paywallEnabled: true, allowUnsafePaywallBypass: true },
     aiSafety: { callTimeoutMs: 30000, globalDailyLimitUsd: 10.0, alertThresholdPercent: 0.8 },
   },
 }));

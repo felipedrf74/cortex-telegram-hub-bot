@@ -13,6 +13,7 @@ import {
 import { filePdf, resolveTargetDirectory } from './invoice-filer';
 import { recordFiling, isDuplicate, isEmailAlreadyFiled } from '../state/invoice-filings';
 import { getActiveVendors } from '../state/invoice-vendors';
+import { areGlobalInvoiceVendorsEnabled } from './runtime-flags';
 
 // ─── Vendor Configuration ───────────────────────────────────────────
 
@@ -82,7 +83,13 @@ const BUILTIN_VENDORS: VendorConfig[] = [
   },
 ];
 
-/** Merge hardcoded + user-added vendors from DB. */
+/**
+ * Returns invoice vendor rules for the authenticated user.
+ *
+ * Legacy beta builds shipped with owner-flavored built-in fiscal vendors.
+ * Those are now opt-in only: a user who has not configured a vendor should not
+ * see or scan against another account's fiscal assumptions.
+ */
 export function getAllVendors(userId: number): VendorConfig[] {
   const dbVendors = getActiveVendors(userId).map((v) => ({
     name: v.name,
@@ -90,7 +97,7 @@ export function getAllVendors(userId: number): VendorConfig[] {
     subjectPatterns: v.subject_patterns?.split(',').map((s) => s.trim()) || ['fatura'],
     builtin: false,
   }));
-  return [...BUILTIN_VENDORS, ...dbVendors];
+  return areGlobalInvoiceVendorsEnabled() ? [...BUILTIN_VENDORS, ...dbVendors] : dbVendors;
 }
 
 /** Get only the builtin vendors (for display). */

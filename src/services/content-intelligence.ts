@@ -5,6 +5,13 @@ import { getDb } from './database';
 import { logger } from '../utils/logger';
 import type { Lang } from '../utils/i18n';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
+import { readRankedSignals } from './intelligence-bus';
+import {
+  getFilmingRecommendation,
+  getTopics,
+  type ContentFilmingRecommendation,
+  type ContentTopic,
+} from './content-scheduler';
 
 export interface ContentPillarSummary {
   name: string;
@@ -17,6 +24,31 @@ export interface ContentDeskItem {
   title: string;
   body: string;
   createdAt: string;
+}
+
+export interface ContentSignalDigest {
+  type: string;
+  title: string;
+  summary: string;
+  priority: 'urgent' | 'normal' | 'background';
+  relevanceScore: number;
+  confidence: number;
+}
+
+export type ContentExecutionMode =
+  | 'publish_ready'
+  | 'script_ready'
+  | 'reaction_window'
+  | 'film_window'
+  | 'discovery';
+
+export interface ContentExecutionHint {
+  mode: ContentExecutionMode;
+  title: string;
+  summary: string;
+  scheduledDate: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  sourceType: string;
 }
 
 function reportInvalidContentIntelligenceScope(
@@ -99,6 +131,159 @@ export function getContentDeskItems(userId: number, limit: number): ContentDeskI
   }
 }
 
+export function getRankedContentSignals(userId: number, limit = 6): ContentSignalDigest[] {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidContentIntelligenceScope('get_ranked_content_signals', userId, { limit });
+    return [];
+  }
+
+  try {
+    return readRankedSignals(
+      'content-intelligence',
+      [
+        'reaction_opportunity',
+        'trending_spike',
+        'competitor_upload',
+        'hook_effectiveness',
+        'pillar_performance',
+        'learning_digest',
+        'content_formula',
+        'pipeline_bottleneck',
+      ],
+      {
+        userId,
+        limit,
+        minConfidence: 0.2,
+      },
+    ).map((signal) => ({
+      type: signal.signal_type,
+      title: describeContentSignalTitle(signal),
+      summary: describeContentSignalSummary(signal),
+      priority: signal.priority,
+      relevanceScore: signal.relevanceScore,
+      confidence: signal.confidence,
+    }));
+  } catch (err) {
+    logger.debug({ err, userId, limit }, 'Content intelligence: ranked signals query failed');
+    return [];
+  }
+}
+
+export async function getNextContentExecutionHint(
+  userId: number,
+  opts?: {
+    topics?: ContentTopic[];
+    deskItems?: ContentDeskItem[];
+    rankedSignals?: ContentSignalDigest[];
+    filmingRecommendation?: ContentFilmingRecommendation | null;
+    pillars?: ContentPillarSummary[];
+  },
+): Promise<ContentExecutionHint | null> {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidContentIntelligenceScope('get_next_content_execution_hint', userId);
+    return null;
+  }
+
+  const topics = opts?.topics ?? getTopics(userId, { includeTerminal: false, limit: 100 });
+  const deskItems = opts?.deskItems ?? getContentDeskItems(userId, 4);
+  const rankedSignals = opts?.rankedSignals ?? getRankedContentSignals(userId, 4);
+  const filmingRecommendation = opts?.filmingRecommendation ?? await getFilmingRecommendation(userId, topics);
+  const pillars = opts?.pillars ?? getActiveContentPillars(userId);
+
+  const readyScheduled = topics.find((topic) => topic.status === 'ready' && topic.scheduled_date);
+  if (readyScheduled) {
+    return {
+      mode: 'publish_ready',
+      title: readyScheduled.title,
+      summary: readyScheduled.scheduled_date
+        ? `Ready to ship and already aligned for ${readyScheduled.scheduled_date}.`
+        : 'Ready to ship next.',
+      scheduledDate: readyScheduled.scheduled_date,
+      confidence: 'high',
+      sourceType: 'topic_ready',
+    };
+  }
+
+  const readyTopic = topics.find((topic) => topic.status === 'ready');
+  if (readyTopic) {
+    return {
+      mode: 'publish_ready',
+      title: readyTopic.title,
+      summary: 'Ready to ship next once the calendar slot is protected.',
+      scheduledDate: readyTopic.scheduled_date,
+      confidence: 'high',
+      sourceType: 'topic_ready',
+    };
+  }
+
+  const scriptReady = deskItems.find((item) => item.type === 'script_ready');
+  if (scriptReady) {
+    return {
+      mode: 'script_ready',
+      title: scriptReady.title,
+      summary: scriptReady.body || 'Script is already on the desk and can move forward now.',
+      scheduledDate: null,
+      confidence: 'high',
+      sourceType: 'desk_item',
+    };
+  }
+
+  const reactionSignal = rankedSignals.find((signal) =>
+    signal.type === 'reaction_opportunity'
+    || signal.type === 'trending_spike'
+    || signal.type === 'competitor_upload');
+  if (reactionSignal) {
+    return {
+      mode: 'reaction_window',
+      title: reactionSignal.title,
+      summary: reactionSignal.summary,
+      scheduledDate: null,
+      confidence: reactionSignal.priority === 'urgent'
+        ? 'high'
+        : reactionSignal.confidence >= 0.6
+          ? 'medium'
+          : 'low',
+      sourceType: reactionSignal.type,
+    };
+  }
+
+  if (filmingRecommendation) {
+    return {
+      mode: 'film_window',
+      title: 'Filming window',
+      summary: filmingRecommendation.reason,
+      scheduledDate: filmingRecommendation.date,
+      confidence: filmingRecommendation.confidence,
+      sourceType: 'filming_recommendation',
+    };
+  }
+
+  const draftingTopic = topics.find((topic) => topic.status === 'drafting' || topic.status === 'planned');
+  if (draftingTopic) {
+    return {
+      mode: 'discovery',
+      title: draftingTopic.title,
+      summary: 'There is already a topic in motion, but it still needs direction before execution.',
+      scheduledDate: draftingTopic.scheduled_date,
+      confidence: 'medium',
+      sourceType: 'topic_pipeline',
+    };
+  }
+
+  if (pillars[0]) {
+    return {
+      mode: 'discovery',
+      title: pillars[0].name,
+      summary: 'This pillar is active, but it still needs a sharper angle before the next move.',
+      scheduledDate: null,
+      confidence: 'low',
+      sourceType: 'pillar',
+    };
+  }
+
+  return null;
+}
+
 export function localizeFilmingRecommendation<T extends {
   reason: string;
   reasons: string[];
@@ -130,6 +315,82 @@ function safeJsonArray(raw: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+function describeContentSignalTitle(signal: {
+  signal_type: string;
+  payload: Record<string, any>;
+}): string {
+  const title = firstText(
+    signal.payload.title,
+    signal.payload.topic,
+    signal.payload.formula,
+    signal.payload.keyword,
+    signal.payload.pillar,
+    signal.payload.hook,
+  );
+  if (title) return title;
+  return humanizeContentSignalType(signal.signal_type);
+}
+
+function describeContentSignalSummary(signal: {
+  signal_type: string;
+  payload: Record<string, any>;
+}): string {
+  const summary = firstText(
+    signal.payload.summary,
+    signal.payload.reason,
+    signal.payload.recommendation,
+    signal.payload.reaction_angle,
+    signal.payload.your_counter_position,
+    signal.payload.pattern,
+    signal.payload.observation,
+    signal.payload.description,
+  );
+  if (summary) return summary;
+
+  switch (signal.signal_type) {
+    case 'reaction_opportunity':
+      return 'Fast reaction window with enough context to move now.';
+    case 'trending_spike':
+      return 'This topic is gaining speed and timing matters.';
+    case 'competitor_upload':
+      return 'A comparable creator move may justify a response angle.';
+    case 'pipeline_bottleneck': {
+      const stage = firstText(signal.payload.bottleneck_stage) ?? 'pipeline';
+      const count = typeof signal.payload.stuck_count === 'number' ? signal.payload.stuck_count : null;
+      return count != null
+        ? `${count} item(s) are stuck at ${stage}.`
+        : `The ${stage} stage is starting to clog.`;
+    }
+    case 'hook_effectiveness':
+      return 'A recent hook pattern is standing out in performance.';
+    case 'pillar_performance':
+      return 'One pillar is clearly outperforming the others.';
+    case 'learning_digest':
+      return 'The learning loop already has a durable pattern worth reusing.';
+    case 'content_formula':
+      return 'A repeatable format is emerging from recent content results.';
+    default:
+      return 'Recent content-system signal.';
+  }
+}
+
+function firstText(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function humanizeContentSignalType(type: string): string {
+  return type
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function localizeFilmingRecommendationText(text: string, language: Lang): string {

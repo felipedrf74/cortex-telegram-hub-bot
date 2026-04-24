@@ -21,6 +21,45 @@ import {
   resetSharedDecisionContextCacheForTests,
 } from '../../src/services/shared-decision-context';
 
+function makeBudgetView(overrides: Partial<{
+  month: string;
+  basisCurrency: string;
+  currencies: string[];
+  integrity: 'reliable' | 'mixed_currency' | 'no_income';
+  affordability: 'tight' | 'controlled' | 'comfortable' | 'unknown';
+  incomeInBasisCurrency: number;
+  expensesInBasisCurrency: number;
+  currentRemainingInBasisCurrency: number | null;
+  currentRemainingRatio: number | null;
+  projectedExpensesInBasisCurrency: number | null;
+  projectedRemainingInBasisCurrency: number | null;
+  projectedRemainingRatio: number | null;
+  recurringExpenseEstimate: number;
+  recurringExpenseCount: number;
+  recurringExpenses: unknown[];
+  notes: string[];
+}> = {}) {
+  return {
+    month: '2026-04',
+    basisCurrency: 'EUR',
+    currencies: ['EUR'],
+    integrity: 'reliable' as const,
+    affordability: 'controlled' as const,
+    incomeInBasisCurrency: 1000,
+    expensesInBasisCurrency: 820,
+    currentRemainingInBasisCurrency: 180,
+    currentRemainingRatio: 0.18,
+    projectedExpensesInBasisCurrency: 820,
+    projectedRemainingInBasisCurrency: 180,
+    projectedRemainingRatio: 0.18,
+    recurringExpenseEstimate: 0,
+    recurringExpenseCount: 0,
+    recurringExpenses: [],
+    notes: [],
+    ...overrides,
+  };
+}
+
 describe('shared-decision-context', () => {
   beforeEach(() => {
     resetSharedDecisionContextCacheForTests();
@@ -55,6 +94,7 @@ describe('shared-decision-context', () => {
         totalExpenses: 820,
         totalDeductions: 0,
       },
+      budgetView: makeBudgetView(),
       derivedSignals: [
         {
           signalType: 'budget_remaining',
@@ -107,7 +147,7 @@ describe('shared-decision-context', () => {
     expect(context).toContain('Cooking:');
     expect(context).toContain('Secretary: calendar is busy on 2 day(s) with 9 events; travel is scheduled on 2026-04-19; focus protection is currently best on 2026-04-17; admin pressure shows 2 overdue and 1 due today');
     expect(context).toContain('fueling support is at_risk because 1 hard training day(s) still lack meals');
-    expect(context).toContain('Finance: budget remaining is 18% for 2026-04; training spend mode is selective; supplement mode is pause_new');
+    expect(context).toContain('Finance: projected budget remaining is 18% for 2026-04; training spend mode is selective; supplement mode is pause_new');
     expect(context).toContain('Content: 3 topic(s) are queued');
     expect(context).not.toContain('Training: recovery is strained');
     expect(mockReadTrainingMeshContext).not.toHaveBeenCalled();
@@ -120,7 +160,7 @@ describe('shared-decision-context', () => {
     expect(context).toContain('Training: recovery is strained; next key session is Tempo Run on 2026-04-17');
     expect(context).toContain('session immovability is high for Tempo Run');
     expect(context).toContain('Cooking: 2 day(s) still have no meals planned; fueling support is at_risk with 1 hard training day(s) still lacking meals; execution readiness is partial; shopping forecast is EUR 16.65');
-    expect(context).toContain('Finance: budget remaining is 18% for 2026-04; budget mode is controlled; tax deadline lands on 2026-04-30');
+    expect(context).toContain('Finance: projected budget remaining is 18% for 2026-04; budget mode is controlled; tax deadline lands on 2026-04-30');
     expect(context).toContain('Content: 3 topic(s) are queued; next publish target is "Race-week recap" on 2026-04-18; best filming window is 2026-04-18 14:00-16:00');
     expect(context).not.toContain('BRL');
     expect(mockReadTrainingMeshContext).toHaveBeenCalledWith({ userId: 42 });
@@ -152,6 +192,17 @@ describe('shared-decision-context', () => {
         totalExpenses: 0,
         totalDeductions: 0,
       },
+      budgetView: makeBudgetView({
+        integrity: 'no_income',
+        affordability: 'unknown',
+        incomeInBasisCurrency: 0,
+        expensesInBasisCurrency: 0,
+        currentRemainingInBasisCurrency: null,
+        currentRemainingRatio: null,
+        projectedExpensesInBasisCurrency: null,
+        projectedRemainingInBasisCurrency: null,
+        projectedRemainingRatio: null,
+      }),
       derivedSignals: [],
     });
     mockReadContentMeshContext.mockResolvedValueOnce({ derivedSignals: [], filmingRecommendation: null });
@@ -172,6 +223,15 @@ describe('shared-decision-context', () => {
         totalExpenses: 920,
         totalDeductions: 0,
       },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 920,
+        currentRemainingInBasisCurrency: 80,
+        currentRemainingRatio: 0.08,
+        projectedExpensesInBasisCurrency: 920,
+        projectedRemainingInBasisCurrency: 80,
+        projectedRemainingRatio: 0.08,
+        affordability: 'tight',
+      }),
       derivedSignals: [
         {
           signalType: 'budget_remaining',
@@ -190,7 +250,7 @@ describe('shared-decision-context', () => {
     const refreshed = await buildSharedDecisionContext('secretary', 42);
 
     expect(refreshed).toContain('budget mode is tight');
-    expect(refreshed).toContain('budget remaining is 8% for 2026-04');
+    expect(refreshed).toContain('projected budget remaining is 8% for 2026-04');
   });
 
   it('builds typed peer contracts for Secretary with non-negotiables and publish deadlines', async () => {
@@ -239,6 +299,15 @@ describe('shared-decision-context', () => {
     // the next reset.
     mockReadFinanceMeshContext.mockResolvedValue({
       monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 950, totalDeductions: 0 },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 950,
+        currentRemainingInBasisCurrency: 50,
+        currentRemainingRatio: 0.05,
+        projectedExpensesInBasisCurrency: 950,
+        projectedRemainingInBasisCurrency: 50,
+        projectedRemainingRatio: 0.05,
+        affordability: 'tight',
+      }),
       derivedSignals: [
         {
           signalType: 'budget_remaining',
@@ -258,12 +327,21 @@ describe('shared-decision-context', () => {
       'Budget headroom is at or below 10% — defer supplement, gear, and equipment asks this cycle.',
     );
     expect(contracts.finance?.preferredWindows).toContain('Supplement spend mode is pause.');
-    expect(contracts.finance?.notes).toContain('Budget remaining: 5%.');
+    expect(contracts.finance?.notes).toContain('Projected budget remaining: 5% for 2026-04.');
   });
 
   it('very-tight budget anchors Cooking on cheap staples', async () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce({
       monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 950, totalDeductions: 0 },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 950,
+        currentRemainingInBasisCurrency: 50,
+        currentRemainingRatio: 0.08,
+        projectedExpensesInBasisCurrency: 920,
+        projectedRemainingInBasisCurrency: 80,
+        projectedRemainingRatio: 0.08,
+        affordability: 'tight',
+      }),
       derivedSignals: [
         {
           signalType: 'budget_remaining',
@@ -287,6 +365,15 @@ describe('shared-decision-context', () => {
   it('moderate budget gets the balanced guidance line on Cooking', async () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce({
       monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 700, totalDeductions: 0 },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 700,
+        currentRemainingInBasisCurrency: 300,
+        currentRemainingRatio: 0.3,
+        projectedExpensesInBasisCurrency: 700,
+        projectedRemainingInBasisCurrency: 300,
+        projectedRemainingRatio: 0.3,
+        affordability: 'controlled',
+      }),
       derivedSignals: [
         {
           signalType: 'budget_remaining',
@@ -312,6 +399,37 @@ describe('shared-decision-context', () => {
     );
   });
 
+  it('keeps actionable content execution visible across secretary, cooking, and finance even without a publish date', async () => {
+    mockReadContentMeshContext.mockResolvedValue({
+      derivedSignals: [],
+      filmingRecommendation: null,
+      nextExecution: {
+        mode: 'script_ready',
+        title: 'Marathon recap hook',
+        summary: 'Script is already ready and only needs a protected execution block.',
+        scheduledDate: '2026-04-19',
+        confidence: 'high',
+        sourceType: 'desk_item',
+      },
+    });
+
+    const [secretaryContext, financeContext, cookingContracts, financeContracts] = await Promise.all([
+      buildSharedDecisionContext('secretary', 42),
+      buildSharedDecisionContext('finance', 42),
+      buildSharedDecisionContracts('cooking', 42),
+      buildSharedDecisionContracts('finance', 42),
+    ]);
+
+    expect(secretaryContext).toContain('next content move is to execute the ready script "Marathon recap hook"');
+    expect(financeContext).toContain('next content move is to execute the ready script "Marathon recap hook"');
+    expect(cookingContracts.content?.notes).toContain(
+      'Next execution: next content move is to execute the ready script "Marathon recap hook" by 2026-04-19.',
+    );
+    expect(financeContracts.content?.notes).toContain(
+      'Next execution: next content move is to execute the ready script "Marathon recap hook" by 2026-04-19.',
+    );
+  });
+
   it('malformed publish date does not crash the contract builder', async () => {
     mockReadContentMeshContext.mockResolvedValueOnce({
       derivedSignals: [
@@ -331,6 +449,35 @@ describe('shared-decision-context', () => {
     const contracts = await buildSharedDecisionContracts('secretary', 42);
     expect(contracts.cooking?.nonNegotiables).toContain(
       'Reserve 60\u201390 min of prep/cook time on 2026-04-17 to cover the upcoming hard session(s).',
+    );
+  });
+
+  it('meal prep pressure is surfaced explicitly to Secretary when cooking execution is fragile', async () => {
+    mockReadCookingMeshContext.mockResolvedValue({
+      derivedSignals: [
+        { signalType: 'meal_plan_window', payload: { coveredDays: ['2026-04-17'], missingDates: ['2026-04-18'] } },
+        {
+          signalType: 'meal_execution_readiness',
+          payload: {
+            status: 'partial',
+            prepPressureDates: ['2026-04-17', '2026-04-18'],
+            constrainedMealDates: ['2026-04-17'],
+            highEffortMealCount: 2,
+            manualMealCount: 1,
+          },
+        },
+      ],
+    });
+
+    const contracts = await buildSharedDecisionContracts('secretary', 42);
+    expect(contracts.cooking?.preferredWindows).toContain(
+      'Prep pressure lands on 2026-04-17, 2026-04-18 — simplify food execution ahead of those dates.',
+    );
+    expect(contracts.cooking?.fallbackIfDeferred).toContain(
+      'If prep keeps slipping, replace high-effort meals on the pressured dates with simpler repeatable options.',
+    );
+    expect(contracts.cooking?.notes).toContain(
+      'Meal execution pressure hits 2026-04-17, 2026-04-18 with 2 high-effort meal(s).',
     );
   });
 

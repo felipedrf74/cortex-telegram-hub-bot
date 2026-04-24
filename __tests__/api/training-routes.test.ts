@@ -11,9 +11,11 @@ const mockApplyCoachRecommendations = vi.fn();
 const mockGetLatestByType = vi.fn();
 const mockGetEvents = vi.fn();
 const mockCreateEvent = vi.fn();
+const mockDeleteEvent = vi.fn();
 const mockGetActivePlan = vi.fn();
 const mockGetCurrentWeek = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
+const mockGetWeeksForPlan = vi.fn();
 // Hardening 2026-04-21: /training/complete + /skip now verify session
 // ownership via getSessionById + getPlanById before mutating. Tests
 // that exercise those routes need these mocks in place.
@@ -25,6 +27,8 @@ const mockCreateWeek = vi.fn();
 const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
 const mockMarkSessionSkipped = vi.fn();
+const mockUpdateSession = vi.fn();
+const mockUpdatePlanStatus = vi.fn();
 const mockGetProfile = vi.fn();
 const mockGetMissingProfileFields = vi.fn();
 const mockGetQuestionnaire = vi.fn();
@@ -40,6 +44,7 @@ const mockReadSecretaryMeshContext = vi.fn();
 const mockSetLastCoachState = vi.fn();
 const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
+const mockInvalidateCalendarCaches = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -67,12 +72,18 @@ vi.mock('../../src/services/report-document-store', () => ({
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
+  deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
+}));
+
+vi.mock('../../src/services/calendar-cache-invalidator', () => ({
+  invalidateCalendarCaches: (...args: unknown[]) => mockInvalidateCalendarCaches(...args),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
+  getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
   getSessionById: (...args: unknown[]) => mockGetSessionById(...args),
   getPlanById: (...args: unknown[]) => mockGetPlanById(...args),
   getWeeklyAdherence: (...args: unknown[]) => mockGetWeeklyAdherence(...args),
@@ -81,6 +92,8 @@ vi.mock('../../src/services/training-plans', () => ({
   createSession: (...args: unknown[]) => mockCreateSession(...args),
   linkSessionToCalendar: (...args: unknown[]) => mockLinkSessionToCalendar(...args),
   markSessionSkipped: (...args: unknown[]) => mockMarkSessionSkipped(...args),
+  updateSession: (...args: unknown[]) => mockUpdateSession(...args),
+  updatePlanStatus: (...args: unknown[]) => mockUpdatePlanStatus(...args),
 }));
 
 vi.mock('../../src/services/onboarding', () => ({
@@ -261,9 +274,11 @@ describe('Training API routes', () => {
     mockGetLatestByType.mockReset();
     mockGetEvents.mockReset();
     mockCreateEvent.mockReset();
+    mockDeleteEvent.mockReset();
     mockGetActivePlan.mockReset();
     mockGetCurrentWeek.mockReset();
     mockGetSessionsForWeek.mockReset();
+    mockGetWeeksForPlan.mockReset();
     mockGetSessionById.mockReset();
     mockGetPlanById.mockReset();
     mockGetWeeklyAdherence.mockReset();
@@ -272,6 +287,8 @@ describe('Training API routes', () => {
     mockCreateSession.mockReset();
     mockLinkSessionToCalendar.mockReset();
     mockMarkSessionSkipped.mockReset();
+    mockUpdateSession.mockReset();
+    mockUpdatePlanStatus.mockReset();
     mockGetProfile.mockReset();
     mockGetMissingProfileFields.mockReset();
     mockGetQuestionnaire.mockReset();
@@ -286,15 +303,18 @@ describe('Training API routes', () => {
     mockReadSecretaryMeshContext.mockReset();
     mockLoggerError.mockReset();
     mockBuildActiveSignalsResponse.mockReset();
+    mockInvalidateCalendarCaches.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
     mockGetLatestByType.mockReturnValue(null);
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
+    mockDeleteEvent.mockResolvedValue(undefined);
     mockGetActivePlan.mockReturnValue(null);
     mockGetCurrentWeek.mockReturnValue(null);
     mockGetSessionsForWeek.mockReturnValue([]);
+    mockGetWeeksForPlan.mockReturnValue([]);
     mockGetWeeklyAdherence.mockReturnValue({ adherenceRate: 0 });
     mockCreatePlan.mockReturnValue({ id: 901 });
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
@@ -302,6 +322,8 @@ describe('Training API routes', () => {
     mockCreateSession.mockImplementation(() => ({ id: 2000 + (++sessionCounter) }));
     mockLinkSessionToCalendar.mockReturnValue(undefined);
     mockMarkSessionSkipped.mockReturnValue(true);
+    mockUpdateSession.mockReturnValue(true);
+    mockUpdatePlanStatus.mockReturnValue(true);
     mockGetProfile.mockReturnValue(null);
     mockGetMissingProfileFields.mockReturnValue([]);
     mockGetQuestionnaire.mockImplementation((id: string) => ({
@@ -653,6 +675,36 @@ describe('Training API routes', () => {
         'dashboard-readiness:12',
       ]),
     );
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('dashboard-home:12:');
+  });
+
+  it('sanitizes degraded coach warnings when briefing generation fails', async () => {
+    mockGenerateCoachBriefing.mockRejectedValueOnce(new Error('upstream garmin timeout: tenant=12'));
+
+    const res = await dispatch('GET', '/coach');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.degraded).toBe(true);
+    expect(res.body.data.warnings).toEqual(['Coach briefing unavailable.']);
+    expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
+  });
+
+  it('keeps coach/apply failures generic for the client while preserving the route code', async () => {
+    mockApplyCoachRecommendations.mockRejectedValueOnce(new Error('calendar mutation failed for user 12'));
+
+    const res = await dispatch(
+      'POST',
+      '/coach/apply',
+      {},
+      { recommendationIds: ['rec-1'] },
+    );
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('COACH_APPLY_FAILED');
+    expect(res.body.error.message).toBe('Failed to apply coach recommendations');
+    expect(JSON.stringify(res.body)).not.toContain('calendar mutation failed');
   });
 
   it('treats training completion without an active session as a soft success', async () => {
@@ -789,6 +841,7 @@ describe('Training API routes', () => {
     expect(runStart.toDateString()).toBe(gymStart.toDateString());
     expect(runStart.getTime()).toBeLessThan(gymStart.getTime());
     expect((gymStart.getTime() - runStart.getTime()) / 60000).toBeGreaterThanOrEqual(300);
+    expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(12);
   });
 
   it('marks a session as skipped and returns updated weekly adherence', async () => {
@@ -1030,6 +1083,49 @@ describe('Training API routes', () => {
     expect(res.body.data.message).toContain('reliable fallback template');
     expect(mockCreatePlan).toHaveBeenCalled();
     expect(mockCreateSession).toHaveBeenCalled();
+  });
+
+  it('cancels an owned plan, removes linked calendar events, and preserves completed session status', async () => {
+    mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12 });
+    mockGetWeeksForPlan.mockReturnValue([{ id: 7001 }]);
+    mockGetSessionsForWeek.mockReturnValue([
+      {
+        id: 321,
+        status: 'completed',
+        calendar_event_id: 'evt-completed',
+        calendar_source: 'outlook',
+      },
+      {
+        id: 322,
+        status: 'planned',
+        calendar_event_id: 'evt-planned',
+        calendar_source: 'google',
+      },
+    ]);
+
+    const res = await dispatch('POST', '/plan/cancel', {}, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data).toMatchObject({
+      cancelled: true,
+      planId: 44,
+      removedEvents: 2,
+      totalSessions: 2,
+    });
+    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
+    expect(mockDeleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
+    expect(mockUpdateSession).toHaveBeenCalledWith(321, {
+      status: 'completed',
+      calendar_event_id: null,
+      calendar_source: null,
+    });
+    expect(mockUpdateSession).toHaveBeenCalledWith(322, {
+      status: 'skipped',
+      calendar_event_id: null,
+      calendar_source: null,
+    });
+    expect(mockUpdatePlanStatus).toHaveBeenCalledWith(44, 'cancelled');
   });
 
   it('ignores generic routine walk events when resolving today training from calendar', async () => {

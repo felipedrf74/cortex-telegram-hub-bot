@@ -15,7 +15,7 @@ import { logger } from '../../utils/logger';
 import { getUserConnections } from '../../services/oauth-store';
 import { getDb } from '../../services/database';
 import { config } from '../../config';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 type ConnectionAvailability = {
@@ -166,7 +166,7 @@ export function connectionRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS connections list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch connections', 500);
+      sendInternalError(res, 'Unable to load connections right now.');
     }
   }));
 

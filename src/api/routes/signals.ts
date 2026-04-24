@@ -16,7 +16,7 @@
 
 import { Router, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
-import { sendSuccess, sendError } from '../response-helpers';
+import { sendSuccess, sendInternalError } from '../response-helpers';
 import { buildActiveSignalsResponse } from '../../services/signals-observability';
 import { logger } from '../../utils/logger';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
@@ -61,7 +61,7 @@ export function signalsRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId }, 'GET /api/v1/signals/active failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to load active signals', 500);
+      sendInternalError(res, 'Failed to load active signals');
     }
   });
 

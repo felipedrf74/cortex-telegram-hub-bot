@@ -164,6 +164,23 @@ describe('Connections routes', () => {
     ]);
   });
 
+  it('returns a client-safe message when the connections resolver fails unexpectedly', async () => {
+    vi.doMock('../../src/services/oauth-store', () => ({
+      getUserConnections: vi.fn(() => {
+        throw new Error('oauth_store table missing');
+      }),
+    }));
+
+    const res = await dispatchConnections(42);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error).toEqual({
+      code: 'INTERNAL',
+      message: 'Unable to load connections right now.',
+    });
+  });
+
   it('fails closed on invalid tenant scope before loading connections', async () => {
     const res = await dispatchConnections(0);
     const observability = await import('../../src/services/tenant-scope-observability');

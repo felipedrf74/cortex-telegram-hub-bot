@@ -8,6 +8,7 @@ const mockIsUserOverDailyCap = vi.fn(() => ({
   plan: 'pro',
   resetAt: '2026-04-15T00:00:00.000Z',
 }));
+const mockAcquireCostLock = vi.fn(async () => () => { /* no-op */ });
 
 vi.mock('../../src/utils/logger', () => ({
   logger: {
@@ -23,7 +24,7 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/services/cost-guardrail', () => ({
   isUserOverDailyCap: (...args: unknown[]) => mockIsUserOverDailyCap(...args),
   buildQuotaExceededMessage: vi.fn((quota: { plan: string; resetAt: string }) => `Daily AI quota reached for the ${quota.plan} plan. Resets at ${quota.resetAt}.`),
-  acquireCostLock: vi.fn(async () => () => { /* no-op */ }),
+  acquireCostLock: (...args: unknown[]) => mockAcquireCostLock(...args),
 }));
 
 vi.mock('../../src/services/user-service', () => ({
@@ -47,7 +48,7 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(body: any): Request {
+function mockReq(body: any, userId?: number | null): Request {
   return {
     method: 'POST',
     url: '/script',
@@ -58,14 +59,14 @@ function mockReq(body: any): Request {
     params: {},
     headers: {},
     body,
-    userId: 12,
+    userId,
   } as any;
 }
 
-async function dispatch(body: any): Promise<MockRes> {
+async function dispatch(body: any, userId: number | null = 12): Promise<MockRes> {
   const { contentRoutes } = await import('../../src/api/routes/content');
   const router = contentRoutes();
-  const req = mockReq(body);
+  const req = mockReq(body, userId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -82,6 +83,7 @@ async function dispatch(body: any): Promise<MockRes> {
 describe('Content API — script quota enforcement', () => {
   beforeEach(() => {
     mockIsUserOverDailyCap.mockReset();
+    mockAcquireCostLock.mockClear();
     mockIsUserOverDailyCap.mockReturnValue({
       over: true,
       spentUsd: 0.2,
@@ -104,5 +106,19 @@ describe('Content API — script quota enforcement', () => {
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+  });
+
+  it('rejects invalid authenticated user scope before acquiring the cost lock', async () => {
+    const response = await dispatch({
+      topic: 'How to recover after hard intervals',
+      format: 'Reel',
+    }, null);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(response.body.error.message).toBe('Invalid authenticated user scope');
+    expect(mockAcquireCostLock).not.toHaveBeenCalled();
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
   });
 });

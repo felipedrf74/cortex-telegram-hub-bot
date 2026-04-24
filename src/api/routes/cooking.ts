@@ -48,7 +48,7 @@ import {
 } from '../../services/cooking-chef';
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
-import { invalidatePlanningCaches } from '../../services/plan-cache-invalidator';
+import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
@@ -80,6 +80,20 @@ interface CookingTrainingSnapshot {
   todayHasHardSession: boolean;
   tomorrowHasTraining: boolean;
   tomorrowHasHardSession: boolean;
+}
+
+function sendCookingInternalError(
+  res: Response,
+  opts: {
+    err: unknown;
+    userId: number;
+    operation: string;
+    message: string;
+    extra?: Record<string, unknown>;
+  },
+): void {
+  logger.error({ err: opts.err, userId: opts.userId, ...(opts.extra ?? {}) }, opts.operation);
+  sendError(res, 'INTERNAL', opts.message, 500);
 }
 
 function isValidNutritionField(value: unknown): value is number | null | undefined {
@@ -308,9 +322,13 @@ export function cookingRoutes(): Router {
     try {
       const recipes = getRecipes(userId, { search, tags, limit });
       sendSuccess(res, { recipes, count: recipes.length });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS cooking recipes list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch recipes', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking recipes list failed',
+        message: 'Failed to fetch recipes',
+      });
     }
   }));
 
@@ -355,9 +373,13 @@ export function cookingRoutes(): Router {
       });
       logger.info({ userId, recipeId: recipe.id }, 'iOS recipe created');
       sendSuccess(res, { recipe }, { status: 201 });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS cooking recipe create failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to create recipe', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking recipe create failed',
+        message: 'Failed to create recipe',
+      });
     }
   }));
 
@@ -382,9 +404,14 @@ export function cookingRoutes(): Router {
         return;
       }
       sendSuccess(res, { recipe });
-    } catch (err: any) {
-      logger.error({ err, userId, recipeId }, 'iOS cooking recipe fetch failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch recipe', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking recipe fetch failed',
+        message: 'Failed to fetch recipe',
+        extra: { recipeId },
+      });
     }
   }));
 
@@ -446,9 +473,14 @@ export function cookingRoutes(): Router {
         return;
       }
       sendSuccess(res, { recipe: updated });
-    } catch (err: any) {
-      logger.error({ err, userId, recipeId }, 'iOS cooking recipe update failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update recipe', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking recipe update failed',
+        message: 'Failed to update recipe',
+        extra: { recipeId },
+      });
     }
   }));
 
@@ -471,9 +503,14 @@ export function cookingRoutes(): Router {
         return;
       }
       sendSuccess(res, { deleted: true, id: recipeId });
-    } catch (err: any) {
-      logger.error({ err, userId, recipeId }, 'iOS cooking recipe delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete recipe', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking recipe delete failed',
+        message: 'Failed to delete recipe',
+        extra: { recipeId },
+      });
     }
   }));
 
@@ -501,9 +538,13 @@ export function cookingRoutes(): Router {
         adaptation: buildMealAdaptation(plan, trainingSnapshot),
       }));
       sendSuccess(res, { meals, count: meals.length, from, to });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS cooking meal-plan list failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch meal plan', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking meal-plan list failed',
+        message: 'Failed to fetch meal plan',
+      });
     }
   }));
 
@@ -523,11 +564,15 @@ export function cookingRoutes(): Router {
 
     try {
       const plan = setMealPlan(userId, date, mealType, title, { recipeId, notes });
-      invalidatePlanningCaches(userId);
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { meal: plan });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS cooking meal-plan set failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to save meal plan', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking meal-plan set failed',
+        message: 'Failed to save meal plan',
+      });
     }
   }));
 
@@ -546,11 +591,15 @@ export function cookingRoutes(): Router {
 
     try {
       const deleted = deleteMealPlan(userId, date, mealType);
-      invalidatePlanningCaches(userId);
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { deleted, date, mealType });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS cooking meal-plan delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete meal plan', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking meal-plan delete failed',
+        message: 'Failed to delete meal plan',
+      });
     }
   }));
 
@@ -572,9 +621,13 @@ export function cookingRoutes(): Router {
     try {
       const list = getShoppingList(userId, week);
       sendSuccess(res, { list });
-    } catch (err: any) {
-      logger.error({ err, userId }, 'iOS cooking shopping-list get failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to fetch shopping list', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking shopping-list get failed',
+        message: 'Failed to fetch shopping list',
+      });
     }
   }));
 
@@ -596,11 +649,16 @@ export function cookingRoutes(): Router {
     try {
       const list = generateShoppingList(userId, week);
       logger.info({ userId, week, itemCount: list.items.length }, 'iOS shopping list generated');
-      invalidatePlanningCaches(userId);
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { list });
-    } catch (err: any) {
-      logger.error({ err, userId, week }, 'iOS cooking shopping-list generate failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to generate shopping list', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking shopping-list generate failed',
+        message: 'Failed to generate shopping list',
+        extra: { week },
+      });
     }
   }));
 
@@ -633,16 +691,22 @@ export function cookingRoutes(): Router {
         sendError(res, 'NOT_FOUND', 'Shopping list not found for that week', 404);
         return;
       }
-      invalidatePlanningCaches(userId);
+      invalidateCookingDerivedCaches(userId);
       sendSuccess(res, { list });
-    } catch (err: any) {
-      logger.error({ err, userId, week, index }, 'iOS cooking shopping-list item update failed');
-      const message = err?.message || 'Failed to update shopping list item';
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '';
       if (message.includes('out of range')) {
+        logger.error({ err, userId, week, index }, 'iOS cooking shopping-list item update rejected');
         sendError(res, 'BAD_REQUEST', message, 400);
         return;
       }
-      sendError(res, 'INTERNAL', message, 500);
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS cooking shopping-list item update failed',
+        message: 'Failed to update shopping list item',
+        extra: { week, index },
+      });
     }
   }));
 
@@ -773,7 +837,7 @@ export function cookingRoutes(): Router {
         { userId, week, eventId: event.id, mealCount: meals.length, source: event.source },
         'iOS meal prep calendar event created',
       );
-      invalidatePlanningCaches(userId);
+      invalidateCookingDerivedCaches(userId, { includeCalendarSurfaces: true });
 
       sendSuccess(res, {
         event: {
@@ -786,9 +850,14 @@ export function cookingRoutes(): Router {
         },
         mealCount: meals.length,
       });
-    } catch (err: any) {
-      logger.error({ err, userId, week }, 'iOS meal prep event creation failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to create prep event', 500);
+    } catch (err: unknown) {
+      sendCookingInternalError(res, {
+        err,
+        userId,
+        operation: 'iOS meal prep event creation failed',
+        message: 'Failed to create prep event',
+        extra: { week },
+      });
     }
   }));
 

@@ -29,6 +29,7 @@ import {
 import { init as initSentry, flush as flushSentry } from './services/error-tracker';
 import { escapeHtml } from './utils/telegram-formatter';
 import type http from 'http';
+import { isTelegramLegacyDeliveryEnabled } from './services/runtime-flags';
 
 const MAX_RETRIES = 5;
 const INITIAL_RETRY_DELAY_MS = 45_000; // 45s — enough for Telegram to release the polling lock
@@ -124,7 +125,7 @@ async function main(): Promise<void> {
   // To re-enable Telegram temporarily: set TELEGRAM_LEGACY_DELIVERY=true
   // in .env and restart. The scheduler's safeSend() gates all sends.
   let bot: any = null;
-  if (process.env.TELEGRAM_LEGACY_DELIVERY === 'true' && config.telegram.botToken) {
+  if (isTelegramLegacyDeliveryEnabled() && config.telegram.botToken) {
     try {
       bot = createBot();
       setBotRef(bot);

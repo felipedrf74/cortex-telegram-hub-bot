@@ -51,8 +51,8 @@ async function main(): Promise<void> {
 
     const targetEmail = destinationEmail || user.email || `beta+${userId}@nexushub.me`;
 
-    addVendor('Faturas do contabilista', 'billing@example.com', 'invoice,receipt,payment', userId);
-    addVendor('Documentos fiscais', 'finance@example.com', 'fiscal,saft,recibo', userId);
+    addVendor('Faturas do contabilista', 'billing@example.com', userId, 'invoice,receipt,payment');
+    addVendor('Documentos fiscais', 'finance@example.com', userId, 'fiscal,saft,recibo');
 
     updateFiscalCollectionProfile(userId, {
       destination_email: targetEmail,

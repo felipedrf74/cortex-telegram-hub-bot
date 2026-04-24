@@ -11,6 +11,9 @@ import * as financeTracker from './finance-tracker';
 import * as cookingChef from './cooking-chef';
 import * as trainingSignals from './training-signals';
 import * as onboarding from './onboarding';
+import { invalidateCalendarCaches } from './calendar-cache-invalidator';
+import { invalidateCookingDerivedCaches } from './cooking-cache-invalidator';
+import { invalidateFinanceDerivedCaches } from './finance-cache-invalidator';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
 import { resolveCanonicalUserId } from './user-service';
@@ -309,16 +312,20 @@ export async function executeToolCall(
 
       // ── Calendar tools (unified: Google + Outlook) ──
       case 'get_calendar_events':
-        if (!unifiedCal.isAnyCalendarConfigured()) {
+        if (userId != null
+          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured. Set Google or Outlook credentials.' };
         }
-        return await unifiedCal.getEvents(input.start_date, input.end_date);
+        return await unifiedCal.getEvents(input.start_date, input.end_date, userId);
 
       case 'create_calendar_event':
-        if (!unifiedCal.isAnyCalendarConfigured()) {
+        if (userId != null
+          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
-        return await unifiedCal.createEvent({
+        const createdEvent = await unifiedCal.createEvent({
           title: input.title,
           start: input.start,
           end: input.end,
@@ -327,26 +334,35 @@ export async function executeToolCall(
           attendees: normalizeAttendeeEmails(input.attendees),
           location: typeof input.location === 'string' ? input.location.trim() || undefined : undefined,
         }, input.calendar_source, userId);
+        invalidateCalendarCaches(userId);
+        return createdEvent;
 
       case 'update_calendar_event': {
-        if (!unifiedCal.isAnyCalendarConfigured()) {
+        if (userId != null
+          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
         const updateSource = input.calendar_source || detectCalendarSource(input.event_id);
-        return await unifiedCal.updateEvent({
+        const updatedEvent = await unifiedCal.updateEvent({
           event_id: input.event_id,
           new_start: input.new_start,
           new_end: input.new_end,
           new_title: input.new_title,
         }, updateSource, userId);
+        invalidateCalendarCaches(userId);
+        return updatedEvent;
       }
 
       case 'delete_calendar_event': {
-        if (!unifiedCal.isAnyCalendarConfigured()) {
+        if (userId != null
+          ? !unifiedCal.hasConnectedCalendarForUser(userId)
+          : !unifiedCal.isAnyCalendarConfigured()) {
           return { error: 'No calendar is configured.' };
         }
         const deleteSource = input.calendar_source || detectCalendarSource(input.event_id);
         await unifiedCal.deleteEvent(input.event_id, deleteSource, userId);
+        invalidateCalendarCaches(userId);
         return { success: true, message: 'Event deleted' };
       }
 
@@ -384,42 +400,76 @@ export async function executeToolCall(
 
       // ── Outlook Email tools ──
       case 'search_outlook_emails':
-        if (!outlookMail.isOutlookMailConfigured()) {
+        if (userId != null
+          ? !outlookMail.isOutlookMailConfiguredForUser(userId)
+          : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured. Set OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, and OUTLOOK_REFRESH_TOKEN.' };
         }
-        return await outlookMail.searchEmails(input.query, input.max_results || 10);
+        return userId != null
+          ? await outlookMail.searchEmailsForUser(userId, input.query, input.max_results || 10)
+          : await outlookMail.searchEmails(input.query, input.max_results || 10);
 
       case 'read_outlook_email':
-        if (!outlookMail.isOutlookMailConfigured()) {
+        if (userId != null
+          ? !outlookMail.isOutlookMailConfiguredForUser(userId)
+          : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        return await outlookMail.readEmail(input.message_id);
+        return userId != null
+          ? await outlookMail.readEmailForUser(userId, input.message_id)
+          : await outlookMail.readEmail(input.message_id);
 
       case 'send_outlook_email':
-        if (!outlookMail.isOutlookMailConfigured()) {
+        if (userId != null
+          ? !outlookMail.isOutlookMailConfiguredForUser(userId)
+          : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        await outlookMail.sendEmail({
-          to: input.to,
-          subject: input.subject,
-          body: input.body,
-          cc: input.cc,
-        });
+        if (userId != null) {
+          await outlookMail.sendEmailForUser(userId, {
+            to: input.to,
+            subject: input.subject,
+            body: input.body,
+            cc: input.cc,
+          });
+        } else {
+          await outlookMail.sendEmail({
+            to: input.to,
+            subject: input.subject,
+            body: input.body,
+            cc: input.cc,
+          });
+        }
         return { success: true, message: `Email sent to ${input.to}` };
 
       case 'reply_outlook_email':
-        if (!outlookMail.isOutlookMailConfigured()) {
+        if (userId != null
+          ? !outlookMail.isOutlookMailConfiguredForUser(userId)
+          : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
         }
-        await outlookMail.replyToEmail({
-          messageId: input.message_id,
-          body: input.body,
-        });
+        if (userId != null) {
+          await outlookMail.replyToEmailForUser(userId, {
+            messageId: input.message_id,
+            body: input.body,
+          });
+        } else {
+          await outlookMail.replyToEmail({
+            messageId: input.message_id,
+            body: input.body,
+          });
+        }
         return { success: true, message: 'Reply sent' };
 
       case 'get_outlook_unread': {
-        if (!outlookMail.isOutlookMailConfigured()) {
+        if (userId != null
+          ? !outlookMail.isOutlookMailConfiguredForUser(userId)
+          : !outlookMail.isOutlookMailConfigured()) {
           return { error: 'Outlook is not configured.' };
+        }
+        if (userId != null) {
+          const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmailsForUser(userId, input.max_results || 10);
+          return { unread_count: unreadCount, recent_unread: unreadEmails };
         }
         const { count: unreadCount, emails: unreadEmails } = await outlookMail.getUnreadEmails(input.max_results || 10);
         return { unread_count: unreadCount, recent_unread: unreadEmails };
@@ -673,6 +723,7 @@ export async function executeToolCall(
           description: input.description,
           currency: input.currency,
         });
+        invalidateFinanceDerivedCaches(uid);
         return {
           success: true,
           id: tx.id,
@@ -696,6 +747,7 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
+        if (deleted) invalidateFinanceDerivedCaches(uid);
         return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
       }
       case 'finance_monthly_summary': {
@@ -710,6 +762,7 @@ export async function executeToolCall(
         const uid = scope.userId;
         const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
         const breakdown = financeTracker.calculateMonthlyTax(taxEvent.gross_income, taxEvent.deductions);
+        invalidateFinanceDerivedCaches(uid);
         return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
       }
       case 'finance_get_tax_events': {
@@ -723,6 +776,7 @@ export async function executeToolCall(
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const marked = financeTracker.markTaxPaid(uid, input.month);
+        if (marked) invalidateFinanceDerivedCaches(uid);
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
       case 'finance_annual_summary': {
@@ -774,6 +828,7 @@ export async function executeToolCall(
         const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
           recipeId: input.recipe_id, notes: input.notes,
         });
+        invalidateCookingDerivedCaches(uid);
         return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
       }
       case 'cooking_get_meal_plan': {
@@ -786,13 +841,17 @@ export async function executeToolCall(
         const scope = requireTenantToolUserId(toolName, userId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.deleteMealPlan(uid, input.date, input.meal_type) ? { success: true } : { error: 'Meal not found' };
+        const deleted = cookingChef.deleteMealPlan(uid, input.date, input.meal_type);
+        if (deleted) invalidateCookingDerivedCaches(uid);
+        return deleted ? { success: true } : { error: 'Meal not found' };
       }
       case 'cooking_generate_shopping_list': {
         const scope = requireTenantToolUserId(toolName, userId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
-        return cookingChef.generateShoppingList(uid, input.week_start);
+        const list = cookingChef.generateShoppingList(uid, input.week_start);
+        invalidateCookingDerivedCaches(uid);
+        return list;
       }
       case 'cooking_get_shopping_list': {
         const scope = requireTenantToolUserId(toolName, userId);
@@ -808,7 +867,7 @@ export async function executeToolCall(
     }
   } catch (err) {
     logger.error({ err, tool: toolName }, 'Tool execution failed');
-    return { error: `Tool execution failed: ${(err as Error).message}` };
+    return { error: 'Tool execution failed' };
   }
 }
 

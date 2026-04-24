@@ -7,10 +7,17 @@ import {
 
 const mockDbAll = vi.fn();
 const mockDbRun = vi.fn();
+const mockSaveNote = vi.fn();
 const mockSearchNotes = vi.fn();
+const mockUpdateNote = vi.fn();
+const mockDeleteNote = vi.fn();
+const mockSetReminder = vi.fn();
 const mockGetActiveReminders = vi.fn();
+const mockCancelReminder = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
 const mockCheckQuota = vi.fn();
+const mockGetDailyUsage = vi.fn();
+const mockGetUsageRange = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => ({
@@ -22,17 +29,17 @@ vi.mock('../../src/services/database', () => ({
 }));
 
 vi.mock('../../src/state/notes', () => ({
-  saveNote: vi.fn(),
+  saveNote: (...args: unknown[]) => mockSaveNote(...args),
   searchNotes: (...args: unknown[]) => mockSearchNotes(...args),
-  updateNote: vi.fn(),
-  deleteNote: vi.fn(),
+  updateNote: (...args: unknown[]) => mockUpdateNote(...args),
+  deleteNote: (...args: unknown[]) => mockDeleteNote(...args),
   getNoteById: vi.fn(),
 }));
 
 vi.mock('../../src/state/reminders', () => ({
-  setReminder: vi.fn(),
+  setReminder: (...args: unknown[]) => mockSetReminder(...args),
   getActiveReminders: (...args: unknown[]) => mockGetActiveReminders(...args),
-  cancelReminder: vi.fn(),
+  cancelReminder: (...args: unknown[]) => mockCancelReminder(...args),
 }));
 
 vi.mock('../../src/services/signals-observability', () => ({
@@ -40,8 +47,8 @@ vi.mock('../../src/services/signals-observability', () => ({
 }));
 
 vi.mock('../../src/services/usage-metering', () => ({
-  getDailyUsage: vi.fn(),
-  getUsageRange: vi.fn(),
+  getDailyUsage: (...args: unknown[]) => mockGetDailyUsage(...args),
+  getUsageRange: (...args: unknown[]) => mockGetUsageRange(...args),
   checkQuota: (...args: unknown[]) => mockCheckQuota(...args),
 }));
 
@@ -188,5 +195,98 @@ describe('Authenticated support routes scope guards', () => {
     expect(getTenantScopeAnomalies(1)).toEqual([
       expect.objectContaining({ operation: 'usage_route', userId: 0 }),
     ]);
+  });
+
+  it('sanitizes usage failures instead of leaking internal quota errors', async () => {
+    mockCheckQuota.mockImplementationOnce(() => {
+      throw new Error('quota ledger exploded for tenant=12');
+    });
+
+    const res = await dispatch(usageRoutes, 'GET', '/', 12);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to fetch usage');
+    expect(JSON.stringify(res.body)).not.toContain('quota ledger exploded');
+  });
+
+  it('sanitizes signals failures instead of leaking observability internals', async () => {
+    mockBuildActiveSignalsResponse.mockImplementationOnce(() => {
+      throw new Error('signals pipeline exploded for tenant 12');
+    });
+
+    const res = await dispatch(signalsRoutes, 'GET', '/active', 12);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to load active signals');
+    expect(JSON.stringify(res.body)).not.toContain('signals pipeline exploded');
+  });
+
+  it('sanitizes audit trail failures instead of leaking query internals', async () => {
+    mockDbAll.mockImplementationOnce(() => {
+      throw new Error('audit query failed for tenant 12');
+    });
+
+    const res = await dispatch(auditTrailRoutes, 'GET', '/me', 12);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to fetch audit trail');
+    expect(JSON.stringify(res.body)).not.toContain('audit query failed');
+  });
+
+  it('sanitizes client error ingestion failures instead of leaking persistence internals', async () => {
+    mockDbRun.mockImplementationOnce(() => {
+      throw new Error('client_errors insert failed for tenant 12');
+    });
+
+    const res = await dispatch(clientErrorsRoutes, 'POST', '/', 12, {
+      message: 'boom',
+      source: 'ios',
+      level: 'error',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to persist client error');
+    expect(JSON.stringify(res.body)).not.toContain('client_errors insert failed');
+  });
+
+  it('sanitizes note creation failures instead of leaking persistence internals', async () => {
+    mockSaveNote.mockImplementationOnce(() => {
+      throw new Error('notes sqlite write failed for user 12');
+    });
+
+    const res = await dispatch(notesRoutes, 'POST', '/', 12, {
+      content: 'Remember this',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to save note');
+    expect(JSON.stringify(res.body)).not.toContain('notes sqlite write failed');
+  });
+
+  it('sanitizes reminder creation failures instead of leaking scheduler internals', async () => {
+    mockSetReminder.mockImplementationOnce(() => {
+      throw new Error('scheduler insert failed for tenant 12');
+    });
+
+    const res = await dispatch(reminderRoutes, 'POST', '/', 12, {
+      message: 'Pay invoice',
+      remindAt: '2026-04-23T09:00:00.000Z',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to create reminder');
+    expect(JSON.stringify(res.body)).not.toContain('scheduler insert failed');
   });
 });

@@ -18,6 +18,7 @@ const mockIsUserOverDailyCap = vi.fn().mockReturnValue({
   plan: 'pro',
   resetAt: '2026-04-15T00:00:00.000Z',
 });
+const mockInvalidateFinanceDerivedCaches = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -46,6 +47,10 @@ vi.mock('../../src/services/cost-guardrail', () => ({
 
 vi.mock('../../src/services/invoice-filer', () => ({
   analyzeInvoiceImage: vi.fn(),
+}));
+
+vi.mock('../../src/services/finance-cache-invalidator', () => ({
+  invalidateFinanceDerivedCaches: (...args: unknown[]) => mockInvalidateFinanceDerivedCaches(...args),
 }));
 
 import { financeRoutes } from '../../src/api/routes/finance';
@@ -138,6 +143,7 @@ describe('Finance API — tax routes', () => {
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+    mockInvalidateFinanceDerivedCaches.mockReset();
   });
 
   afterEach(() => testDb?.close());
@@ -175,6 +181,12 @@ describe('Finance API — tax routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.summary.month).toBe('2024-04');
     expect(res.body.data.preferredCurrency).toBe('EUR');
+    expect(res.body.data.budgetView).toMatchObject({
+      month: '2024-04',
+      basisCurrency: 'EUR',
+      integrity: 'mixed_currency',
+      currencies: ['EUR', 'BRL'],
+    });
   });
 
   it('fails closed on invalid tenant scope before loading transactions', async () => {
@@ -207,6 +219,23 @@ describe('Finance API — tax routes', () => {
     expect(res.body.data.event.month).toBe('2024-03');
     expect(res.body.data.event.status).toBe('paid');
     expect(res.body.data.event.paid_at).toBeTruthy();
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(user.id);
+  });
+
+  it('invalidates finance-derived surfaces after adding a transaction', async () => {
+    const user = getOrCreateUser(22012, { username: 'finance-add' });
+
+    const res = await dispatch('POST', '/transactions', user.id, {
+      date: '2024-04-15',
+      category: 'expense',
+      amount: 42,
+      currency: 'EUR',
+      description: 'Lunch',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(mockInvalidateFinanceDerivedCaches).toHaveBeenCalledWith(user.id);
   });
 
   it('returns 404 when marking a missing tax event as paid', async () => {
@@ -241,6 +270,22 @@ describe('Finance API — tax routes', () => {
       plan: 'pro',
       resetAt: '2026-04-15T00:00:00.000Z',
     });
+  });
+
+  it('does not leak raw provider errors when receipt parsing fails', async () => {
+    const user = getOrCreateUser(220041, { username: 'finance-parse-failure' });
+    vi.mocked(analyzeInvoiceImage).mockRejectedValueOnce(new Error('vision provider stack trace with secret-ish details'));
+
+    const res = await dispatch('POST', '/parse-receipt', user.id, {
+      imageBase64: 'ZmFrZQ==',
+      mimeType: 'image/jpeg',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Receipt parsing failed');
+    expect(JSON.stringify(res.body)).not.toContain('vision provider stack trace');
   });
 
   it('falls back to OCR-hint parsing when no vision provider is configured', async () => {

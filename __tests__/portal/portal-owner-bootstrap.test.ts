@@ -141,12 +141,19 @@ vi.mock('../../src/services/user-service', () => ({
 import {
   getPortalTrainingStatsUserId,
   getPortalUsageMeteringUserIds,
-  handleAction,
-} from '../../src/portal/server';
+} from '../../src/portal/snapshot-builder';
+import {
+  VALID_PORTAL_ACTIONS,
+  handlePortalAction as handleAction,
+  isPortalActionRateLimited,
+  recordPortalAction,
+  resetPortalActionCooldownsForTests,
+} from '../../src/portal/actions';
 
 describe('portal owner bootstrap hardening', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetPortalActionCooldownsForTests();
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 42, telegramId: 1042 });
     mockGetDb.mockReturnValue({
       prepare: vi.fn(() => ({
@@ -223,5 +230,14 @@ describe('portal owner bootstrap hardening', () => {
       message: 'Owner bootstrap target unavailable',
     });
     expect(mockClearAllConversations).not.toHaveBeenCalled();
+  });
+
+  it('keeps portal action allowlist and cooldown ownership outside the server factory', () => {
+    expect(VALID_PORTAL_ACTIONS.has('trigger-coach')).toBe(true);
+    expect(isPortalActionRateLimited('trigger-coach')).toBe(false);
+
+    recordPortalAction('trigger-coach');
+
+    expect(isPortalActionRateLimited('trigger-coach')).toBe(true);
   });
 });

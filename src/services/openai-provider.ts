@@ -22,6 +22,7 @@ import { getDomainSystemPrompt, getClassifierSystemPrompt, TOOLS } from './anthr
 import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
+import { getAICallTimeoutMs } from './runtime-flags';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -99,7 +100,7 @@ async function trackedCompletion(
   category: string,
   userId: number = 0,
 ): Promise<OpenAI.ChatCompletion> {
-  const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+  const AI_CALL_TIMEOUT_MS = getAICallTimeoutMs();
 
   const start = Date.now();
   const response = await withTimeout(client.chat.completions.create(params), AI_CALL_TIMEOUT_MS);

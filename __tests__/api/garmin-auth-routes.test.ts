@@ -190,6 +190,25 @@ describe('Garmin auth routes', () => {
     expect(mockMarkGarminConnectionActive).toHaveBeenCalledWith(12, 'athlete@example.com');
   });
 
+  it('sanitizes login failures instead of leaking Garmin provider internals', async () => {
+    mockLogin.mockRejectedValueOnce(new Error('garmin provider rejected credentials with trace'));
+    mockDbRun.mockImplementationOnce(() => {
+      throw new Error('garmin pending-session insert exploded');
+    });
+
+    const res = await dispatch('POST', '/login', {
+      email: 'athlete@example.com',
+      password: 'secret',
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('AUTH_FAILED');
+    expect(res.body.error.message).toBe('Garmin login failed');
+    expect(JSON.stringify(res.body)).not.toContain('garmin pending-session insert exploded');
+    expect(JSON.stringify(res.body)).not.toContain('garmin provider rejected credentials');
+  });
+
   it('surfaces a reauth endpoint when status is needs_reauth', async () => {
     mockDbGet.mockImplementation((sql: string) => {
       if (sql.includes('SELECT garmin_email, status, last_refresh, last_used')) {
@@ -209,5 +228,58 @@ describe('Garmin auth routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.status).toBe('needs_reauth');
     expect(res.body.data.reauthEndpoint).toBe('/api/v1/garmin/reauth');
+  });
+
+  it('sanitizes manual reauth failures instead of leaking provider internals', async () => {
+    mockLogin.mockRejectedValueOnce(new Error('garmin provider rejected manual reauth'));
+    mockDbRun.mockImplementationOnce(() => {
+      throw new Error('garmin manual reauth persistence exploded');
+    });
+
+    const res = await dispatch('POST', '/reauth', {
+      email: 'athlete@example.com',
+      password: 'secret',
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('AUTH_FAILED');
+    expect(res.body.error.message).toBe('Garmin re-authentication failed');
+    expect(JSON.stringify(res.body)).not.toContain('garmin manual reauth persistence exploded');
+    expect(JSON.stringify(res.body)).not.toContain('garmin provider rejected manual reauth');
+  });
+
+  it('sanitizes verify failures instead of leaking Garmin MFA internals', async () => {
+    mockDbGet.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT garmin_email FROM garmin_user_tokens')) {
+        return { garmin_email: 'athlete@example.com' };
+      }
+      return undefined;
+    });
+    mockDbRun.mockImplementationOnce(() => {
+      throw new Error('garmin verify update exploded');
+    });
+
+    const res = await dispatch('POST', '/verify', { code: '123456' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('VERIFY_FAILED');
+    expect(res.body.error.message).toBe('Verification failed');
+    expect(JSON.stringify(res.body)).not.toContain('garmin verify update exploded');
+  });
+
+  it('sanitizes disconnect failures instead of leaking Garmin session internals', async () => {
+    mockClearGarminSession.mockImplementationOnce(() => {
+      throw new Error('garmin session store exploded');
+    });
+
+    const res = await dispatch('DELETE', '/disconnect');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Disconnect failed');
+    expect(JSON.stringify(res.body)).not.toContain('garmin session store exploded');
   });
 });

@@ -173,6 +173,22 @@ describe('Content API — script duration presets', () => {
     expect(mockGetScript).not.toHaveBeenCalled();
   });
 
+  it('sanitizes script generation failures instead of leaking backend internals', async () => {
+    mockGetScript.mockRejectedValueOnce(new Error('Gemini pipeline exploded for tenant=12'));
+
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe('INTERNAL');
+    expect(response.body.error.message).toBe('Script generation failed');
+    expect(JSON.stringify(response.body)).not.toContain('Gemini pipeline exploded');
+  });
+
   it('localizes topic-generation format validation for Portuguese requests', async () => {
     const response = await dispatch(
       { format: 'podcast' },
@@ -188,17 +204,28 @@ describe('Content API — script duration presets', () => {
 
   it('content route resolves and forwards first-party topic context into canonical script generation', async () => {
     const routeSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/api/routes/content-script-routes.ts'),
+      'utf8',
+    );
+    const contentRouteSource = fs.readFileSync(
       path.resolve(__dirname, '../../src/api/routes/content.ts'),
       'utf8',
     );
+    const topicContextSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/api/routes/content-topic-context.ts'),
+      'utf8',
+    );
 
-    expect(routeSource).toContain('function resolveScriptTopicContext(');
-    expect(routeSource).toContain('parseOptionalPositiveId(raw.pipelineId)');
-    expect(routeSource).toContain('parseOptionalPositiveId(raw.topicFeedbackId)');
-    expect(routeSource).toContain('parseOptionalPositiveId(raw.ideaId)');
+    expect(contentRouteSource).toContain("import { registerContentScriptRoutes } from './content-script-routes';");
+    expect(contentRouteSource).toContain('registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);');
+    expect(routeSource).toContain("import { resolveScriptTopicContext } from './content-topic-context';");
     expect(routeSource).toContain('const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});');
     expect(routeSource).toContain("scriptTopicContext?.niche || niche || 'general'");
     expect(routeSource).toContain('durationPreset.targetDurationSeconds,');
     expect(routeSource).toContain('scriptTopicContext,');
+    expect(topicContextSource).toContain('function resolveScriptTopicContext(');
+    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.pipelineId)');
+    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.topicFeedbackId)');
+    expect(topicContextSource).toContain('parseOptionalPositiveId(raw.ideaId)');
   });
 });

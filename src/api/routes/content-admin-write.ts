@@ -6,36 +6,17 @@
 // view. THIS file adds the mutation endpoints that make the portal a
 // control center instead of a read-only dashboard.
 //
-// Auth: every route is gated by requirePortalToken (same middleware
-// as content-dashboard.ts — checks Authorization: Bearer <PORTAL_TOKEN>
-// against config.portal.token — unified with the main portal auth).
+// Auth: this router applies the shared portal scoped-token middleware.
+// Read routes can use a portal read or full-access token; mutating routes
+// require a portal write or full-access token.
 //
 // Mount: /api/v1/admin/content (sibling to /api/v1/admin/content-dashboard)
 
-import { Router, Request, Response, NextFunction } from 'express';
-import { config } from '../../config';
+import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
-
-// ─── Auth middleware (identical to content-dashboard.ts) ─────────────
-
-function requirePortalToken(req: Request, _res: Response, next: NextFunction): void {
-  const expected = config.portal.token;  // Unified: ONLY config.portal.token
-  if (!expected) {
-    // No token configured — only allow from localhost (matches main portal auth)
-    const ip = req.ip || req.socket.remoteAddress || '';
-    const isLocal = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.');
-    if (isLocal) { next(); return; }
-    _res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'PORTAL_TOKEN not set' } });
-    return;
-  }
-  const auth = req.headers.authorization;
-  if (!auth || auth !== `Bearer ${expected}`) {
-    _res.status(401).json({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Invalid portal token' } });
-    return;
-  }
-  next();
-}
+import { sendInternalError as sendApiInternalError } from '../response-helpers';
+import { requirePortalTokenByMethod } from '../secret-guards';
 
 function sendSuccess(res: Response, data: Record<string, unknown> = {}): void {
   res.json({ ok: true, ...data });
@@ -45,11 +26,15 @@ function sendError(res: Response, code: string, message: string, status = 400): 
   res.status(status).json({ ok: false, error: { code, message } });
 }
 
+function sendInternalError(res: Response, message: string): void {
+  sendApiInternalError(res, message);
+}
+
 // ─── Route factory ──────────────────────────────────────────────────
 
 export function contentAdminWriteRoutes(): Router {
   const router = Router();
-  router.use(requirePortalToken);
+  router.use(requirePortalTokenByMethod);
 
   // ═══════════════════════════════════════════════════════════════════
   // CHANNELS — YouTube reference channels
@@ -75,7 +60,7 @@ export function contentAdminWriteRoutes(): Router {
       });
     } catch (err: any) {
       logger.error({ err }, 'Portal: add channel failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to add channel', 500);
+      sendInternalError(res, 'Failed to add channel');
     }
   });
 
@@ -90,7 +75,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { removed: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: remove channel failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to remove channel', 500);
+      sendInternalError(res, 'Failed to remove channel');
     }
   });
 
@@ -104,7 +89,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { analysis: result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: reanalyze channel failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to reanalyze', 500);
+      sendInternalError(res, 'Failed to reanalyze');
     }
   });
 
@@ -116,7 +101,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: channel relearn failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to run channel relearn', 500);
+      sendInternalError(res, 'Failed to run channel relearn');
     }
   });
 
@@ -140,7 +125,7 @@ export function contentAdminWriteRoutes(): Router {
       }
     } catch (err: any) {
       logger.error({ err }, 'Portal: add book failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to add book', 500);
+      sendInternalError(res, 'Failed to add book');
     }
   });
 
@@ -155,7 +140,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { removed: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: delete book failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete book', 500);
+      sendInternalError(res, 'Failed to delete book');
     }
   });
 
@@ -176,7 +161,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { retried: true, message: result.message });
     } catch (err: any) {
       logger.error({ err }, 'Portal: retry book extraction failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to retry extraction', 500);
+      sendInternalError(res, 'Failed to retry extraction');
     }
   });
 
@@ -194,7 +179,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: update book notes failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update notes', 500);
+      sendInternalError(res, 'Failed to update notes');
     }
   });
 
@@ -215,7 +200,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { pillars });
     } catch (err: any) {
       logger.error({ err }, 'Portal: list pillars failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to list pillars', 500);
+      sendInternalError(res, 'Failed to list pillars');
     }
   });
 
@@ -243,7 +228,7 @@ export function contentAdminWriteRoutes(): Router {
         return sendError(res, 'DUPLICATE', `Pillar "${name}" already exists for this user`);
       }
       logger.error({ err }, 'Portal: add pillar failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to add pillar', 500);
+      sendInternalError(res, 'Failed to add pillar');
     }
   });
 
@@ -270,7 +255,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: update pillar failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update pillar', 500);
+      sendInternalError(res, 'Failed to update pillar');
     }
   });
 
@@ -285,7 +270,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { removed: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: delete pillar failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to delete pillar', 500);
+      sendInternalError(res, 'Failed to delete pillar');
     }
   });
 
@@ -305,7 +290,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { upserted: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: upsert voice DNA failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to upsert voice DNA', 500);
+      sendInternalError(res, 'Failed to upsert voice DNA');
     }
   });
 
@@ -327,7 +312,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { updated: true });
     } catch (err: any) {
       logger.error({ err }, 'Portal: update voice DNA failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to update voice DNA', 500);
+      sendInternalError(res, 'Failed to update voice DNA');
     }
   });
 
@@ -340,7 +325,7 @@ export function contentAdminWriteRoutes(): Router {
       sendSuccess(res, { synthesized: true, result });
     } catch (err: any) {
       logger.error({ err }, 'Portal: voice DNA synthesis failed');
-      sendError(res, 'INTERNAL', err?.message || 'Voice synthesis failed', 500);
+      sendInternalError(res, 'Voice synthesis failed');
     }
   });
 

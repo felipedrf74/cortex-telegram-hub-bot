@@ -41,6 +41,7 @@
  */
 
 import { getDb } from './database';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import { isOwnerUserRef } from './user-service';
 import {
@@ -120,11 +121,6 @@ interface SubscriptionRow {
   current_period_end: string | null;
 }
 
-/** Paywall kill-switch — when false, every user gets owner-equivalent
- *  Max-tier access. Used during beta so internal testers don't hit the
- *  cap. Production must ship with this true. */
-const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
-
 // ── Public API ───────────────────────────────────────────────────
 
 /**
@@ -145,9 +141,9 @@ export function getEffectiveEntitlement(userId: number | null | undefined): User
     });
   }
 
-  if (!PAYWALL_ENABLED) {
-    // Beta kill-switch: everyone is treated as owner (max-tier, high
-    // cost cap). Production MUST enable the paywall before GA.
+  if (!config.billing.paywallEnabled) {
+    // Local/test/staging bypass only. Production startup now refuses this
+    // configuration in src/config.ts before any request can hit the API.
     return {
       userId,
       plan: 'owner',

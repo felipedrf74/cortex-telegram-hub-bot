@@ -276,7 +276,14 @@ function summarizeFinanceForSecretary(finance: FinanceMeshContext | null): strin
   if (!budget && !taxDeadline && !renewal) return '';
 
   const facts: string[] = [];
-  if (budget) facts.push(`budget remaining is ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}`);
+  if (budget) {
+    const budgetHeadroom = formatBudgetRemainingFact(budget);
+    const mixedCurrency = formatMixedCurrencyBudgetFact(budget);
+    const recurringPressure = formatRecurringExpenseFact(budget);
+    if (budgetHeadroom) facts.push(budgetHeadroom);
+    if (mixedCurrency) facts.push(mixedCurrency);
+    if (recurringPressure) facts.push(recurringPressure);
+  }
   if (budget?.budgetMode) facts.push(`budget mode is ${budget.budgetMode}`);
   if (taxDeadline) facts.push(`tax deadline lands on ${taxDeadline.reminderDate}`);
   if (renewal) facts.push(`${renewal.plan} renews on ${renewal.currentPeriodEnd.slice(0, 10)}`);
@@ -287,7 +294,8 @@ function summarizeContentForSecretary(content: ContentMeshContext | null): strin
   if (!content) return '';
   const commitment = extractPublishingCommitment(content);
   const filming = extractFilmingRecommendation(content);
-  if (!commitment && !filming) return '';
+  const nextExecution = extractNextContentExecution(content);
+  if (!commitment && !filming && !isActionableContentExecution(nextExecution)) return '';
 
   const facts: string[] = [];
   if (commitment) facts.push(`${commitment.upcomingTopicCount} topic(s) are queued`);
@@ -299,6 +307,9 @@ function summarizeContentForSecretary(content: ContentMeshContext | null): strin
     );
   }
   if (filming) facts.push(`best filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
+  if (nextExecution && isActionableContentExecution(nextExecution)) {
+    facts.push(formatNextContentExecutionFact(nextExecution));
+  }
   return formatSection('Content', facts, 'Treat filming and publishing as real calendar commitments when the user asks to execute them.');
 }
 
@@ -365,7 +376,14 @@ function summarizeFinanceForTraining(finance: FinanceMeshContext | null): string
   if (!budget && !taxDeadline) return '';
 
   const facts: string[] = [];
-  if (budget) facts.push(`budget remaining is ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}`);
+  if (budget) {
+    const budgetHeadroom = formatBudgetRemainingFact(budget);
+    const mixedCurrency = formatMixedCurrencyBudgetFact(budget);
+    const recurringPressure = formatRecurringExpenseFact(budget);
+    if (budgetHeadroom) facts.push(budgetHeadroom);
+    if (mixedCurrency) facts.push(mixedCurrency);
+    if (recurringPressure) facts.push(recurringPressure);
+  }
   if (budget?.trainingSpendMode) facts.push(`training spend mode is ${budget.trainingSpendMode}`);
   if (budget?.supplementMode) facts.push(`supplement mode is ${budget.supplementMode}`);
   if (taxDeadline) facts.push(`tax deadline lands on ${taxDeadline.reminderDate}`);
@@ -422,10 +440,12 @@ function summarizeFinanceForCooking(finance: FinanceMeshContext | null): string 
   if (!finance) return '';
   const budget = extractBudget(finance);
   if (!budget) return '';
-  const facts = [
-    `budget remaining is ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}`,
-    `grocery mode is ${budget.groceryMode}`,
-  ];
+  const facts = compact([
+    formatBudgetRemainingFact(budget),
+    formatMixedCurrencyBudgetFact(budget),
+    formatRecurringExpenseFact(budget),
+    budget.groceryMode ? `grocery mode is ${budget.groceryMode}` : null,
+  ]);
   return formatSection('Finance', facts, 'Keep recipe and shopping suggestions cost-aware.');
 }
 
@@ -433,7 +453,8 @@ function summarizeContentForCooking(content: ContentMeshContext | null): string 
   if (!content) return '';
   const commitment = extractPublishingCommitment(content);
   const filming = extractFilmingRecommendation(content);
-  if (!commitment && !filming) return '';
+  const nextExecution = extractNextContentExecution(content);
+  if (!commitment && !filming && !isActionableContentExecution(nextExecution)) return '';
 
   const facts: string[] = [];
   if (commitment) {
@@ -444,6 +465,9 @@ function summarizeContentForCooking(content: ContentMeshContext | null): string 
     );
   }
   if (filming) facts.push(`best filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
+  if (nextExecution && isActionableContentExecution(nextExecution)) {
+    facts.push(formatNextContentExecutionFact(nextExecution));
+  }
   return formatSection('Content', facts, 'Treat filming and shipping days as meal-support days, not as invisible obligations.');
 }
 
@@ -490,7 +514,14 @@ function summarizeFinanceForContent(finance: FinanceMeshContext | null): string 
   if (!budget && !taxDeadline) return '';
 
   const facts: string[] = [];
-  if (budget) facts.push(`budget remaining is ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}`);
+  if (budget) {
+    const budgetHeadroom = formatBudgetRemainingFact(budget);
+    const mixedCurrency = formatMixedCurrencyBudgetFact(budget);
+    const recurringPressure = formatRecurringExpenseFact(budget);
+    if (budgetHeadroom) facts.push(budgetHeadroom);
+    if (mixedCurrency) facts.push(mixedCurrency);
+    if (recurringPressure) facts.push(recurringPressure);
+  }
   if (budget?.contentSpendMode) facts.push(`content spend mode is ${budget.contentSpendMode}`);
   if (taxDeadline) facts.push(`tax deadline lands on ${taxDeadline.reminderDate}`);
   return formatSection('Finance', facts, 'Prefer lower-friction production asks during tighter admin or money weeks.');
@@ -542,8 +573,15 @@ function summarizeCookingForFinance(cooking: CookingMeshContext | null): string 
 function summarizeContentForFinance(content: ContentMeshContext | null): string {
   if (!content) return '';
   const commitment = extractPublishingCommitment(content);
-  if (!commitment) return '';
-  return `Content: ${commitment.upcomingTopicCount} topic(s) are queued. Factor creator obligations into subscription or production-cost decisions.`;
+  const nextExecution = extractNextContentExecution(content);
+  if (!commitment && !isActionableContentExecution(nextExecution)) return '';
+  const facts = compact([
+    commitment ? `${commitment.upcomingTopicCount} topic(s) are queued` : null,
+    nextExecution && isActionableContentExecution(nextExecution)
+      ? formatNextContentExecutionFact(nextExecution)
+      : null,
+  ]);
+  return formatSection('Content', facts, 'Factor creator obligations into subscription or production-cost decisions.');
 }
 
 function buildTrainingContractForSecretary(training: TrainingMeshContext | null): PeerDecisionContract | null {
@@ -618,13 +656,24 @@ function buildCookingContractForSecretary(cooking: CookingMeshContext | null): P
       window?.missingDates.length
         ? `Leave prep or shopping time for uncovered dates: ${window.missingDates.join(', ')}.`
         : null,
+      readiness?.prepPressureDates.length
+        ? `Prep pressure lands on ${readiness.prepPressureDates.join(', ')} — simplify food execution ahead of those dates.`
+        : null,
     ]),
     fallbackIfDeferred: compact([
       readiness?.status === 'at_risk'
         ? 'If the week gets crowded, simplify meals instead of dropping fueling support entirely.'
         : null,
+      readiness?.prepPressureDates.length
+        ? 'If prep keeps slipping, replace high-effort meals on the pressured dates with simpler repeatable options.'
+        : null,
     ]),
-    notes: compact([spend ? `Shopping forecast: ${formatCurrencyAmount(spend.currency, spend.amount)}.` : null]),
+    notes: compact([
+      spend ? `Shopping forecast: ${formatCurrencyAmount(spend.currency, spend.amount)}.` : null,
+      readiness?.prepPressureDates.length
+        ? `Meal execution pressure hits ${readiness.prepPressureDates.join(', ')}${readiness.highEffortMealCount > 0 ? ` with ${readiness.highEffortMealCount} high-effort meal(s)` : ''}.`
+        : null,
+    ]),
   });
 }
 
@@ -646,17 +695,26 @@ function buildFinanceContractForSecretary(finance: FinanceMeshContext | null): P
   return createContract({
     nonNegotiables: compact([
       taxDeadline ? `Tax/admin follow-up is due by ${taxDeadline.reminderDate}.` : null,
+      budget?.integrity === 'mixed_currency'
+        ? `Budget posture is provisional for ${budget.month} because multiple currencies are mixed. Do not expand optional commitments until those amounts are normalized.`
+        : null,
     ]),
     preferredWindows: compact([
       budget?.budgetMode ? `Keep optional blocks aligned with the ${budget.budgetMode} budget mode.` : null,
     ]),
     fallbackIfDeferred: compact([
-      budget?.remainingRatio != null && budget.remainingRatio <= 0.1
+      isVeryTightBudget(budget)
         ? 'Prefer admin completion and low-cost execution before adding optional commitments.'
+        : null,
+      budget?.recurringExpenseCount
+        ? `Leave buffer for ${budget.recurringExpenseCount} recurring commitment(s) still likely this month before expanding the day.`
         : null,
     ]),
     budgetMode: budget?.budgetMode ?? null,
-    notes: compact([budget ? `Budget remaining: ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}.` : null]),
+    notes: compact([
+      budget ? buildBudgetContractNote(budget) : null,
+      formatRecurringExpenseContractNote(budget),
+    ]),
   });
 }
 
@@ -664,6 +722,7 @@ function buildContentContractForSecretary(content: ContentMeshContext | null): P
   if (!content) return null;
   const commitment = extractPublishingCommitment(content);
   const filming = extractFilmingRecommendation(content);
+  const nextExecution = extractNextContentExecution(content);
   // Surface the pre-publish filming window as an immovable block to
   // Secretary. The publishing_commitment signal carries nextDate but
   // on its own nothing translates it into a blocked filming window,
@@ -686,14 +745,25 @@ function buildContentContractForSecretary(content: ContentMeshContext | null): P
     ]),
     preferredWindows: compact([
       filming ? `Best filming window is ${filming.date}${filming.window ? ` ${filming.window}` : ''}.` : null,
+      nextExecution?.scheduledDate && isActionableContentExecution(nextExecution)
+        ? `Keep the next content move visible by ${nextExecution.scheduledDate}.`
+        : null,
     ]),
     fallbackIfDeferred: compact([
       commitment?.upcomingTopicCount && commitment.upcomingTopicCount > 0
         ? 'If the day compresses, reschedule lower-value admin before moving filming or publishing work.'
         : null,
+      !commitment && nextExecution && isActionableContentExecution(nextExecution)
+        ? 'If the day compresses, defer lower-value admin before letting the next content move disappear into backlog.'
+        : null,
     ]),
     publishDeadline: commitment?.nextDate ?? null,
-    notes: compact([commitment ? `${commitment.upcomingTopicCount} topic(s) remain queued.` : null]),
+    notes: compact([
+      commitment ? `${commitment.upcomingTopicCount} topic(s) remain queued.` : null,
+      nextExecution && isActionableContentExecution(nextExecution)
+        ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
+        : null,
+    ]),
   });
 }
 
@@ -773,12 +843,15 @@ function buildFinanceContractForTraining(finance: FinanceMeshContext | null): Pe
   // is tight. The `trainingSpendMode` and `supplementMode` fields
   // both exist on the budget_remaining signal payload; historically
   // only `trainingSpendMode` flowed into the prompt.
-  const veryTight = budget?.remainingRatio != null && budget.remainingRatio <= 0.1;
+  const veryTight = isVeryTightBudget(budget);
   return createContract({
     nonNegotiables: compact([
       taxDeadline ? `Tax/admin deadline hits ${taxDeadline.reminderDate}.` : null,
       veryTight
         ? 'Budget headroom is at or below 10% — defer supplement, gear, and equipment asks this cycle.'
+        : null,
+      budget?.integrity === 'mixed_currency'
+        ? `Budget posture is provisional for ${budget.month} because currencies are mixed. Avoid recommending paid upgrades until finance data is normalized.`
         : null,
     ]),
     preferredWindows: compact([
@@ -792,12 +865,14 @@ function buildFinanceContractForTraining(finance: FinanceMeshContext | null): Pe
       budget?.supplementMode === 'pause' || veryTight
         ? 'Prefer time-based progressions over paid equipment upgrades while supplement/gear spend is paused.'
         : null,
+      budget?.recurringExpenseCount
+        ? `Recurring commitments still likely this month (${budget.recurringExpenseCount}) should be treated as real spend pressure before adding optional training costs.`
+        : null,
     ]),
     budgetMode: budget?.budgetMode ?? null,
     notes: compact([
-      budget?.remainingRatio != null
-        ? `Budget remaining: ${Math.round(budget.remainingRatio * 100)}%.`
-        : null,
+      budget ? buildBudgetContractNote(budget) : null,
+      formatRecurringExpenseContractNote(budget),
     ]),
   });
 }
@@ -873,12 +948,15 @@ function buildFinanceContractForCooking(finance: FinanceMeshContext | null): Pee
   // binary "tight / flexible" budgetMode. The groceryMode field on
   // budget_remaining is authored by Finance; this just echoes it with
   // an actionable gate when headroom is very low.
-  const veryTight = budget?.remainingRatio != null && budget.remainingRatio <= 0.1;
+  const veryTight = isVeryTightBudget(budget);
   const moderate = budget?.remainingRatio != null && budget.remainingRatio > 0.1 && budget.remainingRatio <= 0.5;
   return createContract({
     nonNegotiables: compact([
       veryTight
         ? 'Budget headroom is at or below 10% — anchor meal suggestions on cheap staples (rice, beans, eggs, seasonal veg).'
+        : null,
+      budget?.integrity === 'mixed_currency'
+        ? `Budget posture is provisional for ${budget.month} because currencies are mixed. Default to conservative grocery suggestions until finance is normalized.`
         : null,
     ]),
     preferredWindows: compact([
@@ -889,12 +967,14 @@ function buildFinanceContractForCooking(finance: FinanceMeshContext | null): Pee
     ]),
     fallbackIfDeferred: compact([
       budget?.budgetMode === 'tight' ? 'Favor repeatable lower-cost staples before novelty recipes.' : null,
+      budget?.recurringExpenseCount
+        ? `Recurring commitments still likely this month (${budget.recurringExpenseCount}) should reduce grocery ambition before removing meal coverage.`
+        : null,
     ]),
     budgetMode: budget?.budgetMode ?? null,
     notes: compact([
-      budget?.remainingRatio != null
-        ? `Budget remaining: ${Math.round(budget.remainingRatio * 100)}%.`
-        : null,
+      budget ? buildBudgetContractNote(budget) : null,
+      formatRecurringExpenseContractNote(budget),
     ]),
   });
 }
@@ -902,6 +982,7 @@ function buildFinanceContractForCooking(finance: FinanceMeshContext | null): Pee
 function buildContentContractForCooking(content: ContentMeshContext | null): PeerDecisionContract | null {
   if (!content) return null;
   const commitment = extractPublishingCommitment(content);
+  const nextExecution = extractNextContentExecution(content);
   return createContract({
     nonNegotiables: compact([
       commitment?.nextDate ? `Creator deliverable is due on ${commitment.nextDate}.` : null,
@@ -909,9 +990,16 @@ function buildContentContractForCooking(content: ContentMeshContext | null): Pee
     preferredWindows: [],
     fallbackIfDeferred: compact([
       commitment ? 'Prioritize meals that support filming and shipping days when content is active.' : null,
+      !commitment && nextExecution && isActionableContentExecution(nextExecution)
+        ? 'Keep meals lower-friction on content execution days so production work does not compete with food prep.'
+        : null,
     ]),
     publishDeadline: commitment?.nextDate ?? null,
-    notes: [],
+    notes: compact([
+      nextExecution && isActionableContentExecution(nextExecution)
+        ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
+        : null,
+    ]),
   });
 }
 
@@ -978,15 +1066,25 @@ function buildFinanceContractForContent(finance: FinanceMeshContext | null): Pee
   if (!finance) return null;
   const budget = extractBudget(finance);
   return createContract({
-    nonNegotiables: [],
+    nonNegotiables: compact([
+      budget?.integrity === 'mixed_currency'
+        ? `Budget posture is provisional for ${budget.month} because currencies are mixed. Avoid assuming room for paid production upgrades.`
+        : null,
+    ]),
     preferredWindows: compact([
       budget?.contentSpendMode ? `Content spend mode is ${budget.contentSpendMode}.` : null,
     ]),
     fallbackIfDeferred: compact([
       budget?.budgetMode === 'tight' ? 'Prefer lower-friction production asks while the budget is tight.' : null,
+      budget?.recurringExpenseCount
+        ? `Recurring commitments still likely this month (${budget.recurringExpenseCount}) should push content toward lighter execution, not extra spending.`
+        : null,
     ]),
     budgetMode: budget?.budgetMode ?? null,
-    notes: [],
+    notes: compact([
+      budget ? buildBudgetContractNote(budget) : null,
+      formatRecurringExpenseContractNote(budget),
+    ]),
   });
 }
 
@@ -1037,6 +1135,7 @@ function buildCookingContractForFinance(cooking: CookingMeshContext | null): Pee
 function buildContentContractForFinance(content: ContentMeshContext | null): PeerDecisionContract | null {
   if (!content) return null;
   const commitment = extractPublishingCommitment(content);
+  const nextExecution = extractNextContentExecution(content);
   return createContract({
     nonNegotiables: compact([
       commitment?.nextDate ? `Creator commitment still lands on ${commitment.nextDate}.` : null,
@@ -1044,9 +1143,16 @@ function buildContentContractForFinance(content: ContentMeshContext | null): Pee
     preferredWindows: [],
     fallbackIfDeferred: compact([
       commitment ? 'Subscription or production-cost advice should respect active creator commitments.' : null,
+      !commitment && nextExecution && isActionableContentExecution(nextExecution)
+        ? 'Cost guidance should preserve the next content move instead of assuming creator work is optional this week.'
+        : null,
     ]),
     publishDeadline: commitment?.nextDate ?? null,
-    notes: [],
+    notes: compact([
+      nextExecution && isActionableContentExecution(nextExecution)
+        ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
+        : null,
+    ]),
   });
 }
 
@@ -1189,10 +1295,27 @@ function extractFuelingSupportStatus(
 
 function extractMealExecutionReadiness(
   cooking: CookingMeshContext,
-): { status: string } | null {
+): {
+  status: string;
+  constrainedMealDates: string[];
+  prepPressureDates: string[];
+  manualMealCount: number;
+  highEffortMealCount: number;
+} | null {
   const signal = cooking.derivedSignals.find((entry) => entry.signalType === 'meal_execution_readiness');
   const status = signal?.payload.status;
-  return typeof status === 'string' ? { status } : null;
+  if (typeof status !== 'string') return null;
+  return {
+    status,
+    constrainedMealDates: Array.isArray(signal?.payload.constrainedMealDates)
+      ? signal.payload.constrainedMealDates.filter((value): value is string => typeof value === 'string')
+      : [],
+    prepPressureDates: Array.isArray(signal?.payload.prepPressureDates)
+      ? signal.payload.prepPressureDates.filter((value): value is string => typeof value === 'string')
+      : [],
+    manualMealCount: typeof signal?.payload.manualMealCount === 'number' ? signal.payload.manualMealCount : 0,
+    highEffortMealCount: typeof signal?.payload.highEffortMealCount === 'number' ? signal.payload.highEffortMealCount : 0,
+  };
 }
 
 function extractSecretaryFragmentation(
@@ -1253,12 +1376,17 @@ function extractSecretaryTaskPortability(
 
 function extractBudget(finance: FinanceMeshContext): {
   month: string;
-  remainingRatio: number;
+  remainingRatio: number | null;
   budgetMode: string | null;
   groceryMode: string | null;
   trainingSpendMode: string | null;
   contentSpendMode: string | null;
   supplementMode: string | null;
+  integrity: string | null;
+  basisCurrency: string | null;
+  recurringExpenseEstimate: number;
+  recurringExpenseCount: number;
+  notes: string[];
 } | null {
   if (
     finance.monthlySummary.transactionCount === 0
@@ -1269,9 +1397,18 @@ function extractBudget(finance: FinanceMeshContext): {
     return null;
   }
   const signal = finance.derivedSignals.find((entry) => entry.signalType === 'budget_remaining');
-  const month = signal?.payload.month;
-  const remainingRatio = signal?.payload.remainingRatio;
-  if (typeof month !== 'string' || typeof remainingRatio !== 'number') return null;
+  const month = typeof signal?.payload.month === 'string'
+    ? signal.payload.month
+    : finance.budgetView.month;
+  const remainingRatio = typeof signal?.payload.projectedRemainingRatio === 'number'
+    ? signal.payload.projectedRemainingRatio
+    : typeof signal?.payload.remainingRatio === 'number'
+      ? signal.payload.remainingRatio
+      : finance.budgetView.projectedRemainingRatio ?? finance.budgetView.currentRemainingRatio;
+  const integrity = typeof signal?.payload.integrity === 'string'
+    ? signal.payload.integrity
+    : finance.budgetView.integrity;
+  if (typeof month !== 'string') return null;
   return {
     month,
     remainingRatio,
@@ -1280,6 +1417,17 @@ function extractBudget(finance: FinanceMeshContext): {
     trainingSpendMode: typeof signal?.payload.trainingSpendMode === 'string' ? signal.payload.trainingSpendMode : null,
     contentSpendMode: typeof signal?.payload.contentSpendMode === 'string' ? signal.payload.contentSpendMode : null,
     supplementMode: typeof signal?.payload.supplementMode === 'string' ? signal.payload.supplementMode : null,
+    integrity,
+    basisCurrency: typeof signal?.payload.basisCurrency === 'string'
+      ? signal.payload.basisCurrency
+      : finance.budgetView.basisCurrency,
+    recurringExpenseEstimate: typeof signal?.payload.recurringExpenseEstimate === 'number'
+      ? signal.payload.recurringExpenseEstimate
+      : finance.budgetView.recurringExpenseEstimate,
+    recurringExpenseCount: typeof signal?.payload.recurringExpenseCount === 'number'
+      ? signal.payload.recurringExpenseCount
+      : finance.budgetView.recurringExpenseCount,
+    notes: finance.budgetView.notes,
   };
 }
 
@@ -1322,8 +1470,109 @@ function extractFilmingRecommendation(content: ContentMeshContext): { date: stri
   return { date: recommendation.date, window };
 }
 
+function extractNextContentExecution(content: ContentMeshContext): {
+  mode: string;
+  title: string;
+  summary: string;
+  scheduledDate: string | null;
+  confidence: string;
+} | null {
+  const nextExecution = content.nextExecution;
+  if (!nextExecution || typeof nextExecution.mode !== 'string' || typeof nextExecution.title !== 'string') {
+    return null;
+  }
+
+  return {
+    mode: nextExecution.mode,
+    title: nextExecution.title,
+    summary: nextExecution.summary,
+    scheduledDate: nextExecution.scheduledDate ?? null,
+    confidence: nextExecution.confidence,
+  };
+}
+
+function isActionableContentExecution(
+  execution: ReturnType<typeof extractNextContentExecution>,
+): boolean {
+  if (!execution) return false;
+  return execution.mode !== 'discovery';
+}
+
+function formatNextContentExecutionFact(
+  execution: NonNullable<ReturnType<typeof extractNextContentExecution>>,
+): string {
+  switch (execution.mode) {
+    case 'publish_ready':
+      return execution.scheduledDate
+        ? `next content move is to ship "${execution.title}" by ${execution.scheduledDate}`
+        : `next content move is to ship "${execution.title}"`;
+    case 'script_ready':
+      return execution.scheduledDate
+        ? `next content move is to execute the ready script "${execution.title}" by ${execution.scheduledDate}`
+        : `next content move is to execute the ready script "${execution.title}"`;
+    case 'reaction_window':
+      return `next content move is a reaction window for "${execution.title}"`;
+    case 'film_window':
+      return execution.scheduledDate
+        ? `next content move is to capture "${execution.title}" on ${execution.scheduledDate}`
+        : `next content move is to capture "${execution.title}"`;
+    default:
+      return execution.scheduledDate
+        ? `next content move is "${execution.title}" by ${execution.scheduledDate}`
+        : `next content move is "${execution.title}"`;
+  }
+}
+
 function compact(values: Array<string | null | undefined>): string[] {
   return values.filter((value): value is string => Boolean(value && value.trim().length > 0));
+}
+
+function formatBudgetRemainingFact(budget: ReturnType<typeof extractBudget>): string | null {
+  if (!budget) return null;
+  if (budget.remainingRatio == null) {
+    return budget.integrity === 'no_income'
+      ? `budget headroom is still provisional for ${budget.month} because no income is logged`
+      : null;
+  }
+  return `projected budget remaining is ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}`;
+}
+
+function formatMixedCurrencyBudgetFact(budget: ReturnType<typeof extractBudget>): string | null {
+  if (!budget || budget.integrity !== 'mixed_currency') return null;
+  const currencies = budget.notes.find((note) => note.toLowerCase().includes('mixed currencies'))
+    ? null
+    : budget.basisCurrency;
+  return currencies
+    ? `budget mixes currencies this month, so only ${currencies} spend is being treated as reliable`
+    : 'budget mixes currencies this month, so headroom is only provisional until amounts are normalized';
+}
+
+function formatRecurringExpenseFact(budget: ReturnType<typeof extractBudget>): string | null {
+  if (!budget || budget.recurringExpenseEstimate <= 0 || !budget.basisCurrency) return null;
+  return `recurring commitments still likely this month add ${formatCurrencyAmount(budget.basisCurrency, budget.recurringExpenseEstimate)} of pressure across ${budget.recurringExpenseCount} item(s)`;
+}
+
+function buildBudgetContractNote(budget: ReturnType<typeof extractBudget>): string | null {
+  if (!budget) return null;
+  if (budget.remainingRatio != null) {
+    return `Projected budget remaining: ${Math.round(budget.remainingRatio * 100)}% for ${budget.month}.`;
+  }
+  if (budget.integrity === 'mixed_currency') {
+    return `Budget headroom is provisional for ${budget.month} because currencies are mixed.`;
+  }
+  if (budget.integrity === 'no_income') {
+    return `Budget headroom is provisional for ${budget.month} because no income is logged yet.`;
+  }
+  return null;
+}
+
+function formatRecurringExpenseContractNote(budget: ReturnType<typeof extractBudget>): string | null {
+  if (!budget || budget.recurringExpenseEstimate <= 0 || !budget.basisCurrency) return null;
+  return `Recurring commitments still likely this month: ${formatCurrencyAmount(budget.basisCurrency, budget.recurringExpenseEstimate)} across ${budget.recurringExpenseCount} item(s).`;
+}
+
+function isVeryTightBudget(budget: ReturnType<typeof extractBudget>): boolean {
+  return Boolean(budget?.remainingRatio != null && budget.remainingRatio <= 0.1);
 }
 
 function compactContracts(

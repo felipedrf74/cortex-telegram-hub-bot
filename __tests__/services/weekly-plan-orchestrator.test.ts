@@ -35,6 +35,45 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
   readContentMeshContext: (...args: unknown[]) => mockReadContentMeshContext(...args),
   readSecretaryMeshContext: (...args: unknown[]) => mockReadSecretaryMeshContext(...args),
   readFinanceMeshContext: (...args: unknown[]) => mockReadFinanceMeshContext(...args),
+  createEmptyTrainingMeshContext: (userId: number, weekStart: string) => ({
+    userId,
+    weekStart,
+    weekEnd: weekStart,
+    activePlan: null,
+    activeWeek: null,
+    sessions: [],
+    trainingContext: {
+      signals: [],
+      flags: {
+        lowSleep: false,
+        lowHrv: false,
+        lowReadiness: false,
+        highLegLoad: false,
+        highShoulderLoad: false,
+        raceThisWeek: false,
+        lowAdherence: false,
+        highAdherence: false,
+        planDrift: false,
+        otherSportRpeToday: 0,
+      },
+    },
+    coachBriefing: null,
+    adherence: null,
+    derivedSignals: [],
+  }),
+  createEmptySecretaryMeshContext: (userId: number, weekStart: string) => ({
+    userId,
+    weekStart,
+    weekEnd: weekStart,
+    events: [],
+    focusBlock: null,
+    dueToday: [],
+    dueThisWeek: [],
+    overdue: [],
+    pending: [],
+    writableCalendar: false,
+    derivedSignals: [],
+  }),
 }));
 
 vi.mock('../../src/agents/editorial-coordinator-agent', () => ({
@@ -277,6 +316,24 @@ function buildBaseContexts() {
         netIncome: 400,
         transactionCount: 8,
       },
+      budgetView: {
+        month: '2026-04',
+        basisCurrency: 'EUR',
+        currencies: ['EUR'],
+        integrity: 'reliable',
+        affordability: 'comfortable',
+        incomeInBasisCurrency: 1000,
+        expensesInBasisCurrency: 600,
+        currentRemainingInBasisCurrency: 400,
+        currentRemainingRatio: 0.4,
+        projectedExpensesInBasisCurrency: 600,
+        projectedRemainingInBasisCurrency: 400,
+        projectedRemainingRatio: 0.4,
+        recurringExpenseEstimate: 0,
+        recurringExpenseCount: 0,
+        recurringExpenses: [],
+        notes: [],
+      },
       taxEvents: [],
       annualSummary: {
         year: 2026,
@@ -420,6 +477,21 @@ describe('weekly-plan-orchestrator', () => {
 
     expect(result.degraded).toBe(true);
     expect(result.creativeCopy).toEqual({ headline: '', note: '' });
+  });
+
+  it('degrades safely when a mesh context reader fails instead of crashing the whole weekly plan', async () => {
+    mockReadTrainingMeshContext.mockRejectedValueOnce(new Error('training mesh failed'));
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+
+    expect(result.degraded).toBe(true);
+    expect(result.days).toHaveLength(7);
+    expect(result.summary.activeConflictCount).toBeGreaterThanOrEqual(0);
+    expect(result.days.some((day) => day.secretary.focusBlock != null)).toBe(true);
+    const trainingDay = result.days.find((day) => day.date === '2026-04-15');
+    expect(trainingDay?.training.decisions).toEqual([]);
+    expect(trainingDay?.training.reason.length ?? 0).toBeGreaterThan(0);
   });
 
   it('returns garmin_stale and falls back to conservative mode when Garmin needs reauth', async () => {
@@ -739,6 +811,41 @@ describe('weekly-plan-orchestrator', () => {
     expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).toEqual(
       expect.arrayContaining(['session_immovability', 'fueling_gap_risk', 'publishing_commitment', 'shoot_day_locked']),
     );
+  });
+
+  it('promotes editorial content capture opportunities into a real weekly execution block', async () => {
+    const base = buildBaseContexts();
+    base.content.filmingRecommendation = null;
+    base.content.derivedSignals = [];
+    mockReadContentMeshContext.mockResolvedValue(base.content);
+    mockBuildEditorialSignals.mockReturnValue({
+      signals: [
+        {
+          sourceAgent: 'mesh.editorial-coordinator',
+          signalType: 'content_capture_opportunity',
+          meshPriority: 2,
+          priority: 'urgent',
+          payload: {
+            date: '2026-04-15',
+            title: 'Creators are debating carb myths again',
+            angle: 'reaction_window',
+            reason: 'Fast reaction window with enough context to move now.',
+          },
+        },
+      ],
+    });
+
+    const { composeWeeklyPlan } = await import('../../src/services/weekly-plan-orchestrator');
+    const result = await composeWeeklyPlan({ userId: 12, weekStart: '2026-04-13', forceRefresh: true });
+    const wednesday = result.days.find((day) => day.date === '2026-04-15');
+
+    expect(wednesday?.content?.title).toBe('Reaction content window');
+    expect(wednesday?.content?.note).toContain('Fast reaction window with enough context to move now.');
+    expect(wednesday?.headline).toBe('A timely content window is live, so protect a fast execution block.');
+    expect(wednesday?.secretary.priorityNote).toBe('Fast reaction window with enough context to move now.');
+    expect(wednesday?.secretary.sequence).toContain('Protect a fast reaction slot while the context is still fresh.');
+    expect(wednesday?.secretary.tradeoffNote).toBeNull();
+    expect(wednesday?.secretary.decisions.map((decision) => decision.signalType)).toContain('content_capture_opportunity');
   });
 
   it('retires superseded mesh signals so orchestration does not reason from stale copies', async () => {

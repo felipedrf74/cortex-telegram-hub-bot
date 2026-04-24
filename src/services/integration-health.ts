@@ -10,8 +10,8 @@
  *
  * This module exposes `runHealthProbes()` which hits each integration's
  * cheapest authenticated endpoint, records success/failure into the
- * integration_health table, and (on consecutive failures) escalates to
- * the existing Telegram alert callback. Designed to be cron-friendly:
+ * integration_health table, and emits structured operator signals when a
+ * provider crosses a repeated-failure threshold. Designed to be cron-friendly:
  * runs in <10 seconds, never throws, swallows individual probe failures
  * so one bad integration doesn't block the others.
  *
@@ -31,6 +31,7 @@
 
 import { logger } from '../utils/logger';
 import { getDb } from './database';
+import { pushEvent } from '../portal/telemetry';
 
 export type ProbeStatus = 'ok' | 'fail' | 'skipped';
 
@@ -40,6 +41,36 @@ export interface ProbeResult {
   latencyMs: number | null;
   errorMessage: string | null;
 }
+
+const FAILURE_ALERT_THRESHOLD = 3;
+
+type GarminModule = {
+  isGarminConfigured: () => boolean;
+};
+
+type GoogleAuthModule = {
+  isGoogleConfigured: () => boolean;
+  buildGoogleOAuth2Client: () => { getAccessToken: () => Promise<unknown> };
+};
+
+type MicrosoftAuthModule = {
+  isMicrosoftConfigured: () => boolean;
+  getGraphClient: () => {
+    api: (path: string) => {
+      select: (selection: string) => {
+        get: () => Promise<unknown>;
+      };
+    };
+  };
+};
+
+const defaultProbeDeps = {
+  getGarminModule: (): GarminModule => require('./garmin'),
+  getGoogleAuthModule: (): GoogleAuthModule => require('./google-auth'),
+  getMicrosoftAuthModule: (): MicrosoftAuthModule => require('./microsoft-auth'),
+};
+
+const probeDeps = { ...defaultProbeDeps };
 
 // ── Persistence ─────────────────────────────────────────────────────
 
@@ -63,6 +94,57 @@ function persist(result: ProbeResult): void {
   }
 }
 
+function getFailureStreak(provider: string, limit = FAILURE_ALERT_THRESHOLD + 1): number {
+  try {
+    const rows = getDb()
+      .prepare(
+        `SELECT status
+         FROM integration_health
+         WHERE provider = ?
+           AND status != 'skipped'
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(provider, limit) as Array<{ status: ProbeStatus }>;
+
+    let streak = 0;
+    for (const row of rows) {
+      if (row.status !== 'fail') break;
+      streak += 1;
+    }
+    return streak;
+  } catch (err) {
+    logger.debug({ err, provider }, 'integration_health: failed to read failure streak');
+    return 0;
+  }
+}
+
+function emitRepeatedFailureSignals(results: ProbeResult[]): void {
+  const ts = new Date().toISOString();
+
+  for (const result of results) {
+    if (result.status !== 'fail') continue;
+
+    const streak = getFailureStreak(result.provider);
+    if (streak !== FAILURE_ALERT_THRESHOLD) continue;
+
+    logger.warn(
+      {
+        provider: result.provider,
+        streak,
+        errorMessage: result.errorMessage,
+      },
+      'Integration health degraded after repeated probe failures',
+    );
+    pushEvent({
+      ts,
+      type: 'error',
+      summary: `Integration ${result.provider} degraded (${streak} fails)`,
+      detail: result.errorMessage ?? 'Probe failed repeatedly',
+    });
+  }
+}
+
 // ── Per-provider probes ─────────────────────────────────────────────
 
 async function probeGarmin(): Promise<ProbeResult> {
@@ -78,7 +160,7 @@ async function probeGarmin(): Promise<ProbeResult> {
   // If the latest row is >1 hour old, we assume the cron itself is broken
   // and report fail — that's a different failure mode worth alerting on.
   try {
-    const { isGarminConfigured } = require('./garmin');
+    const { isGarminConfigured } = probeDeps.getGarminModule();
     if (!isGarminConfigured()) {
       return { provider: 'garmin', status: 'skipped', latencyMs: null, errorMessage: 'not configured' };
     }
@@ -135,7 +217,7 @@ async function probeGarmin(): Promise<ProbeResult> {
 async function probeGoogle(): Promise<ProbeResult> {
   const start = Date.now();
   try {
-    const { isGoogleConfigured, buildGoogleOAuth2Client } = require('./google-auth');
+    const { isGoogleConfigured, buildGoogleOAuth2Client } = probeDeps.getGoogleAuthModule();
     if (!isGoogleConfigured()) {
       return { provider: 'google', status: 'skipped', latencyMs: null, errorMessage: 'not configured' };
     }
@@ -159,7 +241,7 @@ async function probeGoogle(): Promise<ProbeResult> {
 async function probeOutlook(): Promise<ProbeResult> {
   const start = Date.now();
   try {
-    const { isMicrosoftConfigured, getGraphClient } = require('./microsoft-auth');
+    const { isMicrosoftConfigured, getGraphClient } = probeDeps.getMicrosoftAuthModule();
     if (!isMicrosoftConfigured()) {
       return { provider: 'outlook', status: 'skipped', latencyMs: null, errorMessage: 'not configured' };
     }
@@ -206,6 +288,8 @@ export async function runHealthProbes(): Promise<ProbeResult[]> {
     persist(r);
   }
 
+  emitRepeatedFailureSignals(results);
+
   // Aggregate log line for the operator: "garmin:ok google:fail outlook:ok"
   const summary = results.map((r) => `${r.provider}:${r.status}`).join(' ');
   logger.info({ probes: results.length, summary }, 'Integration health probes complete');
@@ -236,4 +320,18 @@ export function getLatestHealthByProvider(): Record<string, ProbeResult & { ts: 
     logger.warn({ err }, 'getLatestHealthByProvider failed');
     return {};
   }
+}
+
+export function _getFailureAlertThresholdForTests(): number {
+  return FAILURE_ALERT_THRESHOLD;
+}
+
+export function _setIntegrationHealthDepsForTests(
+  overrides: Partial<typeof defaultProbeDeps>,
+): void {
+  Object.assign(probeDeps, overrides);
+}
+
+export function _resetIntegrationHealthDepsForTests(): void {
+  Object.assign(probeDeps, defaultProbeDeps);
 }

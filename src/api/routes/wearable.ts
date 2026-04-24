@@ -13,7 +13,7 @@ import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getDailySummary, getReadiness, getSleep, getUserProviders } from '../../services/wearable';
 import { getCached, setCache } from '../../services/cache-store';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 // Wearable data updates a few times per day on most platforms; cache aggressively.
@@ -60,7 +60,7 @@ export function wearableRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId, date }, 'iOS wearable/summary failed');
-      sendError(res, 'WEARABLE_FETCH_FAILED', err?.message || 'Failed to fetch wearable summary', 500);
+      sendInternalError(res, 'Failed to fetch wearable summary', { code: 'WEARABLE_FETCH_FAILED' });
     }
   }));
 
@@ -91,7 +91,7 @@ export function wearableRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId, date }, 'iOS wearable/readiness failed');
-      sendError(res, 'WEARABLE_FETCH_FAILED', err?.message || 'Failed to fetch readiness', 500);
+      sendInternalError(res, 'Failed to fetch readiness', { code: 'WEARABLE_FETCH_FAILED' });
     }
   }));
 
@@ -121,7 +121,7 @@ export function wearableRoutes(): Router {
       sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err, userId, date }, 'iOS wearable/sleep failed');
-      sendError(res, 'WEARABLE_FETCH_FAILED', err?.message || 'Failed to fetch sleep data', 500);
+      sendInternalError(res, 'Failed to fetch sleep data', { code: 'WEARABLE_FETCH_FAILED' });
     }
   }));
 
@@ -137,7 +137,7 @@ export function wearableRoutes(): Router {
       sendSuccess(res, { providers });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS wearable/providers failed');
-      sendError(res, 'WEARABLE_FETCH_FAILED', err?.message || 'Failed to fetch wearable providers', 500);
+      sendInternalError(res, 'Failed to fetch wearable providers', { code: 'WEARABLE_FETCH_FAILED' });
     }
   }));
 

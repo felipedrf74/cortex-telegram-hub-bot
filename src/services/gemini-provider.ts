@@ -41,6 +41,7 @@ import { getDomainSystemPrompt, getClassifierSystemPrompt, TOOLS } from './anthr
 import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
+import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from './runtime-flags';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -395,7 +396,7 @@ export async function completeVisionOneShotWithFallback(
   // branch normally never runs. If the thunk's internal trackedCreate
   // call fires, the kill switch in anthropic-hook.ts will throw before
   // the SDK actually hits Anthropic.
-  if (process.env.ANTHROPIC_ENABLED === 'true') {
+  if (isAnthropicRuntimeEnabled()) {
     const text = await anthropicFallback();
     return { text, provider: 'anthropic' };
   }
@@ -403,7 +404,7 @@ export async function completeVisionOneShotWithFallback(
   throw new Error(
     `[completeVisionOneShotWithFallback] All providers failed for category='${category}'. ` +
     `Gemini: ${isGeminiProviderConfigured() ? 'failed' : 'not configured'}. ` +
-    `OpenAI: ${process.env.OPENAI_API_KEY ? 'failed' : 'not configured'}. ` +
+    `OpenAI: ${config.openai.apiKey ? 'failed' : 'not configured'}. ` +
     `Anthropic: disabled (set ANTHROPIC_ENABLED=true to re-enable).`,
   );
 }
@@ -466,7 +467,7 @@ export async function completeOneShotWithFallback(
   }
 
   // Stage 3: Anthropic thunk — only if explicitly re-enabled
-  if (process.env.ANTHROPIC_ENABLED === 'true') {
+  if (isAnthropicRuntimeEnabled()) {
     const text = await anthropicFallback();
     return { text, provider: 'anthropic' };
   }
@@ -474,7 +475,7 @@ export async function completeOneShotWithFallback(
   throw new Error(
     `[completeOneShotWithFallback] All providers failed for category='${category}'. ` +
     `Gemini: ${isGeminiProviderConfigured() ? 'failed' : 'not configured'}. ` +
-    `OpenAI: ${process.env.OPENAI_API_KEY ? 'failed' : 'not configured'}. ` +
+    `OpenAI: ${config.openai.apiKey ? 'failed' : 'not configured'}. ` +
     `Anthropic: disabled (set ANTHROPIC_ENABLED=true to re-enable).`,
   );
 }
@@ -607,7 +608,7 @@ export class GeminiProvider implements AIProvider {
   // ─── Retry with exponential backoff ───────────────────────────────
 
   private async withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
-    const AI_CALL_TIMEOUT_MS = parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10);
+    const AI_CALL_TIMEOUT_MS = getAICallTimeoutMs();
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {

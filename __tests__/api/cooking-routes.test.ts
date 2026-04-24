@@ -12,6 +12,9 @@ import {
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+const mockCalendarCreateEvent = vi.fn();
+const mockIsAnyCalendarConfigured = vi.fn();
+const mockInvalidateCookingDerivedCaches = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -29,9 +32,19 @@ vi.mock('../../src/config', () => ({
   },
 }));
 
+vi.mock('../../src/services/unified-calendar', () => ({
+  createEvent: (...args: unknown[]) => mockCalendarCreateEvent(...args),
+  isAnyCalendarConfigured: (...args: unknown[]) => mockIsAnyCalendarConfigured(...args),
+}));
+
+vi.mock('../../src/services/cooking-cache-invalidator', () => ({
+  invalidateCookingDerivedCaches: (...args: unknown[]) => mockInvalidateCookingDerivedCaches(...args),
+}));
+
 import { cookingRoutes } from '../../src/api/routes/cooking';
 import { getOrCreateUser } from '../../src/services/user-service';
 import { addRecipe, setMealPlan, generateShoppingList } from '../../src/services/cooking-chef';
+import * as cookingChef from '../../src/services/cooking-chef';
 import { createPlan, createWeek, createSession } from '../../src/services/training-plans';
 import { publishHighLegLoad, publishLowSleep } from '../../src/services/training-signals';
 import { setDbProvider } from '../../src/services/intelligence-bus';
@@ -127,6 +140,18 @@ describe('Cooking API — shopping list item updates', () => {
     applyMigrations(testDb);
     setDbProvider(() => testDb);
     clearTenantScopeAnomaliesForTests();
+    mockCalendarCreateEvent.mockReset();
+    mockIsAnyCalendarConfigured.mockReset();
+    mockInvalidateCookingDerivedCaches.mockReset();
+    mockIsAnyCalendarConfigured.mockReturnValue(true);
+    mockCalendarCreateEvent.mockResolvedValue({
+      id: 'evt-meal-prep',
+      summary: 'Meal prep — 1 meals',
+      start: '2026-04-19T14:00:00.000+01:00',
+      end: '2026-04-19T16:00:00.000+01:00',
+      source: 'outlook',
+      htmlLink: 'https://calendar.example/prep',
+    });
   });
 
   afterEach(() => testDb?.close());
@@ -164,6 +189,23 @@ describe('Cooking API — shopping list item updates', () => {
         userId: 0,
       }),
     ]);
+  });
+
+  it('does not leak internal exception details on recipe list failures', async () => {
+    const user = getOrCreateUser(21011, { username: 'cook11' });
+    const spy = vi.spyOn(cookingChef, 'getRecipes').mockImplementation(() => {
+      throw new Error('db exploded with vendor path /private/secret');
+    });
+
+    const res = await dispatch('GET', '/recipes', user.id);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('INTERNAL');
+    expect(res.body.error.message).toBe('Failed to fetch recipes');
+    expect(JSON.stringify(res.body)).not.toContain('/private/secret');
+
+    spy.mockRestore();
   });
 
   it('returns 404 when the week has no shopping list', async () => {
@@ -337,6 +379,7 @@ describe('Cooking API — shopping list item updates', () => {
       expect.objectContaining({ name: 'Greek yogurt', aisle: 'protein' }),
       expect.objectContaining({ name: 'Olive oil', aisle: 'pantry' }),
     ]);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id);
   });
 
   it('classifies portuguese ingredient names into useful aisles', async () => {
@@ -358,5 +401,25 @@ describe('Cooking API — shopping list item updates', () => {
       expect.objectContaining({ name: 'Frango', aisle: 'protein' }),
       expect.objectContaining({ name: 'Arroz', aisle: 'pantry' }),
     ]);
+  });
+
+  it('invalidates calendar-backed surfaces after creating a meal prep event', async () => {
+    const user = getOrCreateUser(21012, { username: 'cook12' });
+    const recipe = addRecipe(user.id, 'Prep chicken', [
+      { name: 'Chicken', quantity: '500', unit: 'g' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Prep chicken', { recipeId: recipe.id });
+
+    const res = await dispatch('POST', '/meal-plan/create-prep-event', user.id, {
+      week: '2026-04-13',
+      dayOfWeek: 0,
+      startHour: 14,
+      durationMinutes: 120,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(mockCalendarCreateEvent).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id, { includeCalendarSurfaces: true });
   });
 });

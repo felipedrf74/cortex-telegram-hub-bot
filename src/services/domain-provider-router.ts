@@ -28,6 +28,12 @@
 import type { DomainName } from '../domains/types';
 import type { ProviderName } from './model-config';
 import { logger } from '../utils/logger';
+import {
+  getGeminiDomainAllowlist,
+  getGeminiIncludeSecretaryEnvOverride,
+  getGeminiRoutingEnvOverride,
+  isSecretaryHaikuRoutingEnabled,
+} from './runtime-flags';
 
 // ─── Domain → Provider Mapping ──────────────────────────────────────
 
@@ -73,25 +79,26 @@ let _geminiIncludeSecretary = true;
 
 /** Initialize from environment or kv_store */
 export function initDomainRouting(): void {
-  // Env override — only disables if explicitly set to 'false'. Any other value
-  // (including unset) keeps the enabled-by-default behavior.
-  if (process.env.GEMINI_ROUTING_ENABLED === 'false') {
-    _geminiRoutingEnabled = false;
-  } else if (process.env.GEMINI_ROUTING_ENABLED === 'true') {
-    _geminiRoutingEnabled = true;
+  _geminiRoutingEnabled = true;
+  _geminiDomains = new Set(DEFAULT_GEMINI_DOMAINS);
+  _geminiIncludeSecretary = true;
+  _secretaryHaikuEnabled = isSecretaryHaikuRoutingEnabled();
+
+  const routingOverride = getGeminiRoutingEnvOverride();
+  if (routingOverride !== null) {
+    _geminiRoutingEnabled = routingOverride;
   }
 
   // Env override for the secretary primary-provider safeguard
-  if (process.env.GEMINI_INCLUDE_SECRETARY === 'true') {
-    _geminiIncludeSecretary = true;
-  } else if (process.env.GEMINI_INCLUDE_SECRETARY === 'false') {
-    _geminiIncludeSecretary = false;
+  const includeSecretaryOverride = getGeminiIncludeSecretaryEnvOverride();
+  if (includeSecretaryOverride !== null) {
+    _geminiIncludeSecretary = includeSecretaryOverride;
   }
 
   // Env can also narrow the domain set
-  const domainsStr = process.env.GEMINI_DOMAINS || '';
-  if (domainsStr.trim()) {
-    _geminiDomains = new Set(domainsStr.split(',').map(d => d.trim()).filter(Boolean));
+  const envDomains = getGeminiDomainAllowlist();
+  if (envDomains.length > 0) {
+    _geminiDomains = new Set(envDomains);
   }
 
   // kv_store overrides env (persistent user preferences win)
@@ -243,7 +250,7 @@ const SIMPLE_SECRETARY_PATTERNS = [
   /^\/(status|version)\b/i,
 ];
 
-let _secretaryHaikuEnabled = process.env.SECRETARY_HAIKU_ROUTING_ENABLED === 'true';
+let _secretaryHaikuEnabled = isSecretaryHaikuRoutingEnabled();
 
 /**
  * Check if a secretary message is a simple query that can use Haiku.

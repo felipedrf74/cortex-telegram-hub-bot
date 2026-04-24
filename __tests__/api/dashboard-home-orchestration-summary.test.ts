@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHomeOrchestrationSummary } from '../../src/api/routes/dashboard';
+import { buildHomeOrchestrationSummary } from '../../src/api/routes/dashboard-home-input';
 import type { DailyBriefResponse } from '../../src/services/daily-brief-orchestrator';
 
 function makeBrief(overrides: Partial<DailyBriefResponse> = {}): DailyBriefResponse {
@@ -184,5 +184,62 @@ describe('dashboard home orchestration summary', () => {
 
     expect(summary).not.toBeNull();
     expect(summary?.protectedLater).toBeNull();
+  });
+
+  it('stays skill-aware when coordination only exposes one concrete impact', () => {
+    const summary = buildHomeOrchestrationSummary(
+      makeBrief({
+        coordination: {
+          ...makeBrief().coordination,
+          crossSkillImpacts: [
+            {
+              id: 'secretary-only',
+              skillId: 'secretary',
+              skillLabel: 'Secretária',
+              summary: 'Agrupa o admin depois do almoço para preservar o bloco principal.',
+            },
+          ],
+        },
+        day: {
+          ...makeBrief().day,
+          training: {
+            ...makeBrief().day.training,
+            reason: 'Treino leve hoje para reduzir atrito.',
+          },
+          meals: [
+            {
+              mealType: 'lunch',
+              title: 'Almoço simples',
+              note: 'Mantém o dia executável.',
+              decisions: [],
+            },
+          ],
+          content: {
+            status: 'scheduled',
+            title: 'Janela de gravação',
+            note: 'Sexta continua boa para filmar.',
+            blockStart: '2026-04-24T10:00:00.000Z',
+            blockEnd: '2026-04-24T12:00:00.000Z',
+            decisions: [],
+          },
+          finance: {
+            budgetNote: 'Modo custo controlado.',
+            taxNote: null,
+            subscriptionNote: null,
+            decisions: [],
+          },
+        } as any,
+      }),
+      'pt-PT',
+    );
+
+    expect(summary).not.toBeNull();
+    expect(summary?.impacts).toEqual([
+      {
+        id: 'secretary-only',
+        domain: 'secretary',
+        detail: 'Agrupa o admin depois do almoço para preservar o bloco principal.',
+      },
+    ]);
   });
 });

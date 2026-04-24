@@ -18,6 +18,35 @@ let mockRestarting = false;
 let mockLastMessage: string | null = new Date().toISOString();
 let mockJobStatuses: any[] = [];
 let mockRecentEvents: any[] = [];
+let mockCacheStats = {
+  initCalls: 2,
+  initFailures: 0,
+  readCount: 11,
+  swrReadCount: 4,
+  hitCount: 9,
+  missCount: 2,
+  staleHitCount: 1,
+  writeCount: 5,
+  clearCount: 3,
+  clearByPrefixCount: 4,
+  expireSweepCount: 1,
+  expiredEntriesCleared: 7,
+  readErrors: 0,
+  writeErrors: 0,
+  parseErrors: 0,
+  lastErrorAt: null,
+  lastErrorOperation: null,
+  lastErrorKey: null,
+};
+let mockDashboardCacheInvalidationStats = {
+  requestCount: 6,
+  userScopedRequestCount: 5,
+  globalRequestCount: 1,
+  clearCountRequested: 5,
+  clearByPrefixCountRequested: 11,
+  lastInvalidatedAt: '2026-04-22T11:00:00.000Z',
+  lastUserId: 42,
+};
 
 vi.mock('../../src/portal/telemetry', () => ({
   isBotPollingActive: () => mockPolling,
@@ -58,14 +87,25 @@ vi.mock('../../src/services/database', () => ({
   initDatabase: vi.fn(),
 }));
 
+vi.mock('../../src/services/cache-store', () => ({
+  initCacheStore: vi.fn(),
+  clearExpired: vi.fn(),
+  getCacheStoreStats: () => mockCacheStats,
+}));
+
+vi.mock('../../src/services/dashboard-cache-invalidator', () => ({
+  getDashboardCacheInvalidationStats: () => mockDashboardCacheInvalidationStats,
+}));
+
 // ── Mock config (port 0 = OS-assigned random port) ──────────────────
 
 let healthToken = 'test-health-secret';
+let allowUnauthenticatedDetailed = false;
 
 vi.mock('../../src/config', () => ({
   config: {
     portal: { enabled: true, port: 0, bind: '127.0.0.1', token: '' },
-    get health() { return { token: healthToken }; },
+    get health() { return { token: healthToken, allowUnauthenticatedDetailed }; },
     telegram: { botToken: 'test:token', allowedUserIds: [123] },
     app: { timezone: 'UTC', databasePath: ':memory:' },
     webhooks: { enabled: false, secret: '', maxPayloadBytes: 1048576, eventRetentionDays: 30 },
@@ -197,7 +237,37 @@ describe('GET /health', () => {
     mockDbOk = true;
     mockJobStatuses = [];
     mockRecentEvents = [];
+    mockCacheStats = {
+      initCalls: 2,
+      initFailures: 0,
+      readCount: 11,
+      swrReadCount: 4,
+      hitCount: 9,
+      missCount: 2,
+      staleHitCount: 1,
+      writeCount: 5,
+      clearCount: 3,
+      clearByPrefixCount: 4,
+      expireSweepCount: 1,
+      expiredEntriesCleared: 7,
+      readErrors: 0,
+      writeErrors: 0,
+      parseErrors: 0,
+      lastErrorAt: null,
+      lastErrorOperation: null,
+      lastErrorKey: null,
+    };
+    mockDashboardCacheInvalidationStats = {
+      requestCount: 6,
+      userScopedRequestCount: 5,
+      globalRequestCount: 1,
+      clearCountRequested: 5,
+      clearByPrefixCountRequested: 11,
+      lastInvalidatedAt: '2026-04-22T11:00:00.000Z',
+      lastUserId: 42,
+    };
     healthToken = 'test-health-secret';
+    allowUnauthenticatedDetailed = false;
   });
 
   it('returns 200 with healthy status when bot is polling and DB is up', async () => {
@@ -258,6 +328,7 @@ describe('GET /health/detailed', () => {
     mockLastMessage = new Date().toISOString();
     mockDbOk = true;
     healthToken = 'test-health-secret';
+    allowUnauthenticatedDetailed = false;
     mockJobStatuses = [
       {
         name: 'daily_briefing',
@@ -341,6 +412,22 @@ describe('GET /health/detailed', () => {
     expect(body.errors).toBeDefined();
     expect(body.errors.total).toBe(3); // 3 error events
     expect(body.errors.lastHour).toBe(2); // 2 within last hour
+
+    // Cache observability
+    expect(body.cache).toBeDefined();
+    expect(body.cache.store).toMatchObject({
+      readCount: 11,
+      hitCount: 9,
+      missCount: 2,
+      staleHitCount: 1,
+      expiredEntriesCleared: 7,
+    });
+    expect(body.cache.dashboardInvalidation).toMatchObject({
+      requestCount: 6,
+      userScopedRequestCount: 5,
+      globalRequestCount: 1,
+      lastUserId: 42,
+    });
   });
 
   it('returns 200 when only Telegram bot polling is degraded', async () => {
@@ -361,8 +448,19 @@ describe('GET /health/detailed', () => {
     expect(body.errors).toBeDefined();
   });
 
-  it('allows access without token when HEALTH_TOKEN is empty', async () => {
+  it('rejects access without token when HEALTH_TOKEN is empty and bypass is disabled', async () => {
     healthToken = '';
+
+    const { server, port } = await startServer();
+    activeServer = server;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health/detailed`);
+    expect(res.status).toBe(401);
+  });
+
+  it('allows loopback access without token only when explicit bypass is enabled', async () => {
+    healthToken = '';
+    allowUnauthenticatedDetailed = true;
 
     const { server, port } = await startServer();
     activeServer = server;

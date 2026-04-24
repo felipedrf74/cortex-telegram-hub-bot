@@ -13,6 +13,7 @@ import {
 } from '../services/finance-tracker';
 import { getActiveContentPillars, getContentDeskItems } from '../services/content-intelligence';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../services/tenant-scope-observability';
+import { canUseAnthropicRuntimeFallback } from '../services/runtime-flags';
 
 function isPortugalPortuguese(language: string): boolean {
   return language === 'pt-PT';
@@ -23,7 +24,7 @@ function isEnglish(language: string): boolean {
 }
 
 export function canUseDirectAnthropicFallback(): boolean {
-  return process.env.ANTHROPIC_ENABLED === 'true' && !!process.env.ANTHROPIC_API_KEY;
+  return canUseAnthropicRuntimeFallback();
 }
 
 function reportInvalidAIUnavailableScope(

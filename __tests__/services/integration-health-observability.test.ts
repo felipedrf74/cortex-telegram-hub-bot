@@ -1,0 +1,128 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+let testDb: Database.Database;
+
+const pushEvent = vi.fn();
+
+vi.mock('../../src/services/database', () => ({
+  getDb: () => testDb,
+}));
+
+vi.mock('../../src/portal/telemetry', () => ({
+  pushEvent,
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
+describe('integration health observability', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.exec(`
+      CREATE TABLE integration_health (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        provider TEXT NOT NULL,
+        status TEXT NOT NULL,
+        latency_ms INTEGER,
+        error_message TEXT
+      );
+    `);
+    pushEvent.mockReset();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    const mod = await import('../../src/services/integration-health');
+    mod._resetIntegrationHealthDepsForTests();
+    testDb.close();
+  });
+
+  it('emits an operator event when a provider reaches the repeated-failure threshold', async () => {
+    const mod = await import('../../src/services/integration-health');
+    const { logger } = await import('../../src/utils/logger');
+    const getAccessToken = vi.fn().mockRejectedValue(new Error('invalid_grant'));
+    mod._setIntegrationHealthDepsForTests({
+      getGarminModule: () => ({ isGarminConfigured: () => false }),
+      getGoogleAuthModule: () => ({
+        isGoogleConfigured: () => true,
+        buildGoogleOAuth2Client: () => ({ getAccessToken }),
+      }),
+      getMicrosoftAuthModule: () => ({
+        isMicrosoftConfigured: () => false,
+        getGraphClient: () => ({
+          api: () => ({
+            select: () => ({
+              get: vi.fn(),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const threshold = mod._getFailureAlertThresholdForTests();
+    for (let i = 0; i < threshold - 1; i += 1) {
+      testDb
+        .prepare(`INSERT INTO integration_health (provider, status, latency_ms, error_message) VALUES (?, ?, ?, ?)`)
+        .run('google', 'fail', 1200, 'invalid_grant');
+    }
+    const results = await mod.runHealthProbes();
+
+    expect(results.find((result) => result.provider === 'google')?.status).toBe('fail');
+    expect(pushEvent).toHaveBeenCalledTimes(1);
+    expect(pushEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        summary: `Integration google degraded (${threshold} fails)`,
+        detail: 'invalid_grant',
+      }),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'google',
+        streak: threshold,
+        errorMessage: 'invalid_grant',
+      }),
+      'Integration health degraded after repeated probe failures',
+    );
+  });
+
+  it('does not emit repeated degradation events after the threshold has already been crossed', async () => {
+    const mod = await import('../../src/services/integration-health');
+    const getAccessToken = vi.fn().mockRejectedValue(new Error('invalid_grant'));
+    mod._setIntegrationHealthDepsForTests({
+      getGarminModule: () => ({ isGarminConfigured: () => false }),
+      getGoogleAuthModule: () => ({
+        isGoogleConfigured: () => true,
+        buildGoogleOAuth2Client: () => ({ getAccessToken }),
+      }),
+      getMicrosoftAuthModule: () => ({
+        isMicrosoftConfigured: () => false,
+        getGraphClient: () => ({
+          api: () => ({
+            select: () => ({
+              get: vi.fn(),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const threshold = mod._getFailureAlertThresholdForTests();
+    for (let i = 0; i < threshold; i += 1) {
+      testDb
+        .prepare(`INSERT INTO integration_health (provider, status, latency_ms, error_message) VALUES (?, ?, ?, ?)`)
+        .run('google', 'fail', 1200, 'invalid_grant');
+    }
+    await mod.runHealthProbes();
+
+    expect(pushEvent).not.toHaveBeenCalled();
+  });
+});

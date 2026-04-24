@@ -15,7 +15,7 @@ import {
   getActiveReminders,
   cancelReminder,
 } from '../../state/reminders';
-import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
 export function reminderRoutes(): Router {
@@ -75,7 +75,7 @@ export function reminderRoutes(): Router {
       sendSuccess(res, { reminder: formatReminder(reminder) }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS reminders create failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to create reminder', 500);
+      sendInternalError(res, 'Failed to create reminder');
     }
   }));
 
@@ -97,7 +97,7 @@ export function reminderRoutes(): Router {
       sendSuccess(res, { cancelled: true, id });
     } catch (err: any) {
       logger.error({ err, userId, id }, 'iOS reminders delete failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to cancel reminder', 500);
+      sendInternalError(res, 'Failed to cancel reminder');
     }
   }));
 

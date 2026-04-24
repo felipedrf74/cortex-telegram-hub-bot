@@ -126,8 +126,27 @@ export async function sendEmail(data: {
   cc?: string;
   source?: string;  // job name for tracking (e.g. 'fossa_email')
 }): Promise<void> {
+  return sendEmailWithClient(getGraphClient(), data);
+}
+
+export async function sendEmailForUser(userId: number, data: {
+  to: string;
+  subject: string;
+  body: string;
+  cc?: string;
+  source?: string;
+}): Promise<void> {
+  return sendEmailWithClient(getGraphClientForUser(userId), data, userId);
+}
+
+async function sendEmailWithClient(client: any, data: {
+  to: string;
+  subject: string;
+  body: string;
+  cc?: string;
+  source?: string;
+}, userId?: number): Promise<void> {
   try {
-    const client = getGraphClient();
     const toRecipients = data.to.split(',').map((email) => ({
       emailAddress: { address: email.trim() },
     }));
@@ -151,7 +170,7 @@ export async function sendEmail(data: {
     pushEvent({ ts: new Date().toISOString(), type: 'job', summary: `Email sent: "${data.subject}" → ${data.to.split(',')[0]}` });
   } catch (err) {
     logEmailSend(data.to, data.subject, 'failed', data.source, (err as Error)?.message);
-    logger.error({ err }, 'Failed to send Outlook email');
+    logger.error({ err, userId }, 'Failed to send Outlook email');
     throw err;
   }
 }
@@ -160,13 +179,26 @@ export async function replyToEmail(data: {
   messageId: string;
   body: string;
 }): Promise<void> {
+  return replyToEmailWithClient(getGraphClient(), data);
+}
+
+export async function replyToEmailForUser(userId: number, data: {
+  messageId: string;
+  body: string;
+}): Promise<void> {
+  return replyToEmailWithClient(getGraphClientForUser(userId), data, userId);
+}
+
+async function replyToEmailWithClient(client: any, data: {
+  messageId: string;
+  body: string;
+}, userId?: number): Promise<void> {
   try {
-    const client = getGraphClient();
     await client.api(`/me/messages/${data.messageId}/reply`).post({
       comment: data.body,
     });
   } catch (err) {
-    logger.error({ err }, 'Failed to reply to Outlook email');
+    logger.error({ err, userId }, 'Failed to reply to Outlook email');
     throw err;
   }
 }

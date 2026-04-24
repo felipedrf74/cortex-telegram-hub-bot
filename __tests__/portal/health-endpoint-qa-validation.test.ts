@@ -11,7 +11,27 @@
  * - Bot polling status
  */
 
+import fs from 'fs';
+import path from 'path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const portalServerPath = path.resolve(__dirname, '../../src/portal/server.ts');
+const portalHealthRoutesPath = path.resolve(__dirname, '../../src/portal/health-routes.ts');
+
+function readPortalServerSource(): string {
+  return fs.readFileSync(portalServerPath, 'utf-8');
+}
+
+function readPortalHealthRoutesSource(): string {
+  return fs.readFileSync(portalHealthRoutesPath, 'utf-8');
+}
+
+function publicHealthRouteBlock(): string {
+  const source = readPortalHealthRoutesSource();
+  const healthStart = source.indexOf("app.get('/health'");
+  const healthEnd = source.indexOf("app.get('/health/detailed'", healthStart);
+  return source.slice(healthStart, healthEnd > 0 ? healthEnd : healthStart + 1500);
+}
 
 // ── Mock dependencies ─────────────────────────────────────────────
 
@@ -120,23 +140,14 @@ vi.mock('grammy', () => ({
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('QA: Health endpoint — response structure', () => {
-  it('health endpoint exists in server module', async () => {
-    // Verify the source contains the /health route
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
+  it('health endpoint exists in health route module', async () => {
+    const source = readPortalHealthRoutesSource();
     expect(source).toContain("app.get('/health'");
   });
 
   it('health endpoint is placed before auth middleware', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
-    const healthPos = source.indexOf("app.get('/health'");
+    const source = readPortalServerSource();
+    const healthPos = source.indexOf('registerPortalHealthRoutes(app');
     const authPos = source.indexOf("app.use('/api'");
     expect(healthPos).toBeGreaterThan(0);
     expect(authPos).toBeGreaterThan(0);
@@ -144,21 +155,13 @@ describe('QA: Health endpoint — response structure', () => {
   });
 
   it('returns 200 status code when healthy', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
+    const source = readPortalHealthRoutesSource();
     // Verify the logic: healthy = 200, degraded = 503
     expect(source).toContain("status === 'healthy' ? 200 : 503");
   });
 
   it('response includes all required fields', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
+    const source = readPortalHealthRoutesSource();
     // Check response body has all required fields
     expect(source).toContain('status,');
     expect(source).toContain('uptime:');
@@ -171,16 +174,7 @@ describe('QA: Health endpoint — response structure', () => {
   });
 
   it('memory stats include rss, heapUsed, heapTotal, external', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
-    // Find the health endpoint and check memory fields
-    const healthBlock = source.slice(
-      source.indexOf("app.get('/health'"),
-      source.indexOf("app.get('/health'") + 1500,
-    );
+    const healthBlock = readPortalHealthRoutesSource();
     expect(healthBlock).toContain('rss:');
     expect(healthBlock).toContain('heapUsed:');
     expect(healthBlock).toContain('heapTotal:');
@@ -188,15 +182,7 @@ describe('QA: Health endpoint — response structure', () => {
   });
 
   it('memory values are rounded to MB', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
-    const healthBlock = source.slice(
-      source.indexOf("app.get('/health'"),
-      source.indexOf("app.get('/health'") + 1500,
-    );
+    const healthBlock = readPortalHealthRoutesSource();
     // All memory values should divide by 1024/1024 (bytes to MB) and round
     expect(healthBlock).toContain('Math.round(mem.rss / 1024 / 1024)');
   });
@@ -220,11 +206,7 @@ describe('QA: Health endpoint — response structure', () => {
   });
 
   it('health tracks server availability separately from Telegram polling', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
+    const source = readPortalHealthRoutesSource();
     expect(source).toContain("const runtime = getRuntimeStatus();");
     expect(source).toContain("runtime.serviceStatus === 'online' ? 'healthy' : 'degraded'");
     expect(source).toContain('server: {');
@@ -235,25 +217,25 @@ describe('QA: Health endpoint — response structure', () => {
 // ── humanUptime helper ────────────────────────────────────────────
 
 describe('QA: humanUptime formatting', () => {
-  it('humanUptime exists in server.ts', async () => {
+  it('humanUptime is owned by the portal formatter module', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
+      path.resolve(__dirname, '../../src/portal/formatters.ts'), 'utf-8',
     );
-    expect(source).toContain('function humanUptime(seconds: number): string');
+    expect(source).toContain('export function humanUptime(seconds: number): string');
   });
 
   it('humanUptime handles days, hours, minutes correctly', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
+      path.resolve(__dirname, '../../src/portal/formatters.ts'), 'utf-8',
     );
     // Verify the logic extracts d, h, m
     const fnBlock = source.slice(
-      source.indexOf('function humanUptime'),
-      source.indexOf('function humanUptime') + 300,
+      source.indexOf('export function humanUptime'),
+      source.indexOf('export function humanUptime') + 300,
     );
     expect(fnBlock).toContain('86400'); // seconds per day
     expect(fnBlock).toContain('3600');  // seconds per hour
@@ -264,9 +246,9 @@ describe('QA: humanUptime formatting', () => {
     const fs = await import('fs');
     const path = await import('path');
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
+      path.resolve(__dirname, '../../src/portal/formatters.ts'), 'utf-8',
     );
-    const fnStart = source.indexOf('function humanUptime');
+    const fnStart = source.indexOf('export function humanUptime');
     const fnBlock = source.slice(fnStart, fnStart + 500);
     // Minutes are always pushed unconditionally (not conditional like d/h)
     // Use a regex to avoid template literal escaping issues in the test string
@@ -292,15 +274,7 @@ describe('QA: Portal HTML references health endpoint', () => {
 
 describe('QA: Health endpoint security', () => {
   it('health endpoint does not expose sensitive data', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
-    const healthStart = source.indexOf("app.get('/health'");
-    // Slice only the health handler — ends at the closing `});` before auth middleware
-    const healthEnd = source.indexOf('// ── Auth middleware', healthStart);
-    const healthBlock = source.slice(healthStart, healthEnd > 0 ? healthEnd : healthStart + 800);
+    const healthBlock = publicHealthRouteBlock();
     // Should not expose passwords or env var values in response body
     expect(healthBlock).not.toContain('process.env.TELEGRAM_BOT_TOKEN');
     expect(healthBlock).not.toContain('password');
@@ -309,14 +283,7 @@ describe('QA: Health endpoint security', () => {
   });
 
   it('bot section exposes only polling status, not credentials', async () => {
-    const fs = await import('fs');
-    const path = await import('path');
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'), 'utf-8',
-    );
-    const healthStart = source.indexOf("app.get('/health'");
-    const healthEnd = source.indexOf('// ── Auth middleware', healthStart);
-    const healthBlock = source.slice(healthStart, healthEnd > 0 ? healthEnd : healthStart + 800);
+    const healthBlock = publicHealthRouteBlock();
     // Bot section should have polling, restarting, lastMessageAt — not token
     expect(healthBlock).toContain('polling:');
     expect(healthBlock).toContain('restarting:');

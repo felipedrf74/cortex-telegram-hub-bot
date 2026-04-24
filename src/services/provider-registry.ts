@@ -21,16 +21,13 @@ import { TaskRoutingProvider, TaskRoutingConfig, TaskProviderPair, FallbackEvent
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { captureError } from './error-monitor';
+import { isAnthropicRuntimeEnabled } from './runtime-flags';
 
 // ─── Provider Registry ─────────────────────────────────────────────
 
 type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
 const providers = new Map<string, AIProvider>();
-
-function isAnthropicRuntimeEnabled(): boolean {
-  return process.env.ANTHROPIC_ENABLED === 'true';
-}
 
 function getUsableProvider(name: string): AIProvider | null {
   if (name === 'anthropic' && !isAnthropicRuntimeEnabled()) {

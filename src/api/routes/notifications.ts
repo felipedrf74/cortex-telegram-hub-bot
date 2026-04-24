@@ -3,7 +3,15 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
-import { getNotifications, getUnreadCount } from '../../services/content-notification-store';
+import {
+  getNotifications,
+  getUnreadCount,
+  markAllRead,
+  markRead,
+  resolveNotification,
+  type NotificationStatus,
+  type NotificationType,
+} from '../../services/content-notification-store';
 import { getRecentReports, getUnreadReportCount } from '../../services/report-document-store';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { isConnected } from '../../services/oauth-store';
@@ -541,11 +549,9 @@ export function notificationRoutes(): Router {
   router.get('/', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_list')) return;
-    const status = (req.query.status as string) || undefined;
-    const type = (req.query.type as string) || undefined;
+    const status = (req.query.status as NotificationStatus | undefined) || undefined;
+    const type = (req.query.type as NotificationType | undefined) || undefined;
     const limit = parseInt(String(req.query.limit || '20'), 10);
-
-    const { getNotifications, getUnreadCount } = require('../../services/content-notification-store');
 
     const notifications = status === undefined
       ? getNotifications(userId, { limit })
@@ -675,7 +681,6 @@ export function notificationRoutes(): Router {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_read', { notificationId: req.params.id })) return;
     const { id } = req.params;
-    const { markRead } = require('../../services/content-notification-store');
     const success = markRead(parseInt(id, 10), userId);
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);
@@ -692,7 +697,6 @@ export function notificationRoutes(): Router {
   router.post('/read-all', asyncHandler(async (req, res: Response) => {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_mark_all_read')) return;
-    const { markAllRead } = require('../../services/content-notification-store');
     const count = markAllRead(userId);
     sendSuccess(res, { markedCount: count });
   }));
@@ -706,7 +710,6 @@ export function notificationRoutes(): Router {
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidNotificationsRouteScope(res, userId, 'notifications_route_resolve', { notificationId: req.params.id })) return;
     const { id } = req.params;
-    const { resolveNotification } = require('../../services/content-notification-store');
     const success = resolveNotification(parseInt(id, 10), userId);
     if (!success) {
       sendError(res, 'NOT_FOUND', 'Notification not found', 404);

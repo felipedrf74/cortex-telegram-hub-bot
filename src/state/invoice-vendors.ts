@@ -3,9 +3,24 @@
 import { getDb } from '../services/database';
 import { InvoiceVendor } from '../domains/types';
 
+function normalizeSenderPattern(senderPattern: string): string {
+  return senderPattern.trim().toLowerCase();
+}
+
+function normalizeSubjectPatterns(subjectPatterns?: string): string | null {
+  if (!subjectPatterns) return null;
+  const normalized = subjectPatterns
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(',');
+  return normalized || null;
+}
+
 /**
  * Add a new custom vendor for monthly invoice collection.
- * Uses INSERT OR REPLACE so re-adding the same sender_pattern updates the existing row.
+ * Sender patterns are normalized to lowercase so vendor identity is stable
+ * across UI/API callers and collector matching stays consistent.
  */
 export function addVendor(
   name: string,
@@ -14,17 +29,19 @@ export function addVendor(
   subjectPatterns?: string,
 ): InvoiceVendor {
   const db = getDb();
+  const normalizedSenderPattern = normalizeSenderPattern(senderPattern);
+  const normalizedSubjectPatterns = normalizeSubjectPatterns(subjectPatterns);
   // Re-enable if the sender_pattern was previously disabled (per-user)
   const existing = db.prepare(
     'SELECT id FROM invoice_vendors WHERE sender_pattern = ? AND user_id = ?',
-  ).get(senderPattern, userId) as { id: number } | undefined;
+  ).get(normalizedSenderPattern, userId) as { id: number } | undefined;
 
   if (existing) {
     db.prepare(`
       UPDATE invoice_vendors
       SET name = ?, subject_patterns = ?, enabled = 1
       WHERE id = ? AND user_id = ?
-    `).run(name, subjectPatterns ?? null, existing.id, userId);
+    `).run(name, normalizedSubjectPatterns, existing.id, userId);
     return db.prepare('SELECT * FROM invoice_vendors WHERE id = ?')
       .get(existing.id) as InvoiceVendor;
   }
@@ -32,7 +49,7 @@ export function addVendor(
   const result = db.prepare(`
     INSERT INTO invoice_vendors (name, sender_pattern, subject_patterns, user_id)
     VALUES (?, ?, ?, ?)
-  `).run(name, senderPattern, subjectPatterns ?? null, userId);
+  `).run(name, normalizedSenderPattern, normalizedSubjectPatterns, userId);
 
   return db.prepare('SELECT * FROM invoice_vendors WHERE id = ?')
     .get(result.lastInsertRowid) as InvoiceVendor;
@@ -69,7 +86,7 @@ export function vendorExists(senderPattern: string, userId: number): boolean {
   const db = getDb();
   const row = db.prepare(
     'SELECT COUNT(*) as count FROM invoice_vendors WHERE sender_pattern = ? AND enabled = 1 AND user_id = ?',
-  ).get(senderPattern, userId) as { count: number };
+  ).get(normalizeSenderPattern(senderPattern), userId) as { count: number };
   return row.count > 0;
 }
 

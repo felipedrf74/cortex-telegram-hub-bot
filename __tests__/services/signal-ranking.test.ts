@@ -462,7 +462,7 @@ describe('signal-ranking: structural', () => {
 
   it('portal has /api/pipeline/metrics endpoint', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'),
+      path.resolve(__dirname, '../../src/portal/intelligence-routes.ts'),
       'utf8',
     );
     expect(source).toContain("'/api/pipeline/metrics'");
@@ -471,7 +471,7 @@ describe('signal-ranking: structural', () => {
 
   it('portal has /api/signals/ranked endpoint', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/portal/server.ts'),
+      path.resolve(__dirname, '../../src/portal/intelligence-routes.ts'),
       'utf8',
     );
     expect(source).toContain("'/api/signals/ranked'");

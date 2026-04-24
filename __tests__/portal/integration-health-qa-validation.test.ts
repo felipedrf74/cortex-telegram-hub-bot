@@ -2,8 +2,8 @@
  * QA Validation Tests — Portal Integration Health Checks (OAuth Token Status)
  *
  * Validates the integration health panel added by the devops agent:
- * - inferTokenHealth logic (replicated from server.ts since it's nested)
- * - SnapshotResponse integration shape
+ * - inferTokenHealth logic (replicated from snapshot-builder.ts since it's nested)
+ * - PortalSnapshotResponse integration shape
  * - Portal HTML rendering elements
  * - Edge cases: stale tokens, never-ran jobs, recently expired
  */
@@ -13,9 +13,11 @@ import fs from 'fs';
 import path from 'path';
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const snapshotBuilderPath = path.join(ROOT, 'src', 'portal', 'snapshot-builder.ts');
+const snapshotStatementsPath = path.join(ROOT, 'src', 'portal', 'snapshot-statements.ts');
 
 // ── Replicate inferTokenHealth logic for unit-level validation ──────
-// This mirrors the function inside buildSnapshot() in src/portal/server.ts
+// This mirrors the function inside buildPortalSnapshot() in src/portal/snapshot-builder.ts
 function inferTokenHealth(
   configured: boolean,
   lastSuccess: string | null,
@@ -89,81 +91,75 @@ describe('Integration Health — inferTokenHealth logic', () => {
   });
 });
 
-describe('Integration Health — SnapshotResponse shape', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+describe('Integration Health — PortalSnapshotResponse shape', () => {
+  const snapshotBuilderTs = fs.readFileSync(snapshotBuilderPath, 'utf-8');
 
-  it('SnapshotResponse interface includes tokenHealth field', () => {
-    expect(serverTs).toContain("tokenHealth?: 'valid' | 'expired' | 'warning' | 'not_configured'");
+  it('PortalSnapshotResponse interface includes tokenHealth field', () => {
+    expect(snapshotBuilderTs).toContain("tokenHealth?: 'valid' | 'expired' | 'warning' | 'not_configured'");
   });
 
-  it('SnapshotResponse interface includes lastApiCall field', () => {
-    expect(serverTs).toContain('lastApiCall?: string | null');
+  it('PortalSnapshotResponse interface includes lastApiCall field', () => {
+    expect(snapshotBuilderTs).toContain('lastApiCall?: string | null');
   });
 
-  it('SnapshotResponse interface includes group field', () => {
-    expect(serverTs).toContain('group?: string');
+  it('PortalSnapshotResponse interface includes group field', () => {
+    expect(snapshotBuilderTs).toContain('group?: string');
   });
 
   it('snapshot builds Google Calendar integration with google group', () => {
-    expect(serverTs).toContain("name: 'Google Calendar'");
-    expect(serverTs).toContain("group: 'google'");
+    expect(snapshotBuilderTs).toContain("name: 'Google Calendar'");
+    expect(snapshotBuilderTs).toContain("group: 'google'");
   });
 
   it('snapshot builds Google Drive integration', () => {
-    expect(serverTs).toContain("name: 'Google Drive'");
+    expect(snapshotBuilderTs).toContain("name: 'Google Drive'");
   });
 
   it('snapshot builds Gmail integration', () => {
-    expect(serverTs).toContain("name: 'Gmail'");
+    expect(snapshotBuilderTs).toContain("name: 'Gmail'");
   });
 
   it('snapshot builds Outlook Calendar integration with microsoft group', () => {
-    expect(serverTs).toContain("name: 'Outlook Calendar'");
-    expect(serverTs).toContain("group: 'microsoft'");
+    expect(snapshotBuilderTs).toContain("name: 'Outlook Calendar'");
+    expect(snapshotBuilderTs).toContain("group: 'microsoft'");
   });
 
   it('snapshot builds Outlook Mail integration', () => {
-    expect(serverTs).toContain("name: 'Outlook Mail'");
+    expect(snapshotBuilderTs).toContain("name: 'Outlook Mail'");
   });
 
   it('snapshot builds Microsoft To Do integration', () => {
-    expect(serverTs).toContain("name: 'Microsoft To Do'");
+    expect(snapshotBuilderTs).toContain("name: 'Microsoft To Do'");
   });
 
   it('snapshot builds Garmin Connect integration with garmin group', () => {
-    expect(serverTs).toContain("name: 'Garmin Connect'");
-    expect(serverTs).toContain("group: 'garmin'");
+    expect(snapshotBuilderTs).toContain("name: 'Garmin Connect'");
+    expect(snapshotBuilderTs).toContain("group: 'garmin'");
   });
 
   it('all integrations call inferTokenHealth', () => {
     // Count occurrences: should be at least 7 (3 Google + 3 MS + 1 Garmin)
-    const matches = serverTs.match(/inferTokenHealth\(/g) || [];
+    const matches = snapshotBuilderTs.match(/inferTokenHealth\(/g) || [];
     expect(matches.length).toBeGreaterThanOrEqual(7);
   });
 });
 
 describe('Integration Health — SQL statements', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+  const snapshotStatementsTs = fs.readFileSync(snapshotStatementsPath, 'utf-8');
 
   it('defines lastSuccessForJob prepared statement', () => {
-    expect(serverTs).toContain('lastSuccessForJob');
-    expect(serverTs).toContain("result = 'success'");
+    expect(snapshotStatementsTs).toContain('lastSuccessForJob');
+    expect(snapshotStatementsTs).toContain("result = 'success'");
   });
 
   it('defines lastFailureForJob prepared statement', () => {
-    expect(serverTs).toContain('lastFailureForJob');
-    expect(serverTs).toContain("result = 'failed'");
+    expect(snapshotStatementsTs).toContain('lastFailureForJob');
+    expect(snapshotStatementsTs).toContain("result = 'failed'");
   });
 
   it('queries use parameterized job_name (not string interpolation)', () => {
     // The SQL should use ? placeholder, not template literals
-    expect(serverTs).toContain('WHERE job_name = ?');
+    expect(snapshotStatementsTs).toContain('WHERE job_name = ?');
   });
 });
 
@@ -214,44 +210,41 @@ describe('Integration Health — Portal HTML', () => {
 });
 
 describe('Integration Health — imports and wiring', () => {
-  const serverTs = fs.readFileSync(
-    path.join(ROOT, 'src', 'portal', 'server.ts'),
-    'utf-8',
-  );
+  const snapshotBuilderTs = fs.readFileSync(snapshotBuilderPath, 'utf-8');
 
   it('imports isGoogleCalendarConfigured', () => {
-    expect(serverTs).toContain("import { isGoogleCalendarConfigured } from '../services/google-calendar'");
+    expect(snapshotBuilderTs).toContain("import { isGoogleCalendarConfigured } from '../services/google-calendar'");
   });
 
   it('imports isGmailConfigured', () => {
-    expect(serverTs).toContain("import { isGmailConfigured } from '../services/google-gmail'");
+    expect(snapshotBuilderTs).toContain("import { isGmailConfigured } from '../services/google-gmail'");
   });
 
   it('imports isGoogleDriveEnabled', () => {
-    expect(serverTs).toContain("import { isGoogleDriveEnabled } from '../services/google-drive'");
+    expect(snapshotBuilderTs).toContain("import { isGoogleDriveEnabled } from '../services/google-drive'");
   });
 
   it('imports isOutlookCalendarConfigured', () => {
-    expect(serverTs).toContain("import { isOutlookCalendarConfigured } from '../services/outlook-calendar'");
+    expect(snapshotBuilderTs).toContain("import { isOutlookCalendarConfigured } from '../services/outlook-calendar'");
   });
 
   it('imports isOutlookMailConfigured', () => {
-    expect(serverTs).toContain("import { isOutlookMailConfigured } from '../services/outlook-mail'");
+    expect(snapshotBuilderTs).toContain("import { isOutlookMailConfigured } from '../services/outlook-mail'");
   });
 
   it('imports isOutlookTodoConfigured', () => {
-    expect(serverTs).toContain("import { isOutlookTodoConfigured } from '../services/microsoft-todo'");
+    expect(snapshotBuilderTs).toContain("import { isOutlookTodoConfigured } from '../services/microsoft-todo'");
   });
 
   it('uses daily_briefing job for Google token health proxy', () => {
-    expect(serverTs).toContain("lastJobSuccess('daily_briefing')");
+    expect(snapshotBuilderTs).toContain("lastJobSuccess('daily_briefing')");
   });
 
   it('uses conflict_detection job for Microsoft token health proxy', () => {
-    expect(serverTs).toContain("lastJobSuccess('conflict_detection')");
+    expect(snapshotBuilderTs).toContain("lastJobSuccess('conflict_detection')");
   });
 
   it('uses garmin_keepalive job for Garmin token health proxy', () => {
-    expect(serverTs).toContain("lastJobSuccess('garmin_keepalive')");
+    expect(snapshotBuilderTs).toContain("lastJobSuccess('garmin_keepalive')");
   });
 });

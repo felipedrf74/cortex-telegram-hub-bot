@@ -172,6 +172,18 @@ describe('Calendar API — mutation routes', () => {
     });
   });
 
+  it('does not leak raw provider errors when event loading fails', async () => {
+    mockGetEvents.mockRejectedValueOnce(new Error('outlook token refresh failed with raw upstream body'));
+
+    const res = await dispatch('GET', '/events');
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('CALENDAR_FETCH_FAILED');
+    expect(res.body.error.message).toBe('Failed to fetch calendar events');
+    expect(JSON.stringify(res.body)).not.toContain('outlook token refresh failed');
+  });
+
   it('fails closed on invalid tenant scope before loading events', async () => {
     const res = await dispatch('GET', '/events', undefined, 0);
 

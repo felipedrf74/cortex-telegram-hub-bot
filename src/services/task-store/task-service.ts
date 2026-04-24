@@ -31,7 +31,7 @@ import {
   TaskFilters,
 } from './unified-task-store';
 import { getAdapter } from './sync-engine';
-import { invalidateContextCache } from '../context-engine';
+import { invalidateTaskCaches } from '../task-cache-invalidator';
 import { NormalizedTask, NormalizedStatus, TaskProvider } from './types';
 
 /**
@@ -51,6 +51,14 @@ function findLocalIdFor(userId: number, provider: TaskProvider, externalId: stri
   }
 }
 
+function invalidateTaskMutationCaches(userId: number, task?: Pick<NormalizedTask, 'projectId'> | null): void {
+  invalidateTaskCaches({
+    userId,
+    listIds: task?.projectId != null ? [String(task.projectId)] : [],
+    includeDerivedSurfaces: true,
+  });
+}
+
 export interface CreateTaskInput {
   title: string;
   description?: string;
@@ -66,8 +74,8 @@ export interface CreateTaskInput {
  * Create a task. Tries the user's default provider first; falls back to a
  * Nexus-local row if the provider is unreachable or doesn't support create.
  *
- * Always invalidates the daily context cache so the next AI call sees the
- * new task in its summary.
+ * Always invalidates task-facing, Home/dashboard, plan, and AI context caches
+ * so service-level writes stay consistent with REST task mutations.
  */
 export async function createTask(
   userId: number,
@@ -97,13 +105,14 @@ export async function createTask(
     });
 
     upsertTask(userId, created);
-    invalidateContextCache(userId);
 
     // Re-fetch by id so callers see the auto-assigned local id (the
     // adapter only knows about the external_id; upsertTask wrote a fresh
     // row with a new auto-increment that the in-memory `created` lacks).
     const localId = findLocalIdFor(userId, created.provider, created.externalId);
-    return localId ? (getTaskById(localId) ?? created) : created;
+    const freshTask = localId ? (getTaskById(localId) ?? created) : created;
+    invalidateTaskMutationCaches(userId, freshTask);
+    return freshTask;
   } catch (err) {
     logger.warn({ err, userId, provider: defaultProvider }, 'createTask via provider failed — falling back to local');
     return createLocalTask(userId, input);
@@ -131,11 +140,12 @@ function createLocalTask(userId: number, input: CreateTaskInput): NormalizedTask
     notes: input.notes,
   };
   upsertTask(userId, task);
-  invalidateContextCache(userId);
 
   // Re-fetch so the returned task has the freshly-assigned local id
   const localId = findLocalIdFor(userId, 'nexus', externalId);
-  return localId ? (getTaskById(localId) ?? task) : task;
+  const freshTask = localId ? (getTaskById(localId) ?? task) : task;
+  invalidateTaskMutationCaches(userId, freshTask);
+  return freshTask;
 }
 
 /**
@@ -163,7 +173,7 @@ export async function completeTask(userId: number, taskId: number): Promise<void
   }
 
   markTaskCompleted(taskId);
-  invalidateContextCache(userId);
+  invalidateTaskMutationCaches(userId, task);
 }
 
 /**
@@ -189,7 +199,7 @@ export async function deleteTask(userId: number, taskId: number): Promise<void> 
   }
 
   markTaskDeleted(taskId);
-  invalidateContextCache(userId);
+  invalidateTaskMutationCaches(userId, task);
 }
 
 /**

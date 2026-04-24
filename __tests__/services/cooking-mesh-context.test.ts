@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetMealPlan = vi.fn();
 const mockGetShoppingList = vi.fn();
+const mockGetRecipeById = vi.fn();
 const mockGetActivePlans = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
+const mockGetEvents = vi.fn();
+const mockGetFocusBlockRecommendation = vi.fn();
 
 vi.mock('../../src/config', () => ({
   config: {
@@ -31,6 +34,14 @@ vi.mock('../../src/utils/logger', () => ({
 vi.mock('../../src/services/cooking-chef', () => ({
   getMealPlan: (...args: unknown[]) => mockGetMealPlan(...args),
   getShoppingList: (...args: unknown[]) => mockGetShoppingList(...args),
+  getRecipeById: (...args: unknown[]) => mockGetRecipeById(...args),
+  classifyIngredientAisle: (name: string) => {
+    const lower = name.toLowerCase();
+    if (lower.includes('chicken')) return 'protein';
+    if (lower.includes('rice')) return 'pantry';
+    if (lower.includes('potato')) return 'produce';
+    return 'other';
+  },
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -40,15 +51,27 @@ vi.mock('../../src/services/training-plans', () => ({
   getWeeklyAdherence: vi.fn(),
 }));
 
+vi.mock('../../src/services/unified-calendar', () => ({
+  getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  hasWritableCalendarForUser: vi.fn(),
+}));
+
+vi.mock('../../src/services/focus-planner', () => ({
+  getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
+}));
+
 import { readCookingMeshContext } from '../../src/services/cross-agent-learning';
 
 describe('readCookingMeshContext', () => {
   beforeEach(() => {
     mockGetMealPlan.mockReset();
     mockGetShoppingList.mockReset();
+    mockGetRecipeById.mockReset();
     mockGetActivePlans.mockReset();
     mockGetWeeksForPlan.mockReset();
     mockGetSessionsForWeek.mockReset();
+    mockGetEvents.mockReset();
+    mockGetFocusBlockRecommendation.mockReset();
 
     mockGetActivePlans.mockReturnValue([
       {
@@ -88,6 +111,26 @@ describe('readCookingMeshContext', () => {
         intensity_text: 'Moderate',
       },
     ]);
+    mockGetRecipeById.mockImplementation((_userId: number, recipeId: number) => ({
+      id: recipeId,
+      user_id: 42,
+      title: `Meal ${recipeId}`,
+      ingredients: [{ name: 'Chicken', quantity: '300', unit: 'g' }],
+      instructions: null,
+      prep_time_min: 10,
+      cook_time_min: 20,
+      servings: 2,
+      tags: null,
+      source: null,
+      protein: null,
+      fat: null,
+      carbs: null,
+      calories: null,
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+    }));
+    mockGetEvents.mockResolvedValue([]);
+    mockGetFocusBlockRecommendation.mockResolvedValue(null);
   });
 
   it('publishes at-risk fueling support when a hard training day still lacks meals', async () => {
@@ -134,6 +177,7 @@ describe('readCookingMeshContext', () => {
       shoppingReady: true,
       shoppingItemCount: 1,
       coveredDayCount: 1,
+      manualMealCount: 0,
     });
   });
 
@@ -179,6 +223,129 @@ describe('readCookingMeshContext', () => {
       shoppingReady: true,
       shoppingItemCount: 2,
       coveredDayCount: 7,
+    });
+  });
+
+  it('marks execution at risk when high-effort meals land on fragmented days', async () => {
+    mockGetMealPlan.mockReturnValue([
+      meal(1, '2026-04-13'),
+      meal(2, '2026-04-14'),
+    ]);
+    mockGetShoppingList.mockReturnValue({
+      id: 1,
+      user_id: 42,
+      week_start: '2026-04-13',
+      status: 'draft',
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+      items: [{ name: 'Chicken', quantity: '1', unit: 'kg', checked: false, aisle: 'Protein' }],
+    });
+    mockGetRecipeById.mockImplementation((_userId: number, recipeId: number) => ({
+      id: recipeId,
+      user_id: 42,
+      title: `Meal ${recipeId}`,
+      ingredients: [{ name: 'Chicken', quantity: '300', unit: 'g' }],
+      instructions: null,
+      prep_time_min: 25,
+      cook_time_min: 30,
+      servings: 2,
+      tags: null,
+      source: null,
+      protein: null,
+      fat: null,
+      carbs: null,
+      calories: null,
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+    }));
+    mockGetEvents.mockResolvedValue([
+      {
+        id: 'evt-1',
+        title: 'Travel to Porto',
+        summary: 'Travel to Porto',
+        start: '2026-04-13T09:00:00Z',
+        end: '2026-04-13T11:00:00Z',
+        source: 'outlook',
+      },
+      {
+        id: 'evt-2',
+        title: 'Client review',
+        summary: 'Client review',
+        start: '2026-04-14T10:00:00Z',
+        end: '2026-04-14T11:00:00Z',
+        source: 'outlook',
+      },
+      {
+        id: 'evt-3',
+        title: 'Content block',
+        summary: 'Content block',
+        start: '2026-04-14T13:00:00Z',
+        end: '2026-04-14T14:00:00Z',
+        source: 'outlook',
+      },
+      {
+        id: 'evt-4',
+        title: 'Admin block',
+        summary: 'Admin block',
+        start: '2026-04-14T16:00:00Z',
+        end: '2026-04-14T16:30:00Z',
+        source: 'outlook',
+      },
+    ]);
+
+    const context = await readCookingMeshContext({ userId: 42, weekStart: '2026-04-13' });
+    const executionReadiness = context.derivedSignals.find((signal) => signal.signalType === 'meal_execution_readiness');
+
+    expect(executionReadiness?.payload).toMatchObject({
+      status: 'at_risk',
+      prepPressureDates: ['2026-04-13', '2026-04-14'],
+      highEffortMealCount: 2,
+      totalPrepMinutes: 50,
+      totalCookMinutes: 60,
+    });
+  });
+
+  it('builds a medium-confidence grocery forecast from recipe ingredients when shopping is missing', async () => {
+    mockGetMealPlan.mockReturnValue([
+      meal(1, '2026-04-13'),
+      meal(2, '2026-04-15'),
+    ]);
+    mockGetShoppingList.mockReturnValue(null);
+    mockGetRecipeById.mockImplementation((_userId: number, recipeId: number) => ({
+      id: recipeId,
+      user_id: 42,
+      title: `Meal ${recipeId}`,
+      ingredients: recipeId === 1
+        ? [
+            { name: 'Chicken breast', quantity: '300', unit: 'g' },
+            { name: 'Rice', quantity: '150', unit: 'g' },
+          ]
+        : [
+            { name: 'Potatoes', quantity: '400', unit: 'g' },
+          ],
+      instructions: null,
+      prep_time_min: 10,
+      cook_time_min: 20,
+      servings: 2,
+      tags: null,
+      source: null,
+      protein: null,
+      fat: null,
+      carbs: null,
+      calories: null,
+      created_at: '2026-04-13T08:00:00.000Z',
+      updated_at: '2026-04-13T08:00:00.000Z',
+    }));
+
+    const context = await readCookingMeshContext({ userId: 42, weekStart: '2026-04-13' });
+    const spend = context.derivedSignals.find((signal) => signal.signalType === 'grocery_spend_forecast');
+
+    expect(spend?.payload).toMatchObject({
+      source: 'recipe_ingredients',
+      confidence: 'medium',
+      itemCount: 3,
+      aisleCount: 3,
+      estimatedSpendBrl: 37,
     });
   });
 });

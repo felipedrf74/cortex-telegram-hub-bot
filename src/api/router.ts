@@ -33,6 +33,9 @@ import { billingRoutes } from './routes/billing';
 import { oauthInitiateRoutes } from './routes/oauth-initiate';
 import { internalRoutes } from './routes/internal';
 import { planRoutes } from './routes/plan';
+import { requireEntitlement } from './entitlement-middleware';
+import { notificationRoutes } from './routes/notifications';
+import { reportRoutes } from './routes/reports';
 
 /**
  * Creates the iOS API router.
@@ -283,8 +286,6 @@ export function createApiRouter(): Router {
   // Free users could hit any /content POST and burn AI spend.
   // The resolver in services/entitlement.ts is the sole source of
   // truth for "can this user access this skill?".
-  const { requireEntitlement } = require('./entitlement-middleware');
-
   // Content includes both data lookups (pipeline) and one AI generation
   // endpoint (POST /script). Mounting under one router for cohesion.
   router.use('/content', requireEntitlement({ skill: 'content' }), contentRoutes());
@@ -306,12 +307,10 @@ export function createApiRouter(): Router {
 
   // Content notification inbox — durable notifications for content events.
   // Powers the iOS notification center (unread badge, read/resolve actions).
-  const { notificationRoutes } = require('./routes/notifications');
   router.use('/notifications', notificationRoutes());
 
   // Durable report documents — morning briefing, evening summary, weekly review,
   // coach briefing. Structured JSON payloads rendered natively in iOS.
-  const { reportRoutes } = require('./routes/reports');
   router.use('/reports', reportRoutes());
 
   // Onboarding (questionnaires + profile)

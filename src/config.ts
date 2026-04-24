@@ -1,7 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import dotenv from 'dotenv';
-dotenv.config({ override: true });
+dotenv.config({
+  quiet: true,
+  override: process.env.NODE_ENV !== 'test',
+});
 
 // STAGING flag set by ecosystem.staging.config.js. When true, certain
 // "production-only" required env vars (TELEGRAM_BOT_TOKEN, etc.) become
@@ -9,6 +12,10 @@ dotenv.config({ override: true });
 // startup code in src/index.ts checks isStaging() and skips bot.start()
 // when there's no token. Quarter audit item: staging environment.
 const IS_STAGING = process.env.STAGING === 'true' || process.env.NODE_ENV === 'staging';
+const IS_TEST = process.env.NODE_ENV === 'test';
+const IS_DEVELOPMENT = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+const PAYWALL_ENABLED = (process.env.PAYWALL_ENABLED ?? 'true') !== 'false';
+const PAYWALL_BYPASS_ALLOWED = IS_TEST || IS_DEVELOPMENT || IS_STAGING;
 
 function required(key: string): string {
   const value = process.env[key];
@@ -35,6 +42,40 @@ function requiredInProd(key: string): string {
 
 function optional(key: string, fallback: string): string {
   return process.env[key] || fallback;
+}
+
+interface NumericEnvOptions {
+  min?: number;
+  max?: number;
+}
+
+function validateNumericEnv(key: string, raw: string, value: number, options: NumericEnvOptions = {}): number {
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid numeric environment variable: ${key}="${raw}"`);
+  }
+  if (options.min !== undefined && value < options.min) {
+    throw new Error(`Environment variable ${key} must be >= ${options.min}; received "${raw}"`);
+  }
+  if (options.max !== undefined && value > options.max) {
+    throw new Error(`Environment variable ${key} must be <= ${options.max}; received "${raw}"`);
+  }
+  return value;
+}
+
+function optionalInt(key: string, fallback: number, options: NumericEnvOptions = {}): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  return validateNumericEnv(key, raw, Number.parseInt(raw, 10), options);
+}
+
+function optionalFloat(key: string, fallback: number, options: NumericEnvOptions = {}): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  return validateNumericEnv(key, raw, Number.parseFloat(raw), options);
 }
 
 export const config = {
@@ -140,8 +181,8 @@ export const config = {
       fallback: process.env.AI_TOOL_USE_FALLBACK || 'openai',
     },
     circuitBreaker: {
-      failureThreshold: parseInt(process.env.AI_CB_FAILURE_THRESHOLD || '3', 10),
-      cooldownMs: parseInt(process.env.AI_CB_COOLDOWN_MS || '60000', 10),
+      failureThreshold: optionalInt('AI_CB_FAILURE_THRESHOLD', 3, { min: 1 }),
+      cooldownMs: optionalInt('AI_CB_COOLDOWN_MS', 60000, { min: 0 }),
     },
   },
   google: {
@@ -174,9 +215,9 @@ export const config = {
     sshUser: process.env.INVOICE_SSH_USER || '',
     sshKeyPath: process.env.INVOICE_SSH_KEY || '',
     remotePath: process.env.INVOICE_REMOTE_PATH || '',
-    minConfidence: parseFloat(process.env.INVOICE_MIN_CONFIDENCE || '0.70'),
+    minConfidence: optionalFloat('INVOICE_MIN_CONFIDENCE', 0.70, { min: 0, max: 1 }),
     compressionEnabled: (process.env.INVOICE_COMPRESSION_ENABLED || 'true') === 'true',
-    jpegQuality: parseInt(process.env.INVOICE_JPEG_QUALITY || '80', 10),
+    jpegQuality: optionalInt('INVOICE_JPEG_QUALITY', 80, { min: 1, max: 100 }),
     monthlyCollectionEnabled: (process.env.INVOICE_MONTHLY_COLLECTION || 'true') === 'true',
     // Amazon.es invoice collection (browser automation via Playwright)
     amazonEnabled: (process.env.AMAZON_COLLECTION_ENABLED || 'false') === 'true',
@@ -203,7 +244,7 @@ export const config = {
     dsn: process.env.SENTRY_DSN || '',
     environment: optional('SENTRY_ENVIRONMENT', 'development'),
     release: process.env.SENTRY_RELEASE || '',
-    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE || '0'),
+    tracesSampleRate: optionalFloat('SENTRY_TRACES_SAMPLE_RATE', 0, { min: 0, max: 1 }),
   },
   // ── Todoist (TASK-16b — task provider with webhooks) ───────────────
   todoist: {
@@ -241,13 +282,13 @@ export const config = {
   // ── Content Engine (Python microservice) ────────────────────────────
   contentEngine: {
     enabled: (process.env.CONTENT_ENGINE_ENABLED || 'false') === 'true',
-    port: parseInt(process.env.CONTENT_ENGINE_PORT || '8100', 10),
+    port: optionalInt('CONTENT_ENGINE_PORT', 8100, { min: 1, max: 65535 }),
   },
   // ── Database Backup ─────────────────────────────────────────────────
   backup: {
     enabled: (process.env.BACKUP_ENABLED || 'true') === 'true',
     dir: process.env.BACKUP_DIR || './data/backups',
-    retentionDays: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10),
+    retentionDays: optionalInt('BACKUP_RETENTION_DAYS', 30, { min: 1 }),
     time: process.env.BACKUP_TIME || '03:00',
     encrypt: (process.env.BACKUP_ENCRYPT || 'false') === 'true',
     encryptionKey: process.env.BACKUP_KEY || '',
@@ -255,9 +296,62 @@ export const config = {
   // ── Status Portal ──────────────────────────────────────────────────
   portal: {
     enabled: (process.env.PORTAL_ENABLED || 'true') === 'true',
-    port: parseInt(process.env.PORTAL_PORT || '8200', 10),
+    port: optionalInt('PORTAL_PORT', 8200, { min: 1, max: 65535 }),
     bind: process.env.PORTAL_BIND || '0.0.0.0',
+    // Legacy full-access admin bearer token. New scoped tokens can be
+    // configured below for least-privilege portal usage, but this
+    // remains the backward-compatible fallback if operators have not
+    // split their portal credentials yet.
     token: process.env.PORTAL_TOKEN || '',
+    // Optional read-only portal token. When configured, GET/HEAD/OPTIONS
+    // admin routes can use this token while write routes still require
+    // `writeToken` (or the legacy full-access token above).
+    readToken: process.env.PORTAL_READ_TOKEN || '',
+    // Optional write-capable portal token. When configured, mutating
+    // admin routes require this token (or the legacy full-access token).
+    writeToken: process.env.PORTAL_WRITE_TOKEN || '',
+    // Optional elevated admin token. Use this for sensitive operator
+    // mutations such as founder grants, plan-policy edits, waitlist
+    // approvals, and user entitlement changes. Remote admin mutations
+    // fail closed when this is unset unless explicit legacy fallback or
+    // loopback-only local bypass is active.
+    adminToken: process.env.PORTAL_ADMIN_TOKEN || '',
+    // Optional actor-awareness for sensitive portal admin actions.
+    // When PORTAL_ADMIN_ACTORS is configured, admin requests must include
+    // x-portal-actor/x-admin-actor/x-operator-email matching this allowlist.
+    // PORTAL_ADMIN_REQUIRE_ACTOR=true requires a valid actor header even
+    // without an allowlist, which improves audit quality for operator clients.
+    adminRequireActor:
+      (process.env.PORTAL_ADMIN_REQUIRE_ACTOR || 'false') === 'true',
+    adminActorAllowlist: (process.env.PORTAL_ADMIN_ACTORS || '')
+      .split(',')
+      .map((actor) => actor.trim().toLowerCase())
+      .filter(Boolean),
+    // Optional HMAC hardening for actor-aware admin routes. When configured,
+    // sensitive admin requests must include a signed actor hint generated by a
+    // trusted gateway/session layer:
+    //   x-portal-actor: alice@example.com
+    //   x-portal-actor-timestamp: <unix-ms>
+    //   x-portal-actor-signature: sha256=<hmac(actor.timestamp)>
+    adminActorSignatureSecret: process.env.PORTAL_ADMIN_ACTOR_SIGNATURE_SECRET || '',
+    adminActorSignatureToleranceMs: optionalInt(
+      'PORTAL_ADMIN_ACTOR_SIGNATURE_TOLERANCE_MS',
+      300000,
+      { min: 1000 },
+    ),
+    // Hardening pass 2026-04-22: once scoped portal tokens exist, the
+    // legacy full-access token is disabled by default. Operators who
+    // still need the old token during migration must opt in explicitly.
+    allowLegacyFallback:
+      (process.env.PORTAL_ALLOW_LEGACY_FALLBACK || 'false') === 'true',
+    // Hardening pass 2026-04-22: local unauthenticated portal access
+    // is now explicit opt-in instead of "empty token => open by default".
+    // This bypass is disabled in production/staging even if someone sets
+    // the env var by mistake.
+    allowLocalBypass:
+      (process.env.PORTAL_ALLOW_LOCAL_BYPASS || 'false') === 'true'
+      && process.env.NODE_ENV !== 'production'
+      && !IS_STAGING,
   },
   // ── WhatsApp Cloud API (optional) ──────────────────────────────────
   whatsapp: {
@@ -272,12 +366,18 @@ export const config = {
   webhooks: {
     enabled: (process.env.WEBHOOKS_ENABLED || 'true') === 'true',
     secret: process.env.WEBHOOK_SECRET || '',
-    maxPayloadBytes: parseInt(process.env.WEBHOOK_MAX_PAYLOAD || '1048576', 10),
-    eventRetentionDays: parseInt(process.env.WEBHOOK_RETENTION_DAYS || '30', 10),
+    maxPayloadBytes: optionalInt('WEBHOOK_MAX_PAYLOAD', 1048576, { min: 1 }),
+    eventRetentionDays: optionalInt('WEBHOOK_RETENTION_DAYS', 30, { min: 1 }),
   },
   // ── Health Check ──────────────────────────────────────────────────
   health: {
     token: process.env.HEALTH_TOKEN || '',
+    // Same hardening rule as the portal token: detailed health is only
+    // unauthenticated when explicitly enabled for local development.
+    allowUnauthenticatedDetailed:
+      (process.env.HEALTH_ALLOW_UNAUTHENTICATED || 'false') === 'true'
+      && process.env.NODE_ENV !== 'production'
+      && !IS_STAGING,
   },
   // ── Finance Data Encryption ─────────────────────────────────────
   financeEncryption: {
@@ -293,7 +393,7 @@ export const config = {
     websocketEnabled: (process.env.IOS_WS_ENABLED || 'false') === 'true',
     jwtSecret: process.env.IOS_API_JWT_SECRET || '',
     jwtExpiry: process.env.IOS_JWT_EXPIRY || '7d',
-    rateLimit: parseInt(process.env.IOS_API_RATE_LIMIT || '60', 10),
+    rateLimit: optionalInt('IOS_API_RATE_LIMIT', 60, { min: 1 }),
     inviteCode: process.env.IOS_INVITE_CODE || '',
     ownerCode: process.env.IOS_OWNER_CODE || '',
   },
@@ -344,12 +444,19 @@ export const config = {
     priceMaxMonthlyEur: process.env.STRIPE_PRICE_MAX_MONTHLY_EUR || '',
     priceMaxYearlyEur: process.env.STRIPE_PRICE_MAX_YEARLY_EUR || '',
   },
+  billing: {
+    paywallEnabled: PAYWALL_ENABLED,
+    // Hardening pass 2026-04-22: disabling the paywall is only legal in
+    // local/test/staging contexts. Production must fail fast instead of
+    // silently turning every account into an owner-equivalent user.
+    allowUnsafePaywallBypass: PAYWALL_BYPASS_ALLOWED,
+  },
 
   // ── AI Safety ─────────────────────────────────────────────────────
   aiSafety: {
-    callTimeoutMs: parseInt(process.env.AI_CALL_TIMEOUT_MS || '30000', 10),
-    globalDailyLimitUsd: parseFloat(process.env.GLOBAL_DAILY_COST_LIMIT || '10.00'),
-    alertThresholdPercent: parseFloat(process.env.COST_ALERT_THRESHOLD || '0.80'),
+    callTimeoutMs: optionalInt('AI_CALL_TIMEOUT_MS', 30000, { min: 1 }),
+    globalDailyLimitUsd: optionalFloat('GLOBAL_DAILY_COST_LIMIT', 10.00, { min: 0 }),
+    alertThresholdPercent: optionalFloat('COST_ALERT_THRESHOLD', 0.80, { min: 0, max: 1 }),
   },
 } as const;
 
@@ -360,6 +467,12 @@ export const config = {
 // a security risk, just a "no fallback users registered" warning.
 if (!IS_STAGING && config.telegram.allowedUserIds.length === 0) {
   throw new Error('TELEGRAM_ALLOWED_USER_IDS parsed to empty list — check env var format (comma-separated numeric IDs)');
+}
+
+if (!config.billing.paywallEnabled && !config.billing.allowUnsafePaywallBypass) {
+  throw new Error(
+    'PAYWALL_ENABLED=false is only allowed in test, development, or staging environments. Refusing unsafe startup.',
+  );
 }
 
 // Fail-fast: iOS API enabled without a proper JWT secret is a security risk

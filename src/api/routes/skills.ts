@@ -19,7 +19,7 @@
 
 import { Router, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth-middleware';
-import { sendSuccess, sendError } from '../response-helpers';
+import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import { DEFAULT_SKILLS, type SkillDefinition, type SubSkillDefinition, type SkillTier } from '../../skills/skill-config';
 import {
   checkTierAccess,
@@ -230,7 +230,7 @@ export function skillsRoutes(): Router {
       sendSuccess(res, { granted: true, targetUserId, skillId, expiresAt: expiresAt ?? null });
     } catch (err: any) {
       logger.error({ err, targetUserId, skillId }, 'grantOverride failed');
-      sendError(res, 'INTERNAL', err?.message || 'Failed to grant override', 500);
+      sendInternalError(res, 'Failed to grant override');
     }
   });
 
