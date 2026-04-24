@@ -5,7 +5,7 @@
  * Mirrors the Secretary/Training/Finance route test shape.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -16,6 +16,20 @@ const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 const TEST_JWT_SECRET = process.env.IOS_API_JWT_SECRET || 'test-setup-default-jwt-secret';
 
 let testDb: Database.Database;
+
+
+// OI-UX-106 rebase cleanup: prevent this file's vi.mock('services/database')
+// from polluting later test files in the shared vitest fork (the project's
+// vitest.config.ts sets `poolOptions.forks.singleFork: true`, which runs every
+// test file in one process and keeps module mocks alive across files unless
+// explicitly cleared). doUnmock + resetModules together mark the mock inert
+// AND flush the cached version, so the next file's `import { getDb }` hits
+// either its own mock or the real module.
+afterAll(() => {
+  vi.doUnmock('../../src/services/database');
+  vi.doUnmock('../../src/utils/logger');
+  vi.resetModules();
+});
 
 vi.mock('../../src/services/database', () => ({ getDb: () => testDb }));
 vi.mock('../../src/utils/logger', () => ({
