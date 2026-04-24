@@ -1632,15 +1632,18 @@ tr.row-selected td, .row.row-selected {
       </p>
     </section>
 
-    <!-- ═ Integrations ═══════════════════════════════════════════ -->
+    <!-- ═ Integrations (OI-USR-403 + OI-DATA-007, 2026-04-24) ═══════ -->
+    <!-- Renders the live per-provider status grid from
+         GET /workspace/integrations. Connect / Reconnect actions
+         still launch from iOS (the OAuth return URL is handled by
+         mobile), so the web page is read-only: status awareness +
+         a hand-off note. -->
     <section class="page hidden" data-page="integrations">
       <h1>Integrations</h1>
-      <p class="subtitle">Providers connected to your workspace and your personal account.</p>
-      <div class="empty-state">
-        <div class="icon">⚙</div>
-        <h3>Integration management lives in the iOS app</h3>
-        <p>OAuth connections (Google, Outlook, Garmin, Strava, Todoist, Notion) are established from iOS and status is reflected on skill Dependency panels. A dedicated integration-status page here is tracked as an open item.</p>
-        <a class="btn" data-nav="dependencies">See dependency status →</a>
+      <p class="subtitle">OAuth connections your workspace can use. Connect or reconnect from the iOS app — this page is read-only.</p>
+      <div class="panel">
+        <header><h2>Provider status</h2><span class="meta" id="integrationsMeta">—</span></header>
+        <div id="integrationsTable"></div>
       </div>
     </section>
 
@@ -2131,6 +2134,7 @@ function showPage(id) {
   if (id === 'ref-links') loadLinks();
   if (id === 'ref-notes') loadNotes();
   if (id === 'activity') loadActivity();
+  if (id === 'integrations') loadIntegrations();
   if (id === 'team') loadTeam();
   if (id === 'profile') loadProfile();
   if (id.startsWith('skill-')) paintSkill(id.slice(6));
@@ -4313,6 +4317,76 @@ window.removeMember = async function(userId) {
   try { await fetchJson('/workspace/members/' + userId, { method: 'DELETE' }); toast('Member removed', 'success'); loadTeam(); loadHome(); }
   catch (e) { toast(e.message, 'error'); }
 };
+
+// ── Integrations (OI-USR-403 + OI-DATA-007, 2026-04-24) ─────────
+// Renders the provider grid from GET /workspace/integrations. This
+// page is read-only — OAuth connect/disconnect is iOS-only because
+// mobile handles the callback URL. The web view is pure status
+// awareness: "which providers are wired up?" + "is the provider
+// itself healthy?"
+async function loadIntegrations() {
+  const el = document.getElementById('integrationsTable');
+  const meta = document.getElementById('integrationsMeta');
+  if (!el) return;
+  el.innerHTML = '<div class="muted small">Loading…</div>';
+  try {
+    const r = await fetchJson('/workspace/integrations');
+    const rows = Array.isArray(r?.data?.integrations) ? r.data.integrations : [];
+    const connectedCount = rows.filter((x) => x.connected).length;
+    if (meta) meta.textContent = `${connectedCount} of ${rows.length} connected`;
+    if (rows.length === 0) {
+      el.innerHTML = '<div class="muted small">No providers to show.</div>';
+      return;
+    }
+    el.innerHTML = `<table class="data">
+      <thead><tr><th>Provider</th><th>Status</th><th>Connected</th><th>Token expires</th><th>Platform health</th></tr></thead>
+      <tbody>${rows.map((x) => renderIntegrationRow(x)).join('')}</tbody>
+    </table>
+    <p class="small muted" style="margin-top: var(--space-3);">To connect or reconnect a provider, open the Nexus Hub iOS app → Settings → Integrations. This web page is read-only.</p>`;
+  } catch (e) {
+    el.innerHTML = `<div class="error-banner">Failed to load integrations: ${esc(e.message || 'unknown')}</div>`;
+  }
+}
+
+function renderIntegrationRow(x) {
+  const statusPill = x.connected
+    ? '<span class="pill ready">Connected</span>'
+    : '<span class="pill unknown">Not connected</span>';
+  // Map ProbeStatus → pill class. 'unknown' means we never probed
+  // this provider (the FAILURE_ALERT_THRESHOLD probe doesn't cover
+  // everything — strava/whoop/fitbit/todoist/notion aren't in the
+  // default probe set). Render it neutrally rather than implying
+  // failure.
+  const healthPillClass =
+    x.healthStatus === 'ok' ? 'ready'
+    : x.healthStatus === 'fail' ? 'danger'
+    : x.healthStatus === 'skipped' ? 'info'
+    : 'unknown';
+  const healthPill = `<span class="pill ${healthPillClass}">${esc(x.healthStatus || 'unknown')}</span>`;
+  const healthExtra = x.healthError
+    ? `<div class="small muted" title="${esc(x.healthError)}" style="margin-top: 2px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(x.healthError)}</div>`
+    : '';
+  const connectedAt = x.connectedAt ? formatIntegrationDate(x.connectedAt) : '—';
+  const expiresAt = x.expiresAt ? formatIntegrationDate(x.expiresAt) : (x.connected ? 'never' : '—');
+  return `<tr>
+    <td><strong>${esc(x.provider)}</strong></td>
+    <td>${statusPill}</td>
+    <td class="small muted">${esc(connectedAt)}</td>
+    <td class="small muted">${esc(expiresAt)}</td>
+    <td>${healthPill}${healthExtra}</td>
+  </tr>`;
+}
+
+// Compact date formatting for the table — keeps the rows visually
+// aligned. Defensive: a malformed timestamp returns the raw string
+// rather than NaN/Invalid Date.
+function formatIntegrationDate(iso) {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toISOString().slice(0, 10);
+  } catch { return iso; }
+}
 
 // ── Profile editor (OI-USR-407) ────────────────────────────────
 // state.me carries the current profile. profileBaseline holds the

@@ -84,6 +84,8 @@ import {
 } from '../services/tenant-skill-config-service';
 import { suggestTagsForRef } from '../services/skill-inference';
 import { getDb } from '../services/database';
+// OI-DATA-007 (2026-04-24): consolidated integrations view.
+import { listUserIntegrations } from '../services/integrations-view';
 
 // ── Audit helper ──────────────────────────────────────────────────
 //
@@ -1119,6 +1121,34 @@ export function createPortalWorkspaceRouter(): Router {
     } catch (dbErr) {
       logger.error({ err: dbErr, userId: ctx.userId }, 'portal-workspace-router: /usage failed');
       err(res, 500, 'INTERNAL', 'Failed to compute usage');
+    }
+  });
+
+  // ── GET /workspace/integrations ────────────────────────────────
+  // OI-DATA-007 (2026-04-24): consolidated integration status. Any
+  // tenant member can read this — it only surfaces the CALLER's own
+  // oauth connections (keyed on users.id), never another member's.
+  //
+  // Returns a row per supported provider (connected + unconnected
+  // alike) so the UI can render an Integrations page that doubles as
+  // a "what you CAN connect" list. Joins user_oauth_tokens with the
+  // platform-wide integration_health latest-probe snapshot so the
+  // user sees BOTH "am I connected?" AND "is the provider healthy?"
+  // in one view.
+  //
+  // Privacy: scopes + expiresAt are per-user data; healthStatus +
+  // healthError are platform-wide (same for every tenant).
+  router.get('/integrations', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    try {
+      const integrations = listUserIntegrations(ctx.userId);
+      ok(res, { integrations });
+    } catch (dbErr) {
+      logger.error(
+        { err: dbErr, userId: ctx.userId },
+        'portal-workspace-router: /integrations failed',
+      );
+      err(res, 500, 'INTERNAL', 'Failed to load integration status');
     }
   });
 
