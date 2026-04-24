@@ -1871,6 +1871,11 @@
     // Persisted choice key. First-visit fallback is 'pt'.
     const LANG_STORAGE_KEY = 'nexushub.lang';
     const PROFILE_STORAGE_KEY = 'nexushub.profile';
+    // OI-WAITLIST-101 (2026-04-24): tracking the submitted email
+    // lets the profile-quiz buttons fire a retroactive POST
+    // /waitlist/profile even on a return visit, without requiring
+    // the user to re-submit the waitlist form.
+    const WAITLIST_EMAIL_STORAGE_KEY = 'nexushub.waitlistEmail';
     function getStoredLang() {
       try {
         const v = localStorage.getItem(LANG_STORAGE_KEY);
@@ -2061,10 +2066,14 @@
     // the final-CTA headline to a profile-specific variant. No hard
     // gating — users who skip the quiz see the default headline.
     //
-    // TODO (backend): POST the selected profile to /waitlist/profile so
-    // we have server-side telemetry on which segment is opting in. For
-    // now it's localStorage-only — if the user doesn't convert, we can
-    // still read the profile on next visit and tailor messaging.
+    // OI-WAITLIST-101 (2026-04-24): server-side telemetry is now wired.
+    // The selected profile rides along with the main POST /waitlist
+    // body on form submit (captured in-place on the same row, no
+    // second round-trip). In addition, if the user had already
+    // submitted their email on a prior visit, we fire a best-effort
+    // POST /waitlist/profile to update the row retroactively — that
+    // way a visitor who changes their mind about the quiz answer
+    // STILL sends the updated signal even without re-submitting.
 
     function getStoredProfile() {
       try {
@@ -2075,6 +2084,39 @@
 
     function storeProfile(profile) {
       try { localStorage.setItem(PROFILE_STORAGE_KEY, profile); } catch { /* private mode */ }
+    }
+
+    // OI-WAITLIST-101: remember the email a visitor submitted so
+    // later profile-quiz clicks can ride on it for retroactive
+    // telemetry. We deliberately DON'T read this for pre-fill —
+    // that would be surprising on a shared device; it's write-
+    // only from the user's perspective.
+    function getStoredWaitlistEmail() {
+      try { return localStorage.getItem(WAITLIST_EMAIL_STORAGE_KEY) || null; }
+      catch { return null; }
+    }
+
+    function storeWaitlistEmail(email) {
+      try { localStorage.setItem(WAITLIST_EMAIL_STORAGE_KEY, email); } catch { /* private mode */ }
+    }
+
+    // Fire-and-forget retroactive profile update. No error handling
+    // because:
+    //   - The profile is already in localStorage (source of truth
+    //     for the landing page's own personalisation).
+    //   - A 404 "no_waitlist_entry" means the stored email fell
+    //     out of the DB somehow; harmless.
+    //   - A 429 rate-limit just means we'll try next click.
+    // Returns a promise only so callers can `await` it in tests
+    // later; in production we ignore the return value.
+    function updateWaitlistProfile(email, profile) {
+      if (!email || !profile) return Promise.resolve();
+      return fetch(API_BASE + '/waitlist/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'omit',
+        body: JSON.stringify({ email, profile }),
+      }).catch(() => { /* best-effort; localStorage is the source of truth */ });
     }
 
     // Apply a profile to the final-CTA headline. Called on page load
@@ -2102,6 +2144,15 @@
           if (!profile) return;
           storeProfile(profile);
           applyProfilePersonalization();
+
+          // OI-WAITLIST-101: if the visitor already submitted on a
+          // previous visit, retroactively update the stored row
+          // with the newly-picked profile. Fire-and-forget —
+          // localStorage remains the source of truth for the UI.
+          const submittedEmail = getStoredWaitlistEmail();
+          if (submittedEmail) {
+            updateWaitlistProfile(submittedEmail, profile);
+          }
 
           // Scroll the final CTA into view so the user sees the
           // personalized headline they just unlocked. Smooth scroll
@@ -2228,6 +2279,9 @@
             msg.textContent = slot
               ? tr('form.success_founder', { slot })
               : tr('form.success_general');
+            // OI-WAITLIST-101: remember so quiz-button clicks on a
+            // return visit can retroactively update the profile.
+            storeWaitlistEmail(email);
             form.reset();
             loadBetaStats();
           } else if (response.status === 409) {
@@ -2247,6 +2301,7 @@
             if (retry.ok && retryData.ok) {
               msg.className = 'form__message form__message--success';
               msg.textContent = tr('form.exhausted', { position: retryData.position ?? '—' });
+              storeWaitlistEmail(email);   // OI-WAITLIST-101
               form.reset();
             } else {
               msg.className = 'form__message form__message--error';

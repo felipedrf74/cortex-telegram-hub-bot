@@ -1,0 +1,36 @@
+-- Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+--
+-- OI-WAITLIST-101 — waitlist profile telemetry (2026-04-24).
+--
+-- The landing page's profile quiz (entrepreneur / creator / athlete /
+-- all) used to write ONLY to localStorage — the server had zero
+-- visibility into which segment was opting in. That blocks useful
+-- product decisions like "which profile has the worst conversion?"
+-- and "should we prioritise creator messaging this month?".
+--
+-- This migration adds a nullable `profile` column on the existing
+-- `waitlist` row so a single call to POST /waitlist/profile can
+-- persist the selection in-place. We DON'T introduce a new table
+-- because:
+--   - profile is 1:1 with a waitlist row (the user's identity is
+--     their email; one profile per email)
+--   - no temporal history required — latest-wins is fine; if a user
+--     re-takes the quiz, the new answer replaces the old
+--   - keeps reporting queries trivial (single SELECT grouped by
+--     profile)
+--
+-- Schema invariants:
+--   - profile is nullable: existing rows + rows from users who
+--     skipped the quiz carry NULL
+--   - CHECK constrains the value-set so only the four known
+--     profiles can land. A new profile requires an ALTER + an
+--     update to the landing page's <button data-profile=...> list
+--     and the I18N dictionary — deliberate tight coupling so
+--     telemetry and UI stay in sync
+--   - NOT adding an index yet: segmentation queries will almost
+--     always fan out over all rows anyway, and the table is
+--     small. Revisit if waitlist ever crosses ~100k rows.
+-- ───────────────────────────────────────────────────────────────
+
+ALTER TABLE waitlist ADD COLUMN profile TEXT
+  CHECK (profile IS NULL OR profile IN ('entrepreneur', 'creator', 'athlete', 'all'));

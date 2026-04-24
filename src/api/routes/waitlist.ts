@@ -144,6 +144,21 @@ function applyCors(req: Request, res: Response): void {
   }
 }
 
+// ─── Profile telemetry (OI-WAITLIST-101, 2026-04-24) ───────────────
+//
+// The landing page's profile quiz — 4 buttons: entrepreneur, creator,
+// athlete, all — used to persist ONLY to localStorage. This allow-list
+// gates what POST /waitlist/profile will accept; the DB CHECK
+// constraint enforces the same set at the storage layer (defense in
+// depth). Adding a new profile requires touching BOTH this list AND
+// migration 083's CHECK constraint — that tight coupling is
+// intentional so the telemetry value-set stays in sync with the UI.
+const VALID_PROFILES = new Set<string>(['entrepreneur', 'creator', 'athlete', 'all']);
+
+function isValidProfile(value: unknown): value is string {
+  return typeof value === 'string' && VALID_PROFILES.has(value);
+}
+
 // ─── Router ─────────────────────────────────────────────────────────
 
 export function createWaitlistRouter(): Router {
@@ -204,6 +219,12 @@ export function createWaitlistRouter(): Router {
     const utmMedium = sanitizeString(body.utm_medium, MAX_SOURCE_LENGTH);
     const utmCampaign = sanitizeString(body.utm_campaign, MAX_SOURCE_LENGTH);
     const userAgent = sanitizeString(req.headers['user-agent'], 500);
+    // OI-WAITLIST-101: accept the profile inline on the main POST so
+    // first-submit captures it without a second round-trip. Silently
+    // drop unknown profiles — the dedicated POST /profile endpoint
+    // returns a 400 with the allowed-list echo, but here a drift
+    // shouldn't block the user's signup.
+    const profile: string | null = isValidProfile(body.profile) ? body.profile : null;
 
     try {
       const db = getDb();
@@ -248,7 +269,8 @@ export function createWaitlistRouter(): Router {
                use_case = COALESCE(?, use_case),
                utm_source = COALESCE(?, utm_source),
                utm_medium = COALESCE(?, utm_medium),
-               utm_campaign = COALESCE(?, utm_campaign)
+               utm_campaign = COALESCE(?, utm_campaign),
+               profile = COALESCE(?, profile)
              WHERE id = ?`,
           ).run(
             intent,
@@ -258,6 +280,7 @@ export function createWaitlistRouter(): Router {
             utmSource,
             utmMedium,
             utmCampaign,
+            profile,   // OI-WAITLIST-101: latest-non-null wins; an empty POST won't wipe a prior profile
             existing.id,
           );
           return {
@@ -273,12 +296,12 @@ export function createWaitlistRouter(): Router {
           `INSERT INTO waitlist (
              email, intent, source, use_case,
              utm_source, utm_medium, utm_campaign,
-             ip_hash, user_agent, founder_slot
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ip_hash, user_agent, founder_slot, profile
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           email, intent, source, useCase,
           utmSource, utmMedium, utmCampaign,
-          ipHash, userAgent, founderSlot,
+          ipHash, userAgent, founderSlot, profile,
         );
 
         // General position = row count of all 'general'-intent rows up to now
@@ -332,6 +355,14 @@ export function createWaitlistRouter(): Router {
    * Public endpoint the landing page polls to show the live founder
    * counter ("37 of 100 slots remaining"). Also returns the total general
    * waitlist size, which can be used as social proof on the landing page.
+   *
+   * OI-WAITLIST-101 (2026-04-24): response also includes a `beta` key
+   * that MIRRORS `founder` byte-for-byte. The landing page renamed its
+   * copy "founder → beta" but the data model still keys on
+   * intent='founder'. Returning both lets the frontend read the new
+   * name without a coordinated deploy — and we can retire `founder`
+   * from the response once nothing consumes it (tracked as
+   * OI-WAITLIST-101a).
    */
   router.get('/stats', (_req: Request, res: Response) => {
     try {
@@ -343,15 +374,93 @@ export function createWaitlistRouter(): Router {
       res.json({
         ok: true,
         founder,
+        beta: founder,   // OI-WAITLIST-101: alias for the landing page's new copy
         general: { total: general.cnt || 0 },
       });
     } catch (err) {
       logger.debug({ err }, 'GET /waitlist/stats failed');
+      const fallbackSlots = { filled: 0, remaining: MAX_FOUNDER_SLOTS, max: MAX_FOUNDER_SLOTS };
       res.json({
         ok: true,
-        founder: { filled: 0, remaining: MAX_FOUNDER_SLOTS, max: MAX_FOUNDER_SLOTS },
+        founder: fallbackSlots,
+        beta: fallbackSlots,  // same fallback — caller shouldn't see an inconsistent shape
         general: { total: 0 },
       });
+    }
+  });
+
+  /**
+   * POST /waitlist/profile
+   *
+   * OI-WAITLIST-101 (2026-04-24): server-side telemetry for the
+   * landing page profile quiz.
+   *
+   * Body: { email: string, profile: 'entrepreneur'|'creator'|'athlete'|'all' }
+   *
+   * Semantics:
+   *   - Requires a pre-existing waitlist row for the email. If the
+   *     user picked a profile without signing up first, return 404 —
+   *     the frontend already tracks the profile in localStorage and
+   *     will retry this POST after they submit the waitlist form.
+   *   - Idempotent: re-POSTing the same {email, profile} pair is a
+   *     no-op. Re-POSTing a DIFFERENT profile updates latest-wins.
+   *   - Rate-limited using the same per-IP bucket as POST / —
+   *     profile updates are a secondary signal, not a separate
+   *     abuse surface.
+   *   - Unknown profile → 400 (with the allowed list echoed so the
+   *     landing page can diagnose a drift).
+   */
+  router.post('/profile', json, (req: Request, res: Response) => {
+    const ipHash = hashIp(req);
+    if (!checkRateLimit(ipHash)) {
+      res.status(429).json({ ok: false, error: 'Too many profile updates from this network. Try again later.' });
+      return;
+    }
+
+    const body = req.body || {};
+    const email = sanitizeString(body.email, MAX_EMAIL_LENGTH)?.toLowerCase();
+    if (!email || !isValidEmail(email)) {
+      res.status(400).json({ ok: false, error: 'Please enter a valid email address.' });
+      return;
+    }
+    if (!isValidProfile(body.profile)) {
+      res.status(400).json({
+        ok: false,
+        error: 'Unknown profile.',
+        allowed: Array.from(VALID_PROFILES),
+      });
+      return;
+    }
+
+    try {
+      const db = getDb();
+      const row = db.prepare(
+        'SELECT id, profile FROM waitlist WHERE email = ?',
+      ).get(email) as { id: number; profile: string | null } | undefined;
+
+      if (!row) {
+        // The user must join the waitlist before we can attach a
+        // profile. Returning 404 (not 400) so the frontend can
+        // distinguish "come back after signup" from "bad input".
+        res.status(404).json({ ok: false, error: 'No waitlist entry for that email yet.', code: 'no_waitlist_entry' });
+        return;
+      }
+
+      // Idempotent no-op when the profile hasn't changed.
+      if (row.profile === body.profile) {
+        res.json({ ok: true, profile: body.profile, unchanged: true });
+        return;
+      }
+
+      db.prepare('UPDATE waitlist SET profile = ? WHERE id = ?').run(body.profile, row.id);
+      logger.info(
+        { email, profile: body.profile, previous: row.profile },
+        'Waitlist profile updated',
+      );
+      res.json({ ok: true, profile: body.profile, previous: row.profile });
+    } catch (err) {
+      logger.error({ err, email }, 'Waitlist profile update failed');
+      res.status(500).json({ ok: false, error: 'Something went wrong. Please try again.' });
     }
   });
 
