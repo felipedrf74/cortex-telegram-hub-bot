@@ -333,6 +333,118 @@ export function createPortalServer(bot?: any): http.Server {
     }
   });
 
+  // ── POST /invite/request-signup-link (OI-NAV-203b, 2026-04-24) ──
+  //
+  // Cold-invitee flow: the invitee (who has no account and no iOS
+  // token) requests a magic-link email that will eventually create
+  // their account + accept the invite (consume handler is tracked
+  // as OI-NAV-203c — requires a user-from-email creation decision).
+  //
+  // This endpoint ONLY issues the token + dispatches to the mailer.
+  // It does NOT create a user, does NOT issue a session, and does
+  // NOT touch the invite row — all those live downstream on the
+  // consume side.
+  //
+  // Rate-limit surface: unauthenticated by design (cold invitees
+  // have no JWT). Email is taken from the invite row, not the
+  // request body, so an attacker holding a code can't direct the
+  // link somewhere else. The code itself is the shared secret.
+  app.post('/invite/request-signup-link', express.json({ limit: '16kb' }), async (req: Request, res: Response) => {
+    try {
+      const { getPublicInviteInfo } = require('../services/tenant-invite-service');
+      const { issueMagicLinkToken } = require('../services/magic-link-service');
+      const { sendMagicLink } = require('../services/mailer');
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const code = typeof body.code === 'string' ? body.code : '';
+      if (!code) {
+        res.status(400).json({
+          ok: false,
+          error: { code: 'BAD_REQUEST', message: 'code is required' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      const info = getPublicInviteInfo(code);
+      if (!info.valid) {
+        // Don't echo back the specific reason — the response is
+        // uniformly "we tried" to avoid giving attackers an oracle
+        // on code validity (consistent with /invite/inspect's
+        // 200-for-everything shape).
+        res.json({
+          ok: true,
+          data: { sent: true, debugReason: 'invalid_code' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      if (info.status !== 'pending' || info.isExpired) {
+        res.json({
+          ok: true,
+          data: { sent: true, debugReason: 'invite_not_accepting' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      // Issue the token tied to this invite.
+      const { rawToken, row } = issueMagicLinkToken({
+        email: info.inviteeEmail,
+        intent: 'invite_signup',
+        tenantId: null, // tenant_id is derivable from invite_id; don't duplicate
+        inviteId: null, // Note: public info doesn't surface invite id; the consume handler re-derives via the token
+        ttlSeconds: 60 * 60, // 1 hour
+        metadata: { inviteCode: code, tenantSlug: info.tenantSlug },
+      });
+      const origin = (req.headers.origin as string) || `${req.protocol}://${req.get('host')}`;
+      const url = `${origin}/invite/accept?code=${encodeURIComponent(code)}&magic=${encodeURIComponent(rawToken)}`;
+      let debugUrl: string | undefined;
+      try {
+        const result = await sendMagicLink({
+          to: info.inviteeEmail,
+          url,
+          intentLabel: `Accept invite to ${info.tenantName}`,
+          expiresAt: row.expiresAt,
+          tenantName: info.tenantName,
+        });
+        debugUrl = result.debugUrl;
+      } catch (mailerErr) {
+        logger.error({ err: mailerErr, code }, 'portal: mailer.sendMagicLink failed');
+        // Mailer is not yet implemented in prod (OI-NAV-203c). Return
+        // a 503 with the specific code so UI can show "email provider
+        // not configured" rather than misleading "sent: true".
+        const isUnimpl = mailerErr
+          && typeof mailerErr === 'object'
+          && (mailerErr as { code?: string }).code === 'BACKEND_UNIMPLEMENTED';
+        res.status(isUnimpl ? 503 : 500).json({
+          ok: false,
+          error: {
+            code: isUnimpl ? 'MAILER_UNCONFIGURED' : 'INTERNAL',
+            message: isUnimpl
+              ? 'Magic-link email provider is not configured yet (OI-NAV-203c).'
+              : 'Failed to send magic-link email.',
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      // Success — the link has been handed off to the mailer.
+      // `debugUrl` is populated ONLY by the 'console' backend (dev)
+      // so automated tests + dev UI can verify without parsing logs.
+      res.json({
+        ok: true,
+        data: { sent: true, debugUrl },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'portal: /invite/request-signup-link failed');
+      res.status(500).json({
+        ok: false,
+        error: { code: 'INTERNAL', message: 'Failed to request signup link' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see

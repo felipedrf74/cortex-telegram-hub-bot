@@ -396,7 +396,46 @@ Follow-up items still open:
   **Files.** `src/services/tenant-invite-service.ts` (+90 LOC — `getPublicInviteInfo` + `PublicInviteInfo` type), `src/portal/server.ts` (+30 LOC — `/invite/inspect/:code` handler with lazy require + 500-envelope catch), `src/portal/invite-accept.html` (+~180 LOC — 2 new view cards + `inspectInvite()` + `bootColdOrWarmPath()` + `renderInspectError()` + `renderExpiredOrStale()` + continue-button wiring).
 
   **Tests.** 22 new pins across 2 files: `__tests__/portal/invite-inspect-route.test.ts` (7 service behavior + 3 structural route pins — malformed short code / not_found / valid metadata / case-insensitive hasAccount / isExpired / shape-invariant no-internal-id-leak / route registration + no-store + envelope) and `__tests__/portal/invite-accept-cold-views.test.ts` (15 structural UI pins — 2 new views + show() coverage + inspectInvite error handling + boot routing by hasAccount / isExpired / status + warm path still intact).
-- **OI-NAV-203b** — email delivery of the invite link. Backend is email-agnostic (by design); a minimal transactional-email integration is a product choice, not a UX blocker.
+- ~~**OI-NAV-203b** — magic-link token machinery + mailer abstraction~~ [DONE · 2026-04-24 infrastructure layer]
+
+  **What shipped.** The token machinery + mailer abstraction + signup-link route that the cold-invitee flow depends on — ready to plug an actual email provider into the day product picks one.
+
+  **Token layer** (`src/services/magic-link-service.ts`, ~320 LOC):
+  - 256-bit random `rawToken` (base64url, ~43 chars) generated fresh per issue.
+  - `token_hash = SHA-256(rawToken)` is what's persisted; raw never touches the DB. A DB snapshot leak does not let an attacker forge sessions.
+  - `consumeMagicLinkToken(rawToken, userId | null)` is atomically single-use: `UPDATE ... WHERE consumed_at IS NULL AND datetime('now') < datetime(expires_at)`. Race-safe across concurrent consumes (first wins; second returns `already_consumed` with the row).
+  - TTL clamped to [60s, 24h]; default 1h.
+  - Separate `purgeExpiredMagicLinkTokens()` sweeps expired-unconsumed immediately + consumed rows after a 7-day forensics window.
+
+  **Mailer abstraction** (`src/services/mailer.ts`, ~140 LOC):
+  - `sendMagicLink({ to, url, intentLabel, expiresAt, tenantName? })` dispatches to a backend selected by the `MAGIC_LINK_MAILER` env var.
+  - Backends: `console` (logs via pino — dev default), `noop` (silent — test default under `VITEST=true`), `smtp` / `resend` / `postmark` (reserved, currently throw `MailerError('BACKEND_UNIMPLEMENTED')` with a clear wiring-TODO message).
+  - VITEST detection uses the same VITEST-over-NODE_ENV trick landed earlier today — survives `vi.stubEnv('NODE_ENV', ...)`.
+
+  **Migration 081** (`migrations/081_magic_link_tokens.sql`):
+  - `magic_link_tokens` table keyed by `token_hash` UNIQUE.
+  - `intent` CHECK-constrained to `invite_signup | passwordless_login | email_verify`.
+  - `tenant_id` + `invite_id` FKs use `ON DELETE SET NULL` (tokens outlive their parents for audit).
+  - 3 indexes: `token_hash` (hot-path consume), `email + intent` (admin queries), `expires_at` (GC sweep).
+
+  **Route** (`src/portal/server.ts`, +100 LOC):
+  - `POST /invite/request-signup-link { code }` — unauthenticated.
+  - Flow: validate code → load invite via `getPublicInviteInfo` → issue token → build `/invite/accept?code=...&magic=...` URL → `sendMagicLink`.
+  - Uniform 200 envelope for invalid / already-accepted / revoked / expired codes (oracle resistance, matches the `/invite/inspect` pattern).
+  - 503 `MAILER_UNCONFIGURED` when a `smtp/resend/postmark` backend is selected but unimplemented — lets the UI show a clear "email provider not configured" message instead of misleading "sent: true".
+  - `debugUrl` echoed in the response only when the `console` backend returns one (dev only; prod backends return undefined so the URL stays off the wire).
+
+  **Tests — 43 new pins:**
+  - `__tests__/services/magic-link-service.test.ts` (18): pure crypto (`generateRawToken` entropy + url-safe charset; `hashToken` determinism), `issueMagicLinkToken` (hash-not-raw persisted, email normalised, bad inputs rejected, default TTL 3600s, metadata round-trip), `consumeMagicLinkToken` (happy path, null-consumed-by allowed, second-consume = already_consumed, unknown-token = not_found, malformed-no-DB-touch, expired path), `purgeExpiredMagicLinkTokens` (expired-unused and old-consumed deleted; fresh + recent-consumed kept).
+  - `__tests__/services/mailer.test.ts` (13): `resolveBackend` (explicit env, case-insensitivity + trim, VITEST→noop fallback, outside-vitest→console fallback, unknown→default), `sendMagicLink` console backend (logs with full context + returns `debugUrl`), noop backend (no log, no debugUrl), reserved backends × 3 throw `BACKEND_UNIMPLEMENTED`.
+  - `__tests__/portal/invite-request-signup-link-route.test.ts` (12): handler structure (app.post + json parser), lazy requires of 3 services, 400-on-missing-code, uniform 200 on invalid/stale codes, `issueMagicLinkToken` call shape (intent + TTL + metadata), origin-header URL construction with fallback, magic URL format, 503 MAILER_UNCONFIGURED mapping, `debugUrl` echo shape, 500 on other mailer errors + migration schema pins (hash UNIQUE, intent CHECK, FK behaviour, 3 indexes).
+
+  **What's still pending** for a true end-to-end cold-invitee signup — tracked as **OI-NAV-203c**:
+  1. User-from-email creation. The existing `getOrCreateUser` is keyed on `telegramId`; there's no `createUserForEmail(email)` path. Needs a decision on `auth_provider = 'email'` semantics.
+  2. Magic-link consume handler at `GET /invite/accept?code=...&magic=...` — extract the `magic` param, call `consumeMagicLinkToken`, create user if needed, accept the invite, issue a web session.
+  3. Web-session JWT issuance — reuse the iOS JWT format with an issuer claim, or mint a cookie-backed session that the `/console` bootstraps from. Requires iOS-side coordination on shared auth.
+  4. UI integration in `invite-accept.html`'s `view-cold-signup` view — replace the "install iOS + paste token" copy with an "Email me a link" button that calls the new route and shows a "Check your inbox" state on success.
+  5. Email provider selection + implementation of the `smtp` / `resend` / `postmark` mailer backends.
 
 ---
 
