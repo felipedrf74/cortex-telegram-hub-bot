@@ -12,7 +12,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { getDailySummary, getReadiness, getSleep, getUserProviders } from '../../services/wearable';
-import { getCached, setCache } from '../../services/cache-store';
+import { getCached, requireUserCacheKey, setCache } from '../../services/cache-store';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 
@@ -42,7 +42,7 @@ export function wearableRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     const date = (req.query.date as string | undefined) || todayISODate();
 
-    const cacheKey = `wearable:summary:${userId}:${date}`;
+    const cacheKey = requireUserCacheKey(userId, `wearable:summary:${date}`);
     const cached = getCached<any>(cacheKey);
     if (cached) {
       sendSuccess(res, cached, { cached: true });
@@ -73,7 +73,7 @@ export function wearableRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     const date = (req.query.date as string | undefined) || todayISODate();
 
-    const cacheKey = `wearable:readiness:${userId}:${date}`;
+    const cacheKey = requireUserCacheKey(userId, `wearable:readiness:${date}`);
     const cached = getCached<any>(cacheKey);
     if (cached) {
       sendSuccess(res, cached, { cached: true });
@@ -103,7 +103,7 @@ export function wearableRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     const date = (req.query.date as string | undefined) || todayISODate();
 
-    const cacheKey = `wearable:sleep:${userId}:${date}`;
+    const cacheKey = requireUserCacheKey(userId, `wearable:sleep:${date}`);
     const cached = getCached<any>(cacheKey);
     if (cached) {
       sendSuccess(res, cached, { cached: true });

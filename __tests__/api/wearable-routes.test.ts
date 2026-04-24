@@ -21,6 +21,7 @@ vi.mock('../../src/services/wearable', () => ({
 
 vi.mock('../../src/services/cache-store', () => ({
   getCached: (...args: unknown[]) => mockGetCached(...args),
+  requireUserCacheKey: (userId: number, base: string) => `u:${userId}:${base}`,
   setCache: (...args: unknown[]) => mockSetCache(...args),
 }));
 
@@ -112,6 +113,18 @@ describe('Wearable routes', () => {
       steps: 12000,
       calories: 2500,
     });
+    expect(mockGetCached).toHaveBeenCalledWith('u:14:wearable:summary:2026-04-16');
+    expect(mockSetCache).toHaveBeenCalledWith(
+      'u:14:wearable:summary:2026-04-16',
+      {
+        date: '2026-04-16',
+        summary: {
+          steps: 12000,
+          calories: 2500,
+        },
+      },
+      1800,
+    );
     expect(mockGetDailySummary).toHaveBeenCalledWith(14, '2026-04-16');
   });
 

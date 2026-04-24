@@ -196,8 +196,8 @@ export function financeRoutes(): Router {
       ).run(...params);
 
       const updated = db.prepare(
-        'SELECT * FROM finance_transactions WHERE id = ?'
-      ).get(txId) as any;
+        'SELECT * FROM finance_transactions WHERE id = ? AND user_id = ?'
+      ).get(txId, userId) as any;
 
       invalidateFinanceDerivedCaches(userId);
       logger.info({ userId, txId }, 'iOS finance transaction updated');

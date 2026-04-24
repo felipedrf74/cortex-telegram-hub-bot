@@ -154,6 +154,20 @@ describe('surface cache invalidators', () => {
     expect(mockInvalidateExecutiveBriefCaches).toHaveBeenCalledWith(42);
   });
 
+  it('does not invalidate shared or synthetic cache scopes for invalid integration users', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(0, 'google');
+    invalidateIntegrationDerivedCaches(Number.NaN, 'outlook');
+
+    expect(mockClearCache).not.toHaveBeenCalled();
+    expect(mockClearCacheByPrefix).not.toHaveBeenCalled();
+    expect(mockInvalidateDashboardCaches).not.toHaveBeenCalled();
+    expect(mockInvalidatePlanningCaches).not.toHaveBeenCalled();
+    expect(mockInvalidateDashboardCoordinationCaches).not.toHaveBeenCalled();
+    expect(mockInvalidateExecutiveBriefCaches).not.toHaveBeenCalled();
+  });
+
   it('routes content writes through dashboard coordination surfaces', async () => {
     const { invalidateContentDerivedCaches } = await import('../../src/services/content-cache-invalidator');
 

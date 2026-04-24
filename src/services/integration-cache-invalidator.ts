@@ -5,6 +5,7 @@ import { invalidateExecutiveBriefCaches } from './coordination-cache-invalidator
 import { invalidateFinanceDerivedCaches } from './finance-cache-invalidator';
 import { invalidateTaskCaches } from './task-cache-invalidator';
 import { invalidateTrainingDerivedCaches } from './training-cache-invalidator';
+import { isValidTenantUserId } from './tenant-scope-observability';
 import type { OAuthProvider } from './oauth-store';
 
 /**
@@ -16,7 +17,7 @@ export function invalidateIntegrationDerivedCaches(
   userId: number,
   provider: OAuthProvider | string,
 ): void {
-  if (!Number.isFinite(userId)) return;
+  if (!isValidTenantUserId(userId)) return;
 
   switch (provider) {
     case 'google':
