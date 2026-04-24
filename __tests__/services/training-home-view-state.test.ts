@@ -499,4 +499,58 @@ describe('buildTrainingHomeViewState', () => {
     expect(state.confidence).toBe('medium');
     expect(state.hero.confidenceLabel).toBe('Medium confidence');
   });
+
+  // ── Gap 6: provider-truthful degraded copy ───────────────────────
+  //
+  // The adjustmentSummary (internal) surfaces as the `reasoning.summary`
+  // string. We assert on that surface because it's what iOS renders.
+
+  describe('Gap 6 — degraded copy does not lie about Garmin', () => {
+    it('uses Garmin-specific "until Garmin syncs again" copy ONLY when Garmin is genuinely stale', () => {
+      const state = buildTrainingHomeViewState(baseInput({
+        isGarminStale: true,
+        coachBriefing: {
+          briefing: 'Stale snapshot.',
+          recommendations: [],
+          garminData: null,
+          degraded: true,
+        },
+      }), 'en-US');
+
+      expect(state.reasoning?.summary).toMatch(/Garmin syncs again/i);
+    });
+
+    it('uses provider-agnostic copy when briefing is degraded but Garmin is NOT stale (Gmail-only user)', () => {
+      const state = buildTrainingHomeViewState(baseInput({
+        // Caller (training-home-payload.ts) gates isGarminStale on
+        // `isGarminActivelyIntegrated`; for a user without Garmin it stays
+        // false even when coachBriefing is degraded.
+        isGarminStale: false,
+        coachBriefing: {
+          briefing: 'Cached briefing.',
+          recommendations: [],
+          garminData: null,
+          degraded: true,
+        },
+      }), 'en-US');
+
+      expect(state.reasoning?.summary ?? '').not.toMatch(/Garmin/i);
+      expect(state.reasoning?.summary ?? '').toMatch(/signals recover/i);
+    });
+
+    it('uses provider-agnostic copy on cachedOnlyMiss without Garmin', () => {
+      const state = buildTrainingHomeViewState(baseInput({
+        isGarminStale: false,
+        coachBriefing: {
+          briefing: 'Cached briefing.',
+          recommendations: [],
+          garminData: null,
+          degraded: false,
+          cachedOnlyMiss: true,
+        },
+      }), 'en-US');
+
+      expect(state.reasoning?.summary ?? '').not.toMatch(/Garmin/i);
+    });
+  });
 });

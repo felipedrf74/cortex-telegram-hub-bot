@@ -1268,7 +1268,16 @@ function resolveAdjustmentSummary(
   const causePhrases = dedupedCausePhrases(input.readiness, input.signals, language);
   const causeChips = dedupedCauseChips(input.readiness, input.signals, language);
 
-  if (input.isGarminStale || input.coachBriefing?.degraded === true || input.coachBriefing?.cachedOnlyMiss === true) {
+  // Gap 6: the Garmin-specific copy below names Garmin literally. Firing it
+  // for `coachBriefing.degraded` alone (without Garmin being a data source
+  // for this user) lied to Gmail-only / Outlook-only users that Garmin was
+  // stale when they had never connected it. We now fire this branch ONLY
+  // when `isGarminStale` is genuinely true (caller already gates that on
+  // `isGarminActivelyIntegrated` — see training-home-payload.ts). Other
+  // degraded signals (coachBriefing.degraded for non-Garmin reasons,
+  // cachedOnlyMiss) fall through to the next summary branches or to the
+  // generic degraded UI owned by Agent 4 via `meta.isStale` + `reasonCodes`.
+  if (input.isGarminStale) {
     return {
       title: tPT(language, 'Leitura parcial de hoje', 'Leitura parcial de hoje', "Today's read is partial"),
       detail: tPT(
@@ -1276,6 +1285,23 @@ function resolveAdjustmentSummary(
         'O plano de hoje continua visível, mas o briefing está a usar dados limitados até o Garmin voltar a sincronizar.',
         'O plano de hoje continua visível, mas o briefing está usando dados limitados até o Garmin voltar a sincronizar.',
         "Today's plan is still visible, but the briefing is running on limited data until Garmin syncs again.",
+      ),
+      tone: 'limited',
+      chips: causeChips.slice(0, 3),
+    };
+  }
+
+  // Fallback: briefing is degraded but not because of Garmin. Use
+  // provider-agnostic copy so we don't blame Garmin for an outage that
+  // might be Gemini / network / cached-only-miss.
+  if (input.coachBriefing?.degraded === true || input.coachBriefing?.cachedOnlyMiss === true) {
+    return {
+      title: tPT(language, 'Leitura parcial de hoje', 'Leitura parcial de hoje', "Today's read is partial"),
+      detail: tPT(
+        language,
+        'O plano de hoje continua visível, mas o briefing está a usar dados limitados enquanto os sinais recuperam.',
+        'O plano de hoje continua visível, mas o briefing está usando dados limitados enquanto os sinais recuperam.',
+        "Today's plan is still visible, but the briefing is running on limited data while signals recover.",
       ),
       tone: 'limited',
       chips: causeChips.slice(0, 3),
