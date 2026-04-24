@@ -47,11 +47,36 @@ export function createAdminDashboardHandler(portalDir = __dirname) {
   };
 }
 
+// OI-NAV-201 (2026-04-24): promoted the new Admin Console shell
+// (admin-console.html) to the canonical /admin URL. /portal remains
+// bound to the legacy portal.html for pinned-bookmark users who
+// explicitly want the old dashboard, and / stays on the legacy
+// dashboard too (changing the landing UX is a separate decision).
+// /admin-console itself is now a 301 redirect to /admin, wired in
+// server.ts alongside the other console shell aliases.
+export function createAdminConsoleShellHandler(portalDir = __dirname) {
+  return (_req: Request, res: Response): void => {
+    const htmlPath = path.join(portalDir, 'admin-console.html');
+    if (!fs.existsSync(htmlPath)) {
+      res.status(503).send('Admin console not found — admin-console.html is missing (run `npm run build`)');
+      return;
+    }
+    applyPortalDashboardSecurityHeaders(res);
+    res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
+  };
+}
+
 export function registerPortalStaticRoutes(app: Express, portalDir = __dirname): void {
   app.get('/landing-preview', createLandingPreviewHandler(portalDir));
 
   const serveAdminDashboard = createAdminDashboardHandler(portalDir);
+  const serveAdminConsoleShell = createAdminConsoleShellHandler(portalDir);
+
   app.get('/', serveAdminDashboard);
-  app.get('/admin', serveAdminDashboard);
+  // /admin now serves the new Admin Console shell (OI-NAV-201). Old
+  // bookmarks to /admin-console 301 to this path from server.ts.
+  app.get('/admin', serveAdminConsoleShell);
+  // /portal keeps the legacy dashboard for users who explicitly
+  // want the old UI.
   app.get('/portal', serveAdminDashboard);
 }

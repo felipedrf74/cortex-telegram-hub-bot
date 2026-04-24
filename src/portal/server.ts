@@ -260,14 +260,16 @@ export function createPortalServer(bot?: any): http.Server {
     res.set('X-Content-Type-Options', 'nosniff');
     res.type('html').send(fs.readFileSync(htmlPath, 'utf-8'));
   };
-  app.get('/admin-console', serveShell('admin-console.html'));
-  // NOTE: we deliberately do NOT rebind /admin yet. The legacy
-  // `serveAdminDashboard` (portal.html) is already aliased at /admin
-  // (see further down in this file). Platform admins with /admin
-  // bookmarks and scripts continue to land on the legacy dashboard.
-  // Promoting /admin to the new console is an explicit post-review
-  // step documented in
-  //   docs/portal/nexus-hub-portal-uiux-final-report.md §Recommended next steps
+  // OI-NAV-201 (2026-04-24): /admin now serves the new Admin Console
+  // shell (wired in static-routes.ts#registerPortalStaticRoutes).
+  // /admin-console stays alive as a 301 redirect for permanent
+  // bookmark preservation — old bookmarks and deep links keep
+  // working indefinitely without us carrying two parallel route
+  // handlers. 301 (permanent) tells browsers + iOS + monitors to
+  // update their cached URL; 302 would force the hop forever.
+  app.get('/admin-console', (_req: Request, res: Response) => {
+    res.redirect(301, '/admin');
+  });
   app.get('/console', serveShell('user-console.html'));
   app.get('/user-console', serveShell('user-console.html'));
 

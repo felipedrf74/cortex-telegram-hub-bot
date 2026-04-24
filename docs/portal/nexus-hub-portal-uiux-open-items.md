@@ -331,11 +331,25 @@ Tests: 47 structural pins in `__tests__/portal/portal-responsive-collapse.test.t
 
 ## 3 · Navigation & routing
 
-### OI-NAV-201 — Promote `/admin-console` → `/admin` [P1, gate]
+### ~~OI-NAV-201 — Promote `/admin-console` → `/admin`~~ [DONE · 2026-04-24]
 
-**What's missing.** On this branch, `/admin` still serves the legacy dashboard (portal.html). The new shell is at `/admin-console`. Flipping the alias is an explicit post-review step to avoid breaking platform-admin bookmarks and external monitors that hit `/admin`.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).**
 
-**Gate.** Human review signs off, then: change the `/admin` alias to serve `admin-console.html`, and redirect `/admin/legacy` or keep `/portal` as the pinned legacy entry.
+Three-move URL flip:
+
+1. **`/admin`** now serves `admin-console.html` (the new shell) via a new `createAdminConsoleShellHandler(portalDir)` factory in `src/portal/static-routes.ts`. Same security headers as the legacy handler — `Cache-Control: no-cache`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'self'`.
+2. **`/admin-console`** becomes a 301 permanent redirect to `/admin`, wired in `src/portal/server.ts`. 301 (not 302) tells browsers + iOS deep-linkers + uptime monitors to update their cached URL — after the first hit, subsequent requests go straight to `/admin` with zero network round-trip.
+3. **`/portal`** keeps serving `portal.html` (the legacy dashboard). Users who explicitly want the old UI have a pinned entry point. `/` (root) also keeps serving portal.html — landing UX is a separate decision, not part of this URL flip.
+
+Cross-console wiring updated:
+- `src/portal/user-console.html` — "↗ Admin Console" switch button now targets `/admin` directly instead of `/admin-console` (avoids a 301 hop on every click from the user console).
+
+Files: `src/portal/static-routes.ts` (+~25 LOC — new handler factory + rewired binding), `src/portal/server.ts` (~10 LOC changed — `/admin-console` handler switched from serve-file to 301 redirect), `src/portal/user-console.html` (1 char change in switcher target).
+
+Tests: 9 new pins in `__tests__/portal/portal-admin-console-promotion.test.ts` covering: `createAdminConsoleShellHandler` serves admin-console.html + security headers + 503 on missing file; `registerPortalStaticRoutes` maps /admin to the new shell NOT the legacy dashboard; `/portal` and `/` still serve legacy; `/admin-console` is NOT in static routes (it lives in server.ts); server.ts contains the `res.redirect(301, '/admin')` shape; absence pin that the old `app.get('/admin-console', serveShell('admin-console.html'))` binding is gone; and a UI pin that user-console.html's switcher now targets `/admin` (with an absence pin on `/admin-console`).
+
+Followups:
+- iOS deep-links currently use `/admin-console` in 1-2 spots; they'll continue working via the 301 indefinitely, but a separate iOS-repo PR should update them to `/admin` for clarity + to skip the redirect hop.
 
 ---
 
