@@ -15,6 +15,13 @@
  */
 import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
+// fs + path used by the /owner-ui + /admin-console + /console + /user-console
+// shell-serve handlers. These are legacy-shaped (inline fs.readFileSync) from
+// the OI-USR-404/OI-NAV-203 additions; a follow-up should move them into
+// static-routes.ts alongside createAdminDashboardHandler so we can drop these
+// imports from server.ts. — 2026-04-24 rebase onto decomposed server.ts
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config';
 import { getDb } from '../services/database';
 import { expireSubscriptions } from '../services/webhook-registry';
