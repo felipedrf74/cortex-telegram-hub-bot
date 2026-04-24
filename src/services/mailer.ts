@@ -250,6 +250,216 @@ async function sendViaResend(email: MagicLinkEmail): Promise<MailerSendResult> {
   return { backend: 'resend', delivered: true };
 }
 
+// ─── Transactional email dispatcher (OI-WELCOME-201, 2026-04-24) ───
+//
+// Generalisation of sendMagicLink for non-magic-link transactional
+// sends (welcome, password-reset, etc.). Same backend routing —
+// just a different template-to-body path. Templates are simple
+// inline functions; no external templating engine.
+//
+// Add a new template by:
+//   1. Declaring its type in `TransactionalTemplate`.
+//   2. Adding a `case` to `renderTransactional` that returns
+//      { subject, html, text }.
+
+export type TransactionalTemplate =
+  | 'welcome.paid_upgrade';
+
+export interface TransactionalEmailInput {
+  template: TransactionalTemplate;
+  to: string;
+  subject: string;
+  /** Template-specific context. Shape validated per-template at render time. */
+  context: Record<string, unknown>;
+}
+
+interface RenderedBodies {
+  subject: string;
+  html: string;
+  text: string;
+  /** Tag list for Resend analytics — e.g. [{ name: 'template', value: 'welcome.paid_upgrade' }] */
+  tags: Array<{ name: string; value: string }>;
+}
+
+function renderTransactional(input: TransactionalEmailInput): RenderedBodies {
+  switch (input.template) {
+    case 'welcome.paid_upgrade': {
+      const firstName = typeof input.context.firstName === 'string' ? input.context.firstName : 'there';
+      const tier = typeof input.context.tier === 'string' ? input.context.tier : 'paid';
+      const consoleUrl = typeof input.context.consoleUrl === 'string'
+        ? input.context.consoleUrl
+        : 'https://nexushub.me/console';
+      const tierLabel = tier === 'max' ? 'Max' : tier === 'pro' ? 'Pro' : 'paid';
+      const text = [
+        `Hi ${firstName},`,
+        '',
+        `Your Nexus Hub ${tierLabel} plan is active. Here's what to do next:`,
+        '',
+        `  1. Open your workspace: ${consoleUrl}`,
+        '  2. Configure your 5 skills (Content, Secretary, Training, Finance, Cooking) — each has its own settings under Skills.',
+        '  3. Install the iOS app for the full mobile experience (coming to the App Store).',
+        '',
+        "If you need anything, just reply to this email.",
+        '',
+        '— The Nexus Hub team',
+      ].join('\n');
+      const html = `<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 560px; margin: 24px auto; color: #1f2937; line-height: 1.5;">
+    <h2 style="color: #111827; font-size: 20px; margin: 0 0 12px;">Welcome, ${escapeHtml(firstName)}</h2>
+    <p style="margin: 0 0 16px;">Your Nexus Hub <strong>${escapeHtml(tierLabel)}</strong> plan is active.</p>
+    <p style="margin: 24px 0;">
+      <a href="${escapeHtml(consoleUrl)}"
+         style="display: inline-block; padding: 12px 24px; background: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 500;">
+        Open your workspace
+      </a>
+    </p>
+    <h3 style="font-size: 15px; color: #111827; margin: 24px 0 8px;">What to do next</h3>
+    <ol style="margin: 0 0 16px; padding-left: 20px; color: #374151;">
+      <li style="margin-bottom: 8px;">Open the User Console and set up your tenant (it's already created — just walk through the first-run checklist).</li>
+      <li style="margin-bottom: 8px;">Configure each of your five skills (Content, Secretary, Training, Finance, Cooking) — they read tenant-level config for context.</li>
+      <li style="margin-bottom: 8px;">Install the iOS app when you're ready — it's the primary mobile interface.</li>
+    </ol>
+    <p style="margin: 24px 0 0; font-size: 14px; color: #6b7280;">
+      If you need anything, just reply to this email — we read every message.
+    </p>
+    <p style="margin: 8px 0 0; font-size: 13px; color: #9ca3af;">— The Nexus Hub team</p>
+  </body>
+</html>
+`.trim();
+      return {
+        subject: input.subject,
+        html,
+        text,
+        tags: [
+          { name: 'template', value: 'welcome.paid_upgrade' },
+          { name: 'tier', value: tier },
+          { name: 'source', value: 'nexus-hub-portal' },
+        ],
+      };
+    }
+    default: {
+      const never: never = input.template;
+      throw new MailerError(
+        'UNCONFIGURED_BACKEND',
+        `Unknown transactional template: ${String(never)}`,
+      );
+    }
+  }
+}
+
+/**
+ * Send a transactional email (welcome, etc.). Returns the same
+ * shape as sendMagicLink. Backend is selected the same way via
+ * `MAGIC_LINK_MAILER` (env var is shared — a single mailer config
+ * covers all transactional sends).
+ */
+export async function sendTransactionalEmail(input: TransactionalEmailInput): Promise<MailerSendResult> {
+  const rendered = renderTransactional(input);
+  const backend = resolveBackend();
+  switch (backend) {
+    case 'console':
+      logger.info(
+        {
+          event: 'transactional.send',
+          backend: 'console',
+          to: input.to,
+          template: input.template,
+          subject: rendered.subject,
+        },
+        `[transactional] (${input.template}) → ${input.to}`,
+      );
+      return { backend, delivered: true };
+    case 'noop':
+      return { backend, delivered: true };
+    case 'resend':
+      return sendViaResendGeneric({
+        to: input.to,
+        subject: rendered.subject,
+        html: rendered.html,
+        text: rendered.text,
+        tags: rendered.tags,
+      });
+    case 'smtp':
+    case 'postmark':
+      throw new MailerError(
+        'BACKEND_UNIMPLEMENTED',
+        `Mailer backend '${backend}' is reserved but not yet implemented.`,
+        { backend },
+      );
+    default:
+      throw new MailerError(
+        'UNCONFIGURED_BACKEND',
+        `Unknown MAGIC_LINK_MAILER backend: ${String(backend)}`,
+        { backend },
+      );
+  }
+}
+
+/** Generic Resend send — shared by sendMagicLink + sendTransactionalEmail. */
+async function sendViaResendGeneric(input: {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  tags: Array<{ name: string; value: string }>;
+}): Promise<MailerSendResult> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new MailerError(
+      'BACKEND_UNIMPLEMENTED',
+      'RESEND_API_KEY is not set. Configure the key or switch MAGIC_LINK_MAILER=console for dev.',
+      { backend: 'resend' },
+    );
+  }
+  const from = process.env.MAGIC_LINK_FROM || 'welcome@nexushub.me';
+  const replyTo = process.env.MAGIC_LINK_REPLY_TO || from;
+  const payload: ResendPayload = {
+    from,
+    to: [input.to],
+    subject: input.subject,
+    html: input.html,
+    text: input.text,
+    reply_to: replyTo,
+    tags: input.tags,
+  };
+  let res: Response;
+  try {
+    res = await fetch(RESEND_API_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (networkErr) {
+    logger.error({ err: networkErr, to: input.to }, 'mailer[resend]: network failure');
+    throw new MailerError(
+      'SEND_FAILED',
+      'Resend API network error — check outbound connectivity.',
+      { backend: 'resend' },
+    );
+  }
+  if (!res.ok) {
+    let body: unknown;
+    try { body = await res.json(); } catch { body = await res.text().catch(() => ''); }
+    logger.error({ status: res.status, body, to: input.to }, 'mailer[resend]: non-2xx from Resend API');
+    throw new MailerError(
+      'SEND_FAILED',
+      `Resend API returned ${res.status}. See logs for the full response.`,
+      { backend: 'resend', status: res.status, body },
+    );
+  }
+  let parsed: { id?: string } | null = null;
+  try { parsed = await res.json() as { id?: string }; } catch { /* no body is fine on success */ }
+  logger.info(
+    { to: input.to, subject: input.subject, messageId: parsed?.id },
+    'mailer[resend]: sent',
+  );
+  return { backend: 'resend', delivered: true };
+}
+
 /**
  * Send a magic-link email. Pure side-effect dispatcher — the backend
  * is chosen at call time from `MAGIC_LINK_MAILER` so env-var changes

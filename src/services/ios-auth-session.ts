@@ -112,6 +112,17 @@ export function grantBetaSandboxAccess(userId: number): void {
     userId,
   );
 
+  // OI-WELCOME-201 (2026-04-24): fire welcome email on paid-tier
+  // entry via invite code. Idempotent + background — never blocks
+  // the grant transaction.
+  try {
+    const { fireWelcomeEmailInBackground } = require('./welcome-email-service');
+    fireWelcomeEmailInBackground(userId);
+  } catch (hookErr) {
+    // Non-fatal — logger in this module is imported elsewhere; keep
+    // this silent-on-failure so the grant always completes.
+  }
+
   db.prepare(`
     INSERT INTO subscriptions (
       user_id,

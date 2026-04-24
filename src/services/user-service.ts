@@ -552,6 +552,24 @@ export function setUserTier(telegramId: number, tier: 'free' | 'pro' | 'max' | '
     WHERE telegram_id = ?
   `).run(tier, limits.messages, limits.tokens, limits.cost, telegramId);
   logger.info({ telegramId, tier }, 'User tier updated');
+
+  // OI-WELCOME-201 (2026-04-24): fire welcome email on first
+  // paid-tier transition. The service is idempotent — if the user
+  // already got one, or has no email, or the mailer is down, it
+  // silently no-ops. Never blocks the tier update.
+  if (tier === 'pro' || tier === 'max') {
+    const user = db.prepare('SELECT id FROM users WHERE telegram_id = ?').get(telegramId) as { id: number } | undefined;
+    if (user) {
+      // Lazy-require to avoid a hard dep cycle if welcome-email
+      // service ever needs to call back into user-service.
+      try {
+        const { fireWelcomeEmailInBackground } = require('./welcome-email-service');
+        fireWelcomeEmailInBackground(user.id);
+      } catch (hookErr) {
+        logger.warn({ err: hookErr, telegramId, tier }, 'setUserTier: welcome-email hook failed to fire (non-fatal)');
+      }
+    }
+  }
 }
 
 export function setUserLimits(telegramId: number, limits: {
