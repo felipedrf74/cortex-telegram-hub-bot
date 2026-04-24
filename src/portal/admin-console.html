@@ -472,22 +472,37 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
 
 <!-- ═══════════════════════════════════════════════════════════════
      AUTH VIEW (shown before credentials are entered)
+     OI-SEC-001 (2026-04-24): primary form is a single session-token
+     input. The legacy token+uid form is tucked inside a <details>
+     for deploys that haven't set PORTAL_ADMIN_JWT_SECRET yet.
      ═══════════════════════════════════════════════════════════════ -->
 <div id="authView" class="hidden">
   <div class="auth-prompt">
     <h1>Admin Console sign-in</h1>
-    <p>Enter your <strong>owner token</strong> and <strong>admin user id</strong>. Both are required — the token alone doesn't grant access. Rate-limited at 30 req/min/IP regardless of what you type.</p>
+    <p>Paste your <strong>admin session token</strong>. Mint one with <code>npx ts-node scripts/mint-admin-token.ts &lt;yourUserId&gt;</code>. Rate-limited at 30 req/min/IP.</p>
     <div class="form-row">
-      <label for="authToken">PORTAL_OWNER_TOKEN</label>
-      <input id="authToken" type="password" placeholder="16+ chars" autocomplete="off" />
-    </div>
-    <div class="form-row">
-      <label for="authUid">X-Admin-User-Id</label>
-      <input id="authUid" type="number" placeholder="e.g. 1" />
+      <label for="authSession">Admin session token</label>
+      <input id="authSession" type="password" placeholder="eyJhbGciOi…" autocomplete="off" spellcheck="false" />
     </div>
     <div id="authError" class="error-banner hidden"></div>
     <button class="btn primary" id="authSubmit" style="width:100%; margin-top: var(--space-3);">Sign in</button>
-    <p class="small muted" style="margin-top: var(--space-4); text-align: center;">Session is stored in <code>sessionStorage</code> and cleared when you sign out.</p>
+    <p class="small muted" style="margin-top: var(--space-4); text-align: center;">Session is stored in <code>sessionStorage</code> and cleared on sign-out.</p>
+
+    <details style="margin-top: var(--space-4);">
+      <summary class="small muted" style="cursor: pointer;">Use legacy owner-token sign-in (no <code>PORTAL_ADMIN_JWT_SECRET</code> set)</summary>
+      <div style="margin-top: var(--space-3); padding: var(--space-3); background: var(--surface-2, #f9fafb); border-radius: 6px;">
+        <p class="small muted" style="margin: 0 0 var(--space-3) 0;">Legacy identity mode. Uses <code>PORTAL_OWNER_TOKEN</code> + <code>X-Admin-User-Id</code>. <strong>Insecure</strong> — the header is header-trusted (anyone with the token can impersonate any admin id). Set <code>PORTAL_ADMIN_JWT_SECRET</code> on the server and use the form above instead.</p>
+        <div class="form-row">
+          <label for="authToken">PORTAL_OWNER_TOKEN</label>
+          <input id="authToken" type="password" placeholder="16+ chars" autocomplete="off" />
+        </div>
+        <div class="form-row">
+          <label for="authUid">X-Admin-User-Id</label>
+          <input id="authUid" type="number" placeholder="e.g. 1" />
+        </div>
+        <button class="btn" id="authSubmitLegacy" style="width:100%; margin-top: var(--space-2);">Legacy sign-in</button>
+      </div>
+    </details>
   </div>
 </div>
 
@@ -906,11 +921,20 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
 'use strict';
 
 // ── Session ───────────────────────────────────────────────────────
+// OI-SEC-001 (2026-04-24): two identity modes.
+//   JWT mode (preferred):  state.session carries a signed admin
+//     session token; Authorization: Bearer <session>. Identity
+//     comes from the token's sub claim on the server side.
+//   Legacy mode (fallback): state.token + state.uid as before.
+//     Used only when PORTAL_ADMIN_JWT_SECRET is unset on the
+//     server. The legacy path is header-trusted (insecure) and
+//     logs a warning on every request.
 const SS = sessionStorage;
 const state = {
-  token: SS.getItem('nx.adm.token') || '',
-  uid:   SS.getItem('nx.adm.uid')   || '',
-  page:  'overview',
+  session: SS.getItem('nx.adm.session') || '',   // JWT mode
+  token:   SS.getItem('nx.adm.token')   || '',   // legacy mode
+  uid:     SS.getItem('nx.adm.uid')     || '',   // legacy mode
+  page:    'overview',
   // OI-UX-101a: cache loaded collections so the global search has
   // something to index beyond the fixed pages list. Populated by
   // load* functions; always safe to read.
@@ -921,10 +945,31 @@ const state = {
 
 function authHeaders(contentType) {
   const h = {};
-  if (state.token) h['Authorization'] = 'Bearer ' + state.token;
-  if (state.uid)   h['X-Admin-User-Id'] = state.uid;
+  // Prefer the session token when present. Never send BOTH the
+  // session token AND X-Admin-User-Id — the server rejects that
+  // combo as a confused-deputy attempt (400 BAD_REQUEST).
+  if (state.session) {
+    h['Authorization'] = 'Bearer ' + state.session;
+  } else {
+    if (state.token) h['Authorization'] = 'Bearer ' + state.token;
+    if (state.uid)   h['X-Admin-User-Id'] = state.uid;
+  }
   if (contentType) h['Content-Type'] = contentType;
   return h;
+}
+
+// OI-SEC-001: best-effort client-side JWT decode so we can show
+// the admin's user id in the top-right context pill without a
+// round-trip. Server still re-verifies on every request — this is
+// display-only.
+function decodeSessionClaims(sessionToken) {
+  try {
+    const parts = String(sessionToken || '').split('.');
+    if (parts.length !== 3) return null;
+    const json = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+    const claims = JSON.parse(json);
+    return { sub: claims.sub, role: claims.role, exp: claims.exp };
+  } catch { return null; }
 }
 async function fetchJson(url, opts) {
   const o = Object.assign({ method: 'GET' }, opts || {});
@@ -958,31 +1003,67 @@ function showShell() {
   loadFooter();
 }
 async function tryAuthenticate() {
-  if (!state.token || !state.uid) { showAuth(); return; }
+  // Either JWT mode (state.session) OR legacy mode (state.token + state.uid)
+  // must be populated. If neither is, drop to auth view.
+  if (!state.session && !(state.token && state.uid)) { showAuth(); return; }
   try {
     const r = await fetchJson('/owner/console/overview');
     // If this succeeds, identity is valid.
-    document.getElementById('ctxUser').textContent = '#' + state.uid;
-    document.getElementById('ctxRole').textContent = 'platform_admin';
+    let displayUid = state.uid;
+    let displayRole = 'platform_admin';
+    if (state.session) {
+      const claims = decodeSessionClaims(state.session);
+      if (claims) {
+        displayUid = claims.sub;
+        displayRole = claims.role || 'platform_admin';
+      }
+    }
+    document.getElementById('ctxUser').textContent = '#' + (displayUid || '?');
+    document.getElementById('ctxRole').textContent = displayRole;
     showShell();
     paintOverview(r.data);
   } catch (e) {
-    SS.removeItem('nx.adm.token'); SS.removeItem('nx.adm.uid');
-    state.token = ''; state.uid = '';
-    showAuth(e.status === 401 ? 'Invalid token or user id.' :
-             e.status === 403 ? 'You are not a platform admin.' :
+    // Drop whichever credential we were trying so the user sees
+    // the login screen again.
+    SS.removeItem('nx.adm.session');
+    SS.removeItem('nx.adm.token');
+    SS.removeItem('nx.adm.uid');
+    state.session = ''; state.token = ''; state.uid = '';
+    showAuth(e.status === 401 ? 'Invalid or expired admin session token.' :
+             e.status === 403 ? 'You are not a platform admin (or your access was revoked).' :
              e.status === 429 ? 'Rate limit hit. Wait a minute.' :
              'Could not reach /owner/*.');
   }
 }
+
+// OI-SEC-001 primary sign-in: paste the session token.
 document.getElementById('authSubmit').addEventListener('click', () => {
-  state.token = document.getElementById('authToken').value.trim();
-  state.uid = document.getElementById('authUid').value.trim();
-  if (!state.token || !state.uid) return showAuth('Both fields are required.');
-  SS.setItem('nx.adm.token', state.token);
-  SS.setItem('nx.adm.uid', state.uid);
+  const session = document.getElementById('authSession').value.trim();
+  if (!session) return showAuth('Paste the admin session token.');
+  // Clear any stale legacy creds so authHeaders prefers the new path.
+  SS.removeItem('nx.adm.token');
+  SS.removeItem('nx.adm.uid');
+  state.token = ''; state.uid = '';
+  state.session = session;
+  SS.setItem('nx.adm.session', session);
   tryAuthenticate();
 });
+
+// Legacy sign-in (tucked into the <details> block). Used only in
+// deploys that haven't set PORTAL_ADMIN_JWT_SECRET.
+document.getElementById('authSubmitLegacy').addEventListener('click', () => {
+  const tok = document.getElementById('authToken').value.trim();
+  const uid = document.getElementById('authUid').value.trim();
+  if (!tok || !uid) return showAuth('Both legacy fields are required.');
+  // Clear any stale JWT so authHeaders doesn't prefer it.
+  SS.removeItem('nx.adm.session');
+  state.session = '';
+  state.token = tok; state.uid = uid;
+  SS.setItem('nx.adm.token', tok);
+  SS.setItem('nx.adm.uid', uid);
+  tryAuthenticate();
+});
+
 document.getElementById('signOut').addEventListener('click', (e) => {
   e.preventDefault();
   SS.clear();

@@ -45,6 +45,15 @@ import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { getPlatformRole, type PlatformRole } from '../services/tenant-service';
 import { logger } from '../utils/logger';
+// OI-SEC-001 (2026-04-24): signed admin session tokens. When
+// PORTAL_ADMIN_JWT_SECRET is set, identity comes from the Bearer
+// token's `sub` claim and X-Admin-User-Id is IGNORED. Closes the
+// confused-deputy gap where the token + header were decoupled.
+import {
+  extractBearerToken as extractAdminBearerToken,
+  getAdminSessionSecret,
+  verifyAdminSession,
+} from '../services/admin-session-service';
 
 // ── /owner/* rate limit (Phase 2E validation fix) ────────────────
 //
@@ -324,18 +333,121 @@ function respond(res: Response, status: number, code: string, message: string, d
  * Require a resolvable `platform_admin` identity on the request.
  * Used as the first middleware on the `/owner/*` router.
  *
- * Because the worktree is currently on the pre-scoped-tokens code
- * path, this guard does NOT check `PORTAL_TOKEN` itself — the
- * route is mounted AFTER portal/server.ts's existing portal-token
- * middleware, which already rejected the request if the token was
- * wrong. What this guard adds is the identity half: "who, among
- * platform admins, is this?"
+ * ## Two identity modes
+ *
+ * **Secure mode** (OI-SEC-001, 2026-04-24): when
+ * `PORTAL_ADMIN_JWT_SECRET` is configured, identity comes from a
+ * signed Bearer JWT (the admin session token). The token's `sub`
+ * claim IS the admin user id; X-Admin-User-Id is IGNORED in this
+ * mode. This is the only mode that defends against the confused-
+ * deputy gap where an attacker with just `PORTAL_OWNER_TOKEN` could
+ * set X-Admin-User-Id to any admin's id and impersonate them.
+ *
+ * **Legacy mode**: when the JWT secret is NOT set, identity comes
+ * from the `X-Admin-User-Id` header (or `?_asAdmin=N` debug query
+ * param). Preserved for CI, local dev, and in-flight deploys. A
+ * warning is logged every request so the fallback is visible.
+ *
+ * ## What this guard does NOT check
+ *
+ * The portal-token Bearer credential is verified by
+ * `requireOwnerConsoleToken` upstream. This guard is only about
+ * the identity half: "who, among platform admins, is this?"
  */
 export function resolvePlatformAdmin(
   req: Request,
   res: Response,
   next: NextFunction,
 ): void {
+  // ── Secure mode: JWT-derived identity ───────────────────────────
+  const jwtSecret = getAdminSessionSecret();
+  if (jwtSecret) {
+    const bearer = extractAdminBearerToken(req.header('Authorization'));
+    const verifyResult = verifyAdminSession(bearer, jwtSecret);
+    if (!verifyResult.ok) {
+      // Distinguish signature / expiry / shape problems in logs so
+      // an operator can triage whether this is a leaked token, a
+      // clock skew, or an attempted forge.
+      logger.info(
+        { path: req.path, method: req.method, reason: verifyResult.reason },
+        'platform-admin-guard: admin session token rejected',
+      );
+      const message = verifyResult.reason === 'expired'
+        ? 'Admin session token has expired. Mint a new one and sign in again.'
+        : 'Invalid admin session token.';
+      respond(res, 401, 'UNAUTHORIZED', message);
+      return;
+    }
+
+    // If the caller also sent X-Admin-User-Id, DON'T honor it — the
+    // whole point of JWT mode is that the token alone is the
+    // identity. A mismatch between the header and `sub` is a
+    // bright-red sign of a confused or malicious client; 400 is
+    // clearer than silently ignoring.
+    const headerClaim = readAdminUserIdClaim(req);
+    if (headerClaim !== null && headerClaim !== verifyResult.claims.sub) {
+      logger.warn(
+        { path: req.path, tokenSub: verifyResult.claims.sub, headerClaim },
+        'platform-admin-guard: X-Admin-User-Id mismatches token sub — rejecting as confused-deputy attempt',
+      );
+      respond(
+        res,
+        400,
+        'BAD_REQUEST',
+        'X-Admin-User-Id conflicts with the admin session token. Omit the header — the token carries identity.',
+      );
+      return;
+    }
+
+    // Re-verify platform_admins membership — the token's role claim
+    // is informational only. A demotion (or revocation via
+    // platform_admins delete) takes effect immediately, NOT at the
+    // next token renewal.
+    let role: PlatformRole | null = null;
+    try {
+      role = getPlatformRole(verifyResult.claims.sub);
+    } catch (err) {
+      logger.error(
+        { err, sub: verifyResult.claims.sub },
+        'platform-admin-guard: DB lookup failed for token sub — fail-closed',
+      );
+      respond(res, 403, 'NOT_A_PLATFORM_ADMIN', 'Unable to verify platform-admin identity (DB error).');
+      return;
+    }
+    if (!role) {
+      // Admin was demoted/revoked after the token was minted. Not a
+      // forge — just stale. 403 with a hint to re-mint.
+      logger.info(
+        { sub: verifyResult.claims.sub, path: req.path },
+        'platform-admin-guard: token sub is no longer a platform admin — rejecting',
+      );
+      respond(
+        res,
+        403,
+        'NOT_A_PLATFORM_ADMIN',
+        'Your admin access has been revoked. Contact platform_owner.',
+        { userId: verifyResult.claims.sub },
+      );
+      return;
+    }
+
+    (req as PlatformAdminRequest).platformAdmin = { userId: verifyResult.claims.sub, role };
+    next();
+    return;
+  }
+
+  // ── Legacy mode: X-Admin-User-Id header ─────────────────────────
+  //
+  // This path is the original OI-SEC-001 gap: the header is trusted
+  // without cryptographic binding to the Bearer token. Preserved for
+  // back-compat only. The warning fires every request so an operator
+  // checking logs sees the insecure mode immediately.
+  logger.warn(
+    { path: req.path },
+    'platform-admin-guard: PORTAL_ADMIN_JWT_SECRET not set — running in LEGACY identity mode '
+    + '(X-Admin-User-Id is header-trusted). Set PORTAL_ADMIN_JWT_SECRET + mint admin tokens to harden.',
+  );
+
   const claimedUserId = readAdminUserIdClaim(req);
   if (claimedUserId === null) {
     logger.info(
