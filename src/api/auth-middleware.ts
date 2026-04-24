@@ -5,6 +5,14 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { sendError } from './response-helpers';
+// Beta gap 3 (2026-04-24): moved from inline `require()` to a static
+// import. The lazy pattern below originally hedged against a circular
+// dependency that no longer exists, and the runtime `require()` wasn't
+// interceptable by vitest's mock system — so the user-status and new
+// device-revocation checks couldn't be unit tested against a mocked DB.
+// `services/database` doesn't import anything in `api/*`, so a top-level
+// import is cycle-safe.
+import { getDb } from '../services/database';
 
 export interface AuthenticatedRequest extends Request {
   userId: number;
@@ -47,9 +55,21 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     // user with an unexpired token had full access until natural
     // expiry. One indexed SELECT on `users.status` closes that.
     // Indexed on `idx_users_status` (migrations/030_users.sql:22).
+    //
+    // Beta gap 3 (2026-04-24): we ALSO verify that the device session
+    // has not been revoked — POST /auth/logout and /auth/logout-all
+    // delete the matching `ios_devices` row, but the access token in
+    // the client's pocket remains cryptographically valid until its
+    // 7-day JWT expiry. Without this check, a signed-out device (or a
+    // device whose refresh token was revoked for account switching)
+    // could keep using its access token until natural expiry. The
+    // `device_id` column has a UNIQUE constraint (migration 038) so
+    // the lookup is indexed. Tokens minted BEFORE the sign-out still
+    // match the row and keep working — what breaks is only the
+    // post-logout path, which is exactly the intent.
     try {
-      const { getDb } = require('../services/database');
-      const row = getDb()
+      const db = getDb();
+      const row = db
         .prepare('SELECT status FROM users WHERE id = ?')
         .get(payload.userId) as { status?: string } | undefined;
       if (!row) {
@@ -70,6 +90,25 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
         sendError(res, 'UNAUTHORIZED', 'User account is not active', 401);
         return;
       }
+
+      // Device session check — only run when the JWT carries a deviceId
+      // (all tokens minted by createAuthSessionAndRegisterDevice do).
+      // Older tokens without deviceId are not subject to this check,
+      // which keeps the transition non-breaking for any already-issued
+      // legacy JWT.
+      if (typeof payload.deviceId === 'string' && payload.deviceId.length > 0) {
+        const device = db
+          .prepare('SELECT 1 FROM ios_devices WHERE user_id = ? AND device_id = ?')
+          .get(payload.userId, payload.deviceId) as { 1?: number } | undefined;
+        if (!device) {
+          logger.info(
+            { userId: payload.userId, deviceId: payload.deviceId },
+            'iOS JWT: device session revoked — rejecting',
+          );
+          sendError(res, 'UNAUTHORIZED', 'Session has been revoked', 401);
+          return;
+        }
+      }
     } catch (err) {
       // DB lookup failed. Fail CLOSED: if we can't verify the user's
       // status we don't admit the request. This is a deliberate
@@ -88,11 +127,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
     // Update last_active_at for portal user tracking (fire-and-forget, non-blocking)
     try {
-      const { getDb } = require('../services/database');
-      getDb().prepare(
+      const db = getDb();
+      db.prepare(
         "UPDATE ios_devices SET last_active_at = datetime('now') WHERE user_id = ? AND device_id = ?"
       ).run(payload.userId, payload.deviceId);
-      getDb().prepare(
+      db.prepare(
         "UPDATE users SET last_active_at = datetime('now') WHERE id = ?"
       ).run(payload.userId);
     } catch { /* non-critical — don't block the request */ }

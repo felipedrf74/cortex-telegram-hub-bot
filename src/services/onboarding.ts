@@ -53,6 +53,23 @@ export interface UserProfile {
   updated_at: string;
 }
 
+/**
+ * Beta gap 3 (2026-04-24): raised when a client sends `stepIndex`
+ * greater than the server's current step — i.e. trying to answer a
+ * question that hasn't been reached yet. Carries the server's real
+ * `currentStep` so the route can return it and the client can reconcile.
+ *
+ * The symmetric "client is BEHIND the server" case (retry of an
+ * already-answered step) is NOT an error — `answerStep` handles it
+ * idempotently by returning the current state unchanged.
+ */
+export class OnboardingStepMismatchError extends Error {
+  constructor(public readonly expectedStepIndex: number, public readonly currentStepIndex: number) {
+    super(`Step mismatch: client sent stepIndex=${expectedStepIndex} but server is on step ${currentStepIndex}`);
+    this.name = 'OnboardingStepMismatchError';
+  }
+}
+
 // ── Questionnaire Definitions ──────────────────────────────────────
 
 export const QUESTIONNAIRES: Record<string, QuestionnaireDefinition> = {
@@ -414,6 +431,54 @@ export function startOrResume(userId: number, questionnaireId: string): Onboardi
     return parseSession(existing);
   }
 
+  // Beta gap 3 (2026-04-24) — self-heal divergence between
+  // `onboarding_sessions.status='completed'` and `user_profiles`.
+  //
+  // Pre-fix, `answerStep` updated the session row and then wrote the
+  // profile in two separate statements. A crash (or a DB-locked retry)
+  // between them could leave the session marked completed with no
+  // matching profile row. The user then got stuck: getPendingOnboardings
+  // saw "no profile" and treated the questionnaire as pending, but
+  // startOrResume below would CLOBBER the completed session back to
+  // step 0 — erasing the answers the user had just finished giving.
+  //
+  // Going forward answerStep runs inside a transaction so this class
+  // of divergence can't reappear. The self-heal here covers existing
+  // users whose sessions were broken before the fix landed.
+  //
+  // We intentionally PRESERVE the legacy "reset to step 0 on re-entry"
+  // behavior for completed sessions — tests + handlers rely on it for
+  // the re-take flow. The heal just makes sure the profile row is
+  // written (so pending/completed lookups converge) BEFORE the reset
+  // discards the answers on the session row.
+  const completedRow = db.prepare(
+    "SELECT answers FROM onboarding_sessions WHERE user_id = ? AND questionnaire = ? AND status = 'completed'",
+  ).get(userId, questionnaireId) as { answers?: string | Record<string, string> } | undefined;
+  if (completedRow) {
+    const hasProfile = Boolean(
+      db.prepare(
+        'SELECT 1 FROM user_profiles WHERE user_id = ? AND profile_type = ?',
+      ).get(userId, questionnaireId),
+    );
+    if (!hasProfile) {
+      let answers: Record<string, string> = {};
+      try {
+        answers = typeof completedRow.answers === 'string'
+          ? JSON.parse(completedRow.answers)
+          : (completedRow.answers ?? {});
+      } catch {
+        answers = {};
+      }
+      if (Object.keys(answers).length > 0) {
+        saveProfile(userId, questionnaireId, answers);
+        logger.warn(
+          { userId, questionnaire: questionnaireId, recoveredFields: Object.keys(answers).length },
+          'Onboarding self-heal: re-saved profile from completed session missing a profile row',
+        );
+      }
+    }
+  }
+
   // Create new session (upsert — may replace an abandoned/completed one)
   db.prepare(`
     INSERT INTO onboarding_sessions (user_id, questionnaire, current_step, answers, status)
@@ -434,18 +499,70 @@ export function startOrResume(userId: number, questionnaireId: string): Onboardi
   return parseSession(row);
 }
 
-/** Record an answer for the current step and advance. Returns null if completed. */
+/**
+ * Record an answer for the current step and advance. Returns `nextStep:null`
+ * when the questionnaire is complete.
+ *
+ * Beta gap 3 (2026-04-24):
+ *
+ *  1. `options.expectedStepIndex` makes the answer write idempotent under
+ *     retry. iOS sends the stepIndex it believes it's answering. If the
+ *     server is ALREADY past that step — e.g. a previous request succeeded
+ *     but the client didn't see the 200 — we return the current state as
+ *     a no-op success instead of double-writing the answer. If the client
+ *     is AHEAD of the server we throw OnboardingStepMismatchError so the
+ *     route can return a 409 with the server's real step and the client
+ *     can reconcile. When `expectedStepIndex` is omitted, behavior is
+ *     unchanged (used by Telegram handlers that drive the flow linearly).
+ *
+ *  2. The session UPDATE + profile INSERT now run in a single SQLite
+ *     transaction. Previously a crash between the two statements could
+ *     leave the session marked completed with no profile row, a state
+ *     the startOrResume self-heal recovers from.
+ */
 export function answerStep(
   userId: number,
   questionnaireId: string,
   answer: string,
-): { nextStep: QuestionStep | null; session: OnboardingSession } {
+  options: { expectedStepIndex?: number } = {},
+): { nextStep: QuestionStep | null; session: OnboardingSession; idempotentReplay?: boolean } {
   const db = getDb();
   const def = QUESTIONNAIRES[questionnaireId];
   if (!def) throw new Error(`Unknown questionnaire: ${questionnaireId}`);
 
   const session = getActiveSession(userId, questionnaireId);
   if (!session) throw new Error('No active session');
+
+  const { expectedStepIndex } = options;
+  if (typeof expectedStepIndex === 'number') {
+    if (expectedStepIndex < session.current_step) {
+      // Client is re-sending a step the server already advanced past.
+      // Treat as an idempotent no-op — DO NOT overwrite the already-
+      // stored answer or advance the cursor. Return the current state
+      // so the client converges on the server's view.
+      const isComplete = session.current_step >= def.steps.length;
+      logger.info(
+        {
+          userId,
+          questionnaire: questionnaireId,
+          clientStep: expectedStepIndex,
+          serverStep: session.current_step,
+        },
+        'Onboarding answer replay suppressed (idempotent retry)',
+      );
+      return {
+        nextStep: isComplete ? null : def.steps[session.current_step],
+        session,
+        idempotentReplay: true,
+      };
+    }
+    if (expectedStepIndex > session.current_step) {
+      // Client thinks we're further ahead than we actually are —
+      // skipping a step we haven't answered yet. Surface a typed
+      // error so the route can 409 with the real cursor.
+      throw new OnboardingStepMismatchError(expectedStepIndex, session.current_step);
+    }
+  }
 
   const currentStep = def.steps[session.current_step];
   if (!currentStep) throw new Error('Session already at last step');
@@ -460,22 +577,33 @@ export function answerStep(
   const nextStepIdx = session.current_step + 1;
   const isComplete = nextStepIdx >= def.steps.length;
 
-  db.prepare(`
-    UPDATE onboarding_sessions
-    SET answers = ?, current_step = ?, status = ?, completed_at = ?
-    WHERE user_id = ? AND questionnaire = ? AND status = 'in_progress'
-  `).run(
-    JSON.stringify(answers),
-    nextStepIdx,
-    isComplete ? 'completed' : 'in_progress',
-    isComplete ? new Date().toISOString() : null,
-    userId,
-    questionnaireId,
-  );
+  // Transactional write: the session advancement and the terminal
+  // saveProfile upsert must either both commit or both roll back.
+  // Without this, a crash between UPDATE and INSERT leaves the user
+  // with a status='completed' session and no profile row — the stuck
+  // state the startOrResume self-heal now recovers from, but should
+  // not be allowed to recur for users running the fixed code path.
+  const commit = db.transaction(() => {
+    db.prepare(`
+      UPDATE onboarding_sessions
+      SET answers = ?, current_step = ?, status = ?, completed_at = ?
+      WHERE user_id = ? AND questionnaire = ? AND status = 'in_progress'
+    `).run(
+      JSON.stringify(answers),
+      nextStepIdx,
+      isComplete ? 'completed' : 'in_progress',
+      isComplete ? new Date().toISOString() : null,
+      userId,
+      questionnaireId,
+    );
 
-  // If completed, save profile
+    if (isComplete) {
+      saveProfile(userId, questionnaireId, answers);
+    }
+  });
+  commit();
+
   if (isComplete) {
-    saveProfile(userId, questionnaireId, answers);
     logger.info({ userId, questionnaire: questionnaireId }, 'Onboarding completed');
   }
 
