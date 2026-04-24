@@ -32,6 +32,16 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   acknowledgement, resolution, and audit verification.
 - Deploy scripts now exclude worktree `.git` files so branch worktrees can
   deploy safely.
+- Priority 7 production recheck passed focus recommendation day selection:
+  `/api/v1/calendar/focus-recommendation` returned HTTP `200` and recommended
+  today for Felipe's production account.
+- Priority 7 production recheck found Google Calendar truly degraded:
+  production connections report Google `degraded`, dashboard emits
+  `GOOGLE_CALENDAR_UNAVAILABLE`, and Google refresh fails with
+  `unauthorized_client` / `invalid_grant`. Rerun Google dashboard/write smoke
+  after reconnecting Google from TestFlight.
+- Outlook token-zero calendar write smoke passed create/update/delete
+  `200/200/200` and auto-deleted the temporary event.
 
 ## Single-Agent Rules
 
