@@ -4,6 +4,7 @@ import type { Express, Request, Response } from 'express';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { logAudit } from '../services/audit-trail';
 import { getOwnerBootstrapTarget } from '../services/user-service';
+import { buildPortalAdminAuditDetails } from './admin-audit';
 import {
   VALID_PORTAL_ACTIONS,
   handlePortalAction,
@@ -17,11 +18,17 @@ function auditPortalAction(req: Request, name: string): void {
   try {
     const ownerTarget = getOwnerBootstrapTarget();
     if (ownerTarget) {
+      // Portal actions run as the owner tenant but are dispatched by an
+      // operator. Capture the operator's auth context in the audit details
+      // (credential kind, actor hint, signature verification state) so the
+      // audit trail can attribute the action to the human who triggered it
+      // — not just the owner the bot impersonates.
       logAudit({
         userId: ownerTarget.tenantId,
         actorId: ownerTarget.tenantId,
         action: 'access',
         resource: `portal.action.${name}`,
+        details: buildPortalAdminAuditDetails(req),
         ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
       });
     }

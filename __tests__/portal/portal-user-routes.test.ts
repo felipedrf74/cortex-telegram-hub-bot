@@ -1,13 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const hoisted = vi.hoisted(() => ({
-  getDb: vi.fn(),
-  listUsers: vi.fn(),
-  setUserStatusById: vi.fn(),
-  requirePortalAdminToken: vi.fn(),
-  logPortalAdminMutation: vi.fn(),
-  sendPortalInternalError: vi.fn(),
-}));
+const hoisted = vi.hoisted(() => {
+  const targetUserGuard = ((_req: unknown, _res: unknown, next: () => void) => next()) as unknown as ReturnType<typeof vi.fn>;
+  return {
+    getDb: vi.fn(),
+    listUsers: vi.fn(),
+    setUserStatusById: vi.fn(),
+    requirePortalAdminToken: vi.fn(),
+    logPortalAdminMutation: vi.fn(),
+    sendPortalInternalError: vi.fn(),
+    targetUserGuard,
+    requireOperatorTargetUser: vi.fn(() => targetUserGuard),
+  };
+});
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
@@ -24,6 +29,10 @@ vi.mock('../../src/api/secret-guards', () => ({
 
 vi.mock('../../src/portal/admin-audit', () => ({
   logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
+}));
+
+vi.mock('../../src/portal/admin-target-user', () => ({
+  requireOperatorTargetUser: (...args: unknown[]) => hoisted.requireOperatorTargetUser(...args),
 }));
 
 vi.mock('../../src/portal/http', () => ({
@@ -92,20 +101,22 @@ describe('portal user routes', () => {
     hoisted.getDb.mockReturnValue(recorder.db);
   });
 
-  it('registers user routes and protects mutations with the admin token guard', () => {
+  it('registers user routes and protects mutations with the admin token + operator target-user guards', () => {
     const { app, routes } = makeApp();
 
     registerPortalUserRoutes(app as any);
 
     expect(app.get).toHaveBeenCalledWith('/api/users', expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/suspend', hoisted.requirePortalAdminToken, expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', hoisted.requirePortalAdminToken, expect.any(Function));
-    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/tier', hoisted.requirePortalAdminToken, expect.any(Function), expect.any(Function));
-    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/limits', hoisted.requirePortalAdminToken, expect.any(Function), expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/suspend', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/activate', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
+    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/tier', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
+    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/limits', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
     expect(routes.get('POST /api/users/:userId/suspend')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/suspend')?.[1]).toBe(hoisted.targetUserGuard);
     expect(routes.get('POST /api/users/:userId/activate')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('PUT /api/users/:userId/tier')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('PUT /api/users/:userId/limits')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(hoisted.requireOperatorTargetUser).toHaveBeenCalledWith('userId');
   });
 
   it('lists safe portal users', () => {
@@ -145,7 +156,7 @@ describe('portal user routes', () => {
   it('rejects invalid user ids before status mutations', () => {
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/suspend')?.[1]!;
+    const handler = routes.get('POST /api/users/:userId/suspend')?.[2]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '0' } }, res);
@@ -160,7 +171,7 @@ describe('portal user routes', () => {
     const req = { params: { userId: '42' } };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/suspend')?.[1]!;
+    const handler = routes.get('POST /api/users/:userId/suspend')?.[2]!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -176,7 +187,7 @@ describe('portal user routes', () => {
     const req = { params: { userId: '42' } };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/activate')?.[1]!;
+    const handler = routes.get('POST /api/users/:userId/activate')?.[2]!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -194,7 +205,7 @@ describe('portal user routes', () => {
     const req = { params: { userId: '7' }, body: { tier: 'MAX' } };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/tier')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/tier')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -212,7 +223,7 @@ describe('portal user routes', () => {
     hoisted.getDb.mockReturnValue(recorder.db);
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/tier')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/tier')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '7' }, body: { tier: 'enterprise' } }, res);
@@ -235,7 +246,7 @@ describe('portal user routes', () => {
     };
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/limits')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/limits')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -264,7 +275,7 @@ describe('portal user routes', () => {
     });
     const { app, routes } = makeApp();
     registerPortalUserRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/tier')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/tier')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '7' }, body: { tier: 'pro' } }, res);

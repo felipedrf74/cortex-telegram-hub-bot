@@ -16,7 +16,12 @@ import {
   resolveOperatorAlert,
   type OperatorAlertStatus,
 } from '../services/operator-alerts';
-import { extractPortalActorHint, getPortalAuthContext } from '../api/secret-guards';
+import {
+  extractPortalActorHint,
+  getPortalAuthContext,
+  requirePortalAdminToken,
+} from '../api/secret-guards';
+import { logPortalAdminMutation } from './admin-audit';
 import { sendPortalInternalError } from './http';
 
 interface PortalOperationsRouteDeps {
@@ -145,7 +150,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
     }
   });
 
-  app.post('/api/operator-alerts/:id/ack', (req: Request, res: Response) => {
+  app.post('/api/operator-alerts/:id/ack', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
       if (!id) {
@@ -153,13 +158,16 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
         return;
       }
       const ok = acknowledgeOperatorAlert(id, portalActor(req));
+      if (ok) {
+        logPortalAdminMutation(req, 0, 'operator_alert.ack', { alertId: id });
+      }
       res.status(ok ? 200 : 404).json({ ok });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }
   });
 
-  app.post('/api/operator-alerts/:id/resolve', (req: Request, res: Response) => {
+  app.post('/api/operator-alerts/:id/resolve', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
       if (!id) {
@@ -167,13 +175,16 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
         return;
       }
       const ok = resolveOperatorAlert(id, portalActor(req));
+      if (ok) {
+        logPortalAdminMutation(req, 0, 'operator_alert.resolve', { alertId: id });
+      }
       res.status(ok ? 200 : 404).json({ ok });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
     }
   });
 
-  app.post('/api/operator-alerts/:id/retry-delivery', (req: Request, res: Response) => {
+  app.post('/api/operator-alerts/:id/retry-delivery', requirePortalAdminToken, (req: Request, res: Response) => {
     try {
       const id = parsePositiveInteger(req.params?.id);
       if (!id) {
@@ -181,6 +192,9 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
         return;
       }
       const ok = retryOperatorAlertDelivery(id);
+      if (ok) {
+        logPortalAdminMutation(req, 0, 'operator_alert.retry_delivery', { alertId: id });
+      }
       res.status(ok ? 200 : 404).json({ ok });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');

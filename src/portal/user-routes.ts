@@ -5,6 +5,7 @@ import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import { listUsers, setUserStatusById } from '../services/user-service';
 import { logPortalAdminMutation } from './admin-audit';
+import { requireOperatorTargetUser } from './admin-target-user';
 import { sendPortalInternalError } from './http';
 
 const VALID_TIERS = new Set(['free', 'pro', 'max', 'owner']);
@@ -30,7 +31,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/users/:userId/suspend', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/users/:userId/suspend', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -46,7 +47,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/users/:userId/activate', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/users/:userId/activate', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -62,7 +63,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.put('/api/users/:userId/tier', requirePortalAdminToken, express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/tier', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -85,7 +86,7 @@ export function registerPortalUserRoutes(app: express.Express): void {
     }
   });
 
-  app.put('/api/users/:userId/limits', requirePortalAdminToken, express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/limits', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {

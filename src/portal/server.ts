@@ -24,6 +24,7 @@ import { generateRequestId, runWithContext } from '../utils/request-context';
 import { requirePortalTokenByMethod } from '../api/secret-guards';
 import {
   getConfiguredPortalCredentials,
+  validatePortalAdminBetaReadiness,
   validatePortalCredentialStrength,
 } from './security';
 import { registerPortalAdminDataRoutes } from './admin-data-routes';
@@ -268,6 +269,12 @@ export function createPortalServer(bot?: any): http.Server {
   // empty, but request-time bypass is now explicit via
   // PORTAL_ALLOW_LOCAL_BYPASS=true and loopback-only in non-production.
   validatePortalCredentialStrength(configuredPortalTokens);
+
+  // Gap 5 preflight: classify admin exposure and refuse to boot when the
+  // declared beta-hardened policy cannot be satisfied. Emits a structured
+  // warning when admin is exposed in production without signed sessions or
+  // actor signatures, so the on-call runbook has a single log line to check.
+  validatePortalAdminBetaReadiness(config.portal);
 
   app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     // Skip portal auth for iOS API routes — they use their own JWT middleware

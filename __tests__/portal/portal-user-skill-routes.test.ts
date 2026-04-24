@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const hoisted = vi.hoisted(() => ({
-  requirePortalAdminToken: vi.fn(),
-  getSkillCatalog: vi.fn(),
-  getUserSkillState: vi.fn(),
-  resetUserSkillOverrides: vi.fn(),
-  setSkillAccess: vi.fn(),
-  logPortalAdminMutation: vi.fn(),
-  sendPortalInternalError: vi.fn(),
-}));
+const hoisted = vi.hoisted(() => {
+  const targetUserGuard = ((_req: unknown, _res: unknown, next: () => void) => next()) as unknown as ReturnType<typeof vi.fn>;
+  return {
+    requirePortalAdminToken: vi.fn(),
+    getSkillCatalog: vi.fn(),
+    getUserSkillState: vi.fn(),
+    resetUserSkillOverrides: vi.fn(),
+    setSkillAccess: vi.fn(),
+    logPortalAdminMutation: vi.fn(),
+    sendPortalInternalError: vi.fn(),
+    targetUserGuard,
+    requireOperatorTargetUser: vi.fn(() => targetUserGuard),
+  };
+});
 
 vi.mock('../../src/api/secret-guards', () => ({
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
@@ -23,6 +28,10 @@ vi.mock('../../src/services/user-skill-access', () => ({
 
 vi.mock('../../src/portal/admin-audit', () => ({
   logPortalAdminMutation: (...args: unknown[]) => hoisted.logPortalAdminMutation(...args),
+}));
+
+vi.mock('../../src/portal/admin-target-user', () => ({
+  requireOperatorTargetUser: (...args: unknown[]) => hoisted.requireOperatorTargetUser(...args),
 }));
 
 vi.mock('../../src/portal/http', () => ({
@@ -91,16 +100,19 @@ describe('portal user skill routes', () => {
     hoisted.getUserSkillState.mockReturnValue([{ skill: 'finance', enabled: true }]);
   });
 
-  it('registers skill routes and protects mutations with the admin token guard', () => {
+  it('registers skill routes and protects mutations with the admin token + operator target-user guards', () => {
     const { app, routes } = makeApp();
 
     registerPortalUserSkillRoutes(app as any);
 
     expect(app.get).toHaveBeenCalledWith('/api/users/:userId/skills', expect.any(Function));
-    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/skills', hoisted.requirePortalAdminToken, expect.any(Function), expect.any(Function));
-    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/skills/reset', hoisted.requirePortalAdminToken, expect.any(Function));
+    expect(app.put).toHaveBeenCalledWith('/api/users/:userId/skills', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function), expect.any(Function));
+    expect(app.post).toHaveBeenCalledWith('/api/users/:userId/skills/reset', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(routes.get('PUT /api/users/:userId/skills')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('PUT /api/users/:userId/skills')?.[1]).toBe(hoisted.targetUserGuard);
     expect(routes.get('POST /api/users/:userId/skills/reset')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('POST /api/users/:userId/skills/reset')?.[1]).toBe(hoisted.targetUserGuard);
+    expect(hoisted.requireOperatorTargetUser).toHaveBeenCalledWith('userId');
   });
 
   it('loads a user skill state by canonical user id', () => {
@@ -131,7 +143,7 @@ describe('portal user skill routes', () => {
   it('rejects malformed mutation payloads before writing overrides', () => {
     const { app, routes } = makeApp();
     registerPortalUserSkillRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/skills')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/skills')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '42' }, body: { skill: 'unknown', enabled: true } }, res);
@@ -145,7 +157,7 @@ describe('portal user skill routes', () => {
   it('rejects non-boolean enabled values before writing overrides', () => {
     const { app, routes } = makeApp();
     registerPortalUserSkillRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/skills')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/skills')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '42' }, body: { skill: 'finance', enabled: 'false' } }, res);
@@ -167,7 +179,7 @@ describe('portal user skill routes', () => {
     };
     const { app, routes } = makeApp();
     registerPortalUserSkillRoutes(app as any);
-    const handler = routes.get('PUT /api/users/:userId/skills')?.[2]!;
+    const handler = routes.get('PUT /api/users/:userId/skills')?.[3]!;
     const { payload, res } = makeResponse();
 
     handler(req, res);
@@ -189,7 +201,7 @@ describe('portal user skill routes', () => {
     const req = { params: { userId: '42' } };
     const { app, routes } = makeApp();
     registerPortalUserSkillRoutes(app as any);
-    const handler = routes.get('POST /api/users/:userId/skills/reset')?.[1]!;
+    const handler = routes.get('POST /api/users/:userId/skills/reset')?.[2]!;
     const { payload, res } = makeResponse();
 
     handler(req, res);

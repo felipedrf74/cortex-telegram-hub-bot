@@ -17,7 +17,7 @@
  *      7-day JWT expiry.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -26,6 +26,24 @@ import type { Request } from 'express';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+
+const originalEnv = {
+  STAGING: process.env.STAGING,
+  IOS_API_ENABLED: process.env.IOS_API_ENABLED,
+  IOS_API_JWT_SECRET: process.env.IOS_API_JWT_SECRET,
+  IOS_INVITE_CODE: process.env.IOS_INVITE_CODE,
+  IOS_OWNER_CODE: process.env.IOS_OWNER_CODE,
+  OWNER_TELEGRAM_ID: process.env.OWNER_TELEGRAM_ID,
+};
+
+function restoreEnv(key: keyof typeof originalEnv): void {
+  const value = originalEnv[key];
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
+}
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -138,6 +156,16 @@ describe('POST /auth/logout (server-side session revocation)', () => {
     }));
   });
 
+  afterEach(() => {
+    testDb?.close();
+    (Object.keys(originalEnv) as Array<keyof typeof originalEnv>).forEach(restoreEnv);
+    vi.doUnmock('../../src/api/auth-middleware');
+    vi.doUnmock('../../src/services/audit-trail');
+    vi.doUnmock('../../src/services/database');
+    vi.doUnmock('../../src/utils/logger');
+    vi.resetModules();
+  });
+
   it('deletes the caller\'s ios_devices row so the refresh token is revoked', async () => {
     testDb.prepare(`
       INSERT INTO ios_devices (user_id, device_id, device_name, refresh_token)
@@ -224,6 +252,16 @@ describe('POST /auth/logout-all (account-wide revocation)', () => {
     }));
   });
 
+  afterEach(() => {
+    testDb?.close();
+    (Object.keys(originalEnv) as Array<keyof typeof originalEnv>).forEach(restoreEnv);
+    vi.doUnmock('../../src/api/auth-middleware');
+    vi.doUnmock('../../src/services/audit-trail');
+    vi.doUnmock('../../src/services/database');
+    vi.doUnmock('../../src/utils/logger');
+    vi.resetModules();
+  });
+
   it('deletes every device for the user and preserves other users\' devices', async () => {
     testDb.prepare('INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)').run(42, 'dev-a', 'tok-a');
     testDb.prepare('INSERT INTO ios_devices (user_id, device_id, refresh_token) VALUES (?, ?, ?)').run(42, 'dev-b', 'tok-b');
@@ -242,4 +280,3 @@ describe('POST /auth/logout-all (account-wide revocation)', () => {
     expect(rows).toEqual([{ user_id: 99, device_id: 'dev-other' }]);
   });
 });
-

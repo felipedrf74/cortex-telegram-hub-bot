@@ -51,10 +51,23 @@ vi.mock('../../src/services/operator-alerts', () => ({
   retryOperatorAlertDelivery: (...args: unknown[]) => mockRetryOperatorAlertDelivery(...args),
 }));
 
+const hoistedOps = vi.hoisted(() => ({
+  mockLogPortalAdminMutation: vi.fn(),
+  mockRequirePortalAdminToken: vi.fn((_req: any, _res: any, next: () => void) => next()),
+}));
+
 vi.mock('../../src/api/secret-guards', () => ({
   extractPortalActorHint: (req: any) => req.headers?.['x-portal-actor'],
   getPortalAuthContext: (req: any) => req.portalAuthContext,
+  requirePortalAdminToken: hoistedOps.mockRequirePortalAdminToken,
 }));
+
+vi.mock('../../src/portal/admin-audit', () => ({
+  logPortalAdminMutation: (...args: unknown[]) => hoistedOps.mockLogPortalAdminMutation(...args),
+}));
+
+const mockLogPortalAdminMutation = hoistedOps.mockLogPortalAdminMutation;
+const mockRequirePortalAdminToken = hoistedOps.mockRequirePortalAdminToken;
 
 vi.mock('../../src/portal/http', () => ({
   sendPortalInternalError: (...args: unknown[]) => mockSendPortalInternalError(...args),
@@ -79,11 +92,11 @@ interface CapturedRoute {
 function captureRoutes(): CapturedRoute[] {
   const routes: CapturedRoute[] = [];
   const app = {
-    get(path: string, handler: Handler) {
-      routes.push({ method: 'GET', path, handler });
+    get(path: string, ...handlers: Handler[]) {
+      routes.push({ method: 'GET', path, handler: handlers[handlers.length - 1] });
     },
-    post(path: string, handler: Handler) {
-      routes.push({ method: 'POST', path, handler });
+    post(path: string, ...handlers: Handler[]) {
+      routes.push({ method: 'POST', path, handler: handlers[handlers.length - 1] });
     },
   };
   registerPortalOperationsRoutes(app as any, {
@@ -133,6 +146,9 @@ describe('portal operations routes', () => {
     mockRetryOperatorAlertDelivery.mockReset();
     mockSendPortalInternalError.mockReset();
     mockLoggerError.mockReset();
+    mockLogPortalAdminMutation.mockReset();
+    mockRequirePortalAdminToken.mockClear();
+    mockRequirePortalAdminToken.mockImplementation((_req: any, _res: any, next: () => void) => next());
   });
 
   it('registers the read-only operations route family', () => {
@@ -261,44 +277,62 @@ describe('portal operations routes', () => {
     });
   });
 
-  it('acknowledges and resolves operator alerts with actor context', () => {
+  it('acknowledges and resolves operator alerts with actor context and admin audit', () => {
     mockAcknowledgeOperatorAlert.mockReturnValueOnce(true);
     mockResolveOperatorAlert.mockReturnValueOnce(true);
 
+    const ackReq = {
+      params: { id: '7' },
+      portalAuthContext: { actorHint: 'operator@nexushub.me' },
+    };
     const ack = invoke('/api/operator-alerts/:id/ack', {
       method: 'POST',
-      req: {
-        params: { id: '7' },
-        portalAuthContext: { actorHint: 'operator@nexushub.me' },
-      },
+      req: ackReq,
     });
     expect(ack.statusCode).toBe(200);
     expect(ack.body).toEqual({ ok: true });
     expect(mockAcknowledgeOperatorAlert).toHaveBeenCalledWith(7, 'operator@nexushub.me');
+    expect(mockLogPortalAdminMutation).toHaveBeenCalledWith(ackReq, 0, 'operator_alert.ack', { alertId: 7 });
 
+    const resolveReq = {
+      params: { id: '7' },
+      headers: { 'x-portal-actor': 'fallback@nexushub.me' },
+    };
     const resolved = invoke('/api/operator-alerts/:id/resolve', {
       method: 'POST',
-      req: {
-        params: { id: '7' },
-        headers: { 'x-portal-actor': 'fallback@nexushub.me' },
-      },
+      req: resolveReq,
     });
     expect(resolved.statusCode).toBe(200);
     expect(resolved.body).toEqual({ ok: true });
     expect(mockResolveOperatorAlert).toHaveBeenCalledWith(7, 'fallback@nexushub.me');
+    expect(mockLogPortalAdminMutation).toHaveBeenCalledWith(resolveReq, 0, 'operator_alert.resolve', { alertId: 7 });
   });
 
-  it('queues operator alert delivery retries', () => {
-    mockRetryOperatorAlertDelivery.mockReturnValueOnce(true);
+  it('does not write an admin audit entry when the alert mutation is a no-op', () => {
+    mockAcknowledgeOperatorAlert.mockReturnValueOnce(false);
 
-    const res = invoke('/api/operator-alerts/:id/retry-delivery', {
+    const res = invoke('/api/operator-alerts/:id/ack', {
       method: 'POST',
       req: { params: { id: '7' } },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(mockLogPortalAdminMutation).not.toHaveBeenCalled();
+  });
+
+  it('queues operator alert delivery retries and writes an admin audit entry', () => {
+    mockRetryOperatorAlertDelivery.mockReturnValueOnce(true);
+
+    const req = { params: { id: '7' } };
+    const res = invoke('/api/operator-alerts/:id/retry-delivery', {
+      method: 'POST',
+      req,
     });
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ ok: true });
     expect(mockRetryOperatorAlertDelivery).toHaveBeenCalledWith(7);
+    expect(mockLogPortalAdminMutation).toHaveBeenCalledWith(req, 0, 'operator_alert.retry_delivery', { alertId: 7 });
   });
 
   it('rejects invalid operator alert ids without calling the service', () => {

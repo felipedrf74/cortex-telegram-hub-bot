@@ -66,6 +66,15 @@ function applyMigrations(db: Database.Database): void {
 }
 
 function seedTenantRows(): void {
+  // Seed the users table so the admin target-user guard (Gap 5) can resolve
+  // the target canonical ids before reaching the handler body. These rows
+  // are independent of the finance/audit isolation this suite exercises.
+  const userInsert = testDb.prepare(
+    `INSERT INTO users (id, telegram_id, first_name, status) VALUES (?, ?, ?, 'active')`,
+  );
+  userInsert.run(501, 100501, 'Tenant A');
+  userInsert.run(502, 100502, 'Tenant B');
+
   testDb.prepare(`
     INSERT INTO finance_transactions (user_id, date, category, amount, currency, description)
     VALUES (?, '2026-04-01', 'income', 1000, 'EUR', ?)

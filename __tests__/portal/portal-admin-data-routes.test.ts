@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const hoisted = vi.hoisted(() => ({
-  getDb: vi.fn(),
-  requirePortalAdminToken: vi.fn(),
-  countUserFinanceData: vi.fn(),
-  sendPortalInternalError: vi.fn(),
-}));
+const hoisted = vi.hoisted(() => {
+  const targetUserGuard = ((_req: unknown, _res: unknown, next: () => void) => next()) as unknown as ReturnType<typeof vi.fn>;
+  return {
+    getDb: vi.fn(),
+    requirePortalAdminToken: vi.fn(),
+    countUserFinanceData: vi.fn(),
+    sendPortalInternalError: vi.fn(),
+    targetUserGuard,
+    requireOperatorTargetUser: vi.fn(() => targetUserGuard),
+  };
+});
 
 vi.mock('../../src/services/database', () => ({
   getDb: (...args: unknown[]) => hoisted.getDb(...args),
@@ -17,6 +22,10 @@ vi.mock('../../src/api/secret-guards', () => ({
 
 vi.mock('../../src/services/user-data-export', () => ({
   countUserFinanceData: (...args: unknown[]) => hoisted.countUserFinanceData(...args),
+}));
+
+vi.mock('../../src/portal/admin-target-user', () => ({
+  requireOperatorTargetUser: (...args: unknown[]) => hoisted.requireOperatorTargetUser(...args),
 }));
 
 vi.mock('../../src/portal/http', () => ({
@@ -84,15 +93,17 @@ describe('portal admin data routes', () => {
     hoisted.getDb.mockReturnValue(makeDbRecorder().db);
   });
 
-  it('registers audit and data-summary routes behind the admin token guard', () => {
+  it('registers audit and data-summary routes behind the admin token + operator target-user guards', () => {
     const { app, routes } = makeApp();
 
     registerPortalAdminDataRoutes(app as any);
 
     expect(app.get).toHaveBeenCalledWith('/api/audit-trail', hoisted.requirePortalAdminToken, expect.any(Function));
-    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/data-summary', hoisted.requirePortalAdminToken, expect.any(Function));
+    expect(app.get).toHaveBeenCalledWith('/api/users/:userId/data-summary', hoisted.requirePortalAdminToken, hoisted.targetUserGuard, expect.any(Function));
     expect(routes.get('GET /api/audit-trail')?.[0]).toBe(hoisted.requirePortalAdminToken);
     expect(routes.get('GET /api/users/:userId/data-summary')?.[0]).toBe(hoisted.requirePortalAdminToken);
+    expect(routes.get('GET /api/users/:userId/data-summary')?.[1]).toBe(hoisted.targetUserGuard);
+    expect(hoisted.requireOperatorTargetUser).toHaveBeenCalledWith('userId');
   });
 
   it('loads audit trail entries with a bounded default limit', () => {
@@ -141,7 +152,7 @@ describe('portal admin data routes', () => {
     hoisted.getDb.mockReturnValue(recorder.db);
     const { app, routes } = makeApp();
     registerPortalAdminDataRoutes(app as any);
-    const handler = routes.get('GET /api/users/:userId/data-summary')?.[1]!;
+    const handler = routes.get('GET /api/users/:userId/data-summary')?.[2]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: '42' } }, res);
@@ -162,7 +173,7 @@ describe('portal admin data routes', () => {
   it('rejects invalid user ids before data-summary work', () => {
     const { app, routes } = makeApp();
     registerPortalAdminDataRoutes(app as any);
-    const handler = routes.get('GET /api/users/:userId/data-summary')?.[1]!;
+    const handler = routes.get('GET /api/users/:userId/data-summary')?.[2]!;
     const { payload, res } = makeResponse();
 
     handler({ params: { userId: 'not-a-number' } }, res);

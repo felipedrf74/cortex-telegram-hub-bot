@@ -347,6 +347,40 @@ export const config = {
     sessionMaxAgeMs: optionalInt('PORTAL_SESSION_MAX_AGE_MS', 28800000, { min: 60000 }),
     requireSessionAuth:
       (process.env.PORTAL_REQUIRE_SESSION_AUTH || 'false') === 'true',
+    // Beta readiness flag (Gap 5): when true, the boot preflight refuses to
+    // start if the resolved admin exposure mode is not beta-safe (disabled,
+    // loopback_only, session_only, signed_static). This is the single flag
+    // the beta runbook points at before exposing the admin surface.
+    betaHardened:
+      (process.env.PORTAL_BETA_HARDENED || 'false') === 'true',
+    // Optional per-operator user scope (Gap 5): JSON object mapping actor hint
+    // (lowercased) to the list of user ids that operator is allowed to admin.
+    // When unset, admin credentials have god-mode access across all users
+    // (preserves single-owner deployment behavior). When set, :userId admin
+    // routes fail closed with 403 if the authenticated operator is not scoped
+    // to the requested user. Example:
+    //   PORTAL_OPERATOR_USER_SCOPES='{"operator@example.com":[1,2,3]}'
+    operatorUserScopes: (() => {
+      const raw = (process.env.PORTAL_OPERATOR_USER_SCOPES || '').trim();
+      if (!raw) return {} as Record<string, readonly number[]>;
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (!parsed || typeof parsed !== 'object') return {};
+        const out: Record<string, readonly number[]> = {};
+        for (const [actor, ids] of Object.entries(parsed)) {
+          const normalizedActor = String(actor).trim().toLowerCase();
+          if (!normalizedActor) continue;
+          if (!Array.isArray(ids)) continue;
+          const numericIds = ids
+            .map((id) => Number(id))
+            .filter((id) => Number.isInteger(id) && id > 0);
+          if (numericIds.length > 0) out[normalizedActor] = numericIds;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    })(),
     // Hardening pass 2026-04-22: once scoped portal tokens exist, the
     // legacy full-access token is disabled by default. Operators who
     // still need the old token during migration must opt in explicitly.

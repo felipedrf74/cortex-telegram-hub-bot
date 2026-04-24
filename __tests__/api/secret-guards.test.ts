@@ -736,4 +736,124 @@ describe('secret guards portal scope enforcement', () => {
       dedicatedAdminConfigured: false,
     });
   });
+
+  it('rejects portal session tokens whose signature byte has been tampered with', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const {
+      createPortalSessionToken,
+      requirePortalToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'reader@nexushub.me',
+      scope: 'read',
+      ttlMs: 60000,
+    });
+
+    // Flip a single base64url character in the signature segment to simulate
+    // a tampered session header without corrupting the payload structure.
+    const [prefix, body] = [sessionToken.slice(0, 3), sessionToken.slice(3)];
+    const [encodedPayload, signature] = body.split('.');
+    const flipped = signature.slice(0, -1) + (signature.at(-1) === 'a' ? 'b' : 'a');
+    const tampered = `${prefix}${encodedPayload}.${flipped}`;
+
+    const req = createRequest('GET', undefined, { 'x-portal-session': tampered });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: { code: 'UNAUTHORIZED', message: 'Invalid portal token' },
+    });
+  });
+
+  it('rejects portal session tokens when the payload has been tampered with but the signature is left intact', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const {
+      createPortalSessionToken,
+      requirePortalToken,
+    } = await import('../../src/api/secret-guards');
+
+    const sessionToken = createPortalSessionToken({
+      secret: portalSessionSecret,
+      actorHint: 'reader@nexushub.me',
+      scope: 'read',
+      ttlMs: 60000,
+    });
+    const [prefix, body] = [sessionToken.slice(0, 3), sessionToken.slice(3)];
+    const [encodedPayload, signature] = body.split('.');
+
+    // Substitute an entirely new payload while preserving the prior signature
+    // to prove the verifier compares HMAC against the payload, not just format.
+    const forgedPayload = Buffer.from(
+      JSON.stringify({ v: 1, actor: 'attacker@evil.com', scope: 'admin', iat: Date.now(), exp: Date.now() + 60000 }),
+      'utf8',
+    ).toString('base64url');
+    const tampered = `${prefix}${forgedPayload}.${signature}`;
+
+    const req = createRequest('GET', undefined, { 'x-portal-session': tampered });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalToken(req, res as unknown as Response, next);
+
+    // Sanity: original payload differs from the forgery.
+    expect(forgedPayload).not.toBe(encodedPayload);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects a valid session signed with a different secret (cross-environment replay)', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const {
+      createPortalSessionToken,
+      requirePortalAdminToken,
+    } = await import('../../src/api/secret-guards');
+
+    const strangerToken = createPortalSessionToken({
+      secret: 'different-env-secret',
+      actorHint: 'operator@nexushub.me',
+      scope: 'admin',
+      ttlMs: 60000,
+    });
+
+    const req = createRequest('POST', undefined, { 'x-portal-session': strangerToken });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalAdminToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects a well-formed session with structurally invalid payload fields (v!=1, missing actor)', async () => {
+    portalSessionSecret = 'portal-session-signing-secret';
+    const { requirePortalToken } = await import('../../src/api/secret-guards');
+
+    // Build a token with the correct HMAC but an invalid payload shape.
+    const { signPortalSessionPayload, PORTAL_SESSION_PREFIX } = await import(
+      '../../src/services/portal-session-token'
+    );
+    const badPayload = Buffer.from(
+      JSON.stringify({ v: 2, actor: '', scope: 'admin', iat: Date.now(), exp: Date.now() + 60000 }),
+      'utf8',
+    ).toString('base64url');
+    const badSignature = signPortalSessionPayload(portalSessionSecret, badPayload);
+    const token = `${PORTAL_SESSION_PREFIX}${badPayload}.${badSignature}`;
+
+    const req = createRequest('GET', undefined, { 'x-portal-session': token });
+    const res = createMockResponse();
+    const next = vi.fn() as unknown as NextFunction;
+
+    requirePortalToken(req, res as unknown as Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
 });

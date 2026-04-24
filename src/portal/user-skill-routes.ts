@@ -9,6 +9,7 @@ import {
   setSkillAccess,
 } from '../services/user-skill-access';
 import { logPortalAdminMutation } from './admin-audit';
+import { requireOperatorTargetUser } from './admin-target-user';
 import { sendPortalInternalError } from './http';
 
 function parsePositiveUserId(value: unknown): number | null {
@@ -54,7 +55,7 @@ export function registerPortalUserSkillRoutes(app: express.Express): void {
     }
   });
 
-  app.put('/api/users/:userId/skills', requirePortalAdminToken, express.json(), (req: Request, res: Response) => {
+  app.put('/api/users/:userId/skills', requirePortalAdminToken, requireOperatorTargetUser('userId'), express.json(), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {
@@ -88,7 +89,7 @@ export function registerPortalUserSkillRoutes(app: express.Express): void {
     }
   });
 
-  app.post('/api/users/:userId/skills/reset', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.post('/api/users/:userId/skills/reset', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveUserId(req.params.userId);
       if (!userId) {

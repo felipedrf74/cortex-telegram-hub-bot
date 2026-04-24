@@ -17,6 +17,7 @@ const settingsRoutesPath = path.resolve(__dirname, '../../src/portal/settings-ro
 const userSkillRoutesPath = path.resolve(__dirname, '../../src/portal/user-skill-routes.ts');
 const userRoutesPath = path.resolve(__dirname, '../../src/portal/user-routes.ts');
 const waitlistRoutesPath = path.resolve(__dirname, '../../src/portal/waitlist-routes.ts');
+const operationsRoutesPath = path.resolve(__dirname, '../../src/portal/operations-routes.ts');
 const serverSource = fs.readFileSync(serverPath, 'utf8');
 const portalRouteSource = [
   serverSource,
@@ -34,6 +35,7 @@ const portalRouteSource = [
   fs.readFileSync(webhookRoutesPath, 'utf8'),
   fs.readFileSync(userRoutesPath, 'utf8'),
   fs.readFileSync(waitlistRoutesPath, 'utf8'),
+  fs.readFileSync(operationsRoutesPath, 'utf8'),
 ].join('\n');
 
 describe('portal admin scope hardening', () => {
@@ -109,5 +111,40 @@ describe('portal admin scope hardening', () => {
     expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'waitlist.approve'");
     expect(portalRouteSource).toContain("logPortalAdminMutation(req, userId, 'user.skills.update'");
     expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'settings.update'");
+  });
+
+  // Gap 5: operator alert lifecycle mutations now flow through the portal
+  // admin token guard and the admin audit layer. Previously they required
+  // only the method-based write scope and wrote actor metadata directly to
+  // the alert row, leaving the audit_trail blind to the operator identity.
+  it('protects operator-alert lifecycle mutations with the admin token middleware', () => {
+    expect(portalRouteSource).toContain("app.post('/api/operator-alerts/:id/ack', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/operator-alerts/:id/resolve', requirePortalAdminToken");
+    expect(portalRouteSource).toContain("app.post('/api/operator-alerts/:id/retry-delivery', requirePortalAdminToken");
+  });
+
+  it('captures operator-alert lifecycle mutations in the admin audit trail', () => {
+    expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'operator_alert.ack'");
+    expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'operator_alert.resolve'");
+    expect(portalRouteSource).toContain("logPortalAdminMutation(req, 0, 'operator_alert.retry_delivery'");
+  });
+
+  // Gap 5: admin routes that accept :userId now chain the operator target-user
+  // guard after the admin token guard so we consistently validate existence
+  // and (when configured) per-operator scope before mutating user data.
+  it('chains the operator target-user guard on every :userId admin route', () => {
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/suspend', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/activate', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/tier', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/limits', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.put('/api/users/:userId/skills', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.post('/api/users/:userId/skills/reset', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+    expect(portalRouteSource).toContain("app.get('/api/users/:userId/data-summary', requirePortalAdminToken, requireOperatorTargetUser('userId')");
+  });
+
+  // Gap 5: the server composition root must call the beta-readiness preflight
+  // so unsafe admin exposure is detected at startup, not first-request time.
+  it('wires the portal admin beta readiness preflight into the portal server boot path', () => {
+    expect(serverSource).toContain('validatePortalAdminBetaReadiness(config.portal)');
   });
 });

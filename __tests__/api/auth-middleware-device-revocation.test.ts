@@ -15,7 +15,7 @@
  * behavior under test.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -25,6 +25,24 @@ import type { Request, Response, NextFunction } from 'express';
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
 
 let testDb: Database.Database;
+
+const originalEnv = {
+  STAGING: process.env.STAGING,
+  IOS_API_ENABLED: process.env.IOS_API_ENABLED,
+  IOS_API_JWT_SECRET: process.env.IOS_API_JWT_SECRET,
+  IOS_INVITE_CODE: process.env.IOS_INVITE_CODE,
+  IOS_OWNER_CODE: process.env.IOS_OWNER_CODE,
+  OWNER_TELEGRAM_ID: process.env.OWNER_TELEGRAM_ID,
+};
+
+function restoreEnv(key: keyof typeof originalEnv): void {
+  const value = originalEnv[key];
+  if (value === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = value;
+}
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -94,6 +112,14 @@ describe('authMiddleware: device revocation', () => {
         child: vi.fn().mockReturnThis(),
       },
     }));
+  });
+
+  afterEach(() => {
+    testDb?.close();
+    (Object.keys(originalEnv) as Array<keyof typeof originalEnv>).forEach(restoreEnv);
+    vi.doUnmock('../../src/services/database');
+    vi.doUnmock('../../src/utils/logger');
+    vi.resetModules();
   });
 
   async function runMiddleware(

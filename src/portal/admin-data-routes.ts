@@ -4,6 +4,7 @@ import type { Express, Request, Response } from 'express';
 import { requirePortalAdminToken } from '../api/secret-guards';
 import { getDb } from '../services/database';
 import { countUserFinanceData } from '../services/user-data-export';
+import { requireOperatorTargetUser } from './admin-target-user';
 import { sendPortalInternalError } from './http';
 
 function parsePositiveInteger(value: unknown): number | null {
@@ -44,7 +45,7 @@ export function registerPortalAdminDataRoutes(app: Express): void {
   });
 
   // GET /api/users/:userId/data-summary — record counts per table (admin view)
-  app.get('/api/users/:userId/data-summary', requirePortalAdminToken, (req: Request, res: Response) => {
+  app.get('/api/users/:userId/data-summary', requirePortalAdminToken, requireOperatorTargetUser('userId'), (req: Request, res: Response) => {
     try {
       const userId = parsePositiveInteger(req.params.userId);
       if (!userId) {

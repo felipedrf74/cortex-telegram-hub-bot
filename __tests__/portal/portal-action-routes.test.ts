@@ -8,10 +8,15 @@ const hoisted = vi.hoisted(() => ({
   clearPortalSnapshotCache: vi.fn(),
   getOwnerBootstrapTarget: vi.fn(),
   logAudit: vi.fn(),
+  buildPortalAdminAuditDetails: vi.fn(),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
+}));
+
+vi.mock('../../src/portal/admin-audit', () => ({
+  buildPortalAdminAuditDetails: (...args: unknown[]) => hoisted.buildPortalAdminAuditDetails(...args),
 }));
 
 vi.mock('../../src/portal/actions', () => ({
@@ -79,6 +84,11 @@ describe('portal action routes', () => {
     hoisted.isPortalActionRateLimited.mockReturnValue(false);
     hoisted.handlePortalAction.mockResolvedValue({ ok: true, message: 'done' });
     hoisted.getOwnerBootstrapTarget.mockReturnValue({ tenantId: 42, telegramId: 1042 });
+    hoisted.buildPortalAdminAuditDetails.mockReturnValue({
+      portalCredential: 'admin',
+      dedicatedAdminConfigured: true,
+      portalActorHint: 'operator@nexushub.me',
+    });
   });
 
   it('registers quick actions behind the portal admin token guard', () => {
@@ -119,28 +129,35 @@ describe('portal action routes', () => {
     expect(hoisted.clearPortalSnapshotCache).not.toHaveBeenCalled();
   });
 
-  it('executes actions, clears snapshot cache, and writes owner-scoped audit metadata', async () => {
+  it('executes actions, clears snapshot cache, and writes operator-attributed audit metadata', async () => {
     const bot = { api: { sendMessage: vi.fn() } };
     const { app, routes } = makeApp();
     registerPortalActionRoutes(app as any, bot);
     const handler = routes.get('/api/action/:name')?.[1]!;
     const { payload, res } = makeResponse();
 
-    await handler({
+    const req = {
       params: { name: 'clear-history' },
       ip: '127.0.0.1',
       socket: { remoteAddress: '127.0.0.1' },
-    }, res);
+    };
+    await handler(req, res);
 
     expect(hoisted.handlePortalAction).toHaveBeenCalledWith('clear-history', bot);
     expect(hoisted.recordPortalAction).toHaveBeenCalledWith('clear-history');
     expect(hoisted.clearPortalSnapshotCache).toHaveBeenCalledTimes(1);
+    expect(hoisted.buildPortalAdminAuditDetails).toHaveBeenCalledWith(req);
     expect(hoisted.logAudit).toHaveBeenCalledWith(expect.objectContaining({
       userId: 42,
       actorId: 42,
       action: 'access',
       resource: 'portal.action.clear-history',
       ipAddress: '127.0.0.1',
+      details: expect.objectContaining({
+        portalCredential: 'admin',
+        dedicatedAdminConfigured: true,
+        portalActorHint: 'operator@nexushub.me',
+      }),
     }));
     expect(payload.statusCode).toBe(200);
     expect(payload.body).toEqual({ ok: true, message: 'done' });
