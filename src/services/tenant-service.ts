@@ -610,3 +610,87 @@ export function removeMember(
 
   return existing; // the row AS IT WAS before removal, for the caller
 }
+
+// ─── OI-ADM-302: tenant suspend / activate ───────────────────────────
+// (TenantStatus is declared at the top of this file.)
+
+export class SetTenantStatusError extends Error {
+  constructor(public readonly code: string, message: string, public readonly details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'SetTenantStatusError';
+  }
+}
+
+/**
+ * Transition a tenant between lifecycle statuses. The CHECK
+ * constraint on `tenants.status` is the authoritative allow-list
+ * — we pre-validate here to return a nicer error shape than a
+ * raw SQLite constraint violation.
+ *
+ * Idempotent: setting a tenant's status to its current value is a
+ * no-op and still returns the row (no error, no audit). Callers
+ * depending on "was this an actual transition?" should compare the
+ * returned row's status against the requested value BEFORE calling.
+ *
+ * Cascade is deliberately MINIMAL here:
+ *   - The tenant-context-guard in src/api/tenant-context-guard.ts
+ *     already rejects workspace-router calls with TENANT_SUSPENDED
+ *     when status === 'suspended' (landed before this commit).
+ *   - `acceptInvite` in tenant-invite-service.ts rejects accepts
+ *     into non-active tenants (see OI-ADM-302 companion edit).
+ *   - Scheduled-job pause/resume is tracked separately as
+ *     OI-ADM-302b — requires a scheduler refactor, not a
+ *     tenant-service concern.
+ *   - Existing iOS sessions (JWTs) stay valid until natural expiry
+ *     but every tenant-scoped API call 403s via the guard.
+ */
+export function setTenantStatus(
+  tenantId: number,
+  status: TenantStatus,
+  actorUserId: number,
+  reason: string | null = null,
+): TenantRow {
+  if (!Number.isFinite(tenantId) || tenantId <= 0) {
+    throw new SetTenantStatusError('INVALID_TENANT_ID', 'tenantId must be a positive integer');
+  }
+  const allowed: readonly TenantStatus[] = ['active', 'suspended', 'archived', 'trial'];
+  if (!(allowed as readonly string[]).includes(status)) {
+    throw new SetTenantStatusError(
+      'INVALID_STATUS',
+      `status must be one of ${allowed.join(' | ')}`,
+      { status },
+    );
+  }
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    throw new SetTenantStatusError('TENANT_NOT_FOUND', 'No tenant with that id', { tenantId });
+  }
+  try {
+    getDb()
+      .prepare('UPDATE tenants SET status = ? WHERE id = ?')
+      .run(status, tenantId);
+  } catch (err) {
+    logger.error({ err, tenantId, status, actorUserId, reason }, 'tenant-service: setTenantStatus failed');
+    throw new SetTenantStatusError('DB_ERROR', 'Failed to update tenant status');
+  }
+  const updated = getTenantById(tenantId);
+  if (!updated) {
+    // Should be unreachable — we just updated it.
+    throw new SetTenantStatusError('DB_ERROR', 'Tenant vanished after update', { tenantId });
+  }
+  return updated;
+}
+
+/** Convenience: move tenant to `suspended` via setTenantStatus. */
+export function suspendTenant(
+  tenantId: number,
+  actorUserId: number,
+  reason: string | null = null,
+): TenantRow {
+  return setTenantStatus(tenantId, 'suspended', actorUserId, reason);
+}
+
+/** Convenience: move tenant to `active` via setTenantStatus. */
+export function activateTenant(tenantId: number, actorUserId: number): TenantRow {
+  return setTenantStatus(tenantId, 'active', actorUserId, null);
+}

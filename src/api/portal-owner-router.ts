@@ -57,6 +57,9 @@ import {
   getTenantById,
   listMembersOfTenant,
   listPlatformAdmins,
+  suspendTenant,
+  activateTenant,
+  SetTenantStatusError,
   type TenantStatus,
   type TenantPlan,
   type PlatformRole,
@@ -246,6 +249,85 @@ export function createPortalOwnerRouter(): Router {
 
     const updated = getTenantById(tenantId);
     ok(res, { tenant: updated });
+  });
+
+  // ── POST /owner/tenants/:tenantId/suspend (OI-ADM-302, 2026-04-24) ─
+  //
+  // Dedicated tenant-suspend endpoint. Owner + platform admins can
+  // call (requirePlatformWrite matches the PATCH tenant flow). This
+  // is a THIN WRAPPER over setTenantStatus — the same result could
+  // be achieved via PATCH /owner/tenants/:id with { status: 'suspended' },
+  // but a dedicated action surface gives us:
+  //   - A cleaner audit event shape ('tenant.suspend' vs a generic
+  //     'tenant.update' with a status diff buried in the details).
+  //   - Room to carry a `reason` string through to audit without
+  //     overloading the PATCH contract.
+  //   - Clear product UX ("Suspend tenant" button → POST /suspend,
+  //     not "Edit tenant → change status dropdown to 'suspended'").
+  //
+  // Cascade (documented in the service comment):
+  //   - Tenant-context-guard: all workspace calls return 403
+  //     TENANT_SUSPENDED (already wired; no new code needed here).
+  //   - acceptInvite: refuses to accept into a suspended tenant
+  //     (added in tenant-invite-service.ts alongside this route).
+  //   - Scheduled jobs: NOT paused in v1 — tracked as OI-ADM-302b.
+  //     Services that iterate tenants should check status before
+  //     running per-tenant work; most already do via the guard.
+  //   - iOS JWTs: stay valid until natural expiry; 403 via guard.
+  //     Forced logout is a separate design call.
+  router.post('/tenants/:tenantId/suspend', requirePlatformWrite, (req: Request, res: Response) => {
+    const tenantId = Number.parseInt(String(req.params.tenantId), 10);
+    if (!Number.isFinite(tenantId) || tenantId <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'tenantId must be a positive integer');
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const reason = typeof body.reason === 'string' && body.reason.trim().length > 0
+      ? body.reason.trim().slice(0, 500)
+      : null;
+
+    const admin = (req as PlatformAdminRequest).platformAdmin;
+    try {
+      const before = getTenantById(tenantId);
+      const after = suspendTenant(tenantId, admin.userId, reason);
+      logAdminAudit(admin.userId, 'tenant.suspend', `tenant.${tenantId}`, {
+        tenantId,
+        reason,
+        beforeStatus: before ? before.status : null,
+      });
+      ok(res, { tenant: after });
+    } catch (serviceErr) {
+      if (serviceErr instanceof SetTenantStatusError) {
+        const status = serviceErr.code === 'TENANT_NOT_FOUND' ? 404 : 400;
+        return err(res, status, serviceErr.code, serviceErr.message, serviceErr.details);
+      }
+      logger.error({ err: serviceErr, tenantId }, 'portal-owner-router: tenant suspend failed');
+      err(res, 500, 'INTERNAL', 'Failed to suspend tenant');
+    }
+  });
+
+  // ── POST /owner/tenants/:tenantId/activate (OI-ADM-302) ─────────
+  router.post('/tenants/:tenantId/activate', requirePlatformWrite, (req: Request, res: Response) => {
+    const tenantId = Number.parseInt(String(req.params.tenantId), 10);
+    if (!Number.isFinite(tenantId) || tenantId <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'tenantId must be a positive integer');
+    }
+    const admin = (req as PlatformAdminRequest).platformAdmin;
+    try {
+      const before = getTenantById(tenantId);
+      const after = activateTenant(tenantId, admin.userId);
+      logAdminAudit(admin.userId, 'tenant.activate', `tenant.${tenantId}`, {
+        tenantId,
+        beforeStatus: before ? before.status : null,
+      });
+      ok(res, { tenant: after });
+    } catch (serviceErr) {
+      if (serviceErr instanceof SetTenantStatusError) {
+        const status = serviceErr.code === 'TENANT_NOT_FOUND' ? 404 : 400;
+        return err(res, status, serviceErr.code, serviceErr.message, serviceErr.details);
+      }
+      logger.error({ err: serviceErr, tenantId }, 'portal-owner-router: tenant activate failed');
+      err(res, 500, 'INTERNAL', 'Failed to activate tenant');
+    }
   });
 
   // ── GET /owner/tenants/:tenantId/members ───────────────────────

@@ -66,6 +66,7 @@ export type InviteErrorCode =
   | 'EXPIRED'
   | 'EMAIL_MISMATCH'
   | 'DUPLICATE_PENDING'
+  | 'TENANT_NOT_ACTIVE' // OI-ADM-302: can't accept into a suspended / archived tenant
   | 'DB_ERROR';
 
 export class InviteError extends Error {
@@ -363,6 +364,30 @@ export function acceptInvite(opts: AcceptInviteOptions): InviteRow {
       tenantId: existing.tenantId,
       acceptedBy: existing.acceptedBy,
     });
+  }
+  // OI-ADM-302 (2026-04-24): refuse to accept into a non-active
+  // tenant. A suspended/archived target tenant + a pending invite
+  // would otherwise create a ghost membership the user can't
+  // actually USE (all tenant-scoped calls 403 via the context
+  // guard). Better to fail the accept explicitly than leave them
+  // in a broken state.
+  try {
+    const tenantRow = getDb()
+      .prepare('SELECT status FROM tenants WHERE id = ?')
+      .get(existing.tenantId) as { status: string } | undefined;
+    if (tenantRow && tenantRow.status && tenantRow.status !== 'active') {
+      throw new InviteError(
+        'TENANT_NOT_ACTIVE',
+        `Cannot accept invite — the target workspace is ${tenantRow.status}. Ask the admin who invited you.`,
+        { tenantId: existing.tenantId, tenantStatus: tenantRow.status },
+      );
+    }
+  } catch (dbErr) {
+    // InviteError re-raise passes through unchanged.
+    if (dbErr instanceof InviteError) throw dbErr;
+    // Anything else is a genuine DB failure — don't leak structure.
+    logger.error({ err: dbErr, tenantId: existing.tenantId }, 'tenant-invite-service: tenant status check failed');
+    throw new InviteError('NOT_FOUND', 'Failed to verify invite target tenant');
   }
   // Validation pass (2026-04-22): expiry comparison moved from
   //   `new Date(existing.expiresAt) < new Date()`

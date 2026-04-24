@@ -418,11 +418,41 @@ Follow-ups still open:
 
 ---
 
-### OI-ADM-302 — Tenant suspend action [P1, UX + Data]
+### ~~OI-ADM-302 — Tenant suspend action~~ [DONE · 2026-04-24 v1]
 
-**What's missing.** There's no "Suspend tenant" action on either endpoint — only per-user suspend via `POST /api/users/:userId/suspend`. A tenant-level suspend would be the operational primitive for platform ops.
+**Resolved on branch `feature/nexus-hub-portal-uiux-admin-user-console` (commit pending).** Scope split — v1 ships the backend primitive + audit + cascade-to-accepts; v2 tracks scheduler pause + forced-logout follow-ups.
 
-**Sketch.** Add `POST /owner/tenants/:tenantId/suspend` that cascades to all users in the tenant. Requires careful audit row + reversible state.
+**What shipped in v1:**
+
+1. **Service primitive.** `setTenantStatus(tenantId, status, actorUserId, reason?)` + `suspendTenant(tenantId, actor, reason)` + `activateTenant(tenantId, actor)` in `src/services/tenant-service.ts`. Validates tenant existence + status enum, updates `tenants.status`, returns the fresh row. Idempotent (setting status to its current value is a no-op, no error). Throws `SetTenantStatusError` with typed codes: `INVALID_TENANT_ID` / `INVALID_STATUS` / `TENANT_NOT_FOUND` / `DB_ERROR`.
+
+2. **Admin routes.**
+   - `POST /owner/tenants/:tenantId/suspend` — `requirePlatformWrite` (owner OR platform_admin, not readonly). Accepts `{ reason?: string }` (trimmed, capped at 500 chars). Writes `tenant.suspend` audit row with `{ tenantId, reason, beforeStatus }`.
+   - `POST /owner/tenants/:tenantId/activate` — same guard. Writes `tenant.activate` audit row with `{ tenantId, beforeStatus }`.
+   - Clean separation from the existing PATCH flow (which can change multiple fields at once and writes a generic `tenant.update` audit) — the dedicated endpoints give a clearer product surface + audit story per my recommendation matrix.
+
+3. **Cascade to live traffic.**
+   - **Tenant-context-guard** already returns 403 `TENANT_SUSPENDED` for any workspace-router call when `tenant.status === 'suspended'` (landed before this branch — no new code needed; regression test pins it).
+   - **`acceptInvite`** now refuses to accept into a non-active tenant with a new `TENANT_NOT_ACTIVE` error code, carrying `{ tenantId, tenantStatus }` details. Prevents the "ghost membership" state where a user holds a row in `tenant_members` but can't make any API call because the guard 403s every request.
+
+4. **Cascade NOT in v1 — tracked as OI-ADM-302b.**
+   - **Scheduler pause/resume.** The 28+ cron jobs fan out per-tenant work; adding a status gate to each is invasive. Should happen as a scheduler refactor (single tenant-iteration point that skips non-active tenants).
+   - **Forced iOS logout.** Existing JWTs stay valid until natural expiry; tenant-scoped calls still 403 via the guard, so the user sees "Your workspace is suspended" rather than "logged out." Forcing logout is a UX decision that needs iOS coordination.
+   - **Pending invite revocation.** Suspending a tenant doesn't auto-revoke its pending invites. The acceptInvite gate prevents them from being used until the tenant is reactivated, which is safer than destructive pre-emptive revocation.
+
+5. **Decisions per my recommendation matrix:**
+   - Who can suspend: owner + platform admins (audit records which) ✅
+   - Jobs: paused by skipping via guard at call time (no persistent pause marker) ✅
+   - Invites: refused at accept time, not pre-emptively revoked ✅
+   - iOS sessions: 403 with specific error (not forced logout) ✅
+   - Data retention: untouched — status flag only, no row deletions ✅
+   - Auto-expire: no ✅
+
+**Files.** `src/services/tenant-service.ts` (+~80 LOC — setTenantStatus + suspendTenant + activateTenant + SetTenantStatusError), `src/services/tenant-invite-service.ts` (+30 LOC — acceptInvite status check + `TENANT_NOT_ACTIVE` error code), `src/api/portal-owner-router.ts` (+80 LOC — two POST routes + imports).
+
+**Tests — 22 new pins:**
+- `__tests__/services/tenant-service-suspend.test.ts` (10): setTenantStatus transitions / round-trip / idempotency / error codes (TENANT_NOT_FOUND + INVALID_STATUS + INVALID_TENANT_ID) + suspendTenant / activateTenant wrappers + **acceptInvite refuses into suspended tenant** cascade pin + regression that accept into active tenant still works.
+- `__tests__/api/portal-owner-tenant-suspend-routes.test.ts` (12): auth matrix (401 no-token, 401 no-admin-id, 403 regular user, 403 platform_readonly, 200 platform_admin) + behavior (suspend → status change + audit row with actor + reason + beforeStatus, reason-optional, reason-capped-at-500-chars, 404 for unknown tenant, 400 for non-positive id) + activate (suspended → active + audit, idempotent on already-active).
 
 ---
 
