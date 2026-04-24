@@ -140,6 +140,7 @@ echo "📤 Syncing files to staging..."
   --exclude='content-engine/data/' \
   --exclude='content-engine/__pycache__/' \
   --exclude='**/__pycache__/' \
+  --exclude='.git' \
   --exclude='.git/' \
   --exclude='ecosystem.config.js' \
   "$LOCAL_DIR/" "$SERVER:$STAGING_DIR/" 2>&1 | tail -5

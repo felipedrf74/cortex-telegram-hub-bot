@@ -141,6 +141,7 @@ if command -v rsync &>/dev/null; then
     --exclude='content-engine/data/' \
     --exclude='content-engine/__pycache__/' \
     --exclude='**/__pycache__/' \
+    --exclude='.git' \
     --exclude='.git/' \
     "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
   echo "   ✅ rsync complete"
