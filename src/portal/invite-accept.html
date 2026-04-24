@@ -167,14 +167,17 @@ button.btn.ghost:hover { border-color: var(--border-hover); color: var(--text-pr
     <h1>Join <span id="coldSignupTenant">the workspace</span></h1>
     <p class="lede">This invitation is for <strong id="coldSignupEmail">—</strong>, which doesn't have a Nexus Hub account yet. Create one to accept.</p>
     <div class="banner info">
-      <span class="icon">📱</span>
+      <span class="icon">✉</span>
       <div class="body">
-        <strong>Nexus Hub is iOS-first right now.</strong>
-        <p>Install the app from the App Store, sign up with <span class="mono" id="coldSignupEmail2">—</span>, then reopen this invite link to join the workspace.</p>
+        <strong>Email me a signup link</strong>
+        <p>We'll send a one-time link to <span class="mono" id="coldSignupEmail3">—</span>. Clicking it finishes setup + adds you to the workspace — no iOS install needed.</p>
       </div>
     </div>
+    <button class="btn" id="requestMagicLinkBtn">Email me a link</button>
+    <p class="subtle" id="magicLinkHint">One-time link valid for 1 hour.</p>
+    <hr style="margin: 1.5rem 0; border-color: var(--border-color, #222);" />
     <div class="banner info">
-      <span class="icon">⌨</span>
+      <span class="icon">📱</span>
       <div class="body">
         <strong>Already have iOS set up?</strong>
         <p>Open Nexus Hub → Settings → Developer → Copy access token, then paste it below.</p>
@@ -184,8 +187,42 @@ button.btn.ghost:hover { border-color: var(--border-hover); color: var(--text-pr
       <label for="coldJwtInput">Access token (JWT)</label>
       <input id="coldJwtInput" type="password" placeholder="eyJhbG…" autocomplete="off" />
     </div>
-    <button class="btn" id="coldSignInBtn">Continue with token</button>
-    <p class="subtle">The token is stored only in this tab (<span class="mono">sessionStorage</span>) and cleared when you close the tab. (Magic-link signup without iOS is coming in a follow-up — needs email-provider wiring.)</p>
+    <button class="btn ghost" id="coldSignInBtn">Continue with token</button>
+    <p class="subtle">The token is stored only in this tab (<span class="mono">sessionStorage</span>) and cleared when you close the tab.</p>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: magic-link sent — "check your inbox"
+       (OI-NAV-203c, 2026-04-24)
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-magic-sent">
+    <h1>Check your inbox</h1>
+    <p class="lede">We emailed a signup link to <strong id="magicSentEmail">—</strong>. Click the link in that email to finish joining the workspace.</p>
+    <div class="banner info">
+      <span class="icon">⏱</span>
+      <div class="body">
+        <strong>The link expires in 1 hour.</strong>
+        <p>Not seeing it? Check spam, then come back here and request another.</p>
+      </div>
+    </div>
+    <div id="magicSentDebug" class="banner info hidden">
+      <span class="icon">🧪</span>
+      <div class="body">
+        <strong>Dev mode: mailer is 'console' backend.</strong>
+        <p>The link is logged to the server console. For testing convenience:</p>
+        <p><a id="magicSentDebugLink" class="mono" href="#"></a></p>
+      </div>
+    </div>
+    <button class="btn ghost" id="requestMagicLinkAgainBtn">Request another link</button>
+  </div>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       VIEW: magic-link in-flight — "verifying your link…"
+       (OI-NAV-203c, 2026-04-24)
+       ────────────────────────────────────────────────────────── -->
+  <div class="card hidden" id="view-magic-processing">
+    <h1><span class="spinner"></span>&nbsp;&nbsp;Verifying your link…</h1>
+    <p class="lede">One moment — we're creating your account and adding you to the workspace.</p>
   </div>
 
   <!-- ─────────────────────────────────────────────────────────────
@@ -292,14 +329,20 @@ button.btn.ghost:hover { border-color: var(--border-hover); color: var(--text-pr
 // immediately on load).
 let code = null;
 let jwt = sessionStorage.getItem('nx.usr.jwt') || '';
+// OI-NAV-203c: cached invitee email for the "Check your inbox" view.
+let pendingMagicEmail = null;
 
 // ── URL parsing + privacy cleanup ────────────────────────────────
-// Read ?code=..., strip it from the URL so later screenshots, copy-
-// link, or browser-back don't carry the live secret around.
+// Read ?code=... AND ?magic=... (OI-NAV-203c), strip both from the
+// URL so later screenshots, copy-link, or browser-back don't carry
+// the live secrets around. The magic param is captured into a
+// file-scope var `magicFromUrl` that the boot code consumes below.
+let magicFromUrl = null;
 try {
   const params = new URLSearchParams(location.search);
   code = (params.get('code') || '').trim();
-  if (code) {
+  magicFromUrl = (params.get('magic') || '').trim() || null;
+  if (code || magicFromUrl) {
     const clean = location.pathname;
     history.replaceState({}, '', clean);
   }
@@ -317,6 +360,8 @@ function show(viewId) {
     'no-code', 'need-auth', 'loading', 'success', 'error',
     // OI-NAV-203a cold-invitee views:
     'cold-signup', 'sign-in-prompt',
+    // OI-NAV-203c magic-link flow views:
+    'magic-sent', 'magic-processing',
   ].forEach((v) => {
     const el = document.getElementById('view-' + v);
     if (el) el.classList.toggle('hidden', v !== viewId);
@@ -511,8 +556,10 @@ async function bootColdOrWarmPath() {
   }
   // No account → cold-signup view.
   document.getElementById('coldSignupEmail').textContent = info.inviteeEmail || 'your invited email';
-  document.getElementById('coldSignupEmail2').textContent = info.inviteeEmail || '—';
+  document.getElementById('coldSignupEmail3').textContent = info.inviteeEmail || '—';
   document.getElementById('coldSignupTenant').textContent = info.tenantName || 'the workspace';
+  // Cache the email for the magic-link success view.
+  pendingMagicEmail = info.inviteeEmail || null;
   show('cold-signup');
 }
 
@@ -587,8 +634,110 @@ document.getElementById('signInContinueBtn').addEventListener('click', () => {
   acceptInvite();
 });
 
+// ── OI-NAV-203c: magic-link request + consume flow ───────────────
+async function requestMagicLink() {
+  const hintEl = document.getElementById('magicLinkHint');
+  hintEl.textContent = 'Sending…';
+  try {
+    const res = await fetch('/invite/request-signup-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || body.ok !== true) {
+      const errCode = body && body.error && body.error.code;
+      if (errCode === 'MAILER_UNCONFIGURED') {
+        hintEl.textContent = 'Email provider is not configured on this server. Ask the admin who invited you to use the iOS token option instead.';
+        return;
+      }
+      hintEl.textContent = 'Failed to send the email. Try again or use the iOS token option below.';
+      return;
+    }
+    // Success — show the "check your inbox" view.
+    document.getElementById('magicSentEmail').textContent = pendingMagicEmail || 'your invited email';
+    // Dev-only: the console backend echoes debugUrl. Surface it so
+    // tests + dev-UI can pick it up without scraping logs.
+    const debugBanner = document.getElementById('magicSentDebug');
+    const debugLink = document.getElementById('magicSentDebugLink');
+    if (body.data && typeof body.data.debugUrl === 'string') {
+      debugLink.href = body.data.debugUrl;
+      debugLink.textContent = body.data.debugUrl;
+      debugBanner.classList.remove('hidden');
+    } else {
+      debugBanner.classList.add('hidden');
+    }
+    show('magic-sent');
+  } catch {
+    hintEl.textContent = 'Network error. Check your connection and try again.';
+  }
+}
+document.getElementById('requestMagicLinkBtn').addEventListener('click', requestMagicLink);
+document.getElementById('requestMagicLinkAgainBtn').addEventListener('click', () => {
+  // Reset + fire again.
+  const hintEl = document.getElementById('magicLinkHint');
+  hintEl.textContent = 'One-time link valid for 1 hour.';
+  show('cold-signup');
+});
+
+// Consume a magic-link token carried via ?magic=<token>. Runs on
+// boot when the URL has the magic param, BEFORE we strip the URL
+// (so the token is captured before history.replaceState runs).
+async function consumeMagicLink(magic) {
+  show('magic-processing');
+  try {
+    const res = await fetch('/invite/signup/consume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, magic }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || body.ok !== true) {
+      const errCode = (body && body.error && body.error.code) || 'UNKNOWN';
+      const errMsg = (body && body.error && body.error.message) || 'The signup link could not be used.';
+      const titleEl = document.getElementById('errorTitle');
+      const ledeEl = document.getElementById('errorLede');
+      const codeEl = document.getElementById('errorCode');
+      const msgEl = document.getElementById('errorMessage');
+      titleEl.textContent = 'Signup link expired or already used';
+      ledeEl.textContent = 'The link you clicked is no longer valid.';
+      codeEl.textContent = errCode;
+      msgEl.textContent = errMsg;
+      show('error');
+      return;
+    }
+    // Success — store the issued JWT, remember the tenant, show success.
+    if (body.data && body.data.jwt) {
+      jwt = body.data.jwt;
+      sessionStorage.setItem('nx.usr.jwt', jwt);
+    }
+    if (body.data && body.data.tenantId) {
+      sessionStorage.setItem('nx.usr.tenantId', String(body.data.tenantId));
+    }
+    document.getElementById('successRole').textContent = 'member';
+    show('success');
+    // Countdown + redirect is already wired in view-success elsewhere.
+  } catch {
+    const titleEl = document.getElementById('errorTitle');
+    const ledeEl = document.getElementById('errorLede');
+    const codeEl = document.getElementById('errorCode');
+    const msgEl = document.getElementById('errorMessage');
+    titleEl.textContent = "We couldn't reach Nexus Hub";
+    ledeEl.textContent = 'A network error interrupted your signup.';
+    codeEl.textContent = 'NETWORK_ERROR';
+    msgEl.textContent = 'Reload this page to try again. Your link is still single-use — if it already consumed, ask for a fresh one.';
+    show('error');
+  }
+}
+
 // ── Boot ─────────────────────────────────────────────────────────
-if (!code) {
+// OI-NAV-203c: if we captured a `magic` token from the URL earlier,
+// take the signup-completion branch FIRST. Even if a JWT is cached,
+// the consume flow runs to attach the user to the tenant + mint a
+// session-scoped JWT for the cold invitee.
+if (code && magicFromUrl) {
+  consumeMagicLink(magicFromUrl);
+} else if (!code) {
   show('no-code');
 } else if (!jwt) {
   // Cold path — probe invite metadata first, then route.

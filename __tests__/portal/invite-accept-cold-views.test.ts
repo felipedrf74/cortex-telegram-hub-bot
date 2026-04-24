@@ -21,7 +21,10 @@ describe('invite-accept.html — cold-invitee views (OI-NAV-203a)', () => {
     expect(html).toMatch(/id="coldSignupEmail"/);
     expect(html).toMatch(/id="coldJwtInput"/);
     expect(html).toMatch(/id="coldSignInBtn"/);
-    expect(html).toMatch(/App Store/); // iOS install hint
+    // OI-NAV-203c replaced the App Store guidance with an "Email me
+    // a link" primary CTA — iOS token paste remains as a secondary
+    // affordance below the divider.
+    expect(html).toMatch(/id="requestMagicLinkBtn"/);
   });
 
   it('renders a sign-in-prompt view for invitees whose email DOES have an account', () => {

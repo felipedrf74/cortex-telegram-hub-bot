@@ -430,12 +430,43 @@ Follow-up items still open:
   - `__tests__/services/mailer.test.ts` (13): `resolveBackend` (explicit env, case-insensitivity + trim, VITEST→noop fallback, outside-vitest→console fallback, unknown→default), `sendMagicLink` console backend (logs with full context + returns `debugUrl`), noop backend (no log, no debugUrl), reserved backends × 3 throw `BACKEND_UNIMPLEMENTED`.
   - `__tests__/portal/invite-request-signup-link-route.test.ts` (12): handler structure (app.post + json parser), lazy requires of 3 services, 400-on-missing-code, uniform 200 on invalid/stale codes, `issueMagicLinkToken` call shape (intent + TTL + metadata), origin-header URL construction with fallback, magic URL format, 503 MAILER_UNCONFIGURED mapping, `debugUrl` echo shape, 500 on other mailer errors + migration schema pins (hash UNIQUE, intent CHECK, FK behaviour, 3 indexes).
 
-  **What's still pending** for a true end-to-end cold-invitee signup — tracked as **OI-NAV-203c**:
-  1. User-from-email creation. The existing `getOrCreateUser` is keyed on `telegramId`; there's no `createUserForEmail(email)` path. Needs a decision on `auth_provider = 'email'` semantics.
-  2. Magic-link consume handler at `GET /invite/accept?code=...&magic=...` — extract the `magic` param, call `consumeMagicLinkToken`, create user if needed, accept the invite, issue a web session.
-  3. Web-session JWT issuance — reuse the iOS JWT format with an issuer claim, or mint a cookie-backed session that the `/console` bootstraps from. Requires iOS-side coordination on shared auth.
-  4. UI integration in `invite-accept.html`'s `view-cold-signup` view — replace the "install iOS + paste token" copy with an "Email me a link" button that calls the new route and shows a "Check your inbox" state on success.
-  5. Email provider selection + implementation of the `smtp` / `resend` / `postmark` mailer backends.
+  **What's still pending for full prod-grade cold-invitee signup (formerly OI-NAV-203c — mostly DONE below):**
+
+- ~~**OI-NAV-203c** — end-to-end cold-invitee signup~~ [DONE · 2026-04-24 — 4 of 5 subpoints ship; remaining item is just email-provider wiring]
+
+  **What shipped.** The full browser-only signup flow: cold invitee receives the magic link → clicks it → their account is created + invite accepted + web-session JWT issued → they land in `/console`. No iOS installation required, no password.
+
+  1. **User-from-email creation.** New `createPasswordlessEmailUser(email)` in `src/services/user-service.ts`. Creates a user with `auth_provider='email'`, `email_verified=1` (possession of the magic link IS the verification), `tier='free'`, derives `first_name` from the email local-part. Idempotent — returns the existing user when one is already registered under the email. Password-hash NULL (magic-link is the credential).
+
+  2. **Magic-link consume handler** (`POST /invite/signup/consume` in `src/portal/server.ts`, +~170 LOC). Request body: `{ code, magic }`. Flow:
+     - `consumeMagicLinkToken(magic, null)` — atomic single-use via the service from OI-NAV-203b.
+     - Validate `tokenRow.metadata.inviteCode === body.code` (prevents code-swap — attacker with a stolen magic can't redirect it to a different invite).
+     - Validate `tokenRow.email === invite.email` (defense-in-depth — both are invite-derived on the issue side, but re-check catches service-layer drift).
+     - `getUserByEmail` → if absent, `createPasswordlessEmailUser`.
+     - `acceptInvite({ code, userId, userEmail })` — reuses the existing tenant-invite code path (idempotent).
+     - Mint an iOS-format JWT with `deviceId='web-session-<hex>'` so `/workspace/*` auth-middleware accepts it verbatim.
+     - Best-effort retrofit: update `magic_link_tokens.consumed_by` with the real user id for audit continuity.
+     - Error mapping: consume errors → 404/410/409 (`MAGIC_LINK_NOT_FOUND` / `_EXPIRED` / `_ALREADY_CONSUMED`); code-swap → 400 `MAGIC_LINK_CODE_MISMATCH`; email mismatch → 400 `MAGIC_LINK_EMAIL_MISMATCH`; missing JWT secret → 503 `AUTH_UNCONFIGURED`; InviteError → pass-through with its own code + status.
+
+  3. **Web-session JWT issuance.** Reuses the iOS JWT format (`{ userId, deviceId }` signed with `config.ios.jwtSecret`, 7-day expiry). `deviceId='web-session-<16-byte-hex>'` makes web sessions trivially distinguishable from iOS devices in audit logs. No `ios_devices` row registered — the middleware's device-touch UPDATE is a no-op when none exists, which is fine.
+
+  4. **UI integration in `invite-accept.html`** (+~170 LOC):
+     - `view-cold-signup` now leads with an "Email me a link" primary CTA (calls `/invite/request-signup-link`, shows a hint line that updates on send-failure).
+     - Secondary iOS-token paste path preserved below a divider (as a `.btn ghost` instead of primary) — still works for iOS users who land on this flow.
+     - New `view-magic-sent` ("Check your inbox") with a dev-only debug banner that surfaces `debugUrl` when the mailer is the `console` backend. Makes end-to-end testing possible without log scraping.
+     - New `view-magic-processing` shown while `/invite/signup/consume` is in flight (spinner + "Verifying your link…").
+     - Boot wiring: URL parser now captures BOTH `?code` and `?magic` before `history.replaceState` strips them. When both are present, boot takes the consume branch FIRST — even if a JWT is cached, the consume flow runs to attach the user to the tenant.
+     - Consume error → routes to `view-error` with the server-side error code surfaced verbatim. Network errors → bespoke "We couldn't reach Nexus Hub" copy.
+     - Sessionstorage writes on success: `nx.usr.jwt` + `nx.usr.tenantId`, so `/console` lands directly on the right workspace.
+
+  5. **Still pending** — email provider selection + implementation of the `smtp` / `resend` / `postmark` mailer backends. Stub-throwing today; the whole flow works end-to-end under `MAGIC_LINK_MAILER=console` (dev default), which logs the link to pino + returns `debugUrl` in the response.
+
+  **Files.** `src/services/user-service.ts` (+~40 LOC — `createPasswordlessEmailUser`), `src/portal/server.ts` (+~170 LOC — `/invite/signup/consume` handler), `src/portal/invite-accept.html` (+~170 LOC — 2 new view cards + magic-link request handler + consume handler + URL parsing update).
+
+  **Tests — 40 new pins:**
+  - `__tests__/services/create-passwordless-email-user.test.ts` (6): creates with `auth_provider=email` + `email_verified=1` + `tier=free` + NULL password_hash, lowercases + trims email, idempotent on existing email, first_name derived from local-part, bad-input rejection.
+  - `__tests__/portal/invite-signup-consume-route.test.ts` (27): handler structure (app.post + json parser + 4 lazy-required services), 400 on missing body, consume-reason HTTP mapping (404/410/409), MAGIC_LINK_<REASON> code prefix, code-swap guard (metadata.inviteCode match), email-mismatch guard, create-only-when-absent, acceptInvite call shape, web-session deviceId shape, 7d JWT expiry, 503 AUTH_UNCONFIGURED branch, consumed_by retrofit shape, success response fields, InviteError duck-type handling, + UI pins: magic-sent / magic-processing views + "Email me a link" button + show() coverage + URL parser magicFromUrl + boot routes consume when code+magic present + requestMagicLink POST shape + MAILER_UNCONFIGURED surfaced message + debugUrl dev banner + consume POST shape + sessionStorage writes + error-view routing.
+  - 1 regression fix to the OI-NAV-203a test that previously asserted "App Store" copy (removed by OI-NAV-203c's rewrite of the cold-signup CTA).
 
 ---
 

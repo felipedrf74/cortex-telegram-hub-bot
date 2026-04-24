@@ -443,6 +443,44 @@ export function createEmailUser(email: string, passwordHash: string, profile: {
   return getUserByEmail(email)!;
 }
 
+/**
+ * OI-NAV-203c (2026-04-24): passwordless email user creation for the
+ * magic-link cold-invitee flow. No password hash, no username — just
+ * an email + first_name derived from the local-part. Marks
+ * email_verified=1 because possession of the magic link IS the
+ * verification (the email only ever reached the address owner).
+ *
+ * If a user with this email already exists, returns that user without
+ * modification — magic-link consume is idempotent on the user side.
+ *
+ * Throws if the email is empty or malformed. Caller is expected to
+ * have already validated via invite metadata.
+ */
+export function createPasswordlessEmailUser(email: string): User {
+  const normalized = (email || '').trim().toLowerCase();
+  if (!normalized || !normalized.includes('@')) {
+    throw new Error('createPasswordlessEmailUser: invalid email');
+  }
+  const existing = getUserByEmail(normalized);
+  if (existing) return existing;
+
+  const db = getDb();
+  // Derive a display name from the local-part — nothing fancy, the
+  // user can rename in Profile later. Replaces dots/underscores with
+  // spaces for a half-reasonable first-pass.
+  const localPart = normalized.split('@')[0] || '';
+  const firstName = localPart.replace(/[._-]+/g, ' ').trim() || 'Friend';
+
+  // email_verified=1 because the magic-link arrived at THIS email.
+  db.prepare(`
+    INSERT INTO users (email, first_name, email_verified,
+      auth_provider, tier, daily_message_limit, daily_token_limit, daily_cost_limit_usd)
+    VALUES (?, ?, 1, 'email', 'free', 40, 100000, ?)
+  `).run(normalized, firstName, getStoredDailyCostLimitUsdForTier('free'));
+  logger.info({ email: normalized, via: 'magic-link' }, 'New passwordless email user registered');
+  return getUserByEmail(normalized)!;
+}
+
 export function isUserAuthorized(telegramId: number): boolean {
   const user = getUserByTelegramId(telegramId);
   return !!user && user.status === 'active';

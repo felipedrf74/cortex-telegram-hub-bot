@@ -445,6 +445,208 @@ export function createPortalServer(bot?: any): http.Server {
     }
   });
 
+  // ── POST /invite/signup/consume (OI-NAV-203c, 2026-04-24) ───────
+  //
+  // Completes the cold-invitee flow kicked off by
+  // POST /invite/request-signup-link. Given a raw magic-link token
+  // + the same invite code the invitee started with, this handler:
+  //   1. Consumes the token (atomic single-use).
+  //   2. Validates the token's metadata.inviteCode matches the body
+  //      (prevents code swap — an attacker with a stolen magic
+  //      token can't redirect it to a different invite).
+  //   3. Looks up / creates a passwordless email user keyed on the
+  //      invite's email. Email-verified=1 because receiving the
+  //      magic link proved email possession.
+  //   4. Accepts the tenant invite (existing acceptInvite path —
+  //      idempotent at the membership layer).
+  //   5. Mints an iOS-format JWT with deviceId='web-session-<rand>'
+  //      so the caller can use it verbatim with the /workspace/*
+  //      router's auth middleware.
+  //
+  // Unauthenticated entry point by design: the magic token IS the
+  // credential. Tokens are single-use + time-limited via the
+  // service-layer atomic UPDATE.
+  app.post('/invite/signup/consume', express.json({ limit: '16kb' }), (req: Request, res: Response) => {
+    try {
+      const { consumeMagicLinkToken } = require('../services/magic-link-service');
+      const { getInviteByCode, acceptInvite, InviteError } = require('../services/tenant-invite-service');
+      const { getUserByEmail, createPasswordlessEmailUser } = require('../services/user-service');
+      const jwtLib = require('jsonwebtoken');
+      const crypto = require('crypto');
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const code = typeof body.code === 'string' ? body.code : '';
+      const magic = typeof body.magic === 'string' ? body.magic : '';
+      if (!code || !magic) {
+        res.status(400).json({
+          ok: false,
+          error: { code: 'BAD_REQUEST', message: 'code and magic are required' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Step 1: consume the magic-link token. Pass null for
+      // consumedByUserId — we'll update the row (via a second step
+      // below) to carry the ACTUAL user id after creation. Two-step
+      // to keep the consume single-use-atomic without needing the
+      // user to exist first.
+      const consumeResult = consumeMagicLinkToken(magic, null);
+      if (!consumeResult.valid) {
+        const reasonMap: Record<string, number> = {
+          not_found: 404,
+          expired: 410,
+          already_consumed: 409,
+        };
+        const reason = consumeResult.reason || 'not_found';
+        const status = reasonMap[reason] ?? 400;
+        res.status(status).json({
+          ok: false,
+          error: {
+            code: `MAGIC_LINK_${reason.toUpperCase()}`,
+            message: 'This signup link is no longer valid — request a fresh invite link.',
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      const tokenRow = consumeResult.row;
+      if (!tokenRow) {
+        res.status(500).json({
+          ok: false,
+          error: { code: 'INTERNAL', message: 'Consumed token had no row' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Step 2: verify the metadata.inviteCode matches what the
+      // caller supplied. Prevents an attacker with a token for
+      // invite A from redirecting it at invite B.
+      const metaCode = typeof tokenRow.metadata?.inviteCode === 'string'
+        ? tokenRow.metadata.inviteCode
+        : '';
+      if (!metaCode || metaCode !== code) {
+        res.status(400).json({
+          ok: false,
+          error: {
+            code: 'MAGIC_LINK_CODE_MISMATCH',
+            message: 'The invite code and magic-link token do not match.',
+          },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Step 3: verify the invite still exists + is usable. We
+      // don't reuse getPublicInviteInfo because we need the raw
+      // InviteRow for acceptInvite.
+      const invite = getInviteByCode(code);
+      if (!invite) {
+        res.status(404).json({
+          ok: false,
+          error: { code: 'INVITE_NOT_FOUND', message: 'Invite not found.' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Step 4: email consistency check — the token's stored email
+      // must match the invite's email. (They're both derived from
+      // the invite row on the issue side, but we re-check here in
+      // case of future service-layer changes.)
+      if (tokenRow.email.toLowerCase() !== invite.email.toLowerCase()) {
+        logger.warn({ tokenEmail: tokenRow.email, inviteEmail: invite.email }, 'portal: magic-link email mismatch');
+        res.status(400).json({
+          ok: false,
+          error: { code: 'MAGIC_LINK_EMAIL_MISMATCH', message: 'This link is not valid for the invited email.' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Step 5: look up or create the passwordless email user.
+      let user = getUserByEmail(invite.email);
+      let created = false;
+      if (!user) {
+        user = createPasswordlessEmailUser(invite.email);
+        created = true;
+      }
+
+      // Step 6: accept the invite (idempotent).
+      try {
+        acceptInvite({ code, userId: user.id, userEmail: invite.email });
+      } catch (acceptErr: unknown) {
+        // Duck-type on the `code` property rather than `instanceof
+        // InviteError` — InviteError is require'd from a dynamic
+        // import here, and structural equality across module
+        // boundaries is TS-friendlier than the nominal check.
+        const ae = acceptErr as { code?: string; message?: string; details?: unknown } | null;
+        if (ae && typeof ae.code === 'string' && ae.code.length > 0) {
+          const accStatus = ae.code === 'NOT_FOUND' ? 404 : 400;
+          res.status(accStatus).json({
+            ok: false,
+            error: { code: ae.code, message: ae.message || 'Invite acceptance failed', details: ae.details },
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+        throw acceptErr;
+      }
+
+      // Step 7: mint a web-session JWT. deviceId is per-session so
+      // the same user signing up twice gets distinct sessions —
+      // cheap uniqueness, no device registry required. The
+      // workspace router's auth middleware accepts this JWT verbatim
+      // because it only checks the signature + payload shape.
+      const secret = config.ios.jwtSecret;
+      if (!secret) {
+        logger.error('portal: IOS_API_JWT_SECRET missing — cannot mint web-session JWT');
+        res.status(503).json({
+          ok: false,
+          error: { code: 'AUTH_UNCONFIGURED', message: 'Server auth is not configured.' },
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      const deviceId = 'web-session-' + crypto.randomBytes(16).toString('hex');
+      const jwtToken = jwtLib.sign({ userId: user.id, deviceId }, secret, { expiresIn: '7d' });
+
+      // Step 8: retrofit the magic-link row with the actual consumer.
+      // Best-effort — if this fails, the audit row just has NULL
+      // consumed_by, which is still valid data.
+      try {
+        const { getDb } = require('../services/database');
+        getDb()
+          .prepare('UPDATE magic_link_tokens SET consumed_by = ? WHERE id = ?')
+          .run(user.id, tokenRow.id);
+      } catch (retroErr) {
+        logger.warn({ err: retroErr }, 'portal: magic-link consumed_by retrofit failed (non-critical)');
+      }
+
+      res.json({
+        ok: true,
+        data: {
+          userCreated: created,
+          userId: user.id,
+          tenantId: invite.tenantId,
+          jwt: jwtToken,
+          // Human-friendly bits for the UI:
+          email: invite.email,
+          tenantSlug: invite.tenantSlug || null,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'portal: /invite/signup/consume failed');
+      res.status(500).json({
+        ok: false,
+        error: { code: 'INTERNAL', message: 'Failed to complete signup' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
   // ── /workspace/* — Tenant Workspace user console ────────────────────
   //
   // Introduced by the portal redesign (2026-04-22, see
