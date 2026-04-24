@@ -13,6 +13,8 @@ import {
   upsertProfileField,
   getMissingProfileFields,
   startOrResume,
+  getActiveSession,
+  OnboardingStepMismatchError,
 } from '../../services/onboarding';
 import { invalidateOnboardingDerivedCaches } from '../../services/onboarding-cache-invalidator';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
@@ -284,16 +286,32 @@ export function onboardingRoutes(): Router {
       return;
     }
 
+    // Beta gap 3 (2026-04-24): treat `stepIndex` as optimistic-concurrency
+    // control. The service layer uses it to suppress duplicate writes
+    // on client retry and to surface a 409 if the client tries to skip
+    // ahead. Before this, a flaky-network retry could advance the
+    // server twice — writing the same answer to two different question
+    // keys because the server silently re-derived the step from the
+    // session row.
+    const expectedStepIndex = typeof stepIndex === 'number'
+      ? stepIndex
+      : Number.parseInt(String(stepIndex), 10);
+
     try {
-      const result = answerStep(userId, questionnaireId, answer);
-      invalidateOnboardingDerivedCaches(userId, questionnaireId);
+      const result = answerStep(userId, questionnaireId, answer, {
+        expectedStepIndex: Number.isFinite(expectedStepIndex) ? expectedStepIndex : undefined,
+      });
+      if (!result.idempotentReplay) {
+        invalidateOnboardingDerivedCaches(userId, questionnaireId);
+      }
 
       const questionnaire = getQuestionnaire(questionnaireId);
       const totalSteps = questionnaire?.steps?.length || 1;
+      const advancedStep = result.session.current_step;
 
       sendSuccess(res, {
         nextStep: result.nextStep ? {
-          index: stepIndex + 1,
+          index: advancedStep,
           field: result.nextStep.key,       // questionnaire uses 'key' not 'field'
           question: result.nextStep.prompt,  // questionnaire uses 'prompt' not 'question'
           type: result.nextStep.type,
@@ -302,11 +320,103 @@ export function onboardingRoutes(): Router {
           max: null,
         } : null,
         isComplete: !result.nextStep,
-        progress: (stepIndex + 1) / totalSteps,
+        progress: Math.min(1, advancedStep / totalSteps),
+        currentStep: advancedStep,
+        idempotentReplay: result.idempotentReplay === true,
       });
     } catch (err: any) {
+      if (err instanceof OnboardingStepMismatchError) {
+        logger.info(
+          {
+            userId,
+            questionnaireId,
+            clientStep: err.expectedStepIndex,
+            serverStep: err.currentStepIndex,
+          },
+          'iOS onboarding answer rejected: step mismatch',
+        );
+        sendError(
+          res,
+          'STEP_MISMATCH',
+          'Client step index is ahead of the server. Resync with GET /onboarding/:id/status.',
+          409,
+          { currentStep: err.currentStepIndex, clientStep: err.expectedStepIndex },
+        );
+        return;
+      }
       logger.error({ err }, 'iOS onboarding answer failed');
       sendInternalError(res, 'Unable to save onboarding progress right now.');
+    }
+  });
+
+  /**
+   * GET /api/v1/onboarding/:questionnaireId/status
+   *
+   * Beta gap 3 (2026-04-24): read-only companion to GET /:questionnaireId,
+   * which implicitly creates a session. iOS uses this on session restore
+   * and after background wake to reconcile the client's cached step with
+   * the server's view WITHOUT writing anything. Returns a typed state:
+   *
+   *   not_started — no session, no profile. iOS can safely start fresh.
+   *   in_progress — active session. Returns currentStep for resume.
+   *   completed   — profile row present. No further answers needed.
+   *   unknown     — questionnaire id is not defined on this server.
+   *
+   * This is the preferred endpoint for "do I need to show the
+   * onboarding wizard at launch?" — using GET /:questionnaireId (which
+   * mutates) for that check races with other clients and can silently
+   * wipe an in-progress session if misused.
+   */
+  router.get('/:questionnaireId/status', async (req, res: Response) => {
+    const { userId } = req as unknown as AuthenticatedRequest;
+    const { questionnaireId } = req.params;
+
+    try {
+      const questionnaire = getQuestionnaire(questionnaireId);
+      if (!questionnaire) {
+        sendSuccess(res, {
+          questionnaireId,
+          state: 'unknown' as const,
+        });
+        return;
+      }
+
+      const totalSteps = questionnaire.steps.length;
+      const profile = getProfile(userId, questionnaireId);
+      const session = getActiveSession(userId, questionnaireId);
+
+      if (session) {
+        sendSuccess(res, {
+          questionnaireId,
+          state: 'in_progress' as const,
+          currentStep: session.current_step,
+          totalSteps,
+          answeredKeys: Object.keys(session.answers),
+          hasProfile: Boolean(profile),
+        });
+        return;
+      }
+
+      if (profile) {
+        sendSuccess(res, {
+          questionnaireId,
+          state: 'completed' as const,
+          currentStep: totalSteps,
+          totalSteps,
+          profileUpdatedAt: profile.updated_at,
+        });
+        return;
+      }
+
+      sendSuccess(res, {
+        questionnaireId,
+        state: 'not_started' as const,
+        currentStep: 0,
+        totalSteps,
+      });
+    } catch (err: any) {
+      logger.error({ err, userId, questionnaireId }, 'iOS onboarding status lookup failed');
+      sendInternalError(res, 'Unable to load onboarding status right now.');
     }
   });
 

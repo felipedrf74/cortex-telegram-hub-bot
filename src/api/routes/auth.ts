@@ -625,5 +625,75 @@ export function authRoutes(): Router {
     sendSuccess(res, { verified: true });
   }));
 
+  // ── Sign Out ─────────────────────────────────────────────────────
+  //
+  // Beta gap 3 (2026-04-24): there was previously NO server-side way
+  // for iOS to invalidate its session. Sign-out on the client just
+  // discarded the tokens locally, but the refresh token stayed valid
+  // in `ios_devices` indefinitely — if the token leaked or the user
+  // switched accounts on the same device, the prior session could still
+  // be resurrected by anyone with the refresh token. These two routes
+  // close that loophole:
+  //
+  //   POST /auth/logout      — revoke THIS device's refresh token.
+  //                            Called on "Sign out" / account switch.
+  //                            authMiddleware will also reject future
+  //                            calls bearing the now-orphaned access
+  //                            token (see auth-middleware.ts — device
+  //                            row existence check).
+  //
+  //   POST /auth/logout-all  — revoke every device for the user.
+  //                            Used for "sign out all devices",
+  //                            account deletion, or a suspected
+  //                            credential leak.
+  //
+  // Both return 200 even when no matching device row exists, so iOS
+  // can retry safely and does not need branching logic on the client.
+  router.post('/logout', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
+    const { userId, deviceId } = req as AuthenticatedRequest;
+    const db = getDb();
+
+    const result = db.prepare(
+      'DELETE FROM ios_devices WHERE user_id = ? AND device_id = ?',
+    ).run(userId, deviceId);
+
+    logAudit({
+      userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.logout',
+      details: { deviceId, devicesRevoked: result.changes },
+      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+    });
+
+    logger.info(
+      { userId, deviceId, devicesRevoked: result.changes },
+      'iOS session signed out',
+    );
+    sendSuccess(res, { signedOut: true, devicesRevoked: result.changes });
+  }));
+
+  router.post('/logout-all', verifyJwt, asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+    const db = getDb();
+
+    const result = db.prepare('DELETE FROM ios_devices WHERE user_id = ?').run(userId);
+
+    logAudit({
+      userId,
+      actorId: userId,
+      action: 'access',
+      resource: 'auth.logout_all',
+      details: { devicesRevoked: result.changes },
+      ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
+    });
+
+    logger.info(
+      { userId, devicesRevoked: result.changes },
+      'iOS sessions signed out across all devices',
+    );
+    sendSuccess(res, { signedOut: true, devicesRevoked: result.changes });
+  }));
+
   return router;
 }
