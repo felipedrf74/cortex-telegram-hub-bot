@@ -108,6 +108,44 @@ function renderMagicLoginHandoff(jwtToken: string, tenantId: string): string {
 </body></html>`;
 }
 
+// OI-SEC-001a (2026-04-24) — admin handoff page. Mirrors
+// renderMagicLoginHandoff but writes to the admin-console's
+// sessionStorage key (`nx.adm.session` — see admin-console.html)
+// and redirects to /admin instead of /console. Kept separate so
+// the two flows never cross-contaminate; a bug in one can't
+// silently authenticate the other.
+function renderAdminMagicLoginHandoff(jwtToken: string): string {
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Signing you in — Nexus Hub Admin</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 420px; margin: 80px auto; padding: 0 20px; color: #1f2937; text-align: center; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+    p { font-size: 14px; color: #6b7280; margin: 4px 0; }
+    .spin { display: inline-block; width: 18px; height: 18px; border: 2px solid #e5e7eb; border-top-color: #111827; border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head><body>
+  <h1><span class="spin"></span>Signing you into Admin…</h1>
+  <p>One moment — establishing your admin session.</p>
+  <script>
+    (function() {
+      try {
+        sessionStorage.setItem('nx.adm.session', ${JSON.stringify(jwtToken)});
+      } catch (e) {
+        // sessionStorage disabled (private browsing) — /admin will
+        // show the sign-in prompt, which is a fine fallback.
+      }
+      setTimeout(function () { window.location.replace('/admin'); }, 300);
+    })();
+  </script>
+</body></html>`;
+}
+
 function renderMagicLoginError(res: Response, status: number, title: string, body: string): void {
   res.status(status);
   res.set('Cache-Control', 'no-store');
@@ -854,6 +892,252 @@ export function createPortalServer(bot?: any): http.Server {
     } catch (e) {
       logger.error({ err: e }, 'portal: /magic-login failed');
       renderMagicLoginError(res, 500, 'Something went wrong', 'Reload the link. If it keeps failing, ask us to resend.');
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // OI-SEC-001a (2026-04-24) — admin magic-link login
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // Closes the "shell access required to mint admin tokens" UX gap
+  // from OI-SEC-001. Before this, the only way to obtain an admin
+  // session JWT was `npx ts-node scripts/mint-admin-token.ts <id>`
+  // on the server host. Now any platform admin can sign in from
+  // the web by entering their email — the server looks them up,
+  // issues a 15-minute single-use magic link, emails it, and
+  // resolves it to a fresh admin session JWT on click.
+  //
+  // Two routes, both unauthenticated:
+  //   POST /admin/login/request  — body: { email }
+  //   GET  /admin/magic-login    — query: ?token=<rawToken>
+  //
+  // These live at root (NOT under /owner/*) because /owner/*
+  // requires the admin session token we're about to establish.
+  // A chicken-and-egg: auth entry points can't sit behind the
+  // auth gate they're setting up.
+
+  // Reuse the /owner/* per-IP rate limit to protect against
+  // enumeration: a leaked portal token can't probe which emails
+  // are platform admins because POST /admin/login/request always
+  // returns the same generic success response.
+  app.post(
+    '/admin/login/request',
+    (req: Request, res: Response, next: (err?: unknown) => void) => {
+      // Import lazily to avoid require-order issues.
+      const { ownerRateLimitMiddleware } = require('../api/platform-admin-guard');
+      ownerRateLimitMiddleware(req, res, next);
+    },
+    express.json({ limit: '4kb' }),
+    async (req: Request, res: Response) => {
+      // Generic 200 response regardless of whether the email
+      // matches a platform admin. Revealing that would be an
+      // enumeration oracle — an attacker could probe every
+      // potential admin email and measure response time /
+      // content to harvest the admin list.
+      const GENERIC_RESPONSE = {
+        ok: true,
+        message: 'If that email is registered as a platform admin, a sign-in link has been sent.',
+      };
+
+      try {
+        const rawEmail = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+        // Basic email shape validation — same regex used in
+        // waitlist + invite flows. Fail silently on bad input
+        // (still return generic 200) so this endpoint doesn't
+        // become a validator oracle either.
+        const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail) && rawEmail.length <= 254;
+        if (!looksLikeEmail) {
+          res.json(GENERIC_RESPONSE);
+          return;
+        }
+        const email = rawEmail.toLowerCase();
+
+        // Resolve the user by email. If found AND they're a
+        // platform_admin, issue a token + send the email.
+        // Otherwise: quietly drop. We log either way for audit.
+        const { getDb } = require('../services/database');
+        const { getPlatformRole } = require('../services/tenant-service');
+        const { issueMagicLinkToken } = require('../services/magic-link-service');
+        const { sendTransactionalEmail } = require('../services/mailer');
+
+        const db = getDb();
+        const user = db.prepare(
+          'SELECT id, first_name, status FROM users WHERE lower(email) = ?',
+        ).get(email) as { id: number; first_name: string | null; status: string | null } | undefined;
+
+        if (!user || user.status !== 'active') {
+          logger.info({ email }, 'admin login request: no active user for email');
+          res.json(GENERIC_RESPONSE);
+          return;
+        }
+
+        let role: string | null = null;
+        try {
+          role = getPlatformRole(user.id);
+        } catch (roleErr) {
+          logger.error({ err: roleErr, userId: user.id }, 'admin login request: getPlatformRole failed');
+          // Fail-closed on DB errors — never issue a token when
+          // we can't verify platform_admins membership.
+          res.json(GENERIC_RESPONSE);
+          return;
+        }
+        if (!role) {
+          logger.info({ email, userId: user.id }, 'admin login request: user is not a platform admin');
+          res.json(GENERIC_RESPONSE);
+          return;
+        }
+
+        // Issue the token (15-minute TTL — short because the
+        // admin plane is sensitive; the user-facing magic-login
+        // uses 24h but admins can re-request in 30 seconds).
+        const TTL_SECONDS = 15 * 60;
+        const issueResult = issueMagicLinkToken({
+          email,
+          intent: 'admin_session',
+          ttlSeconds: TTL_SECONDS,
+          metadata: { adminUserId: user.id },
+        });
+
+        const consoleUrl = (process.env.PORTAL_PUBLIC_URL || 'https://nexushub.me')
+          + '/admin/magic-login?token=' + encodeURIComponent(issueResult.rawToken);
+
+        // Fire the email (best-effort — if mailer fails, log it
+        // but still return the same generic 200, so a broken
+        // mailer doesn't become an admin-email oracle).
+        try {
+          await sendTransactionalEmail({
+            template: 'admin.magic_login',
+            to: email,
+            subject: 'Your Nexus Hub Admin Console sign-in link',
+            context: {
+              firstName: user.first_name,
+              consoleUrl,
+              expiresInMinutes: 15,
+            },
+          });
+          logger.info({ userId: user.id, role }, 'admin login: magic-link email sent');
+        } catch (mailErr) {
+          logger.error({ err: mailErr, userId: user.id }, 'admin login: mailer send failed');
+        }
+
+        res.json(GENERIC_RESPONSE);
+      } catch (err) {
+        // Never leak error details — same generic response. Log
+        // the full context for ops.
+        logger.error({ err }, 'admin login request failed');
+        res.json(GENERIC_RESPONSE);
+      }
+    },
+  );
+
+  // GET /admin/magic-login?token=X — consume the token, verify
+  // the subject is still a platform admin, mint an admin session
+  // JWT, and hand it off to the Admin Console via sessionStorage.
+  app.get('/admin/magic-login', async (req: Request, res: Response) => {
+    try {
+      const { consumeMagicLinkToken } = require('../services/magic-link-service');
+      const { getPlatformRole } = require('../services/tenant-service');
+      const { mintAdminSession, getAdminSessionSecret } = require('../services/admin-session-service');
+
+      const rawToken = typeof req.query.token === 'string' ? req.query.token : '';
+      if (!rawToken) {
+        renderMagicLoginError(res, 400, 'Missing admin login token',
+          'The link you clicked is incomplete. Request a fresh one from the Admin Console sign-in screen.');
+        return;
+      }
+
+      const consume = consumeMagicLinkToken(rawToken, null);
+      if (!consume.valid) {
+        const reason = consume.reason || 'not_found';
+        const copy: Record<string, { title: string; body: string }> = {
+          not_found: { title: 'Admin link not recognised', body: 'This link is invalid or was never issued. Request a fresh one.' },
+          expired: { title: 'Admin link expired', body: 'Admin sign-in links are valid for 15 minutes. Request a fresh one.' },
+          already_consumed: { title: 'Admin link already used', body: 'This link was used once already — they are single-use for security. Request a fresh one.' },
+        };
+        const c = copy[reason] || copy.not_found;
+        renderMagicLoginError(res, 410, c.title, c.body);
+        return;
+      }
+
+      const tokenRow = consume.row;
+      if (!tokenRow) {
+        renderMagicLoginError(res, 500, 'Unexpected state',
+          'The sign-in succeeded partially but the server lost the session handle. Request a fresh link.');
+        return;
+      }
+
+      // Defense-in-depth: intent check. This route must only
+      // consume admin_session tokens; a passwordless_login token
+      // reused here would otherwise cross the wires between user
+      // and admin flows.
+      if (tokenRow.intent !== 'admin_session') {
+        logger.warn(
+          { tokenId: tokenRow.id, intent: tokenRow.intent },
+          'portal: /admin/magic-login received a token with non-admin_session intent — rejecting',
+        );
+        renderMagicLoginError(res, 400, 'Wrong link type',
+          'This link was not issued for admin sign-in. Use the link from the email you received after requesting admin access.');
+        return;
+      }
+
+      // Extract adminUserId from metadata + verify still admin.
+      const adminUserId = typeof tokenRow.metadata?.adminUserId === 'number'
+        ? tokenRow.metadata.adminUserId : null;
+      if (adminUserId === null) {
+        logger.error({ tokenId: tokenRow.id }, 'portal: /admin/magic-login token missing adminUserId metadata');
+        renderMagicLoginError(res, 500, 'Admin link incomplete',
+          'The server issued this link without enough context. Request a fresh one.');
+        return;
+      }
+
+      let role: string | null = null;
+      try {
+        role = getPlatformRole(adminUserId);
+      } catch (err) {
+        logger.error({ err, adminUserId }, 'portal: /admin/magic-login getPlatformRole failed');
+        renderMagicLoginError(res, 403, 'Admin access unverifiable',
+          'The server could not verify your platform-admin status (database error). Contact support.');
+        return;
+      }
+      if (!role) {
+        // Platform admin was revoked between issuance and
+        // consumption. Legitimate but stale — reject cleanly.
+        logger.info({ adminUserId }, 'portal: /admin/magic-login subject is no longer a platform admin — rejecting');
+        renderMagicLoginError(res, 403, 'Admin access revoked',
+          'Your platform admin access was revoked. Contact platform_owner.');
+        return;
+      }
+
+      // Mint the admin session JWT. Requires PORTAL_ADMIN_JWT_SECRET.
+      if (!getAdminSessionSecret()) {
+        logger.error('portal: /admin/magic-login — PORTAL_ADMIN_JWT_SECRET missing');
+        renderMagicLoginError(res, 503, 'Server misconfigured',
+          'Admin authentication is not configured on this server. Set PORTAL_ADMIN_JWT_SECRET and restart.');
+        return;
+      }
+      const adminSessionJwt = mintAdminSession(adminUserId, role, { expiresIn: '24h' });
+
+      // Best-effort: retrofit consumed_by with the admin id.
+      try {
+        const { getDb } = require('../services/database');
+        getDb()
+          .prepare('UPDATE magic_link_tokens SET consumed_by = ? WHERE id = ?')
+          .run(adminUserId, tokenRow.id);
+      } catch (retroErr) {
+        logger.warn({ err: retroErr }, 'portal: /admin/magic-login consumed_by retrofit failed (non-critical)');
+      }
+
+      // Render the handoff page. Same safe-render pattern as the
+      // user magic-login — JWT is inlined in a <script> after
+      // sanitization, then sessionStorage + redirect to /admin.
+      const safeJwt = String(adminSessionJwt).replace(/[^A-Za-z0-9._\-=]/g, '');
+      res.set('Cache-Control', 'no-store');
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.type('html').send(renderAdminMagicLoginHandoff(safeJwt));
+    } catch (e) {
+      logger.error({ err: e }, 'portal: /admin/magic-login failed');
+      renderMagicLoginError(res, 500, 'Something went wrong',
+        'Reload the link. If it keeps failing, request a fresh one.');
     }
   });
 

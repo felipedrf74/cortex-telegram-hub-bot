@@ -479,13 +479,32 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
 <div id="authView" class="hidden">
   <div class="auth-prompt">
     <h1>Admin Console sign-in</h1>
-    <p>Paste your <strong>admin session token</strong>. Mint one with <code>npx ts-node scripts/mint-admin-token.ts &lt;yourUserId&gt;</code>. Rate-limited at 30 req/min/IP.</p>
+
+    <!-- OI-SEC-001a (2026-04-24): email-link sign-in is the primary
+         path. Admins who don't have shell access can request a
+         15-minute single-use magic link that drops them directly
+         into the console. Rate-limited at 30 req/min/IP. -->
+    <p>Enter your admin email — we'll send you a sign-in link. Valid for 15 minutes, single-use.</p>
     <div class="form-row">
-      <label for="authSession">Admin session token</label>
-      <input id="authSession" type="password" placeholder="eyJhbGciOi…" autocomplete="off" spellcheck="false" />
+      <label for="authEmail">Email</label>
+      <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
     </div>
-    <div id="authError" class="error-banner hidden"></div>
-    <button class="btn primary" id="authSubmit" style="width:100%; margin-top: var(--space-3);">Sign in</button>
+    <div id="authEmailStatus" class="small muted" style="margin-top: var(--space-2); text-align: center;"></div>
+    <button class="btn primary" id="authEmailSubmit" style="width:100%; margin-top: var(--space-3);">Email me a sign-in link</button>
+
+    <details style="margin-top: var(--space-4);">
+      <summary class="small muted" style="cursor: pointer;">Already have a session token? Paste it directly</summary>
+      <div style="margin-top: var(--space-3); padding: var(--space-3); background: var(--surface-2, #f9fafb); border-radius: 6px;">
+        <p class="small muted" style="margin: 0 0 var(--space-3) 0;">For deploys where email isn't configured, mint a token with <code>npx ts-node scripts/mint-admin-token.ts &lt;yourUserId&gt;</code> and paste below.</p>
+        <div class="form-row">
+          <label for="authSession">Admin session token</label>
+          <input id="authSession" type="password" placeholder="eyJhbGciOi…" autocomplete="off" spellcheck="false" />
+        </div>
+        <button class="btn" id="authSubmit" style="width:100%; margin-top: var(--space-2);">Sign in with token</button>
+      </div>
+    </details>
+
+    <div id="authError" class="error-banner hidden" style="margin-top: var(--space-3);"></div>
     <p class="small muted" style="margin-top: var(--space-4); text-align: center;">Session is stored in <code>sessionStorage</code> and cleared on sign-out.</p>
 
     <details style="margin-top: var(--space-4);">
@@ -1035,6 +1054,44 @@ async function tryAuthenticate() {
              'Could not reach /owner/*.');
   }
 }
+
+// OI-SEC-001a (2026-04-24): request a magic-link email. Always
+// returns a generic success message so this endpoint isn't an
+// enumeration oracle. If the email matches a platform admin,
+// the link arrives shortly; if not, nothing happens.
+document.getElementById('authEmailSubmit').addEventListener('click', async () => {
+  const emailEl = document.getElementById('authEmail');
+  const statusEl = document.getElementById('authEmailStatus');
+  const btn = document.getElementById('authEmailSubmit');
+  const email = (emailEl.value || '').trim();
+  if (!email) {
+    statusEl.textContent = 'Enter your email first.';
+    return;
+  }
+  const originalBtnText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  statusEl.textContent = '';
+  try {
+    const r = await fetch('/admin/login/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify({ email }),
+    });
+    const data = await r.json().catch(() => ({}));
+    // Always render the server's generic success message so this
+    // UI never leaks "yes this email is an admin" vs "no it
+    // isn't" to the user either.
+    statusEl.textContent = (data && data.message)
+      || 'If that email is registered as a platform admin, a sign-in link has been sent.';
+  } catch {
+    statusEl.textContent = 'Could not reach the server. Try again in a moment.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalBtnText;
+  }
+});
 
 // OI-SEC-001 primary sign-in: paste the session token.
 document.getElementById('authSubmit').addEventListener('click', () => {

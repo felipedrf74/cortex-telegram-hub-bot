@@ -42,7 +42,13 @@ import crypto from 'crypto';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 
-export type MagicLinkIntent = 'invite_signup' | 'passwordless_login' | 'email_verify';
+// OI-SEC-001a (2026-04-24): 'admin_session' mints an admin session
+// JWT (PORTAL_ADMIN_JWT_SECRET) for /owner/* control-plane access.
+// Distinct from 'passwordless_login' which mints a USER session
+// JWT — keeping them separate prevents a metadata-demux footgun
+// where a bug in the handler could silently escalate a user flow
+// into an admin flow.
+export type MagicLinkIntent = 'invite_signup' | 'passwordless_login' | 'email_verify' | 'admin_session';
 
 export interface MagicLinkRow {
   id: number;
@@ -85,6 +91,7 @@ const ALLOWED_INTENTS: readonly MagicLinkIntent[] = [
   'invite_signup',
   'passwordless_login',
   'email_verify',
+  'admin_session',  // OI-SEC-001a
 ];
 
 // ─── Crypto helpers (pure) ───────────────────────────────────────────

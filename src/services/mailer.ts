@@ -263,7 +263,8 @@ async function sendViaResend(email: MagicLinkEmail): Promise<MailerSendResult> {
 //      { subject, html, text }.
 
 export type TransactionalTemplate =
-  | 'welcome.paid_upgrade';
+  | 'welcome.paid_upgrade'
+  | 'admin.magic_login';   // OI-SEC-001a (2026-04-24)
 
 export interface TransactionalEmailInput {
   template: TransactionalTemplate;
@@ -511,6 +512,87 @@ function renderTransactional(input: TransactionalEmailInput): RenderedBodies {
         ],
       };
     }
+
+    // OI-SEC-001a (2026-04-24): admin magic-link email. Sent to a
+    // platform admin who requested a sign-in link. The email MUST
+    // be brutally simple — one button, one sentence, no tier pill
+    // or marketing — because:
+    //   1. It's a security-sensitive credential handoff; cruft
+    //      around the link is phishing-shaped.
+    //   2. Admins often open mail on mobile; a plain body
+    //      renders identically across clients.
+    //   3. Any rendering bug on the admin auth path locks the
+    //      admin out — minimal HTML keeps the blast radius small.
+    case 'admin.magic_login': {
+      const firstName = typeof input.context.firstName === 'string' && input.context.firstName.trim()
+        ? input.context.firstName.trim()
+        : null;
+      const consoleUrl = typeof input.context.consoleUrl === 'string'
+        ? input.context.consoleUrl
+        : 'https://nexushub.me/admin';
+      const expiresInMinutes = typeof input.context.expiresInMinutes === 'number'
+        && input.context.expiresInMinutes > 0
+        ? Math.floor(input.context.expiresInMinutes)
+        : 15;
+
+      const greeting = firstName ? `Hi ${firstName},` : 'Hi,';
+
+      const text = [
+        greeting,
+        '',
+        `Click the link below to sign in to the Nexus Hub Admin Console. The link is valid for ${expiresInMinutes} minutes and single-use.`,
+        '',
+        consoleUrl,
+        '',
+        `If you didn't request this, you can safely ignore this email — the link will expire on its own.`,
+        '',
+        '— Nexus Hub security',
+      ].join('\n');
+
+      const html = `<!DOCTYPE html>
+<html>
+  <body style="margin: 0; padding: 24px; background: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1f2937; line-height: 1.55;">
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="max-width: 520px; margin: 0 auto; background: #ffffff; border-radius: 10px; border: 1px solid #e5e7eb;">
+      <tr>
+        <td style="padding: 28px 32px 8px 32px; font-size: 16px;">
+          <p style="margin: 0 0 12px 0;">${escapeHtml(greeting)}</p>
+          <p style="margin: 0 0 20px 0;">Click the button below to sign in to the <strong>Nexus Hub Admin Console</strong>. The link is valid for <strong>${escapeHtml(String(expiresInMinutes))} minutes</strong> and can only be used once.</p>
+        </td>
+      </tr>
+      <tr>
+        <td align="center" style="padding: 0 32px 8px 32px;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+            <tr>
+              <td align="center" bgcolor="#111827" style="border-radius: 8px; background-color: #111827;">
+                <a href="${escapeHtml(consoleUrl)}"
+                   style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 8px; line-height: 1;">
+                  Sign in to Admin Console
+                </a>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding: 12px 32px 24px 32px; font-size: 13px; color: #6b7280;">
+          <p style="margin: 8px 0 0 0;">If you didn't request this, you can safely ignore this email — the link will expire on its own.</p>
+          <p style="margin: 16px 0 0 0; font-size: 12px; color: #9ca3af;">— Nexus Hub security</p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`.trim();
+      return {
+        subject: input.subject,
+        html,
+        text,
+        tags: [
+          { name: 'template', value: 'admin_magic_login' },
+          { name: 'source', value: 'nexus-hub-portal' },
+        ],
+      };
+    }
+
     default: {
       const never: never = input.template;
       throw new MailerError(
