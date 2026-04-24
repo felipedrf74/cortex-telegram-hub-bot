@@ -4,6 +4,20 @@ This document covers the backend alert loop for Nexus Hub operators. It is not
 a release checklist; it describes how durable operator alerts are created,
 delivered, acknowledged, resolved, and recovered.
 
+## Last Verified Drill
+
+2026-04-25 staging drill passed:
+
+- synthetic alert created;
+- external webhook delivery succeeded;
+- alert acknowledged;
+- alert resolved;
+- portal/admin audit rows verified.
+
+Production backend is live at `4.14.64`. If the final production alert receiver
+differs from the staging receiver, run one additional production-safe delivery
+drill after changing the receiver env.
+
 ## Alert Lifecycle
 
 Operator alerts are stored in `operator_alerts`.

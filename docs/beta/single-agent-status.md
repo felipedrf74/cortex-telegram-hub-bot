@@ -1,6 +1,6 @@
 # Single-Agent Beta Status
 
-Date: 2026-04-24
+Date: 2026-04-25
 
 Active branch: `beta/single-agent-rc`
 
@@ -10,16 +10,28 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
 
 | Gap | Status | Evidence | Remaining Work | Tests Needed | Notes |
 |---|---|---|---|---|---|
-| Gap 1: Live TestFlight smoke | Not started | Backend repo has no live TestFlight proof. | Coordinate with iOS worktree and staging credentials. | TestFlight/manual smoke. | Out of scope for Gap 7. |
-| Gap 2: Tenant/data isolation | Implemented, needs verification | `docs/beta/security-foundation-handoff.md`; backend local proof previously passed. | Staging two-user smoke. | Tenant/data isolation staging smoke. | Preserved during this phase. |
-| Gap 3: Auth + onboarding reliability | Partially done | `docs/beta/agent-3-auth-onboarding-handoff.md`; auth/onboarding tests exist. | iOS adoption and staging validation. | Auth/onboarding regression and device smoke. | Preserved during this phase. |
-| Gap 4: iOS degraded/error states | Implemented, needs verification | Implemented in the iOS single-agent worktree, not this backend worktree. | Visual/TestFlight verification. | iOS degraded-state smoke. | Out of scope for Gap 7 backend work. |
-| Gap 5: Portal/admin operator sessions | Implemented, needs verification | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests previously passed. | Staging signed operator-session smoke. | Portal/admin staging smoke. | Preserved during this phase. |
-| Gap 6: Gmail/Outlook/Health integration truth | Partially done | `docs/beta/agent-6-integration-truth-handoff.md`; backend contract exists. | iOS contract adoption and staging validation. | Provider-state backend/iOS smoke. | Preserved during this phase. |
-| Gap 7: Observability/on-call loop | Implemented, needs verification | Durable alert lifecycle, delivery states, portal ack/resolve/retry, beta-critical telemetry, `docs/OBSERVABILITY-ONCALL.md`, and focused tests passed. | Provision external alert webhook and run staging delivery/ack/resolve/dead-letter smoke. | Live webhook smoke plus full backend verify before release. | Handoff: `docs/beta/observability-oncall-handoff.md`. |
-| Gap 8: Release/runbook discipline | Partially done | Existing docs and beta handoffs. | Consolidate release gate and runbook commands. | Docs/script verification. | Later phase. |
-| Gap 9: Frontend architecture debt | Not started | Backend repo only. | Handle in iOS worktree if needed. | iOS build/tests. | Out of scope for Gap 7. |
-| Gap 10: Product polish consistency | Not started | Backend repo only. | Handle in iOS worktree if needed. | UI/accessibility smoke. | Out of scope for Gap 7. |
+| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, and 2026-04-25 simulator smoke with Felipe's persisted account. Backend production is live at `4.14.64`. | Signed TestFlight/device smoke, APNs proof, fresh auth, and true two-account switching. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
+| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; full `npm run verify` passed 342 files / 5,436 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
+| Gap 3: Auth + onboarding reliability | Partial | `docs/beta/agent-3-auth-onboarding-handoff.md`; backend auth/onboarding tests exist; full backend verify passed; iOS existing-session simulator restore succeeded. | Fresh Apple/Google/email auth and interrupted onboarding on signed iOS build/device. | Real-device auth/onboarding smoke. | Backend promotion completed; iOS live auth proof remains. |
+| Gap 4: iOS degraded/error states | Complete with manual verification required | Implemented in the iOS single-agent worktree; simulator smoke showed honest missing calendar/email/Training setup states. | Physical-device visual pass for backend unavailable, retry success/failure, and account-switch loading. | iOS degraded-state smoke. | Out of scope for backend code, but backend returns canonical envelopes for iOS. |
+| Gap 5: Portal/admin operator sessions | Complete | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests passed; hardened staging smoke passed valid, expired, tampered, unauthorized role/scope, wrong-tenant, and static-token rejection paths. | Optional production env flip to require signed sessions only if desired. | Optional production hardening smoke after final env flip. | Production code is live at `4.14.64`. |
+| Gap 6: Gmail/Outlook/Health integration truth | Partial | `docs/beta/agent-6-integration-truth-handoff.md`; backend canonical provider-state tests passed; iOS simulator showed one-provider connected truth with Garmin only. | Real/provider-backed Gmail-only, Outlook-only, Health-only, revoked, and degraded checks. | Device/provider-state smoke. | Backend contract is in place; live provider proof remains. |
+| Gap 7: Observability/on-call loop | Complete | Durable alert lifecycle, delivery states, portal ack/resolve/retry, beta-critical telemetry, `docs/OBSERVABILITY-ONCALL.md`, focused tests, full verify, and staging external webhook drill passed. | Configure/drill final production alert receiver if different from staging. | Optional production receiver drill. | Handoff: `docs/beta/observability-oncall-handoff.md`. |
+| Gap 8: Release/runbook discipline | Complete with manual verification required | iOS release checklist/config/rollback docs exist; backend deploy scripts were fixed for worktree `.git`; production promoted to `4.14.64`; production sanity smoke passed canonical unauthenticated `401` envelopes. | Signed TestFlight/device gate before broad public beta. | TestFlight/APNs/physical-device release rehearsal. | Backend production is live; iOS distribution proof remains. |
+| Gap 9: Frontend architecture debt | Partial | Implemented in the iOS single-agent worktree with safe SwiftUI extractions and passing focused tests/build. | Continue incremental extractions only when backed by focused tests/previews. | iOS focused tests/build. | Out of scope for backend code. |
+| Gap 10: Product polish consistency | Complete with manual verification required | Implemented in the iOS single-agent worktree with skill card, chat shortcut, retry copy, accessibility, and spacing polish. | Visual simulator/TestFlight pass for skill cards, chat shortcuts, degraded states, and empty/error copy. | Visual smoke/accessibility pass. | Out of scope for backend code. |
+
+## Production / Staging Update - 2026-04-25
+
+- Backend production is live at `4.14.64`.
+- `content-engine` and `nexus-hub` were online after promotion/recovery.
+- Founder accounts verified in production:
+  `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
+- Hardened staging operator-session smoke passed.
+- External webhook/on-call staging drill passed alert creation, delivery,
+  acknowledgement, resolution, and audit verification.
+- Deploy scripts now exclude worktree `.git` files so branch worktrees can
+  deploy safely.
 
 ## Single-Agent Rules
 

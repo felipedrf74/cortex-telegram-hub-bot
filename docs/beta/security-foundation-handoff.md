@@ -1,6 +1,6 @@
 # Security Foundation Handoff — Gaps 2 and 5
 
-Date: 2026-04-24
+Date: 2026-04-25
 
 Backend branch: `beta/single-agent-rc`  
 Backend worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-codex-single-agent`
@@ -17,6 +17,26 @@ Gap 5 reused the narrow, safe commit from `beta/gap-5-admin-sessions`
 The patch adds beta-safe portal exposure classification, signed-session boot
 preflight, per-operator target-user scoping, and audit coverage for admin
 mutations.
+
+## 2026-04-25 Staging And Production Verification
+
+The local proof below has now been followed by hardened staging and production
+checks:
+
+- full backend `npm run verify` passed after the beta hardening work;
+- hardened staging operator-session smoke passed valid session, expired
+  session, tampered session, unauthorized role/scope, wrong tenant, and
+  static-token rejection paths;
+- founder accounts `felipedrf74@gmail.com` and
+  `vieira.jaqueline@gmail.com` were verified in staging and production with
+  founder max access;
+- backend production is live at `4.14.64`;
+- production app-facing unauthenticated sanity checks returned canonical
+  `{ error: { code, message, details? } }` `401` envelopes.
+
+The remaining data-isolation proof is an app-level physical-device
+account-switching smoke between the two founder accounts. The backend route,
+service, cache, portal, and operator-session proofs are complete.
 
 ## Gap 2 Evidence
 
@@ -82,10 +102,10 @@ mutations.
 Observed non-fatal runner warnings: missing `node-cron` sourcemap source and
 `--localstorage-file` without a valid path.
 
-## Staging Verification Still Needed
+## Staging Verification Command Reference
 
-No external credentials or staging services were available in this local pass.
-Before beta exposure, run a staging boot and smoke with:
+The staging smoke described here passed on 2026-04-25. Keep the command shape
+as the reference for future release rehearsals:
 
 ```bash
 PORTAL_SESSION_SECRET='<32+ byte random secret>'
@@ -122,7 +142,9 @@ Then smoke:
 
 ## Status
 
-- Gap 2: complete for code and executable local proof; needs staging two-user
-  smoke under the release runbook.
-- Gap 5: complete for code and executable local proof; needs staging boot with
-  `PORTAL_BETA_HARDENED=true` plus a signed operator-session smoke.
+- Gap 2: complete for backend code, local executable proof, and staging
+  wrong-tenant/operator-scope proof. Physical-device app account switching
+  remains as the public-beta gate.
+- Gap 5: complete for code, local executable proof, and hardened staging
+  signed operator-session smoke. Production signed-session-only env flip is
+  optional and should be followed by a small production smoke if enabled.

@@ -12,6 +12,25 @@
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
+## Current Production Truth - 2026-04-25
+
+- Production backend is live at `4.14.64`.
+- Current release branch for the beta hardening work:
+  `beta/single-agent-rc`.
+- Full backend verification passed after beta hardening:
+  342 test files / 5,436 tests.
+- Hardened staging operator-session smoke passed valid, expired, tampered,
+  unauthorized role/scope, wrong-tenant, and static-token rejection paths.
+- External webhook/on-call staging drill passed alert creation, delivery,
+  acknowledgement, resolution, and audit verification.
+- Founder accounts verified in production:
+  `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
+- Deploy scripts now exclude worktree `.git` files so branch worktrees can
+  deploy safely.
+- Remaining public-beta gates are iOS distribution gates: signed TestFlight,
+  APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
+  and real Gmail/Outlook/Health provider-state checks.
+
 ---
 
 ## Repository Layout
@@ -152,10 +171,26 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 
 ## Active Phase (April 2026)
 
-**Phase 0 — Plumbing + Salvage**: audit_trail bomb fix ✅, worktree cherry-picks (Sentry ✅, dep enforcement ✅), Gemini routing verified ✅, Garmin keepalive verified ✅, orchestration cleanup ✅.
+**Beta release hardening is the active production context.** The backend beta
+hardening branch has been deployed to production as `4.14.64`; do not treat the
+older Phase 0/Phase 1 notes as the current release state.
 
-**Phase 1 — Skill Architecture Revamp** (next): triathlon → 4 sub-skills (gym, running, cycle, swim) + shared coach intelligence, data-driven skill catalog, entitlements (`access_level`: free/pro/admin), cross-skill signal wiring via intelligence-bus.
+Current backend follow-ups:
 
-**Phase 2+**: iOS onboarding rewrite, Skills tab replacing Training tab, Notes/Reminders iOS UI, OAuth connect flows, content creator iOS section with Google Drive integration.
+- keep tenant/founder/business-rule docs aligned with the beta tracker;
+- run another production-safe alert drill only if the final receiver differs
+  from the staging receiver;
+- keep deploy scripts worktree-safe;
+- avoid broad architecture rewrites until the signed TestFlight/device gates
+  are complete.
 
-See `DEPLOY.md` and the top of this file for operational context. For architecture details on the OAuth bridge, distributed tracing, cost dashboard, staging environment, and validated promote pipeline, see their respective commit messages in `git log`.
+Current iOS-dependent release gates:
+
+- signed TestFlight smoke;
+- fresh Apple/Google/email auth and interrupted onboarding;
+- APNs token upload and safe delivery;
+- true two-account switching between Felipe and Jaqueline test accounts;
+- real Gmail/Outlook/Health provider-state validation.
+
+See `DEPLOY.md`, `STAGING.md`, `docs/OBSERVABILITY-ONCALL.md`, and
+`docs/beta/single-agent-status.md` for operational context.

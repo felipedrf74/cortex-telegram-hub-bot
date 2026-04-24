@@ -1,6 +1,6 @@
 # Observability On-Call Handoff
 
-Date: 2026-04-24
+Date: 2026-04-25
 
 Branch: `beta/single-agent-rc`
 
@@ -18,6 +18,22 @@ Worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-codex-si
 ## Reuse Decision
 
 The previous `beta/gap-7-observability` branch contains useful work, but it is not safe to merge because it predates later security/auth/integration changes and would remove current Gap 2, Gap 3, Gap 5, and Gap 6 files. The current `beta/single-agent-rc` branch already contained most of the Gap 7 implementation, so this phase reused it in place and added only narrow hardening changes.
+
+## 2026-04-25 External Staging Drill
+
+The external on-call path has now been exercised in staging:
+
+- a synthetic operator alert was created;
+- webhook delivery reached the external receiver;
+- the alert was acknowledged;
+- the alert was resolved;
+- portal/admin audit rows were verified;
+- no secrets, OAuth tokens, email contents, health data, fiscal/vendor values,
+  or raw user payloads were printed or required for the drill.
+
+If the final production receiver differs from the staging receiver, run one
+more production-safe receiver drill after the production env is pointed at the
+final destination.
 
 ## Alert Lifecycle
 
@@ -94,9 +110,10 @@ npx vitest run __tests__/services/operator-alerts.test.ts __tests__/api/response
 
 Result: 6 files, 49 tests passed.
 
-## External Verification Still Needed
+## External Verification Command Reference
 
-No external webhook was called locally. Provision these env vars in staging:
+The staging external webhook drill passed on 2026-04-25. Keep this command
+shape as the reference for future release rehearsals:
 
 ```bash
 OPERATOR_ALERT_WEBHOOK_URL='<https alert receiver>'
@@ -127,4 +144,6 @@ Expected staging smoke:
 
 ## Status
 
-Gap 7 is implemented with local executable proof and needs external webhook/staging verification before being marked complete.
+Gap 7 is complete for code, local executable proof, and staging external
+webhook/on-call verification. A final production receiver drill is optional if
+the production receiver differs from the staging receiver.
