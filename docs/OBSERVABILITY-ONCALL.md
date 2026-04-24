@@ -50,6 +50,8 @@ Current durable alert producers:
 - `integration_health`: repeated Google/Outlook/Garmin probe failures.
 - `tenant_scope`: tenant isolation denials and invalid scoped reads/writes.
 - `cost_guardrail`: global AI spend crosses configured alert tiers.
+- `api_degraded_response`: explicit backend 5xx or service-unavailable response
+  envelopes returned to app-facing clients.
 
 ## Scheduled Job Failures
 
@@ -95,6 +97,26 @@ Typical actions:
 - Use the `reqId` from logs/Sentry when available.
 - Acknowledge once investigating; resolve only after the failing path is fixed
   or known to have recovered.
+
+## Backend Degraded Responses
+
+Routes that intentionally return a client-safe 5xx or `SERVICE_UNAVAILABLE`
+envelope now create a deduped warning alert even when the route handled the
+exception locally. The alert metadata is limited to code, HTTP status, and
+request id; raw route details are not copied into the alert payload.
+
+Typical actions:
+
+- Use the request id to find the structured log line for the failing route.
+- Confirm whether the iOS app is showing a retryable degraded state.
+- Resolve after the backend dependency or route has recovered.
+
+## Account Switching Telemetry
+
+iOS `POST /api/v1/auth/logout` and `POST /api/v1/auth/logout-all` emit
+structured `event=account_switching` logs with the number of revoked devices.
+This is intentionally logged, not alerted, because account switching is a
+normal user action unless accompanied by auth failures or tenant-scope denials.
 
 ## Cost Guardrail Alerts
 

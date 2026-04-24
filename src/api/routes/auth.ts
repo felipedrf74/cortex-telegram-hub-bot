@@ -697,7 +697,15 @@ export function authRoutes(): Router {
     });
 
     logger.info(
-      { userId, deviceId, devicesRevoked: result.changes },
+      {
+        event: 'account_switching',
+        action: 'logout',
+        outcome: 'success',
+        surface: 'ios',
+        userId,
+        deviceId,
+        devicesRevoked: result.changes,
+      },
       'iOS session signed out',
     );
     sendSuccess(res, { signedOut: true, devicesRevoked: result.changes });
@@ -719,7 +727,14 @@ export function authRoutes(): Router {
     });
 
     logger.info(
-      { userId, devicesRevoked: result.changes },
+      {
+        event: 'account_switching',
+        action: 'logout_all',
+        outcome: 'success',
+        surface: 'ios',
+        userId,
+        devicesRevoked: result.changes,
+      },
       'iOS sessions signed out across all devices',
     );
     sendSuccess(res, { signedOut: true, devicesRevoked: result.changes });

@@ -236,6 +236,38 @@ describe('operator alerts', () => {
     expect(listOperatorAlerts({ status: 'acknowledged' })).toHaveLength(1);
   });
 
+  it('tracks acknowledgement and resolution as a durable lifecycle', async () => {
+    const {
+      acknowledgeOperatorAlert,
+      recordOperatorAlert,
+      resolveOperatorAlert,
+      listOperatorAlerts,
+    } = await import('../../src/services/operator-alerts');
+
+    const created = recordOperatorAlert({
+      severity: 'critical',
+      source: 'api_degraded_response',
+      dedupeKey: 'api_degraded:INTERNAL:500',
+      title: 'Backend degraded API response',
+    });
+    const id = created.alert!.id;
+
+    expect(acknowledgeOperatorAlert(id, 'operator@nexushub.me')).toBe(true);
+    expect(listOperatorAlerts({ status: 'acknowledged' })[0]).toMatchObject({
+      id,
+      status: 'acknowledged',
+      acknowledgedBy: 'operator@nexushub.me',
+    });
+
+    expect(resolveOperatorAlert(id, 'operator@nexushub.me')).toBe(true);
+    expect(listOperatorAlerts({ status: 'resolved' })[0]).toMatchObject({
+      id,
+      status: 'resolved',
+      acknowledgedBy: 'operator@nexushub.me',
+    });
+    expect(listOperatorAlerts({ status: 'open' })).toEqual([]);
+  });
+
   it('fails closed on invalid input', async () => {
     const { recordOperatorAlert, listOperatorAlerts } = await import('../../src/services/operator-alerts');
 

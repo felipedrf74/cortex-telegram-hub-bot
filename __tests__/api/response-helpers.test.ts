@@ -8,7 +8,14 @@
  * the envelope shape without coordinating with the iOS app.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+const mockRecordOperatorAlert = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/services/operator-alerts', () => ({
+  recordOperatorAlert: (...args: unknown[]) => mockRecordOperatorAlert(...args),
+}));
+
 import {
   apiSuccess,
   apiError,
@@ -18,6 +25,10 @@ import {
   sendInternalError,
   asyncHandler,
 } from '../../src/api/response-helpers';
+
+beforeEach(() => {
+  mockRecordOperatorAlert.mockReset();
+});
 
 describe('apiSuccess', () => {
   it('produces an envelope with ok=true and the data payload', () => {
@@ -114,6 +125,27 @@ describe('sendError (express helper)', () => {
     const res = mockResponse();
     sendError(res, 'NOT_FOUND', 'no such id', 404);
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  it('records a durable operator alert for degraded backend responses', () => {
+    const res = mockResponse();
+    sendError(res, 'SERVICE_UNAVAILABLE', 'Try again later', 503, {
+      rawBackendError: 'postgres password=not-for-alerts',
+    });
+
+    expect(mockRecordOperatorAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: 'warning',
+        source: 'api_degraded_response',
+        dedupeKey: 'api_degraded:SERVICE_UNAVAILABLE:503',
+        title: 'Backend degraded API response',
+        metadata: expect.objectContaining({
+          code: 'SERVICE_UNAVAILABLE',
+          status: 503,
+        }),
+      }),
+    );
+    expect(mockRecordOperatorAlert.mock.calls[0][0].metadata).not.toHaveProperty('rawBackendError');
   });
 });
 

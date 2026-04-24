@@ -22,6 +22,7 @@
 import type { Response } from 'express';
 import { logger } from '../utils/logger';
 import { captureError } from '../services/error-monitor';
+import { recordOperatorAlert } from '../services/operator-alerts';
 import { getCurrentRequestId } from '../utils/request-context';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -155,15 +156,39 @@ export function sendError(
   details?: Record<string, unknown>,
 ): void {
   if (status >= 500 || code === 'SERVICE_UNAVAILABLE') {
+    const reqId = getCurrentRequestId();
     logger.warn?.(
       {
         event: 'backend_degraded_response',
-        reqId: getCurrentRequestId(),
+        reqId,
         code,
         status,
       },
       'Backend returned degraded API response',
     );
+    try {
+      recordOperatorAlert({
+        severity: 'warning',
+        source: 'api_degraded_response',
+        dedupeKey: `api_degraded:${code}:${status}`,
+        title: 'Backend degraded API response',
+        detail: `${code} response returned with HTTP ${status}`,
+        owner: 'ops',
+        suspectedArea: 'backend_degraded_response',
+        userImpact: 'The iOS app may show a degraded or retryable error state for this backend surface.',
+        runbookUrl: 'docs/OBSERVABILITY-ONCALL.md#error-monitor-alerts',
+        metadata: {
+          code,
+          status,
+          reqId,
+        },
+      });
+    } catch (alertErr) {
+      logger.warn?.(
+        { err: alertErr, reqId, code, status },
+        'Failed to record degraded API response operator alert',
+      );
+    }
   }
   res.status(status).json(apiError(code, message, details));
 }
