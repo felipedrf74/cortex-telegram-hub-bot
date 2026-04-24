@@ -1088,36 +1088,80 @@ export function createPortalWorkspaceRouter(): Router {
   });
 
   // ── GET /workspace/usage ───────────────────────────────────────
-  // Returns the CURRENT USER's spend for today — never any other
-  // tenant's. This is the user-scoped "how much have I used?"
-  // version of /owner/usage.
+  // Every caller always gets their OWN spend for today. A
+  // tenant_admin ADDITIONALLY gets the tenant-wide roll-up under
+  // `tenant.today` (OI-COR-001, 2026-04-24): previously a 3-member
+  // tenant wanting "our total usage this month" had to fan out
+  // three individual responses and sum manually. Now one call
+  // gets it, role-gated.
+  //
   // Cost-privacy invariant (2026-04-22): `/workspace/*` MUST NOT
-  // expose AI spend dollars to tenant users. The platform owner
-  // subsidizes AI infrastructure — tenants see their own activity
-  // (call counts, rate-limit status) but NEVER the $ amount.
-  // Cross-tenant + per-tenant spend rollups live at `/owner/usage`
-  // behind the platform-admin guard. See the test case
+  // expose AI spend dollars to tenant users — NOT even to tenant
+  // admins, NOT in the tenant rollup, NOT anywhere. The platform
+  // owner subsidizes AI infrastructure; tenants see their own
+  // activity (call counts, rate-limit status) but NEVER the $
+  // amount. Cross-tenant + per-tenant spend rollups live at
+  // `/owner/usage` behind the platform-admin guard. See the test
   // "cost-privacy: /workspace/usage MUST NOT return costUsd" in
   // __tests__/api/portal-workspace-router.test.ts.
+  //
+  // Isolation invariant: the tenant rollup is scoped via
+  // tenant_members, never via a global SELECT. The test "tenant
+  // total never leaks from another tenant" pins this — a user in
+  // tenant A querying /workspace/usage must never see tenant B's
+  // calls, even when A is also a member of B.
   router.get('/usage', (req: Request, res: Response) => {
     const ctx = (req as TenantContextRequest).tenantContext;
     try {
       const db = getDb();
-      const row = db
+
+      // Caller's own calls (every role sees this).
+      const mine = db
         .prepare(
           `SELECT COUNT(*) as calls
            FROM api_usage
            WHERE user_id = ? AND ts >= date('now')`,
         )
         .get(ctx.userId) as { calls: number } | undefined;
-      ok(res, {
+
+      // Base response. `tenant` added conditionally for admins below.
+      const response: Record<string, unknown> = {
         tenantId: ctx.tenantId,
         userId: ctx.userId,
         today: {
           // NOTE: no costUsd. Platform-owner-only via /owner/usage.
-          calls: row?.calls ?? 0,
+          calls: mine?.calls ?? 0,
         },
-      });
+      };
+
+      // OI-COR-001: tenant-wide rollup for admins only. Aggregation
+      // joins api_usage through tenant_members so the count is
+      // strictly the sum of calls-by-current-members-of-this-tenant
+      // today. A user who left the tenant yesterday is correctly
+      // excluded (their membership row is gone); a user still in
+      // the tenant has all their calls today included.
+      if (ctx.role === 'tenant_admin') {
+        const rollup = db.prepare(
+          `SELECT COUNT(u.id) AS calls, COUNT(DISTINCT tm.user_id) AS memberCount
+           FROM tenant_members tm
+           LEFT JOIN api_usage u
+             ON u.user_id = tm.user_id
+             AND u.ts >= date('now')
+           WHERE tm.tenant_id = ?`,
+        ).get(ctx.tenantId) as { calls: number; memberCount: number } | undefined;
+        // `memberCount` counts members regardless of whether they
+        // called today — the admin wants "3 members, 47 calls
+        // today" not "2 members who happened to make calls today".
+        response.tenant = {
+          today: {
+            // NOTE: no costUsd. Same invariant as `today`.
+            calls: rollup?.calls ?? 0,
+            memberCount: rollup?.memberCount ?? 0,
+          },
+        };
+      }
+
+      ok(res, response);
     } catch (dbErr) {
       logger.error({ err: dbErr, userId: ctx.userId }, 'portal-workspace-router: /usage failed');
       err(res, 500, 'INTERNAL', 'Failed to compute usage');
