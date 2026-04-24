@@ -147,7 +147,19 @@ describe('Authenticated support routes scope guards', () => {
 
     expect(res.statusCode).toBe(401);
     expect(res.body.error.code).toBe('UNAUTHORIZED');
-    expect(mockDbRun).not.toHaveBeenCalled();
+    expect(mockDbRun).toHaveBeenCalledTimes(1);
+    expect(mockDbRun).toHaveBeenCalledWith(
+      'critical',
+      'Tenant isolation denial',
+      expect.stringContaining('client_errors_route rejected invalid_user_scope'),
+      expect.stringContaining('"operation":"client_errors_route"'),
+      'ops',
+      'tenant_isolation',
+      expect.stringContaining('rejected unsafe scope'),
+      'docs/OBSERVABILITY-ONCALL.md#tenant-isolation-alerts',
+      'tenant_scope:delivery:client_errors_route:invalid_user_scope',
+    );
+    expect(JSON.stringify(mockDbRun.mock.calls)).not.toContain('boom');
     expect(getTenantScopeAnomalies(1)).toEqual([
       expect.objectContaining({ operation: 'client_errors_route', userId: 0 }),
     ]);

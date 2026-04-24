@@ -24,6 +24,7 @@ import {
   type UsageLevel,
 } from './plan-quotas';
 import { isOwnerUserRef } from './user-service';
+import { recordOperatorAlert } from './operator-alerts';
 
 // ── Telegram Alert Callback ──────────────────────────────────────
 
@@ -230,6 +231,25 @@ export function checkGlobalCostGuardrail(): { totalUsd: number; limitUsd: number
         { total: row.total, limit, tier: currentTier },
         `Cost guardrail tier ${currentTier} ${verb}`,
       );
+      recordOperatorAlert({
+        severity: currentTier === 'critical' ? 'critical' : 'warning',
+        source: 'cost_guardrail',
+        dedupeKey: `cost:${today}:${currentTier}`,
+        title: `AI cost ${verb.toLowerCase()} ${pct}%`,
+        detail: `Daily AI spend is $${row.total.toFixed(4)} of $${limit.toFixed(2)}.`,
+        owner: 'ops',
+        suspectedArea: 'ai_cost',
+        userImpact: currentTier === 'critical'
+          ? 'The global AI cost guardrail has been reached; AI-backed flows may be blocked or degraded.'
+          : 'AI spend is elevated and should be checked before it affects beta usage.',
+        runbookUrl: 'docs/OBSERVABILITY-ONCALL.md#cost-guardrail-alerts',
+        metadata: {
+          totalUsd: row.total,
+          limitUsd: limit,
+          percentOfLimit: pct,
+          tier: currentTier,
+        },
+      });
       if (_alertFn) {
         const msg =
           `${icon} <b>AI cost ${verb}</b>\n\n` +

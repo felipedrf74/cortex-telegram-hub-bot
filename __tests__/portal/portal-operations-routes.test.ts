@@ -10,8 +10,10 @@ const mockGetQualityByAgent = vi.fn();
 const mockGetTaskExecutionSummary = vi.fn();
 const mockGetRecentExecutions = vi.fn();
 const mockListOperatorAlerts = vi.fn();
+const mockGetOperatorAlertDeliverySummary = vi.fn();
 const mockAcknowledgeOperatorAlert = vi.fn();
 const mockResolveOperatorAlert = vi.fn();
+const mockRetryOperatorAlertDelivery = vi.fn();
 const mockSendPortalInternalError = vi.fn();
 const mockLoggerError = vi.fn();
 
@@ -43,8 +45,10 @@ vi.mock('../../src/services/task-metrics', () => ({
 
 vi.mock('../../src/services/operator-alerts', () => ({
   listOperatorAlerts: (...args: unknown[]) => mockListOperatorAlerts(...args),
+  getOperatorAlertDeliverySummary: (...args: unknown[]) => mockGetOperatorAlertDeliverySummary(...args),
   acknowledgeOperatorAlert: (...args: unknown[]) => mockAcknowledgeOperatorAlert(...args),
   resolveOperatorAlert: (...args: unknown[]) => mockResolveOperatorAlert(...args),
+  retryOperatorAlertDelivery: (...args: unknown[]) => mockRetryOperatorAlertDelivery(...args),
 }));
 
 vi.mock('../../src/api/secret-guards', () => ({
@@ -123,8 +127,10 @@ describe('portal operations routes', () => {
     mockGetTaskExecutionSummary.mockReset();
     mockGetRecentExecutions.mockReset();
     mockListOperatorAlerts.mockReset();
+    mockGetOperatorAlertDeliverySummary.mockReset();
     mockAcknowledgeOperatorAlert.mockReset();
     mockResolveOperatorAlert.mockReset();
+    mockRetryOperatorAlertDelivery.mockReset();
     mockSendPortalInternalError.mockReset();
     mockLoggerError.mockReset();
   });
@@ -143,6 +149,7 @@ describe('portal operations routes', () => {
       'GET /api/operator-alerts',
       'POST /api/operator-alerts/:id/ack',
       'POST /api/operator-alerts/:id/resolve',
+      'POST /api/operator-alerts/:id/retry-delivery',
     ]);
   });
 
@@ -240,6 +247,7 @@ describe('portal operations routes', () => {
     mockListOperatorAlerts.mockReturnValue([
       { id: 7, severity: 'warning', title: 'Integration degraded' },
     ]);
+    mockGetOperatorAlertDeliverySummary.mockReturnValue({ pending: 1, delivered: 0, failed: 0, dead_letter: 0, not_configured: 0 });
 
     const res = invoke('/api/operator-alerts', {
       req: { query: { status: 'all', limit: '10' } },
@@ -249,6 +257,7 @@ describe('portal operations routes', () => {
     expect(res.body).toEqual({
       ok: true,
       alerts: [{ id: 7, severity: 'warning', title: 'Integration degraded' }],
+      delivery: { pending: 1, delivered: 0, failed: 0, dead_letter: 0, not_configured: 0 },
     });
   });
 
@@ -277,6 +286,19 @@ describe('portal operations routes', () => {
     expect(resolved.statusCode).toBe(200);
     expect(resolved.body).toEqual({ ok: true });
     expect(mockResolveOperatorAlert).toHaveBeenCalledWith(7, 'fallback@nexushub.me');
+  });
+
+  it('queues operator alert delivery retries', () => {
+    mockRetryOperatorAlertDelivery.mockReturnValueOnce(true);
+
+    const res = invoke('/api/operator-alerts/:id/retry-delivery', {
+      method: 'POST',
+      req: { params: { id: '7' } },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(mockRetryOperatorAlertDelivery).toHaveBeenCalledWith(7);
   });
 
   it('rejects invalid operator alert ids without calling the service', () => {

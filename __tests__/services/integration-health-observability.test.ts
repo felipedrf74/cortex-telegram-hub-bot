@@ -37,10 +37,12 @@ describe('integration health observability', () => {
         error_message TEXT
       );
     `);
-    testDb.exec(fs.readFileSync(
-      path.resolve(__dirname, '../../migrations/076_operator_alerts.sql'),
-      'utf8',
-    ));
+    for (const file of ['076_operator_alerts.sql', '077_operator_alert_delivery.sql']) {
+      testDb.exec(fs.readFileSync(
+        path.resolve(__dirname, '../../migrations', file),
+        'utf8',
+      ));
+    }
     pushEvent.mockReset();
     vi.clearAllMocks();
   });
@@ -82,12 +84,19 @@ describe('integration health observability', () => {
     const results = await mod.runHealthProbes();
 
     expect(results.find((result) => result.provider === 'google')?.status).toBe('fail');
-    expect(pushEvent).toHaveBeenCalledTimes(1);
+    expect(pushEvent).toHaveBeenCalledTimes(2);
     expect(pushEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'error',
         summary: `Integration google degraded (${threshold} fails)`,
         detail: 'invalid_grant',
+      }),
+    );
+    expect(pushEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        summary: 'Operator alert: Integração google degradada',
+        detail: expect.stringContaining('integration_health'),
       }),
     );
     expect(logger.warn).toHaveBeenCalledWith(
@@ -107,6 +116,9 @@ describe('integration health observability', () => {
       detail: 'invalid_grant',
       status: 'open',
       occurrence_count: 1,
+      delivery_status: 'pending',
+      owner: 'ops',
+      suspected_area: 'integration_sync',
     });
     expect(JSON.parse(alert.metadata_json)).toMatchObject({
       provider: 'google',

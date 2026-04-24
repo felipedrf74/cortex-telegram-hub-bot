@@ -147,7 +147,10 @@ export function onboardingRoutes(): Router {
 
       sendSuccess(res, { questionnaires });
     } catch (err: any) {
-      logger.error({ err }, 'iOS onboarding/pending failed');
+      logger.error(
+        { event: 'onboarding', action: 'pending', outcome: 'degraded', err, userId },
+        'iOS onboarding/pending failed',
+      );
       sendSuccess(res, {
         questionnaires: [],
         status: 'degraded',
@@ -175,7 +178,10 @@ export function onboardingRoutes(): Router {
 
       sendSuccess(res, { profiles });
     } catch (err: any) {
-      logger.error({ err }, 'iOS profile fetch failed');
+      logger.error(
+        { event: 'onboarding', action: 'profile', outcome: 'degraded', err, userId },
+        'iOS profile fetch failed',
+      );
       sendSuccess(res, {
         profiles: [],
         status: 'degraded',
@@ -236,7 +242,7 @@ export function onboardingRoutes(): Router {
       }
 
       logger.info(
-        { userId, questionnaireId, requestBody: req.body ?? null },
+        { event: 'onboarding', action: 'start', outcome: 'requested', userId, questionnaireId, hasRequestBody: Boolean(req.body && Object.keys(req.body).length > 0) },
         'iOS onboarding start requested',
       );
 
@@ -258,6 +264,9 @@ export function onboardingRoutes(): Router {
 
       logger.info(
         {
+          event: 'onboarding',
+          action: 'start',
+          outcome: 'success',
           userId,
           questionnaireId,
           currentStep: payload.currentStep,

@@ -64,6 +64,17 @@ function issueTokensAndRegisterDevice(
     ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
   });
 
+  logger.info(
+    {
+      event: 'auth',
+      action: req.path || 'issue_session',
+      outcome: 'success',
+      userId,
+      deviceId,
+      hasPushToken: Boolean(pushToken),
+    },
+    'iOS auth session issued',
+  );
   sendSuccess(res, payload, { status: 201 });
 }
 
@@ -171,6 +182,16 @@ export function authRoutes(): Router {
       ipAddress: (req.ip || req.socket?.remoteAddress) ?? undefined,
     });
 
+    logger.info(
+      {
+        event: 'auth',
+        action: 'refresh',
+        outcome: 'success',
+        userId: device.user_id,
+        deviceId: device.device_id,
+      },
+      'iOS auth refresh succeeded',
+    );
     sendSuccess(res, { accessToken, refreshToken: newRefreshToken, expiresIn: 604800 });
   }));
 
@@ -238,7 +259,10 @@ export function authRoutes(): Router {
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'Apple sign-in verification failed');
+      logger.warn(
+        { event: 'auth', action: 'apple_sign_in', outcome: 'rejected', reason: 'verification_failed', errorName: err?.name || 'Error' },
+        'Apple sign-in verification failed',
+      );
       sendError(res, 'AUTH_FAILED', authCopy(language,
         'A autenticação Apple falhou',
         'A autenticação Apple falhou',
@@ -359,7 +383,10 @@ export function authRoutes(): Router {
 
         if (!tokenRes.ok) {
           const errBody = await tokenRes.text();
-          logger.warn({ status: tokenRes.status, body: errBody }, 'Google PKCE token exchange failed');
+          logger.warn(
+            { event: 'auth', action: 'google_pkce_exchange', outcome: 'rejected', status: tokenRes.status, responseBytes: errBody.length },
+            'Google PKCE token exchange failed',
+          );
           sendError(res, 'INVALID_TOKEN', authCopy(language,
             'A troca do token Google falhou',
             'A troca do token Google falhou',
@@ -392,7 +419,10 @@ export function authRoutes(): Router {
 
       issueTokensAndRegisterDevice(req, res, user.id, deviceId, deviceName || null, null, user);
     } catch (err: any) {
-      logger.warn({ err: err.message }, 'Google sign-in verification failed');
+      logger.warn(
+        { event: 'auth', action: 'google_sign_in', outcome: 'rejected', reason: 'verification_failed', errorName: err?.name || 'Error' },
+        'Google sign-in verification failed',
+      );
       sendError(res, 'AUTH_FAILED', authCopy(language,
         'A autenticação Google falhou',
         'A autenticação Google falhou',

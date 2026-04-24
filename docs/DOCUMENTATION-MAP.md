@@ -30,6 +30,7 @@ Explicitly excluded from doc-audit status:
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/TOKEN-QUOTA-CONTRACT.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/GARMIN-REAUTH-NOTIFICATION.md`
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/MODEL-REVIEW-PROCESS.md`
+- `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/docs/OBSERVABILITY-ONCALL.md`
 
 ## Active Supporting Docs
 - `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot/DOCUMENTATION.md`

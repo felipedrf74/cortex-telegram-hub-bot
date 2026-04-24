@@ -68,6 +68,14 @@ describe('Connections routes', () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    process.env.GOOGLE_CLIENT_ID = 'google-client';
+    process.env.GOOGLE_CLIENT_SECRET = 'google-secret';
+    process.env.OUTLOOK_CLIENT_ID = '';
+    process.env.OUTLOOK_CLIENT_SECRET = '';
+    process.env.STRAVA_CLIENT_ID = '';
+    process.env.STRAVA_CLIENT_SECRET = '';
+    process.env.WHOOP_CLIENT_ID = '';
+    process.env.WHOOP_CLIENT_SECRET = '';
     const observability = await import('../../src/services/tenant-scope-observability');
     observability.clearTenantScopeAnomaliesForTests();
     vi.doMock('../../src/utils/logger', () => ({
@@ -99,14 +107,6 @@ describe('Connections routes', () => {
         })),
       })),
     }));
-    process.env.GOOGLE_CLIENT_ID = 'google-client';
-    process.env.GOOGLE_CLIENT_SECRET = 'google-secret';
-    process.env.OUTLOOK_CLIENT_ID = '';
-    process.env.OUTLOOK_CLIENT_SECRET = '';
-    process.env.STRAVA_CLIENT_ID = '';
-    process.env.STRAVA_CLIENT_SECRET = '';
-    process.env.WHOOP_CLIENT_ID = '';
-    process.env.WHOOP_CLIENT_SECRET = '';
   });
 
   afterEach(() => {
