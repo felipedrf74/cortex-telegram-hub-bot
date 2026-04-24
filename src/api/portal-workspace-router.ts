@@ -1515,7 +1515,13 @@ export function createPortalWorkspaceRouter(): Router {
   // mirror the OI-ADM-303 defense.
   router.get('/activity', (req: Request, res: Response) => {
     const ctx = (req as TenantContextRequest).tenantContext;
-    const where: string[] = ['(resource = ? OR resource LIKE ?)'];
+    // OI-DATA-005b: qualify every column with `a.` so WHERE is
+    // valid against the SELECT that JOINs audit_trail (aliased as
+    // `a`) against users. The plain `count` query below uses the
+    // same WHERE unaliased, which also works because SQLite
+    // silently accepts `a.col` when there's no ambiguity — so we
+    // keep ONE builder and inject the prefix consistently.
+    const where: string[] = ['(a.resource = ? OR a.resource LIKE ?)'];
     const params: unknown[] = [`tenant.${ctx.tenantId}`, `tenant.${ctx.tenantId}.%`];
 
     const actorRaw = String(req.query.actor ?? '').trim();
@@ -1524,7 +1530,7 @@ export function createPortalWorkspaceRouter(): Router {
       if (!Number.isFinite(actor) || actor < 0) {
         return err(res, 400, 'BAD_REQUEST', 'actor must be a non-negative integer');
       }
-      where.push('actor_id = ?'); params.push(actor);
+      where.push('a.actor_id = ?'); params.push(actor);
     }
 
     const actionRaw = String(req.query.action ?? '').trim();
@@ -1534,16 +1540,16 @@ export function createPortalWorkspaceRouter(): Router {
       }
       if (actionRaw.endsWith('*')) {
         const prefix = actionRaw.slice(0, -1).replace(/[%_]/g, (c) => '\\' + c);
-        where.push("action LIKE ? ESCAPE '\\'"); params.push(prefix + '%');
+        where.push("a.action LIKE ? ESCAPE '\\'"); params.push(prefix + '%');
       } else {
-        where.push('action = ?'); params.push(actionRaw);
+        where.push('a.action = ?'); params.push(actionRaw);
       }
     }
 
     const from = String(req.query.from ?? '').trim();
-    if (from) { where.push('ts >= ?'); params.push(from); }
+    if (from) { where.push('a.ts >= ?'); params.push(from); }
     const to = String(req.query.to ?? '').trim();
-    if (to) { where.push('ts <= ?'); params.push(to); }
+    if (to) { where.push('a.ts <= ?'); params.push(to); }
 
     const rawLimit = Number.parseInt(String(req.query.limit ?? '100'), 10);
     const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 100, 1), 200);
@@ -1553,19 +1559,33 @@ export function createPortalWorkspaceRouter(): Router {
     try {
       const db = getDb();
       const whereSql = 'WHERE ' + where.join(' AND ');
+      // OI-DATA-005b (2026-04-24): LEFT JOIN users so the feed can
+      // display actor identity (email + first name) instead of
+      // just a numeric id. LEFT (not INNER) so audit rows whose
+      // actor has been deleted since still appear — the UI renders
+      // "(deleted user)" for null joins.
+      //
+      // The WHERE clause filters on audit_trail.* columns (aliased
+      // as `a`), so the JOIN has no isolation risk: rows are
+      // already tenant-scoped by resource before users is touched.
       const rows = db
         .prepare(
-          `SELECT id, ts, user_id, actor_id, action, resource, details
-           FROM audit_trail ${whereSql}
-           ORDER BY id DESC
+          `SELECT a.id, a.ts, a.user_id, a.actor_id, a.action, a.resource, a.details,
+                  u.email       AS actor_email,
+                  u.first_name  AS actor_first_name
+           FROM audit_trail a
+           LEFT JOIN users u ON u.id = a.actor_id
+           ${whereSql}
+           ORDER BY a.id DESC
            LIMIT ? OFFSET ?`,
         )
         .all(...params, limit, offset) as Array<{
           id: number; ts: string; user_id: number; actor_id: number;
           action: string; resource: string; details: string | null;
+          actor_email: string | null; actor_first_name: string | null;
         }>;
       const countRow = db
-        .prepare(`SELECT COUNT(*) AS c FROM audit_trail ${whereSql}`)
+        .prepare(`SELECT COUNT(*) AS c FROM audit_trail a ${whereSql}`)
         .get(...params) as { c: number } | undefined;
       const total = countRow?.c ?? 0;
       ok(res, {
@@ -1575,6 +1595,12 @@ export function createPortalWorkspaceRouter(): Router {
           ts: r.ts,
           userId: r.user_id,
           actorId: r.actor_id,
+          // OI-DATA-005b: null when actor_id is 0 (system event)
+          // OR when the user was deleted after the audit row was
+          // written. UI distinguishes via actorId: 0 → "System",
+          // actorId > 0 + null email → "(deleted user)".
+          actorEmail: r.actor_email,
+          actorFirstName: r.actor_first_name,
           action: r.action,
           resource: r.resource,
           details: r.details,

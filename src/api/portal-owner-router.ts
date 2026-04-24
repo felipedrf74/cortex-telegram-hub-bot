@@ -375,17 +375,25 @@ export function createPortalOwnerRouter(): Router {
       const db = getDb();
       const exact = `tenant.${tenantId}`;
       const prefix = `tenant.${tenantId}.%`;
+      // OI-DATA-005b (2026-04-24): LEFT JOIN users so each event
+      // surfaces the actor's email + first name, not just a bare
+      // numeric id. LEFT (not INNER) so rows referencing a
+      // since-deleted user still appear.
       const rows = db
         .prepare(
-          `SELECT id, ts, user_id, actor_id, action, resource, details
-           FROM audit_trail
-           WHERE resource = ? OR resource LIKE ?
-           ORDER BY id DESC
+          `SELECT a.id, a.ts, a.user_id, a.actor_id, a.action, a.resource, a.details,
+                  u.email       AS actor_email,
+                  u.first_name  AS actor_first_name
+           FROM audit_trail a
+           LEFT JOIN users u ON u.id = a.actor_id
+           WHERE a.resource = ? OR a.resource LIKE ?
+           ORDER BY a.id DESC
            LIMIT ? OFFSET ?`,
         )
         .all(exact, prefix, limit, offset) as Array<{
           id: number; ts: string; user_id: number; actor_id: number;
           action: string; resource: string; details: string | null;
+          actor_email: string | null; actor_first_name: string | null;
         }>;
       const countRow = db
         .prepare(
@@ -400,6 +408,8 @@ export function createPortalOwnerRouter(): Router {
           ts: r.ts,
           userId: r.user_id,
           actorId: r.actor_id,
+          actorEmail: r.actor_email,
+          actorFirstName: r.actor_first_name,
           action: r.action,
           resource: r.resource,
           // Leave details as a raw string; UI parses on demand. This
@@ -431,6 +441,9 @@ export function createPortalOwnerRouter(): Router {
   //
   // Response carries `{ events, pagination: { total, limit, offset } }`.
   router.get('/audit', (req: Request, res: Response) => {
+    // OI-DATA-005b: WHERE columns aliased to `a.` so the JOIN
+    // below is valid. The COUNT query uses the same aliased
+    // FROM so the clause works for both.
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -440,7 +453,7 @@ export function createPortalOwnerRouter(): Router {
       if (!Number.isFinite(actor) || actor < 0) {
         return err(res, 400, 'BAD_REQUEST', 'actor must be a non-negative integer');
       }
-      where.push('actor_id = ?'); params.push(actor);
+      where.push('a.actor_id = ?'); params.push(actor);
     }
 
     const actionRaw = String(req.query.action ?? '').trim();
@@ -452,16 +465,16 @@ export function createPortalOwnerRouter(): Router {
         // Prefix match. Escape `%` and `_` in the remainder so a
         // user-supplied `action=tenant_%` can't inject wildcards.
         const prefix = actionRaw.slice(0, -1).replace(/[%_]/g, (c) => '\\' + c);
-        where.push("action LIKE ? ESCAPE '\\'"); params.push(prefix + '%');
+        where.push("a.action LIKE ? ESCAPE '\\'"); params.push(prefix + '%');
       } else {
-        where.push('action = ?'); params.push(actionRaw);
+        where.push('a.action = ?'); params.push(actionRaw);
       }
     }
 
     const from = String(req.query.from ?? '').trim();
-    if (from) { where.push('ts >= ?'); params.push(from); }
+    if (from) { where.push('a.ts >= ?'); params.push(from); }
     const to = String(req.query.to ?? '').trim();
-    if (to) { where.push('ts <= ?'); params.push(to); }
+    if (to) { where.push('a.ts <= ?'); params.push(to); }
 
     const q = String(req.query.q ?? '').trim();
     if (q) {
@@ -469,7 +482,7 @@ export function createPortalOwnerRouter(): Router {
         return err(res, 400, 'BAD_REQUEST', 'q too long');
       }
       const esc = q.replace(/[%_]/g, (c) => '\\' + c);
-      where.push("resource LIKE ? ESCAPE '\\'"); params.push('%' + esc + '%');
+      where.push("a.resource LIKE ? ESCAPE '\\'"); params.push('%' + esc + '%');
     }
 
     const rawLimit = Number.parseInt(String(req.query.limit ?? '100'), 10);
@@ -481,20 +494,29 @@ export function createPortalOwnerRouter(): Router {
 
     try {
       const db = getDb();
+      // OI-DATA-005b: LEFT JOIN users. Platform-wide feed sees
+      // actors across ALL tenants, so this can surface both
+      // platform-admin actors (on /owner/* mutations) and
+      // tenant-member actors (on /workspace/* mutations) with
+      // the same identity-resolution rule.
       const rows = db
         .prepare(
-          `SELECT id, ts, user_id, actor_id, action, resource, details
-           FROM audit_trail
+          `SELECT a.id, a.ts, a.user_id, a.actor_id, a.action, a.resource, a.details,
+                  u.email       AS actor_email,
+                  u.first_name  AS actor_first_name
+           FROM audit_trail a
+           LEFT JOIN users u ON u.id = a.actor_id
            ${whereSql}
-           ORDER BY id DESC
+           ORDER BY a.id DESC
            LIMIT ? OFFSET ?`,
         )
         .all(...params, limit, offset) as Array<{
           id: number; ts: string; user_id: number; actor_id: number;
           action: string; resource: string; details: string | null;
+          actor_email: string | null; actor_first_name: string | null;
         }>;
       const countRow = db
-        .prepare(`SELECT COUNT(*) AS c FROM audit_trail ${whereSql}`)
+        .prepare(`SELECT COUNT(*) AS c FROM audit_trail a ${whereSql}`)
         .get(...params) as { c: number } | undefined;
       const total = countRow?.c ?? 0;
       ok(res, {
@@ -503,6 +525,8 @@ export function createPortalOwnerRouter(): Router {
           ts: r.ts,
           userId: r.user_id,
           actorId: r.actor_id,
+          actorEmail: r.actor_email,
+          actorFirstName: r.actor_first_name,
           action: r.action,
           resource: r.resource,
           details: r.details,
@@ -711,15 +735,21 @@ export function createPortalOwnerRouter(): Router {
         .get() as { total: number; calls: number } | undefined;
 
       // Recent audit events (last 10 — newest first).
+      // OI-DATA-005b: LEFT JOIN users so the Overview card shows
+      // actor names, same as the full audit viewer.
       const recentAudit = db
         .prepare(
-          `SELECT id, ts, user_id, actor_id, action, resource
-           FROM audit_trail
-           ORDER BY id DESC
+          `SELECT a.id, a.ts, a.user_id, a.actor_id, a.action, a.resource,
+                  u.email       AS actor_email,
+                  u.first_name  AS actor_first_name
+           FROM audit_trail a
+           LEFT JOIN users u ON u.id = a.actor_id
+           ORDER BY a.id DESC
            LIMIT 10`,
         )
         .all() as Array<{
           id: number; ts: string; user_id: number; actor_id: number; action: string; resource: string;
+          actor_email: string | null; actor_first_name: string | null;
         }>;
 
       // Tenant-adoption risk: tenants with zero api_usage in the
@@ -752,6 +782,8 @@ export function createPortalOwnerRouter(): Router {
           ts: r.ts,
           userId: r.user_id,
           actorId: r.actor_id,
+          actorEmail: r.actor_email,
+          actorFirstName: r.actor_first_name,
           action: r.action,
           resource: r.resource,
         })),
