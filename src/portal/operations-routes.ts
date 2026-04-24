@@ -10,7 +10,9 @@ import { getQualityByAgent } from '../services/quality-scorer';
 import { getRecentExecutions, getTaskExecutionSummary } from '../services/task-metrics';
 import {
   acknowledgeOperatorAlert,
+  getOperatorAlertDeliverySummary,
   listOperatorAlerts,
+  retryOperatorAlertDelivery,
   resolveOperatorAlert,
   type OperatorAlertStatus,
 } from '../services/operator-alerts';
@@ -136,6 +138,7 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
       res.json({
         ok: true,
         alerts: listOperatorAlerts({ status, limit }),
+        delivery: getOperatorAlertDeliverySummary(),
       });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
@@ -164,6 +167,20 @@ export function registerPortalOperationsRoutes(app: Express, deps: PortalOperati
         return;
       }
       const ok = resolveOperatorAlert(id, portalActor(req));
+      res.status(ok ? 200 : 404).json({ ok });
+    } catch (err) {
+      sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');
+    }
+  });
+
+  app.post('/api/operator-alerts/:id/retry-delivery', (req: Request, res: Response) => {
+    try {
+      const id = parsePositiveInteger(req.params?.id);
+      if (!id) {
+        res.status(400).json({ ok: false, message: 'Invalid alert id' });
+        return;
+      }
+      const ok = retryOperatorAlertDelivery(id);
       res.status(ok ? 200 : 404).json({ ok });
     } catch (err) {
       sendPortalInternalError(res, err, 'Portal request failed', 'Portal: request failed');

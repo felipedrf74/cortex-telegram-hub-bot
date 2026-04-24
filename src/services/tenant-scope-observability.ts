@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { logger } from '../utils/logger';
+import { recordOperatorAlert } from './operator-alerts';
 
 export type TenantScopeAnomalyLayer =
   | 'intelligence_bus'
@@ -55,6 +56,26 @@ export function recordTenantScopeAnomaly(
     },
     'Tenant scope anomaly detected',
   );
+
+  recordOperatorAlert({
+    severity: 'critical',
+    source: 'tenant_scope',
+    dedupeKey: `tenant_scope:${entry.layer}:${entry.operation}:${entry.reason}`,
+    title: 'Tenant isolation denial',
+    detail: `${entry.layer}.${entry.operation} rejected ${entry.reason}`,
+    owner: 'ops',
+    suspectedArea: 'tenant_isolation',
+    userImpact: 'A tenant-scoped backend path rejected unsafe scope instead of risking cross-user data access.',
+    runbookUrl: 'docs/OBSERVABILITY-ONCALL.md#tenant-isolation-alerts',
+    metadata: {
+      layer: entry.layer,
+      operation: entry.operation,
+      reason: entry.reason,
+      userId: entry.userId,
+      signalType: entry.signalType,
+      details: entry.details,
+    },
+  });
 
   return entry;
 }

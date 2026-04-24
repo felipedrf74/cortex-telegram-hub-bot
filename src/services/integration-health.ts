@@ -149,6 +149,10 @@ function emitRepeatedFailureSignals(results: ProbeResult[]): void {
       dedupeKey: `integration:${result.provider}:degraded`,
       title: `Integração ${result.provider} degradada`,
       detail: result.errorMessage ?? `A integração ${result.provider} falhou ${streak} vezes seguidas.`,
+      owner: 'ops',
+      suspectedArea: 'integration_sync',
+      userImpact: 'Provider-backed app surfaces may show stale, partial, or unavailable data until the integration recovers.',
+      runbookUrl: 'docs/OBSERVABILITY-ONCALL.md#integration-health-alerts',
       metadata: {
         provider: result.provider,
         status: result.status,

@@ -154,6 +154,17 @@ export function sendError(
   status = 400,
   details?: Record<string, unknown>,
 ): void {
+  if (status >= 500 || code === 'SERVICE_UNAVAILABLE') {
+    logger.warn?.(
+      {
+        event: 'backend_degraded_response',
+        reqId: getCurrentRequestId(),
+        code,
+        status,
+      },
+      'Backend returned degraded API response',
+    );
+  }
   res.status(status).json(apiError(code, message, details));
 }
 

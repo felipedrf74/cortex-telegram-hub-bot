@@ -47,6 +47,7 @@ import { getOwnerBootstrapTarget, getUserById } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { storeAndPushReport } from './report-document-store';
 import { isTelegramLegacyDeliveryEnabled } from './runtime-flags';
+import { processDueOperatorAlertDeliveries, recordOperatorAlert } from './operator-alerts';
 
 interface ActiveUserTarget {
   tenantId: number;
@@ -584,12 +585,27 @@ export function startScheduler(bot?: any): void {
   const telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
   const safeSend = async (userId: number, message: string, opts?: any) => {
     if (!telegramEnabled) return;
-    try { await safeSend(userId, message, opts); } catch {}
+    try { await bot.api.sendMessage(userId, message, opts); } catch {}
   };
 
   // Register failure notifier — logs to portal telemetry (always) + Telegram (if enabled)
   setJobFailureNotifier(async (jobLabel, errorMessage) => {
     const short = errorMessage.slice(0, 120);
+    recordOperatorAlert({
+      severity: 'critical',
+      source: 'scheduler',
+      dedupeKey: `job:${jobLabel}:failed`,
+      title: `${jobLabel} failed`,
+      detail: short,
+      owner: 'ops',
+      suspectedArea: 'scheduled_jobs',
+      userImpact: 'A scheduled backend workflow failed and may leave app data stale or undelivered.',
+      runbookUrl: 'docs/OBSERVABILITY-ONCALL.md#scheduled-job-failures',
+      metadata: {
+        jobLabel,
+        errorMessage: short,
+      },
+    });
     for (const userId of getOwnerUserIds()) {
       await safeSend(userId,
         `⚠️ <b>${escapeHtml(jobLabel)} failed</b>\n\n<code>${escapeHtml(short)}</code>\n\n<i>Check logs for details.</i>`,
@@ -652,6 +668,7 @@ export function startScheduler(bot?: any): void {
   registerJob('db_restore_test', 'Weekly Restore Test',   '0 4 * * 0',       'system');
   registerJob('task_sync',        'Task Provider Sync',     '*/15 * * * *',    'system');
   registerJob('daily_context',    'Daily Context Builder',  '0 5 * * *',       'system');
+  registerJob('operator_alert_delivery', 'Operator Alert Delivery', '* * * * *', 'system');
 
   // Seed lastRunAt from DB so the DST watchdog doesn't re-fire jobs after a restart
   seedJobLastRunFromHistory();
@@ -1516,6 +1533,21 @@ export function startScheduler(bot?: any): void {
   cron.schedule('*/5 * * * *', wrapJob('integration_health', async () => {
     const { runHealthProbes } = require('./integration-health');
     await runHealthProbes();
+  }));
+
+  cron.schedule('* * * * *', wrapJob('operator_alert_delivery', async () => {
+    const results = await processDueOperatorAlertDeliveries(25);
+    if (results.length === 0) return 'skipped';
+    logger.info(
+      {
+        attempted: results.length,
+        delivered: results.filter((result) => result.status === 'delivered').length,
+        failed: results.filter((result) => result.status === 'failed').length,
+        deadLetter: results.filter((result) => result.status === 'dead_letter').length,
+        notConfigured: results.filter((result) => result.status === 'not_configured').length,
+      },
+      'Operator alert delivery cycle complete',
+    );
   }));
 
   // Seed SEO keywords (only if table is empty)

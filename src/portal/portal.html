@@ -1349,6 +1349,11 @@ table.legacy th {
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg></span>
         <span class="nav-label">Dashboard</span>
       </a>
+      <a class="nav-item" data-nav="alerts">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+        <span class="nav-label">Alerts</span>
+        <span class="nav-badge mono" id="nav-alerts-count"></span>
+      </a>
       <a class="nav-item" data-nav="users">
         <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></span>
         <span class="nav-label">Users</span>
@@ -1464,10 +1469,86 @@ table.legacy th {
 
       <div class="card mt-4">
         <div class="card-header">
+          <div class="card-title">🚨 Operator Alerts</div>
+          <a class="btn btn-ghost btn-sm" data-jump-to="alerts">Open queue →</a>
+        </div>
+        <div id="dash-alerts" class="grid" style="gap:var(--space-2)">
+          <div class="empty">Loading alerts…</div>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header">
           <div class="card-title">📋 Recent Activity <span class="card-subtitle" id="event-count"></span></div>
         </div>
         <div id="dash-activity" class="activity-feed">
           <div class="empty">No activity yet</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════ ALERTS ════════════════════ -->
+    <section class="section" data-section="alerts">
+      <div class="section-header">
+        <div>
+          <h1 class="section-title">Operator Alerts</h1>
+          <div class="section-subtitle">Durable incident queue, delivery status, acknowledgement, and resolution</div>
+        </div>
+        <div class="section-actions">
+          <select class="input" id="alerts-filter-status" style="max-width:150px">
+            <option value="open">Open</option>
+            <option value="acknowledged">Acknowledged</option>
+            <option value="resolved">Resolved</option>
+            <option value="all">All</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="alerts-refresh-btn">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8M21 3v5h-5"/></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-4">
+        <div class="kpi-card">
+          <div class="kpi-label">Pending</div>
+          <div class="kpi-value" id="alerts-kpi-pending">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Delivered</div>
+          <div class="kpi-value" id="alerts-kpi-delivered">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Retrying</div>
+          <div class="kpi-value" id="alerts-kpi-failed">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Dead Letter</div>
+          <div class="kpi-value" id="alerts-kpi-dead">—</div>
+        </div>
+      </div>
+
+      <div class="card mt-4">
+        <div class="card-header">
+          <div class="card-title">Alert Queue</div>
+          <span class="card-subtitle" id="alerts-count-label">—</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Alert</th>
+                <th>Severity</th>
+                <th>Status</th>
+                <th>Delivery</th>
+                <th>Owner</th>
+                <th>Last Seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="alerts-tbody">
+              <tr><td colspan="7"><div class="empty">Loading alerts…</div></td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -2465,7 +2546,7 @@ table.legacy th {
   // ════════════════════════════════════════════════════════════
   // Navigation — hash routing between sections
   // ════════════════════════════════════════════════════════════
-  const SECTIONS = ['dashboard', 'users', 'ai', 'jobs', 'skills', 'content', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
+  const SECTIONS = ['dashboard', 'alerts', 'users', 'ai', 'jobs', 'skills', 'content', 'settings', 'invites', 'founders', 'waitlist', 'audit'];
   let currentSection = 'dashboard';
 
   function navigateTo(section) {
@@ -2482,6 +2563,7 @@ table.legacy th {
     }
     // On-demand section loaders
     if (section === 'users') loadUsers();
+    if (section === 'alerts') loadOperatorAlerts();
     if (section === 'invites') loadInviteCodes();
     if (section === 'founders') loadFounders();
     if (section === 'waitlist') loadWaitlist();
@@ -2677,6 +2759,126 @@ table.legacy th {
         '</div>';
     }).join('');
   }
+
+  let allOperatorAlerts = [];
+  let operatorAlertDeliverySummary = {};
+
+  async function loadOperatorAlerts() {
+    const status = document.getElementById('alerts-filter-status')?.value || 'open';
+    try {
+      const r = await apiFetch('/api/operator-alerts?status=' + encodeURIComponent(status) + '&limit=50');
+      if (!r.ok) throw new Error('alerts unavailable');
+      const d = await r.json();
+      allOperatorAlerts = d.alerts || [];
+      operatorAlertDeliverySummary = d.delivery || {};
+      renderOperatorAlerts();
+    } catch {
+      const tbody = document.getElementById('alerts-tbody');
+      if (tbody) tbody.innerHTML = '<tr><td colspan="7"><div class="empty">Unable to load operator alerts</div></td></tr>';
+      const dash = document.getElementById('dash-alerts');
+      if (dash) dash.innerHTML = '<div class="empty">Unable to load alerts</div>';
+    }
+  }
+
+  function renderOperatorAlerts() {
+    const openCount = allOperatorAlerts.filter(a => a.status === 'open').length;
+    const navBadge = document.getElementById('nav-alerts-count');
+    if (navBadge) navBadge.textContent = openCount > 0 ? String(openCount) : '';
+
+    document.getElementById('alerts-kpi-pending').textContent = fmtNum(operatorAlertDeliverySummary.pending || 0);
+    document.getElementById('alerts-kpi-delivered').textContent = fmtNum(operatorAlertDeliverySummary.delivered || 0);
+    document.getElementById('alerts-kpi-failed').textContent = fmtNum(operatorAlertDeliverySummary.failed || 0);
+    document.getElementById('alerts-kpi-dead').textContent = fmtNum(operatorAlertDeliverySummary.dead_letter || 0);
+
+    const countLabel = document.getElementById('alerts-count-label');
+    if (countLabel) countLabel.textContent = allOperatorAlerts.length + ' shown';
+
+    renderDashAlerts(allOperatorAlerts);
+
+    const tbody = document.getElementById('alerts-tbody');
+    if (!tbody) return;
+    if (allOperatorAlerts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7"><div class="empty">No alerts in this state</div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = allOperatorAlerts.map(a => {
+      const severityClass = a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warning' : 'info';
+      const statusClass = a.status === 'resolved' ? 'success' : a.status === 'acknowledged' ? 'info' : 'warning';
+      const deliveryClass =
+        a.deliveryStatus === 'delivered' ? 'success' :
+        a.deliveryStatus === 'dead_letter' ? 'error' :
+        a.deliveryStatus === 'failed' || a.deliveryStatus === 'not_configured' ? 'warning' :
+        'neutral';
+      const retryButton = (a.deliveryStatus === 'failed' || a.deliveryStatus === 'dead_letter' || a.deliveryStatus === 'not_configured')
+        ? '<button class="btn btn-ghost btn-sm" onclick="retryAlertDelivery(' + a.id + ')">Retry</button>'
+        : '';
+      const ackButton = a.status === 'open'
+        ? '<button class="btn btn-ghost btn-sm" onclick="ackAlert(' + a.id + ')">Ack</button>'
+        : '';
+      const resolveButton = a.status !== 'resolved'
+        ? '<button class="btn btn-ghost btn-sm" onclick="resolveAlert(' + a.id + ')">Resolve</button>'
+        : '';
+      return '<tr>' +
+        '<td><div style="font-weight:600">' + esc(a.title) + '</div>' +
+          '<div class="text-muted" style="font-size:11px;max-width:520px">' + esc(a.userImpact || a.detail || '—') + '</div>' +
+          '<div class="text-tertiary mono" style="font-size:10px">' + esc(a.source) + ' · ' + esc(a.suspectedArea || 'unknown') + '</div></td>' +
+        '<td><span class="badge badge-' + severityClass + '">' + esc(a.severity) + '</span></td>' +
+        '<td><span class="badge badge-' + statusClass + '">' + esc(a.status) + '</span></td>' +
+        '<td><span class="badge badge-' + deliveryClass + '">' + esc(a.deliveryStatus || 'pending') + '</span>' +
+          (a.lastDeliveryError ? '<div class="text-tertiary" style="font-size:10px;margin-top:4px">' + esc(a.lastDeliveryError).slice(0, 90) + '</div>' : '') +
+          (a.nextDeliveryAttemptAt ? '<div class="text-tertiary" style="font-size:10px;margin-top:4px">next ' + relativeTime(a.nextDeliveryAttemptAt) + '</div>' : '') +
+          '</td>' +
+        '<td>' + esc(a.owner || 'ops') + '</td>' +
+        '<td class="text-muted">' + relativeTime(a.lastSeenAt || a.createdAt) + '<div class="mono text-tertiary" style="font-size:10px">' + fmtNum(a.occurrenceCount || 1) + 'x</div></td>' +
+        '<td><div class="flex gap-2" style="justify-content:flex-end">' + retryButton + ackButton + resolveButton + '</div></td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function renderDashAlerts(alerts) {
+    const el = document.getElementById('dash-alerts');
+    if (!el) return;
+    const active = (alerts || []).filter(a => a.status !== 'resolved').slice(0, 4);
+    if (active.length === 0) {
+      el.innerHTML = '<div class="empty">No active operator alerts</div>';
+      return;
+    }
+    el.innerHTML = active.map(a => {
+      const dot = a.severity === 'critical' ? 'error' : a.severity === 'warning' ? 'warning' : 'online';
+      return '<div class="flex-between" style="padding:var(--space-2) var(--space-1);border-bottom:1px solid var(--border)">' +
+        '<div class="flex gap-2" style="align-items:center;min-width:0">' +
+          '<span class="status-dot ' + dot + '"></span>' +
+          '<span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(a.title) + '</span>' +
+        '</div>' +
+        '<span class="text-tertiary mono" style="font-size:10px">' + esc(a.deliveryStatus || 'pending') + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  async function mutateAlert(id, action, successMessage) {
+    try {
+      const r = await apiFetch('/api/operator-alerts/' + id + '/' + action, { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) throw new Error('mutation failed');
+      showToast(successMessage);
+      await loadOperatorAlerts();
+    } catch {
+      showToast('Alert action failed', false);
+    }
+  }
+
+  window.ackAlert = function(id) {
+    mutateAlert(id, 'ack', 'Alert acknowledged');
+  };
+  window.resolveAlert = function(id) {
+    mutateAlert(id, 'resolve', 'Alert resolved');
+  };
+  window.retryAlertDelivery = function(id) {
+    mutateAlert(id, 'retry-delivery', 'Delivery retry queued');
+  };
+
+  document.getElementById('alerts-refresh-btn').addEventListener('click', loadOperatorAlerts);
+  document.getElementById('alerts-filter-status').addEventListener('change', loadOperatorAlerts);
 
   function renderDomainStatus(domains) {
     const el = document.getElementById('domain-status-content');
@@ -4992,6 +5194,7 @@ table.legacy th {
     pollSnapshot();
     pollUsageSummary();
     loadProviderHealth();
+    loadOperatorAlerts();
   }
 
   let pollTimer = null;
@@ -5029,6 +5232,7 @@ table.legacy th {
       loadSettings();
       // Refresh users in background if user is on the Users tab
       if (currentSection === 'users') loadUsers();
+      if (currentSection === 'alerts') loadOperatorAlerts();
       if (currentSection === 'audit') loadAuditTrail();
       if (currentSection === 'invites') loadInviteCodes();
       if (currentSection === 'waitlist') loadWaitlist();

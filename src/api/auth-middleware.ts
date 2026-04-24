@@ -26,6 +26,10 @@ export interface AuthenticatedRequest extends Request {
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
+    logger.debug(
+      { event: 'auth', action: 'jwt.verify', outcome: 'rejected', reason: 'missing_token' },
+      'iOS JWT rejected',
+    );
     sendError(res, 'UNAUTHORIZED', 'Missing token', 401);
     return;
   }
@@ -51,13 +55,16 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       if (!row) {
         // Token references a user that no longer exists — probably
         // post-deletion. Reject rather than proceed with a dangling id.
-        logger.warn({ userId: payload.userId }, 'iOS JWT: user row not found — rejecting');
+        logger.warn(
+          { event: 'auth', action: 'jwt.verify', outcome: 'rejected', reason: 'user_not_found', userId: payload.userId },
+          'iOS JWT: user row not found — rejecting',
+        );
         sendError(res, 'UNAUTHORIZED', 'User account no longer exists', 401);
         return;
       }
       if (row.status && row.status !== 'active') {
         logger.warn(
-          { userId: payload.userId, status: row.status },
+          { event: 'auth', action: 'jwt.verify', outcome: 'rejected', reason: 'inactive_user', userId: payload.userId, status: row.status },
           'iOS JWT: user status is not active — rejecting',
         );
         sendError(res, 'UNAUTHORIZED', 'User account is not active', 401);
@@ -68,7 +75,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       // status we don't admit the request. This is a deliberate
       // availability-for-security tradeoff — an open auth bypass on DB
       // degradation is worse than a brief 401 storm.
-      logger.error({ err, userId: payload.userId }, 'iOS JWT: user-status check failed — rejecting');
+      logger.error(
+        { event: 'auth', action: 'jwt.verify', outcome: 'degraded', reason: 'user_status_check_failed', err, userId: payload.userId },
+        'iOS JWT: user-status check failed — rejecting',
+      );
       sendError(res, 'UNAUTHORIZED', 'Authentication service unavailable', 401);
       return;
     }
@@ -89,7 +99,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
     next();
   } catch (err) {
-    logger.debug({ err }, 'iOS JWT verification failed');
+    logger.debug(
+      { event: 'auth', action: 'jwt.verify', outcome: 'rejected', reason: 'invalid_or_expired_token', err },
+      'iOS JWT verification failed',
+    );
     sendError(res, 'UNAUTHORIZED', 'Invalid or expired token', 401);
   }
 }

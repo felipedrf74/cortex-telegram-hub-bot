@@ -725,7 +725,14 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
 
   if (_client && _authenticated && _activeClientUserId !== sessionUserId) {
     logger.debug(
-      { previousUserId: _activeClientUserId, requestedUserId: sessionUserId },
+      {
+        event: 'account_switching',
+        provider: 'garmin',
+        action: 'switch_authenticated_client_scope',
+        outcome: 'requested',
+        previousUserId: _activeClientUserId,
+        requestedUserId: sessionUserId,
+      },
       'Garmin: switching authenticated client to another user scope',
     );
     _client = null;
@@ -740,7 +747,14 @@ async function getClient(opts?: { silent?: boolean }): Promise<InstanceType<type
       return _clientBootstrapPromise;
     }
     logger.debug(
-      { activeBootstrapUserId: _clientBootstrapUserId, requestedUserId: sessionUserId },
+      {
+        event: 'account_switching',
+        provider: 'garmin',
+        action: 'wait_for_bootstrap_before_switch',
+        outcome: 'waiting',
+        activeBootstrapUserId: _clientBootstrapUserId,
+        requestedUserId: sessionUserId,
+      },
       'Garmin: waiting for in-flight bootstrap before switching user scope',
     );
     try {

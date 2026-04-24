@@ -18,6 +18,7 @@ import {
   captureException as sentryCaptureException,
   isEnabled as isSentryEnabled,
 } from './error-tracker';
+import { recordOperatorAlert } from './operator-alerts';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -175,6 +176,27 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
 
   // Log
   logger.error({ source: record.source, level: record.level }, record.message);
+
+  if (shouldSendAlert) {
+    recordOperatorAlert({
+      severity: record.level === 'fatal' ? 'critical' : 'warning',
+      source: `error_monitor:${record.source}`,
+      dedupeKey: `error:${record.source}:${record.message.slice(0, 160)}`,
+      title: `${record.level.toUpperCase()} in ${record.source}`,
+      detail: record.message.slice(0, 500),
+      owner: 'ops',
+      suspectedArea: record.source,
+      userImpact: record.source === 'api'
+        ? 'A backend API request failed and may have returned a degraded or failed response to the app.'
+        : 'A backend runtime path failed and may need operator investigation.',
+      runbookUrl: 'docs/OBSERVABILITY-ONCALL.md#error-monitor-alerts',
+      metadata: {
+        source: record.source,
+        level: record.level,
+        context: record.context,
+      },
+    });
+  }
 
   // Send Telegram alert (rate-limited)
   if (shouldSendAlert && alerted && _alertFn) {
