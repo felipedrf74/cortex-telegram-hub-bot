@@ -81,6 +81,7 @@ import {
   SkillConfigError,
   type SkillId,
 } from '../services/tenant-skill-config-service';
+import { suggestTagsForRef } from '../services/skill-inference';
 import { getDb } from '../services/database';
 
 // ── Audit helper ──────────────────────────────────────────────────
@@ -941,6 +942,43 @@ export function createPortalWorkspaceRouter(): Router {
       if (e instanceof SkillConfigError) return mapSkillConfigError(res, e);
       logger.error({ err: e, tenantId: ctx.tenantId, skillId }, 'portal-workspace-router: PUT /skills/:id/config failed');
       err(res, 500, 'INTERNAL', 'Failed to save skill config');
+    }
+  });
+
+  // ── /workspace/skills/suggest-tags (OI-USR-405b, 2026-04-24) ───
+  //
+  // Given an existing reference (book / link / note / channel),
+  // return ranked skill suggestions based on tag overlap with
+  // the tenant's already-skill-tagged references. Pure read — no
+  // writes, no side effects. Returns `coldStart: true` when the
+  // tenant has ≤ 3 refs carrying any skill tag (the user hasn't
+  // built enough tagging history for the signal to be useful).
+  //
+  // Any tenant member can call this (the suggestions are read-
+  // only and don't reveal other tenants' data). The audit trail
+  // skips this endpoint — it's a view-like operation, not a
+  // mutation.
+  router.post('/skills/suggest-tags', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const kindRaw = typeof body.kind === 'string' ? body.kind : '';
+    const idRaw = body.id;
+    if (!['book', 'link', 'note', 'channel'].includes(kindRaw)) {
+      return err(res, 400, 'INVALID_KIND', `kind must be one of book|link|note|channel (got '${kindRaw}')`);
+    }
+    const id = typeof idRaw === 'number' ? idRaw : Number(idRaw);
+    if (!Number.isFinite(id) || !Number.isInteger(id) || id <= 0) {
+      return err(res, 400, 'INVALID_ID', `id must be a positive integer (got ${JSON.stringify(idRaw)})`);
+    }
+    try {
+      const result = suggestTagsForRef(ctx.tenantId, kindRaw as 'book' | 'link' | 'note' | 'channel', id);
+      ok(res, result);
+    } catch (e) {
+      if (e instanceof ReferenceError) {
+        return err(res, 404, 'REF_NOT_FOUND', e.message);
+      }
+      logger.error({ err: e, tenantId: ctx.tenantId, kind: kindRaw, id }, 'portal-workspace-router: POST /skills/suggest-tags failed');
+      err(res, 500, 'INTERNAL', 'Failed to compute skill suggestions');
     }
   });
 

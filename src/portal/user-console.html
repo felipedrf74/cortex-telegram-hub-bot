@@ -346,6 +346,25 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
 }
 .skill-add-item:hover { background: var(--accent-subtle); color: var(--accent); }
 
+/* OI-USR-405b: ✨ Suggest chip + its empty / loading states in the popover. */
+.skill-chip-suggest {
+  cursor: pointer; display: inline-flex; align-items: center;
+  background: transparent; color: var(--text-secondary);
+  border: 1px dashed var(--border); font-family: inherit;
+  line-height: 1; list-style: none;
+  padding: 1px 7px; font-size: 11px;
+}
+.skill-chip-suggest::-webkit-details-marker { display: none; }
+.skill-chip-suggest:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-subtle);
+}
+.skill-add-item-loading,
+.skill-add-item-empty {
+  padding: 6px 10px; font-size: 11px;
+  color: var(--text-muted); font-style: italic;
+}
+
 /* OI-UX-102: tag autocomplete popover. Lives appended to <body> at
  * position:fixed so we don't disturb the input's flex-layout. The
  * parent-hiding behavior (click outside → input.blur → hide) is
@@ -3224,8 +3243,70 @@ function renderSkillBadgesEditable(tags, kind, id) {
           ).join('')}
         </div>
       </details>`;
-  return `<span class="skill-chip-group">${chips}${popover}</span>`;
+  // OI-USR-405b: ✨ Suggest — pulls ranked skill candidates from
+  // the /workspace/skills/suggest-tags route, populated lazily on
+  // the first click so we don't fire an API call on every row render.
+  // Only useful when there are unassigned skills; otherwise hidden.
+  const suggestPopover = available.length === 0
+    ? ''
+    : `<details class="skill-add-popover skill-suggest-popover"
+              ontoggle="if (this.open) loadSuggestionsInto(this, '${esc(kind)}', ${id})">
+        <summary class="skill-chip skill-chip-suggest" title="Suggest skills based on your tags">✨</summary>
+        <div class="skill-add-menu">
+          <div class="skill-add-item-loading">Computing…</div>
+        </div>
+      </details>`;
+  return `<span class="skill-chip-group">${chips}${popover}${suggestPopover}</span>`;
 }
+
+// OI-USR-405b: lazy-load skill suggestions into an open <details>
+// popover. Network call fires on first expand. Handles three result
+// shapes: cold-start (no history yet), empty (no strong matches),
+// and suggestions (clickable apply buttons).
+async function loadSuggestionsInto(detailsEl, kind, id) {
+  const menu = detailsEl.querySelector('.skill-add-menu');
+  if (!menu) return;
+  // Guard against double-fires if the user toggles quickly.
+  if (detailsEl.dataset.suggestLoaded === '1') return;
+  detailsEl.dataset.suggestLoaded = '1';
+  menu.innerHTML = '<div class="skill-add-item-loading">Computing…</div>';
+  try {
+    const res = await fetchJson('/workspace/skills/suggest-tags', {
+      method: 'POST',
+      body: JSON.stringify({ kind, id }),
+    });
+    const data = (res && res.data) || {};
+    const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+    const coldStart = data.coldStart === true;
+    if (coldStart) {
+      menu.innerHTML =
+        '<div class="skill-add-item-empty">Tag a few references first to unlock suggestions.</div>';
+      return;
+    }
+    if (suggestions.length === 0) {
+      menu.innerHTML =
+        '<div class="skill-add-item-empty">No strong skill matches from your tags yet.</div>';
+      return;
+    }
+    menu.innerHTML = suggestions
+      .map((s) => {
+        const skillMeta = SKILLS_LIST.find((x) => x.id === s.skillId) || { label: s.skillId };
+        const pct = Math.round((Number(s.confidence) || 0) * 100);
+        return `<button type="button" class="skill-add-item"
+                  onclick="setSkillTagOnRef('${esc(kind)}', ${id}, '${esc(s.skillId)}', true); this.closest('details').open = false;"
+                  title="${pct}% tag overlap with your ${esc(skillMeta.label)} refs">
+                  ${esc(skillMeta.label)} <span class="muted small">${pct}%</span>
+                </button>`;
+      })
+      .join('');
+  } catch (e) {
+    // Reset the loaded flag so a retry actually re-fires.
+    detailsEl.dataset.suggestLoaded = '';
+    menu.innerHTML =
+      `<div class="skill-add-item-empty">Suggest failed: ${esc((e && e.message) || 'unknown error')}</div>`;
+  }
+}
+window.loadSuggestionsInto = loadSuggestionsInto;
 
 // ── OI-UX-103: bulk actions across reference tables ───────────────
 // Each reference row renderer now gets a checkbox column + a
