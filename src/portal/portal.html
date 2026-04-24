@@ -4228,7 +4228,14 @@ table.legacy th {
           '<button class="btn btn-primary btn-xs" onclick="approveWaitlist(' + r.id + ')">Approve → invite</button> ' +
           '<button class="btn btn-danger btn-xs" onclick="rejectWaitlist(' + r.id + ')">Reject</button>';
       } else if (r.status === 'approved' && r.invite_code) {
+        // OI-UX-001 (2026-04-24): "Copy link" is the primary action
+        // — the admin almost always wants to paste the full URL into
+        // an email, not the raw code. "Copy code" stays as a
+        // secondary option for admins who want to use it in non-
+        // clickable contexts (e.g. a chat message where the URL
+        // would wrap awkwardly).
         actionsHtml =
+          '<button class="btn btn-primary btn-xs" onclick="copyInviteLink(\'' + esc(r.invite_code) + '\')">Copy link</button> ' +
           '<button class="btn btn-xs" onclick="copyInviteCode(\'' + esc(r.invite_code) + '\')">Copy code</button> ' +
           '<button class="btn btn-xs" onclick="markInvited(' + r.id + ')">Mark emailed</button>';
       }
@@ -4294,6 +4301,31 @@ table.legacy th {
       showToast('Copied ' + code);
     } catch {
       showToast('Copy failed', false);
+    }
+  };
+
+  // OI-UX-001 (2026-04-24): copy the full invite-accept URL so the
+  // admin can paste it directly into an email. URL shape matches
+  // the landing page's expected query param (see OI-NAV-203 +
+  // OI-NAV-203a). encodeURIComponent is load-bearing — invite
+  // codes are opaque byte strings and anything non-URL-safe would
+  // corrupt the link.
+  window.copyInviteLink = async function(code) {
+    const url = location.origin + '/invite/accept?code=' + encodeURIComponent(code);
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Copied invite link');
+    } catch {
+      // Clipboard API requires a secure context (https or localhost).
+      // On non-https staging without localhost bypass, the writeText
+      // call rejects. Fall back to a prompt() the admin can select
+      // from; functionally equivalent, no worse than the raw-code
+      // fallback behavior of copyInviteCode above.
+      try {
+        window.prompt('Copy this invite link:', url);
+      } catch {
+        showToast('Copy failed', false);
+      }
     }
   };
 

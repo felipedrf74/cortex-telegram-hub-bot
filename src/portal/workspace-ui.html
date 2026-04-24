@@ -904,10 +904,16 @@ async function loadInvites() {
 function renderInviteRow(inv) {
   const roleBadge = `<span class="role-badge role-${inv.role}">${inv.role}</span>`;
   const statusBadge = `<span class="role-badge status-${inv.status}">${inv.status}</span>`;
+  // OI-UX-001 (2026-04-24): "copy link" is the primary action for a
+  // human admin composing an email — the accept URL is clickable.
+  // "copy code" stays as a secondary option for contexts where a
+  // raw code is more useful (e.g. a chat message where URLs wrap).
+  const acceptUrl = location.origin + '/invite/accept?code=' + encodeURIComponent(inv.inviteCode);
   const code = inv.status === 'pending' ? `
       <div style="margin-top:.5rem;">
         <code style="user-select: all; font-size:10px; word-break: break-all;">${escape(inv.inviteCode)}</code>
-        <button class="ghost small" onclick="navigator.clipboard.writeText('${escape(inv.inviteCode)}');showBanner('Invite code copied','success',2000)">copy</button>
+        <button class="ghost small" onclick="navigator.clipboard.writeText('${escape(acceptUrl)}').then(() => showBanner('Invite link copied','success',2000))">copy link</button>
+        <button class="ghost small" onclick="navigator.clipboard.writeText('${escape(inv.inviteCode)}').then(() => showBanner('Invite code copied','success',2000))">copy code</button>
       </div>` : '';
   const action = inv.status === 'pending'
     ? `<button class="ghost small" onclick="revokeInviteUI(${inv.id})">Revoke</button>`
