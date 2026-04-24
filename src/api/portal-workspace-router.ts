@@ -78,6 +78,7 @@ import {
 } from '../services/tenant-channel-service';
 import {
   getSkillConfig, putSkillConfig, getSkillSchemaKeys, isSkillId,
+  listSkillConfigHistoryByKey,
   SkillConfigError,
   type SkillId,
 } from '../services/tenant-skill-config-service';
@@ -942,6 +943,44 @@ export function createPortalWorkspaceRouter(): Router {
       if (e instanceof SkillConfigError) return mapSkillConfigError(res, e);
       logger.error({ err: e, tenantId: ctx.tenantId, skillId }, 'portal-workspace-router: PUT /skills/:id/config failed');
       err(res, 500, 'INTERNAL', 'Failed to save skill config');
+    }
+  });
+
+  // ── /workspace/skills/:skillId/config/history (OI-DATA-003e) ───
+  //
+  // Per-key audit history for a skill-config field. Returns the N
+  // most recent audit_trail rows whose keysTouched array contained
+  // the queried key. Values are NEVER returned — only who changed
+  // it, when, and what other keys they touched in the same save.
+  // (Preserves the CLAUDE.md "audit: keysTouched only" invariant.)
+  //
+  // Any tenant member can read (view-only, no PII beyond the
+  // actor's email, which the member already sees in the Team list).
+  router.get('/skills/:skillId/config/history', (req: Request, res: Response) => {
+    const ctx = (req as TenantContextRequest).tenantContext;
+    const skillId = String(req.params.skillId);
+    if (!isSkillId(skillId)) {
+      return err(res, 404, 'UNKNOWN_SKILL', `Unknown skill '${skillId}'`, { skillId });
+    }
+    const keyRaw = typeof req.query.key === 'string' ? req.query.key : '';
+    const validKeys = getSkillSchemaKeys(skillId as SkillId);
+    if (!keyRaw || !validKeys.includes(keyRaw)) {
+      return err(res, 400, 'INVALID_KEY', `key must be one of the ${skillId} schema keys`, {
+        allowed: validKeys,
+      });
+    }
+    const limitRaw = req.query.limit;
+    const limitParsed = typeof limitRaw === 'string' ? Number.parseInt(limitRaw, 10) : 10;
+    if (!Number.isFinite(limitParsed) || limitParsed <= 0 || limitParsed > 100) {
+      return err(res, 400, 'INVALID_LIMIT', 'limit must be a positive integer ≤ 100');
+    }
+    try {
+      const entries = listSkillConfigHistoryByKey(ctx.tenantId, skillId as SkillId, keyRaw, limitParsed);
+      ok(res, { skillId, key: keyRaw, entries });
+    } catch (e) {
+      if (e instanceof SkillConfigError) return mapSkillConfigError(res, e);
+      logger.error({ err: e, tenantId: ctx.tenantId, skillId, key: keyRaw }, 'portal-workspace-router: GET /skills/:id/config/history failed');
+      err(res, 500, 'INTERNAL', 'Failed to load skill config history');
     }
   });
 

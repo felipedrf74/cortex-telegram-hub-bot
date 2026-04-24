@@ -408,3 +408,89 @@ export function putSkillConfig(
 
   return getSkillConfig(tenantId, skillId);
 }
+
+// ─── OI-DATA-003e: per-key audit history ─────────────────────────────
+
+/**
+ * One row in the skill-config history drawer. Values are
+ * deliberately absent — CLAUDE.md's audit invariant is "keysTouched
+ * only, never values." The drawer answers "who changed this field,
+ * when, and what else did they change in that save," not "what was
+ * the old/new value."
+ */
+export interface SkillConfigAuditEntry {
+  id: number;
+  ts: string;
+  actorUserId: number;
+  actorEmail: string | null;
+  /** All keys the matching save touched (including the queried key). */
+  keysTouched: string[];
+}
+
+/**
+ * List audit entries where the given `key` was part of the saved
+ * patch. Sorted newest-first, capped at `limit` (default 10, max
+ * 100 — enforced at the route layer).
+ *
+ * Uses SQLite's `json_each` + `json_extract` to filter by the key
+ * presence in `details.keysTouched`. This is stricter than a
+ * `details LIKE '%key%'` substring match, which could false-positive
+ * on a key that happens to be a SUBSTRING of another key's value or
+ * an unrelated JSON string.
+ */
+export function listSkillConfigHistoryByKey(
+  tenantId: number,
+  skillId: SkillId,
+  key: string,
+  limit = 10,
+): SkillConfigAuditEntry[] {
+  const resource = `tenant.${tenantId}.skill.${skillId}.config`;
+  try {
+    const rows = getDb()
+      .prepare(
+        `SELECT a.id, a.ts, a.actor_id, a.details, u.email AS actor_email
+         FROM audit_trail a
+         LEFT JOIN users u ON u.id = a.actor_id
+         WHERE a.action = 'tenant.skill_config.update'
+           AND a.resource = ?
+           AND EXISTS (
+             SELECT 1 FROM json_each(json_extract(a.details, '$.keysTouched'))
+             WHERE value = ?
+           )
+         ORDER BY a.id DESC
+         LIMIT ?`,
+      )
+      .all(resource, key, limit) as Array<{
+        id: number;
+        ts: string;
+        actor_id: number;
+        details: string | null;
+        actor_email: string | null;
+      }>;
+
+    return rows.map((r) => {
+      let keysTouched: string[] = [];
+      if (r.details) {
+        try {
+          const parsed = JSON.parse(r.details) as { keysTouched?: unknown };
+          if (Array.isArray(parsed.keysTouched)) {
+            keysTouched = parsed.keysTouched.filter((x): x is string => typeof x === 'string');
+          }
+        } catch {
+          // Malformed JSON (shouldn't happen — we control the writer)
+          // — treat as empty keys and keep the row for the timeline.
+        }
+      }
+      return {
+        id: Number(r.id),
+        ts: String(r.ts),
+        actorUserId: Number(r.actor_id),
+        actorEmail: r.actor_email,
+        keysTouched,
+      };
+    });
+  } catch (err) {
+    logger.error({ err, tenantId, skillId, key }, 'tenant-skill-config-service: listSkillConfigHistoryByKey failed');
+    throw new SkillConfigError('DB_ERROR', 'Failed to load skill config history');
+  }
+}

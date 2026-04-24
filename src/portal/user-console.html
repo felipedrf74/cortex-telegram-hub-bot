@@ -365,6 +365,30 @@ textarea { min-height: 80px; font-family: inherit; resize: vertical; }
   color: var(--text-muted); font-style: italic;
 }
 
+/* OI-DATA-003e: 🕐 history button + history-drawer item styling. */
+.field-history-btn {
+  margin-left: 6px; padding: 0;
+  background: transparent; border: 0;
+  cursor: pointer; font-size: 12px; line-height: 1;
+  opacity: 0.6;
+}
+.field-history-btn:hover { opacity: 1; }
+.history-item {
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.history-item:last-child { border-bottom: 0; }
+.history-item-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: var(--space-2);
+  font-size: 12px; color: var(--text-primary);
+}
+.history-item-meta { margin-top: 2px; }
+.history-item-loading,
+.history-item-empty {
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-muted); font-style: italic; font-size: 12px;
+}
+
 /* OI-UX-102: tag autocomplete popover. Lives appended to <body> at
  * position:fixed so we don't disturb the input's flex-layout. The
  * parent-hiding behavior (click outside → input.blur → hide) is
@@ -1865,6 +1889,22 @@ tr.row-selected td, .row.row-selected {
   </div>
   <div class="kb-modal-footer">
     <span class="small muted">Shortcuts are disabled while you're typing in a field.</span>
+  </div>
+</div>
+
+<!-- OI-DATA-003e: per-key config history modal. Shared across all
+     5 skills + 30 fields — the 🕐 button next to each field label
+     opens THIS modal with the right { skillId, key } context. -->
+<div id="configHistoryModal" class="kb-modal hidden" role="dialog" aria-label="Config change history">
+  <div class="kb-modal-header">
+    <h3>Change history <span class="muted small" id="configHistoryContext">—</span></h3>
+    <button class="btn ghost small" onclick="closeConfigHistory()">Close</button>
+  </div>
+  <div id="configHistoryBody" class="kb-modal-body" style="grid-template-columns: 1fr;">
+    <div class="history-item-empty">Click a 🕐 next to any field to see its change history.</div>
+  </div>
+  <div class="kb-modal-footer">
+    <span class="small muted">Shows who changed this field and when — values are never shown (audit-trail invariant).</span>
   </div>
 </div>
 
@@ -3585,6 +3625,120 @@ function initAllTagAutocomplete() {
     initTagAutocomplete(id);
   }
 }
+
+// ── OI-DATA-003e: per-key audit history ──────────────────────────
+// Every skill-config field gets a 🕐 button next to its label that
+// opens a shared #configHistoryModal with the right { skillId, key }
+// context. Values never appear — we only show who changed it, when,
+// and what other keys were touched in the same save. Preserves
+// CLAUDE.md's "audit: keysTouched only, never values" invariant.
+
+function collectConfigFieldKeyMap() {
+  // Flatten all 5 skills' field-id maps into one { htmlId → { skillId, key } }
+  // lookup. Leans on the per-skill *ConfigFieldIds functions already
+  // used by the editors — if those change, this hook stays in sync.
+  const out = {};
+  const add = (skillId, map) => {
+    for (const [key, htmlId] of Object.entries(map)) {
+      out[htmlId] = { skillId, key };
+    }
+  };
+  add('content',   contentConfigFieldIds());
+  add('secretary', secretaryConfigFieldIds());
+  add('training',  trainingConfigFieldIds());
+  add('finance',   financeConfigFieldIds());
+  add('cooking',   cookingConfigFieldIds());
+  return out;
+}
+
+function attachHistoryButtonsToConfigFields() {
+  const map = collectConfigFieldKeyMap();
+  for (const [htmlId, { skillId, key }] of Object.entries(map)) {
+    const field = document.getElementById(htmlId);
+    if (!field) continue;
+    // The label is the most recent prior sibling that's a <label>,
+    // or (more reliably) the first <label> inside the field's parent.
+    const parent = field.parentElement;
+    if (!parent) continue;
+    const label = parent.querySelector('label');
+    if (!label) continue;
+    // Idempotent — skip if we've already instrumented this label.
+    if (label.querySelector('.field-history-btn')) continue;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'field-history-btn';
+    btn.textContent = '🕐';
+    btn.title = 'View change history for this field';
+    btn.setAttribute('data-skill-id', skillId);
+    btn.setAttribute('data-config-key', key);
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openConfigHistory(skillId, key);
+    });
+    label.appendChild(btn);
+  }
+}
+
+async function openConfigHistory(skillId, key) {
+  const modal = document.getElementById('configHistoryModal');
+  const body = document.getElementById('configHistoryBody');
+  const ctx = document.getElementById('configHistoryContext');
+  if (!modal || !body || !ctx) return;
+  ctx.textContent = skillId + ' · ' + key;
+  body.innerHTML = '<div class="history-item-loading">Loading…</div>';
+  modal.classList.remove('hidden');
+  try {
+    const res = await fetchJson(
+      '/workspace/skills/' + encodeURIComponent(skillId) +
+      '/config/history?key=' + encodeURIComponent(key) + '&limit=20',
+    );
+    const entries = (res && res.data && res.data.entries) || [];
+    if (entries.length === 0) {
+      body.innerHTML = '<div class="history-item-empty">No changes recorded for this field yet.</div>';
+      return;
+    }
+    body.innerHTML = entries.map((e) => {
+      const other = (Array.isArray(e.keysTouched) ? e.keysTouched : []).filter((k) => k !== key);
+      const otherLabel = other.length
+        ? 'Also touched: ' + other.map(esc).join(', ')
+        : 'Only this field was changed';
+      const actor = e.actorEmail || ('user #' + e.actorUserId);
+      return (
+        '<div class="history-item">' +
+          '<div class="history-item-row">' +
+            '<strong>' + esc(actor) + '</strong>' +
+            '<span class="muted small">' + esc(e.ts) + '</span>' +
+          '</div>' +
+          '<div class="history-item-meta small muted">' + otherLabel + '</div>' +
+        '</div>'
+      );
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<div class="history-item-empty">Failed to load: ' + esc((e && e.message) || 'unknown error') + '</div>';
+  }
+}
+function closeConfigHistory() {
+  const modal = document.getElementById('configHistoryModal');
+  if (modal) modal.classList.add('hidden');
+}
+window.openConfigHistory = openConfigHistory;
+window.closeConfigHistory = closeConfigHistory;
+
+// Boot-time injection — run on shell load AFTER the DOM is settled.
+// The config fields are statically in the markup so they're always
+// available at first paint.
+setTimeout(attachHistoryButtonsToConfigFields, 0);
+
+// Close the history modal on Escape (matches search-modal + kb-modal pattern).
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const m = document.getElementById('configHistoryModal');
+    if (m && !m.classList.contains('hidden')) {
+      e.preventDefault();
+      closeConfigHistory();
+    }
+  }
+});
 
 // ── Books CRUD ────────────────────────────────────────────────────
 async function loadBooks() {
