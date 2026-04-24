@@ -20,7 +20,10 @@ function escapeHtml(s: string): string {
 const firstName = 'Felipe';
 const tier: string = 'pro';
 const tierLabel = tier === 'max' ? 'Max' : tier === 'pro' ? 'Pro' : 'paid';
-const consoleUrl = 'https://nexushub.me/console';
+// OI-WELCOME-201b (2026-04-24): CTA is a magic-login URL, not a
+// bare /console link. Clicking it in the email mints a web-session
+// JWT + redirects to /console with the user already signed in.
+const consoleUrl = 'https://nexushub.me/magic-login?token=TOKEN_A_REAL_RANDOM_BASE64URL_VALUE_GOES_HERE';
 
 const html = `<!DOCTYPE html>
 <html>

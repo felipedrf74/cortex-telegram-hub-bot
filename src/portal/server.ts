@@ -59,6 +59,82 @@ import { registerPortalWebhookRoutes } from './webhook-routes';
 
 const startedAt = Date.now();
 
+// ─── OI-WELCOME-201b (2026-04-24): /magic-login helpers ─────────────
+//
+// Two small HTML renderers for the email-click login flow. Kept at
+// module scope (not inside createPortalServer) so they're easy to
+// unit-test by a future structural pin without spinning up the full
+// server.
+
+function renderMagicLoginHandoff(jwtToken: string, tenantId: string): string {
+  // Inline JS that stores the session + redirects to /console. The
+  // sessionStorage writes mirror what invite-accept.html does on
+  // success — same keys, same tenantId convention. We DELIBERATELY
+  // don't render the JWT into the page visibly (it's only in the
+  // <script> source, not in the DOM).
+  return `<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Signing you in — Nexus Hub</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 420px; margin: 80px auto; padding: 0 20px; color: #1f2937; text-align: center; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+    p { font-size: 14px; color: #6b7280; margin: 4px 0; }
+    .spin { display: inline-block; width: 18px; height: 18px; border: 2px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head><body>
+  <h1><span class="spin"></span>Signing you in…</h1>
+  <p>One moment — we're setting up your workspace session.</p>
+  <script>
+    (function() {
+      try {
+        sessionStorage.setItem('nx.usr.jwt', ${JSON.stringify(jwtToken)});
+        sessionStorage.setItem('nx.usr.tenantId', ${JSON.stringify(tenantId)});
+      } catch (e) {
+        // sessionStorage disabled (private browsing quirks) — fall
+        // through to /console; it'll show the login prompt and at
+        // least the link is gone from the URL bar.
+      }
+      // Tiny delay so the spinner is visible + any extension hooks
+      // finish running. 300ms is imperceptible for success,
+      // reassuring for "am I actually being signed in?" doubts.
+      setTimeout(function () { window.location.replace('/console'); }, 300);
+    })();
+  </script>
+</body></html>`;
+}
+
+function renderMagicLoginError(res: Response, status: number, title: string, body: string): void {
+  res.status(status);
+  res.set('Cache-Control', 'no-store');
+  const escapeHtml = (s: string) => String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c] as string));
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>${escapeHtml(title)} — Nexus Hub</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 80px auto; padding: 0 24px; color: #1f2937; }
+    h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; color: #111827; }
+    p { font-size: 14px; line-height: 1.6; margin: 8px 0; color: #374151; }
+    .status { display: inline-block; font-size: 11px; color: #9ca3af; letter-spacing: 0.5px; text-transform: uppercase; margin-top: 24px; }
+    a { color: #3b82f6; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head><body>
+  <h1>${escapeHtml(title)}</h1>
+  <p>${escapeHtml(body)}</p>
+  <p style="margin-top: 24px;"><a href="/console">Go to the workspace</a></p>
+  <p class="status">${escapeHtml(String(status))} · Nexus Hub</p>
+</body></html>`);
+}
+
 // ─── Express App Factory ────────────────────────────────────────────
 
 export function createPortalServer(bot?: any): http.Server {
@@ -644,6 +720,140 @@ export function createPortalServer(bot?: any): http.Server {
         error: { code: 'INTERNAL', message: 'Failed to complete signup' },
         timestamp: new Date().toISOString(),
       });
+    }
+  });
+
+  // ── GET /magic-login (OI-WELCOME-201b, 2026-04-24) ──────────────
+  //
+  // Browser-facing "click this email link → you're logged in"
+  // endpoint. The welcome email (sent on paid-tier upgrade) points
+  // its CTA here with a magic-link token; this handler consumes
+  // the token, mints a web-session JWT, and returns a small HTML
+  // page that:
+  //   1. Stores the JWT in sessionStorage.
+  //   2. Stores the tenantId (solo-tenant convention: user.id).
+  //   3. Redirects to /console.
+  //
+  // Uses passwordless_login intent from magic-link-service (OI-NAV-
+  // 203b). The token metadata carries `welcomeUserId` — we verify
+  // the persisted user still exists + has an email matching the
+  // token's `email` field before minting a session.
+  //
+  // Failure modes render a minimal error page (NOT a JSON response)
+  // because the user clicked a link in an email — they're in a
+  // browser context and a raw JSON body would be baffling.
+  app.get('/magic-login', async (req: Request, res: Response) => {
+    try {
+      const { consumeMagicLinkToken } = require('../services/magic-link-service');
+      const { getUserById } = require('../services/user-service');
+      const jwtLib = require('jsonwebtoken');
+      const crypto = require('crypto');
+
+      const rawToken = typeof req.query.token === 'string' ? req.query.token : '';
+      if (!rawToken) {
+        renderMagicLoginError(res, 400, 'Missing login token', 'The link you clicked is incomplete. Open your welcome email and try the link again.');
+        return;
+      }
+
+      // Consume the token (single-use, atomic). consumedBy is null
+      // here — we set it after user verification so a bogus token
+      // doesn't pollute the consumed_by field with a random user.
+      const consume = consumeMagicLinkToken(rawToken, null);
+      if (!consume.valid) {
+        const reason = consume.reason || 'not_found';
+        const copy: Record<string, { title: string; body: string }> = {
+          not_found: { title: 'Login link not recognised', body: 'This link is invalid or was never issued. If you need a fresh one, ask us to resend your welcome email.' },
+          expired: { title: 'Login link expired', body: 'This link is older than 24 hours. Ask us to resend your welcome email to get a fresh one.' },
+          already_consumed: { title: 'Login link already used', body: 'This link was used once already — they are single-use for security. Sign in via the iOS app, or ask us to resend.' },
+        };
+        const c = copy[reason] || copy.not_found;
+        renderMagicLoginError(res, 410, c.title, c.body);
+        return;
+      }
+
+      const tokenRow = consume.row;
+      if (!tokenRow) {
+        renderMagicLoginError(res, 500, 'Unexpected state', 'The login succeeded partially but the server lost the session handle. Try again.');
+        return;
+      }
+
+      // Check intent — defense in depth. This route should only
+      // consume tokens issued with passwordless_login intent; a
+      // token issued for invite_signup shouldn't log anyone in
+      // here (it has a different semantics chain).
+      if (tokenRow.intent !== 'passwordless_login') {
+        logger.warn(
+          { tokenId: tokenRow.id, intent: tokenRow.intent },
+          'portal: /magic-login received a token with non-passwordless_login intent — rejecting',
+        );
+        renderMagicLoginError(res, 400, 'Login link mismatch', 'This link was not issued for web login.');
+        return;
+      }
+
+      // Resolve the user from token metadata.
+      const welcomeUserId = typeof tokenRow.metadata?.welcomeUserId === 'number'
+        ? tokenRow.metadata.welcomeUserId
+        : null;
+      if (welcomeUserId === null) {
+        logger.error({ tokenId: tokenRow.id }, 'portal: /magic-login token missing welcomeUserId metadata');
+        renderMagicLoginError(res, 500, 'Login link incomplete', 'The server issued this link without enough context. Ask for a fresh welcome email.');
+        return;
+      }
+      const user = getUserById(welcomeUserId);
+      if (!user) {
+        logger.warn({ welcomeUserId }, 'portal: /magic-login resolved user no longer exists');
+        renderMagicLoginError(res, 404, 'Account missing', 'The account this link belongs to no longer exists. Contact support.');
+        return;
+      }
+      // Double-check email consistency: token.email must match
+      // user.email (both lowercase-normalised).
+      if (user.email && tokenRow.email.toLowerCase() !== user.email.toLowerCase()) {
+        logger.warn(
+          { welcomeUserId, tokenEmail: tokenRow.email, userEmail: user.email },
+          'portal: /magic-login email mismatch — rejecting',
+        );
+        renderMagicLoginError(res, 400, 'Login link mismatch', 'This link was issued for a different email than the one on your account.');
+        return;
+      }
+
+      // Mint a web-session JWT. Same format + secret as iOS, with
+      // a distinguishable deviceId prefix for audit.
+      const secret = config.ios.jwtSecret;
+      if (!secret) {
+        logger.error('portal: /magic-login — IOS_API_JWT_SECRET missing');
+        renderMagicLoginError(res, 503, 'Server misconfigured', 'Authentication is not configured on this server. Contact support.');
+        return;
+      }
+      const deviceId = 'web-magic-login-' + crypto.randomBytes(16).toString('hex');
+      const jwtToken = jwtLib.sign({ userId: user.id, deviceId }, secret, { expiresIn: '7d' });
+
+      // Best-effort: retrofit consumed_by with the real user id.
+      try {
+        const { getDb } = require('../services/database');
+        getDb()
+          .prepare('UPDATE magic_link_tokens SET consumed_by = ? WHERE id = ?')
+          .run(user.id, tokenRow.id);
+      } catch (retroErr) {
+        logger.warn({ err: retroErr }, 'portal: /magic-login consumed_by retrofit failed (non-critical)');
+      }
+
+      // Solo-tenant convention: tenant_id == user.id (migration 076).
+      // We stash both in sessionStorage so /console lands on the
+      // right tenant without a fetch round-trip.
+      const tenantId = user.id;
+
+      // Render the handoff page. JWT is inlined in a <script> block
+      // — NOT an inline onload attribute — so it's easy to audit
+      // via CSP (we could tighten CSP to disallow inline JS later,
+      // but the handoff page is the one place we need it).
+      const safeJwt = String(jwtToken).replace(/[^A-Za-z0-9._\-=]/g, '');
+      const safeTenant = String(tenantId).replace(/[^0-9]/g, '');
+      res.set('Cache-Control', 'no-store');
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.type('html').send(renderMagicLoginHandoff(safeJwt, safeTenant));
+    } catch (e) {
+      logger.error({ err: e }, 'portal: /magic-login failed');
+      renderMagicLoginError(res, 500, 'Something went wrong', 'Reload the link. If it keeps failing, ask us to resend.');
     }
   });
 

@@ -37,6 +37,7 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { sendTransactionalEmail, MailerError } from './mailer';
+import { issueMagicLinkToken } from './magic-link-service';
 
 const WELCOME_AUDIT_ACTION = 'welcome_email.sent';
 const PAID_TIERS: ReadonlySet<string> = new Set(['pro', 'max']);
@@ -127,6 +128,30 @@ export async function fireWelcomeEmailIfFirstTimePaid(userId: number): Promise<F
   if (!row.tier || !PAID_TIERS.has(row.tier)) return { sent: false, reason: 'not_paid_tier' };
   if (hasPriorWelcome(userId)) return { sent: false, reason: 'already_sent' };
 
+  // OI-WELCOME-201b (2026-04-24): issue a magic-login token so the
+  // email's CTA lands the user INTO /console — not just a login
+  // wall. Uses the existing magic-link-service with intent=
+  // passwordless_login. TTL is 24h (longer than invite magic links
+  // because a welcome may sit in an inbox over a weekend).
+  //
+  // If token issuance fails, we still try to send the welcome with
+  // a bare /console link — graceful degradation. Users with a
+  // prior iOS session click through fine; cold users see a login
+  // wall and can request a magic link separately.
+  const publicBase = process.env.PORTAL_PUBLIC_URL || 'https://nexushub.me';
+  let ctaUrl: string = publicBase + '/console';
+  try {
+    const { rawToken } = issueMagicLinkToken({
+      email: row.email,
+      intent: 'passwordless_login',
+      ttlSeconds: 24 * 60 * 60,
+      metadata: { welcomeUserId: userId, source: 'welcome.paid_upgrade' },
+    });
+    ctaUrl = publicBase + '/magic-login?token=' + encodeURIComponent(rawToken);
+  } catch (tokenErr) {
+    logger.warn({ err: tokenErr, userId }, 'welcome-email: magic-login token issuance failed — falling back to plain /console CTA');
+  }
+
   try {
     await sendTransactionalEmail({
       template: 'welcome.paid_upgrade',
@@ -135,7 +160,7 @@ export async function fireWelcomeEmailIfFirstTimePaid(userId: number): Promise<F
       context: {
         firstName: row.firstName || 'there',
         tier: row.tier,
-        consoleUrl: (process.env.PORTAL_PUBLIC_URL || 'https://nexushub.me') + '/console',
+        consoleUrl: ctaUrl,
       },
     });
     recordWelcomeSent(userId, row.email);

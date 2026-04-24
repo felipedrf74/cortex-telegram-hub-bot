@@ -176,11 +176,52 @@ describe('fireWelcomeEmailIfFirstTimePaid (OI-WELCOME-201)', () => {
     expect(second.sent).toBe(true);
   });
 
-  it('context includes consoleUrl for the CTA button', async () => {
+  it('context includes consoleUrl — now a /magic-login?token=... URL (OI-WELCOME-201b)', async () => {
+    // Post OI-WELCOME-201b, the CTA URL carries a magic-login
+    // token so the user lands IN /console, not on a login wall.
     const iris = seedUser(testDb, { email: 'iris@e.com', tier: 'pro' });
     const { fireWelcomeEmailIfFirstTimePaid } = await import('../../src/services/welcome-email-service');
     await fireWelcomeEmailIfFirstTimePaid(iris);
-    expect(sendTransactionalCalls[0].context.consoleUrl).toMatch(/\/console$/);
+    const ctaUrl = sendTransactionalCalls[0].context.consoleUrl as string;
+    expect(ctaUrl).toMatch(/\/magic-login\?token=/);
+    // Token is URL-encoded base64url — must contain only URL-safe chars
+    // after the 'token=' parameter. Confirm via a targeted slice.
+    const token = new URL(ctaUrl).searchParams.get('token');
+    expect(token).toBeTruthy();
+    expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(token!.length).toBeGreaterThanOrEqual(40);
+  });
+
+  it('magic-login token is issued with passwordless_login intent + welcomeUserId metadata', async () => {
+    const jack = seedUser(testDb, { email: 'jack@e.com', tier: 'pro' });
+    const { fireWelcomeEmailIfFirstTimePaid } = await import('../../src/services/welcome-email-service');
+    await fireWelcomeEmailIfFirstTimePaid(jack);
+    // Check the magic_link_tokens row directly — we can't crack the
+    // hash to find it by the raw token, but we CAN query by email +
+    // intent since only one row should exist for jack.
+    const row = testDb.prepare(
+      "SELECT * FROM magic_link_tokens WHERE email = ? AND intent = 'passwordless_login' ORDER BY id DESC LIMIT 1",
+    ).get('jack@e.com') as any;
+    expect(row).toBeTruthy();
+    expect(row.intent).toBe('passwordless_login');
+    const meta = JSON.parse(row.metadata_json);
+    expect(meta.welcomeUserId).toBe(jack);
+    expect(meta.source).toBe('welcome.paid_upgrade');
+  });
+
+  it('falls back to plain /console CTA when token issuance throws (graceful degradation)', async () => {
+    // If magic-link-service is hobbled (DB error, whatever), the
+    // welcome must STILL send — users can reach /console and sign
+    // in via iOS as a fallback. We simulate by dropping the
+    // magic_link_tokens table.
+    testDb.exec('DROP TABLE magic_link_tokens');
+    const kelly = seedUser(testDb, { email: 'kelly@e.com', tier: 'pro' });
+    const { fireWelcomeEmailIfFirstTimePaid } = await import('../../src/services/welcome-email-service');
+    const result = await fireWelcomeEmailIfFirstTimePaid(kelly);
+    expect(result.sent).toBe(true); // welcome still sent
+    const ctaUrl = sendTransactionalCalls[0].context.consoleUrl as string;
+    expect(ctaUrl).toMatch(/\/console$/); // bare /console, no magic-login
+    expect(ctaUrl).not.toContain('magic-login');
   });
 
   it('firstName falls back to "there" when user has no first_name', async () => {
