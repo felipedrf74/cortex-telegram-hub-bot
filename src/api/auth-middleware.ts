@@ -35,6 +35,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     const payload = jwt.verify(token, config.ios.jwtSecret) as {
       userId: number;
       deviceId: string;
+      iat?: number;
     };
 
     // Hardening audit 2026-04-20: verify the user is still active
@@ -69,6 +70,35 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       // availability-for-security tradeoff — an open auth bypass on DB
       // degradation is worse than a brief 401 storm.
       logger.error({ err, userId: payload.userId }, 'iOS JWT: user-status check failed — rejecting');
+      sendError(res, 'UNAUTHORIZED', 'Authentication service unavailable', 401);
+      return;
+    }
+
+    // OI-ADM-302c (2026-04-24): session-revocation ledger check.
+    // When a tenant is suspended, every member gets a fresh
+    // session_revocations row; any JWT whose `iat` (issued-at) is
+    // EARLIER than that row's revoked_at is invalid. The check is
+    // one indexed SELECT on the user's most recent revocation —
+    // cheap enough to do on every authed request at current scale.
+    //
+    // Distinct error code SESSION_REVOKED so iOS clients can
+    // differentiate it from TOKEN_EXPIRED and surface a bespoke
+    // message ("Your workspace was suspended — contact the owner")
+    // instead of generic re-auth copy. The client-side handling is
+    // tracked separately as iOS-AUTH-401-SR.
+    try {
+      const { isTokenRevoked } = require('../services/session-revocation-service');
+      if (isTokenRevoked(payload.userId, payload.iat)) {
+        logger.warn(
+          { userId: payload.userId, iat: payload.iat },
+          'iOS JWT: token predates session revocation — rejecting',
+        );
+        sendError(res, 'SESSION_REVOKED', 'Your session has been revoked.', 401);
+        return;
+      }
+    } catch (err) {
+      // Same fail-closed stance as the user-status check above.
+      logger.error({ err, userId: payload.userId }, 'iOS JWT: revocation check failed — rejecting');
       sendError(res, 'UNAUTHORIZED', 'Authentication service unavailable', 401);
       return;
     }

@@ -33,6 +33,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { revokeSessionsForTenant } from './session-revocation-service';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -681,13 +682,37 @@ export function setTenantStatus(
   return updated;
 }
 
-/** Convenience: move tenant to `suspended` via setTenantStatus. */
+/**
+ * Convenience: move tenant to `suspended` + cascade the session
+ * revocation (OI-ADM-302c). Every current member of the tenant
+ * gets a fresh session_revocations row; their next auth-middleware
+ * pass returns 401 SESSION_REVOKED for any JWT issued before this
+ * point. Cascade failure is non-fatal — we log and continue so the
+ * status transition always succeeds even if revocation write is
+ * temporarily unavailable.
+ */
 export function suspendTenant(
   tenantId: number,
   actorUserId: number,
   reason: string | null = null,
 ): TenantRow {
-  return setTenantStatus(tenantId, 'suspended', actorUserId, reason);
+  const row = setTenantStatus(tenantId, 'suspended', actorUserId, reason);
+  try {
+    revokeSessionsForTenant(tenantId, {
+      reason: 'tenant.suspend',
+      actorUserId,
+      details: { tenantId, reasonFromSuspend: reason },
+    });
+  } catch (err) {
+    // Cascade is non-fatal — log and continue so the status
+    // transition is always final even if the revocation ledger is
+    // temporarily unavailable. The context guard still 403s
+    // workspace calls from suspended tenants, so the user isn't
+    // silently admitted — they just don't get the FORCED session
+    // invalidation on existing tokens.
+    logger.warn({ err, tenantId }, 'tenant-service: suspendTenant session-revocation cascade failed (non-fatal)');
+  }
+  return row;
 }
 
 /** Convenience: move tenant to `active` via setTenantStatus. */
