@@ -722,6 +722,20 @@ label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 
             <div><label>Search resource</label><input id="fQ" placeholder="tenant.42 or user.1" /></div>
             <button class="btn" onclick="auditApplyFilters()">Apply</button>
           </div>
+          <!-- OI-DATA-005c (2026-04-24): saved filter presets. The
+               dropdown is populated on page load; clicking a preset
+               loads its filters into the inputs and runs the query.
+               "Save current…" prompts for a name, posts the current
+               filter state to /owner/audit-presets. "Delete" lets
+               the admin prune stale presets via the same dropdown. -->
+          <div class="row-inline small" style="margin-top: var(--space-3); align-items: center; gap: var(--space-3);">
+            <label class="small muted">Saved:</label>
+            <select id="fPreset" onchange="auditApplyPreset()" style="max-width: 240px;">
+              <option value="">— pick a saved filter —</option>
+            </select>
+            <button class="btn ghost small" onclick="auditSavePreset()" title="Save current filter values as a named preset">Save current…</button>
+            <button class="btn ghost small danger" onclick="auditDeletePreset()" title="Delete the selected saved filter">Delete</button>
+          </div>
           <div id="auditFilterMeta" class="small muted" style="margin-top: var(--space-3);">
             Apply filters or scroll recent events below.
           </div>
@@ -1150,7 +1164,7 @@ function showPage(id) {
   if (id === 'tenants') loadTenants();
   if (id === 'users') loadPlatformAdmins();
   if (id === 'usage') loadUsage();
-  if (id === 'security') loadAudit();
+  if (id === 'security') { loadAudit(); loadAuditPresets(); }
   if (id === 'integrations') loadOwnerIntegrations();
   // OI-UX-106: auto-close mobile drawer after any navigation.
   closeMobileNav();
@@ -1503,6 +1517,103 @@ window.auditPage = function(dir) {
   loadAudit();
 };
 window.loadAudit = loadAudit;
+
+// ── Saved filter presets (OI-DATA-005c, 2026-04-24) ────────────
+//
+// Fetches /owner/audit-presets on demand (on Security-page load
+// and after every save/delete), renders them into #fPreset. The
+// preset's filters are stored on the <option> as a JSON-encoded
+// data-filters attribute so applying is zero fetches. Fresh
+// names re-trigger a server refresh via loadAuditPresets().
+let auditPresetsCache = [];
+
+async function loadAuditPresets() {
+  try {
+    const r = await fetchJson('/owner/audit-presets');
+    auditPresetsCache = (r && r.data && Array.isArray(r.data.presets)) ? r.data.presets : [];
+  } catch { auditPresetsCache = []; }
+  paintAuditPresetDropdown();
+}
+
+function paintAuditPresetDropdown() {
+  const sel = document.getElementById('fPreset');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— pick a saved filter —</option>'
+    + auditPresetsCache.map((p) =>
+      `<option value="${esc(String(p.id))}" data-filters='${esc(JSON.stringify(p.filters || {}))}'>${esc(p.name)}</option>`,
+    ).join('');
+  // Restore selection if the selected preset still exists.
+  if (current && auditPresetsCache.some((p) => String(p.id) === current)) {
+    sel.value = current;
+  }
+}
+
+window.auditApplyPreset = function() {
+  const sel = document.getElementById('fPreset');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) return;
+  let filters = {};
+  try { filters = JSON.parse(opt.getAttribute('data-filters') || '{}'); }
+  catch { filters = {}; }
+  // Load into the form inputs (not directly into auditState —
+  // keeps Apply as the single action that kicks a query, matches
+  // the UX of typing manually + pressing Apply).
+  document.getElementById('fActor').value  = filters.actor  || '';
+  document.getElementById('fAction').value = filters.action || '';
+  document.getElementById('fFrom').value   = filters.from   || '';
+  document.getElementById('fTo').value     = filters.to     || '';
+  document.getElementById('fQ').value      = filters.q      || '';
+  window.auditApplyFilters();
+};
+
+window.auditSavePreset = async function() {
+  const rawName = window.prompt('Name this saved filter:');
+  if (rawName == null) return;            // user cancelled
+  const name = rawName.trim();
+  if (!name) return;                       // blank name
+  // Snapshot current form values (not auditState — a user might
+  // have typed new filters without hitting Apply and expect the
+  // saved preset to match what they SEE).
+  const filters = {
+    actor:  document.getElementById('fActor').value.trim(),
+    action: document.getElementById('fAction').value.trim(),
+    from:   document.getElementById('fFrom').value,
+    to:     document.getElementById('fTo').value,
+    q:      document.getElementById('fQ').value.trim(),
+  };
+  try {
+    const r = await fetchJson('/owner/audit-presets', {
+      method: 'POST',
+      body: JSON.stringify({ name, filters }),
+    });
+    if (r && r.data && r.data.preset) {
+      await loadAuditPresets();
+      // Auto-select the newly-saved preset.
+      const sel = document.getElementById('fPreset');
+      sel.value = String(r.data.preset.id);
+    }
+  } catch (e) {
+    alert('Save failed: ' + (e && e.message ? e.message : 'unknown error'));
+  }
+};
+
+window.auditDeletePreset = async function() {
+  const sel = document.getElementById('fPreset');
+  const id = sel.value;
+  if (!id) return;
+  const preset = auditPresetsCache.find((p) => String(p.id) === id);
+  const name = preset ? preset.name : 'this preset';
+  if (!confirm(`Delete saved filter "${name}"?`)) return;
+  try {
+    await fetchJson('/owner/audit-presets/' + encodeURIComponent(id), { method: 'DELETE' });
+    // Clear selection, refresh dropdown.
+    sel.value = '';
+    await loadAuditPresets();
+  } catch (e) {
+    alert('Delete failed: ' + (e && e.message ? e.message : 'unknown error'));
+  }
+};
 
 // Render a single audit row (used by drawer audit tab AND full audit
 // page). Click expands the details JSON inline; click again collapses.

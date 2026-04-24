@@ -67,6 +67,13 @@ import {
 import { getDb } from '../services/database';
 // OI-ADM-305 (2026-04-24): platform-wide integration health view.
 import { listPlatformIntegrations } from '../services/integrations-view';
+// OI-DATA-005c (2026-04-24): audit filter presets.
+import {
+  listAuditPresets,
+  createAuditPreset,
+  deleteAuditPreset,
+  AuditPresetError,
+} from '../services/audit-preset-service';
 
 // ── Response helpers (local — avoids coupling to /api/v1 response-helpers) ─
 
@@ -583,6 +590,65 @@ export function createPortalOwnerRouter(): Router {
     } catch (dbErr) {
       logger.error({ err: dbErr }, 'portal-owner-router: /usage failed');
       err(res, 500, 'INTERNAL', 'Failed to compute usage');
+    }
+  });
+
+  // ── GET /owner/audit-presets ───────────────────────────────────
+  // OI-DATA-005c (2026-04-24): saved filter presets for the
+  // platform-wide audit viewer. Scoped to the CALLING admin — a
+  // preset saved by Felipe isn't visible to another platform
+  // admin. Inherits the /owner/* auth chain; no write-role gate
+  // on GET/POST/DELETE because presets are per-user personal
+  // state (platform_readonly should be able to curate their own
+  // list).
+  router.get('/audit-presets', (req: Request, res: Response) => {
+    const admin = (req as PlatformAdminRequest).platformAdmin;
+    const presets = listAuditPresets(admin.userId, 'owner');
+    ok(res, { presets });
+  });
+
+  // ── POST /owner/audit-presets ──────────────────────────────────
+  router.post('/audit-presets', (req: Request, res: Response) => {
+    const admin = (req as PlatformAdminRequest).platformAdmin;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = typeof body.name === 'string' ? body.name : '';
+    const filters = body.filters;
+    try {
+      const preset = createAuditPreset(admin.userId, 'owner', name, filters);
+      ok(res, { preset }, 201);
+    } catch (e) {
+      if (e instanceof AuditPresetError) {
+        const status = e.code === 'NOT_FOUND' ? 404
+          : e.code === 'DB_ERROR' ? 500
+          : 400;
+        return err(res, status, e.code, e.message, e.details);
+      }
+      logger.error({ err: e, adminUserId: admin.userId }, 'portal-owner-router: POST /audit-presets failed');
+      err(res, 500, 'INTERNAL', 'Failed to save preset');
+    }
+  });
+
+  // ── DELETE /owner/audit-presets/:id ────────────────────────────
+  router.delete('/audit-presets/:id', (req: Request, res: Response) => {
+    const admin = (req as PlatformAdminRequest).platformAdmin;
+    const id = Number.parseInt(String(req.params.id), 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return err(res, 400, 'BAD_REQUEST', 'id must be a positive integer');
+    }
+    try {
+      deleteAuditPreset(admin.userId, id);
+      ok(res, { deleted: true, id });
+    } catch (e) {
+      if (e instanceof AuditPresetError) {
+        // NOT_FOUND on missing-or-cross-owner attempts — matches
+        // the OI-TEST-001 "existence non-leak" pattern so a
+        // platform admin guessing another admin's preset id
+        // can't tell whether it exists.
+        const status = e.code === 'NOT_FOUND' ? 404 : 500;
+        return err(res, status, e.code, e.message);
+      }
+      logger.error({ err: e, adminUserId: admin.userId, id }, 'portal-owner-router: DELETE /audit-presets failed');
+      err(res, 500, 'INTERNAL', 'Failed to delete preset');
     }
   });
 

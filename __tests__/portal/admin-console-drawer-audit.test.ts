@@ -116,8 +116,11 @@ describe('admin-console.html — filtered audit viewer (OI-ADM-303)', () => {
 
   it('Security page lazy-loads the audit viewer (not the legacy last-10)', () => {
     // showPage('security') should call loadAudit, not the removed
-    // loadSecurity.
-    expect(html).toMatch(/id\s*===\s*['"]security['"]\s*\)\s*loadAudit\(\)/);
+    // loadSecurity. Relaxed in OI-DATA-005c to allow additional
+    // loaders in the same dispatch (e.g. loadAuditPresets) — the
+    // invariant is "loadAudit fires on security page," not "it's
+    // the ONLY thing that fires."
+    expect(html).toMatch(/id\s*===\s*['"]security['"][\s\S]{0,80}?loadAudit\(\)/);
     expect(html).not.toContain('function loadSecurity()');
     expect(html).not.toContain('id="securityAudit"'); // old element removed
   });
