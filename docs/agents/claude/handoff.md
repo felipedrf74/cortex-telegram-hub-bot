@@ -6,41 +6,43 @@ This section supersedes older branch/status notes below. Historical handoff
 content is retained only for provenance.
 
 - Current backend beta branch: `beta/single-agent-rc`.
-- Backend production is live at `4.14.66`.
-- Full backend verification passed: 342 test files / 5,438 tests.
+- Backend production is live at `4.14.67`.
+- Full backend verification passed before the latest production deploy:
+  345 test files / 5,452 tests.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
   acknowledgement, resolution, and audit verification.
 - Founder accounts verified in production:
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
-- Deploy scripts now exclude worktree `.git` files so branch worktrees can
-  deploy safely.
-- Latest local Content + Training TestFlight bugfix pass on 2026-04-25:
+- Deploy scripts exclude worktree `.git` files and local agent/worktree
+  artifacts so branch worktrees can deploy safely.
+- Latest Content + Training TestFlight bugfix pass on 2026-04-25 is deployed
+  in backend `4.14.67` and pushed in iOS `main`:
   `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
   derives user-scoped Voice DNA from content knowledge, forwards it into the
   Python script engine, includes style in the script cache key, and returns
   `scriptStyle` in the API response. Python degraded fallback now distinguishes
   YouTube vs short-form and detailed vs bullet outputs, but a visible
   "Qualidade reduzida" response still means AI synthesis/generation was
-  unavailable and the backend provider path needs deployment/config proof.
+  unavailable and the live AI provider path needs config/provider proof.
   Python JSON synthesis calls now set backend proxy `jsonMode`, reducing
   avoidable search-based fallbacks from non-JSON model formatting.
   iOS also fixed topic-list cache invalidation after topic writes, athlete
   profile finish actions from Training, and Training complete/skip fallback to
   the `"today"` sentinel.
-- Follow-up local Content scheduling/pipeline + Training readiness pass on
-  2026-04-25: `POST/PATCH /api/v1/content/topics` now accepts
+- Follow-up Content scheduling/pipeline + Training readiness pass on
+  2026-04-25 is deployed in backend `4.14.67` and pushed in iOS `main`:
+  `POST/PATCH /api/v1/content/topics` now accepts
   `scheduledDateTime`; date-only topics create/update Secretary tasks;
   date+time topics also create/update calendar agenda/events through unified
   calendar; Content Tasks reads scheduled topics directly and shows
   task/calendar sync status; Pipeline Detail ignores benign superseded-load
   cancellation; Training keeps renderable Home/Training data visible during
   refresh; Home secondary previews fan out in parallel after the primary
-  dashboard render. This requires migration
-  `078_content_topic_secretary_artifacts.sql`,
-  backend deployment, and fresh signed TestFlight/device validation before it is
-  live user truth.
+  dashboard render. Migration `078_content_topic_secretary_artifacts.sql` is
+  deployed with `4.14.67`; fresh signed TestFlight/device validation is still
+  required before closing user-facing QA.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the

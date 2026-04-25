@@ -133,7 +133,10 @@ echo "📤 Syncing files to server..."
 if command -v rsync &>/dev/null; then
   rsync -avz --delete \
     --exclude='.env' \
+    --exclude='.env.agents' \
+    --exclude='.DS_Store' \
     --exclude='.db.sqlite' \
+    --exclude='*.db' \
     --exclude='data/' \
     --exclude='logs/' \
     --exclude='node_modules/' \
@@ -141,6 +144,10 @@ if command -v rsync &>/dev/null; then
     --exclude='content-engine/data/' \
     --exclude='content-engine/__pycache__/' \
     --exclude='**/__pycache__/' \
+    --exclude='.claude/worktrees/' \
+    --exclude='.claude/worktrees/**' \
+    --exclude='.codex/' \
+    --exclude='.codex/**' \
     --exclude='.git' \
     --exclude='.git/' \
     "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"

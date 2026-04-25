@@ -14,47 +14,48 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend is live at `4.14.66`.
+- Production backend is live at `4.14.67`.
 - Current release branch for the beta hardening work:
   `beta/single-agent-rc`.
-- Full backend verification passed after beta hardening:
-  342 test files / 5,438 tests.
+- Full backend verification passed before the latest production deploy:
+  345 test files / 5,452 tests.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
   acknowledgement, resolution, and audit verification.
 - Founder accounts verified in production:
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
-- Deploy scripts now exclude worktree `.git` files so branch worktrees can
-  deploy safely.
+- Deploy scripts exclude worktree `.git` files and local agent/worktree
+  artifacts so branch worktrees can deploy safely.
 - Home-to-Inbox latency and task-list count truth were verified live on
-  `4.14.66`; `/api/v1/tasks/lists` returns real `taskCount` values, not `-1`
-  placeholders.
-- Latest local Content + Training TestFlight bugfix pass on 2026-04-25:
+  `4.14.66` and remain in `4.14.67`; `/api/v1/tasks/lists` returns real
+  `taskCount` values, not `-1` placeholders.
+- Latest Content + Training TestFlight bugfix pass on 2026-04-25 is deployed
+  in backend `4.14.67` and pushed in iOS `main`:
   `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
   derives user-scoped Voice DNA from content knowledge, forwards it into the
   Python script engine, includes style in the script cache key, and returns
   `scriptStyle` in the API response. Python degraded fallback now distinguishes
   YouTube vs short-form and detailed vs bullet outputs, but a visible
   "Qualidade reduzida" response still means AI synthesis/generation was
-  unavailable and the backend provider path needs deployment/config proof.
+  unavailable and the live AI provider path needs config/provider proof.
   Python JSON synthesis calls now set backend proxy `jsonMode`, reducing
   avoidable search-based fallbacks from non-JSON model formatting.
   iOS also fixed topic-list cache invalidation after topic writes, athlete
   profile finish actions from Training, and Training complete/skip fallback to
   the `"today"` sentinel.
-- Follow-up local Content scheduling/pipeline + Training readiness pass on
-  2026-04-25: `POST/PATCH /api/v1/content/topics` now accepts
+- Follow-up Content scheduling/pipeline + Training readiness pass on
+  2026-04-25 is deployed in backend `4.14.67` and pushed in iOS `main`:
+  `POST/PATCH /api/v1/content/topics` now accepts
   `scheduledDateTime`; date-only topics create/update Secretary tasks;
   date+time topics also create/update calendar agenda/events through unified
   calendar; Content Tasks reads scheduled topics directly and surfaces
   task/calendar sync status; Pipeline Detail ignores benign superseded-load
   cancellation; Training keeps renderable Home/Training data visible during
   refresh; Home secondary previews fan out in parallel after the primary
-  dashboard render. This requires migration
-  `078_content_topic_secretary_artifacts.sql`,
-  backend deployment, and fresh signed TestFlight/device validation before it is
-  live user truth.
+  dashboard render. Migration `078_content_topic_secretary_artifacts.sql` is
+  deployed with `4.14.67`; fresh signed TestFlight/device validation is still
+  required before closing user-facing QA.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
@@ -202,15 +203,14 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.66`; do not treat the
+hardening branch has been deployed to production as `4.14.67`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:
 
 - keep tenant/founder/business-rule docs aligned with the beta tracker;
-- deploy migration `078_content_topic_secretary_artifacts.sql` with the Content
-  topic Secretary/calendar artifact sync before marking the latest topic
-  scheduling TestFlight fix live;
+- validate the latest Content scheduling, script generation, Training readiness,
+  Secretary recurrence, and Health fixes in a signed TestFlight device build;
 - run another production-safe alert drill only if the final receiver differs
   from the staging receiver;
 - keep deploy scripts worktree-safe;
