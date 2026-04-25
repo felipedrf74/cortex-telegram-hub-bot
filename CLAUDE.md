@@ -14,11 +14,13 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend is live at `4.14.67`.
-- Current release branch for the beta hardening work:
-  `beta/single-agent-rc`.
+- Production backend and staging are live at `4.14.68`.
+- Current deployed branch: `main`.
+- Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  345 test files / 5,452 tests.
+  345 test files / 5,454 tests.
+- Production deploy health passed for content engine, status portal, and bot
+  online at backend commit `a1a143a`.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -28,10 +30,10 @@
 - Deploy scripts exclude worktree `.git` files and local agent/worktree
   artifacts so branch worktrees can deploy safely.
 - Home-to-Inbox latency and task-list count truth were verified live on
-  `4.14.66` and remain in `4.14.67`; `/api/v1/tasks/lists` returns real
+  `4.14.66` and remain in `4.14.68`; `/api/v1/tasks/lists` returns real
   `taskCount` values, not `-1` placeholders.
 - Latest Content + Training TestFlight bugfix pass on 2026-04-25 is deployed
-  in backend `4.14.67` and pushed in iOS `main`:
+  in backend `4.14.68` and pushed in iOS `main`:
   `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
   derives user-scoped Voice DNA from content knowledge, forwards it into the
   Python script engine, includes style in the script cache key, and returns
@@ -45,7 +47,7 @@
   profile finish actions from Training, and Training complete/skip fallback to
   the `"today"` sentinel.
 - Follow-up Content scheduling/pipeline + Training readiness pass on
-  2026-04-25 is deployed in backend `4.14.67` and pushed in iOS `main`:
+  2026-04-25 is deployed in backend `4.14.68` and pushed in iOS `main`:
   `POST/PATCH /api/v1/content/topics` now accepts
   `scheduledDateTime`; date-only topics create/update Secretary tasks;
   date+time topics also create/update calendar agenda/events through unified
@@ -54,8 +56,21 @@
   cancellation; Training keeps renderable Home/Training data visible during
   refresh; Home secondary previews fan out in parallel after the primary
   dashboard render. Migration `078_content_topic_secretary_artifacts.sql` is
-  deployed with `4.14.67`; fresh signed TestFlight/device validation is still
+  deployed with `4.14.68`; fresh signed TestFlight/device validation is still
   required before closing user-facing QA.
+- Second Training TestFlight bugfix pass on 2026-04-25 is deployed in backend
+  `4.14.68` and pushed in iOS `main` at `7f722da`: setup prompts are gated by
+  real pending training questionnaires, started sport profiles count as usable
+  objective context, skipped optional questionnaire steps persist safe
+  placeholders, deterministic coach adjustment IDs are humanized, recovery/easy
+  run sessions marked `rest` remain openable when they contain real session
+  detail, new plan generation refreshes plan/calendar caches before showing the
+  week, coach briefing has an active-plan deterministic fallback, and workout
+  adjustment actions refresh instead of silently no-oping. Verification:
+  focused backend Training tests passed 4 files / 63 tests, full deploy gate
+  passed 345 files / 5,454 tests, staging signed-session smoke passed 17/17,
+  and iOS simulator build passed. Signed TestFlight/device validation remains
+  required.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
@@ -203,7 +218,7 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.67`; do not treat the
+hardening branch has been deployed to production as `4.14.68` from `main`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:
