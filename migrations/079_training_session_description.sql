@@ -1,0 +1,24 @@
+-- Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
+--
+-- Migration 079 — Rich training session description
+--
+-- Adds a structured-sections JSON column to `training_sessions` so the
+-- calendar event description (= email body when invites are delivered)
+-- and the iOS Week plan view session sheet can both render the same
+-- coaching content with proper section semantics.
+--
+-- The plain-text `description` column stays as the canonical text body
+-- (used directly as the calendar event description). `description_json`
+-- holds the structured form — `{ header, badge, weeklyProgression,
+-- execution, exercises, warmup, cooldown, important, totalMinutesText,
+-- notes }` — so iOS can render typed sections (cards, monospace
+-- progression, color-tinted execution chips, ⚠️ warning callouts)
+-- instead of treating the body as opaque text.
+--
+-- Existing sessions retain `description_json = NULL`. Read paths
+-- treat NULL as "no structured content available — fall back to the
+-- plain-text description" so this migration is fully backward
+-- compatible with sessions persisted before the description-builder
+-- shipped.
+
+ALTER TABLE training_sessions ADD COLUMN description_json TEXT;

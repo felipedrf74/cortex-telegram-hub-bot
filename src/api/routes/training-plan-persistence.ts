@@ -2,6 +2,11 @@
 
 import * as trainingPlans from '../../services/training-plans';
 import { createEvent } from '../../services/unified-calendar';
+import {
+  buildRichSessionDescription,
+  type AthleteProfiles,
+  type SessionDescriptionInput,
+} from '../../services/training-session-description';
 import { logger } from '../../utils/logger';
 import {
   preferredTimeForSessionType,
@@ -46,6 +51,13 @@ export interface PersistGeneratedTrainingPlanInput {
   normalizedPreferredCardioTime: string;
   normalizedPreferredStrengthTime: string;
   busyWindows: BusyWindow[];
+  /**
+   * Optional athlete profile data. When present, the rich session
+   * description includes pace/HR/power zones derived from threshold
+   * pace, FTP, max HR, etc. When absent, the description gracefully
+   * omits the per-zone block and uses generic effort cues.
+   */
+  athleteProfiles?: AthleteProfiles;
 }
 
 export interface PersistGeneratedTrainingPlanResult {
@@ -115,13 +127,23 @@ export async function persistGeneratedTrainingPlan(
         title: sessionData.title || 'Training session',
       });
 
+      const richDescription = buildRichSessionDescription(
+        buildSessionDescriptionInput({
+          input,
+          weekData,
+          sessionData,
+          durationMinutes,
+        }),
+      );
+
       const session = trainingPlans.createSession({
         week_id: week.id,
         plan_id: plan.id,
         day_of_week: sessionData.dayOfWeek || '',
         session_type: sessionData.sessionType || 'training',
         title: sessionData.title || 'Training session',
-        description: sessionData.description || '',
+        description: richDescription.text,
+        description_json: JSON.stringify(richDescription.sections),
         exercises_json: JSON.stringify(sessionData.exercises || []),
         duration_minutes: durationMinutes,
         intensity_text: `RPE ${weekData.intensityPct || 70}%`,
@@ -132,7 +154,7 @@ export async function persistGeneratedTrainingPlan(
         title: `${emojiForTrainingSession(sessionData.sessionType)} ${sessionData.title || 'Training session'} (${durationMinutes}min)`,
         start: scheduledWindow.start.toISOString(),
         end: scheduledWindow.end.toISOString(),
-        description: buildTrainingCalendarDescription(input.planData, input.objective, sessionData, durationMinutes),
+        description: richDescription.text,
       });
 
       totalSessions++;
@@ -226,31 +248,53 @@ function scheduleSessionForPlan(input: {
   return scheduledWindow;
 }
 
-function buildTrainingCalendarDescription(
-  planData: GeneratedTrainingPlan,
-  objective: string,
-  sessionData: GeneratedTrainingSession,
-  durationMinutes: number,
-): string {
-  let body = `${planData.planName || objective}\n\n`;
-  body += `${sessionData.title || 'Training session'}\n\n`;
+/**
+ * Adapts the persister's loop-local context (plan + week + session
+ * input) into the `SessionDescriptionInput` shape consumed by
+ * `buildRichSessionDescription`. Kept inline so the loop body stays
+ * readable and the description module has no knowledge of how the
+ * persister's plan-generation pipeline shapes its data.
+ */
+function buildSessionDescriptionInput(args: {
+  input: PersistGeneratedTrainingPlanInput;
+  weekData: NonNullable<GeneratedTrainingPlan['weeks']>[number];
+  sessionData: GeneratedTrainingSession;
+  durationMinutes: number;
+}): SessionDescriptionInput {
+  const { input, weekData, sessionData, durationMinutes } = args;
+  const allWeeks = (input.planData.weeks ?? []).map((week) => ({
+    weekNumber: typeof week.weekNumber === 'number' ? week.weekNumber : 0,
+    focus: week.focus,
+    intensityPct: week.intensityPct,
+    sessions: (week.sessions ?? []).map((s) => ({
+      sessionType: s.sessionType,
+      title: s.title,
+      durationMinutes: s.durationMinutes,
+      dayOfWeek: s.dayOfWeek,
+    })),
+  }));
 
-  if (sessionData.exercises?.length) {
-    body += 'EXERCISES:\n';
-    sessionData.exercises.forEach((exercise, index) => {
-      body += `${index + 1}. ${exercise.name}`;
-      if (exercise.sets && exercise.reps) body += ` — ${exercise.sets}×${exercise.reps}`;
-      if (exercise.rpe) body += ` @ RPE ${exercise.rpe}`;
-      if (exercise.restSec) body += ` | ${exercise.restSec}s rest`;
-      if (exercise.distance_km) body += ` — ${exercise.distance_km}km`;
-      if (exercise.pace) body += ` @ ${exercise.pace}`;
-      body += '\n';
-    });
-  }
-
-  if (sessionData.description) body += `\n${sessionData.description}`;
-  body += `\n\nTIME: ~${durationMinutes} min total`;
-  return body;
+  return {
+    planName: input.planData.planName || `${input.objective} Plan`,
+    objective: input.objective,
+    totalWeeks: input.durationWeeks,
+    startDate: input.startDate,
+    sport: input.planData.sport || 'hybrid',
+    periodization: input.planData.periodization,
+    weekNumber: weekData.weekNumber || 1,
+    weekFocus: weekData.focus,
+    weekIntensityPct: weekData.intensityPct,
+    allWeeks,
+    session: {
+      sessionType: sessionData.sessionType || 'training',
+      title: sessionData.title || 'Training session',
+      durationMinutes,
+      description: sessionData.description,
+      exercises: sessionData.exercises,
+      dayOfWeek: sessionData.dayOfWeek || 'Monday',
+    },
+    profiles: input.athleteProfiles,
+  };
 }
 
 function emojiForTrainingSession(sessionType: unknown): string {

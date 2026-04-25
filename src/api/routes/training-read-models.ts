@@ -18,6 +18,23 @@ import {
 
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
 
+/**
+ * Parse the `description_json` column into a structured object for
+ * iOS rendering. Returns `null` when the column is empty or contains
+ * malformed JSON — iOS falls back to the plain-text `description` in
+ * that case so we never break the read path on a bad row.
+ */
+function parseDescriptionSections(raw: string | null | undefined): unknown {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch (err) {
+    logger.warn({ err }, 'Failed to parse training_sessions.description_json — falling back to plain text');
+    return null;
+  }
+}
+
 export async function getTodaySession(userId: number) {
   let session: any = null;
   let plan: any = null;
@@ -126,6 +143,10 @@ export async function getWeekPlan(userId: number) {
           time: s.calendar_event_id ? calendarLookup.get(s.calendar_event_id)?.time ?? null : null,
           status: normalizeTrainingStatus(s.status),
           description: s.description || null,
+          // Structured-sections companion to `description` so iOS can
+          // render typed cards. Older rows have NULL `description_json`
+          // and iOS falls back to the plain-text `description`.
+          descriptionSections: parseDescriptionSections(s.description_json),
           duration: s.duration_minutes || null,
           exercises: parseExercises(s.exercises_json),
         }));

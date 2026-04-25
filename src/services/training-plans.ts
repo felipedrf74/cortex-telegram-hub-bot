@@ -63,6 +63,14 @@ export interface TrainingSession {
   session_type: string;
   title: string;
   description: string | null;
+  /**
+   * Structured description sections, JSON-encoded. Stored alongside
+   * `description` so iOS can render typed sections (cards, monospace
+   * progression, ⚠️ callouts) while the calendar event description /
+   * email body uses the plain-text rendering. Older rows have NULL
+   * here — read paths must fall back to `description`.
+   */
+  description_json: string | null;
   exercises_json: string | null;
   duration_minutes: number | null;
   intensity_text: string | null;
@@ -115,6 +123,8 @@ export interface CreateSessionInput {
   session_type: string;
   title: string;
   description?: string;
+  /** Optional structured-sections JSON. Persisted as TEXT. */
+  description_json?: string;
   exercises_json?: string;
   duration_minutes?: number;
   intensity_text?: string;
@@ -237,6 +247,60 @@ export function updatePlanStatus(planId: number, status: TrainingPlan['status'])
   return result.changes > 0;
 }
 
+/**
+ * Hard-delete a training plan and every artifact derived from it.
+ *
+ * Used by `POST /api/v1/training/plan/cancel` to satisfy the user
+ * contract "nothing left behind." Schema FKs declared in
+ * `migrations/023_fitness_training_plans.sql` cascade as
+ * `ON DELETE CASCADE`, so a single DELETE on the plan row removes:
+ *
+ *   - every `training_weeks` row with that `plan_id`
+ *   - every `training_sessions` row (via `plan_id` AND via `week_id`)
+ *   - every `training_completions` row (via `plan_id` AND via `session_id`)
+ *
+ * Pre-conditions enforced by callers:
+ *   - the plan's calendar events have already been removed via
+ *     `unifiedCalendar.deleteEvent` so external Google/Outlook
+ *     state matches the local hard delete
+ *   - the caller has verified `plan.user_id === ctx.userId`
+ *
+ * Returns row counts so the route can report what was actually
+ * removed in the response payload (audit + UI feedback).
+ */
+export function deletePlanHard(planId: number, userId: number): {
+  ok: boolean;
+  removedPlans: number;
+  removedWeeks: number;
+  removedSessions: number;
+  removedCompletions: number;
+} {
+  const db = getDb();
+
+  const weeksCount = (db.prepare('SELECT COUNT(*) AS n FROM training_weeks WHERE plan_id = ?')
+    .get(planId) as { n: number } | undefined)?.n ?? 0;
+  const sessionsCount = (db.prepare('SELECT COUNT(*) AS n FROM training_sessions WHERE plan_id = ?')
+    .get(planId) as { n: number } | undefined)?.n ?? 0;
+  const completionsCount = (db.prepare('SELECT COUNT(*) AS n FROM training_completions WHERE plan_id = ?')
+    .get(planId) as { n: number } | undefined)?.n ?? 0;
+
+  // Scope the DELETE to (id, user_id) so a stale planId from another
+  // tenant cannot accidentally remove someone else's plan even if the
+  // caller's ownership gate is bypassed in the future.
+  const result = db.prepare(`
+    DELETE FROM fitness_training_plans WHERE id = ? AND user_id = ?
+  `).run(planId, userId);
+
+  const removedPlans = result.changes;
+  return {
+    ok: removedPlans > 0,
+    removedPlans,
+    removedWeeks: removedPlans > 0 ? weeksCount : 0,
+    removedSessions: removedPlans > 0 ? sessionsCount : 0,
+    removedCompletions: removedPlans > 0 ? completionsCount : 0,
+  };
+}
+
 // ── Week CRUD ──────────────────────────────────────────────────────
 
 export function createWeek(input: CreateWeekInput): TrainingWeek {
@@ -296,11 +360,13 @@ export function createSession(input: CreateSessionInput): TrainingSession {
   const result = db.prepare(`
     INSERT INTO training_sessions
       (week_id, plan_id, day_of_week, session_type, title, description,
-       exercises_json, duration_minutes, intensity_text, calendar_event_id, calendar_source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       description_json, exercises_json, duration_minutes, intensity_text,
+       calendar_event_id, calendar_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.week_id, input.plan_id, normalizedDay, input.session_type,
-    input.title, input.description ?? null, input.exercises_json ?? null,
+    input.title, input.description ?? null, input.description_json ?? null,
+    input.exercises_json ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
     input.calendar_event_id ?? null, input.calendar_source ?? null,
   );

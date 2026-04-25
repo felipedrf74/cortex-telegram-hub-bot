@@ -240,6 +240,11 @@ export async function generateTrainingPlanForUser(
     normalizedPreferredCardioTime,
     normalizedPreferredStrengthTime,
     busyWindows,
+    athleteProfiles: {
+      fitnessProfile,
+      gymProfile,
+      runProfile,
+    },
   });
 
   return {

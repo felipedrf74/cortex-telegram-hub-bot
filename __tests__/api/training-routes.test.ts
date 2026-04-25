@@ -29,6 +29,7 @@ const mockLinkSessionToCalendar = vi.fn();
 const mockMarkSessionSkipped = vi.fn();
 const mockUpdateSession = vi.fn();
 const mockUpdatePlanStatus = vi.fn();
+const mockDeletePlanHard = vi.fn();
 const mockGetProfile = vi.fn();
 const mockGetMissingProfileFields = vi.fn();
 const mockGetQuestionnaire = vi.fn();
@@ -94,6 +95,7 @@ vi.mock('../../src/services/training-plans', () => ({
   markSessionSkipped: (...args: unknown[]) => mockMarkSessionSkipped(...args),
   updateSession: (...args: unknown[]) => mockUpdateSession(...args),
   updatePlanStatus: (...args: unknown[]) => mockUpdatePlanStatus(...args),
+  deletePlanHard: (...args: unknown[]) => mockDeletePlanHard(...args),
 }));
 
 vi.mock('../../src/services/onboarding', () => ({
@@ -289,6 +291,14 @@ describe('Training API routes', () => {
     mockMarkSessionSkipped.mockReset();
     mockUpdateSession.mockReset();
     mockUpdatePlanStatus.mockReset();
+    mockDeletePlanHard.mockReset();
+    mockDeletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 0,
+      removedSessions: 0,
+      removedCompletions: 0,
+    });
     mockGetProfile.mockReset();
     mockGetMissingProfileFields.mockReset();
     mockGetQuestionnaire.mockReset();
@@ -1116,7 +1126,7 @@ describe('Training API routes', () => {
     expect(mockCreateSession).toHaveBeenCalled();
   });
 
-  it('cancels an owned plan, removes linked calendar events, and preserves completed session status', async () => {
+  it('cancels an owned plan, removes linked calendar events, and hard-deletes the plan + cascades', async () => {
     mockGetActivePlan.mockReturnValue({ id: 44, user_id: 12 });
     mockGetWeeksForPlan.mockReturnValue([{ id: 7001 }]);
     mockGetSessionsForWeek.mockReturnValue([
@@ -1133,6 +1143,13 @@ describe('Training API routes', () => {
         calendar_source: 'google',
       },
     ]);
+    mockDeletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 2,
+      removedCompletions: 1,
+    });
 
     const res = await dispatch('POST', '/plan/cancel', {}, {});
 
@@ -1142,21 +1159,19 @@ describe('Training API routes', () => {
       cancelled: true,
       planId: 44,
       removedEvents: 2,
+      removedSessions: 2,
+      removedWeeks: 1,
+      removedCompletions: 1,
+      removedPlans: 1,
       totalSessions: 2,
     });
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mockDeleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
-    expect(mockUpdateSession).toHaveBeenCalledWith(321, {
-      status: 'completed',
-      calendar_event_id: null,
-      calendar_source: null,
-    });
-    expect(mockUpdateSession).toHaveBeenCalledWith(322, {
-      status: 'skipped',
-      calendar_event_id: null,
-      calendar_source: null,
-    });
-    expect(mockUpdatePlanStatus).toHaveBeenCalledWith(44, 'cancelled');
+    expect(mockDeletePlanHard).toHaveBeenCalledWith(44, 12);
+    // Hard delete replaces the soft-update path; no per-session
+    // status mutations or plan status mutation should fire anymore.
+    expect(mockUpdateSession).not.toHaveBeenCalled();
+    expect(mockUpdatePlanStatus).not.toHaveBeenCalled();
   });
 
   it('ignores generic routine walk events when resolving today training from calendar', async () => {
