@@ -51,6 +51,11 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   immediate repeat ~2ms, with only real Google/Gmail OAuth warning codes
   remaining. Focused notifications route tests, typecheck, staging smoke, and
   full `npm test` passed 342 files / 5,438 tests.
+- Priority 9 task-list count truth is verified in production `4.14.66`.
+  `/api/v1/tasks/lists` returned HTTP `200` for Felipe's production account in
+  ~21ms with 10 task lists and real `taskCount` values; no `-1` placeholders
+  were present. Focused task route/store regression tests passed 3 files / 62
+  tests.
 
 ## Single-Agent Rules
 

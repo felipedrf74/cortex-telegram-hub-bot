@@ -14,11 +14,11 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend is live at `4.14.64`.
+- Production backend is live at `4.14.66`.
 - Current release branch for the beta hardening work:
   `beta/single-agent-rc`.
 - Full backend verification passed after beta hardening:
-  342 test files / 5,436 tests.
+  342 test files / 5,438 tests.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -27,6 +27,9 @@
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
 - Deploy scripts now exclude worktree `.git` files so branch worktrees can
   deploy safely.
+- Home-to-Inbox latency and task-list count truth were verified live on
+  `4.14.66`; `/api/v1/tasks/lists` returns real `taskCount` values, not `-1`
+  placeholders.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   and real Gmail/Outlook/Health provider-state checks.
@@ -172,7 +175,7 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.64`; do not treat the
+hardening branch has been deployed to production as `4.14.66`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:
