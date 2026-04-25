@@ -460,7 +460,7 @@ export function buildScriptCacheKey(
   scriptStyle: ScriptStyle = 'detailed',
 ): string {
   return [
-    'script-v5',
+    'script-v6',
     topic.toLowerCase().trim(),
     niche,
     format,
