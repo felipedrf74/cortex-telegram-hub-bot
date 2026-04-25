@@ -10,22 +10,22 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
 
 | Gap | Status | Evidence | Remaining Work | Tests Needed | Notes |
 |---|---|---|---|---|---|
-| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, 2026-04-25 simulator smoke with Felipe's persisted account, and backend production/staging live at `4.14.69`. | Signed TestFlight/device smoke, APNs proof, fresh auth, true two-account switching, and latest Content/Training TestFlight bugfix proof. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
-| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; latest full deploy verification passed 345 files / 5,454 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
+| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, 2026-04-25 simulator smoke with Felipe's persisted account, and backend production/staging live at `4.14.70`. | Signed TestFlight/device smoke, APNs proof, fresh auth, true two-account switching, and latest Content/Training TestFlight bugfix proof. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
+| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; latest full deploy verification passed 345 files / 5,456 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
 | Gap 3: Auth + onboarding reliability | Partial | `docs/beta/agent-3-auth-onboarding-handoff.md`; backend auth/onboarding tests exist; full backend verify passed; iOS existing-session simulator restore succeeded. | Fresh Apple/Google/email auth and interrupted onboarding on signed iOS build/device. | Real-device auth/onboarding smoke. | Backend promotion completed; iOS live auth proof remains. |
 | Gap 4: iOS degraded/error states | Complete with manual verification required | Implemented in the iOS single-agent worktree; simulator smoke showed honest missing calendar/email/Training setup states. | Physical-device visual pass for backend unavailable, retry success/failure, and account-switch loading. | iOS degraded-state smoke. | Out of scope for backend code, but backend returns canonical envelopes for iOS. |
-| Gap 5: Portal/admin operator sessions | Complete | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests passed; hardened staging smoke passed valid, expired, tampered, unauthorized role/scope, wrong-tenant, and static-token rejection paths. | Optional production env flip to require signed sessions only if desired. | Optional production hardening smoke after final env flip. | Production code is live at `4.14.69`. |
+| Gap 5: Portal/admin operator sessions | Complete | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests passed; hardened staging smoke passed valid, expired, tampered, unauthorized role/scope, wrong-tenant, and static-token rejection paths. | Optional production env flip to require signed sessions only if desired. | Optional production hardening smoke after final env flip. | Production code is live at `4.14.70`. |
 | Gap 6: Gmail/Outlook/Health integration truth | Partial | `docs/beta/agent-6-integration-truth-handoff.md`; backend canonical provider-state tests passed; iOS simulator showed one-provider connected truth with Garmin only. | Real/provider-backed Gmail-only, Outlook-only, Health-only, revoked, and degraded checks. | Device/provider-state smoke. | Backend contract is in place; live provider proof remains. |
 | Gap 7: Observability/on-call loop | Complete | Durable alert lifecycle, delivery states, portal ack/resolve/retry, beta-critical telemetry, `docs/OBSERVABILITY-ONCALL.md`, focused tests, full verify, and staging external webhook drill passed. | Configure/drill final production alert receiver if different from staging. | Optional production receiver drill. | Handoff: `docs/beta/observability-oncall-handoff.md`. |
-| Gap 8: Release/runbook discipline | Complete with manual verification required | iOS release checklist/config/rollback docs exist; backend deploy scripts were fixed for worktree `.git` and local agent/worktree artifacts; production promoted to `4.14.69`; production health checks passed for content engine, status portal, and bot online. | Signed TestFlight/device gate before broad public beta. | TestFlight/APNs/physical-device release rehearsal. | Backend production is live; iOS distribution proof remains. |
+| Gap 8: Release/runbook discipline | Complete with manual verification required | iOS release checklist/config/rollback docs exist; backend deploy scripts were fixed for worktree `.git` and local agent/worktree artifacts; production promoted to `4.14.70`; production health checks passed for content engine, status portal, and bot online. | Signed TestFlight/device gate before broad public beta. | TestFlight/APNs/physical-device release rehearsal. | Backend production is live; iOS distribution proof remains. |
 | Gap 9: Frontend architecture debt | Partial | Implemented in the iOS single-agent worktree with safe SwiftUI extractions and passing focused tests/build. | Continue incremental extractions only when backed by focused tests/previews. | iOS focused tests/build. | Out of scope for backend code. |
 | Gap 10: Product polish consistency | Complete with manual verification required | Implemented in the iOS single-agent worktree with skill card, chat shortcut, retry copy, accessibility, and spacing polish. | Visual simulator/TestFlight pass for skill cards, chat shortcuts, degraded states, and empty/error copy. | Visual smoke/accessibility pass. | Out of scope for backend code. |
 
 ## Production / Staging Update - 2026-04-25
 
-- Backend production and staging are live at `4.14.69`.
+- Backend production and staging are live at `4.14.70`.
 - Production deploy health passed for content engine, status portal, and bot
-  online at backend commit `a1a143a`.
+  online at backend commit `4fbc32b`.
 - `content-engine` and `nexus-hub` were online after promotion/recovery.
 - Founder accounts verified in production:
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
@@ -81,9 +81,9 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   prevention, optional/skipped profile completion, readable coach adjustments,
   recovery-run detail access, post-plan calendar refresh, deterministic coach
   fallback, and workout-adjustment refresh. Full deploy gate passed 345 files /
-  5,454 tests; staging signed-session smoke passed 17/17. Still needs a fresh
+  5,456 tests; staging signed-session smoke passed 17/17. Still needs a fresh
   signed TestFlight/device pass before closing user-facing QA.
-- Content script AI delivery hotfix is deployed in backend `4.14.69` and
+- Content script AI delivery hotfix is deployed in backend `4.14.70` and
   focused-test validated: production/staging env gates now require the Python
   content engine to have a signed TS AI bridge, backend URL/port, long
   content-engine timeout, and at least one configured AI provider; the internal
@@ -91,10 +91,14 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   timeouts into Gemini/OpenAI; Python extracts and repairs fenced/malformed
   JSON before degrading deepsearch synthesis; and script prompts now include a
   quality bar for Voice DNA, topic-specific examples, format-specific
-  structure, and non-repetitive hooks. Staging direct script smoke returned
-  full quality with no warnings after provider fallback was enabled. Production
-  script smoke should return `degraded=false` unless a real provider outage is
-  occurring.
+  structure, non-repetitive hooks, and distinct YouTube vs short-form outputs.
+  The script writer strips decorative section dividers and raw markdown
+  emphasis before returning app-rendered sections. Production direct script
+  smoke on `4.14.70` returned `degraded=false`, `warnings=[]`, 5 sources, no
+  old generic pattern, no decorative dividers, no raw markdown emphasis, and
+  Voice-DNA-specific language for both YouTube detailed and Shorts detailed
+  requests. Production script smoke should return `degraded=false` unless a
+  real provider outage is occurring.
 
 ## Single-Agent Rules
 

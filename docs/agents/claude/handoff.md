@@ -7,11 +7,11 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.69`.
+- Backend production and staging are live at `4.14.70`.
 - Full backend verification passed before the latest production deploy:
-  345 test files / 5,454 tests.
+  345 test files / 5,456 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at backend commit `a1a143a`.
+  online at backend commit `4fbc32b`.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -51,12 +51,13 @@ content is retained only for provenance.
   detail, new plan generation refreshes plan/calendar caches before showing the
   week, coach briefing has an active-plan deterministic fallback, and workout
   adjustment actions refresh instead of silently no-oping. Verification:
-  focused backend Training tests passed 4 files / 63 tests, full deploy gate
-  passed 345 files / 5,454 tests twice during promote/push, staging
-  signed-session smoke passed 17/17, and iOS simulator build passed. Signed
-  TestFlight/device validation remains required.
+  focused backend Training tests passed 4 files / 63 tests, staging
+  signed-session smoke passed 17/17, and iOS simulator build passed. The
+  latest full deploy gate later passed 345 files / 5,456 tests during the
+  `4.14.70` content AI hotfix promotion. Signed TestFlight/device validation
+  remains required.
 - Content script AI delivery hotfix on 2026-04-25 is deployed in backend
-  `4.14.69`: the live reduced-quality symptom came from the Python content
+  `4.14.70`: the live reduced-quality symptom came from the Python content
   engine falling off the TS AI bridge and from model JSON formatting that
   forced deepsearch synthesis into fallback. Production and staging now fail
   deploy if `INTERNAL_API_SECRET`, `AI_CALL_TIMEOUT_MS`, backend URL/port, or a
@@ -64,8 +65,13 @@ content is retained only for provenance.
   and longer content-engine timeouts into Gemini/OpenAI; Python extracts and
   repairs fenced/malformed JSON before degrading; and script prompts include a
   stricter quality bar for Voice DNA, topic-specific examples, format-specific
-  structure, and non-repetitive hooks. Staging direct script smoke returned
-  full quality with no warnings after provider fallback was enabled.
+  structure, non-repetitive hooks, and distinct YouTube vs short-form outputs.
+  The script writer strips decorative section dividers and raw markdown
+  emphasis before returning app-rendered sections. Production direct script
+  smoke on `4.14.70` returned `degraded=false`, `warnings=[]`, 5 sources, no
+  old generic pattern, no decorative dividers, no raw markdown emphasis, and
+  Voice-DNA-specific language for both YouTube detailed and Shorts detailed
+  requests.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
