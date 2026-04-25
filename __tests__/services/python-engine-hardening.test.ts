@@ -180,9 +180,11 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _normalize_script_style');
     expect(src).toContain('def _script_style_guidance');
     expect(src).toContain('def _script_quality_guidance');
+    expect(src).toContain('def _clean_script_dividers');
     expect(src).toContain('OUTPUT STYLE RULES:');
     expect(src).toContain('SCRIPT QUALITY BAR:');
     expect(src).toContain('Do not reuse the same hook/title/script skeleton');
+    expect(src).toContain('Do NOT use decorative dividers or labels');
     expect(src).toContain('Write the bullet-point filming outline now');
     expect(src).toContain('Voice DNA memory was applied to the degraded fallback.');
   });

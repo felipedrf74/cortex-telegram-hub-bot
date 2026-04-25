@@ -699,6 +699,19 @@ def _clean_chat_script(script: str) -> str:
     return cleaned or script.strip()
 
 
+def _clean_script_dividers(script: str) -> str:
+    cleaned_lines: list[str] = []
+    for raw_line in script.replace("\r\n", "\n").split("\n"):
+        line = raw_line.strip()
+        if re.match(r"^={2,}\s*[^=]+\s*={2,}$", line):
+            continue
+        if re.match(r"^(HOOK|SCRIPT|ROTEIRO|FULL SCRIPT|ROTEIRO COMPLETO)\s*:?$", line, re.IGNORECASE):
+            continue
+        cleaned_lines.append(raw_line)
+    cleaned = "\n".join(cleaned_lines).strip()
+    return cleaned or script.strip()
+
+
 async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     start = time.monotonic()
     warnings: list[str] = []
@@ -846,7 +859,7 @@ Also provide:
 4. A short social media caption (1-2 sentences, with emoji, for Instagram/YouTube description)
 5. The CTA (call to action) as a standalone line
 
-{"Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body." if normalized_render_mode == "chat" else ("Write the bullet-point filming outline now. Start with the hook, then the core beats, proof/source cues, on-screen ideas, and CTA.\n\nAfter the outline, add a FONTES VERIFICADAS section listing sources." if normalized_script_style == "bullets" else "Write the complete script now. Start with the hook, follow the structure, end with CTA.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources.")}
+{"Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body." if normalized_render_mode == "chat" else ("Write the bullet-point filming outline now. Start with the hook, then the core beats, proof/source cues, on-screen ideas, and CTA.\n\nAfter the outline, add a FONTES VERIFICADAS section listing sources." if normalized_script_style == "bullets" else "Write the complete script now. Start with the spoken hook, follow the structure, end with CTA. Do NOT use decorative dividers or labels like `=== HOOK ===`, `=== SCRIPT ===`, `HOOK:`, or `SCRIPT:`; the app already renders those sections.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources.")}
 
 Then, on a NEW LINE, write exactly `---METADATA---` followed by a JSON object with these fields:
 ```json
@@ -918,6 +931,8 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
 
     if normalized_render_mode == "chat":
         script_text = _clean_chat_script(script_text)
+    else:
+        script_text = _clean_script_dividers(script_text)
 
     # Final fallbacks if parsing didn't find hook/titles
     if not hook and briefs:
