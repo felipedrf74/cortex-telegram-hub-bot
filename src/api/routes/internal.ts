@@ -24,6 +24,14 @@ import { getOwnerBootstrapTarget } from '../../services/user-service';
 import { getPerformanceSummary } from '../../services/content-learning-store';
 import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
 
+function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
+  const normalized = String(category || '').toLowerCase();
+  if (normalized.startsWith('content_engine_script')) return 180_000;
+  if (normalized.startsWith('content_engine_deepsearch')) return 180_000;
+  if (normalized.startsWith('content_engine')) return Math.max(90_000, Math.min(180_000, maxTokens * 25));
+  return undefined;
+}
+
 export function internalRoutes(): Router {
   const router = Router();
 
@@ -188,7 +196,12 @@ export function internalRoutes(): Router {
             .map((b: any) => b.text)
             .join('\n');
         },
-        { maxTokens, temperature },
+        {
+          maxTokens,
+          temperature,
+          timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens),
+          jsonMode,
+        },
       );
 
       logger.info({ category, provider, chars: text.length }, 'AI completion for Python engine');

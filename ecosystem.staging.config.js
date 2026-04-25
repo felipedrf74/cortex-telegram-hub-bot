@@ -55,6 +55,9 @@ module.exports = {
         // Different ports than prod so both can run side-by-side
         PORTAL_PORT: '8201',
         CONTENT_ENGINE_PORT: '8101',
+        NEXUS_BACKEND_BASE_URL: 'http://127.0.0.1:8201',
+        NEXUS_BACKEND_PORT: '8201',
+        AI_CALL_TIMEOUT_MS: '180000',
         // Staging DB lives inside the staging install — fully isolated
         DATABASE_PATH: '/home/dominguez/telegram-hub-bot-staging/data/bot.db',
         // The rest of the env (TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, etc.)
@@ -90,6 +93,9 @@ module.exports = {
       env: {
         // Different port than prod content-engine (8100 → 8101)
         CONTENT_ENGINE_PORT: '8101',
+        NEXUS_BACKEND_BASE_URL: 'http://127.0.0.1:8201',
+        NEXUS_BACKEND_PORT: '8201',
+        AI_CALL_TIMEOUT_MS: '180000',
         ENV: 'staging',
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',

@@ -14,7 +14,7 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend and staging are live at `4.14.68`.
+- Production backend and staging are live at `4.14.69`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
@@ -37,12 +37,8 @@
   `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
   derives user-scoped Voice DNA from content knowledge, forwards it into the
   Python script engine, includes style in the script cache key, and returns
-  `scriptStyle` in the API response. Python degraded fallback now distinguishes
-  YouTube vs short-form and detailed vs bullet outputs, but a visible
-  "Qualidade reduzida" response still means AI synthesis/generation was
-  unavailable and the live AI provider path needs config/provider proof.
-  Python JSON synthesis calls now set backend proxy `jsonMode`, reducing
-  avoidable search-based fallbacks from non-JSON model formatting.
+  `scriptStyle` in the API response. Python degraded fallback distinguishes
+  YouTube vs short-form and detailed vs bullet outputs.
   iOS also fixed topic-list cache invalidation after topic writes, athlete
   profile finish actions from Training, and Training complete/skip fallback to
   the `"today"` sentinel.
@@ -71,6 +67,18 @@
   passed 345 files / 5,454 tests, staging signed-session smoke passed 17/17,
   and iOS simulator build passed. Signed TestFlight/device validation remains
   required.
+- Content script AI delivery hotfix on 2026-04-25 is deployed in backend
+  `4.14.69`: the live "Qualidade reduzida" root cause was the Python content
+  engine losing the TS AI bridge and degrading when synthesis responses were
+  fenced/malformed JSON. Production and staging now require
+  `INTERNAL_API_SECRET`, `AI_CALL_TIMEOUT_MS`, and a backend URL/port before
+  deploy; the TS proxy forwards `jsonMode` and longer content-engine timeouts
+  to Gemini/OpenAI; Python extracts/repairs JSON before degrading; and script
+  prompts now include a quality bar that forces Voice DNA, topic-specific
+  examples, format-specific structure, and non-repetitive hooks. Staging direct
+  script smoke returned full quality with no warnings after provider fallback
+  was enabled; production must keep returning `degraded=false` for normal
+  script generation unless a real provider outage occurs.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
@@ -218,13 +226,13 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.68` from `main`; do not treat the
+hardening branch has been deployed to production as `4.14.69` from `main`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:
 
 - keep tenant/founder/business-rule docs aligned with the beta tracker;
-- validate the latest Content scheduling, script generation, Training readiness,
+- validate the latest Content scheduling, high-quality AI script generation, Training readiness,
   Secretary recurrence, and Health fixes in a signed TestFlight device build;
 - run another production-safe alert drill only if the final receiver differs
   from the staging receiver;

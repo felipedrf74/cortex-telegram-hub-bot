@@ -130,11 +130,20 @@ function logGeminiUsage(
  * analytical calls (e.g. coach_analysis with ~12K input tokens), this is
  * ~5.5× cheaper per call than Claude Sonnet 4.6 with comparable quality.
  */
+type OneShotOptions = {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  userId?: number;
+  timeoutMs?: number;
+  jsonMode?: boolean;
+};
+
 export async function completeOneShot(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: OneShotOptions,
 ): Promise<string> {
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
@@ -149,13 +158,14 @@ export async function completeOneShot(
     generationConfig: {
       maxOutputTokens: maxTokens,
       temperature,
+      ...(options?.jsonMode ? { responseMimeType: 'application/json' } : {}),
     },
   });
 
   const start = Date.now();
   const result = await withTimeout(
     genModel.generateContent([{ text: userPrompt }]),
-    config.aiSafety.callTimeoutMs,
+    options?.timeoutMs ?? config.aiSafety.callTimeoutMs,
   );
   const durationMs = Date.now() - start;
 
@@ -436,7 +446,7 @@ export async function completeOneShotWithFallback(
   userPrompt: string,
   category: string,
   anthropicFallback: () => Promise<string>,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: OneShotOptions,
 ): Promise<{ text: string; provider: 'gemini' | 'openai' | 'anthropic' }> {
   // Stage 1: Gemini (primary)
   if (isGeminiProviderConfigured()) {

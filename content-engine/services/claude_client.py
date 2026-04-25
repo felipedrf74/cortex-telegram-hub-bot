@@ -24,6 +24,7 @@ ARCHITECTURE (April 2026):
 import json
 import logging
 import os
+import re
 
 import httpx
 
@@ -43,6 +44,79 @@ _TS_BASE = (
 ).rstrip("/")
 _INTERNAL_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
 _AI_COMPLETE_URL = f"{_TS_BASE}/api/v1/internal/ai-complete"
+
+
+def _strip_markdown_json_fence(raw: str) -> str:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json|JSON)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    return cleaned.strip()
+
+
+def _extract_json_candidate(raw: str) -> str:
+    cleaned = _strip_markdown_json_fence(raw)
+    if not cleaned:
+        return cleaned
+
+    start_candidates = [idx for idx in (cleaned.find("{"), cleaned.find("[")) if idx >= 0]
+    if not start_candidates:
+        return cleaned
+    start = min(start_candidates)
+    opener = cleaned[start]
+    closer = "}" if opener == "{" else "]"
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(cleaned)):
+        ch = cleaned[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return cleaned[start:idx + 1].strip()
+
+    return cleaned[start:].strip()
+
+
+async def _repair_json_response(
+    raw: str,
+    system: str,
+    category: str,
+    max_tokens: int,
+) -> dict | list | None:
+    repair_prompt = f"""Repair the following model output into valid JSON only.
+Preserve the original structure and data. Do not summarize. Do not add markdown.
+If a string contains a line break, escape it correctly. Return only the JSON object or array.
+
+BROKEN OUTPUT:
+{raw[:12000]}"""
+    try:
+        repaired = await ask_claude(
+            repair_prompt,
+            system=system,
+            max_tokens=min(max_tokens, 4096),
+            temperature=0.0,
+            category=f"{category}_json_repair",
+            json_mode=True,
+        )
+        return json.loads(_extract_json_candidate(repaired))
+    except Exception as exc:
+        logger.warning("AI JSON repair failed for category=%s: %s", category, exc)
+        return None
 
 
 async def ask_claude(
@@ -125,14 +199,15 @@ async def ask_claude_json(
         category=category, json_mode=True,
     )
 
-    # Strip markdown code fences if present
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    cleaned = _extract_json_candidate(raw)
 
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        logger.warning("AI proxy returned non-JSON: %s", raw[:200])
+        repaired = await _repair_json_response(raw, system, category, max_tokens)
+        if repaired is not None:
+            logger.info("AI JSON response repaired for category=%s", category)
+            return repaired
+
+        logger.warning("AI proxy returned non-JSON after repair attempt: %s", raw[:200])
         return {"raw": raw}

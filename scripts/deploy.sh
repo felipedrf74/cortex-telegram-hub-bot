@@ -51,6 +51,54 @@ echo ""
 echo "📦 Building TypeScript..."
 npm run build 2>/dev/null && echo "   ✅ Build complete" || { echo "   ❌ Build failed — aborting"; exit 1; }
 
+# ── 1a. Validate production .env before version bump/deploy ─────────
+# The Python content-engine calls the TS AI proxy for script synthesis.
+# If INTERNAL_API_SECRET or the backend URL/port is missing, script
+# generation silently degrades into fallback templates. Fail fast here.
+echo ""
+echo "🔑 Validating production .env..."
+ENV_CHECK=$(ssh "$SERVER" "
+  set -e
+  if [ ! -f $REMOTE_DIR/.env ]; then
+    echo 'MISSING_FILE'
+    exit 0
+  fi
+  MISSING=''
+  for KEY in DATABASE_PATH PORTAL_PORT CONTENT_ENGINE_PORT PORTAL_TOKEN OAUTH_ENCRYPTION_KEY INTERNAL_API_SECRET AI_CALL_TIMEOUT_MS; do
+    if ! grep -qE \"^\${KEY}=.+\" $REMOTE_DIR/.env; then
+      MISSING=\"\$MISSING \$KEY\"
+    fi
+  done
+  if ! grep -qE '^NEXUS_BACKEND_BASE_URL=.+' $REMOTE_DIR/.env && ! grep -qE '^NEXUS_BACKEND_PORT=.+' $REMOTE_DIR/.env; then
+    MISSING=\"\$MISSING NEXUS_BACKEND_BASE_URL_OR_NEXUS_BACKEND_PORT\"
+  fi
+  if ! grep -qE '^GEMINI_API_KEY=.+' $REMOTE_DIR/.env && ! grep -qE '^OPENAI_API_KEY=.+' $REMOTE_DIR/.env; then
+    MISSING=\"\$MISSING GEMINI_API_KEY_OR_OPENAI_API_KEY\"
+  fi
+  if [ -n \"\$MISSING\" ]; then
+    echo \"MISSING_KEYS:\$MISSING\"
+  else
+    echo OK
+  fi
+")
+case "$ENV_CHECK" in
+  MISSING_FILE)
+    echo "   ❌ No production .env file at $REMOTE_DIR/.env"
+    exit 1
+    ;;
+  MISSING_KEYS:*)
+    echo "   ❌ Production .env is missing required keys:${ENV_CHECK#MISSING_KEYS:}"
+    echo "      Add them before deploying so content scripts use the AI synthesis bridge."
+    exit 1
+    ;;
+  OK)
+    echo "   ✅ All required production keys present"
+    ;;
+  *)
+    echo "   ⚠️  Unexpected .env validator output: $ENV_CHECK — proceeding cautiously"
+    ;;
+esac
+
 # ── 1b. Version bump + commit (only AFTER validation) ─
 OLD_VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
 npm version patch --no-git-tag-version > /dev/null 2>&1

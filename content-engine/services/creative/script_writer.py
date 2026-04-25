@@ -333,6 +333,37 @@ def _script_style_guidance(req: ScriptRequest, script_style: str) -> str:
     ])
 
 
+def _script_quality_guidance(req: ScriptRequest, script_style: str) -> str:
+    format_name = (req.format or "").strip().lower()
+    if _is_short_form(req):
+        format_rule = (
+            "- SHORTS/REELS must not be a compressed YouTube script. Use one tension, one turn, one payoff, and a fast close."
+        )
+    elif format_name in {"youtube", "longform", "long-form"}:
+        format_rule = (
+            "- YOUTUBE scripts must have a real argument arc: cold open, context, stakes, 3-5 developed beats, counterpoint, payoff."
+        )
+    else:
+        format_rule = "- Match the requested format instead of recycling a generic YouTube outline."
+
+    if script_style == "bullets":
+        style_rule = "- BULLETS must be a production outline with creative beats, not the same full script with bullet marks."
+    else:
+        style_rule = "- DETAILED mode must deliver the spoken script, not a brief, not a summary, not a content plan."
+
+    return "\n".join([
+        "SCRIPT QUALITY BAR:",
+        "- Do not use the generic pattern `X seems fast, but the real bottleneck is judgment` unless the topic explicitly calls for it.",
+        "- Do not reuse the same hook/title/script skeleton across topics or formats.",
+        "- Use at least 2 topic-specific examples or scenarios from the research or first-party context.",
+        "- Make the opening feel written for this exact creator and this exact viewer, not for a generic AI content account.",
+        "- If Voice DNA is provided, apply it to sentence rhythm, stance, vocabulary, and the kind of examples selected.",
+        "- The final output should feel stronger than a default AI-generated script: concrete, opinionated, source-aware, and filmable.",
+        format_rule,
+        style_rule,
+    ])
+
+
 def _topic_context_block(req: ScriptRequest) -> str:
     context = getattr(req, "topic_context", None) or {}
     if not isinstance(context, dict):
@@ -680,6 +711,7 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     format_rules = _format_guidance(req)
     render_mode_rules = _render_mode_guidance(req, normalized_render_mode)
     script_style_rules = _script_style_guidance(req, normalized_script_style)
+    script_quality_rules = _script_quality_guidance(req, normalized_script_style)
     topic_context_block = _topic_context_block(req)
     brand_voice_block = ""
     if req.brand_voice and req.brand_voice.strip():
@@ -791,7 +823,9 @@ RENDER MODE RULES:
 {render_mode_rules}
 
 OUTPUT STYLE RULES:
-{script_style_rules}{topic_context_block}{brand_voice_block}
+{script_style_rules}
+
+{script_quality_rules}{topic_context_block}{brand_voice_block}
 
 VERIFIED RESEARCH FINDINGS (USE ONLY THESE AS FACTUAL BASIS):
 {research_context}{intelligence_block}

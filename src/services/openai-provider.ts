@@ -62,6 +62,15 @@ type OpenAIStreamingParams = OpenAI.ChatCompletionCreateParamsStreaming & {
   max_completion_tokens?: number;
 };
 
+type OneShotOptions = {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  userId?: number;
+  timeoutMs?: number;
+  jsonMode?: boolean;
+};
+
 function usesCompletionTokenCap(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   return normalized.startsWith('gpt-5')
@@ -99,8 +108,9 @@ async function trackedCompletion(
   params: OpenAINonStreamingParams,
   category: string,
   userId: number = 0,
+  timeoutMs?: number,
 ): Promise<OpenAI.ChatCompletion> {
-  const AI_CALL_TIMEOUT_MS = getAICallTimeoutMs();
+  const AI_CALL_TIMEOUT_MS = timeoutMs ?? getAICallTimeoutMs();
 
   const start = Date.now();
   const response = await withTimeout(client.chat.completions.create(params), AI_CALL_TIMEOUT_MS);
@@ -172,7 +182,7 @@ export async function completeOneShot(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: OneShotOptions,
 ): Promise<string> {
   if (!isOpenAIConfigured()) {
     throw new Error('OpenAI provider not configured (OPENAI_API_KEY missing)');
@@ -187,6 +197,7 @@ export async function completeOneShot(
       withTokenLimit({
         model,
         temperature,
+        ...(options?.jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -194,6 +205,7 @@ export async function completeOneShot(
       }, maxTokens),
       category,
       options?.userId ?? 0,
+      options?.timeoutMs,
     ),
   );
 

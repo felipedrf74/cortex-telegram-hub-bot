@@ -29,6 +29,14 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('completeOneShotWithFallback');
   });
 
+  it('ai-complete passes long-running content timeouts and JSON mode into the provider cascade', () => {
+    expect(routesSrc).toContain('function resolveInternalAiTimeoutMs');
+    expect(routesSrc).toContain("content_engine_script");
+    expect(routesSrc).toContain("content_engine_deepsearch");
+    expect(routesSrc).toContain('timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens)');
+    expect(routesSrc).toContain('jsonMode,');
+  });
+
   it('defines anthropic-enabled endpoint', () => {
     expect(routesSrc).toContain("router.get('/anthropic-enabled'");
   });

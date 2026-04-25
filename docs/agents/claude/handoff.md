@@ -7,7 +7,7 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.68`.
+- Backend production and staging are live at `4.14.69`.
 - Full backend verification passed before the latest production deploy:
   345 test files / 5,454 tests.
 - Production deploy health passed for content engine, status portal, and bot
@@ -25,12 +25,8 @@ content is retained only for provenance.
   `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
   derives user-scoped Voice DNA from content knowledge, forwards it into the
   Python script engine, includes style in the script cache key, and returns
-  `scriptStyle` in the API response. Python degraded fallback now distinguishes
-  YouTube vs short-form and detailed vs bullet outputs, but a visible
-  "Qualidade reduzida" response still means AI synthesis/generation was
-  unavailable and the live AI provider path needs config/provider proof.
-  Python JSON synthesis calls now set backend proxy `jsonMode`, reducing
-  avoidable search-based fallbacks from non-JSON model formatting.
+  `scriptStyle` in the API response. Python degraded fallback distinguishes
+  YouTube vs short-form and detailed vs bullet outputs.
   iOS also fixed topic-list cache invalidation after topic writes, athlete
   profile finish actions from Training, and Training complete/skip fallback to
   the `"today"` sentinel.
@@ -59,6 +55,17 @@ content is retained only for provenance.
   passed 345 files / 5,454 tests twice during promote/push, staging
   signed-session smoke passed 17/17, and iOS simulator build passed. Signed
   TestFlight/device validation remains required.
+- Content script AI delivery hotfix on 2026-04-25 is deployed in backend
+  `4.14.69`: the live reduced-quality symptom came from the Python content
+  engine falling off the TS AI bridge and from model JSON formatting that
+  forced deepsearch synthesis into fallback. Production and staging now fail
+  deploy if `INTERNAL_API_SECRET`, `AI_CALL_TIMEOUT_MS`, backend URL/port, or a
+  configured AI provider are missing. The internal AI proxy passes `jsonMode`
+  and longer content-engine timeouts into Gemini/OpenAI; Python extracts and
+  repairs fenced/malformed JSON before degrading; and script prompts include a
+  stricter quality bar for Voice DNA, topic-specific examples, format-specific
+  structure, and non-repetitive hooks. Staging direct script smoke returned
+  full quality with no warnings after provider fallback was enabled.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the

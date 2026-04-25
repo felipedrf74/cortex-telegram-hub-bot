@@ -74,6 +74,13 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
     expect(src).toContain('"jsonMode": json_mode');
     expect(src).toContain('category=category, json_mode=True');
   });
+
+  it('repairs fenced or malformed JSON instead of immediately degrading research synthesis', () => {
+    expect(src).toContain('def _extract_json_candidate');
+    expect(src).toContain('def _repair_json_response');
+    expect(src).toContain("_json_repair");
+    expect(src).toContain('AI JSON response repaired');
+  });
 });
 
 describe('Python feedback_loop.py — no more feedback.json', () => {
@@ -172,7 +179,10 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
   it('supports detailed versus bullet-point script output styles', () => {
     expect(src).toContain('def _normalize_script_style');
     expect(src).toContain('def _script_style_guidance');
+    expect(src).toContain('def _script_quality_guidance');
     expect(src).toContain('OUTPUT STYLE RULES:');
+    expect(src).toContain('SCRIPT QUALITY BAR:');
+    expect(src).toContain('Do not reuse the same hook/title/script skeleton');
     expect(src).toContain('Write the bullet-point filming outline now');
     expect(src).toContain('Voice DNA memory was applied to the degraded fallback.');
   });
