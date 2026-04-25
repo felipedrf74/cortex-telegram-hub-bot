@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => ({
   getWeeksForPlan: vi.fn(),
   getSessionsForWeek: vi.fn(),
   deletePlanHard: vi.fn(),
+  clearStoredPlansForAthlete: vi.fn(),
+  deleteReportsByType: vi.fn(),
+  clearLastCoachState: vi.fn(),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -19,6 +22,18 @@ vi.mock('../../src/services/training-plans', () => ({
   getWeeksForPlan: mocks.getWeeksForPlan,
   getSessionsForWeek: mocks.getSessionsForWeek,
   deletePlanHard: mocks.deletePlanHard,
+}));
+
+vi.mock('../../src/services/coach-plan-registry', () => ({
+  clearStoredPlansForAthlete: mocks.clearStoredPlansForAthlete,
+}));
+
+vi.mock('../../src/services/report-document-store', () => ({
+  deleteReportsByType: mocks.deleteReportsByType,
+}));
+
+vi.mock('../../src/domains/domain-handler', () => ({
+  clearLastCoachState: mocks.clearLastCoachState,
 }));
 
 import { cancelTrainingPlanForUser } from '../../src/api/routes/training-plan-cancellation';
@@ -38,6 +53,9 @@ describe('training-plan-cancellation (hard delete)', () => {
       removedSessions: 0,
       removedCompletions: 0,
     });
+    mocks.clearStoredPlansForAthlete.mockReturnValue(0);
+    mocks.deleteReportsByType.mockReturnValue(0);
+    mocks.clearLastCoachState.mockReset();
   });
 
   it('deletes calendar events then hard-deletes the plan, returning row counts', async () => {
@@ -78,6 +96,13 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(44, 12);
+    // After hard-delete, every per-user coach narrative store must
+    // be wiped so iOS Training Home doesn't keep rendering the
+    // cancelled plan's day strip / coach card / week-protection
+    // narrative from durable reports + in-memory caches.
+    expect(mocks.deleteReportsByType).toHaveBeenCalledWith(12, ['coach_briefing', 'coach_phase']);
+    expect(mocks.clearStoredPlansForAthlete).toHaveBeenCalledWith(12);
+    expect(mocks.clearLastCoachState).toHaveBeenCalledWith(12);
   });
 
   it('uses requested plan id when provided and rejects cross-user cancellation', async () => {
@@ -185,5 +210,11 @@ describe('training-plan-cancellation (hard delete)', () => {
       expect(result.data.cancelled).toBe(false);
       expect(result.data.removedEvents).toBe(0);
     }
+    // Don't wipe coach narrative state when the hard-delete didn't
+    // actually remove a plan — another concurrent cancel got there
+    // first, and clearing again would punish whoever just won.
+    expect(mocks.deleteReportsByType).not.toHaveBeenCalled();
+    expect(mocks.clearStoredPlansForAthlete).not.toHaveBeenCalled();
+    expect(mocks.clearLastCoachState).not.toHaveBeenCalled();
   });
 });

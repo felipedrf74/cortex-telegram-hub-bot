@@ -132,6 +132,10 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
+      // Hard-delete removes calendar events too — make sure the
+      // unified-inbox / dashboard calendar caches don't keep
+      // serving the deleted events as if they still existed.
+      invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
       sendSuccess(res, result.data);
     } catch (err: any) {

@@ -280,6 +280,43 @@ export function markReportRead(reportId: number, userId: number): boolean {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
+ * Hard-delete every report of the given types for a user. Used by
+ * the training plan-cancellation path so a stale `coach_briefing`
+ * or `coach_phase` document does not keep being surfaced as the
+ * "current" coach narrative after the underlying plan rows are
+ * gone (production bug 2026-04-25 user 29: a cancelled plan kept
+ * showing rest-day cards, week journey, and "Why the coach decided
+ * this" because `getLatestByType(userId, 'coach_briefing')` still
+ * returned the stored report).
+ *
+ * Returns the number of rows removed so callers can audit what
+ * actually got cleaned. Tenant-scoped on purpose — a missing or
+ * negative `userId` is rejected, not silently turned into a
+ * cross-tenant wipe.
+ */
+export function deleteReportsByType(userId: number, types: ReportType[]): number {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidReportScope('delete_reports_by_type', userId, { types });
+    return 0;
+  }
+  if (types.length === 0) return 0;
+
+  const db = getDb();
+  const placeholders = types.map(() => '?').join(',');
+  const result = db.prepare(
+    `DELETE FROM report_documents WHERE user_id = ? AND type IN (${placeholders})`,
+  ).run(userId, ...types);
+
+  if (result.changes > 0) {
+    logger.info(
+      { userId, types, removed: result.changes },
+      'Deleted report documents by type',
+    );
+  }
+  return result.changes;
+}
+
+/**
  * Get all reports across all users (admin/portal view).
  */
 export function getAllReports(limit = 50): ReportDocument[] {

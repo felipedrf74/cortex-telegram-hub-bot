@@ -85,3 +85,14 @@ export function getStoredPlanCoveringDate(athleteId: number, date: string): Stor
 export function getWeeklyPlanCoveringDate(athleteId: number, date: string): WeeklyPlan | null {
   return getStoredPlanCoveringDate(athleteId, date)?.plan ?? null;
 }
+
+/**
+ * Drop every stored WeeklyPlan + AthleteState entry for an athlete.
+ * Called by the plan-cancellation path so the home-view route stops
+ * surfacing guardrails / day strip from a plan whose DB rows were
+ * just hard-deleted. Returns the number of entries removed for
+ * auditing. Safe to call when the registry is empty for that athlete.
+ */
+export function clearStoredPlansForAthlete(athleteId: number): number {
+  return store.clearForAthlete(athleteId);
+}

@@ -162,6 +162,18 @@ export function __resetLastCoachStateCacheForTests(): void {
 }
 
 /**
+ * Drop the last coach state for a user from both the in-memory LRU
+ * and the durable persistence layer. Called when the user's training
+ * plan is hard-deleted so a stale "Strength + Core Support is on the
+ * plan" summary doesn't keep being surfaced as the current coach
+ * read after the plan rows are gone.
+ */
+export function clearLastCoachState(userId: number): void {
+  lastCoachStates.delete(userId);
+  deleteCoachState(userId);
+}
+
+/**
  * Shared state context builder for simple domains (triathlon, content).
  * Only fetches local to-dos — no external API calls needed.
  *

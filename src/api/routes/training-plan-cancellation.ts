@@ -3,6 +3,9 @@
 import { logger } from '../../utils/logger';
 import { deleteEvent, type CalendarSource } from '../../services/unified-calendar';
 import * as trainingPlans from '../../services/training-plans';
+import { clearStoredPlansForAthlete } from '../../services/coach-plan-registry';
+import { deleteReportsByType } from '../../services/report-document-store';
+import { clearLastCoachState } from '../../domains/domain-handler';
 
 /**
  * Successful plan-cancellation payload.
@@ -120,6 +123,35 @@ export async function cancelTrainingPlanForUser(
   // ever weakened or bypassed.
   const removal = trainingPlans.deletePlanHard(plan.id, userId);
 
+  // Step 3 — wipe every per-user coach narrative store that survives
+  // the DB hard-delete. Without this, the iOS Training Home keeps
+  // rendering the cancelled plan's day strip, "Why the coach decided
+  // this" card, week-protection narrative, and rest-day hero because
+  // the durable `coach_briefing` / `coach_phase` reports + the
+  // in-memory coach plan registry + the LRU of last coach states all
+  // outlive the plan rows. Run after the hard delete so a transient
+  // failure in step 2 doesn't leave us with cleared narrative + an
+  // intact ghost plan.
+  let removedReports = 0;
+  let clearedRegistry = 0;
+  if (removal.ok) {
+    try {
+      removedReports = deleteReportsByType(userId, ['coach_briefing', 'coach_phase']);
+    } catch (err) {
+      logger.warn({ err, userId, planId: plan.id }, 'Failed to purge coach reports during plan cancellation; UI may render stale coach copy');
+    }
+    try {
+      clearedRegistry = clearStoredPlansForAthlete(userId);
+    } catch (err) {
+      logger.warn({ err, userId, planId: plan.id }, 'Failed to clear in-memory coach plan registry during plan cancellation');
+    }
+    try {
+      clearLastCoachState(userId);
+    } catch (err) {
+      logger.warn({ err, userId, planId: plan.id }, 'Failed to clear last-coach-state during plan cancellation');
+    }
+  }
+
   if (!removal.ok) {
     // The plan was found above but hard delete didn't change any
     // rows — extremely unlikely (race with another cancel for the
@@ -140,6 +172,17 @@ export async function cancelTrainingPlanForUser(
       },
     };
   }
+
+  logger.info({
+    userId,
+    planId: plan.id,
+    removedEvents,
+    removedSessions: removal.removedSessions,
+    removedWeeks: removal.removedWeeks,
+    removedCompletions: removal.removedCompletions,
+    removedReports,
+    clearedRegistry,
+  }, 'Training plan cancelled and per-user coach state cleared');
 
   return {
     status: 'cancelled',

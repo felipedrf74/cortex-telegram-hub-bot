@@ -15,6 +15,15 @@ export interface StoredCoachPlan {
 export interface CoachPlanStore {
   save(entry: StoredCoachPlan): StoredCoachPlan;
   get(athleteId: number, weekStart: string): StoredCoachPlan | null;
+  /**
+   * Drop every stored entry for the given athlete. Used when a plan
+   * is cancelled — leaving the registry primed with the cancelled
+   * plan's WeeklyPlan + AthleteState meant the home-view route kept
+   * rendering the deleted plan's day strip and guardrails after the
+   * DB rows were gone (production bug 2026-04-25). Returns the count
+   * of removed entries so callers can audit what was cleaned.
+   */
+  clearForAthlete(athleteId: number): number;
 }
 
 export class InMemoryCoachPlanStore implements CoachPlanStore {
@@ -27,6 +36,18 @@ export class InMemoryCoachPlanStore implements CoachPlanStore {
 
   get(athleteId: number, weekStart: string): StoredCoachPlan | null {
     return this.store.get(`${athleteId}:${weekStart}`) ?? null;
+  }
+
+  clearForAthlete(athleteId: number): number {
+    const prefix = `${athleteId}:`;
+    let removed = 0;
+    for (const key of Array.from(this.store.keys())) {
+      if (key.startsWith(prefix)) {
+        this.store.delete(key);
+        removed++;
+      }
+    }
+    return removed;
   }
 }
 
