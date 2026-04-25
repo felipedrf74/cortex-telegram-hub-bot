@@ -31,10 +31,10 @@
 - Deploy scripts exclude worktree `.git` files and local agent/worktree
   artifacts so branch worktrees can deploy safely.
 - Home-to-Inbox latency and task-list count truth were verified live on
-  `4.14.66` and remain in `4.14.68`; `/api/v1/tasks/lists` returns real
-  `taskCount` values, not `-1` placeholders.
+  `4.14.66` and remain live through `4.14.74`; `/api/v1/tasks/lists` returns
+  real `taskCount` values, not `-1` placeholders.
 - Latest Content + Training TestFlight bugfix pass on 2026-04-25 is deployed
-  in backend `4.14.68` and pushed in iOS `main`:
+  in backend `4.14.74` and pushed in iOS `main`:
   `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
   derives user-scoped Voice DNA from content knowledge, forwards it into the
   Python script engine, includes style in the script cache key, and returns
@@ -44,7 +44,7 @@
   profile finish actions from Training, and Training complete/skip fallback to
   the `"today"` sentinel.
 - Follow-up Content scheduling/pipeline + Training readiness pass on
-  2026-04-25 is deployed in backend `4.14.68` and pushed in iOS `main`:
+  2026-04-25 is deployed in backend `4.14.74` and pushed in iOS `main`:
   `POST/PATCH /api/v1/content/topics` now accepts
   `scheduledDateTime`; date-only topics create/update Secretary tasks;
   date+time topics also create/update calendar agenda/events through unified
@@ -53,10 +53,10 @@
   cancellation; Training keeps renderable Home/Training data visible during
   refresh; Home secondary previews fan out in parallel after the primary
   dashboard render. Migration `078_content_topic_secretary_artifacts.sql` is
-  deployed with `4.14.68`; fresh signed TestFlight/device validation is still
+  deployed with `4.14.74`; fresh signed TestFlight/device validation is still
   required before closing user-facing QA.
 - Second Training TestFlight bugfix pass on 2026-04-25 is deployed in backend
-  `4.14.68` and pushed in iOS `main` at `7f722da`: setup prompts are gated by
+  `4.14.74` and pushed in iOS `main` at `7f722da`: setup prompts are gated by
   real pending training questionnaires, started sport profiles count as usable
   objective context, skipped optional questionnaire steps persist safe
   placeholders, deterministic coach adjustment IDs are humanized, recovery/easy
@@ -66,8 +66,8 @@
   adjustment actions refresh instead of silently no-oping. Verification:
   focused backend Training tests passed 4 files / 63 tests, staging
   signed-session smoke passed 17/17, and iOS simulator build passed. The
-  latest full deploy gate later passed 345 files / 5,456 tests during the
-  `4.14.71` content AI hotfix/cache promotion. Signed TestFlight/device validation
+  latest full production deploy gate passed 345 files / 5,468 tests during the
+  `4.14.74` Training coach engine promotion. Signed TestFlight/device validation
   remains required.
 - Content script AI delivery hotfixes on 2026-04-25 remain live in backend
   `4.14.74`. `4.14.71` fixed the TS AI bridge/json-mode degradation
@@ -102,6 +102,30 @@
   real Gmail/Outlook/Health provider-state checks, and device proof for the
   latest Secretary, Health, Content script/topic scheduling/pipeline, and
   Training action/readiness fixes.
+
+---
+
+## Codex + Claude Operating Protocol
+
+- Treat this file and `docs/agents/claude/handoff.md` as the backend
+  cross-agent starting point. In the iOS workspace, read `AGENTS.md`,
+  `CLAUDE.md`, `specs/00-CURRENT-PRODUCT-TRUTH.md`, and
+  `specs/27-CLAUDE-CODE-HANDOVER.md`.
+- Codex has been working by verifying QA reports with code/runtime evidence,
+  implementing scoped fixes, running focused and broad tests, deploying through
+  staging smoke before production, and updating docs before handoff. Claude
+  should follow the same loop.
+- Backend production changes should follow: focused tests/typecheck,
+  staging deploy, staging smoke, production promote, production health, docs
+  update. Do not skip the staging smoke gate.
+- Token-zero remains law for iOS: ordinary operational flows use REST routes,
+  not fake chat commands or prompt-driven lookups.
+- Avoid single-tenant runtime assumptions in prompts, caches, background jobs,
+  provider fallbacks, and user-facing copy. Hardcoded founder identity belongs
+  only in docs, provenance notes, or explicit owner-only fixtures.
+- If credentials, APNs, TestFlight, OAuth, HealthKit, Gmail/Outlook, or provider
+  access are required, document the exact env/command and mark the item as
+  manual verification required.
 
 ---
 
