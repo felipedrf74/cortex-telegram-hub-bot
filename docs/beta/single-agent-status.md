@@ -10,20 +10,20 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
 
 | Gap | Status | Evidence | Remaining Work | Tests Needed | Notes |
 |---|---|---|---|---|---|
-| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, and 2026-04-25 simulator smoke with Felipe's persisted account. Backend production is live at `4.14.64`. | Signed TestFlight/device smoke, APNs proof, fresh auth, and true two-account switching. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
-| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; full `npm run verify` passed 342 files / 5,436 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
+| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, and 2026-04-25 simulator smoke with Felipe's persisted account. Backend production is live at `4.14.66`. | Signed TestFlight/device smoke, APNs proof, fresh auth, and true two-account switching. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
+| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; latest full backend validation passed 342 files / 5,438 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
 | Gap 3: Auth + onboarding reliability | Partial | `docs/beta/agent-3-auth-onboarding-handoff.md`; backend auth/onboarding tests exist; full backend verify passed; iOS existing-session simulator restore succeeded. | Fresh Apple/Google/email auth and interrupted onboarding on signed iOS build/device. | Real-device auth/onboarding smoke. | Backend promotion completed; iOS live auth proof remains. |
 | Gap 4: iOS degraded/error states | Complete with manual verification required | Implemented in the iOS single-agent worktree; simulator smoke showed honest missing calendar/email/Training setup states. | Physical-device visual pass for backend unavailable, retry success/failure, and account-switch loading. | iOS degraded-state smoke. | Out of scope for backend code, but backend returns canonical envelopes for iOS. |
-| Gap 5: Portal/admin operator sessions | Complete | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests passed; hardened staging smoke passed valid, expired, tampered, unauthorized role/scope, wrong-tenant, and static-token rejection paths. | Optional production env flip to require signed sessions only if desired. | Optional production hardening smoke after final env flip. | Production code is live at `4.14.64`. |
+| Gap 5: Portal/admin operator sessions | Complete | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests passed; hardened staging smoke passed valid, expired, tampered, unauthorized role/scope, wrong-tenant, and static-token rejection paths. | Optional production env flip to require signed sessions only if desired. | Optional production hardening smoke after final env flip. | Production code is live at `4.14.66`. |
 | Gap 6: Gmail/Outlook/Health integration truth | Partial | `docs/beta/agent-6-integration-truth-handoff.md`; backend canonical provider-state tests passed; iOS simulator showed one-provider connected truth with Garmin only. | Real/provider-backed Gmail-only, Outlook-only, Health-only, revoked, and degraded checks. | Device/provider-state smoke. | Backend contract is in place; live provider proof remains. |
 | Gap 7: Observability/on-call loop | Complete | Durable alert lifecycle, delivery states, portal ack/resolve/retry, beta-critical telemetry, `docs/OBSERVABILITY-ONCALL.md`, focused tests, full verify, and staging external webhook drill passed. | Configure/drill final production alert receiver if different from staging. | Optional production receiver drill. | Handoff: `docs/beta/observability-oncall-handoff.md`. |
-| Gap 8: Release/runbook discipline | Complete with manual verification required | iOS release checklist/config/rollback docs exist; backend deploy scripts were fixed for worktree `.git`; production promoted to `4.14.64`; production sanity smoke passed canonical unauthenticated `401` envelopes. | Signed TestFlight/device gate before broad public beta. | TestFlight/APNs/physical-device release rehearsal. | Backend production is live; iOS distribution proof remains. |
+| Gap 8: Release/runbook discipline | Complete with manual verification required | iOS release checklist/config/rollback docs exist; backend deploy scripts were fixed for worktree `.git`; production promoted to `4.14.66`; production sanity smoke passed canonical unauthenticated `401` envelopes. | Signed TestFlight/device gate before broad public beta. | TestFlight/APNs/physical-device release rehearsal. | Backend production is live; iOS distribution proof remains. |
 | Gap 9: Frontend architecture debt | Partial | Implemented in the iOS single-agent worktree with safe SwiftUI extractions and passing focused tests/build. | Continue incremental extractions only when backed by focused tests/previews. | iOS focused tests/build. | Out of scope for backend code. |
 | Gap 10: Product polish consistency | Complete with manual verification required | Implemented in the iOS single-agent worktree with skill card, chat shortcut, retry copy, accessibility, and spacing polish. | Visual simulator/TestFlight pass for skill cards, chat shortcuts, degraded states, and empty/error copy. | Visual smoke/accessibility pass. | Out of scope for backend code. |
 
 ## Production / Staging Update - 2026-04-25
 
-- Backend production is live at `4.14.64`.
+- Backend production is live at `4.14.66`.
 - `content-engine` and `nexus-hub` were online after promotion/recovery.
 - Founder accounts verified in production:
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
@@ -42,11 +42,15 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   after reconnecting Google from TestFlight.
 - Outlook token-zero calendar write smoke passed create/update/delete
   `200/200/200` and auto-deleted the temporary event.
-- Priority 8 Home-to-Inbox latency pass measured production `4.14.64` with
-  cached inbox at ~3ms and a cold cache key at ~10.3s. Backend code now bounds
-  unified inbox sources with soft deadlines so slow Gmail/Google Calendar
-  degradation no longer holds the whole response. Focused notifications route
-  tests and full `npm test` passed 342 files / 5,438 tests.
+- Priority 8 Home-to-Inbox latency pass is live in production `4.14.66`.
+  Pre-fix production `4.14.64` measured cached inbox at ~3ms and a cold cache
+  key at ~10.3s. The first fix bounded unified inbox sources with soft
+  deadlines; the final fix moved task reads to the normalized local task store
+  so Inbox no longer waits on Microsoft Graph for task data. Post-deploy
+  production measurement: unread count ~1.286s, cold inbox `limit=33` ~2.455s,
+  immediate repeat ~2ms, with only real Google/Gmail OAuth warning codes
+  remaining. Focused notifications route tests, typecheck, staging smoke, and
+  full `npm test` passed 342 files / 5,438 tests.
 
 ## Single-Agent Rules
 
