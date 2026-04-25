@@ -42,6 +42,11 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   after reconnecting Google from TestFlight.
 - Outlook token-zero calendar write smoke passed create/update/delete
   `200/200/200` and auto-deleted the temporary event.
+- Priority 8 Home-to-Inbox latency pass measured production `4.14.64` with
+  cached inbox at ~3ms and a cold cache key at ~10.3s. Backend code now bounds
+  unified inbox sources with soft deadlines so slow Gmail/Google Calendar
+  degradation no longer holds the whole response. Focused notifications route
+  tests and full `npm test` passed 342 files / 5,438 tests.
 
 ## Single-Agent Rules
 

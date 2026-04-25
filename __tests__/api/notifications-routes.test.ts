@@ -80,15 +80,15 @@ interface MockRes {
   end(): MockRes;
 }
 
-function mockRes(): MockRes {
+function mockRes(onSend?: () => void): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
     headers: {},
     status(code: number) { r.statusCode = code; return r; },
-    json(body: any) { r.body = body; return r; },
+    json(body: any) { r.body = body; onSend?.(); return r; },
     setHeader(name: string, value: string) { r.headers[name] = value; return r; },
-    end() { return r; },
+    end() { onSend?.(); return r; },
   };
   return r;
 }
@@ -110,14 +110,29 @@ function mockReq(method: string, path: string, query: Record<string, any> = {}, 
 async function dispatch(method: string, path: string, query: Record<string, any> = {}, userId = 7): Promise<MockRes> {
   const router = notificationRoutes();
   const req = mockReq(method, path, query, userId);
-  const res = mockRes();
+  let resolveResponse!: () => void;
+  let rejectResponse!: (err: Error) => void;
+  const responseDone = new Promise<void>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+  const res = mockRes(resolveResponse);
 
-  await new Promise<void>((resolve) => {
-    (router as any).handle(req, res, (err: any) => {
-      if (err) throw err;
-      resolve();
-    });
-    setImmediate(resolve);
+  (router as any).handle(req, res, (err: any) => {
+    if (err) {
+      rejectResponse(err);
+      return;
+    }
+  });
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    responseDone,
+    new Promise<void>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(`${method} ${path} did not send a response`)), 1_000);
+    }),
+  ]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
   });
 
   return res;
@@ -125,6 +140,9 @@ async function dispatch(method: string, path: string, query: Record<string, any>
 
 describe('Notification inbox routes', () => {
   beforeEach(() => {
+    delete process.env.UNIFIED_INBOX_SOURCE_TIMEOUT_MS;
+    delete process.env.UNIFIED_INBOX_SUMMARY_SOURCE_TIMEOUT_MS;
+
     mockGetNotifications.mockReset();
     mockGetUnreadCount.mockReset();
     mockGetRecentReports.mockReset();
@@ -235,6 +253,38 @@ describe('Notification inbox routes', () => {
     expect(mockGetUnreadEmailsForUser).toHaveBeenCalledWith(7, expect.any(Number));
   });
 
+  it('bounds slow inbox sources so a cold Home-to-Inbox load returns degraded data quickly', async () => {
+    process.env.UNIFIED_INBOX_SOURCE_TIMEOUT_MS = '5';
+
+    mockIsConnected.mockImplementation((_userId: number, provider: string) =>
+      provider === 'google'
+    );
+    mockGetRecentReports.mockReturnValue([
+      {
+        id: 44,
+        type: 'morning_briefing',
+        title: 'Morning Briefing',
+        summary: 'Plan is ready.',
+        status: 'unread',
+        createdAt: '2026-04-14T06:00:00Z',
+        sourceJob: 'scheduler:morning',
+      },
+    ]);
+    mockGetUnreadReportCount.mockReturnValue(1);
+    mockSearchEmailsForUser.mockImplementation(() => new Promise(() => {}));
+    mockGetGoogleEvents.mockResolvedValue([]);
+
+    const startedAt = Date.now();
+    const res = await dispatch('GET', '/inbox', { limit: '19' }, 77);
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.status).toBe('degraded');
+    expect(res.body.data.warningCodes).toContain('GMAIL_UNAVAILABLE');
+    expect(res.body.data.items.map((item: any) => item.kind)).toContain('report');
+  });
+
   it('surfaces missing mail and calendar integrations honestly when neither provider is connected', async () => {
     mockGetNotifications.mockReturnValue([
       {
@@ -309,6 +359,26 @@ describe('Notification inbox routes', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.data.unreadCount).toBe(7);
     expect(mockCountEmailsForUser).toHaveBeenCalledWith(7, 'in:inbox is:unread newer_than:14d');
+  });
+
+  it('bounds slow unread provider counts so the Home badge can still use local counts', async () => {
+    process.env.UNIFIED_INBOX_SUMMARY_SOURCE_TIMEOUT_MS = '5';
+
+    mockIsConnected.mockImplementation((_userId: number, provider: string) =>
+      provider === 'google'
+    );
+    mockGetUnreadCount.mockReturnValue(2);
+    mockGetUnreadReportCount.mockReturnValue(1);
+    mockCountEmailsForUser.mockImplementation(() => new Promise(() => {}));
+
+    const startedAt = Date.now();
+    const res = await dispatch('GET', '/unread-count', {}, 78);
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.unreadCount).toBe(3);
+    expect(res.body.data.warningCodes).toContain('GMAIL_UNAVAILABLE');
   });
 
   it('keeps unread count honest about missing mail integrations when no provider is connected', async () => {

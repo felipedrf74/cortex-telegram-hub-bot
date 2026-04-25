@@ -25,6 +25,7 @@ import { getEvents as getOutlookEvents } from '../../services/outlook-calendar';
 import { getEvents as getGoogleEvents } from '../../services/google-calendar';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { logger } from '../../utils/logger';
+import { AITimeoutError, withTimeout } from '../../utils/timeout';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 
 type InboxItemKind = 'notification' | 'report' | 'email' | 'task' | 'event';
@@ -36,6 +37,8 @@ const INBOX_CACHE_TTL = 45;
 const INBOX_SWR_STALE = 300;
 const INBOX_SUMMARY_CACHE_TTL = 30;
 const INBOX_SUMMARY_SWR_STALE = 180;
+const DEFAULT_INBOX_SOURCE_TIMEOUT_MS = 3_000;
+const DEFAULT_INBOX_SUMMARY_SOURCE_TIMEOUT_MS = 2_000;
 const inboxSWRInFlight = new Set<string>();
 
 interface UnifiedInboxItem {
@@ -56,6 +59,80 @@ interface UnifiedInboxItem {
 interface UnifiedInboxSourceResult {
   items: UnifiedInboxItem[];
   unreadCount: number;
+}
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getInboxSourceTimeoutMs(): number {
+  return positiveIntFromEnv('UNIFIED_INBOX_SOURCE_TIMEOUT_MS', DEFAULT_INBOX_SOURCE_TIMEOUT_MS);
+}
+
+function getInboxSummarySourceTimeoutMs(): number {
+  return positiveIntFromEnv('UNIFIED_INBOX_SUMMARY_SOURCE_TIMEOUT_MS', DEFAULT_INBOX_SUMMARY_SOURCE_TIMEOUT_MS);
+}
+
+function safeErrorName(err: unknown): string {
+  if (err instanceof Error && err.name) return err.name;
+  return typeof err;
+}
+
+function safeErrorCode(err: unknown): string | number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const candidate = err as { code?: unknown; status?: unknown; response?: { status?: unknown } };
+  if (typeof candidate.code === 'string' || typeof candidate.code === 'number') return candidate.code;
+  if (typeof candidate.status === 'string' || typeof candidate.status === 'number') return candidate.status;
+  if (typeof candidate.response?.status === 'string' || typeof candidate.response?.status === 'number') {
+    return candidate.response.status;
+  }
+  return undefined;
+}
+
+async function runInboxSource<T>(
+  opts: {
+    key: string;
+    userId: number;
+    limit?: number;
+    timeoutMs: number;
+    run: () => Promise<T>;
+  },
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    const value = await withTimeout(opts.run(), opts.timeoutMs);
+    logger.debug(
+      {
+        event: 'unified_inbox_source',
+        source: opts.key,
+        outcome: 'success',
+        userId: opts.userId,
+        limit: opts.limit,
+        durationMs: Date.now() - startedAt,
+      },
+      'Unified inbox source completed',
+    );
+    return value;
+  } catch (err) {
+    logger.warn(
+      {
+        event: 'unified_inbox_source',
+        source: opts.key,
+        outcome: err instanceof AITimeoutError ? 'timeout' : 'failed',
+        userId: opts.userId,
+        limit: opts.limit,
+        durationMs: Date.now() - startedAt,
+        timeoutMs: opts.timeoutMs,
+        errorName: safeErrorName(err),
+        errorCode: safeErrorCode(err),
+      },
+      'Unified inbox source degraded',
+    );
+    throw err;
+  }
 }
 
 function reportInvalidNotificationsRouteScope(
@@ -411,7 +488,16 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
     );
   }
 
-  const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
+  const sourceTimeoutMs = getInboxSourceTimeoutMs();
+  const results = await Promise.allSettled(fetchers.map((fetcher) =>
+    runInboxSource({
+      key: fetcher.key,
+      userId,
+      limit,
+      timeoutMs: sourceTimeoutMs,
+      run: fetcher.run,
+    }),
+  ));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
   if (!outlookConnected && !googleConnected) {
@@ -464,16 +550,19 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
   const outlookConnected = isConnected(userId, 'outlook');
   const googleConnected = isConnected(userId, 'google');
   const fetchers: Array<{
+    key: string;
     warningCode: string;
     warning: string;
     run: () => Promise<number>;
   }> = [
     {
+      key: 'notifications',
       warningCode: 'CONTENT_NOTIFICATIONS_UNAVAILABLE',
       warning: 'Content notifications are temporarily unavailable.',
       run: async () => getUnreadCount(userId),
     },
     {
+      key: 'reports',
       warningCode: 'REPORTS_UNAVAILABLE',
       warning: 'Reports are temporarily unavailable.',
       run: async () => getUnreadReportCount(userId),
@@ -482,6 +571,7 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
 
   if (outlookConnected) {
     fetchers.push({
+      key: 'outlook-email',
       warningCode: 'OUTLOOK_MAIL_UNAVAILABLE',
       warning: 'Outlook mail is temporarily unavailable.',
       run: async () => {
@@ -493,13 +583,22 @@ async function buildUnifiedInboxSummary(userId: number): Promise<{
 
   if (googleConnected) {
     fetchers.push({
+      key: 'gmail',
       warningCode: 'GMAIL_UNAVAILABLE',
       warning: 'Gmail is temporarily unavailable.',
         run: async () => countGmailEmailsForUser(userId, 'in:inbox is:unread newer_than:14d'),
     });
   }
 
-  const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
+  const sourceTimeoutMs = getInboxSummarySourceTimeoutMs();
+  const results = await Promise.allSettled(fetchers.map((fetcher) =>
+    runInboxSource({
+      key: fetcher.key,
+      userId,
+      timeoutMs: sourceTimeoutMs,
+      run: fetcher.run,
+    }),
+  ));
   const warningCodes: string[] = [];
   const warnings: string[] = [];
   if (!outlookConnected && !googleConnected) {
