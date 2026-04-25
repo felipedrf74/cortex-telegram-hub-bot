@@ -3,26 +3,39 @@
 import { getGraphClient, getGraphClientForUser, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { getTokens } from './oauth-store';
 import { CalendarEvent } from './google-calendar';
 import type { NormalizedRecurrence } from './recurrence-utils';
 
 export function isOutlookCalendarConfigured(userId?: number): boolean {
-  // Owner-level check (Telegram bot / global config)
-  if (isMicrosoftConfigured()) return true;
+  // Multi-tenant rule (mirrors `isGoogleConfigured(userId)` in
+  // `services/google-auth.ts`): when a `userId` is passed, return the
+  // per-user truth ONLY. Falling through to the owner-global
+  // `isMicrosoftConfigured()` here was a tenant-leak bug — if the
+  // server has owner Outlook tokens, the global check returned `true`
+  // for EVERY user, including iOS users who only connected Google.
+  // The unified calendar then routed createEvent to Outlook, which
+  // failed inside `getAccessTokenForUser` with "Outlook not connected
+  // for user N", and `Promise.allSettled` swallowed every failure —
+  // the symptom was a generated plan with N sessions in the DB and
+  // 0 calendar events created (see prod log 2026-04-25 user 29).
+  //
+  // Required server-side config still gates everything: without
+  // `config.outlook.clientId` we cannot authenticate, period.
+  if (!config.outlook.clientId) return false;
 
-  // CHAT-M2: per-user check — iOS users connect Outlook via OAuth,
-  // storing tokens under their JWT userId (not the Telegram owner ID).
-  // Without this check, the unified calendar skips Outlook entirely
-  // for iOS users who have a valid connection.
-  if (userId && config.outlook.clientId) {
+  if (userId !== undefined) {
     try {
-      const { getTokens } = require('./oauth-store');
       const tokens = getTokens(userId, 'outlook');
       return !!tokens?.refreshToken;
-    } catch { /* oauth-store unavailable */ }
+    } catch {
+      return false;
+    }
   }
 
-  return false;
+  // No `userId` → owner / Telegram bot codepath. Fall back to the
+  // owner-global check that's still the right answer for that path.
+  return isMicrosoftConfigured();
 }
 
 // ── Master Categories (color ↔ displayName mapping) ─────────────────
