@@ -23,10 +23,13 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
 
 ## Production / Staging Update - 2026-04-25
 
-- Backend production is live at `4.14.74`; staging remains live at `4.14.73`.
+- Backend production is live at `4.14.75`; staging remains at `4.14.74`.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `0f7fd74`; code commit `45f3a1c` is the Training
-  coach engine hardening release.
+  online at deploy commit `80b6715`; code commit `688d30e` is the Training
+  plan-cancel hard-delete + rich session description release. Migration
+  `079_training_session_description.sql` deployed with `4.14.75`. Code
+  commit `45f3a1c` is the prior Training coach engine hardening (still
+  in `4.14.75`).
 - `content-engine` and `nexus-hub` were online after promotion/recovery.
 - Founder accounts verified in production:
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.

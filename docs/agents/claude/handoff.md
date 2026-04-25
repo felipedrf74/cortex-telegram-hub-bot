@@ -7,12 +7,41 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production is live at `4.14.74`; staging remains live at `4.14.73`.
+- Backend production is live at `4.14.75`; staging remains at `4.14.74`.
 - Full backend verification passed before the latest production deploy:
-  345 test files / 5,468 tests.
+  346 test files / 5,477 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `0f7fd74`; code commit `45f3a1c` is the Training
-  coach engine hardening release.
+  online at deploy commit `80b6715`; code commit `688d30e` is the Training
+  plan-cancel hard-delete + rich session description release. Migration
+  `079_training_session_description.sql` deployed with `4.14.75`.
+- Training plan cancel is now hard-delete: `cancelTrainingPlanForUser`
+  removes calendar events first, then `deletePlanHard(planId, userId)`
+  cascades through `training_weeks`, `training_sessions`, and
+  `training_completions` via the FK CASCADE declared in migration 023. The
+  cancel response reports `removedEvents`, `removedSessions`, `removedWeeks`,
+  `removedCompletions`, `removedPlans` plus a legacy `totalSessions` alias.
+  Defense-in-depth: the DELETE statement scopes to `(id, user_id)` so a
+  stale planId from another tenant cannot overshoot the ownership gate.
+- New `src/services/training-session-description.ts` builds a single
+  structured-sections JSON for each generated session (`description_json`
+  on `training_sessions`) AND the corresponding plain-text rendering used
+  as the calendar-event description / email body. Sections cover plan +
+  phase header, day badge, weekly progression for the same session type
+  across the plan, execution chips (pace / HR / RPE / power / CSS — derived
+  from athlete profile when present, generic effort otherwise), gym
+  exercises, warm-up, cool-down, deload / heavy-day IMPORTANT callouts,
+  AI-supplied notes, and total-minutes footer. iOS read paths surface
+  `descriptionSections` so the new SessionDetailSectionsView renders typed
+  cards on the Week plan detail sheet instead of plain text.
+- iOS `main` is at `ab00164` after this push. The Cancel Plan toolbar in
+  `WeeklyPlanView` now owns its own confirmation alert and dismisses the
+  surface back to Training Home after the async cancel resolves; the
+  Active signals "Low adherence" card was removed from the Training
+  surface (it was noisy on freshly-cancelled or never-started plans). The
+  iOS script-timeout fix from earlier on the same `main` (commit
+  `833f81b`) sets per-mode iOS request timeouts (75s/210s/360s) for
+  `POST /api/v1/content/script` so deep-mode generation no longer aborts
+  at 90s.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,

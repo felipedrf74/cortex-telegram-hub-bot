@@ -14,14 +14,15 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend is live at `4.14.74`; staging remains live at `4.14.73`.
+- Production backend is live at `4.14.75`; staging remains at `4.14.74`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  345 test files / 5,468 tests.
+  346 test files / 5,477 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `0f7fd74`; code commit `45f3a1c` is the Training
-  coach engine hardening release.
+  online at deploy commit `80b6715`; code commit `688d30e` is the Training
+  plan-cancel hard-delete + rich session description release. Migration
+  `079_training_session_description.sql` is deployed with `4.14.75`.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
