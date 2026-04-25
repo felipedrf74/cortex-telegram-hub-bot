@@ -14,14 +14,14 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend and staging are live at `4.14.72`.
+- Production backend is live at `4.14.73`; staging remains live at `4.14.72`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
   345 test files / 5,459 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at backend commit `e8239e8`; `4.14.72` is the follow-up content
-  script prompt-architecture release.
+  online at deploy commit `61f9d1c`; code commit `1300b20` is the follow-up
+  content script prompt-architecture release.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -70,8 +70,8 @@
   `4.14.71` content AI hotfix/cache promotion. Signed TestFlight/device validation
   remains required.
 - Content script AI delivery hotfixes on 2026-04-25 are deployed through
-  backend `4.14.72`. `4.14.71` fixed the TS AI bridge/json-mode degradation
-  path. `4.14.72` fixes the deeper script-quality architecture: the Python
+  backend `4.14.73`. `4.14.71` fixed the TS AI bridge/json-mode degradation
+  path. `4.14.73` carries the deeper script-quality architecture: the Python
   script writer no longer imports a global creator profile or a module-level
   system prompt, no longer hardcodes a founder/operator persona, and builds the
   script system prompt per request from the authenticated user's scoped creator
@@ -231,7 +231,7 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.72` from `main`; do not treat the
+hardening branch has been deployed to production as `4.14.73` from `main`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:

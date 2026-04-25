@@ -7,12 +7,12 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.72`.
+- Backend production is live at `4.14.73`; staging remains live at `4.14.72`.
 - Full backend verification passed before the latest production deploy:
   345 test files / 5,459 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at backend commit `e8239e8`; `4.14.72` is the follow-up content
-  script prompt-architecture release.
+  online at deploy commit `61f9d1c`; code commit `1300b20` is the follow-up
+  content script prompt-architecture release.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -58,8 +58,8 @@ content is retained only for provenance.
   `4.14.71` content AI hotfix/cache promotion. Signed TestFlight/device validation
   remains required.
 - Content script AI delivery hotfixes on 2026-04-25 are deployed through
-  backend `4.14.72`. `4.14.71` fixed the TS AI bridge/json-mode degradation
-  path. `4.14.72` fixes the deeper script-quality architecture: the Python
+  backend `4.14.73`. `4.14.71` fixed the TS AI bridge/json-mode degradation
+  path. `4.14.73` carries the deeper script-quality architecture: the Python
   script writer no longer imports a global creator profile or a module-level
   system prompt, no longer hardcodes a founder/operator persona, and builds the
   script system prompt per request from the authenticated user's scoped creator

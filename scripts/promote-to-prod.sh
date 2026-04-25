@@ -136,7 +136,9 @@ fi
 echo ""
 PROD_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('/home/dominguez/telegram-hub-bot/package.json').version\"" 2>/dev/null || echo "unknown")
 LOCAL_VERSION=$(node -p "require('$LOCAL_DIR/package.json').version" 2>/dev/null || echo "unknown")
+STAGING_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('$STAGING_DIR/package.json').version\"" 2>/dev/null || echo "unknown")
 echo "   Current prod version:  v$PROD_VERSION"
+echo "   Current staging version: v$STAGING_VERSION"
 echo "   Local working tree:    v$LOCAL_VERSION  ← will become prod"
 echo ""
 read -p "   Promote to production? (type YES to confirm) " CONFIRM
@@ -186,8 +188,15 @@ echo "════════════════════════�
 echo "  ✅ PROMOTE COMPLETE"
 echo "═══════════════════════════════════════════════"
 echo ""
-echo "Production is now running v$LOCAL_VERSION (was v$PROD_VERSION)."
-echo "Staging is still on v$LOCAL_VERSION too — they're in sync."
+POST_PROD_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('/home/dominguez/telegram-hub-bot/package.json').version\"" 2>/dev/null || echo "unknown")
+POST_STAGING_VERSION=$(ssh "$SERVER" "/usr/bin/node -p \"require('$STAGING_DIR/package.json').version\"" 2>/dev/null || echo "unknown")
+POST_LOCAL_VERSION=$(node -p "require('$LOCAL_DIR/package.json').version" 2>/dev/null || echo "unknown")
+echo "Production is now running v$POST_PROD_VERSION (was v$PROD_VERSION)."
+echo "Local working tree is now v$POST_LOCAL_VERSION."
+echo "Staging remains on v$POST_STAGING_VERSION."
+if [ "$POST_PROD_VERSION" != "$POST_STAGING_VERSION" ]; then
+  echo "Note: deploy.sh may auto-bump production. Run ./scripts/deploy-staging.sh if staging should match prod exactly."
+fi
 echo ""
 echo "To deploy a new change next time, the workflow is:"
 echo "  1. git pull / make changes locally"
