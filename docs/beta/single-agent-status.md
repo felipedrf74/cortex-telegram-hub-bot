@@ -96,6 +96,16 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   regeneration seed. The script generation cache key is now `script-v7`; full
   backend verification passed 345 files / 5,459 tests. Production script smoke
   should return `degraded=false` unless a real provider outage is occurring.
+- Training coach engine hardening is implemented on backend `main` and
+  full-test validated, pending the next staging/prod deploy. It removes
+  founder-specific Felipe/carnivore/high-volume defaults from Training prompts,
+  makes daily coach briefing generation per active canonical tenant instead of
+  owner-only, fixes ACWR to use actual training-load values with a 14-day
+  sample guard, makes no-wearable readiness conservative instead of
+  `full_intensity`, combines sleep quality with duration as a safety floor, and
+  downshifts orange/red/injury states deterministically. Handoff:
+  `docs/beta/training-coach-engine-hardening-handoff.md`. Full backend
+  verification passed 345 files / 5,468 tests.
 
 ## Single-Agent Rules
 

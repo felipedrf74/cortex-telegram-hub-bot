@@ -72,6 +72,24 @@ describe('prompt-cleanliness: no Telegram formatting in domain prompts', () => {
   }
 });
 
+describe('prompt-cleanliness: training prompts are not founder-persona prompts', () => {
+  const trainingPrompts = [
+    'triathlon.md',
+    'triathlon/swim.md',
+    'triathlon/running.md',
+    'triathlon/gym.md',
+    'triathlon/cycling.md',
+  ];
+  const founderPersonaPattern = /Felipe|The Operator|4-5x\/week|never suggest plant-based|Carnivore default|Carnivore diet/i;
+
+  for (const promptFile of trainingPrompts) {
+    it(`${promptFile} avoids single-tenant founder defaults`, () => {
+      const content = fs.readFileSync(path.join(PROMPTS_DIR, promptFile), 'utf8');
+      expect(content).not.toMatch(founderPersonaPattern);
+    });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // 2. System Descriptions — iOS-First
 // ═══════════════════════════════════════════════════════════════════

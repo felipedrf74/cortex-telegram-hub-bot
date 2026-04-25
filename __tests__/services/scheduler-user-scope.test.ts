@@ -19,6 +19,7 @@ const mockRunWithContext = vi.fn((_ctx, fn: () => unknown) => fn());
 const mockStoreAndPushReport = vi.fn();
 const mockGetDb = vi.fn();
 const mockGetOwnerBootstrapTarget = vi.fn();
+const mockGenerateCoachBriefing = vi.hoisted(() => vi.fn());
 
 vi.mock('node-cron', () => ({
   default: { schedule: vi.fn() },
@@ -100,7 +101,9 @@ vi.mock('../../src/services/fiscal-bundle', () => ({
   isFiscalBundleDue: vi.fn(() => false),
   sendFiscalBundleNow: vi.fn(),
 }));
-vi.mock('../../src/services/garmin-coach', () => ({ generateCoachBriefing: vi.fn() }));
+vi.mock('../../src/services/garmin-coach', () => ({
+  generateCoachBriefing: (...args: unknown[]) => mockGenerateCoachBriefing(...args),
+}));
 vi.mock('../../src/services/garmin', () => ({
   isGarminConfigured: vi.fn(() => false),
   keepAlive: vi.fn(),
@@ -169,8 +172,12 @@ import {
   buildWeeklyReviewPayloadForUser,
   getActiveUserIds,
   getOwnerUserIds,
+  sendCoachBriefings,
   sendDailyBriefing,
 } from '../../src/services/scheduler';
+import { setLastCoachState } from '../../src/domains/domain-handler';
+import { setLastActiveDomain } from '../../src/bot';
+import { addToConversation } from '../../src/state/conversation';
 
 describe('scheduler tenant scoping', () => {
   beforeEach(() => {
@@ -201,6 +208,13 @@ describe('scheduler tenant scoping', () => {
       })),
     });
     mockGetOwnerBootstrapTarget.mockReturnValue({ tenantId: 99, telegramId: 1999 });
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'coach briefing',
+      recommendations: [],
+      errors: [],
+      dataCollectionMs: 1,
+      analysisMs: 2,
+    });
   });
 
   it('getActiveUserIds returns canonical tenant ids from the users table', () => {
@@ -383,5 +397,48 @@ describe('scheduler tenant scoping', () => {
 
     expect(mockStoreAndPushReport).toHaveBeenCalledTimes(1);
     expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 99 }));
+  });
+
+  it('sendCoachBriefings generates, stores, and scopes coach state for every active tenant', async () => {
+    mockGenerateCoachBriefing.mockResolvedValue({
+      message: 'coach briefing',
+      recommendations: [{
+        eventId: 'event-1',
+        source: 'outlook',
+        action: 'MODIFY',
+        originalTitle: 'Run',
+        newTitle: 'Easy run',
+        newStart: null,
+        newEnd: null,
+        summary: 'Reduce intensity',
+        reason: 'Low readiness',
+      }],
+      errors: [],
+      dataCollectionMs: 11,
+      analysisMs: 22,
+    });
+
+    await sendCoachBriefings();
+
+    expect(mockGenerateCoachBriefing).toHaveBeenCalledTimes(2);
+    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(1, 11);
+    expect(mockGenerateCoachBriefing).toHaveBeenNthCalledWith(2, 22);
+    expect(mockRunWithContext).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'cron:garmin_coach', userId: 11 }),
+      expect.any(Function),
+    );
+    expect(mockRunWithContext).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'cron:garmin_coach', userId: 22 }),
+      expect.any(Function),
+    );
+    expect(setLastCoachState).toHaveBeenCalledWith(11, expect.any(Array), expect.any(String));
+    expect(setLastCoachState).toHaveBeenCalledWith(22, expect.any(Array), expect.any(String));
+    expect(addToConversation).toHaveBeenCalledWith(11, 'triathlon', 'assistant', 'coach briefing');
+    expect(addToConversation).toHaveBeenCalledWith(22, 'triathlon', 'assistant', 'coach briefing');
+    expect(setLastActiveDomain).toHaveBeenCalledWith(11, 'triathlon');
+    expect(setLastActiveDomain).toHaveBeenCalledWith(22, 'triathlon');
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 11, type: 'coach_briefing' }));
+    expect(mockStoreAndPushReport).toHaveBeenCalledWith(expect.objectContaining({ userId: 22, type: 'coach_briefing' }));
+    expect(mockStoreAndPushReport).not.toHaveBeenCalledWith(expect.objectContaining({ userId: 1011 }));
   });
 });

@@ -17,7 +17,37 @@ import { triathlonEngine } from './engines/triathlon-engine';
 import { resolveHybridPriority } from './engines/hybrid-engine';
 import { applyGuardrails } from './guardrails';
 
+function hasHighImpactInjuryConstraint(athlete: AthleteState): boolean {
+  return athlete.constraints.some((constraint) =>
+    constraint.type === 'injury' && (constraint.severity === 'medium' || constraint.severity === 'high')
+  ) || (athlete.readiness.painFlags ?? []).some((pain) => pain.severity === 'moderate' || pain.severity === 'high');
+}
+
+function raceWindowDays(race: AthleteState['goals']['raceCalendar'][number]): { taperDays: number; peakDays: number } {
+  switch (race.subtype) {
+  case '5k':
+  case 'sprint':
+    return { taperDays: 5, peakDays: 14 };
+  case '10k':
+  case 'olympic':
+    return { taperDays: 7, peakDays: 21 };
+  case 'half_marathon':
+    return { taperDays: 10, peakDays: 28 };
+  case 'marathon':
+  case '70.3':
+    return { taperDays: 14, peakDays: 35 };
+  case 'ironman':
+    return { taperDays: 21, peakDays: 56 };
+  default:
+    if (race.discipline === 'triathlon') return { taperDays: 14, peakDays: 42 };
+    if (race.discipline === 'running') return { taperDays: 10, peakDays: 28 };
+    return { taperDays: 7, peakDays: 21 };
+  }
+}
+
 function inferPhase(athlete: AthleteState, weekStart: string): BlockPhase {
+  if (hasHighImpactInjuryConstraint(athlete) || athlete.readiness.level === 'red') return 'deload';
+  if (athlete.readiness.level === 'orange') return 'maintenance';
   if (athlete.currentBlock.phase) return athlete.currentBlock.phase;
 
   const nextRace = [...athlete.goals.raceCalendar]
@@ -26,9 +56,10 @@ function inferPhase(athlete: AthleteState, weekStart: string): BlockPhase {
     .sort((a, b) => a.diffDays - b.diffDays)[0];
 
   if (!nextRace) return 'base';
+  const windows = raceWindowDays(nextRace);
   if (nextRace.diffDays <= 7) return 'race';
-  if (nextRace.diffDays <= 21) return 'taper';
-  if (nextRace.diffDays <= 42) return 'peak';
+  if (nextRace.diffDays <= windows.taperDays) return 'taper';
+  if (nextRace.diffDays <= windows.peakDays) return 'peak';
   if (athlete.currentBlock.weekIndex > 0 && athlete.currentBlock.weekIndex % 4 === 0) return 'deload';
   return 'build';
 }
@@ -151,14 +182,23 @@ export function buildDayPlan(athlete: AthleteState, weeklyPlan: WeeklyPlan, dayO
 
 export function adjustForFatigue(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
   if (athlete.readiness.level === 'green' || athlete.readiness.level === 'yellow') return weeklyPlan;
+  const fatiguePhase: BlockPhase = athlete.readiness.level === 'red' ? 'deload' : 'maintenance';
   const adjustedState: AthleteState = {
     ...athlete,
     currentBlock: {
       ...athlete.currentBlock,
-      phase: athlete.readiness.level === 'red' ? 'deload' : athlete.currentBlock.phase,
+      phase: fatiguePhase,
     },
   };
-  return reschedulePlanSessions(adjustedState, applyGuardrails(weeklyPlan, adjustedState));
+  const adjustedPlan: WeeklyPlan = {
+    ...weeklyPlan,
+    phase: fatiguePhase,
+    notes: [
+      ...weeklyPlan.notes.filter((note) => !note.startsWith('Readiness override:')),
+      `Readiness override: ${athlete.readiness.level} shifted this week to ${fatiguePhase}.`,
+    ],
+  };
+  return reschedulePlanSessions(adjustedState, applyGuardrails(adjustedPlan, adjustedState));
 }
 
 export function replaceSession(weeklyPlan: WeeklyPlan, sessionId: string, replacement: Session): WeeklyPlan {

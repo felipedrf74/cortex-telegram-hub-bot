@@ -84,6 +84,17 @@
   bypasses the cache. The script generation cache key is now `script-v7`.
   Production must keep returning `degraded=false` for normal script generation
   unless a real provider outage occurs.
+- Training coach engine hardening on 2026-04-25 is implemented on `main` and
+  full-test validated, pending the next staging/prod deploy. It removes
+  founder-specific Felipe/carnivore/high-volume defaults from the Training
+  prompts, makes daily coach briefing generation iterate every active canonical
+  tenant instead of owner-only users, fixes ACWR to use actual training-load
+  values with a 14-day sample guard, changes no-wearable readiness from
+  `full_intensity` to a conservative recommendation, combines sleep quality
+  with duration as a safety floor, and makes orange/red/injury coach-kernel
+  states downshift deterministically. Handoff:
+  `docs/beta/training-coach-engine-hardening-handoff.md`. Verification passed:
+  full `npm run verify` = 345 files / 5,468 tests.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
@@ -239,6 +250,7 @@ Current backend follow-ups:
 - keep tenant/founder/business-rule docs aligned with the beta tracker;
 - validate the latest Content scheduling, high-quality AI script generation, Training readiness,
   Secretary recurrence, and Health fixes in a signed TestFlight device build;
+- deploy and device-validate the Training coach engine hardening pass;
 - run another production-safe alert drill only if the final receiver differs
   from the staging receiver;
 - keep deploy scripts worktree-safe;

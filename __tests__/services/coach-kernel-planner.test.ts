@@ -94,6 +94,32 @@ describe('coach-kernel planner', () => {
     expect(adjusted.guardrailResults).not.toEqual(originalPlan.guardrailResults);
   });
 
+  it('re-running adjustForFatigue with orange readiness downshifts to maintenance', () => {
+    const greenAthlete: AthleteState = {
+      ...sampleMarathonAthlete,
+      readiness: {
+        ...sampleMarathonAthlete.readiness,
+        level: 'green',
+        score: 88,
+      },
+    };
+    const originalPlan = buildWeekPlan(greenAthlete, '2026-05-11');
+
+    const orangeAthlete: AthleteState = {
+      ...greenAthlete,
+      readiness: {
+        ...greenAthlete.readiness,
+        level: 'orange',
+        score: 54,
+      },
+    };
+    const adjusted = adjustForFatigue(orangeAthlete, originalPlan);
+
+    expect(adjusted).not.toBe(originalPlan);
+    expect(adjusted.phase).toBe('maintenance');
+    expect(adjusted.notes.some((note) => note.includes('Readiness override'))).toBe(true);
+  });
+
   it('is a no-op when readiness stays green or yellow', () => {
     // Green/yellow explicitly skip the adjustment path — otherwise we
     // would pay the cost on every healthy home-view hit.
@@ -109,6 +135,52 @@ describe('coach-kernel planner', () => {
     const result = adjustForFatigue(yellowAthlete, plan);
 
     expect(result).toBe(plan); // reference equality — returned same object
+  });
+
+  it('uses race-distance-aware taper windows instead of tapering every race 14 days out', () => {
+    const weekStart = '2026-05-01';
+    const unlockedBlock = {
+      ...sampleMarathonAthlete.currentBlock,
+      phase: undefined as any,
+      weekIndex: 5,
+    };
+    const fiveKPlan = buildWeekPlan({
+      ...sampleMarathonAthlete,
+      currentBlock: unlockedBlock,
+      readiness: { ...sampleMarathonAthlete.readiness, level: 'green', score: 82 },
+      goals: {
+        ...sampleMarathonAthlete.goals,
+        primaryFocus: 'running',
+        raceCalendar: [{
+          id: 'local-5k',
+          name: 'Local 5k',
+          discipline: 'running',
+          subtype: '5k',
+          date: '2026-05-15',
+          priority: 'a',
+        }],
+      },
+    }, weekStart);
+
+    const marathonPlan = buildWeekPlan({
+      ...sampleMarathonAthlete,
+      currentBlock: unlockedBlock,
+      readiness: { ...sampleMarathonAthlete.readiness, level: 'green', score: 82 },
+      goals: {
+        ...sampleMarathonAthlete.goals,
+        raceCalendar: [{
+          id: 'marathon',
+          name: 'Marathon',
+          discipline: 'running',
+          subtype: 'marathon',
+          date: '2026-05-15',
+          priority: 'a',
+        }],
+      },
+    }, weekStart);
+
+    expect(fiveKPlan.phase).toBe('peak');
+    expect(marathonPlan.phase).toBe('taper');
   });
 
   it('enumerates fired guardrails in the daily rationale and preserves every guardrail result', () => {
@@ -145,4 +217,3 @@ describe('coach-kernel planner', () => {
     expect(day.rationale.some((line) => line.includes('Readiness within band'))).toBe(false);
   });
 });
-

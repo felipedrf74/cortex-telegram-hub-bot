@@ -70,6 +70,16 @@ content is retained only for provenance.
   speed-vs-judgment hooks; and `/api/v1/content/script` supports
   `forceRefresh`/`regenerate` with a regeneration seed so "generate again"
   bypasses the cache. The script generation cache key is now `script-v7`.
+- Training coach engine hardening on 2026-04-25 is implemented on `main` and
+  full-test validated, pending the next staging/prod deploy. It removes
+  founder-specific Felipe/carnivore/high-volume defaults from Training prompts,
+  makes the daily coach briefing cron generate per active canonical tenant
+  instead of owner-only users, fixes ACWR to use actual training-load values
+  with a 14-day sample guard, changes no-wearable readiness away from
+  `full_intensity`, combines sleep quality with duration as a safety floor, and
+  makes orange/red/injury coach-kernel states downshift deterministically.
+  Handoff: `docs/beta/training-coach-engine-hardening-handoff.md`.
+  Verification passed: full `npm run verify` = 345 files / 5,468 tests.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the

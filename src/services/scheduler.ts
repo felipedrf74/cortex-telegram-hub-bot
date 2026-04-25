@@ -1114,103 +1114,24 @@ export function startScheduler(bot?: any): void {
   }
 
   // ── Garmin coach briefing (configurable time) ──────────────────────
-  if (config.garmin.coachEnabled && isGarminConfigured()) {
+  if (config.garmin.coachEnabled) {
     cron.schedule(coachCron, wrapJob('garmin_coach', async () => {
-      logger.info('Daily coach briefing starting — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
-      // Silent mode: cron has no interactive user to answer an MFA
-      // code, so the recovery path must skip full re-login. If tokens
-      // are too stale even for OAuth2 refresh, the briefing runs with
-      // data gaps (logged as a warning) and the next user-initiated
-      // call will recover interactively. Fixes the daily Garmin
-      // passcode email that was landing in Felipe's inbox.
-      const authed = await garminEnsureAuth({ silent: true });
-      if (!authed) {
-        logger.warn('Coach briefing: Garmin session unrecoverable in silent mode — proceeding with whatever cached/partial data the briefing can assemble');
-      }
-      const result = await generateCoachBriefing();
-
-      if (result.errors.length > 0) {
-        logger.warn({ errors: result.errors }, 'Coach briefing completed with data gaps');
-      }
-
-      // Store recommendations so triathlon domain can reference them in follow-up chat
-      if (result.recommendations.length > 0) {
-        for (const userId of getOwnerUserIds()) {
-          setLastCoachState(userId, result.recommendations, result.message.substring(0, 500));
+      if (isGarminConfigured()) {
+        logger.info('Daily coach briefing starting — pre-authenticating Garmin (silent mode — no MFA email if session is dead)');
+        // Silent mode: cron has no interactive user to answer an MFA
+        // code, so the recovery path must skip full re-login. If tokens
+        // are too stale even for OAuth2 refresh, the briefing runs with
+        // data gaps (logged as a warning) and the next user-initiated
+        // call will recover interactively. Fixes the daily Garmin
+        // passcode email that was landing in Felipe's inbox.
+        const authed = await garminEnsureAuth({ silent: true });
+        if (!authed) {
+          logger.warn('Coach briefing: Garmin session unrecoverable in silent mode — proceeding with whatever cached/partial data the briefing can assemble');
         }
+      } else {
+        logger.info('Daily coach briefing starting without global Garmin; users with Apple Health or other wearable data can still receive scoped briefings');
       }
-
-      const chunks = splitMessage(result.message);
-
-      // Save coach briefing to each owner Telegram conversation history so
-      // follow-up replies stay in the same legacy Telegram context without
-      // writing under the old synthetic tenant 0.
-      for (const userId of getOwnerUserIds()) {
-        addToConversation(userId, 'triathlon', 'assistant', result.message);
-      }
-
-      for (const userId of getOwnerUserIds()) {
-        // Set conversation continuity to triathlon so follow-up replies stay in context
-        setLastActiveDomain(userId, 'triathlon');
-
-        // ── Store durable report + APNs push (April 2026) ──────────
-        // Coach briefing previously had NO APNs push — only Telegram.
-        // Now stored as a durable report with structured data.
-        try {
-          // Fetch readiness for structured metrics in the coach report
-          let readinessData: any = null;
-          try {
-            const { calculateReadiness } = require('./readiness-scorer');
-            readinessData = await calculateReadiness(userId);
-          } catch { /* non-fatal */ }
-
-          await storeAndPushReport({
-            userId,
-            type: 'coach_briefing' as const,
-            title: '🏋️ Coach Report',
-            summary: `${result.recommendations.length} recommendations`,
-            documentJson: {
-              message: result.message,
-              recommendations: result.recommendations,
-              errors: result.errors,
-              dataCollectionMs: result.dataCollectionMs,
-              analysisMs: result.analysisMs,
-              // Structured metrics for native iOS rendering
-              readiness: readinessData ? {
-                score: readinessData.score,
-                recommendation: readinessData.recommendation,
-                reasoning: readinessData.reasoning,
-                factors: {
-                  hrv: readinessData.factors?.hrv,
-                  sleep: readinessData.factors?.sleep,
-                  bodyBattery: readinessData.factors?.bodyBattery,
-                  trainingLoad: readinessData.factors?.trainingLoad,
-                },
-              } : null,
-            },
-            sourceJob: 'garmin_coach',
-            pushCategory: 'coach_briefing',
-          });
-        } catch (err) {
-          logger.debug({ err, userId }, 'Failed to store coach report (non-fatal)');
-        }
-
-        // Legacy Telegram delivery (gated)
-        if (telegramLegacyEnabled) {
-          try {
-            for (const chunk of chunks) {
-              await safeSend(userId, chunk, { parse_mode: 'HTML' });
-            }
-          } catch (err) {
-            logger.error({ err, userId }, 'Failed to send coach briefing');
-          }
-        }
-      }
-
-      logger.info(
-        { dataMs: result.dataCollectionMs, analysisMs: result.analysisMs, errors: result.errors.length },
-        'Daily coach briefing completed'
-      );
+      await sendCoachBriefings(bot);
     }), { timezone: tz });
   }
 
@@ -1616,6 +1537,97 @@ export function startScheduler(bot?: any): void {
 }
 
 // ── Exported for portal quick actions ─────────────────────────────────
+
+export async function sendCoachBriefings(bot?: any): Promise<void> {
+  const telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;
+  const safeSend = async (userId: number, msg: string, opts?: any) => {
+    if (!telegramEnabled) return;
+    try { await bot.api.sendMessage(userId, msg, opts); } catch {}
+  };
+
+  for (const target of getActiveUserTargets()) {
+    await runWithContext({ source: 'cron:garmin_coach', userId: target.tenantId }, async () => {
+      let result;
+      try {
+        result = await generateCoachBriefing(target.tenantId);
+      } catch (err) {
+        logger.warn({ err, userId: target.tenantId }, 'Coach briefing skipped for user');
+        return;
+      }
+
+      if (result.errors.length > 0) {
+        logger.warn({ userId: target.tenantId, errors: result.errors }, 'Coach briefing completed with data gaps');
+      }
+
+      // Store recommendations so Training follow-up actions can reference
+      // the correct tenant-scoped coach state.
+      if (result.recommendations.length > 0) {
+        setLastCoachState(target.tenantId, result.recommendations, result.message.substring(0, 500));
+      }
+
+      addToConversation(target.tenantId, 'triathlon', 'assistant', result.message);
+      setLastActiveDomain(target.tenantId, 'triathlon');
+
+      // Durable report + APNs push for the native app.
+      try {
+        let readinessData: any = null;
+        try {
+          const { calculateReadiness } = require('./readiness-scorer');
+          readinessData = await calculateReadiness(target.tenantId);
+        } catch { /* non-fatal */ }
+
+        await storeAndPushReport({
+          userId: target.tenantId,
+          type: 'coach_briefing' as const,
+          title: '🏋️ Coach Report',
+          summary: `${result.recommendations.length} recommendations`,
+          documentJson: {
+            message: result.message,
+            recommendations: result.recommendations,
+            errors: result.errors,
+            dataCollectionMs: result.dataCollectionMs,
+            analysisMs: result.analysisMs,
+            readiness: readinessData ? {
+              score: readinessData.score,
+              recommendation: readinessData.recommendation,
+              reasoning: readinessData.reasoning,
+              factors: {
+                hrv: readinessData.factors?.hrv,
+                sleep: readinessData.factors?.sleep,
+                bodyBattery: readinessData.factors?.bodyBattery,
+                trainingLoad: readinessData.factors?.trainingLoad,
+              },
+            } : null,
+          },
+          sourceJob: 'garmin_coach',
+          pushCategory: 'coach_briefing',
+        });
+      } catch (err) {
+        logger.debug({ err, userId: target.tenantId }, 'Failed to store coach report (non-fatal)');
+      }
+
+      if (telegramEnabled && target.telegramId) {
+        try {
+          for (const chunk of splitMessage(result.message)) {
+            await safeSend(target.telegramId, chunk, { parse_mode: 'HTML' });
+          }
+        } catch (err) {
+          logger.error({ err, userId: target.telegramId, tenantId: target.tenantId }, 'Failed to send coach briefing');
+        }
+      }
+
+      logger.info(
+        {
+          userId: target.tenantId,
+          dataMs: result.dataCollectionMs,
+          analysisMs: result.analysisMs,
+          errors: result.errors.length,
+        },
+        'Daily coach briefing completed'
+      );
+    });
+  }
+}
 
 export async function sendDailyBriefing(bot?: any): Promise<void> {
   const _telegramEnabled = isTelegramLegacyDeliveryEnabled() && bot;

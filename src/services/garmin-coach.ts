@@ -1,8 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 /**
- * Garmin Daily Coach — collects Garmin data, analyzes with Claude using
- * the Triatlon coaching persona, and formats a Telegram briefing message.
+ * Garmin Daily Coach — collects health/training data, analyzes it with the
+ * Training coaching persona, and formats a structured coach briefing message.
  *
  * v2: Includes structured recommendations (JSON) that the bot can use to
  *     offer inline buttons for applying coach suggestions to the calendar.
@@ -35,64 +35,63 @@ const client = new Anthropic({
 
 // ─── Coaching analysis prompt ─────────────────────────────────────────
 
-const COACH_ANALYSIS_PROMPT = `You are analyzing daily health and training data for your athlete. Respond ONLY with the structured Telegram briefing — no preamble, no explanations outside the template.
+const COACH_ANALYSIS_PROMPT = `You are analyzing daily health and training data for this athlete. Respond ONLY with the structured coach briefing — no preamble, no explanations outside the template.
 
 RULES:
-- Be direct, data-driven, no fluff — talk like a coach who knows this athlete
+- Be direct, data-driven, no fluff — talk like a coach who uses this athlete's actual profile
 - Every recommendation MUST cite specific data points
-- Carnivore diet framework: never suggest plant-based nutrition
-- Use ONLY Telegram HTML tags: <b>bold</b>, <i>italic</i>, <code>monospace</code>
-- NEVER use markdown syntax: no triple-backtick code fences, no | tables |, no --- dividers, no # headers, no ** bold **, no * italic *
+- Respect stored diet preferences and constraints when present. If none are present, give neutral recovery/fueling guidance.
+- Use plain text only. Do not use HTML tags, markdown tables, code fences, dividers, or markdown headings.
 - For tables/structured data, use aligned plain text with spaces or bullet points instead
-- For code/exercise blocks, use <code> tags or plain indented text, NOT triple backticks
-- Keep the HUMAN-READABLE part under 3800 characters (Telegram limit is 4096)
-- All times in Europe/Lisbon timezone
+- For exercise blocks, use short indented plain text, NOT triple backticks
+- Keep the HUMAN-READABLE part under 3800 characters
+- Use event timestamps exactly as provided in the payload. Do not assume timezone or delivery time.
 
 DATA INTERPRETATION:
-- <b>bodyBatterySummary</b>: pre-extracted body battery values (current, highest, lowest, charged, drained). ALWAYS use these in the snapshot section, even if the raw bodyBattery events data seems complex.
-- <b>activities</b>: today's recorded Garmin activities. Check activityDetails for training effect. For strength_training, look for exerciseSets.
-- <b>tomorrowCalendar</b>: the athlete's CALENDAR events for tomorrow, each with an "id" and "source" field. This is the PRIMARY source for tomorrow's training plan — training sessions are scheduled on the calendar (not in Garmin's workout planner). Look for events whose summary contains training-related keywords (gym, treino, corrida, bike, swim, yoga, strength, run, cycling, etc.).
-- <b>tomorrowScheduledWorkouts</b> and <b>tomorrowTrainingPlan</b>: Garmin's own workout scheduler (often empty — the athlete uses calendar instead).
+- bodyBatterySummary: pre-extracted body battery values (current, highest, lowest, charged, drained). ALWAYS use these in the snapshot section, even if the raw bodyBattery events data seems complex.
+- activities: today's recorded activities. Check activityDetails for training effect. For strength_training, look for exerciseSets.
+- tomorrowCalendar: the athlete's CALENDAR events for tomorrow, each with an "id" and "source" field. This is the PRIMARY source for tomorrow's training plan — training sessions are scheduled on the calendar. Look for events whose summary contains training-related keywords (gym, treino, corrida, bike, swim, yoga, strength, run, cycling, etc.).
+- tomorrowScheduledWorkouts and tomorrowTrainingPlan: Garmin's own workout scheduler (often empty — calendar may be the source of truth).
 
 OUTPUT FORMAT (follow exactly):
 
-🏋️ <b>NEXUS HUB — DAILY COACH BRIEFING</b>
-📅 {date} — 21:00
+🏋️ NEXUS HUB — DAILY COACH BRIEFING
+📅 {date}
 
-━━━ <b>TODAY'S SNAPSHOT</b> ━━━
+TODAY'S SNAPSHOT
 🛌 Sleep: {hours}h ({quality})
 💓 RHR: {bpm} | HRV: {ms}
 🔋 Body Battery: {current}/{highest recharged} (lowest: {lowest})
 😰 Stress: {avg} ({low/medium/high})
 🏃 Training Readiness: {score}/100
 
-━━━ <b>TODAY'S TRAINING</b> ━━━
+TODAY'S TRAINING
 {For each activity in activities array:}
-• <b>{activityName or activity_type}</b>: {duration}, {distance if applicable}
+• {activityName or activity_type}: {duration}, {distance if applicable}
   Training Effect: {aerobic}/{anaerobic}
   {Key metrics: calories, avg HR, max HR, sets/reps for strength}
 
 {If activities array is empty: "Rest day — no recorded activities."}
 
-━━━ <b>ANALYSIS</b> ━━━
+ANALYSIS
 {2-4 sentences: direct coaching assessment}
 {Flag concerns: overtraining, undereating, poor sleep, elevated RHR}
 
-━━━ <b>TOMORROW'S PLAN</b> ━━━
+TOMORROW'S PLAN
 {Check BOTH tomorrowCalendar AND tomorrowScheduledWorkouts/tomorrowTrainingPlan.}
 {Calendar events with training keywords ARE planned sessions.}
 {For each planned session:}
-{✅/⚠️/🔄/❌} <b>{session_name}</b>
+{✅/⚠️/🔄/❌} {session_name}
   ⏰ {start_time} – {end_time}
   Recommendation: {KEEP/MODIFY details/SWAP details/REST}
   Why: {1-2 sentence data-driven explanation}
 
 {Non-training calendar events → list briefly as schedule context:}
-⏰ <b>Schedule:</b> {event1 time, event2 time, ...}
+⏰ Schedule: {event1 time, event2 time, ...}
 
 {If NO training found in calendar AND no Garmin workouts: "No training planned for tomorrow. Consider: {suggestion based on recovery data}."}
 
-━━━ 💡 <b>TIP OF THE DAY</b> ━━━
+TIP OF THE DAY
 {One actionable tip: recovery, nutrition, electrolytes, mobility, mindset}
 
 RECOMMENDATION KEY:
@@ -432,10 +431,10 @@ ${payloadStr}
 1. Analyze my recovery status and today's training load
 2. For each scheduled workout tomorrow, recommend: KEEP / MODIFY / SWAP / REST
 3. Every recommendation must reference specific data points
-4. Flag nutrition concerns (carnivore diet, high training volume)
+4. Flag recovery, fueling, or schedule concerns only when supported by payload or profile data
 5. Include one actionable tip
-6. Be direct, no fluff — talk to me like a coach who knows me
-7. Use HTML tags for Telegram formatting (<b>, <i>)
+6. Be direct, no fluff — talk like a coach using this athlete's actual profile
+7. Use plain text only; no HTML tags
 8. Keep the human-readable briefing under 3800 characters
 9. At the END, include the structured COACH_RECS JSON block for calendar actions`;
 
@@ -482,7 +481,7 @@ ${payloadStr}
 
     if (!rawText.trim()) {
       return {
-        message: '⚠️ <b>Coach analysis returned empty.</b>\n\nTry /coach again.',
+        message: '⚠️ Coach analysis returned empty.\n\nTry /coach again.',
         recommendations: [],
         errors: [...errors, `${analysisProvider} returned empty response`],
         dataCollectionMs,
@@ -493,11 +492,11 @@ ${payloadStr}
     // Extract structured recommendations JSON from the response
     const { humanMessage, recommendations } = extractRecommendations(rawText);
 
-    // Sanitize any markdown that Claude may have output despite HTML instructions
+    // Sanitize any markdown/unsafe fragments that the model may have output
     const cleanMessage = sanitizeMarkdownForTelegram(humanMessage);
 
     // Append data collection info as a footer
-    const footer = `\n\n<i>📊 Data: ${(dataCollectionMs / 1000).toFixed(1)}s | Analysis: ${(analysisMs / 1000).toFixed(1)}s${errors.length > 0 ? ` | ⚠️ ${errors.length} data gap(s)` : ''}</i>`;
+    const footer = `\n\n📊 Data: ${(dataCollectionMs / 1000).toFixed(1)}s | Analysis: ${(analysisMs / 1000).toFixed(1)}s${errors.length > 0 ? ` | ⚠️ ${errors.length} data gap(s)` : ''}`;
 
     return {
       message: cleanMessage + footer,
@@ -509,7 +508,7 @@ ${payloadStr}
   } catch (err) {
     logger.error({ err }, 'Coach analysis failed');
     return {
-      message: '⚠️ <b>Coach analysis failed</b>\n\nAI provider error. Try /coach later.',
+      message: '⚠️ Coach analysis failed\n\nAI provider error. Try /coach later.',
       recommendations: [],
       errors: [...errors, (err as Error).message],
       dataCollectionMs,

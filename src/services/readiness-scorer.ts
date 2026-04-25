@@ -133,9 +133,19 @@ export function scoreHrv(todayMs: number, avgMs: number): number {
 }
 
 export function scoreSleep(durationHours: number, garminQuality: number | null): number {
+  const hasDuration = Number.isFinite(durationHours) && durationHours > 0;
+  const durationScore = hasDuration ? scoreSleepDuration(durationHours) : null;
   if (garminQuality != null && garminQuality > 0) {
-    return clamp(garminQuality, 0, 100);
+    // Garmin's quality score can look "good" after too little total sleep.
+    // Keep duration as a hard safety floor so 3h of high-quality sleep does
+    // not become a green recovery signal.
+    const qualityScore = clamp(garminQuality, 0, 100);
+    return durationScore != null ? Math.min(durationScore, qualityScore) : qualityScore;
   }
+  return durationScore ?? 60;
+}
+
+function scoreSleepDuration(durationHours: number): number {
   if (durationHours < 5) return 20;
   if (durationHours < 6) return 40;
   if (durationHours < 7) return 60;
@@ -158,20 +168,85 @@ export function scoreAcwr(acwr: number): number {
   return 70;                      // under-training
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function scoreTrainingEffectLabel(label: unknown): number | null {
+  if (label == null) return null;
+  const normalized = String(label).toLowerCase();
+  if (/recovery|easy|base|aerobic/.test(normalized)) return 35;
+  if (/tempo|threshold|sweet|sst/.test(normalized)) return 75;
+  if (/vo2|anaerobic|sprint|interval|max/.test(normalized)) return 105;
+  if (/maintaining|productive/.test(normalized)) return 55;
+  return null;
+}
+
+function estimateTrainingStress(activity: any): number {
+  const explicitLoad = toFiniteNumber(
+    activity.activityTrainingLoad
+      ?? activity.trainingLoad
+      ?? activity.training_load
+      ?? activity.trainingLoadValue
+      ?? activity.training_stress_score
+      ?? activity.tss,
+  );
+  if (explicitLoad != null && explicitLoad > 0) return explicitLoad;
+
+  const effectValue = toFiniteNumber(
+    activity.trainingEffect
+      ?? activity.aerobicTrainingEffect
+      ?? activity.trainingEffectValue,
+  );
+  if (effectValue != null && effectValue > 0) return clamp(effectValue * 25, 20, 130);
+
+  const effectLabelScore = scoreTrainingEffectLabel(activity.trainingEffectLabel ?? activity.trainingEffect);
+  if (effectLabelScore != null) return effectLabelScore;
+
+  const durationSeconds = toFiniteNumber(
+    activity.duration
+      ?? activity.durationSeconds
+      ?? activity.elapsedDuration
+      ?? activity.movingDuration,
+  );
+  if (durationSeconds != null && durationSeconds > 0) {
+    return clamp(durationSeconds / 60, 20, 240);
+  }
+
+  return 30;
+}
+
 function computeAcwr(activities: any[]): { acuteLoad: number; chronicLoad: number; acwr: number } {
   const now = Date.now();
   const msPerDay = 86400000;
 
   let acuteLoad = 0;
   let chronicLoad = 0;
+  const sampleDays = new Set<string>();
 
   for (const a of activities) {
-    const actDate = new Date(a.startTimeLocal || a.startTimeGMT || a.beginTimestamp).getTime();
+    const rawDate = a.startTimeLocal || a.startTimeGMT || a.beginTimestamp || a.startDate || a.start;
+    const actDate = new Date(rawDate).getTime();
+    if (!Number.isFinite(actDate)) continue;
     const daysAgo = (now - actDate) / msPerDay;
-    const stress = a.activityTrainingLoad || a.trainingEffectLabel ? 50 : (a.duration ? a.duration / 60 : 30);
+    if (daysAgo < 0 || daysAgo > 28) continue;
+    sampleDays.add(new Date(actDate).toISOString().slice(0, 10));
+    const stress = estimateTrainingStress(a);
 
     if (daysAgo <= 7) acuteLoad += stress;
-    if (daysAgo <= 28) chronicLoad += stress;
+    chronicLoad += stress;
+  }
+
+  // ACWR is unstable with sparse history. Preserve the real load totals for
+  // display, but keep the ratio neutral until there is enough distinct-day
+  // history to avoid fake precision for cold-start users.
+  if (sampleDays.size < 14 || chronicLoad <= 0) {
+    return { acuteLoad, chronicLoad, acwr: 1.0 };
   }
 
   // Normalize to per-day averages
@@ -454,8 +529,8 @@ export async function calculateReadiness(userId: number): Promise<ReadinessResul
     return {
       score: 60,
       factors: neutralFactors,
-      recommendation: 'full_intensity',
-      reasoning: 'No wearable connected — using default readiness. Connect Garmin or Apple Health for personalized adjustments.',
+      recommendation: getRecommendation(60),
+      reasoning: 'No wearable connected — using conservative default readiness. Connect Garmin or Apple Health for personalized adjustments.',
       reasonCode: 'WEARABLE_INTEGRATION_MISSING',
     };
   }

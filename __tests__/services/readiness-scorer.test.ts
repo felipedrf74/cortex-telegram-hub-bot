@@ -101,8 +101,9 @@ describe('readiness-scorer — factor scorers', () => {
       expect(scoreSleep(8.5, null)).toBe(90);
     });
 
-    it('uses Garmin quality score when available', () => {
-      expect(scoreSleep(5, 85)).toBe(85);
+    it('uses Garmin quality score but keeps sleep duration as a safety floor', () => {
+      expect(scoreSleep(7.5, 85)).toBe(80);
+      expect(scoreSleep(3, 95)).toBe(20);
     });
   });
 
@@ -216,8 +217,26 @@ describe('readiness-scorer — calculateReadiness', () => {
     // With no Apple Health data either (mock DB returns empty), falls to neutral
     const result = await calculateReadiness(1);
     expect(result.score).toBe(60);
-    expect(result.recommendation).toBe('full_intensity');
-    expect(result.reasoning).toContain('No wearable connected');
+    expect(result.recommendation).toBe('reduce_25pct');
+    expect(result.reasoning).toContain('conservative default readiness');
+  });
+
+  it('uses actual Garmin training load values instead of a constant stress score', async () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86400000).toISOString();
+    mockGarmin.getHrvData.mockResolvedValue({ hrvSummary: { lastNightAvg: 60, weeklyAvg: 60 } });
+    mockGarmin.getSleepData.mockResolvedValue({ dailySleepDTO: { sleepTimeSeconds: 28800, overallSleepScore: 90 } });
+    mockGarmin.getBodyBatteryEvents.mockResolvedValue([{ bodyBatteryLevel: 80 }]);
+    mockGarmin.getTrainingReadiness.mockResolvedValue({});
+    mockGarmin.getActivitiesByDate.mockResolvedValue([
+      { activityTrainingLoad: 180, startTimeLocal: daysAgo(1), duration: 3600 },
+      { activityTrainingLoad: 120, startTimeLocal: daysAgo(5), duration: 3600 },
+      { activityTrainingLoad: 90, startTimeLocal: daysAgo(10), duration: 3600 },
+    ]);
+
+    const result = await calculateReadiness(1);
+    expect(result.factors.trainingLoad.acuteLoad).toBe(300);
+    expect(result.factors.trainingLoad.chronicLoad).toBe(390);
+    expect(result.factors.trainingLoad.acwr).toBe(1);
   });
 
   it('handles missing data gracefully (uses fallback per factor)', async () => {
