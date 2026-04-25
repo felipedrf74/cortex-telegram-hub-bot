@@ -696,7 +696,13 @@ def _clean_chat_script(script: str) -> str:
 
     cleaned = "\n".join(cleaned_lines).strip()
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    return cleaned or script.strip()
+    return _strip_inline_markdown_emphasis(cleaned or script.strip())
+
+
+def _strip_inline_markdown_emphasis(script: str) -> str:
+    cleaned = re.sub(r"\*\*([^*\n][^*]*?)\*\*", r"\1", script)
+    cleaned = re.sub(r"__([^_\n][^_]*?)__", r"\1", cleaned)
+    return cleaned
 
 
 def _clean_script_dividers(script: str) -> str:
@@ -709,7 +715,7 @@ def _clean_script_dividers(script: str) -> str:
             continue
         cleaned_lines.append(raw_line)
     cleaned = "\n".join(cleaned_lines).strip()
-    return cleaned or script.strip()
+    return _strip_inline_markdown_emphasis(cleaned or script.strip())
 
 
 async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:

@@ -180,6 +180,7 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('def _normalize_script_style');
     expect(src).toContain('def _script_style_guidance');
     expect(src).toContain('def _script_quality_guidance');
+    expect(src).toContain('def _strip_inline_markdown_emphasis');
     expect(src).toContain('def _clean_script_dividers');
     expect(src).toContain('OUTPUT STYLE RULES:');
     expect(src).toContain('SCRIPT QUALITY BAR:');
