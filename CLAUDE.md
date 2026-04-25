@@ -14,13 +14,13 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend and staging are live at `4.14.70`.
+- Production backend and staging are live at `4.14.71`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
   345 test files / 5,456 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at backend commit `4fbc32b`.
+  online at backend commit `e8239e8`.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -66,10 +66,10 @@
   focused backend Training tests passed 4 files / 63 tests, staging
   signed-session smoke passed 17/17, and iOS simulator build passed. The
   latest full deploy gate later passed 345 files / 5,456 tests during the
-  `4.14.70` content AI hotfix promotion. Signed TestFlight/device validation
+  `4.14.71` content AI hotfix/cache promotion. Signed TestFlight/device validation
   remains required.
 - Content script AI delivery hotfix on 2026-04-25 is deployed in backend
-  `4.14.70`: the live "Qualidade reduzida" root cause was the Python content
+  `4.14.71`: the live "Qualidade reduzida" root cause was the Python content
   engine losing the TS AI bridge and degrading when synthesis responses were
   fenced/malformed JSON. Production and staging now require
   `INTERNAL_API_SECRET`, `AI_CALL_TIMEOUT_MS`, and a backend URL/port before
@@ -79,12 +79,14 @@
   examples, format-specific structure, non-repetitive hooks, and distinct
   YouTube vs short-form outputs. The script writer also strips decorative
   section dividers and raw markdown emphasis before returning app-rendered
-  sections. Production direct script smoke on `4.14.70` returned
-  `degraded=false`, `warnings=[]`, 5 sources, no old generic pattern, no
+  sections. `4.14.71` also bumps the script generation cache key to
+  `script-v6`, so old generic/degraded `script-v5` results cannot replay for
+  standard/quick generations. Production direct script smoke on `4.14.71`
+  returned `degraded=false`, `warnings=[]`, no old generic pattern, no
   decorative dividers, no raw markdown emphasis, and Voice-DNA-specific
-  language for both YouTube detailed and Shorts detailed requests; production
-  must keep returning `degraded=false` for normal script generation unless a
-  real provider outage occurs.
+  language for YouTube detailed, Shorts detailed, and a standard cache-v6
+  request; production must keep returning `degraded=false` for normal script
+  generation unless a real provider outage occurs.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
@@ -232,7 +234,7 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.70` from `main`; do not treat the
+hardening branch has been deployed to production as `4.14.71` from `main`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:
