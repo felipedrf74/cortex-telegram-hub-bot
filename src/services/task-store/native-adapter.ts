@@ -115,8 +115,8 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
 
     const importance = this.priorityToImportance(task.priority);
     const result = db.prepare(`
-      INSERT INTO native_tasks (user_id, list_id, title, body, importance, status, due_date_time, tags)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO native_tasks (user_id, list_id, title, body, importance, status, due_date_time, recurrence, tags)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       userId,
       listId,
@@ -125,6 +125,7 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
       importance,
       task.status === 'completed' ? 'completed' : 'notStarted',
       task.dueDate || null,
+      task.recurrence ? JSON.stringify(task.recurrence) : null,
       task.tags ? JSON.stringify(task.tags) : null,
     );
 
@@ -209,6 +210,7 @@ export class NativeTaskAdapter implements TaskProviderAdapter {
       tags: row.tags ? JSON.parse(row.tags) : undefined,
       notes: row.body || undefined,
       completedAt: row.completed_at || undefined,
+      recurrence: row.recurrence ? JSON.parse(row.recurrence) : undefined,
     };
   }
 

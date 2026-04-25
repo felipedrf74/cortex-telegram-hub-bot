@@ -6,8 +6,8 @@ This section supersedes older branch/status notes below. Historical handoff
 content is retained only for provenance.
 
 - Current backend beta branch: `beta/single-agent-rc`.
-- Backend production is live at `4.14.64`.
-- Full backend verification passed: 342 test files / 5,436 tests.
+- Backend production is live at `4.14.66`.
+- Full backend verification passed: 342 test files / 5,438 tests.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -16,9 +16,36 @@ content is retained only for provenance.
   `felipedrf74@gmail.com` and `vieira.jaqueline@gmail.com`.
 - Deploy scripts now exclude worktree `.git` files so branch worktrees can
   deploy safely.
+- Latest local Content + Training TestFlight bugfix pass on 2026-04-25:
+  `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
+  derives user-scoped Voice DNA from content knowledge, forwards it into the
+  Python script engine, includes style in the script cache key, and returns
+  `scriptStyle` in the API response. Python degraded fallback now distinguishes
+  YouTube vs short-form and detailed vs bullet outputs, but a visible
+  "Qualidade reduzida" response still means AI synthesis/generation was
+  unavailable and the backend provider path needs deployment/config proof.
+  Python JSON synthesis calls now set backend proxy `jsonMode`, reducing
+  avoidable search-based fallbacks from non-JSON model formatting.
+  iOS also fixed topic-list cache invalidation after topic writes, athlete
+  profile finish actions from Training, and Training complete/skip fallback to
+  the `"today"` sentinel.
+- Follow-up local Content scheduling/pipeline + Training readiness pass on
+  2026-04-25: `POST/PATCH /api/v1/content/topics` now accepts
+  `scheduledDateTime`; date-only topics create/update Secretary tasks;
+  date+time topics also create/update calendar agenda/events through unified
+  calendar; Content Tasks reads scheduled topics directly and shows
+  task/calendar sync status; Pipeline Detail ignores benign superseded-load
+  cancellation; Training keeps renderable Home/Training data visible during
+  refresh; Home secondary previews fan out in parallel after the primary
+  dashboard render. This requires migration
+  `078_content_topic_secretary_artifacts.sql`,
+  backend deployment, and fresh signed TestFlight/device validation before it is
+  live user truth.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
-  and real Gmail/Outlook/Health provider-state checks.
+  real Gmail/Outlook/Health provider-state checks, and device proof for the
+  latest Secretary, Health, Content script/topic scheduling/pipeline, and
+  Training action/readiness fixes.
 
 Do not treat the older `claude/tenant-entitlement-portal-hardening` notes below
 as current release status.

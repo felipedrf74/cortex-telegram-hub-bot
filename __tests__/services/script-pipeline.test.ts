@@ -117,13 +117,14 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     expect(engineSource).toContain('export function buildScriptCacheKey');
-    expect(engineSource).toContain("'script-v4'");
+    expect(engineSource).toContain("'script-v5'");
     expect(engineSource).toContain('`duration:${maxDuration}`');
     expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
     expect(engineSource).toContain('`mode:${mode}`');
     expect(engineSource).toContain('`lang:${normalizeScriptLanguage(language)}`');
     expect(engineSource).toContain('`voice:${hashBrandVoice(brandVoice)}`');
     expect(engineSource).toContain('`render:${normalizeScriptRenderMode(renderMode)}`');
+    expect(engineSource).toContain('`style:${normalizeScriptStyle(scriptStyle)}`');
     expect(engineSource).toContain('`ctx:${hashScriptContext(scriptContext)}`');
     expect(engineSource).toContain("`scope:${userId ?? 'global'}`");
   });

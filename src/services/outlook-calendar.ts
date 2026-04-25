@@ -4,6 +4,7 @@ import { getGraphClient, getGraphClientForUser, isMicrosoftConfigured } from './
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { CalendarEvent } from './google-calendar';
+import type { NormalizedRecurrence } from './recurrence-utils';
 
 export function isOutlookCalendarConfigured(userId?: number): boolean {
   // Owner-level check (Telegram bot / global config)
@@ -213,6 +214,7 @@ export async function createEvent(data: {
   categories?: string[];
   attendees?: string[];
   location?: string;
+  recurrence?: NormalizedRecurrence;
 }, userId?: number): Promise<CalendarEvent> {
   try {
     const client = userId
@@ -240,6 +242,9 @@ export async function createEvent(data: {
     }
     if (data.location) {
       postBody.location = { displayName: data.location };
+    }
+    if (data.recurrence) {
+      postBody.recurrence = data.recurrence;
     }
     if (attendees.length > 0) {
       postBody.attendees = attendees.map((address) => ({

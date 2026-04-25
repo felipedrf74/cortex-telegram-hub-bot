@@ -152,6 +152,7 @@ function createNativeWrapper(userId: number) {
         status: 'pending',
         priority: data.importance === 'high' ? 3 : data.importance === 'low' ? 1 : 2,
         dueDate: data.dueDateTime || undefined,
+        recurrence: data.recurrence || undefined,
         projectId: fallbackProject ? parseInt(fallbackProject.externalId, 10) : undefined,
         projectName: fallbackProject?.name || listName,
       });
@@ -333,6 +334,7 @@ function taskToMsTodoShape(t: any, listId: string, listName: string) {
     status: t.status === 'completed' ? 'completed' : t.status === 'in_progress' ? 'inProgress' : 'notStarted',
     dueDateTime: t.dueDate || null,
     reminderDateTime: null,
+    recurrence: t.recurrence || null,
     isReminderOn: false,
     createdDateTime: t.completedAt || new Date().toISOString(),
     completedDateTime: t.completedAt || null,

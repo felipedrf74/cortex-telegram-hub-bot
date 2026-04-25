@@ -10,8 +10,8 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
 
 | Gap | Status | Evidence | Remaining Work | Tests Needed | Notes |
 |---|---|---|---|---|---|
-| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, and 2026-04-25 simulator smoke with Felipe's persisted account. Backend production is live at `4.14.66`. | Signed TestFlight/device smoke, APNs proof, fresh auth, and true two-account switching. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
-| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; latest full backend validation passed 342 files / 5,438 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
+| Gap 1: Live TestFlight smoke | Complete with manual verification required | iOS worktree has smoke matrix, manual checklist, local smoke script, focused smoke tests, and 2026-04-25 simulator smoke with Felipe's persisted account. Backend production is live at `4.14.66`. | Signed TestFlight/device smoke, APNs proof, fresh auth, true two-account switching, and latest Content/Training TestFlight bugfix proof. | Physical-device/TestFlight checklist. | Backend is ready for the smoke gate; iOS distribution proof remains. |
+| Gap 2: Tenant/data isolation | Complete with manual verification required | `docs/beta/security-foundation-handoff.md`; targeted isolation/admin/auth/integration suite passed 41 files / 439 tests; full `npm run verify` passed 342 files / 5,438 tests; staging wrong-tenant/operator-scope smoke passed; founder users verified in staging and production. | True app-level two-account switching on device with safe seeded data. | Device account-switching smoke for fiscal/vendor, finance, integrations, health/wearable, plan, and skill data. | Backend isolation proof is complete. |
 | Gap 3: Auth + onboarding reliability | Partial | `docs/beta/agent-3-auth-onboarding-handoff.md`; backend auth/onboarding tests exist; full backend verify passed; iOS existing-session simulator restore succeeded. | Fresh Apple/Google/email auth and interrupted onboarding on signed iOS build/device. | Real-device auth/onboarding smoke. | Backend promotion completed; iOS live auth proof remains. |
 | Gap 4: iOS degraded/error states | Complete with manual verification required | Implemented in the iOS single-agent worktree; simulator smoke showed honest missing calendar/email/Training setup states. | Physical-device visual pass for backend unavailable, retry success/failure, and account-switch loading. | iOS degraded-state smoke. | Out of scope for backend code, but backend returns canonical envelopes for iOS. |
 | Gap 5: Portal/admin operator sessions | Complete | `docs/beta/security-foundation-handoff.md`; signed session/admin scope tests passed; hardened staging smoke passed valid, expired, tampered, unauthorized role/scope, wrong-tenant, and static-token rejection paths. | Optional production env flip to require signed sessions only if desired. | Optional production hardening smoke after final env flip. | Production code is live at `4.14.66`. |
@@ -56,6 +56,21 @@ Active worktree: `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/beta-c
   ~21ms with 10 task lists and real `taskCount` values; no `-1` placeholders
   were present. Focused task route/store regression tests passed 3 files / 62
   tests.
+- Local 2026-04-25 Content + Training TestFlight bugfix pass is code-fixed and
+  focused-test validated: content script style/Voice DNA/cache-key contract,
+  Python proxy JSON mode for synthesis, Python degraded fallback distinction,
+  iOS topic-write cache invalidation, Training athlete-profile finish action,
+  and Training complete/skip fallback to backend `"today"`. Still needs backend
+  deployment plus a fresh signed TestFlight/device pass before it is live user
+  truth.
+- Follow-up local Content scheduling/pipeline + Training readiness pass is
+  code-fixed and focused-test validated: topic `scheduledDateTime`, date-only
+  Secretary task sync, date+time calendar agenda sync, Content Tasks scheduled
+  topic visibility, Pipeline cancellation handling, and Training renderable-data
+  readiness during refresh. iOS Home secondary previews now fan out in parallel
+  after the primary dashboard render. Still needs migration
+  `078_content_topic_secretary_artifacts.sql`, backend deployment, and a fresh
+  signed TestFlight/device pass before it is live user truth.
 
 ## Single-Agent Rules
 

@@ -46,6 +46,8 @@ export interface NormalizedTask {
   url?: string;
   /** Full provider response — preserved so we can re-render rich provider UI. */
   providerData?: Record<string, unknown>;
+  /** Provider-native or Nexus-normalized recurrence pattern. */
+  recurrence?: unknown;
 }
 
 /** Normalized project / task list. */

@@ -19,6 +19,7 @@ import {
   setContentRadarPreferences,
 } from '../../services/content-radar-preferences';
 import { localizeFilmingRecommendation } from '../../services/content-intelligence';
+import { syncContentTopicSecretaryArtifacts } from '../../services/content-topic-secretary-sync';
 import { logger } from '../../utils/logger';
 import type { Lang } from '../../utils/i18n';
 
@@ -38,6 +39,17 @@ function parseContentTopicId(value: string): number | null {
 function isValidScheduledDate(value: unknown): value is string | null | undefined {
   if (value === undefined || value === null) return true;
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function isValidScheduledDateTime(value: unknown): value is string | null | undefined {
+  if (value === undefined || value === null) return true;
+  return typeof value === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})?$/.test(value)
+    && !Number.isNaN(Date.parse(value));
+}
+
+function datePartFromScheduledDateTime(value: string | null | undefined): string | undefined {
+  return typeof value === 'string' ? value.slice(0, 10) : undefined;
 }
 
 export function registerContentTopicRoutes(
@@ -127,7 +139,7 @@ export function registerContentTopicRoutes(
 
   /**
    * POST /api/v1/content/topics
-   * Body: { title, notes?, scheduledDate?, status? }
+   * Body: { title, notes?, scheduledDate?, scheduledDateTime?, status? }
    *
    * Creates a new topic. `scheduledDate` is nullable — unscheduled
    * topics go in the "later" bucket in the iOS UI. `status` defaults
@@ -137,7 +149,7 @@ export function registerContentTopicRoutes(
     const { userId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_create')) return;
 
-    const { title, notes, scheduledDate, status } = req.body;
+    const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
     if (!title || typeof title !== 'string' || !title.trim()) {
       sendError(res, 'BAD_REQUEST', 'title is required and must be non-empty');
       return;
@@ -150,15 +162,25 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDate must be YYYY-MM-DD or null');
       return;
     }
+    if (!isValidScheduledDateTime(scheduledDateTime)) {
+      sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
+      return;
+    }
 
     try {
+      const language = resolveContentLanguage(req, userId);
+      const effectiveScheduledDate = scheduledDate
+        ?? datePartFromScheduledDateTime(scheduledDateTime)
+        ?? null;
       const topic = addTopic(userId, title.trim(), {
         notes: notes ?? null,
-        scheduledDate: scheduledDate ?? null,
+        scheduledDate: effectiveScheduledDate,
+        scheduledAt: scheduledDateTime ?? null,
         status: status ?? 'planned',
       });
+      const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, topic, { language });
       invalidateContentDerivedCaches(userId);
-      sendSuccess(res, { topic }, { status: 201 });
+      sendSuccess(res, { topic: syncedTopic }, { status: 201 });
     } catch (err: any) {
       logger.error({ err, userId }, 'iOS content topic create failed');
       sendInternalError(res, 'Failed to create topic');
@@ -167,7 +189,7 @@ export function registerContentTopicRoutes(
 
   /**
    * PATCH /api/v1/content/topics/:id
-   * Body: { title?, notes?, scheduledDate?, status? }
+   * Body: { title?, notes?, scheduledDate?, scheduledDateTime?, status? }
    *
    * Partial update — only the fields present in the body are modified.
    * `scheduledDate` and `notes` accept explicit null to clear.
@@ -177,13 +199,13 @@ export function registerContentTopicRoutes(
     const topicId = parseContentTopicId(req.params.id);
     if (!ensureValidContentRouteScope(res, userId, 'content_route_topics_update', { topicId })) return;
 
-    const { title, notes, scheduledDate, status } = req.body;
+    const { title, notes, scheduledDate, scheduledDateTime, status } = req.body;
     if (topicId == null) {
       sendError(res, 'BAD_REQUEST', 'id must be a number');
       return;
     }
-    if (title === undefined && notes === undefined && scheduledDate === undefined && status === undefined) {
-      sendError(res, 'BAD_REQUEST', 'At least one of title, notes, scheduledDate, or status must be provided');
+    if (title === undefined && notes === undefined && scheduledDate === undefined && scheduledDateTime === undefined && status === undefined) {
+      sendError(res, 'BAD_REQUEST', 'At least one of title, notes, scheduledDate, scheduledDateTime, or status must be provided');
       return;
     }
     if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
@@ -198,20 +220,31 @@ export function registerContentTopicRoutes(
       sendError(res, 'BAD_REQUEST', 'scheduledDate must be YYYY-MM-DD or null');
       return;
     }
+    if (!isValidScheduledDateTime(scheduledDateTime)) {
+      sendError(res, 'BAD_REQUEST', 'scheduledDateTime must be ISO datetime or null');
+      return;
+    }
 
     try {
+      const effectiveScheduledDate = scheduledDate !== undefined
+        ? scheduledDate
+        : datePartFromScheduledDateTime(scheduledDateTime);
       const updated = updateTopic(userId, topicId, {
         title: title !== undefined ? title.trim() : undefined,
         notes: notes !== undefined ? (notes === null ? null : String(notes)) : undefined,
-        scheduled_date: scheduledDate !== undefined ? scheduledDate : undefined,
+        scheduled_date: effectiveScheduledDate,
+        scheduled_at: scheduledDateTime !== undefined ? scheduledDateTime : undefined,
         status,
       });
       if (!updated) {
         sendError(res, 'NOT_FOUND', 'Topic not found or not owned by user', 404);
         return;
       }
+      const syncedTopic = await syncContentTopicSecretaryArtifacts(userId, updated, {
+        language: resolveContentLanguage(req, userId),
+      });
       invalidateContentDerivedCaches(userId);
-      sendSuccess(res, { topic: updated });
+      sendSuccess(res, { topic: syncedTopic });
     } catch (err: any) {
       logger.error({ err, userId, topicId }, 'iOS content topic update failed');
       sendInternalError(res, 'Failed to update topic');

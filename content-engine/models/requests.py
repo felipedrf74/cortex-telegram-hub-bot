@@ -74,6 +74,7 @@ class ScriptRequest(BaseModel):
     mode: str = Field(default="standard")
     language: str = Field(default="pt-BR")
     render_mode: str = Field(default="structured")
+    script_style: str = Field(default="detailed")
     max_duration_minutes: int = Field(default=8, ge=1, le=30)
     target_duration_seconds: int | None = Field(default=None, ge=15, le=900)
     topic_context: dict | None = Field(default=None)

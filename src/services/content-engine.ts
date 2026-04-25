@@ -324,6 +324,7 @@ export async function getHooks(topic: string, niche = 'general', count = 8): Pro
 
 export type ScriptGenerationMode = 'quick' | 'standard' | 'deep';
 export type ScriptRenderMode = 'structured' | 'chat';
+export type ScriptStyle = 'detailed' | 'bullets';
 
 const MODE_CONFIG: Record<ScriptGenerationMode, { cacheTtl: number; signalDays: number; timeoutMs: number }> = {
   quick:    { cacheTtl: 48 * 3600, signalDays: 0,  timeoutMs: 60_000 },
@@ -342,6 +343,13 @@ function normalizeScriptRenderMode(renderMode?: string | null): ScriptRenderMode
   return String(renderMode || 'structured').trim().toLowerCase() === 'chat'
     ? 'chat'
     : 'structured';
+}
+
+function normalizeScriptStyle(style?: string | null): ScriptStyle {
+  const normalized = String(style || 'detailed').trim().toLowerCase();
+  return ['bullet', 'bullets', 'outline', 'pontos'].includes(normalized)
+    ? 'bullets'
+    : 'detailed';
 }
 
 function hashBrandVoice(brandVoice?: string | null): string {
@@ -449,9 +457,10 @@ export function buildScriptCacheKey(
   renderMode: ScriptRenderMode = 'structured',
   userId?: number,
   scriptContext?: ScriptTopicContext | null,
+  scriptStyle: ScriptStyle = 'detailed',
 ): string {
   return [
-    'script-v4',
+    'script-v5',
     topic.toLowerCase().trim(),
     niche,
     format,
@@ -461,6 +470,7 @@ export function buildScriptCacheKey(
     `lang:${normalizeScriptLanguage(language)}`,
     `voice:${hashBrandVoice(brandVoice)}`,
     `render:${normalizeScriptRenderMode(renderMode)}`,
+    `style:${normalizeScriptStyle(scriptStyle)}`,
     `ctx:${hashScriptContext(scriptContext)}`,
     `scope:${userId ?? 'global'}`,
   ].join(':');
@@ -475,10 +485,12 @@ export async function getScript(
   userId?: number,
   targetDurationSeconds?: number | null,
   scriptContext?: ScriptTopicContext | null,
+  scriptStyle: ScriptStyle = 'detailed',
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
   const normalizedLanguage = normalizeScriptLanguage(language);
   const normalizedRenderMode = normalizeScriptRenderMode(renderMode);
+  const normalizedScriptStyle = normalizeScriptStyle(scriptStyle);
   const normalizedKey = buildScriptCacheKey(
     topic,
     niche,
@@ -491,6 +503,7 @@ export async function getScript(
     normalizedRenderMode,
     userId,
     scriptContext,
+    normalizedScriptStyle,
   );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
@@ -538,6 +551,7 @@ export async function getScript(
       topic, niche, format, mode,
       language: normalizedLanguage,
       render_mode: normalizedRenderMode,
+      script_style: normalizedScriptStyle,
       max_duration_minutes: maxDuration,
       target_duration_seconds: targetDurationSeconds ?? undefined,
       topic_context: scriptContext ?? undefined,

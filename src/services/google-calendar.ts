@@ -10,6 +10,7 @@ import {
   isGoogleConfigured,
   registerGoogleClientReset,
 } from './google-auth';
+import { recurrenceToGoogleRRule, type NormalizedRecurrence } from './recurrence-utils';
 
 // Google API calls are bounded to 15s. Google Calendar / Drive / Gmail
 // normally respond in <2s, but under Google outages they can hang for
@@ -100,12 +101,14 @@ export async function createEvent(data: {
   description?: string;
   attendees?: string[];
   location?: string;
+  recurrence?: NormalizedRecurrence;
 }, userId?: number): Promise<CalendarEvent> {
   try {
     const calendar = getCalendar(userId);
     const attendees = (data.attendees || [])
       .map((email) => email.trim())
       .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+    const rrule = recurrenceToGoogleRRule(data.recurrence);
     const response = await withTimeout(
       calendar.events.insert({
         calendarId: 'primary',
@@ -116,6 +119,7 @@ export async function createEvent(data: {
           end: { dateTime: data.end, timeZone: config.app.timezone },
           description: data.description,
           location: data.location,
+          ...(rrule ? { recurrence: [rrule] } : {}),
           ...(attendees.length > 0 ? { attendees: attendees.map((email) => ({ email })) } : {}),
         },
       }),

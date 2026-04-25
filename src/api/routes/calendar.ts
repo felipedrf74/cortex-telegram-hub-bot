@@ -116,6 +116,7 @@ export function calendarRoutes(): Router {
       location?: string;
       attendees?: unknown[];
       source?: string;
+      recurrence?: unknown;
     };
 
     if (!body.title || typeof body.title !== 'string' || !body.title.trim()) {
@@ -166,6 +167,7 @@ export function calendarRoutes(): Router {
                 .map((value: unknown) => typeof value === 'string' ? value.trim() : '')
                 .filter((value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
             : undefined,
+          recurrence: body.recurrence,
         },
         source,
         userId,

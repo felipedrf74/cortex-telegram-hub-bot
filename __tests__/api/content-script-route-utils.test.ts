@@ -3,8 +3,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildScriptSuccessResponse,
+  buildUserVoiceMemory,
   resolveScriptGenerationMode,
   resolveScriptRenderMode,
+  resolveScriptStyle,
   resolveScriptTargetLanguage,
 } from '../../src/api/routes/content-script-route-utils';
 
@@ -25,6 +27,11 @@ describe('content script route contract utilities', () => {
     expect(resolveScriptRenderMode(' STRUCTURED ')).toBe('structured');
     expect(resolveScriptRenderMode('cards')).toBe('structured');
     expect(resolveScriptRenderMode(null)).toBe('structured');
+
+    expect(resolveScriptStyle('bullets')).toBe('bullets');
+    expect(resolveScriptStyle('outline')).toBe('bullets');
+    expect(resolveScriptStyle('Roteiro completo')).toBe('detailed');
+    expect(resolveScriptStyle(undefined)).toBe('detailed');
   });
 
   it('prefers explicit language and safely falls back to the user preference', () => {
@@ -35,6 +42,20 @@ describe('content script route contract utilities', () => {
     expect(resolveScriptTargetLanguage(undefined, 12, () => {
       throw new Error('user preferences unavailable');
     })).toBe('pt-BR');
+  });
+
+  it('builds a scoped Voice DNA memory pack from the user content knowledge rows', () => {
+    const memory = buildUserVoiceMemory(42, () => [
+      { category: 'content_structure', synthesized_text: 'Use contrast, then a concrete operating rule.' },
+      { category: 'brand_voice', synthesized_text: 'Direct, practical, founder-operator tone.' },
+      { category: 'irrelevant', synthesized_text: 'Should be ignored.' },
+      { category: 'hook_style', synthesized_text: 'Open with a sharp misconception.' },
+    ]);
+
+    expect(memory).toContain('[brand_voice] Direct, practical, founder-operator tone.');
+    expect(memory).toContain('[hook_style] Open with a sharp misconception.');
+    expect(memory).toContain('[content_structure] Use contrast');
+    expect(memory).not.toContain('irrelevant');
   });
 
   it('builds the script response contract with defensive source normalization', () => {
@@ -58,6 +79,7 @@ describe('content script route contract utilities', () => {
       },
       format: 'YouTube',
       renderMode: 'structured',
+      scriptStyle: 'detailed',
       generationMode: 'deep',
       startMs: new Date('2026-04-22T10:00:00.000Z').getTime(),
       cacheHit: false,
@@ -77,6 +99,7 @@ describe('content script route contract utilities', () => {
       estimatedDuration: '8:00',
       format: 'YouTube',
       renderMode: 'structured',
+      scriptStyle: 'detailed',
       durationMs: 1200,
       hashtags: [],
       caption: '',
@@ -108,6 +131,7 @@ describe('content script route contract utilities', () => {
       },
       format: 'Reel',
       renderMode: 'chat',
+      scriptStyle: 'bullets',
       generationMode: 'standard',
       startMs: new Date('2026-04-22T10:00:00.000Z').getTime(),
       cacheHit: true,

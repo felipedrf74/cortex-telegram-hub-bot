@@ -47,6 +47,10 @@ vi.mock('../../src/services/user-service', () => ({
 
 vi.mock('../../src/state/content-references', () => ({
   getKnowledgeByCategory: vi.fn(() => null),
+  getAllKnowledge: vi.fn(() => [
+    { category: 'brand_voice', synthesized_text: 'Direct founder voice.' },
+    { category: 'hook_style', synthesized_text: 'Open with a misconception.' },
+  ]),
 }));
 
 vi.mock('../../src/services/database', () => ({
@@ -119,6 +123,9 @@ async function dispatch(
     });
     setImmediate(resolve);
   });
+  for (let i = 0; i < 5 && res.body == null; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 
   return res;
 }
@@ -187,6 +194,23 @@ describe('Content API — script duration presets', () => {
     expect(response.body.error.code).toBe('INTERNAL');
     expect(response.body.error.message).toBe('Script generation failed');
     expect(JSON.stringify(response.body)).not.toContain('Gemini pipeline exploded');
+  });
+
+  it('forwards script style and scoped Voice DNA memory into script generation', async () => {
+    const response = await dispatch({
+      topic: 'Build a SaaS product solo',
+      format: 'YouTube',
+      maxDurationMinutes: 8,
+      scriptStyle: 'bullets',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(mockGetScript).toHaveBeenCalled();
+    const args = mockGetScript.mock.calls.at(-1) ?? [];
+    expect(args[5]).toContain('[brand_voice] Direct founder voice.');
+    expect(args[5]).toContain('[hook_style] Open with a misconception.');
+    expect(args[11]).toBe('bullets');
   });
 
   it('localizes topic-generation format validation for Portuguese requests', async () => {

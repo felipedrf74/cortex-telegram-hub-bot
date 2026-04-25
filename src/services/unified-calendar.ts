@@ -3,6 +3,7 @@
 import * as googleCal from './google-calendar';
 import * as outlookCal from './outlook-calendar';
 import { logger } from '../utils/logger';
+import { normalizeMicrosoftRecurrence, type NormalizedRecurrence } from './recurrence-utils';
 
 export type CalendarSource = 'google' | 'outlook';
 
@@ -112,6 +113,7 @@ export async function createEvent(
     categories?: string[];
     attendees?: string[];
     location?: string;
+    recurrence?: unknown;
   },
   target?: CalendarSource,
   userId?: number,
@@ -138,11 +140,17 @@ export async function createEvent(
     throw new Error('No calendar provider is connected');
   }
 
+  const recurrence: NormalizedRecurrence | undefined = normalizeMicrosoftRecurrence(
+    data.recurrence,
+    data.start,
+  );
+  const eventData = { ...data, recurrence };
+
   if (source === 'outlook') {
-    const event = await outlookCal.createEvent(data, scopedUserId ?? undefined);
+    const event = await outlookCal.createEvent(eventData, scopedUserId ?? undefined);
     return { ...event, source: 'outlook' };
   } else {
-    const event = await googleCal.createEvent(data, scopedUserId ?? undefined);
+    const event = await googleCal.createEvent(eventData, scopedUserId ?? undefined);
     return { ...event, source: 'google' };
   }
 }

@@ -30,9 +30,36 @@
 - Home-to-Inbox latency and task-list count truth were verified live on
   `4.14.66`; `/api/v1/tasks/lists` returns real `taskCount` values, not `-1`
   placeholders.
+- Latest local Content + Training TestFlight bugfix pass on 2026-04-25:
+  `/api/v1/content/script` accepts `scriptStyle` (`detailed` or `bullets`),
+  derives user-scoped Voice DNA from content knowledge, forwards it into the
+  Python script engine, includes style in the script cache key, and returns
+  `scriptStyle` in the API response. Python degraded fallback now distinguishes
+  YouTube vs short-form and detailed vs bullet outputs, but a visible
+  "Qualidade reduzida" response still means AI synthesis/generation was
+  unavailable and the backend provider path needs deployment/config proof.
+  Python JSON synthesis calls now set backend proxy `jsonMode`, reducing
+  avoidable search-based fallbacks from non-JSON model formatting.
+  iOS also fixed topic-list cache invalidation after topic writes, athlete
+  profile finish actions from Training, and Training complete/skip fallback to
+  the `"today"` sentinel.
+- Follow-up local Content scheduling/pipeline + Training readiness pass on
+  2026-04-25: `POST/PATCH /api/v1/content/topics` now accepts
+  `scheduledDateTime`; date-only topics create/update Secretary tasks;
+  date+time topics also create/update calendar agenda/events through unified
+  calendar; Content Tasks reads scheduled topics directly and surfaces
+  task/calendar sync status; Pipeline Detail ignores benign superseded-load
+  cancellation; Training keeps renderable Home/Training data visible during
+  refresh; Home secondary previews fan out in parallel after the primary
+  dashboard render. This requires migration
+  `078_content_topic_secretary_artifacts.sql`,
+  backend deployment, and fresh signed TestFlight/device validation before it is
+  live user truth.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
-  and real Gmail/Outlook/Health provider-state checks.
+  real Gmail/Outlook/Health provider-state checks, and device proof for the
+  latest Secretary, Health, Content script/topic scheduling/pipeline, and
+  Training action/readiness fixes.
 
 ---
 
@@ -181,6 +208,9 @@ older Phase 0/Phase 1 notes as the current release state.
 Current backend follow-ups:
 
 - keep tenant/founder/business-rule docs aligned with the beta tracker;
+- deploy migration `078_content_topic_secretary_artifacts.sql` with the Content
+  topic Secretary/calendar artifact sync before marking the latest topic
+  scheduling TestFlight fix live;
 - run another production-safe alert drill only if the final receiver differs
   from the staging receiver;
 - keep deploy scripts worktree-safe;

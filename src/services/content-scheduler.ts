@@ -62,7 +62,15 @@ export interface ContentTopic {
   title: string;
   notes: string | null;
   scheduled_date: string | null;   // YYYY-MM-DD, nullable
+  scheduled_at?: string | null;    // ISO local datetime, nullable
   status: ContentTopicStatus;
+  secretary_task_list_id?: string | null;
+  secretary_task_list_name?: string | null;
+  secretary_task_external_id?: string | null;
+  calendar_event_id?: string | null;
+  calendar_source?: string | null;
+  secretary_sync_status?: string | null;
+  secretary_sync_error?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +106,7 @@ export function addTopic(
   opts?: {
     notes?: string | null;
     scheduledDate?: string | null;
+    scheduledAt?: string | null;
     status?: ContentTopicStatus;
   },
 ): ContentTopic {
@@ -114,6 +123,15 @@ export function addTopic(
       opts?.scheduledDate ?? null,
       opts?.status ?? 'planned',
     );
+
+  if (opts?.scheduledAt !== undefined || hasColumn('content_topics', 'scheduled_at')) {
+    try {
+      db.prepare('UPDATE content_topics SET scheduled_at = ? WHERE id = ?')
+        .run(opts?.scheduledAt ?? null, result.lastInsertRowid);
+    } catch {
+      // Older local databases/tests may not have migration 078 applied.
+    }
+  }
 
   const row = db
     .prepare('SELECT * FROM content_topics WHERE id = ?')
@@ -387,7 +405,15 @@ export function updateTopic(
     title?: string;
     notes?: string | null;
     scheduled_date?: string | null;
+    scheduled_at?: string | null;
     status?: ContentTopicStatus;
+    secretary_task_list_id?: string | null;
+    secretary_task_list_name?: string | null;
+    secretary_task_external_id?: string | null;
+    calendar_event_id?: string | null;
+    calendar_source?: string | null;
+    secretary_sync_status?: string | null;
+    secretary_sync_error?: string | null;
   },
 ): ContentTopic | null {
   const db = getDb();
@@ -406,6 +432,21 @@ export function updateTopic(
   if (updates.scheduled_date !== undefined) {
     setParts.push('scheduled_date = ?');
     params.push(updates.scheduled_date);
+  }
+  for (const [column, value] of Object.entries({
+    scheduled_at: updates.scheduled_at,
+    secretary_task_list_id: updates.secretary_task_list_id,
+    secretary_task_list_name: updates.secretary_task_list_name,
+    secretary_task_external_id: updates.secretary_task_external_id,
+    calendar_event_id: updates.calendar_event_id,
+    calendar_source: updates.calendar_source,
+    secretary_sync_status: updates.secretary_sync_status,
+    secretary_sync_error: updates.secretary_sync_error,
+  })) {
+    if (value !== undefined && hasColumn('content_topics', column)) {
+      setParts.push(`${column} = ?`);
+      params.push(value);
+    }
   }
   if (updates.status !== undefined) {
     if (!CONTENT_TOPIC_STATUSES.includes(updates.status)) {
@@ -428,6 +469,15 @@ export function updateTopic(
   }
 
   return getTopicById(userId, topicId);
+}
+
+function hasColumn(table: string, column: string): boolean {
+  try {
+    const rows = getDb().prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return rows.some((row) => row.name === column);
+  } catch {
+    return false;
+  }
 }
 
 // ─── Delete ─────────────────────────────────────────────────────────

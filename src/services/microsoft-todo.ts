@@ -3,6 +3,7 @@
 import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import type { NormalizedRecurrence } from './recurrence-utils';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -444,6 +445,7 @@ export async function createTask(
     importance?: 'low' | 'normal' | 'high';
     dueDateTime?: string;
     reminderDateTime?: string;
+    recurrence?: NormalizedRecurrence;
   }
 ): Promise<ServiceResult<TodoTask>> {
   try {
@@ -466,6 +468,10 @@ export async function createTask(
     if (data.reminderDateTime) {
       taskBody.reminderDateTime = { dateTime: data.reminderDateTime, timeZone: tz };
       taskBody.isReminderOn = true;
+    }
+
+    if (data.recurrence) {
+      taskBody.recurrence = data.recurrence;
     }
 
     const response = await withRetry(() =>

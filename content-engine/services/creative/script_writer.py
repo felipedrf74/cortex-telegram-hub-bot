@@ -176,6 +176,11 @@ def _normalize_render_mode(render_mode: str | None) -> str:
     return "chat" if normalized == "chat" else "structured"
 
 
+def _normalize_script_style(script_style: str | None) -> str:
+    normalized = (script_style or "detailed").strip().lower()
+    return "bullets" if normalized in {"bullet", "bullets", "outline", "pontos"} else "detailed"
+
+
 def _target_duration_seconds(req: ScriptRequest) -> int:
     if req.target_duration_seconds:
         return int(req.target_duration_seconds)
@@ -307,6 +312,27 @@ def _render_mode_guidance(req: ScriptRequest, render_mode: str) -> str:
     ])
 
 
+def _script_style_guidance(req: ScriptRequest, script_style: str) -> str:
+    if script_style == "bullets":
+        return "\n".join([
+            "- OUTPUT STYLE: BULLET POINTS.",
+            "- Return a practical filming outline, not a full word-for-word script.",
+            "- Include the hook, the sequence of beats, proof/source cues, suggested on-screen moments, and CTA.",
+            "- Keep each bullet specific enough to film from; avoid generic slogans.",
+        ])
+    if _is_short_form(req):
+        return "\n".join([
+            "- OUTPUT STYLE: DETAILED SHORT SCRIPT.",
+            "- Return the exact spoken text for the short-form video.",
+            "- Make every beat distinct from long-form YouTube; shorts need a sharper first sentence, one clear tension, and a fast close.",
+        ])
+    return "\n".join([
+        "- OUTPUT STYLE: DETAILED FULL SCRIPT.",
+        "- Return the full spoken script text, not a summary.",
+        "- Each timestamped section should include enough lines for the requested YouTube duration, with transitions and concrete examples.",
+    ])
+
+
 def _topic_context_block(req: ScriptRequest) -> str:
     context = getattr(req, "topic_context", None) or {}
     if not isinstance(context, dict):
@@ -426,82 +452,135 @@ def _build_degraded_script_response(
     start: float,
     language: str,
     warnings: list[str],
+    script_style: str,
+    brand_voice: str | None,
 ) -> ScriptResponse:
     topic = req.topic.strip()
     subject = _normalize_fallback_topic(topic)
     render_mode = _normalize_render_mode(getattr(req, "render_mode", None))
+    normalized_style = _normalize_script_style(script_style)
     key_points = _pick_key_points(briefs)
     cta = _fallback_cta(language)
     cta_line = cta if render_mode == "chat" else f"CTA: {cta}"
     timestamps = _fallback_timestamps(req)
+    short_form = _is_short_form(req)
+    voice_seed = " ".join((brand_voice or "").strip().split())[:260]
+    voice_line = ""
+    if voice_seed:
+        voice_line = {
+            "en-US": f"Voice DNA to preserve: {voice_seed}",
+            "pt-PT": f"Voice DNA a preservar: {voice_seed}",
+        }.get(language, f"Voice DNA a preservar: {voice_seed}")
 
     if language == "en-US":
         hook = f"If you're trying to {subject.lower()}, the trap is thinking speed replaces judgment."
         beats = [
-            key_points[0] if len(key_points) > 0 else "Start by naming the one painful problem this product solves for a real person.",
-            key_points[1] if len(key_points) > 1 else "Use vibe coding to compress execution, not to skip decisions about scope, UX, or trust.",
-            key_points[2] if len(key_points) > 2 else "Ship the smallest loop that proves people want the outcome enough to return, share, or pay.",
+            key_points[0] if len(key_points) > 0 else "Name the one painful problem this solves for a real person.",
+            key_points[1] if len(key_points) > 1 else "Show the constraint, the tradeoff, and the decision that changed the build.",
+            key_points[2] if len(key_points) > 2 else "Prove demand with the smallest loop people will repeat.",
+            key_points[3] if len(key_points) > 3 else "Make the takeaway concrete enough to use today.",
         ]
-        if render_mode == "chat":
+        if normalized_style == "bullets":
+            script = "\n".join([
+                f"- Hook: {hook}",
+                f"- Tension: {subject} looks like a speed problem, but it is really a judgment problem.",
+                f"- Beat 1: {beats[0]}",
+                f"- Beat 2: {beats[1]}",
+                f"- Beat 3: {beats[2]}",
+                f"- Proof moment: {beats[3]}",
+                f"- On screen: Speed without clarity = noise",
+                f"- CTA: {cta}",
+                f"- {voice_line}" if voice_line else "",
+            ]).strip()
+        elif short_form or render_mode == "chat":
             script = "\n\n".join([
-                f"**{subject}** sounds fast when AI is helping, but the real bottleneck is still judgment.",
-                f"First, get painfully clear on the problem. {beats[0]} Then keep the build loop tight. {beats[1]}",
-                f"Finally, only keep what proves demand. {beats[2]} Speed matters, but clarity is what stops you from shipping noise.",
+                f"**{subject}** sounds fast because AI is helping. But the real bottleneck is still judgment.",
+                f"Here is the filter: {beats[0]} Then make the tradeoff visible: {beats[1]}",
+                f"Close with proof, not hype: {beats[2]} {beats[3]}",
                 cta,
             ])
         else:
             script = "\n".join([
-                f"[{timestamps[0]}] **{subject}** sounds fast when AI is helping, but the real bottleneck is still judgment. [SHOW ON SCREEN: \"Speed without clarity = noise\"]",
-                f"[{timestamps[1]}] First: define the painful problem. {beats[0]}",
-                f"[{timestamps[2]}] Second: keep the build loop tight. {beats[1]}",
-                f"[{timestamps[3]}] Third: keep only what proves demand. {beats[2]} [SHOW ON SCREEN: \"Ship the smallest proof\"]",
+                f"[{timestamps[0]}] **{subject}** sounds like a speed story, but it is actually a judgment story. [SHOW ON SCREEN: \"Speed without clarity = noise\"]",
+                f"[{timestamps[1]}] First: frame the real constraint. {beats[0]} This is where most generic scripts skip the useful part.",
+                f"[{timestamps[2]}] Second: show the decision under pressure. {beats[1]} Give the audience the fork in the road, not just the conclusion.",
+                f"[{timestamps[3]}] Third: turn it into a repeatable operating rule. {beats[2]} {beats[3]}",
                 f"[{timestamps[-1]}] {cta_line}",
             ])
     elif language == "pt-PT":
         hook = f"Se estás a tentar {subject.lower()}, o erro é achar que velocidade substitui critério."
         beats = [
-            key_points[0] if len(key_points) > 0 else "Começa por definir o problema doloroso que o produto resolve para uma pessoa concreta.",
-            key_points[1] if len(key_points) > 1 else "Usa vibe coding para acelerar execução, não para saltar decisões de escopo, UX ou confiança.",
-            key_points[2] if len(key_points) > 2 else "Lança o circuito mínimo que prova que alguém quer o resultado ao ponto de voltar, partilhar ou pagar.",
+            key_points[0] if len(key_points) > 0 else "Define o problema doloroso que isto resolve para uma pessoa concreta.",
+            key_points[1] if len(key_points) > 1 else "Mostra a restrição, a troca e a decisão que mudou o caminho.",
+            key_points[2] if len(key_points) > 2 else "Prova procura com o ciclo mínimo que alguém repetiria.",
+            key_points[3] if len(key_points) > 3 else "Fecha com uma regra prática que a pessoa consegue usar hoje.",
         ]
-        if render_mode == "chat":
+        if normalized_style == "bullets":
+            script = "\n".join([
+                f"- Hook: {hook}",
+                f"- Tensão: {subject} parece um problema de velocidade, mas é um problema de critério.",
+                f"- Beat 1: {beats[0]}",
+                f"- Beat 2: {beats[1]}",
+                f"- Beat 3: {beats[2]}",
+                f"- Momento de prova: {beats[3]}",
+                f"- No ecrã: Velocidade sem clareza = ruído",
+                f"- CTA: {cta}",
+                f"- {voice_line}" if voice_line else "",
+            ]).strip()
+        elif short_form or render_mode == "chat":
             script = "\n\n".join([
-                f"**{subject}** parece rápido com IA, mas o verdadeiro bloqueio continua a ser critério.",
-                f"Primeiro, clarifica o problema. {beats[0]} Depois mantém o ciclo de build apertado. {beats[1]}",
-                f"Por fim, fica só com o que prova procura real. {beats[2]} Velocidade ajuda, mas clareza é o que impede que publiques ruído.",
+                f"**{subject}** parece rápido com IA. Mas o verdadeiro bloqueio continua a ser critério.",
+                f"O filtro é este: {beats[0]} Depois mostra a troca real: {beats[1]}",
+                f"Fecha com prova, não com hype: {beats[2]} {beats[3]}",
                 cta,
             ])
         else:
             script = "\n".join([
-                f"[{timestamps[0]}] **{subject}** parece rápido com IA, mas o verdadeiro bloqueio continua a ser critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
-                f"[{timestamps[1]}] Primeiro: define o problema real. {beats[0]}",
-                f"[{timestamps[2]}] Segundo: mantém o ciclo de build apertado. {beats[1]}",
-                f"[{timestamps[3]}] Terceiro: guarda só o que prova procura. {beats[2]} [SHOW ON SCREEN: \"Lança a menor prova possível\"]",
+                f"[{timestamps[0]}] **{subject}** parece uma história de velocidade, mas é uma história de critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
+                f"[{timestamps[1]}] Primeiro: enquadra a restrição real. {beats[0]} É aqui que os roteiros genéricos saltam a parte útil.",
+                f"[{timestamps[2]}] Segundo: mostra a decisão sob pressão. {beats[1]} Dá ao público a bifurcação, não só a conclusão.",
+                f"[{timestamps[3]}] Terceiro: transforma isto numa regra operacional. {beats[2]} {beats[3]}",
                 f"[{timestamps[-1]}] {cta_line}",
             ])
     else:
         hook = f"Se você está tentando {subject.lower()}, o erro é achar que velocidade substitui critério."
         beats = [
-            key_points[0] if len(key_points) > 0 else "Comece definindo o problema doloroso que o produto resolve para uma pessoa real.",
-            key_points[1] if len(key_points) > 1 else "Use vibe coding para acelerar execução, não para pular decisões de escopo, UX ou confiança.",
-            key_points[2] if len(key_points) > 2 else "Lance o menor loop que prova que alguém quer o resultado a ponto de voltar, compartilhar ou pagar.",
+            key_points[0] if len(key_points) > 0 else "Defina o problema doloroso que isso resolve para uma pessoa real.",
+            key_points[1] if len(key_points) > 1 else "Mostre a restrição, a troca e a decisão que mudou o caminho.",
+            key_points[2] if len(key_points) > 2 else "Prove demanda com o menor loop que alguém repetiria.",
+            key_points[3] if len(key_points) > 3 else "Feche com uma regra prática que a pessoa consegue usar hoje.",
         ]
-        if render_mode == "chat":
+        if normalized_style == "bullets":
+            script = "\n".join([
+                f"- Hook: {hook}",
+                f"- Tensão: {subject} parece um problema de velocidade, mas é um problema de critério.",
+                f"- Beat 1: {beats[0]}",
+                f"- Beat 2: {beats[1]}",
+                f"- Beat 3: {beats[2]}",
+                f"- Momento de prova: {beats[3]}",
+                f"- Na tela: Velocidade sem clareza = ruído",
+                f"- CTA: {cta}",
+                f"- {voice_line}" if voice_line else "",
+            ]).strip()
+        elif short_form or render_mode == "chat":
             script = "\n\n".join([
-                f"**{subject}** parece rápido com IA, mas o gargalo real continua sendo critério.",
-                f"Primeiro, esclareça o problema. {beats[0]} Depois mantenha o ciclo de build enxuto. {beats[1]}",
-                f"Por fim, fique só com o que prova demanda real. {beats[2]} Velocidade ajuda, mas clareza é o que impede você de publicar ruído.",
+                f"**{subject}** parece rápido com IA. Mas o gargalo real continua sendo critério.",
+                f"O filtro é esse: {beats[0]} Depois mostre a troca real: {beats[1]}",
+                f"Feche com prova, não com hype: {beats[2]} {beats[3]}",
                 cta,
             ])
         else:
             script = "\n".join([
-                f"[{timestamps[0]}] **{subject}** parece rápido com IA, mas o gargalo real continua sendo critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
-                f"[{timestamps[1]}] Primeiro: defina o problema real. {beats[0]}",
-                f"[{timestamps[2]}] Segundo: mantenha o ciclo de build enxuto. {beats[1]}",
-                f"[{timestamps[3]}] Terceiro: guarde só o que prova demanda. {beats[2]} [SHOW ON SCREEN: \"Lance a menor prova possível\"]",
+                f"[{timestamps[0]}] **{subject}** parece uma história de velocidade, mas é uma história de critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
+                f"[{timestamps[1]}] Primeiro: enquadre a restrição real. {beats[0]} É aqui que roteiros genéricos pulam a parte útil.",
+                f"[{timestamps[2]}] Segundo: mostre a decisão sob pressão. {beats[1]} Dê ao público a bifurcação, não só a conclusão.",
+                f"[{timestamps[3]}] Terceiro: transforme isso numa regra operacional. {beats[2]} {beats[3]}",
                 f"[{timestamps[-1]}] {cta_line}",
             ])
 
+    if voice_line and normalized_style != "bullets":
+        script = f"{script}\n\n{voice_line}"
+        warnings.append("Voice DNA memory was applied to the degraded fallback.")
     warnings.append("AI generation was unavailable; returned a templated degraded script grounded in the available research.")
     duration_ms = int((time.monotonic() - start) * 1000)
     return ScriptResponse(
@@ -596,9 +675,11 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
     normalized_mode = (getattr(req, "mode", "standard") or "standard").strip().lower()
     normalized_language = _normalize_language(req.language)
     normalized_render_mode = _normalize_render_mode(getattr(req, "render_mode", None))
+    normalized_script_style = _normalize_script_style(getattr(req, "script_style", None))
     language_label, language_rules = _language_guidance(normalized_language)
     format_rules = _format_guidance(req)
     render_mode_rules = _render_mode_guidance(req, normalized_render_mode)
+    script_style_rules = _script_style_guidance(req, normalized_script_style)
     topic_context_block = _topic_context_block(req)
     brand_voice_block = ""
     if req.brand_voice and req.brand_voice.strip():
@@ -698,6 +779,7 @@ FORMAT: {req.format}
 TARGET DURATION: {est_duration}
 LANGUAGE: {language_label}
 RENDER MODE: {normalized_render_mode.upper()}
+OUTPUT STYLE: {normalized_script_style.upper()}
 
 LANGUAGE RULES:
 {language_rules}
@@ -706,7 +788,10 @@ FORMAT RULES:
 {format_rules}
 
 RENDER MODE RULES:
-{render_mode_rules}{topic_context_block}{brand_voice_block}
+{render_mode_rules}
+
+OUTPUT STYLE RULES:
+{script_style_rules}{topic_context_block}{brand_voice_block}
 
 VERIFIED RESEARCH FINDINGS (USE ONLY THESE AS FACTUAL BASIS):
 {research_context}{intelligence_block}
@@ -727,7 +812,7 @@ Also provide:
 4. A short social media caption (1-2 sentences, with emoji, for Instagram/YouTube description)
 5. The CTA (call to action) as a standalone line
 
-{"Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body." if normalized_render_mode == "chat" else "Write the complete script now. Start with the hook, follow the structure, end with CTA.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources."}
+{"Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body." if normalized_render_mode == "chat" else ("Write the bullet-point filming outline now. Start with the hook, then the core beats, proof/source cues, on-screen ideas, and CTA.\n\nAfter the outline, add a FONTES VERIFICADAS section listing sources." if normalized_script_style == "bullets" else "Write the complete script now. Start with the hook, follow the structure, end with CTA.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources.")}
 
 Then, on a NEW LINE, write exactly `---METADATA---` followed by a JSON object with these fields:
 ```json
@@ -756,6 +841,8 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
             start=start,
             language=normalized_language,
             warnings=warnings,
+            script_style=normalized_script_style,
+            brand_voice=req.brand_voice,
         )
 
     # Parse metadata from JSON block after ---METADATA--- separator

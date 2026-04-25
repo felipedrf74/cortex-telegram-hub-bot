@@ -22,6 +22,13 @@ vi.mock('../../src/services/content-radar-preferences', () => ({
   })),
 }));
 
+vi.mock('../../src/services/content-topic-secretary-sync', () => ({
+  syncContentTopicSecretaryArtifacts: vi.fn(async (_userId: number, topic: any) => ({
+    ...topic,
+    secretary_sync_status: topic.scheduled_at ? 'task_calendar_synced' : 'task_synced',
+  })),
+}));
+
 vi.mock('../../src/services/content-scheduler', () => ({
   CONTENT_TOPIC_STATUSES: ['planned', 'drafting', 'ready', 'published', 'cancelled'],
   addTopic: vi.fn((userId: number, title: string, opts: any) => ({
@@ -30,6 +37,7 @@ vi.mock('../../src/services/content-scheduler', () => ({
     title,
     notes: opts.notes,
     scheduled_date: opts.scheduledDate,
+    scheduled_at: opts.scheduledAt,
     status: opts.status,
     created_at: '2026-04-24T10:00:00.000Z',
     updated_at: '2026-04-24T10:00:00.000Z',
@@ -53,6 +61,7 @@ vi.mock('../../src/services/content-scheduler', () => ({
     title: updates.title ?? 'Race week recap',
     notes: updates.notes ?? null,
     scheduled_date: updates.scheduled_date ?? null,
+    scheduled_at: updates.scheduled_at ?? null,
     status: updates.status ?? 'planned',
     created_at: '2026-04-24T10:00:00.000Z',
     updated_at: '2026-04-24T10:10:00.000Z',
@@ -63,6 +72,7 @@ vi.mock('../../src/services/content-scheduler', () => ({
 import { registerContentTopicRoutes } from '../../src/api/routes/content-topic-routes';
 import { invalidateContentDerivedCaches } from '../../src/services/content-cache-invalidator';
 import { getContentRadarPreferences, setContentRadarPreferences } from '../../src/services/content-radar-preferences';
+import { syncContentTopicSecretaryArtifacts } from '../../src/services/content-topic-secretary-sync';
 import {
   addTopic,
   deleteTopic,
@@ -194,6 +204,7 @@ describe('content topic routes', () => {
       title: '  Race recap  ',
       notes: 'Use training angle',
       scheduledDate: '2026-04-25',
+      scheduledDateTime: '2026-04-25T09:30:00',
       status: 'drafting',
     }, 77);
 
@@ -201,9 +212,36 @@ describe('content topic routes', () => {
     expect(addTopic).toHaveBeenCalledWith(77, 'Race recap', {
       notes: 'Use training angle',
       scheduledDate: '2026-04-25',
+      scheduledAt: '2026-04-25T09:30:00',
       status: 'drafting',
     });
+    expect(syncContentTopicSecretaryArtifacts).toHaveBeenCalledWith(77, expect.objectContaining({
+      title: 'Race recap',
+      scheduled_date: '2026-04-25',
+      scheduled_at: '2026-04-25T09:30:00',
+    }), { language: 'pt-BR' });
+    expect(response.body.data.topic.secretary_sync_status).toBe('task_calendar_synced');
     expect(invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
+  });
+
+  it('creates a Secretary task for date-only topics without requiring calendar time', async () => {
+    const { response } = await dispatch('POST', '/topics', {
+      title: '  Topic test  ',
+      scheduledDate: '2026-04-26',
+    }, 77);
+
+    expect(response.statusCode).toBe(201);
+    expect(addTopic).toHaveBeenCalledWith(77, 'Topic test', {
+      notes: null,
+      scheduledDate: '2026-04-26',
+      scheduledAt: null,
+      status: 'planned',
+    });
+    expect(syncContentTopicSecretaryArtifacts).toHaveBeenCalledWith(77, expect.objectContaining({
+      scheduled_date: '2026-04-26',
+      scheduled_at: null,
+    }), { language: 'pt-BR' });
+    expect(response.body.data.topic.secretary_sync_status).toBe('task_synced');
   });
 
   it('rejects invalid scheduledDate values before creating or updating topics', async () => {
@@ -221,6 +259,18 @@ describe('content topic routes', () => {
     expect(updateTopic).not.toHaveBeenCalled();
   });
 
+  it('rejects invalid scheduledDateTime values before creating topics', async () => {
+    const { response } = await dispatch('POST', '/topics', {
+      title: 'Race recap',
+      scheduledDateTime: 'tomorrow at nine',
+    }, 77);
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body.error.code).toBe('BAD_REQUEST');
+    expect(addTopic).not.toHaveBeenCalled();
+    expect(syncContentTopicSecretaryArtifacts).not.toHaveBeenCalled();
+  });
+
   it('updates and deletes only through scoped topic mutations', async () => {
     const update = await dispatch('PATCH', '/topics/11', {
       title: '  Updated angle  ',
@@ -233,6 +283,7 @@ describe('content topic routes', () => {
       title: 'Updated angle',
       notes: undefined,
       scheduled_date: null,
+      scheduled_at: undefined,
       status: undefined,
     });
     expect(remove.response.statusCode).toBe(200);

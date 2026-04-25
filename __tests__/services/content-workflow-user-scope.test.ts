@@ -186,6 +186,7 @@ describe('content-workflow: user-scoped knowledge injection', () => {
         whyNow: 'Builders can ship faster with AI tooling',
         angleTag: 'build-in-public',
       },
+      'detailed',
     );
 
     expect(storeScript).toHaveBeenCalledWith(expect.objectContaining({

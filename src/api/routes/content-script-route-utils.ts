@@ -4,6 +4,12 @@ import { buildGenerationMeta, type GenerationMode } from './content-generation-m
 
 export type ScriptRenderMode = 'structured' | 'chat';
 export type ScriptFormat = 'YouTube' | 'Reel';
+export type ScriptStyle = 'detailed' | 'bullets';
+
+interface ContentKnowledgeLike {
+  category?: string | null;
+  synthesized_text?: string | null;
+}
 
 export interface ScriptSourceUsed {
   title?: string;
@@ -41,6 +47,18 @@ export function resolveScriptRenderMode(renderMode: unknown): ScriptRenderMode {
     : 'structured';
 }
 
+export function resolveScriptStyle(style: unknown): ScriptStyle {
+  if (typeof style !== 'string') return 'detailed';
+  const normalized = style.trim().toLowerCase();
+  if (['bullet', 'bullets', 'outline', 'pontos'].includes(normalized) || normalized.includes('ponto')) return 'bullets';
+  if (
+    ['detailed', 'full', 'script', 'roteiro', 'completo'].includes(normalized)
+    || normalized.includes('roteiro')
+    || normalized.includes('complete')
+  ) return 'detailed';
+  return 'detailed';
+}
+
 export function resolveScriptTargetLanguage(
   language: unknown,
   userId: number,
@@ -57,10 +75,51 @@ export function resolveScriptTargetLanguage(
   }
 }
 
+export function buildUserVoiceMemory(
+  userId: number,
+  readAllKnowledge: (userId: number) => ContentKnowledgeLike[],
+): string | null {
+  try {
+    const knowledge = readAllKnowledge(userId) || [];
+    const preferredCategories = [
+      'brand_voice',
+      'voice_summary',
+      'voice_pattern',
+      'voice_phrase_trend',
+      'hook_style',
+      'storytelling',
+      'content_structure',
+      'cta_pattern',
+      'audience_engagement',
+    ];
+    const byCategory = new Map<string, string>();
+
+    for (const entry of knowledge) {
+      const category = (entry.category || '').trim();
+      const text = (entry.synthesized_text || '').trim();
+      if (!category || !text || byCategory.has(category)) continue;
+      byCategory.set(category, text);
+    }
+
+    const lines = preferredCategories
+      .map((category) => {
+        const text = byCategory.get(category);
+        return text ? `[${category}] ${text}` : null;
+      })
+      .filter((line): line is string => Boolean(line));
+
+    if (lines.length === 0) return null;
+    return lines.join('\n\n').slice(0, 6000);
+  } catch {
+    return null;
+  }
+}
+
 export function buildScriptSuccessResponse(params: {
   result: ContentScriptEngineResult;
   format: ScriptFormat;
   renderMode: ScriptRenderMode;
+  scriptStyle: ScriptStyle;
   generationMode: GenerationMode;
   startMs: number;
   cacheHit: boolean;
@@ -69,6 +128,7 @@ export function buildScriptSuccessResponse(params: {
     result,
     format,
     renderMode,
+    scriptStyle,
     generationMode,
     startMs,
     cacheHit,
@@ -90,6 +150,7 @@ export function buildScriptSuccessResponse(params: {
     estimatedDuration: result.estimated_duration,
     format,
     renderMode,
+    scriptStyle,
     durationMs: result.duration_ms,
     hashtags: result.hashtags ?? [],
     caption: result.caption ?? '',

@@ -68,6 +68,12 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
   it('logs which provider was used', () => {
     expect(src).toContain('provider');
   });
+
+  it('requests JSON mode from the backend proxy for JSON synthesis calls', () => {
+    expect(src).toContain('json_mode: bool = False');
+    expect(src).toContain('"jsonMode": json_mode');
+    expect(src).toContain('category=category, json_mode=True');
+  });
 });
 
 describe('Python feedback_loop.py — no more feedback.json', () => {
@@ -163,6 +169,14 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('re.sub(r"\\[(?:SFX|EDIT|CUT TO|PLAY CLIP):[^\\]]+\\]"');
   });
 
+  it('supports detailed versus bullet-point script output styles', () => {
+    expect(src).toContain('def _normalize_script_style');
+    expect(src).toContain('def _script_style_guidance');
+    expect(src).toContain('OUTPUT STYLE RULES:');
+    expect(src).toContain('Write the bullet-point filming outline now');
+    expect(src).toContain('Voice DNA memory was applied to the degraded fallback.');
+  });
+
   it('uses shallow quick research on quick mode cache misses instead of always deep searching', () => {
     expect(src).toContain('normalized_mode = (getattr(req, "mode", "standard") or "standard").strip().lower()');
     expect(src).toContain('if normalized_mode == "quick":');
@@ -186,6 +200,7 @@ describe('Python requests.py — script render mode contract', () => {
 
   it('ScriptRequest exposes mode and topic_context for richer script generation', () => {
     expect(src).toContain('mode: str = Field(default="standard")');
+    expect(src).toContain('script_style: str = Field(default="detailed")');
     expect(src).toContain('topic_context: dict | None = Field(default=None)');
   });
 });

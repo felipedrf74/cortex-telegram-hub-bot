@@ -334,6 +334,7 @@ export async function executeToolCall(
           categories: input.categories,
           attendees: normalizeAttendeeEmails(input.attendees),
           location: typeof input.location === 'string' ? input.location.trim() || undefined : undefined,
+          recurrence: input.recurrence,
         }, input.calendar_source, userId);
         invalidateCalendarCaches(userId);
         return createdEvent;

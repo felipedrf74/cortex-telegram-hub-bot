@@ -113,13 +113,15 @@ function normalizeTopics(topics: string[]): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
   for (const raw of topics) {
-    const trimmed = raw.replace(/\s+/g, ' ').trim();
-    if (!trimmed) continue;
-    const folded = foldText(trimmed);
-    if (seen.has(folded)) continue;
-    seen.add(folded);
-    ordered.push(trimmed);
-    if (ordered.length >= 12) break;
+    const candidates = raw.split(',').map((part) => part.replace(/\s+/g, ' ').trim());
+    for (const trimmed of candidates) {
+      if (!trimmed) continue;
+      const folded = foldText(trimmed);
+      if (seen.has(folded)) continue;
+      seen.add(folded);
+      ordered.push(trimmed);
+      if (ordered.length >= 12) return ordered;
+    }
   }
   return ordered;
 }

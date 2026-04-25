@@ -12,6 +12,7 @@ import { resolveTaskCreationList } from '../../services/task-store/task-list-res
 import { getOwnerBootstrapUser } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
+import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -303,7 +304,7 @@ export function taskRoutes(): Router {
       const userId = (req as any).userId;
       const syncProvider = resolveTaskProvider(userId);
       const todo = getTodo(req);
-      const { title, listName, dueDateTime, importance, body } = req.body;
+      const { title, listName, dueDateTime, importance, body, recurrence } = req.body;
 
       if (!title) {
         sendError(res, 'BAD_REQUEST', 'title is required');
@@ -326,6 +327,7 @@ export function taskRoutes(): Router {
         dueDateTime: dueDateTime || undefined,
         importance: (importance || 'normal') as 'low' | 'normal' | 'high',
         body: body || undefined,
+        recurrence: normalizeMicrosoftRecurrence(recurrence, dueDateTime || new Date()),
       });
 
       if (!result?.success) {

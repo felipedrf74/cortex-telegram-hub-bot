@@ -23,6 +23,7 @@ vi.mock('../../src/config', () => ({
   config: {
     telegram: { allowedUserIds: [111111] },
     app: { timezone: 'Europe/Lisbon' },
+    contentEngine: { enabled: false, port: 8100 },
   },
 }));
 

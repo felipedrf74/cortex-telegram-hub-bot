@@ -11,7 +11,7 @@ import { now } from '../utils/date-parser';
 import { trackedCreate } from '../portal/anthropic-hook';
 import { completeOneShotWithFallback } from './gemini-provider';
 import { getDb } from './database';
-import { buildKnowledgePromptBlock } from '../state/content-references';
+import { buildKnowledgePromptBlock, getAllKnowledge } from '../state/content-references';
 import { saveScriptAsDocx } from './video-study';
 import { storeCallback } from '../utils/callback-store';
 import { buildAngleDiversityBlock, isDuplicateIdea } from './content-dedup';
@@ -23,6 +23,29 @@ import { getUserLanguage } from './user-service';
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
 const IDEAS_DIR = path.join(os.homedir(), 'Desktop', 'IDEAS');
+
+function buildWorkflowVoiceMemory(userId: number): string | null {
+  if (userId <= 0) return null;
+  const preferredCategories = [
+    'brand_voice',
+    'voice_summary',
+    'hook_style',
+    'storytelling',
+    'content_structure',
+    'cta_pattern',
+    'audience_engagement',
+  ];
+  try {
+    const knowledge = getAllKnowledge(userId);
+    const lines = preferredCategories.flatMap((category) => {
+      const entry = knowledge.find((row) => row.category === category && row.synthesized_text?.trim());
+      return entry ? [`[${category}] ${entry.synthesized_text.trim()}`] : [];
+    });
+    return lines.length > 0 ? lines.join('\n\n').slice(0, 6000) : null;
+  } catch {
+    return null;
+  }
+}
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -328,6 +351,7 @@ export async function generateScript(
   const maxDuration = format === 'reel' ? 1 : 8;
   const engineFormat = format === 'reel' ? 'Reel' : 'YouTube';
   const targetLanguage = userId > 0 ? getUserLanguage(userId) : 'pt-BR';
+  const voiceMemory = buildWorkflowVoiceMemory(userId);
 
   const result = await getScript(
     topic.title,
@@ -335,7 +359,7 @@ export async function generateScript(
     maxDuration,
     engineFormat,
     'standard',
-    null,
+    voiceMemory,
     targetLanguage,
     'structured',
     userId,
@@ -347,6 +371,7 @@ export async function generateScript(
       whyNow: topic.whyNow || null,
       angleTag: topic.angleTag || null,
     },
+    'detailed',
   );
 
   // ── Durable script storage (April 2026) ──

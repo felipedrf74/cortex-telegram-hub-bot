@@ -599,6 +599,10 @@ describe('executeToolCall — Calendar', () => {
         description: '2km open water',
         categories: ['sport'],
         calendar_source: 'google',
+        recurrence: {
+          pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },
+          range: { type: 'noEnd', startDate: '2026-04-01' },
+        },
       });
       expect(result).toEqual(created);
       expect(mockCal.createEvent).toHaveBeenCalledWith(
@@ -610,6 +614,10 @@ describe('executeToolCall — Calendar', () => {
           categories: ['sport'],
           attendees: undefined,
           location: undefined,
+          recurrence: {
+            pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },
+            range: { type: 'noEnd', startDate: '2026-04-01' },
+          },
         },
         'google',
         undefined,

@@ -52,6 +52,7 @@ async def ask_claude(
     max_tokens: int = 4096,
     temperature: float = 0.7,
     category: str = "content_engine",
+    json_mode: bool = False,
 ) -> str:
     """Send a prompt through the TS AI proxy and return the text response.
 
@@ -71,6 +72,7 @@ async def ask_claude(
         "category": category,
         "maxTokens": max_tokens,
         "temperature": temperature,
+        "jsonMode": json_mode,
     }
 
     async with httpx.AsyncClient(timeout=300.0) as client:
@@ -120,7 +122,7 @@ async def ask_claude_json(
     raw = await ask_claude(
         prompt, system=system, model=model,
         max_tokens=max_tokens, temperature=temperature,
-        category=category,
+        category=category, json_mode=True,
     )
 
     # Strip markdown code fences if present

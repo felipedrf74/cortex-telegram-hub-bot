@@ -14,11 +14,15 @@ import {
 } from './content-script-utils';
 import {
   buildScriptSuccessResponse,
+  buildUserVoiceMemory,
   resolveScriptGenerationMode,
   resolveScriptRenderMode,
+  resolveScriptStyle,
   resolveScriptTargetLanguage,
 } from './content-script-route-utils';
 import { resolveScriptTopicContext } from './content-topic-context';
+import { getAllKnowledge } from '../../state/content-references';
+import { getScript } from '../../services/content-engine';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -56,7 +60,18 @@ export function registerContentScriptRoutes(
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_generate')) return;
 
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
-    const { topic, niche, format, maxDurationMinutes, targetDurationSeconds, mode, language, renderMode } = req.body;
+    const {
+      topic,
+      niche,
+      format,
+      maxDurationMinutes,
+      targetDurationSeconds,
+      mode,
+      language,
+      renderMode,
+      scriptStyle,
+      style,
+    } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
       sendError(res, 'VALIDATION', 'topic is required', 400);
@@ -81,6 +96,7 @@ export function registerContentScriptRoutes(
 
     const genMode = resolveScriptGenerationMode(mode);
     const targetRenderMode = resolveScriptRenderMode(renderMode);
+    const targetScriptStyle = resolveScriptStyle(scriptStyle ?? style);
     const startMs = Date.now();
 
     // TOCTOU-safe cost window — serialize check + AI + api_usage row
@@ -99,32 +115,30 @@ export function registerContentScriptRoutes(
         return;
       }
 
-      // CONT-M4: load user's brand voice from content_knowledge table
-      // and pass it to the script engine so the generated script
-      // reflects the user's tone, style, and vocabulary preferences.
-      let brandVoice: string | null = null;
+      // CONT-M4: load the user's Voice DNA memory from content_knowledge
+      // and pass it to the script engine so scripts reflect tone, structure,
+      // phrases, and creator preferences instead of only topic research.
+      let voiceMemory: string | null = null;
       try {
-        const { getKnowledgeByCategory } = require('../../state/content-references');
-        const row = getKnowledgeByCategory('brand_voice', userId);
-        brandVoice = row?.synthesized_text || null;
+        voiceMemory = buildUserVoiceMemory(userId, getAllKnowledge);
       } catch { /* non-critical — generate without voice if DB fails */ }
 
       const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});
       const targetLanguage = resolveScriptTargetLanguage(language, userId, getUserLanguage);
 
-      const { getScript } = require('../../services/content-engine');
       const result = await getScript(
         topic.trim(),
         scriptTopicContext?.niche || niche || 'general',
         durationPreset.maxDurationMinutes,
         normalizedFormat,
         genMode,
-        brandVoice,
+        voiceMemory,
         targetLanguage,
         targetRenderMode,
         userId,
         durationPreset.targetDurationSeconds,
         scriptTopicContext,
+        targetScriptStyle,
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = elapsedMs < 500;
@@ -133,6 +147,7 @@ export function registerContentScriptRoutes(
         result,
         format: normalizedFormat,
         renderMode: targetRenderMode,
+        scriptStyle: targetScriptStyle,
         generationMode: genMode,
         startMs,
         cacheHit,
