@@ -2,7 +2,7 @@
 
 Date: 2026-04-25
 
-Status: implemented on backend `main`; production deploy pending until the next deploy script run.
+Status: deployed to production in backend `4.14.74`.
 
 ## Summary
 
@@ -65,6 +65,12 @@ This pass fixes the high-impact backend issues without redesigning the whole coa
   - Passed.
 - `npm run verify`
   - Passed: 345 files / 5,468 tests.
+- `./scripts/deploy-staging.sh`
+  - Passed build, staging env validation, owner bootstrap preflight, native module rebuild, and staging service restart.
+- `./scripts/staging-smoke.sh`
+  - Passed: 17/17 smoke checks.
+- `./scripts/promote-to-prod.sh`
+  - Passed staging smoke gate, full production deploy gate, version bump to `4.14.74`, production rsync/restart, and production health checks for content engine, status portal, and bot online.
 
 ## Deliberately Not Completed In This Pass
 
@@ -80,6 +86,5 @@ These are product-depth follow-ups, not blockers for this hardening patch.
 
 ## Remaining Release Proof
 
-- Deploy to staging/prod.
 - Run a production-safe coach briefing smoke for both founder tenants.
 - TestFlight/device validation for Training coach briefing, readiness display, week plan, and action buttons.

@@ -14,7 +14,7 @@ delivered, acknowledged, resolved, and recovered.
 - alert resolved;
 - portal/admin audit rows verified.
 
-Production backend is live at `4.14.67`. If the final production alert receiver
+Production backend is live at `4.14.74`. If the final production alert receiver
 differs from the staging receiver, run one additional production-safe delivery
 drill after changing the receiver env.
 

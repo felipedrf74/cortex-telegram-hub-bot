@@ -7,12 +7,12 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production is live at `4.14.73`; staging remains live at `4.14.72`.
+- Backend production is live at `4.14.74`; staging remains live at `4.14.73`.
 - Full backend verification passed before the latest production deploy:
-  345 test files / 5,459 tests.
+  345 test files / 5,468 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `61f9d1c`; code commit `1300b20` is the follow-up
-  content script prompt-architecture release.
+  online at deploy commit `0f7fd74`; code commit `45f3a1c` is the Training
+  coach engine hardening release.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -57,8 +57,8 @@ content is retained only for provenance.
   latest full deploy gate later passed 345 files / 5,456 tests during the
   `4.14.71` content AI hotfix/cache promotion. Signed TestFlight/device validation
   remains required.
-- Content script AI delivery hotfixes on 2026-04-25 are deployed through
-  backend `4.14.73`. `4.14.71` fixed the TS AI bridge/json-mode degradation
+- Content script AI delivery hotfixes on 2026-04-25 remain live in backend
+  `4.14.74`. `4.14.71` fixed the TS AI bridge/json-mode degradation
   path. `4.14.73` carries the deeper script-quality architecture: the Python
   script writer no longer imports a global creator profile or a module-level
   system prompt, no longer hardcodes a founder/operator persona, and builds the
@@ -70,8 +70,8 @@ content is retained only for provenance.
   speed-vs-judgment hooks; and `/api/v1/content/script` supports
   `forceRefresh`/`regenerate` with a regeneration seed so "generate again"
   bypasses the cache. The script generation cache key is now `script-v7`.
-- Training coach engine hardening on 2026-04-25 is implemented on `main` and
-  full-test validated, pending the next staging/prod deploy. It removes
+- Training coach engine hardening on 2026-04-25 is deployed in backend
+  `4.14.74`. It removes
   founder-specific Felipe/carnivore/high-volume defaults from Training prompts,
   makes the daily coach briefing cron generate per active canonical tenant
   instead of owner-only users, fixes ACWR to use actual training-load values
@@ -79,7 +79,9 @@ content is retained only for provenance.
   `full_intensity`, combines sleep quality with duration as a safety floor, and
   makes orange/red/injury coach-kernel states downshift deterministically.
   Handoff: `docs/beta/training-coach-engine-hardening-handoff.md`.
-  Verification passed: full `npm run verify` = 345 files / 5,468 tests.
+  Verification passed: staging smoke = 17/17, production deploy gate = 345
+  files / 5,468 tests, and production health checks passed for content engine,
+  status portal, and bot online.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the

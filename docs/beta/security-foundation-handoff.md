@@ -30,7 +30,7 @@ checks:
 - founder accounts `felipedrf74@gmail.com` and
   `vieira.jaqueline@gmail.com` were verified in staging and production with
   founder max access;
-- backend production is live at `4.14.66`;
+- backend production is live at `4.14.74`;
 - production app-facing unauthenticated sanity checks returned canonical
   `{ error: { code, message, details? } }` `401` envelopes.
 
