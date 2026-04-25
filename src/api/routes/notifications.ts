@@ -13,7 +13,6 @@ import {
   type NotificationType,
 } from '../../services/content-notification-store';
 import { getRecentReports, getUnreadReportCount } from '../../services/report-document-store';
-import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
 import { isConnected } from '../../services/oauth-store';
 import { getUnreadEmailsForUser as getOutlookUnreadEmailsForUser, readEmailForUser as readOutlookEmailForUser } from '../../services/outlook-mail';
 import {
@@ -27,6 +26,8 @@ import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { logger } from '../../utils/logger';
 import { AITimeoutError, withTimeout } from '../../utils/timeout';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
+import { listTasks } from '../../services/task-store/task-service';
+import type { NormalizedTask } from '../../services/task-store/types';
 
 type InboxItemKind = 'notification' | 'report' | 'email' | 'task' | 'event';
 type InboxAction = 'open_content' | 'open_report' | 'view_email' | 'open_tasks' | 'view_event';
@@ -184,6 +185,12 @@ function toHumanDateTime(input: unknown): string | null {
   });
 }
 
+function inboxTaskPriority(task: NormalizedTask): InboxPriority {
+  if (task.priority >= 3) return 'high';
+  if (task.priority === 2) return 'medium';
+  return 'low';
+}
+
 function inboxPriorityScore(item: UnifiedInboxItem): number {
   const createdAt = new Date(item.createdAt).getTime();
   const hoursSinceCreated = Number.isNaN(createdAt)
@@ -303,22 +310,12 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
       warningCode: 'TASKS_INBOX_UNAVAILABLE',
       warning: 'Task items are temporarily unavailable.',
       run: async () => {
-        const todo = getTaskProviderForUser(userId);
-        const taskProvider = resolveTaskProvider(userId);
-        const taskProviderName = taskProvider === 'ms_todo'
-          ? 'microsoft_todo'
-          : taskProvider === 'todoist'
-            ? 'todoist'
-            : 'nexus';
-        const allTasksResult = await todo.getAllPendingTasks();
-        const tasks = allTasksResult?.data || allTasksResult || [];
-        if (!allTasksResult?.success || !Array.isArray(tasks)) {
-          throw new Error('Task data unavailable');
-        }
+        const tasks = listTasks(userId, { status: 'pending' });
+        if (!Array.isArray(tasks)) throw new Error('Task data unavailable');
 
         const items = tasks
-          .map((task: any) => {
-            const dueDateTime = task.dueDateTime?.dateTime || task.dueDateTime || null;
+          .map((task) => {
+            const dueDateTime = task.dueDate || null;
             const dueIso = dueDateTime ? safeIso(dueDateTime) : null;
             const dueStr = dueIso
               ? new Date(dueIso).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' })
@@ -326,23 +323,25 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
             const isOverdue = !!dueStr && dueStr < todayStr;
             const isDueToday = !!dueStr && dueStr === todayStr;
             const dueLabel = dueIso ? toHumanDateTime(dueIso) : null;
+            const taskId = task.id ?? task.externalId;
             return {
               kind: 'task' as const,
-              id: `task:${task.id}`,
+              id: `task:${taskId}`,
+              numericId: task.id,
               title: task.title || 'Untitled task',
-              body: task.body?.content || task.body || (dueLabel ? `Due ${dueLabel}` : task.listName || null),
+              body: task.description || task.notes || (dueLabel ? `Due ${dueLabel}` : task.projectName || null),
               type: isOverdue ? 'task_overdue' : isDueToday ? 'task_due_today' : 'task_pending',
               status: isOverdue ? 'attention' : isDueToday ? 'due_today' : 'pending',
-              createdAt: dueIso || safeIso(task.createdDateTime || now),
-              source: taskProviderName,
-              priority: isOverdue || task.importance === 'high' ? 'high' as const : isDueToday ? 'medium' as const : 'low' as const,
+              createdAt: dueIso || safeIso(now),
+              source: task.provider === 'ms_todo' ? 'microsoft_todo' : task.provider,
+              priority: isOverdue ? 'high' as const : isDueToday ? 'medium' as const : inboxTaskPriority(task),
               action: 'open_tasks' as const,
               metadata: {
-                taskId: task.id,
+                taskId,
                 dueDateTime: dueIso,
-                listId: task.listId || null,
-                listName: task.listName || null,
-                importance: task.importance || 'normal',
+                listId: task.projectId || null,
+                listName: task.projectName || null,
+                importance: task.priority >= 3 ? 'high' : task.priority === 1 ? 'low' : 'normal',
               },
             };
           })

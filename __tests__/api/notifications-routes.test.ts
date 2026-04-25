@@ -14,8 +14,7 @@ const mockCountEmailsForUser = vi.fn();
 const mockReadGmailEmailForUser = vi.fn();
 const mockGetOutlookEvents = vi.fn();
 const mockGetGoogleEvents = vi.fn();
-const mockResolveTaskProvider = vi.fn();
-const mockGetAllPendingTasks = vi.fn();
+const mockListTasks = vi.fn();
 
 vi.mock('../../src/services/content-notification-store', () => ({
   getNotifications: (...args: unknown[]) => mockGetNotifications(...args),
@@ -50,11 +49,8 @@ vi.mock('../../src/services/google-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetGoogleEvents(...args),
 }));
 
-vi.mock('../../src/services/task-store/task-router', () => ({
-  resolveTaskProvider: (...args: unknown[]) => mockResolveTaskProvider(...args),
-  getTaskProviderForUser: () => ({
-    getAllPendingTasks: (...args: unknown[]) => mockGetAllPendingTasks(...args),
-  }),
+vi.mock('../../src/services/task-store/task-service', () => ({
+  listTasks: (...args: unknown[]) => mockListTasks(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -155,8 +151,7 @@ describe('Notification inbox routes', () => {
     mockReadGmailEmailForUser.mockReset();
     mockGetOutlookEvents.mockReset();
     mockGetGoogleEvents.mockReset();
-    mockResolveTaskProvider.mockReset();
-    mockGetAllPendingTasks.mockReset();
+    mockListTasks.mockReset();
     clearTenantScopeAnomaliesForTests();
 
     mockGetNotifications.mockReturnValue([]);
@@ -171,8 +166,7 @@ describe('Notification inbox routes', () => {
     mockReadGmailEmailForUser.mockResolvedValue(null);
     mockGetOutlookEvents.mockResolvedValue([]);
     mockGetGoogleEvents.mockResolvedValue([]);
-    mockResolveTaskProvider.mockReturnValue('ms_todo');
-    mockGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
+    mockListTasks.mockReturnValue([]);
   });
 
   it('returns a unified secretary inbox with urgency ordering and degraded state on partial source failure', async () => {
@@ -219,20 +213,20 @@ describe('Notification inbox routes', () => {
       ],
     });
     mockGetOutlookEvents.mockRejectedValue(new Error('calendar unavailable'));
-    mockGetAllPendingTasks.mockResolvedValue({
-      success: true,
-      data: [
-        {
-          id: 'task-1',
-          title: 'Pay IVA',
-          body: 'Submit this month before noon.',
-          importance: 'high',
-          dueDateTime: yesterday,
-          listName: 'Admin',
-          listId: 'list-1',
-        },
-      ],
-    });
+    mockListTasks.mockReturnValue([
+      {
+        id: 1,
+        externalId: 'task-1',
+        provider: 'ms_todo',
+        title: 'Pay IVA',
+        description: 'Submit this month before noon.',
+        status: 'pending',
+        priority: 3,
+        dueDate: yesterday,
+        projectName: 'Admin',
+        projectId: 11,
+      },
+    ]);
 
     const res = await dispatch('GET', '/inbox', { limit: '10' });
 
@@ -251,6 +245,7 @@ describe('Notification inbox routes', () => {
       expect.arrayContaining(['task', 'email', 'report', 'notification']),
     );
     expect(mockGetUnreadEmailsForUser).toHaveBeenCalledWith(7, expect.any(Number));
+    expect(mockListTasks).toHaveBeenCalledWith(7, { status: 'pending' });
   });
 
   it('bounds slow inbox sources so a cold Home-to-Inbox load returns degraded data quickly', async () => {
@@ -300,7 +295,7 @@ describe('Notification inbox routes', () => {
     mockGetUnreadCount.mockReturnValue(1);
     mockGetRecentReports.mockReturnValue([]);
     mockGetUnreadReportCount.mockReturnValue(0);
-    mockGetAllPendingTasks.mockResolvedValue({ success: true, data: [] });
+    mockListTasks.mockReturnValue([]);
 
     const res = await dispatch('GET', '/inbox', { limit: '10' });
 
@@ -417,7 +412,7 @@ describe('Notification inbox routes', () => {
     expect(res.body.error.code).toBe('UNAUTHORIZED');
     expect(mockGetNotifications).not.toHaveBeenCalled();
     expect(mockGetRecentReports).not.toHaveBeenCalled();
-    expect(mockGetAllPendingTasks).not.toHaveBeenCalled();
+    expect(mockListTasks).not.toHaveBeenCalled();
     expect(getTenantScopeAnomalies()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
