@@ -6,6 +6,7 @@ the research pipeline to gather context, then asks Claude to write a
 complete video script with timing marks, screen cues, and CTA.
 """
 
+import hashlib
 import json
 import re
 import time
@@ -13,7 +14,6 @@ import logging
 from models.requests import ScriptRequest, ScriptResponse
 from models.research import SourceReference
 from services.claude_client import ask_claude, MODEL
-from services.creator_profile import get_profile
 
 logger = logging.getLogger("content-engine.script")
 
@@ -24,142 +24,59 @@ SHORT_FORM_WORD_TARGETS = {
     60: (125, 150),
 }
 
-SYSTEM_PROMPT = f"""You are the creator's AI scriptwriter.
-Use the creator configuration below as the canonical source of identity, worldview, audience, language defaults, and production style.
-Write natural, conversational scripts as if Felipe is talking to camera — never robotic, never generic.
+SCRIPT_TEMPERATURE = 0.88
+CREATOR_PROFILE_MAX_CHARS = 6000
 
-{get_profile()}
 
-AVAILABLE MARKERS (use throughout all scripts):
-- [SFX:vine-boom] [SFX:metal-pipe] [SFX:fahhh] [SFX:bruh] [SFX:sad-violin] [SFX:among-us] [SFX:record-scratch] [SFX:ding] [SFX:boom]
-- [EDIT:zoom-punch] [EDIT:hard-cut] [EDIT:speed-ramp] [EDIT:text-popup] [EDIT:deadpan-stare]
-- [SHOW ON SCREEN: ...] for sources, screenshots, data
-- [PLAY CLIP: timestamp-timestamp] for reaction content
-- [CUT TO: ...] for visual variety
+def _compact_text(value: str | None, limit: int) -> str:
+    compacted = " ".join((value or "").strip().split())
+    return compacted[:limit]
 
-FORMAT-SPECIFIC STRUCTURES:
 
---- DEFAULT (YouTube essay/commentary) ---
+def _creator_profile_block(req: ScriptRequest) -> str:
+    creator_profile = _compact_text(getattr(req, "creator_profile", None), CREATOR_PROFILE_MAX_CHARS)
+    brand_voice = _compact_text(getattr(req, "brand_voice", None), CREATOR_PROFILE_MAX_CHARS)
+    if creator_profile:
+        return creator_profile
+    if brand_voice:
+        return "\n".join([
+            "User-scoped Voice DNA memory is available for this current authenticated creator.",
+            "Apply it to rhythm, stance, vocabulary, examples, and editing choices.",
+            brand_voice,
+        ])
+    return "\n".join([
+        "No stored creator profile was provided for this request.",
+        "Use a neutral, multi-tenant creator stance: specific to the topic, useful to the intended audience, and free of any founder, brand, political, or personal identity assumptions.",
+        "Do not invent personal biography, audience demographics, worldview, catchphrases, hashtags, or creator identity.",
+    ])
 
-=== HOOK (0:00-0:03) ===
-[Pattern interrupt / bold statement / shocking visual]
-[SFX:vine-boom] or [SFX:metal-pipe] on the punch
-[Must create curiosity gap]
 
-=== SETUP (0:03-0:30) ===
-[Context: what, why should you care]
-[SHOW ON SCREEN: source/stat]
-[EDIT:text-popup] on key number or claim
+def _build_system_prompt(req: ScriptRequest) -> str:
+    return f"""You are Nexus Hub's multi-tenant creative scriptwriter.
+Build each script for the current authenticated creator only.
 
-=== BODY — Point 1 (0:30-2:00) ===
-[Main argument with data]
-[SHOW ON SCREEN: screenshot/source]
-[SFX] on surprising reveals
-[Transition hook to next point — open loop]
+CREATOR CONTEXT FOR THIS REQUEST:
+{_creator_profile_block(req)}
 
-=== BODY — Point 2 (2:00-3:30) ===
-[Supporting argument/counter-argument]
-[SHOW ON SCREEN: tweet/article/study]
-[EDIT:zoom-punch] on hot takes
+NON-NEGOTIABLE MULTI-TENANT RULES:
+- Never assume a founder persona, creator handle, ideology, default audience, nationality, or private biography unless it appears in the request creator context.
+- Do not inject branded hashtags, catchphrases, politics, or worldview from any other creator.
+- If creator context is sparse, write a strong neutral script shaped by the topic, niche, language, research, and format.
 
-=== BODY — Point 3 (3:30-5:00) ===
-[Personal opinion / hot take / the twist]
-[SFX:vine-boom] on the verdict
-[This is where The Operator's personality shines]
+CREATIVE DIRECTION:
+- Write natural spoken language, not a fill-in-the-blanks outline.
+- Choose the narrative shape that best fits the topic: myth-busting, demonstration, story, teardown, contrast, tutorial, forecast, reaction, or case study.
+- Vary the opening, turn, examples, and ending across topics. Do not reuse a universal hook pattern.
+- Production markers such as [SHOW ON SCREEN: ...], [CUT TO: ...], [SFX:...], [EDIT:...], and [PLAY CLIP: ...] are optional tools, not a required style. Use them only when they improve the specific script.
+- In chat render mode, keep the body clean and avoid production markers unless explicitly requested.
+- Metadata is for app rendering only; it must not force labeled sections inside the script body.
 
-=== PAYOFF (5:00-5:30) ===
-[Close the loop from the hook]
-[Emotional or thought-provoking conclusion]
-
-=== CTA (5:30-6:00) ===
-[Call to action — direct, not begging]
-
---- REACTION FORMAT ---
-Use this when the FORMAT is "Reaction" or the topic involves reacting to content:
-
-=== REACTION BEAT ===
-[CONTENT plays 5-8s]
-[PAUSE — face fills screen, 2-3s silence]
-[SFX:vine-boom] or [SFX:metal-pipe]
-"Mano."
-[SFX:fahhh] or lean-back moment
-[EDIT:deadpan-stare]
-"Tá, vamos por partes..."
-[Resume with point-by-point + meme overlays]
-[SHOW ON SCREEN: counter-evidence or supporting data]
-[EDIT:zoom-punch] on each key point
-[Close with definitive take — commit, don't hedge]
-[SFX:boom] on final verdict
-
-Repeat REACTION BEAT for each segment of source content. Each beat should feel raw and unscripted.
-
---- BUILD LOG FORMAT ---
-Use this when the topic involves AI builds, tech projects, automation, or coding:
-
-=== HOOK (0:00-0:03) ===
-Bold claim or demo of finished result
-[SFX:vine-boom + EDIT:zoom-punch into screen]
-
-=== PROBLEM (0:03-0:20) ===
-Why this matters / what was broken
-[EDIT:speed-ramp] through boring setup
-[SHOW ON SCREEN: error messages, broken UI, terminal output]
-
-=== BUILD (0:20-1:30) ===
-Screen recording of actual building
-Voiceover explaining decisions
-[SFX] on key moments (successful runs, errors fixed)
-[EDIT:text-popup] on tech stack choices
-[SHOW ON SCREEN: code, terminal, architecture diagrams]
-
-=== RESULT (1:30-2:00) ===
-Live demo of working system
-[SFX:vine-boom] on the reveal
-CTA — "Link na descrição" or "Comenta se quer o tutorial"
-
-RULES:
-- Write in the exact language requested in the prompt
-- Sound natural and conversational — like speaking, not reading
-- Include [SHOW ON SCREEN: ...] markers at every data reference
-- Include [SFX:...] markers at reaction moments, reveals, and punchlines
-- Include [EDIT:...] markers for post-production cues
-- Include [CUT TO: ...] for visual variety (retention)
-- Include timing marks [0:00], [0:30], etc.
-- **Bold** key phrases to emphasise in delivery
-- For reaction scripts: [PLAY CLIP: timestamp-timestamp]
-- Never use filler — every sentence must earn its place
-- End with a thought that makes the viewer think or feel
-- The Operator doesn't hedge — commit to the take
-
-CRITICAL CONTENT ACCURACY RULES:
-
-1. NEVER state a person's current legal/political/professional status from memory.
-   ONLY use facts from the RESEARCH FINDINGS provided below.
-
-2. For ANY claim about:
-   - Who holds a political position → ONLY use from research, tag [VERIFIED: source]
-   - Whether someone can/will run for election → ONLY use from research, tag [VERIFIED: source]
-   - Court decisions, sentences, legal status → ONLY use from research, tag [VERIFIED: source]
-   - Statistics, poll numbers, economic data → ONLY use from research, tag [VERIFIED: source]
-   - Scientific/health claims → ONLY use from research, tag [VERIFIED: source]
-
-3. If a claim cannot be found in the RESEARCH FINDINGS, DO NOT include it.
-   Replace with: [NEEDS VERIFICATION: <claim>]
-
-4. Separate FACTS from TAKES clearly:
-   - FACT (needs source): "Bolsonaro está inelegível até 2030 [VERIFIED: TSE]"
-   - TAKE (no source needed): "Isso muda completamente o jogo da direita"
-   Mark opinions with [TAKE] so Felipe knows what's commentary vs. fact.
-
-5. When discussing trending topics, ONLY reference information from the research findings.
-   NEVER assume that because something was true in your training data, it is still true today.
-
-6. At the END of every script, include a FONTES section:
-   ---
-   📋 FONTES VERIFICADAS:
-   1. [Claim] — [Source from research] — [URL if available]
-   ⚠️ ALERTAS: [Any claims marked NEEDS VERIFICATION]
-   ---"""
+ACCURACY RULES:
+- Use the verified research and first-party context as the factual basis.
+- Never state current legal, political, professional, statistical, scientific, health, or financial claims from memory.
+- If a claim is not supported by provided research or first-party context, omit it or mark it as needing verification when structured mode requires source notes.
+- Separate factual claims from commentary so the creator can review what is sourced versus opinion.
+- Trending or time-sensitive topics must rely on the provided research, not model memory."""
 
 
 def _normalize_language(language: str | None) -> str:
@@ -218,8 +135,21 @@ def _estimated_duration(req: ScriptRequest) -> str:
 
 def _fallback_timestamps(req: ScriptRequest) -> list[str]:
     target_seconds = _target_duration_seconds(req)
-    fractions = [0.0, 0.22, 0.48, 0.72, 0.92] if _is_short_form(req) else [0.0, 0.1, 0.35, 0.65, 0.9]
-    return [_format_timestamp(round(target_seconds * fraction)) for fraction in fractions]
+    fractions = [0.0, 0.2, 0.46, 0.71, 0.93] if _is_short_form(req) else [0.0, 0.12, 0.31, 0.58, 0.86]
+    seed = f"{req.topic}|{req.format}|{req.language}|{getattr(req, 'regeneration_seed', '') or ''}"
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    timestamps: list[str] = []
+    for index, fraction in enumerate(fractions):
+        if index == 0:
+            timestamps.append(_format_timestamp(0))
+            continue
+        # Deterministic jitter keeps degraded drafts from sharing the same grid
+        # while remaining stable for a given request/cache key.
+        window = int(digest[index * 2:index * 2 + 2], 16)
+        jitter = ((window % 9) - 4) / 100.0
+        seconds = round(target_seconds * max(0.02, min(0.97, fraction + jitter)))
+        timestamps.append(_format_timestamp(seconds))
+    return timestamps
 
 
 def _language_guidance(language: str) -> tuple[str, str]:
@@ -259,7 +189,7 @@ def _format_guidance(req: ScriptRequest) -> str:
             "- This is a SHORT-FORM script.",
             f"- Hit the {target_seconds}-second runtime cleanly; do not drift toward a 60-second generic short.",
             f"- Keep the spoken script around {min_words}-{max_words} words.",
-            "- Use at most 4 spoken beats after the hook.",
+            "- Usually use 2-4 spoken moves total, but choose the shape that fits the topic.",
             "- Timestamp the script so the final beat lands near the requested short duration.",
             "- Do NOT add a separate 'Visuals:' section or any preamble before the script.",
             "- Use inline [SHOW ON SCREEN: ...] markers inside the script instead of standalone visual notes.",
@@ -267,19 +197,19 @@ def _format_guidance(req: ScriptRequest) -> str:
     if target_seconds >= 900:
         pacing = [
             "- This is a 15-minute YouTube script.",
-            "- Use 9-12 timestamped beats so the arc can breathe without filler.",
+            "- Choose enough timestamped beats for a full argument arc; do not force a fixed count.",
             "- Bring the CTA in near the 14-minute mark and close close to 15:00.",
         ]
     elif target_seconds >= 600:
         pacing = [
             "- This is a 10-minute YouTube script.",
-            "- Use 7-9 timestamped beats with clear transitions and one real midpoint turn.",
+            "- Use a clear midpoint turn and enough timestamped beats to make the argument feel developed.",
             "- Bring the CTA in near the 9-minute mark and close close to 10:00.",
         ]
     else:
         pacing = [
             "- This is an 8-minute YouTube script.",
-            "- Use 6-8 timestamped beats and stay disciplined; every section must earn its minute.",
+            "- Stay disciplined; every timestamped move must earn its place.",
             "- Bring the CTA in near the 7-minute mark and close close to 8:00.",
         ]
     return "\n".join([
@@ -317,7 +247,8 @@ def _script_style_guidance(req: ScriptRequest, script_style: str) -> str:
         return "\n".join([
             "- OUTPUT STYLE: BULLET POINTS.",
             "- Return a practical filming outline, not a full word-for-word script.",
-            "- Include the hook, the sequence of beats, proof/source cues, suggested on-screen moments, and CTA.",
+            "- Pick a structure that fits this topic; do not mirror the detailed script with bullet marks.",
+            "- Include only the filming cues that matter: opening move, key proof, visual moments, pivots, and next action where useful.",
             "- Keep each bullet specific enough to film from; avoid generic slogans.",
         ])
     if _is_short_form(req):
@@ -353,11 +284,12 @@ def _script_quality_guidance(req: ScriptRequest, script_style: str) -> str:
 
     return "\n".join([
         "SCRIPT QUALITY BAR:",
-        "- Do not use the generic pattern `X seems fast, but the real bottleneck is judgment` unless the topic explicitly calls for it.",
+        "- Do not use a universal bottleneck hook pattern unless the topic explicitly calls for that idea.",
         "- Do not reuse the same hook/title/script skeleton across topics or formats.",
         "- Use at least 2 topic-specific examples or scenarios from the research or first-party context.",
         "- Make the opening feel written for this exact creator and this exact viewer, not for a generic AI content account.",
         "- If Voice DNA is provided, apply it to sentence rhythm, stance, vocabulary, and the kind of examples selected.",
+        "- If Voice DNA is not provided, do not borrow another creator's identity; stay topic-led and neutral.",
         "- The final output should feel stronger than a default AI-generated script: concrete, opinionated, source-aware, and filmable.",
         format_rule,
         style_rule,
@@ -392,38 +324,38 @@ def _fallback_titles(topic: str, language: str) -> list[str]:
     subject = _normalize_fallback_topic(topic)
     if language == "en-US":
         return [
-            f"What nobody tells you about {subject}",
-            f"How I would approach {subject} solo",
-            f"{subject}: the operator breakdown",
+            f"The overlooked angle inside {subject}",
+            f"How to make {subject} feel concrete",
+            f"{subject}: a clearer way to explain it",
         ]
     if language == "pt-PT":
         return [
-            f"O que ninguém te diz sobre {subject}",
-            f"Como eu abordaria {subject} sozinho",
-            f"{subject}: a leitura do Operator",
+            f"O ângulo esquecido em {subject}",
+            f"Como tornar {subject} mais concreto",
+            f"{subject}: uma forma mais clara de explicar",
         ]
     return [
-        f"O que ninguém te conta sobre {subject}",
-        f"Como eu abordaria {subject} sozinho",
-        f"{subject}: o breakdown do Operator",
+        f"O ângulo esquecido em {subject}",
+        f"Como tornar {subject} mais concreto",
+        f"{subject}: uma forma mais clara de explicar",
     ]
 
 
 def _fallback_caption(topic: str, language: str) -> str:
     subject = _normalize_fallback_topic(topic)
     if language == "en-US":
-        return f"If you're working on {subject}, speed only helps when the product logic stays clear. Save this before your next build sprint."
+        return f"A practical way to turn {subject} into a clearer story. Save this before planning the next video."
     if language == "pt-PT":
-        return f"Se estás a trabalhar em {subject}, a velocidade só ajuda quando a lógica do produto está clara. Guarda isto antes do próximo sprint."
-    return f"Se você está trabalhando em {subject}, velocidade só ajuda quando a lógica do produto está clara. Salva isso antes do próximo sprint."
+        return f"Uma forma prática de transformar {subject} numa história mais clara. Guarda isto antes do próximo vídeo."
+    return f"Uma forma prática de transformar {subject} em uma história mais clara. Salva isso antes do próximo vídeo."
 
 
 def _fallback_cta(language: str) -> str:
     if language == "en-US":
-        return "Save this and send it to the builder who's trying to do everything at once."
+        return "Save this and use it as the starting point for the next take."
     if language == "pt-PT":
-        return "Guarda isto e envia a quem está a tentar construir tudo ao mesmo tempo."
-    return "Salva isso e manda para quem está tentando construir tudo ao mesmo tempo."
+        return "Guarda isto e usa como ponto de partida para a próxima gravação."
+    return "Salva isso e usa como ponto de partida para a próxima gravação."
 
 
 def _normalize_fallback_topic(topic: str) -> str:
@@ -442,7 +374,7 @@ def _fallback_hashtags(topic: str) -> list[str]:
     normalized = _normalize_fallback_topic(topic).lower()
     topic_tokens = re.findall(r"[a-zA-Z0-9]+", normalized)
     derived = [f"#{token}" for token in topic_tokens[:2] if len(token) > 3]
-    base = ["#theoperator", "#buildinpublic", "#product", "#systems"]
+    base = ["#conteudo", "#criadores", "#video", "#estrategia"]
     merged: list[str] = []
     for tag in derived + base:
         if tag not in merged:
@@ -458,7 +390,7 @@ def _is_usable_key_point(point: str) -> bool:
         "set youtube_api_key",
         "set newsapi_api_key",
         "mock ",
-        "add felipe's perspective",
+        "add creator's perspective",
         "turn the strongest verified point",
         "validate the strongest claims",
     ]
@@ -472,7 +404,58 @@ def _pick_key_points(briefs: list) -> list[str]:
             cleaned = str(point).strip()
             if _is_usable_key_point(cleaned) and cleaned not in points:
                 points.append(cleaned)
-    return points[:3]
+    return points[:4]
+
+
+def _fallback_default_beats(subject: str, language: str) -> list[str]:
+    if language == "en-US":
+        return [
+            f"Name the real viewer problem behind {subject}, not just the topic label.",
+            "Use one concrete scene or example so the viewer can picture the stakes.",
+            "Show the tradeoff or decision that changes how someone should act.",
+            "Close with one practical next move instead of a generic motivational line.",
+        ]
+    if language == "pt-PT":
+        return [
+            f"Nomeia o problema real do público por trás de {subject}, não só o tema.",
+            "Usa uma cena ou exemplo concreto para o público sentir o que está em jogo.",
+            "Mostra a troca ou decisão que muda a forma de agir.",
+            "Fecha com uma próxima ação prática, não com uma frase motivacional genérica.",
+        ]
+    return [
+        f"Nomeie o problema real do público por trás de {subject}, não só o tema.",
+        "Use uma cena ou exemplo concreto para o público sentir o que está em jogo.",
+        "Mostre a troca ou decisão que muda a forma de agir.",
+        "Feche com uma próxima ação prática, não com uma frase motivacional genérica.",
+    ]
+
+
+def _fallback_hook(subject: str, language: str, req: ScriptRequest, key_points: list[str]) -> str:
+    evidence_hint = key_points[0] if key_points else subject
+    seed = f"{subject}|{language}|{req.format}|{getattr(req, 'regeneration_seed', '') or ''}"
+    variant = int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:2], 16) % 4
+    if language == "en-US":
+        options = [
+            f"{subject} gets easier to explain when you stop starting from the obvious part.",
+            f"The strongest angle in {subject} is hiding in the detail people usually skip.",
+            f"Before you make another video about {subject}, anchor it in this: {evidence_hint}",
+            f"{subject} does not need a louder hook; it needs a sharper reason to care.",
+        ]
+    elif language == "pt-PT":
+        options = [
+            f"{subject} fica mais fácil de explicar quando não começas pela parte óbvia.",
+            f"O ângulo mais forte em {subject} está no detalhe que quase toda a gente salta.",
+            f"Antes de gravar mais um vídeo sobre {subject}, ancora-o nisto: {evidence_hint}",
+            f"{subject} não precisa de um gancho mais barulhento; precisa de uma razão mais clara para importar.",
+        ]
+    else:
+        options = [
+            f"{subject} fica mais fácil de explicar quando você para de começar pela parte óbvia.",
+            f"O ângulo mais forte em {subject} está no detalhe que quase todo mundo pula.",
+            f"Antes de gravar mais um vídeo sobre {subject}, ancora nisso: {evidence_hint}",
+            f"{subject} não precisa de um gancho mais barulhento; precisa de uma razão mais clara para importar.",
+        ]
+    return options[variant]
 
 
 def _build_degraded_script_response(
@@ -491,128 +474,101 @@ def _build_degraded_script_response(
     render_mode = _normalize_render_mode(getattr(req, "render_mode", None))
     normalized_style = _normalize_script_style(script_style)
     key_points = _pick_key_points(briefs)
+    default_beats = _fallback_default_beats(subject, language)
+    beats = [
+        key_points[index] if len(key_points) > index else default_beats[index]
+        for index in range(4)
+    ]
     cta = _fallback_cta(language)
     cta_line = cta if render_mode == "chat" else f"CTA: {cta}"
     timestamps = _fallback_timestamps(req)
     short_form = _is_short_form(req)
-    voice_seed = " ".join((brand_voice or "").strip().split())[:260]
-    voice_line = ""
-    if voice_seed:
-        voice_line = {
-            "en-US": f"Voice DNA to preserve: {voice_seed}",
-            "pt-PT": f"Voice DNA a preservar: {voice_seed}",
-        }.get(language, f"Voice DNA a preservar: {voice_seed}")
+    if brand_voice and brand_voice.strip():
+        warnings.append("Voice DNA memory was available, but the AI writer was unavailable; fallback used only safe topic and research cues.")
 
     if language == "en-US":
-        hook = f"If you're trying to {subject.lower()}, the trap is thinking speed replaces judgment."
-        beats = [
-            key_points[0] if len(key_points) > 0 else "Name the one painful problem this solves for a real person.",
-            key_points[1] if len(key_points) > 1 else "Show the constraint, the tradeoff, and the decision that changed the build.",
-            key_points[2] if len(key_points) > 2 else "Prove demand with the smallest loop people will repeat.",
-            key_points[3] if len(key_points) > 3 else "Make the takeaway concrete enough to use today.",
-        ]
+        hook = _fallback_hook(subject, language, req, key_points)
         if normalized_style == "bullets":
             script = "\n".join([
                 f"- Hook: {hook}",
-                f"- Tension: {subject} looks like a speed problem, but it is really a judgment problem.",
-                f"- Beat 1: {beats[0]}",
-                f"- Beat 2: {beats[1]}",
-                f"- Beat 3: {beats[2]}",
-                f"- Proof moment: {beats[3]}",
-                f"- On screen: Speed without clarity = noise",
+                f"- Viewer tension: What makes {subject} feel confusing, urgent, or worth watching right now?",
+                f"- Proof or scene: {beats[0]}",
+                f"- Turn: {beats[1]}",
+                f"- Filming cue: Put one visual, receipt, or example on screen that makes the point tangible.",
+                f"- Close: {beats[2]} {beats[3]}",
                 f"- CTA: {cta}",
-                f"- {voice_line}" if voice_line else "",
             ]).strip()
         elif short_form or render_mode == "chat":
             script = "\n\n".join([
-                f"**{subject}** sounds fast because AI is helping. But the real bottleneck is still judgment.",
-                f"Here is the filter: {beats[0]} Then make the tradeoff visible: {beats[1]}",
-                f"Close with proof, not hype: {beats[2]} {beats[3]}",
-                cta,
+                hook,
+                f"Make it concrete: {beats[0]}",
+                f"Then give the viewer the turn: {beats[1]} {beats[2]}",
+                f"{beats[3]} {cta}",
             ])
         else:
             script = "\n".join([
-                f"[{timestamps[0]}] **{subject}** sounds like a speed story, but it is actually a judgment story. [SHOW ON SCREEN: \"Speed without clarity = noise\"]",
-                f"[{timestamps[1]}] First: frame the real constraint. {beats[0]} This is where most generic scripts skip the useful part.",
-                f"[{timestamps[2]}] Second: show the decision under pressure. {beats[1]} Give the audience the fork in the road, not just the conclusion.",
-                f"[{timestamps[3]}] Third: turn it into a repeatable operating rule. {beats[2]} {beats[3]}",
+                f"[{timestamps[0]}] {hook}",
+                f"[{timestamps[1]}] Ground the story in a specific viewer problem. {beats[0]} [SHOW ON SCREEN: one concrete example or source cue]",
+                f"[{timestamps[2]}] Move into the turn. {beats[1]} This is the moment where the audience sees why the topic is not generic.",
+                f"[{timestamps[3]}] Make it useful. {beats[2]} {beats[3]}",
                 f"[{timestamps[-1]}] {cta_line}",
             ])
     elif language == "pt-PT":
-        hook = f"Se estás a tentar {subject.lower()}, o erro é achar que velocidade substitui critério."
-        beats = [
-            key_points[0] if len(key_points) > 0 else "Define o problema doloroso que isto resolve para uma pessoa concreta.",
-            key_points[1] if len(key_points) > 1 else "Mostra a restrição, a troca e a decisão que mudou o caminho.",
-            key_points[2] if len(key_points) > 2 else "Prova procura com o ciclo mínimo que alguém repetiria.",
-            key_points[3] if len(key_points) > 3 else "Fecha com uma regra prática que a pessoa consegue usar hoje.",
-        ]
+        hook = _fallback_hook(subject, language, req, key_points)
         if normalized_style == "bullets":
             script = "\n".join([
-                f"- Hook: {hook}",
-                f"- Tensão: {subject} parece um problema de velocidade, mas é um problema de critério.",
-                f"- Beat 1: {beats[0]}",
-                f"- Beat 2: {beats[1]}",
-                f"- Beat 3: {beats[2]}",
-                f"- Momento de prova: {beats[3]}",
-                f"- No ecrã: Velocidade sem clareza = ruído",
+                f"- Gancho: {hook}",
+                f"- Tensão do público: o que torna {subject} confuso, urgente ou digno de atenção agora?",
+                f"- Prova ou cena: {beats[0]}",
+                f"- Viragem: {beats[1]}",
+                f"- Pista visual: mostra um exemplo, recibo ou detalhe que torne a ideia tangível.",
+                f"- Fecho: {beats[2]} {beats[3]}",
                 f"- CTA: {cta}",
-                f"- {voice_line}" if voice_line else "",
             ]).strip()
         elif short_form or render_mode == "chat":
             script = "\n\n".join([
-                f"**{subject}** parece rápido com IA. Mas o verdadeiro bloqueio continua a ser critério.",
-                f"O filtro é este: {beats[0]} Depois mostra a troca real: {beats[1]}",
-                f"Fecha com prova, não com hype: {beats[2]} {beats[3]}",
-                cta,
+                hook,
+                f"Torna isto concreto: {beats[0]}",
+                f"Depois dá a viragem: {beats[1]} {beats[2]}",
+                f"{beats[3]} {cta}",
             ])
         else:
             script = "\n".join([
-                f"[{timestamps[0]}] **{subject}** parece uma história de velocidade, mas é uma história de critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
-                f"[{timestamps[1]}] Primeiro: enquadra a restrição real. {beats[0]} É aqui que os roteiros genéricos saltam a parte útil.",
-                f"[{timestamps[2]}] Segundo: mostra a decisão sob pressão. {beats[1]} Dá ao público a bifurcação, não só a conclusão.",
-                f"[{timestamps[3]}] Terceiro: transforma isto numa regra operacional. {beats[2]} {beats[3]}",
+                f"[{timestamps[0]}] {hook}",
+                f"[{timestamps[1]}] Começa pelo problema específico do público. {beats[0]} [SHOW ON SCREEN: exemplo concreto ou fonte]",
+                f"[{timestamps[2]}] Entra na viragem. {beats[1]} É aqui que o público percebe porque o tema não é genérico.",
+                f"[{timestamps[3]}] Torna isto útil. {beats[2]} {beats[3]}",
                 f"[{timestamps[-1]}] {cta_line}",
             ])
     else:
-        hook = f"Se você está tentando {subject.lower()}, o erro é achar que velocidade substitui critério."
-        beats = [
-            key_points[0] if len(key_points) > 0 else "Defina o problema doloroso que isso resolve para uma pessoa real.",
-            key_points[1] if len(key_points) > 1 else "Mostre a restrição, a troca e a decisão que mudou o caminho.",
-            key_points[2] if len(key_points) > 2 else "Prove demanda com o menor loop que alguém repetiria.",
-            key_points[3] if len(key_points) > 3 else "Feche com uma regra prática que a pessoa consegue usar hoje.",
-        ]
+        hook = _fallback_hook(subject, language, req, key_points)
         if normalized_style == "bullets":
             script = "\n".join([
-                f"- Hook: {hook}",
-                f"- Tensão: {subject} parece um problema de velocidade, mas é um problema de critério.",
-                f"- Beat 1: {beats[0]}",
-                f"- Beat 2: {beats[1]}",
-                f"- Beat 3: {beats[2]}",
-                f"- Momento de prova: {beats[3]}",
-                f"- Na tela: Velocidade sem clareza = ruído",
+                f"- Gancho: {hook}",
+                f"- Tensão do público: o que torna {subject} confuso, urgente ou digno de atenção agora?",
+                f"- Prova ou cena: {beats[0]}",
+                f"- Virada: {beats[1]}",
+                f"- Pista visual: mostre um exemplo, recibo ou detalhe que torne a ideia tangível.",
+                f"- Fechamento: {beats[2]} {beats[3]}",
                 f"- CTA: {cta}",
-                f"- {voice_line}" if voice_line else "",
             ]).strip()
         elif short_form or render_mode == "chat":
             script = "\n\n".join([
-                f"**{subject}** parece rápido com IA. Mas o gargalo real continua sendo critério.",
-                f"O filtro é esse: {beats[0]} Depois mostre a troca real: {beats[1]}",
-                f"Feche com prova, não com hype: {beats[2]} {beats[3]}",
-                cta,
+                hook,
+                f"Torne isso concreto: {beats[0]}",
+                f"Depois dê a virada: {beats[1]} {beats[2]}",
+                f"{beats[3]} {cta}",
             ])
         else:
             script = "\n".join([
-                f"[{timestamps[0]}] **{subject}** parece uma história de velocidade, mas é uma história de critério. [SHOW ON SCREEN: \"Velocidade sem clareza = ruído\"]",
-                f"[{timestamps[1]}] Primeiro: enquadre a restrição real. {beats[0]} É aqui que roteiros genéricos pulam a parte útil.",
-                f"[{timestamps[2]}] Segundo: mostre a decisão sob pressão. {beats[1]} Dê ao público a bifurcação, não só a conclusão.",
-                f"[{timestamps[3]}] Terceiro: transforme isso numa regra operacional. {beats[2]} {beats[3]}",
+                f"[{timestamps[0]}] {hook}",
+                f"[{timestamps[1]}] Comece pelo problema específico do público. {beats[0]} [SHOW ON SCREEN: exemplo concreto ou fonte]",
+                f"[{timestamps[2]}] Entre na virada. {beats[1]} É aqui que o público percebe por que o tema não é genérico.",
+                f"[{timestamps[3]}] Torne isso útil. {beats[2]} {beats[3]}",
                 f"[{timestamps[-1]}] {cta_line}",
             ])
 
-    if voice_line and normalized_style != "bullets":
-        script = f"{script}\n\n{voice_line}"
-        warnings.append("Voice DNA memory was applied to the degraded fallback.")
-    warnings.append("AI generation was unavailable; returned a templated degraded script grounded in the available research.")
+    warnings.append("AI generation was unavailable; returned a topic-aware degraded draft grounded in available research.")
     duration_ms = int((time.monotonic() - start) * 1000)
     return ScriptResponse(
         topic=topic,
@@ -788,7 +744,7 @@ async def generate(req: ScriptRequest, orchestrator) -> ScriptResponse:
                 phrase = payload.get("phrase", "")
                 ctx = payload.get("context", "")
                 if phrase:
-                    sections.append(f"FELIPE'S PHRASE: \"{phrase}\" — use when: {ctx}")
+                    sections.append(f"CREATOR PHRASE: \"{phrase}\" — use when: {ctx}")
 
             elif sig_type == "channel_dna" and payload.get("category") in ("hook_style", "storytelling", "content_structure"):
                 patterns = payload.get("patterns", [])
@@ -852,7 +808,7 @@ VERIFIED RESEARCH FINDINGS (USE ONLY THESE AS FACTUAL BASIS):
 ACCURACY INSTRUCTIONS:
 - ONLY use facts that appear in the RESEARCH FINDINGS above.
 - Tag factual claims with [VERIFIED: source name] inline.
-- Tag your opinions/commentary with [TAKE] so Felipe knows what's fact vs. opinion.
+- Tag your opinions/commentary with [TAKE] so the creator knows what's fact vs. opinion.
 - If you want to make a claim NOT found in research, mark it [NEEDS VERIFICATION: claim].
 - DO NOT invent statistics, poll numbers, dates, legal outcomes, or people's current status.
 - If FIRST-PARTY TOPIC CONTEXT is present, treat it as the primary editorial direction and use research to sharpen it rather than replacing it with some unrelated pillar.
@@ -865,7 +821,7 @@ Also provide:
 4. A short social media caption (1-2 sentences, with emoji, for Instagram/YouTube description)
 5. The CTA (call to action) as a standalone line
 
-{"Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body." if normalized_render_mode == "chat" else ("Write the bullet-point filming outline now. Start with the hook, then the core beats, proof/source cues, on-screen ideas, and CTA.\n\nAfter the outline, add a FONTES VERIFICADAS section listing sources." if normalized_script_style == "bullets" else "Write the complete script now. Start with the spoken hook, follow the structure, end with CTA. Do NOT use decorative dividers or labels like `=== HOOK ===`, `=== SCRIPT ===`, `HOOK:`, or `SCRIPT:`; the app already renders those sections.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources.")}
+{"Write the complete script now. Return only the clean spoken script body before the metadata separator. Do NOT include a FONTES VERIFICADAS appendix, section headings, or labeled metadata in the script body." if normalized_render_mode == "chat" else ("Write the bullet-point filming outline now. Choose the order of bullets from the topic itself: strongest opening move, proof/source cues, visual ideas, pivots, and next action where useful.\n\nAfter the outline, add a FONTES VERIFICADAS section listing sources." if normalized_script_style == "bullets" else "Write the complete script now. Start with the strongest spoken opening for this specific topic, let the argument shape emerge from the research, and close with a natural next action. Do NOT use decorative dividers or labels like `=== HOOK ===`, `=== SCRIPT ===`, `HOOK:`, or `SCRIPT:`; the app already renders those sections.\n\nAfter the script, add a FONTES VERIFICADAS section listing sources.")}
 
 Then, on a NEW LINE, write exactly `---METADATA---` followed by a JSON object with these fields:
 ```json
@@ -883,7 +839,14 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
     # unavailable, return a clearly degraded script grounded in the
     # research already collected instead of exploding into a 500.
     try:
-        raw = await ask_claude(prompt, system=SYSTEM_PROMPT, model=MODEL, max_tokens=8192, category="content_engine_script")
+        raw = await ask_claude(
+            prompt,
+            system=_build_system_prompt(req),
+            model=MODEL,
+            max_tokens=8192,
+            temperature=SCRIPT_TEMPERATURE,
+            category="content_engine_script",
+        )
     except Exception as exc:
         logger.warning("AI generation unavailable for script_writer.generate: %s", exc)
         return _build_degraded_script_response(

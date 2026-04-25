@@ -14,13 +14,14 @@
 
 ## Current Production Truth - 2026-04-25
 
-- Production backend and staging are live at `4.14.71`.
+- Production backend and staging are live at `4.14.72`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  345 test files / 5,456 tests.
+  345 test files / 5,459 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at backend commit `e8239e8`.
+  online at backend commit `e8239e8`; `4.14.72` is the follow-up content
+  script prompt-architecture release.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,
@@ -68,25 +69,21 @@
   latest full deploy gate later passed 345 files / 5,456 tests during the
   `4.14.71` content AI hotfix/cache promotion. Signed TestFlight/device validation
   remains required.
-- Content script AI delivery hotfix on 2026-04-25 is deployed in backend
-  `4.14.71`: the live "Qualidade reduzida" root cause was the Python content
-  engine losing the TS AI bridge and degrading when synthesis responses were
-  fenced/malformed JSON. Production and staging now require
-  `INTERNAL_API_SECRET`, `AI_CALL_TIMEOUT_MS`, and a backend URL/port before
-  deploy; the TS proxy forwards `jsonMode` and longer content-engine timeouts
-  to Gemini/OpenAI; Python extracts/repairs JSON before degrading; and script
-  prompts now include a quality bar that forces Voice DNA, topic-specific
-  examples, format-specific structure, non-repetitive hooks, and distinct
-  YouTube vs short-form outputs. The script writer also strips decorative
-  section dividers and raw markdown emphasis before returning app-rendered
-  sections. `4.14.71` also bumps the script generation cache key to
-  `script-v6`, so old generic/degraded `script-v5` results cannot replay for
-  standard/quick generations. Production direct script smoke on `4.14.71`
-  returned `degraded=false`, `warnings=[]`, no old generic pattern, no
-  decorative dividers, no raw markdown emphasis, and Voice-DNA-specific
-  language for YouTube detailed, Shorts detailed, and a standard cache-v6
-  request; production must keep returning `degraded=false` for normal script
-  generation unless a real provider outage occurs.
+- Content script AI delivery hotfixes on 2026-04-25 are deployed through
+  backend `4.14.72`. `4.14.71` fixed the TS AI bridge/json-mode degradation
+  path. `4.14.72` fixes the deeper script-quality architecture: the Python
+  script writer no longer imports a global creator profile or a module-level
+  system prompt, no longer hardcodes a founder/operator persona, and builds the
+  script system prompt per request from the authenticated user's scoped creator
+  profile/Voice DNA. The prompt now uses outcome-based creative guidance
+  instead of literal hook/setup/body/CTA templates; `ask_claude` sets an
+  explicit script temperature; degraded fallback drafts are topic-aware,
+  deterministic-jittered, and free of founder hashtags or generic
+  speed-vs-judgment hooks; and `/api/v1/content/script` supports
+  `forceRefresh`/`regenerate` with a regeneration seed so "generate again"
+  bypasses the cache. The script generation cache key is now `script-v7`.
+  Production must keep returning `degraded=false` for normal script generation
+  unless a real provider outage occurs.
 - Remaining public-beta gates are iOS distribution gates: signed TestFlight,
   APNs token/delivery proof, fresh auth/onboarding, true two-account switching,
   real Gmail/Outlook/Health provider-state checks, and device proof for the
@@ -234,7 +231,7 @@ Direct `./scripts/deploy.sh` exists for trivial hotfixes but the default is alwa
 ## Active Phase (April 2026)
 
 **Beta release hardening is the active production context.** The backend beta
-hardening branch has been deployed to production as `4.14.71` from `main`; do not treat the
+hardening branch has been deployed to production as `4.14.72` from `main`; do not treat the
 older Phase 0/Phase 1 notes as the current release state.
 
 Current backend follow-ups:

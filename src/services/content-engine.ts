@@ -374,6 +374,12 @@ function hashScriptContext(context?: ScriptTopicContext | null): string {
   return crypto.createHash('sha1').update(JSON.stringify(normalized)).digest('hex').slice(0, 12);
 }
 
+function hashRegenerationSeed(seed?: string | null): string | null {
+  const normalized = (seed || '').trim();
+  if (!normalized) return null;
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+}
+
 function tokenizeContentText(value: string): string[] {
   return value
     .toLowerCase()
@@ -458,9 +464,10 @@ export function buildScriptCacheKey(
   userId?: number,
   scriptContext?: ScriptTopicContext | null,
   scriptStyle: ScriptStyle = 'detailed',
+  regenerationSeed?: string | null,
 ): string {
-  return [
-    'script-v6',
+  const parts = [
+    'script-v7',
     topic.toLowerCase().trim(),
     niche,
     format,
@@ -473,7 +480,10 @@ export function buildScriptCacheKey(
     `style:${normalizeScriptStyle(scriptStyle)}`,
     `ctx:${hashScriptContext(scriptContext)}`,
     `scope:${userId ?? 'global'}`,
-  ].join(':');
+  ];
+  const seedHash = hashRegenerationSeed(regenerationSeed);
+  if (seedHash) parts.push(`regen:${seedHash}`);
+  return parts.join(':');
 }
 
 export async function getScript(
@@ -486,6 +496,9 @@ export async function getScript(
   targetDurationSeconds?: number | null,
   scriptContext?: ScriptTopicContext | null,
   scriptStyle: ScriptStyle = 'detailed',
+  forceRefresh = false,
+  regenerationSeed?: string | null,
+  creatorProfile?: string | null,
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
   const normalizedLanguage = normalizeScriptLanguage(language);
@@ -504,10 +517,11 @@ export async function getScript(
     userId,
     scriptContext,
     normalizedScriptStyle,
+    regenerationSeed,
   );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
-  if (cfg.cacheTtl > 0) {
+  if (cfg.cacheTtl > 0 && !forceRefresh) {
     try {
       const { getCached } = await import('./cache-store');
       const cached = getCached<ScriptResponse>(normalizedKey);
@@ -559,11 +573,14 @@ export async function getScript(
       // CONT-M4: pass user's brand voice to Python script writer so the
       // generated script reflects the user's tone, vocabulary, and style.
       brand_voice: brandVoice || undefined,
+      creator_profile: creatorProfile || undefined,
+      force_refresh: forceRefresh || undefined,
+      regeneration_seed: regenerationSeed || undefined,
     }),
   }, cfg.timeoutMs);
 
   // ── Cache store (skip for deep mode) ───────────────────────────
-  if (cfg.cacheTtl > 0) {
+  if (cfg.cacheTtl > 0 && (!forceRefresh || Boolean(regenerationSeed?.trim()))) {
     try {
       const { setCache } = await import('./cache-store');
       setCache(normalizedKey, result, cfg.cacheTtl);

@@ -115,6 +115,34 @@ export function buildUserVoiceMemory(
   }
 }
 
+export function buildScriptCreatorProfile(params: {
+  language: string;
+  niche?: string | null;
+  voiceMemory?: string | null;
+}): string {
+  const language = params.language?.trim() || 'pt-BR';
+  const niche = params.niche?.trim() || 'general';
+  const lines = [
+    'Creator scope: current authenticated Nexus Hub user only.',
+    `Primary output language: ${language}.`,
+    `Requested niche/context: ${niche}.`,
+  ];
+
+  const voiceMemory = params.voiceMemory?.trim();
+  if (voiceMemory) {
+    lines.push(
+      'User-scoped Voice DNA follows. Apply it to sentence rhythm, stance, vocabulary, examples, and CTA style without quoting it verbatim.',
+      voiceMemory.slice(0, 6000),
+    );
+  } else {
+    lines.push(
+      'No stored Voice DNA exists yet. Use a neutral creator voice grounded in this topic, niche, language, and research. Do not borrow another creator identity, brand, audience, politics, biography, or hashtags.',
+    );
+  }
+
+  return lines.join('\n');
+}
+
 export function buildScriptSuccessResponse(params: {
   result: ContentScriptEngineResult;
   format: ScriptFormat;

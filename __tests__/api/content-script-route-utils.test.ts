@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildScriptCreatorProfile,
   buildScriptSuccessResponse,
   buildUserVoiceMemory,
   resolveScriptGenerationMode,
@@ -56,6 +57,32 @@ describe('content script route contract utilities', () => {
     expect(memory).toContain('[hook_style] Open with a sharp misconception.');
     expect(memory).toContain('[content_structure] Use contrast');
     expect(memory).not.toContain('irrelevant');
+  });
+
+  it('builds a per-request creator profile without single-tenant identity assumptions', () => {
+    const profile = buildScriptCreatorProfile({
+      language: 'pt-BR',
+      niche: 'fitness',
+      voiceMemory: '[brand_voice] Quiet, evidence-led coaching voice.',
+    });
+
+    expect(profile).toContain('current authenticated Nexus Hub user only');
+    expect(profile).toContain('Primary output language: pt-BR');
+    expect(profile).toContain('Requested niche/context: fitness');
+    expect(profile).toContain('[brand_voice] Quiet, evidence-led coaching voice.');
+    expect(profile).not.toContain('The Operator');
+  });
+
+  it('uses a neutral creator profile for cold-start users without Voice DNA', () => {
+    const profile = buildScriptCreatorProfile({
+      language: 'en-US',
+      niche: 'homeschooling',
+      voiceMemory: null,
+    });
+
+    expect(profile).toContain('No stored Voice DNA exists yet');
+    expect(profile).toContain('Do not borrow another creator identity');
+    expect(profile).toContain('Requested niche/context: homeschooling');
   });
 
   it('builds the script response contract with defensive source normalization', () => {

@@ -152,16 +152,34 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
 
   it('returns a degraded fallback script when AI generation fails', () => {
     expect(src).toContain('def _build_degraded_script_response');
-    expect(src).toContain('AI generation was unavailable; returned a templated degraded script grounded in the available research.');
+    expect(src).toContain('AI generation was unavailable; returned a topic-aware degraded draft grounded in available research.');
     expect(src).toContain('except Exception as exc');
     expect(src).toContain('return _build_degraded_script_response(');
   });
 
-  it('grounds degraded fallback copy in the requested topic instead of hardcoded fitness recovery copy', () => {
+  it('grounds degraded fallback copy in the requested topic instead of hardcoded creator templates', () => {
     expect(src).toContain('def _normalize_fallback_topic');
-    expect(src).toContain('What nobody tells you about {subject}');
+    expect(src).toContain('def _fallback_hook');
+    expect(src).toContain('def _fallback_default_beats');
+    expect(src).toContain('hashlib.sha1');
+    expect(src).toContain('topic-aware degraded draft');
     expect(src).not.toContain('The recovery protocol after hard intervals');
     expect(src).not.toContain('Most athletes finish hard intervals');
+    expect(src).not.toContain('theoperator');
+    expect(src).not.toContain('buildinpublic');
+    expect(src).not.toContain('speed replaces judgment');
+    expect(src).not.toContain('velocidade substitui critério');
+  });
+
+  it('builds the script system prompt per request without a global single-tenant persona', () => {
+    expect(src).toContain('def _build_system_prompt(req: ScriptRequest) -> str:');
+    expect(src).toContain('CREATOR CONTEXT FOR THIS REQUEST:');
+    expect(src).toContain('Never assume a founder persona');
+    expect(src).toContain('temperature=SCRIPT_TEMPERATURE');
+    expect(src).not.toContain('SYSTEM_PROMPT =');
+    expect(src).not.toContain('from services.creator_profile import get_profile');
+    expect(src).not.toContain('as if Felipe is talking to camera');
+    expect(src).not.toContain("The Operator's personality shines");
   });
 
   it('supports chat render mode cleanup for concise chat delivery', () => {
@@ -186,8 +204,8 @@ describe('Python script_writer.py — JSON metadata parsing', () => {
     expect(src).toContain('SCRIPT QUALITY BAR:');
     expect(src).toContain('Do not reuse the same hook/title/script skeleton');
     expect(src).toContain('Do NOT use decorative dividers or labels');
-    expect(src).toContain('Write the bullet-point filming outline now');
-    expect(src).toContain('Voice DNA memory was applied to the degraded fallback.');
+    expect(src).toContain('Choose the order of bullets from the topic itself');
+    expect(src).toContain('Voice DNA memory was available, but the AI writer was unavailable');
   });
 
   it('uses shallow quick research on quick mode cache misses instead of always deep searching', () => {
@@ -215,6 +233,9 @@ describe('Python requests.py — script render mode contract', () => {
     expect(src).toContain('mode: str = Field(default="standard")');
     expect(src).toContain('script_style: str = Field(default="detailed")');
     expect(src).toContain('topic_context: dict | None = Field(default=None)');
+    expect(src).toContain('creator_profile: str | None = Field(default=None)');
+    expect(src).toContain('force_refresh: bool = Field(default=False)');
+    expect(src).toContain('regeneration_seed: str | None = Field(default=None)');
   });
 });
 

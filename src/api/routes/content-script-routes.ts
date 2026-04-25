@@ -13,6 +13,7 @@ import {
   resolveScriptDurationPreset,
 } from './content-script-utils';
 import {
+  buildScriptCreatorProfile,
   buildScriptSuccessResponse,
   buildUserVoiceMemory,
   resolveScriptGenerationMode,
@@ -71,6 +72,9 @@ export function registerContentScriptRoutes(
       renderMode,
       scriptStyle,
       style,
+      forceRefresh,
+      regenerate,
+      regenerationSeed,
     } = req.body;
 
     if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
@@ -125,6 +129,17 @@ export function registerContentScriptRoutes(
 
       const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});
       const targetLanguage = resolveScriptTargetLanguage(language, userId, getUserLanguage);
+      const shouldForceRefresh = forceRefresh === true || regenerate === true;
+      const resolvedRegenerationSeed = shouldForceRefresh
+        ? (typeof regenerationSeed === 'string' && regenerationSeed.trim().length > 0
+          ? regenerationSeed.trim().slice(0, 120)
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
+        : null;
+      const creatorProfile = buildScriptCreatorProfile({
+        language: targetLanguage,
+        niche: scriptTopicContext?.niche || niche || 'general',
+        voiceMemory,
+      });
 
       const result = await getScript(
         topic.trim(),
@@ -139,9 +154,12 @@ export function registerContentScriptRoutes(
         durationPreset.targetDurationSeconds,
         scriptTopicContext,
         targetScriptStyle,
+        shouldForceRefresh,
+        resolvedRegenerationSeed,
+        creatorProfile,
       );
       const elapsedMs = Date.now() - startMs;
-      const cacheHit = elapsedMs < 500;
+      const cacheHit = !shouldForceRefresh && elapsedMs < 500;
 
       sendSuccess(res, buildScriptSuccessResponse({
         result,

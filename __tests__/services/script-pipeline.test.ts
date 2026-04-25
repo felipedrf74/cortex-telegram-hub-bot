@@ -110,14 +110,14 @@ describe('script-pipeline: ScriptResponse shape', () => {
 });
 
 describe('script-pipeline: cache key hardening', () => {
-  it('script cache key includes language, mode, duration, brand voice hash, and render mode inputs', () => {
+  it('script cache key includes language, mode, duration, brand voice hash, render mode, and regeneration inputs', () => {
     const engineSource = require('fs').readFileSync(
       require('path').resolve(__dirname, '../../src/services/content-engine.ts'),
       'utf8',
     );
 
     expect(engineSource).toContain('export function buildScriptCacheKey');
-    expect(engineSource).toContain("'script-v6'");
+    expect(engineSource).toContain("'script-v7'");
     expect(engineSource).toContain('`duration:${maxDuration}`');
     expect(engineSource).toContain('`target:${targetDurationSeconds ?? maxDuration * 60}`');
     expect(engineSource).toContain('`mode:${mode}`');
@@ -127,6 +127,9 @@ describe('script-pipeline: cache key hardening', () => {
     expect(engineSource).toContain('`style:${normalizeScriptStyle(scriptStyle)}`');
     expect(engineSource).toContain('`ctx:${hashScriptContext(scriptContext)}`');
     expect(engineSource).toContain("`scope:${userId ?? 'global'}`");
+    expect(engineSource).toContain('hashRegenerationSeed');
+    expect(engineSource).toContain("parts.push(`regen:${seedHash}`)");
+    expect(engineSource).toContain('cfg.cacheTtl > 0 && !forceRefresh');
   });
 
   it('script signal reads are user-scoped instead of using global signal context', () => {
@@ -145,6 +148,9 @@ describe('script-pipeline: cache key hardening', () => {
     );
 
     expect(engineSource).toContain('topic_context: scriptContext ?? undefined');
+    expect(engineSource).toContain('creator_profile: creatorProfile || undefined');
+    expect(engineSource).toContain('force_refresh: forceRefresh || undefined');
+    expect(engineSource).toContain('regeneration_seed: regenerationSeed || undefined');
   });
 });
 
