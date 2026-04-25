@@ -196,9 +196,10 @@ describe('training home payload builder', () => {
     });
     expect(payload.weekProtection?.kernelAdjustments).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('threshold_run → recovery_run because readiness is low'),
+        expect.stringContaining('threshold run → recovery run because readiness is low'),
       ]),
     );
+    expect(payload.weekProtection?.kernelAdjustments.join('\n')).not.toContain('threshold_run');
   });
 
   it('skips the fatigue re-run on green or yellow readiness', async () => {

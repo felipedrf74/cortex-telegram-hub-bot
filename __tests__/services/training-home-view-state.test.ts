@@ -122,7 +122,7 @@ describe('buildTrainingHomeViewState', () => {
   it('surfaces kernel-generated guardrail adjustments in weekProtection.kernelAdjustments', () => {
     // The authoritative "what changed and why" lives in the coach-kernel
     // guardrail results. When those are threaded into the view-state
-    // input, they appear as ruleId-prefixed lines independent of whether
+    // input, they appear as user-readable lines independent of whether
     // the LLM briefing happens to be fresh — previously this story was
     // only told by the LLM path.
     const state = buildTrainingHomeViewState(baseInput({
@@ -134,9 +134,9 @@ describe('buildTrainingHomeViewState', () => {
     }), 'pt-BR');
 
     expect(state.weekProtection?.kernelAdjustments.length).toBe(2);
-    expect(state.weekProtection?.kernelAdjustments[0]).toContain('readiness:');
+    expect(state.weekProtection?.kernelAdjustments[0]).toContain('Prontidão:');
     expect(state.weekProtection?.kernelAdjustments[0]).toContain('recovery run');
-    expect(state.weekProtection?.kernelAdjustments[1]).toContain('volume_growth:');
+    expect(state.weekProtection?.kernelAdjustments[1]).toContain('Progressão de volume:');
     // pass-status guardrails must NOT appear
     expect(state.weekProtection?.kernelAdjustments.some((line) => line.includes('Readiness within band'))).toBe(false);
   });

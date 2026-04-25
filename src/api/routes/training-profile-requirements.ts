@@ -10,6 +10,7 @@ export type ObjectiveProfileRequirement = {
 };
 
 export type ObjectiveProfileSource = {
+  getProfile?: (userId: number, questionnaireId: string) => { data?: Record<string, unknown> } | Record<string, unknown> | null | undefined;
   getMissingProfileFields?: (userId: number, questionnaireId: string) => unknown[];
   getQuestionnaire?: (questionnaireId: string) => { title?: string } | null | undefined;
 };
@@ -29,6 +30,10 @@ export function resolveObjectiveProfileRequirement(
 ): ObjectiveProfileRequirement | null {
   const lowerObjective = objective.trim();
   const maybeRequirement = (questionnaireId: string, message: string): ObjectiveProfileRequirement | null => {
+    const profile = profileSource.getProfile?.(userId, questionnaireId);
+    const profileData = profile && 'data' in profile ? profile.data : profile;
+    if (profileData && typeof profileData === 'object' && Object.keys(profileData).length > 0) return null;
+
     const missingFields = profileSource.getMissingProfileFields?.(userId, questionnaireId) || [];
     if (!Array.isArray(missingFields) || missingFields.length === 0) return null;
     const questionnaire = profileSource.getQuestionnaire?.(questionnaireId);

@@ -674,7 +674,7 @@ function buildWeekProtection(
   const kernelAdjustments = (input.kernelGuardrails ?? [])
     .filter((g) => g.adjusted && typeof g.message === 'string' && g.message.trim().length > 0)
     .slice(0, 5)
-    .map((g) => `${g.ruleId}: ${g.message}`);
+    .map((g) => formatKernelAdjustment(g, language));
 
   return {
     title: tPT(language, 'O que isto protege', 'O que isto protege', 'What this protects'),
@@ -702,6 +702,62 @@ function buildWeekProtection(
       priority: 'secondary',
     },
   };
+}
+
+function formatKernelAdjustment(guardrail: KernelGuardrailInput, language: Lang): string {
+  const label = localizedKernelRuleLabel(guardrail.ruleId, language);
+  const message = localizedKernelAdjustmentMessage(guardrail.message, language);
+  return message ? `${label}: ${message}` : label;
+}
+
+function localizedKernelRuleLabel(ruleId: string, language: Lang): string {
+  const normalized = ruleId.trim().toLowerCase();
+
+  if (normalized.startsWith('interference_strength')) {
+    return tPT(language, 'Conflito força/cardio', 'Conflito força/cardio', 'Strength/cardio conflict');
+  }
+
+  switch (normalized) {
+    case 'readiness':
+      return tPT(language, 'Prontidão', 'Prontidão', 'Readiness');
+    case 'volume_growth':
+      return tPT(language, 'Progressão de volume', 'Progressão de volume', 'Volume progression');
+    case 'weekly_adherence':
+    case 'adherence':
+      return tPT(language, 'Aderência semanal', 'Aderência semanal', 'Weekly adherence');
+    case 'focus_protection':
+    case 'calendar_conflict':
+      return tPT(language, 'Agenda protegida', 'Agenda protegida', 'Protected schedule');
+    default:
+      return humanizeKernelToken(ruleId);
+  }
+}
+
+function localizedKernelAdjustmentMessage(message: string, language: Lang): string {
+  const cleaned = message.trim().replace(/\s{2,}/g, ' ');
+  const normalized = cleaned.toLowerCase();
+
+  if (normalized.includes('strength maintenance conflicted with a key endurance day')) {
+    return tPT(
+      language,
+      'A manutenção de força ficou perto demais de um dia-chave de endurance e foi movida ou suavizada.',
+      'A manutenção de força ficou perto demais de um dia-chave de endurance e foi movida ou suavizada.',
+      'Strength maintenance conflicted with a key endurance day and was moved or softened.',
+    );
+  }
+
+  return cleaned.replace(/_/g, ' ');
+}
+
+function humanizeKernelToken(value: string): string {
+  return value
+    .trim()
+    .replace(/_/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.length <= 3 ? word.toUpperCase() : `${word[0]?.toUpperCase() ?? ''}${word.slice(1)}`)
+    .join(' ');
 }
 
 function buildWeekJourney(

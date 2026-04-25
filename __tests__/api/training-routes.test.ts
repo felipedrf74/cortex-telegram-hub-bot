@@ -690,6 +690,37 @@ describe('Training API routes', () => {
     expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
   });
 
+  it('falls back to deterministic coach copy when AI coach generation fails but a plan exists', async () => {
+    mockGenerateCoachBriefing.mockRejectedValueOnce(new Error('upstream garmin timeout: tenant=12'));
+    mockGetActivePlan.mockReturnValue({
+      id: 44,
+      name: 'Hybrid build',
+      start_date: '2026-04-20',
+      periodization: 'build',
+    });
+    mockGetCurrentWeek.mockReturnValue({ id: 78, week_number: 1, focus: 'base' });
+    mockGetSessionsForWeek.mockReturnValue([
+      {
+        id: 101,
+        day_of_week: 'Monday',
+        title: 'Easy Run',
+        session_type: 'recovery_run',
+        duration_minutes: 36,
+        status: 'planned',
+        description: 'Easy aerobic run',
+      },
+    ]);
+
+    const res = await dispatch('GET', '/coach', {}, undefined, 12, { 'x-language': 'pt-BR' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.degraded).toBe(false);
+    expect(res.body.data.deterministicFallback).toBe(true);
+    expect(res.body.data.briefing).toContain('Leitura rápida do coach');
+    expect(JSON.stringify(res.body)).not.toContain('upstream garmin timeout');
+  });
+
   it('keeps coach/apply failures generic for the client while preserving the route code', async () => {
     mockApplyCoachRecommendations.mockRejectedValueOnce(new Error('calendar mutation failed for user 12'));
 

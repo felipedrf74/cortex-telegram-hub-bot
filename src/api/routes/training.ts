@@ -57,6 +57,72 @@ function invalidateTrainingScreenCaches(userId: number) {
   invalidateTrainingDerivedCaches(userId);
 }
 
+function trainingCopy(language: Lang, ptPT: string, ptBR: string, en: string): string {
+  if (language === 'pt-PT') return ptPT;
+  if (language === 'pt-BR') return ptBR;
+  return en;
+}
+
+function compactCoachSessionTitle(session: any, language: Lang): string {
+  const raw = String(session?.title || session?.type || session?.sessionType || 'workout').trim();
+  if (!raw) return trainingCopy(language, 'treino', 'treino', 'workout');
+  const normalized = raw.toLowerCase();
+  if (language !== 'en-US') {
+    if (normalized.includes('easy') && normalized.includes('run')) return 'corrida leve';
+    if (normalized.includes('recovery') && normalized.includes('run')) return 'corrida de recuperação';
+    if (normalized.includes('strength')) return 'força';
+    if (normalized.includes('swim')) return 'natação';
+    if (normalized.includes('bike') || normalized.includes('ride') || normalized.includes('cycling')) return 'bicicleta';
+  }
+  return raw;
+}
+
+async function buildDeterministicCoachFallback(
+  userId: number,
+  language: Lang,
+): Promise<Record<string, unknown> | null> {
+  const [todayResult, weekResult, readinessResult] = await Promise.allSettled([
+    getTodaySession(userId),
+    getWeekPlan(userId),
+    getReadiness(userId),
+  ]);
+
+  const today = todayResult.status === 'fulfilled' ? todayResult.value?.session : null;
+  const plan = todayResult.status === 'fulfilled' ? todayResult.value?.plan : null;
+  const week = weekResult.status === 'fulfilled' ? weekResult.value : null;
+  const readiness = readinessResult.status === 'fulfilled' ? readinessResult.value : null;
+  const sessions = Array.isArray(week?.sessions) ? week.sessions : [];
+  const nextSession = sessions.find((session: any) => session?.status !== 'completed' && session?.status !== 'skipped') ?? today;
+  const hasTrainingContext = Boolean(today || nextSession || plan || sessions.length > 0);
+  const readinessScore = typeof readiness?.score === 'number' ? readiness.score : null;
+
+  if (!hasTrainingContext) return null;
+
+  const sessionTitle = compactCoachSessionTitle(nextSession || today, language);
+  const readinessText = readinessScore != null
+    ? trainingCopy(language, `Prontidão ${readinessScore}/100`, `Prontidão ${readinessScore}/100`, `readiness ${readinessScore}/100`)
+    : trainingCopy(language, 'prontidão ainda limitada', 'prontidão ainda limitada', 'limited readiness data');
+  const plannedCount = sessions.filter((session: any) => session?.status !== 'rest').length;
+  const completedCount = sessions.filter((session: any) => session?.status === 'completed').length;
+
+  const briefing = trainingCopy(
+    language,
+    `Leitura rápida do coach: ${sessionTitle} está no plano com ${readinessText}. Mantém a sessão conservadora se sono, HRV ou energia estiverem abaixo do normal. Semana: ${completedCount}/${plannedCount} sessões concluídas.`,
+    `Leitura rápida do coach: ${sessionTitle} está no plano com ${readinessText}. Mantém a sessão conservadora se sono, HRV ou energia estiverem abaixo do normal. Semana: ${completedCount}/${plannedCount} sessões concluídas.`,
+    `Quick coach read: ${sessionTitle} is on the plan with ${readinessText}. Keep the session conservative if sleep, HRV, or energy are below normal. Week: ${completedCount}/${plannedCount} sessions completed.`,
+  );
+
+  return {
+    briefing,
+    recommendations: [],
+    garminData: null,
+    degraded: false,
+    warnings: [],
+    deterministicFallback: true,
+    cachedAt: new Date().toISOString(),
+  };
+}
+
 export function trainingRoutes(): Router {
   const router = Router();
 
@@ -173,6 +239,7 @@ export function trainingRoutes(): Router {
     const forceRefresh = req.query.refresh === 'true';
     const cacheOnly = req.query.cacheOnly === 'true';
     const cacheKey = `coach-briefing:${userId}`;
+    const language = resolveTrainingLanguage(req as AuthenticatedRequest, userId);
 
     // Return SQLite-cached briefing (survives restarts, no AI call)
     if (!forceRefresh) {
@@ -225,6 +292,16 @@ export function trainingRoutes(): Router {
       sendSuccess(res, hydratedPayload);
     } catch (err: any) {
       logger.error({ err }, 'iOS training/coach failed');
+      const fallback = await buildDeterministicCoachFallback(userId, language).catch((fallbackErr) => {
+        logger.debug({ err: fallbackErr, userId }, 'training/coach deterministic fallback failed');
+        return null;
+      });
+      if (fallback) {
+        const hydratedFallback = syncCoachStateForUser(userId, fallback);
+        setCache(cacheKey, hydratedFallback, COACH_BRIEFING_TTL);
+        sendSuccess(res, hydratedFallback);
+        return;
+      }
       sendSuccess(res, {
         briefing: 'Coach briefing unavailable.',
         recommendations: [],

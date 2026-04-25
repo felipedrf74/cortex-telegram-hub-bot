@@ -60,6 +60,24 @@ describe('training profile requirements', () => {
     });
   });
 
+  it('does not require every sport-profile field once a user has started that profile', () => {
+    const requirement = resolveObjectiveProfileRequirement(
+      'gym strength',
+      7,
+      {
+        ...fakeProfileSource({ 'triathlon-gym': ['bench_1rm_kg', 'deadlift_1rm_kg'] }),
+        getProfile(_userId, questionnaireId) {
+          if (questionnaireId === 'triathlon-gym') {
+            return { data: { training_age: '1-3 years', equipment_access: 'Full gym' } };
+          }
+          return null;
+        },
+      },
+    );
+
+    expect(requirement).toBeNull();
+  });
+
   it('does not block plan generation when the objective does not need a missing profile', () => {
     expect(resolveObjectiveProfileRequirement('mobility and recovery', 7, fakeProfileSource({}))).toBeNull();
     expect(resolveObjectiveProfileRequirement('10k running', 7, fakeProfileSource({ 'triathlon-running': [] }))).toBeNull();
