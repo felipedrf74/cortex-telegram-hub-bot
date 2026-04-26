@@ -14,14 +14,25 @@
 
 ## Current Production Truth - 2026-04-26
 
-- Production backend is live at `4.14.87`; staging remains at `4.14.86`.
+- Production backend is live at `4.14.88`; staging remains at `4.14.87`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  349 test files / 5,539 tests.
+  350 test files / 5,547 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `d383936`; code commit `1885607` is the Secretary
-  audit closeout release. It makes task completion idempotent, reconciles task
+  online at deploy commit `927b16a`; code commit `9c4a4a0` is the Training
+  stale calendar-link repair release. It verifies linked provider events before
+  treating sessions as synced, repairs missing or mismatched Google Calendar
+  events, exposes stale calendar links as missing in Week Plan read models, and
+  filters app-facing Secretary calendar reads so generated Training events
+  linked to another Nexus user or inactive/cancelled plan do not leak into the
+  current user's agenda. Felipe's production gym plan was repaired with 24 real
+  Google Calendar events; live checks show Week 1 has six owned calendar links,
+  and simulator smoke showed Secretary Week Agenda plus Training Week Plan both
+  rendering the current `Strength Session`/`Mobility + Recovery`/`Strength
+  Support Session` schedule without the stale sync banner.
+- The preceding `4.14.87` Secretary audit closeout release makes task
+  completion idempotent, reconciles task
   creation after transient provider failures, uses per-user task due-date
   windows instead of a Lisbon default, cascades remote task-list deletion where
   supported, invalidates provider-derived task caches after OAuth reauth, uses
