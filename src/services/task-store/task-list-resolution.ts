@@ -37,6 +37,17 @@ function listDisplayName(list: TaskListLike | null | undefined): string {
   return String(list?.displayName || list?.name || '').trim();
 }
 
+export class TaskListResolutionError extends Error {
+  constructor(
+    public readonly code: 'TASK_LIST_AMBIGUOUS' | 'LIST_NOT_FOUND',
+    message: string,
+    public readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'TaskListResolutionError';
+  }
+}
+
 export async function resolvePreferredCaptureList(todo: TaskProviderLike): Promise<TaskListLike | null> {
   const listsResult = await todo.getLists?.();
   const lists = extractLists(listsResult);
@@ -66,8 +77,24 @@ export async function resolveTaskCreationList(
     return resolvePreferredCaptureList(todo);
   }
 
-  const explicit = await todo.findListByName?.(trimmed);
-  if (explicit) return explicit;
+  const lists = extractLists(await todo.getLists?.());
+  const normalizedRequested = normalizeListName(trimmed);
+  const exactMatches = lists.filter((list) => normalizeListName(listDisplayName(list)) === normalizedRequested);
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) {
+    throw new TaskListResolutionError(
+      'TASK_LIST_AMBIGUOUS',
+      `More than one task list matches "${trimmed}"`,
+      {
+        requestedListName: trimmed,
+        matches: exactMatches.map((list) => ({ id: list.id, name: listDisplayName(list) })),
+      },
+    );
+  }
 
-  return (await todo.getDefaultList?.()) || null;
+  throw new TaskListResolutionError(
+    'LIST_NOT_FOUND',
+    `Task list "${trimmed}" was not found`,
+    { requestedListName: trimmed },
+  );
 }

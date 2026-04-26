@@ -28,6 +28,10 @@ vi.mock('../../src/services/training-plans', () => ({
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
 }));
 
+vi.mock('../../src/services/user-service', () => ({
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+}));
+
 vi.mock('../../src/config', () => ({
   config: {
     app: { timezone: 'Europe/Lisbon' },
@@ -175,5 +179,29 @@ describe('focus-planner', () => {
     expect(recommendation).toBeTruthy();
     expect(recommendation?.date).toBe(dayAfter.toISODate());
     expect(recommendation?.calendarLoad).toBe('light');
+  });
+
+  it('keeps focus-time blocks unavailable without counting them as meeting load', async () => {
+    const zone = 'Europe/Lisbon';
+    const target = DateTime.now().setZone(zone).plus({ days: 1 }).startOf('day');
+
+    mockGetActivePlans.mockReturnValue([]);
+    mockGetEvents.mockResolvedValue([
+      {
+        summary: 'Focus Time',
+        start: target.set({ hour: 8, minute: 0 }).toUTC().toISO(),
+        end: target.set({ hour: 12, minute: 0 }).toUTC().toISO(),
+      },
+    ]);
+
+    const recommendation = await getFocusBlockRecommendation(7, {
+      durationMinutes: 90,
+      horizonDays: 2,
+      preferredDate: target.toISODate()!,
+    });
+
+    expect(recommendation).toBeTruthy();
+    expect(recommendation?.calendarLoad).toBe('light');
+    expect(DateTime.fromISO(recommendation!.start, { zone: 'utc' }).setZone(zone).hour).toBeGreaterThanOrEqual(12);
   });
 });

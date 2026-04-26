@@ -19,6 +19,8 @@ import { logger } from '../../utils/logger';
 import { isConnected } from '../oauth-store';
 import { NativeTaskAdapter } from './native-adapter';
 import { TodoistAdapter } from './todoist-adapter';
+import { getUserTimezone } from '../user-service';
+import { expandRecurringTaskOccurrencesForRange } from '../recurrence-utils';
 
 // Singleton native adapter
 const nativeAdapter = new NativeTaskAdapter();
@@ -61,7 +63,7 @@ export function getTaskProviderForUser(userId: number) {
   const provider = resolveTaskProvider(userId);
 
   if (provider === 'ms_todo') {
-    return require('../microsoft-todo');
+    return createMicrosoftTodoWrapper(userId);
   }
 
   if (provider === 'todoist') {
@@ -70,6 +72,23 @@ export function getTaskProviderForUser(userId: number) {
 
   // Native adapter — return a microsoft-todo-compatible wrapper
   return createNativeWrapper(userId);
+}
+
+function createMicrosoftTodoWrapper(userId: number) {
+  const microsoftTodo = require('../microsoft-todo');
+  const timezone = () => getUserTimezone(userId);
+  return {
+    ...microsoftTodo,
+    async createTask(listId: string, listName: string, data: any) {
+      return microsoftTodo.createTask(listId, listName, { ...data, timeZone: data?.timeZone || timezone() });
+    },
+    async updateTask(listId: string, taskId: string, data: any, listName?: string) {
+      return microsoftTodo.updateTask(listId, taskId, { ...data, timeZone: data?.timeZone || timezone() }, listName);
+    },
+    async getTasksDueInRange(startDate: string, endDate: string) {
+      return microsoftTodo.getTasksDueInRange(startDate, endDate, timezone());
+    },
+  };
 }
 
 function createTodoistWrapper(userId: number) {
@@ -201,12 +220,8 @@ function createTodoistWrapper(userId: number) {
 
     async getTasksDueInRange(startDate: string, endDate: string) {
       const result = await todoistAdapter.getTasks(userId);
-      const start = new Date(startDate).getTime();
-      const end = new Date(endDate).getTime();
-      const dueTasks = result.tasks.filter((task) => {
-        if (!task.dueDate) return false;
-        const due = new Date(task.dueDate).getTime();
-        return Number.isFinite(due) && due >= start && due <= end;
+      const dueTasks = expandRecurringTaskOccurrencesForRange(result.tasks, startDate, endDate, {
+        timezone: getUserTimezone(userId),
       });
       return {
         success: true,
@@ -440,12 +455,8 @@ function createNativeWrapper(userId: number) {
 
     async getTasksDueInRange(startDate: string, endDate: string) {
       const result = await nativeAdapter.getTasks(userId);
-      const start = new Date(startDate).getTime();
-      const end = new Date(endDate).getTime();
-      const dueTasks = result.tasks.filter((task) => {
-        if (!task.dueDate) return false;
-        const due = new Date(task.dueDate).getTime();
-        return Number.isFinite(due) && due >= start && due <= end;
+      const dueTasks = expandRecurringTaskOccurrencesForRange(result.tasks, startDate, endDate, {
+        timezone: getUserTimezone(userId),
       });
       return {
         success: true,

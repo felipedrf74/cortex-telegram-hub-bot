@@ -316,7 +316,8 @@ describe('QA: Shopping list edge cases', () => {
     const list = generateShoppingList(1, '2024-06-17');
     const butter = list.items.find(i => i.name.toLowerCase() === 'butter');
     expect(butter).toBeTruthy();
-    expect(butter!.quantity).toContain('+'); // aggregated
+    expect(butter!.quantity).toBe('50');
+    expect(butter!.unit).toBe('g');
     expect(list.items).toHaveLength(3); // butter, beef, eggs
   });
 
@@ -343,7 +344,8 @@ describe('QA: Shopping list edge cases', () => {
     // Should have aggregated A from 2 meals (day 1 and day 7), not 3
     const itemA = list.items.find(i => i.name === 'A');
     expect(itemA).toBeTruthy();
-    expect(itemA!.quantity).toContain('+'); // two meals aggregated
+    expect(itemA!.quantity).toBe('2');
+    expect(itemA!.unit).toBe('g');
   });
 
   it('regenerating shopping list updates existing record', () => {

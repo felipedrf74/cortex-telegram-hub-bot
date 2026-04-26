@@ -177,6 +177,7 @@ vi.mock('../../src/services/cache-store', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
   setUserLanguage: (...args: unknown[]) => mockSetUserLanguage(...args),
+  getUserTimezone: () => 'Europe/Lisbon',
   getUserById: (userId: number) => ({ id: userId, tier: 'pro' }),
   getUserByTelegramId: (userId: number) => ({ id: userId, tier: 'pro' }),
 }));

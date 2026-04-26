@@ -13,6 +13,7 @@ const mockSetCache = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockLoggerError = vi.fn();
+const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
 
 vi.mock('../../src/api/routes/../../services/task-store/task-router', () => ({
   resolveTaskProvider: (...args: unknown[]) => mockResolveTaskProvider(...args),
@@ -48,6 +49,11 @@ vi.mock('../../src/services/cache-store', () => ({
   userCacheKey: (userId: number, key: string) => `u:${userId}:${key}`,
 }));
 
+vi.mock('../../src/services/user-service', () => ({
+  getOwnerBootstrapUser: vi.fn(() => null),
+  getUserTimezone: (...args: unknown[]) => mockGetUserTimezone(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -59,7 +65,7 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
-import { taskRoutes } from '../../src/api/routes/tasks';
+import { dateKeyInAppTimezone, taskDueDateKey, taskRoutes } from '../../src/api/routes/tasks';
 
 interface MockRes {
   statusCode: number;
@@ -71,15 +77,15 @@ interface MockRes {
   end(): MockRes;
 }
 
-function mockRes(): MockRes {
+function mockRes(onDone?: () => void): MockRes {
   const r: MockRes = {
     statusCode: 200,
     body: null,
     headers: {},
     status(code: number) { r.statusCode = code; return r; },
-    json(body: any) { r.body = body; return r; },
+    json(body: any) { r.body = body; onDone?.(); return r; },
     setHeader(name: string, value: string) { r.headers[name] = value; return r; },
-    end() { return r; },
+    end() { onDone?.(); return r; },
   };
   return r;
 }
@@ -120,9 +126,10 @@ async function dispatch(
 ): Promise<MockRes> {
   const router = taskRoutes();
   const req = mockReq(method, path, options);
-  const res = mockRes();
+  let res!: MockRes;
 
   await new Promise<void>((resolve, reject) => {
+    res = mockRes(resolve);
     (router as any).handle(req, res, (err: any) => {
       if (err) {
         reject(err);
@@ -130,7 +137,6 @@ async function dispatch(
       }
       resolve();
     });
-    setImmediate(resolve);
   });
 
   return res;
@@ -147,6 +153,7 @@ describe('Task routes sync provider metadata', () => {
     createTask: vi.fn(),
     updateTask: vi.fn(),
     completeTask: vi.fn(),
+    deleteList: vi.fn(),
     addChecklistItem: vi.fn(),
   };
 
@@ -160,6 +167,7 @@ describe('Task routes sync provider metadata', () => {
     mockSetCache.mockReturnValue(undefined);
     mockClearCache.mockReturnValue(undefined);
     mockClearCacheByPrefix.mockReturnValue(undefined);
+    mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
     providerApi.getLists.mockResolvedValue({
       success: true,
       data: [
@@ -204,6 +212,10 @@ describe('Task routes sync provider metadata', () => {
     providerApi.completeTask.mockResolvedValue({
       success: true,
       data: { id: 'task-1', status: 'completed' },
+    });
+    providerApi.deleteList.mockResolvedValue({
+      success: true,
+      data: undefined,
     });
     providerApi.addChecklistItem.mockResolvedValue({
       success: true,
@@ -360,6 +372,40 @@ describe('Task routes sync provider metadata', () => {
     );
   });
 
+  it('does not silently fall back when an explicit task list name is missing', async () => {
+    const res = await dispatch('POST', '/', {
+      body: {
+        title: 'pay via verde',
+        listName: 'European Commission',
+      },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body.error.code).toBe('LIST_NOT_FOUND');
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict when an explicit task list name is ambiguous', async () => {
+    providerApi.getLists.mockResolvedValueOnce({
+      success: true,
+      data: [
+        { id: 'list-1', displayName: 'Work' },
+        { id: 'list-2', displayName: 'work ' },
+      ],
+    });
+
+    const res = await dispatch('POST', '/', {
+      body: {
+        title: 'weekly review',
+        listName: 'Work',
+      },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error.code).toBe('TASK_LIST_AMBIGUOUS');
+    expect(providerApi.createTask).not.toHaveBeenCalled();
+  });
+
   it('returns real list task counts instead of placeholder sentinel values', async () => {
     providerApi.getAllPendingTasks.mockResolvedValue({
       success: true,
@@ -511,6 +557,138 @@ describe('Task routes sync provider metadata', () => {
       }),
     );
     expect(res.body.data.message).toContain('Inbox cleanup');
+  });
+
+  it('treats completing an already-completed task as an idempotent success', async () => {
+    providerApi.getTask.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: 'task-1',
+        title: 'Inbox cleanup',
+        status: 'completed',
+        listId: 'list-1',
+        listName: 'Tasks',
+      },
+    });
+
+    const res = await dispatch('POST', '/list-1/task-1/complete', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.completeTask).not.toHaveBeenCalled();
+    expect(res.body.data.alreadyCompleted).toBe(true);
+    expect(res.body.data.task.status).toBe('completed');
+  });
+
+  it('coalesces concurrent complete requests for the same task', async () => {
+    let releaseComplete: (() => void) | undefined;
+    providerApi.completeTask.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseComplete = () => resolve({ success: true, data: { id: 'task-1', status: 'completed' } });
+    }));
+    providerApi.getTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'task-1',
+          title: 'Inbox cleanup',
+          status: 'completed',
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+      ],
+    });
+
+    const first = dispatch('POST', '/list-1/task-1/complete', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+    });
+    const second = dispatch('POST', '/list-1/task-1/complete', {
+      params: { listId: 'list-1', taskId: 'task-1' },
+    });
+
+    await vi.waitFor(() => expect(providerApi.completeTask).toHaveBeenCalledTimes(1));
+    releaseComplete?.();
+    const [firstRes, secondRes] = await Promise.all([first, second]);
+
+    expect(firstRes.statusCode).toBe(200);
+    expect(secondRes.statusCode).toBe(200);
+    expect(providerApi.completeTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconciles task creation when the provider accepted the write but returned an error', async () => {
+    providerApi.createTask.mockResolvedValueOnce({
+      success: false,
+      data: null,
+      error: 'upstream timeout after write',
+    });
+    providerApi.getTasks.mockResolvedValueOnce({
+      success: true,
+      data: [
+        {
+          id: 'task-99',
+          title: 'Board prep',
+          status: 'notStarted',
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+      ],
+    });
+
+    const res = await dispatch('POST', '/', {
+      body: {
+        title: 'Board prep',
+        importance: 'high',
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.data.reconciled).toBe(true);
+    expect(res.body.data.task.id).toBe('task-99');
+  });
+
+  it('deletes supported task lists through the active provider', async () => {
+    const res = await dispatch('DELETE', '/lists/list-2', {
+      params: { listId: 'list-2' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(providerApi.deleteList).toHaveBeenCalledWith('list-2');
+    expect(mockClearCache).toHaveBeenCalledWith('u:12:tasks:list-2:all');
+  });
+
+  it('derives task due-date keys across the Lisbon DST boundary using configured timezone', () => {
+    const timezone = 'Europe/Lisbon';
+
+    expect(dateKeyInAppTimezone(new Date('2026-03-29T22:30:00.000Z'), timezone)).toBe('2026-03-29');
+    expect(taskDueDateKey({ dueDateTime: '2026-03-29T20:30:00.000Z' }, timezone)).toBe('2026-03-29');
+    expect(taskDueDateKey({ dueDateTime: '2026-03-29T23:30:00.000Z' }, timezone)).toBe('2026-03-30');
+  });
+
+  it('filters due-today tasks using the signed-in user timezone', async () => {
+    mockGetUserTimezone.mockReturnValue('America/New_York');
+    const todayInNewYork = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const startOfTodayNewYorkUtc = new Date(`${todayInNewYork}T04:30:00.000Z`).toISOString();
+    providerApi.getAllPendingTasks.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: 'task-ny',
+          title: 'New York midnight task',
+          status: 'notStarted',
+          dueDateTime: startOfTodayNewYorkUtc,
+          listId: 'list-1',
+          listName: 'Tasks',
+        },
+      ],
+    });
+
+    const res = await dispatch('GET', '/filtered', { query: { filter: 'dueToday' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockGetUserTimezone).toHaveBeenCalledWith(12);
+    expect(res.body.data.tasks).toEqual([
+      expect.objectContaining({ id: 'task-ny' }),
+    ]);
   });
 
   it('includes nexus syncProvider on created tasks when using native storage', async () => {

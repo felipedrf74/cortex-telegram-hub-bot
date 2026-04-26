@@ -32,10 +32,6 @@ import type { TodoTask } from './microsoft-todo';
 import { getRemindersForToday, setReminder } from '../state/reminders';
 import {
   now,
-  startOfDay,
-  endOfDay,
-  startOfWeek,
-  endOfWeek,
   formatTime,
 } from '../utils/date-parser';
 import { escapeHtml } from '../utils/telegram-formatter';
@@ -43,7 +39,8 @@ import type { DomainName, DomainResponse } from '../domains/types';
 import { logger } from '../utils/logger';
 import { isSubmoduleEnabled } from '../skills/registry';
 import type { Lang } from '../utils/i18n';
-import { getUserLanguage } from './user-service';
+import { DateTime } from 'luxon';
+import { getUserLanguage, getUserTimezone } from './user-service';
 import { getTaskProviderForUser } from './task-store/task-router';
 import { composeDailyBrief } from './daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from './unified-mail-pressure';
@@ -271,20 +268,20 @@ function localeForLang(lang: Lang): string {
  * Date-only comparison (NOT timestamp comparison) so a task "due April 6"
  * is treated as due TODAY at any moment on April 6, matching MS Todo's UI.
  */
-function filterDueToday(tasks: TodoTask[]): TodoTask[] {
-  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+function filterDueToday(tasks: TodoTask[], timezone: string): TodoTask[] {
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
   return tasks.filter((t) => {
     if (!t.dueDateTime) return false;
-    const d = new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+    const d = new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: timezone });
     return d === todayStr;
   });
 }
 
-function filterOverdue(tasks: TodoTask[]): TodoTask[] {
-  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+function filterOverdue(tasks: TodoTask[], timezone: string): TodoTask[] {
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
   return tasks.filter((t) => {
     if (!t.dueDateTime) return false;
-    const d = new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+    const d = new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: timezone });
     return d < todayStr;
   });
 }
@@ -303,7 +300,11 @@ function looksLikeTrainingTitle(title: string | undefined | null): boolean {
   return TRAINING_KEYWORDS.some((keyword) => normalized.includes(keyword));
 }
 
-async function getTodayTrainingSummary(userId: number, events: Array<{ summary?: string; start: string; end: string }>): Promise<string | null> {
+async function getTodayTrainingSummary(
+  userId: number,
+  events: Array<{ summary?: string; start: string; end: string }>,
+  timezone: string,
+): Promise<string | null> {
   try {
     const tp = require('../../services/training-plans');
     const activePlan = tp.getActivePlan?.(userId);
@@ -311,7 +312,7 @@ async function getTodayTrainingSummary(userId: number, events: Array<{ summary?:
       const currentWeek = tp.getCurrentWeek?.(activePlan.id);
       if (currentWeek) {
         const sessions = tp.getSessionsForWeek?.(currentWeek.id) || [];
-        const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+        const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
         const rawSession = sessions.find((session: any) => session.day_of_week === todayName);
         if (rawSession) {
           const duration = rawSession.duration_minutes ? ` · ${rawSession.duration_minutes} min` : '';
@@ -419,23 +420,25 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       const taskProvider = tasksOk ? getScopedTaskProvider(userId) : null;
       const hasCalendar = calOk && !!userId && hasConnectedCalendarForUser(userId);
       const hasMail = emailOk && !!userId && isAnyMailConfiguredForUser(userId);
+      const timezone = getUserTimezone(userId);
+      const day = DateTime.now().setZone(timezone);
 
       const [events, todoResult, reminders] = await Promise.all([
         hasCalendar
-          ? getEvents(startOfDay(), endOfDay(), userId).catch(() => [])
+          ? getEvents(day.startOf('day').toISO()!, day.endOf('day').toISO()!, userId).catch(() => [])
           : Promise.resolve([]),
         taskProvider
           ? taskProvider.getAllPendingTasks().catch(() => ({ success: false as const, data: [], error: 'API error' }))
           : Promise.resolve({ success: false as const, data: [], error: 'disabled' }),
         remOk ? Promise.resolve(getRemindersForToday(userId)) : Promise.resolve([]),
       ]);
-      const todayTraining = await getTodayTrainingSummary(userId, events);
+      const todayTraining = await getTodayTrainingSummary(userId, events, timezone);
 
       // Date header in the user's locale. PT-BR puts day before
       // month ("terça, 09 abril 2026"); EN puts month before day
       // ("Tuesday, April 09 2026"). Luxon reads the TOKENS but
       // the LOCALE of the formatter is set via .setLocale().
-      const todayStr = now()
+      const todayStr = day
         .setLocale(localeForLang(lang))
         .toFormat(lang.startsWith('pt') ? 'cccc, dd LLLL yyyy' : 'cccc, LLLL dd yyyy');
       let msg = `📅 <b>${todayStr}</b>\n\n`;
@@ -453,8 +456,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       // Tasks block
       if (todoResult.success && todoResult.data.length > 0) {
         const tasks = todoResult.data;
-        const overdue = filterOverdue(tasks);
-        const dueToday = filterDueToday(tasks);
+        const overdue = filterOverdue(tasks, timezone);
+        const dueToday = filterDueToday(tasks, timezone);
 
         msg += `\n📌 <b>${c.tasksHeader}</b> ${tasks.length} ${c.tasksPending}`;
         if (overdue.length > 0) msg += ` | ⚠️ ${overdue.length} ${c.tasksOverdue}`;
@@ -547,8 +550,11 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
     requires: 'calendar',
     handler: async (_userId, _match, lang) => {
       const c = copyForLang(lang);
+      const timezone = getUserTimezone(_userId);
+      const weekStart = DateTime.now().setZone(timezone).startOf('week');
+      const weekEnd = weekStart.endOf('week');
       const events = _userId && hasConnectedCalendarForUser(_userId)
-        ? await getEvents(startOfWeek(), endOfWeek(), _userId).catch(() => [])
+        ? await getEvents(weekStart.toISO()!, weekEnd.toISO()!, _userId).catch(() => [])
         : [];
 
       let msg = `📅 <b>${c.weekHeader}</b>\n\n`;
@@ -556,13 +562,12 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       // Group by yyyy-MM-dd in the configured timezone
       const byDay = new Map<string, typeof events>();
       for (const e of events) {
-        const day = new Date(e.start).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+        const day = new Date(e.start).toLocaleDateString('en-CA', { timeZone: timezone });
         if (!byDay.has(day)) byDay.set(day, []);
         byDay.get(day)!.push(e);
       }
 
       // Iterate Monday through Sunday and render each day's events
-      const weekStart = now().startOf('week'); // Luxon Monday-start
       for (let i = 0; i < 7; i++) {
         const d = weekStart.plus({ days: i });
         const dateStr = d.toFormat('yyyy-MM-dd');
@@ -616,11 +621,12 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       }
 
       const locale = localeForLang(lang);
+      const timezone = getUserTimezone(_userId);
       for (const [listName, tasks] of byList) {
         msg += `<b>${escapeHtml(listName)}</b> (${tasks.length})\n`;
         for (const t of tasks.slice(0, 10)) {
           const dueLabel = t.dueDateTime
-            ? ` 📅 ${new Date(t.dueDateTime).toLocaleDateString(locale)}`
+            ? ` 📅 ${new Date(t.dueDateTime).toLocaleDateString(locale, { timeZone: timezone })}`
             : '';
           msg += `  ▸ ${escapeHtml(t.title)}${dueLabel}\n`;
         }
@@ -678,7 +684,8 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
         return { text: c.tasksErrorFetch, domain: SECRETARY };
       }
 
-      const overdue = filterOverdue(result.data);
+      const timezone = getUserTimezone(_userId);
+      const overdue = filterOverdue(result.data, timezone);
       if (overdue.length === 0) {
         return { text: c.overdueEmpty, domain: SECRETARY };
       }
@@ -687,7 +694,7 @@ const FASTPATH_PATTERNS: PatternEntry[] = [
       let msg = `⚠️ <b>${overdue.length} ${header}</b>\n\n`;
       const locale = localeForLang(lang);
       for (const t of overdue.slice(0, 10)) {
-        const d = new Date(t.dueDateTime!).toLocaleDateString(locale);
+        const d = new Date(t.dueDateTime!).toLocaleDateString(locale, { timeZone: timezone });
         msg += `▸ ${escapeHtml(t.title)} <i>(${c.overdueDueLabel} ${d})</i>\n`;
       }
       if (overdue.length > 10) msg += `\n... +${overdue.length - 10} ${c.moreTasksSuffix}`;

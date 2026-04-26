@@ -403,6 +403,32 @@ describe('Cooking API — shopping list item updates', () => {
     ]);
   });
 
+  it('normalizes compatible shopping-list units before aggregating quantities', async () => {
+    const user = getOrCreateUser(21013, { username: 'cook13' });
+    const lunch = addRecipe(user.id, 'Lunch prep', [
+      { name: 'Chicken', quantity: '500', unit: 'g' },
+      { name: 'Olive oil', quantity: '1', unit: 'tbsp' },
+    ]);
+    const dinner = addRecipe(user.id, 'Dinner prep', [
+      { name: 'Chicken', quantity: '0.5', unit: 'kg' },
+      { name: 'Olive oil', quantity: '15', unit: 'ml' },
+    ]);
+    setMealPlan(user.id, '2026-04-13', 'lunch', 'Lunch prep', { recipeId: lunch.id });
+    setMealPlan(user.id, '2026-04-13', 'dinner', 'Dinner prep', { recipeId: dinner.id });
+
+    const res = await dispatch('POST', '/shopping-list/generate', user.id, {
+      week: '2026-04-13',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.list.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'Chicken', quantity: '1', unit: 'kg' }),
+        expect.objectContaining({ name: 'Olive oil', quantity: '30', unit: 'ml' }),
+      ]),
+    );
+  });
+
   it('invalidates calendar-backed surfaces after creating a meal prep event', async () => {
     const user = getOrCreateUser(21012, { username: 'cook12' });
     const recipe = addRecipe(user.id, 'Prep chicken', [

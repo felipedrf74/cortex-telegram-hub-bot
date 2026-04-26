@@ -36,6 +36,7 @@ interface PortalOAuthServices {
   resetGoogleClients?: () => void;
   resetMicrosoftClients?: () => void;
   syncProvider?: (userId: number, provider: string) => Promise<unknown>;
+  invalidateIntegrationDerivedCaches?: (userId: number, provider: string) => void;
 }
 
 interface PortalOAuthRouteDeps {
@@ -75,6 +76,11 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     syncProvider = require('../services/task-store/sync-engine').syncProvider;
   } catch { /* optional sync engine */ }
 
+  let invalidateIntegrationDerivedCaches: ((userId: number, provider: string) => void) | undefined;
+  try {
+    invalidateIntegrationDerivedCaches = require('../services/integration-cache-invalidator').invalidateIntegrationDerivedCaches;
+  } catch { /* optional cache invalidator */ }
+
   return {
     exchangeCode,
     storeTokens,
@@ -93,6 +99,7 @@ function loadDefaultOAuthServices(): PortalOAuthServices {
     resetGoogleClients,
     resetMicrosoftClients,
     syncProvider,
+    invalidateIntegrationDerivedCaches,
   };
 }
 
@@ -161,6 +168,19 @@ async function notifyTelegramConnection(
   }
 }
 
+function invalidateProviderConnectionCaches(
+  userId: number,
+  provider: string,
+  services: PortalOAuthServices,
+  logger: PortalOAuthLogger,
+): void {
+  try {
+    services.invalidateIntegrationDerivedCaches?.(userId, provider);
+  } catch (err) {
+    logger.warn({ err, userId, provider }, 'OAuth callback cache invalidation failed');
+  }
+}
+
 async function handleIOSAwareOAuthCallback(
   provider: OAuthProvider,
   providerLabel: string,
@@ -188,6 +208,7 @@ async function handleIOSAwareOAuthCallback(
 
     const tokens = await services.exchangeCode(provider, code, resolved.userId);
     services.storeTokens(resolved.userId, provider, tokens);
+    invalidateProviderConnectionCaches(resolved.userId, provider, services, logger);
     afterStore?.(resolved.userId, services);
 
     if (resolved.isIOS) {
@@ -311,6 +332,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       const services = loadServices();
       const tokens = await services.exchangeCode('fitbit', code, userId);
       services.storeTokens(userId, 'fitbit', tokens);
+      invalidateProviderConnectionCaches(userId, 'fitbit', services, logger);
       try {
         await notifyTelegramConnection(userId, 'Fitbit', services, getBotRef);
       } catch { /* notification is best-effort */ }
@@ -334,6 +356,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       const services = loadServices();
       const tokens = await services.exchangeCode('todoist', code, userId);
       services.storeTokens(userId, 'todoist', tokens);
+      invalidateProviderConnectionCaches(userId, 'todoist', services, logger);
 
       try {
         services.syncProvider?.(userId, 'todoist').catch((err: unknown) =>
@@ -365,6 +388,7 @@ export function registerPortalOAuthRoutes(app: Express, deps: PortalOAuthRouteDe
       const services = loadServices();
       const tokens = await services.exchangeCode('notion', code, userId);
       services.storeTokens(userId, 'notion', tokens);
+      invalidateProviderConnectionCaches(userId, 'notion', services, logger);
 
       try {
         await notifyTelegramConnection(userId, 'Notion', services, getBotRef);

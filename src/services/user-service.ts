@@ -464,6 +464,22 @@ export function getUserLanguage(userRef: number): Lang {
   return (user?.language as Lang) || 'pt-BR';
 }
 
+export function getUserTimezone(userRef: number | null | undefined): string {
+  const fallback = config.app.timezone || 'Europe/Lisbon';
+  if (typeof userRef !== 'number' || !Number.isFinite(userRef) || userRef <= 0) {
+    return fallback;
+  }
+
+  const candidate = getUserByAnyIdentifier(userRef)?.timezone || fallback;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    logger.warn({ userRef, timezone: candidate }, 'Invalid user timezone; falling back to app timezone');
+    return fallback;
+  }
+}
+
 export function setUserLanguage(userRef: number, language: Lang): void {
   const db = getDb();
   db.prepare('UPDATE users SET language = ? WHERE telegram_id = ? OR id = ?').run(language, userRef, userRef);

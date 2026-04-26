@@ -58,6 +58,7 @@ vi.mock('../../src/services/unified-mail-pressure', () => ({
 }));
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: vi.fn().mockReturnValue('en-US'),
+  getUserTimezone: vi.fn().mockReturnValue('Europe/Lisbon'),
 }));
 
 const mockGetTaskProviderForUser = vi.fn();
@@ -135,12 +136,13 @@ import {
   buildSharedDecisionContext,
   buildSharedDecisionContracts,
 } from '../../src/services/shared-decision-context';
-import { getUserLanguage } from '../../src/services/user-service';
+import { getUserLanguage, getUserTimezone } from '../../src/services/user-service';
 
 const mockCallDomain = vi.mocked(callDomain);
 const mockContinue = vi.mocked(continueWithToolResults);
 const mockExecuteTool = vi.mocked(executeToolCall);
 const mockGetUserLanguage = vi.mocked(getUserLanguage);
+const mockGetUserTimezone = vi.mocked(getUserTimezone);
 
 // ─── Shared setup ────────────────────────────────────────────────────
 
@@ -201,6 +203,7 @@ beforeEach(() => {
     minus: vi.fn().mockReturnValue({ toFormat: vi.fn().mockReturnValue('2026-03-27') }),
   } as any);
   mockGetUserLanguage.mockReturnValue('en-US');
+  mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
 });
 
 afterEach(() => {
@@ -220,7 +223,7 @@ describe('handleSecretary', () => {
       stopReason: 'end_turn',
     } as any);
 
-    const result = await handleSecretary('What do I have today?', 42);
+    const result = await handleSecretary('Give me a concise secretary summary', 42);
     expect(result).toEqual({ text: 'You have 3 tasks today.', domain: 'secretary' });
     expect(mockCallDomain).toHaveBeenCalledOnce();
   });
@@ -416,7 +419,8 @@ describe('Secretary state context', () => {
 
     expect(mockCallDomain).toHaveBeenCalled();
     const stateCtx = mockCallDomain.mock.calls.at(-1)?.[3] as string;
-    expect(stateCtx).toContain('Monday, March 30 2026');
+    expect(stateCtx).toContain('Today:');
+    expect(stateCtx).toContain('(Europe/Lisbon)');
   });
 
   it('includes pending todo summary when configured', async () => {

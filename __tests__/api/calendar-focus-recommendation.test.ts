@@ -33,6 +33,10 @@ vi.mock('../../src/services/training-plans', () => ({
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
 }));
 
+vi.mock('../../src/services/user-service', () => ({
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+}));
+
 vi.mock('../../src/services/cache-store', () => ({
   getCached: vi.fn(() => null),
   setCache: vi.fn(),

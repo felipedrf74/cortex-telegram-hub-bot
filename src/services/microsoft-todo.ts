@@ -3,7 +3,7 @@
 import { getGraphClient, isMicrosoftConfigured } from './microsoft-auth';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import type { NormalizedRecurrence } from './recurrence-utils';
+import { expandRecurringTaskOccurrencesForRange, type NormalizedRecurrence } from './recurrence-utils';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -446,11 +446,12 @@ export async function createTask(
     dueDateTime?: string;
     reminderDateTime?: string;
     recurrence?: NormalizedRecurrence;
+    timeZone?: string;
   }
 ): Promise<ServiceResult<TodoTask>> {
   try {
     const client = getGraphClient();
-    const tz = config.app.timezone;
+    const tz = data.timeZone || config.app.timezone;
 
     const taskBody: any = {
       title: data.title,
@@ -498,12 +499,13 @@ export async function updateTask(
     status?: string;
     dueDateTime?: string | null;
     reminderDateTime?: string | null;
+    timeZone?: string;
   },
   listName?: string
 ): Promise<ServiceResult<TodoTask>> {
   try {
     const client = getGraphClient();
-    const tz = config.app.timezone;
+    const tz = data.timeZone || config.app.timezone;
     const patch: any = {};
 
     if (data.title) patch.title = data.title;
@@ -610,7 +612,8 @@ export async function searchTasks(query: string): Promise<ServiceResult<TodoTask
  */
 export async function getTasksDueInRange(
   startISO: string,
-  endISO: string
+  endISO: string,
+  timezone = config.app.timezone,
 ): Promise<ServiceResult<TodoTask[]>> {
   try {
     const listsResult = await getLists();
@@ -618,32 +621,18 @@ export async function getTasksDueInRange(
       return { success: false, data: [], error: listsResult.error };
     }
 
-    const start = new Date(startISO).getTime();
-    const end = new Date(endISO).getTime();
-
     const results = await Promise.all(
       listsResult.data.map((list) => getTasks(list.id, list.displayName, { status: 'notStarted' }))
     );
 
-    const dueTasks: TodoTask[] = [];
+    const tasks: TodoTask[] = [];
     for (const tasksResult of results) {
       if (tasksResult.success) {
-        for (const task of tasksResult.data) {
-          if (task.dueDateTime) {
-            const due = new Date(task.dueDateTime).getTime();
-            if (due >= start && due <= end) {
-              dueTasks.push(task);
-            }
-          }
-        }
+        tasks.push(...tasksResult.data);
       }
     }
-
-    // Sort by due date
-    dueTasks.sort((a, b) => {
-      const aTime = a.dueDateTime ? new Date(a.dueDateTime).getTime() : Infinity;
-      const bTime = b.dueDateTime ? new Date(b.dueDateTime).getTime() : Infinity;
-      return aTime - bTime;
+    const dueTasks = expandRecurringTaskOccurrencesForRange(tasks, startISO, endISO, {
+      timezone,
     });
 
     return { success: true, data: dueTasks };

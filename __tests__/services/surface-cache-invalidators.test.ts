@@ -136,6 +136,16 @@ describe('surface cache invalidators', () => {
     expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
   });
 
+  it('routes Outlook reauth through both calendar and task surfaces', async () => {
+    const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
+
+    invalidateIntegrationDerivedCaches(42, 'outlook');
+
+    expect(mockClearCacheByPrefix).toHaveBeenCalledWith('u:42:calendar:');
+    expect(mockClearCache).toHaveBeenCalledWith('u:42:task-lists');
+    expect(mockInvalidateDashboardCoordinationCaches).toHaveBeenCalledWith(42);
+  });
+
   it('routes wearable connection changes through training surfaces', async () => {
     const { invalidateIntegrationDerivedCaches } = await import('../../src/services/integration-cache-invalidator');
 

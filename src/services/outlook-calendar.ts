@@ -35,6 +35,10 @@ export function isOutlookCalendarConfigured(userId?: number): boolean {
 
   // No `userId` → owner / Telegram bot codepath. Fall back to the
   // owner-global check that's still the right answer for that path.
+  logger.warn(
+    { provider: 'outlook', scope: 'owner_global' },
+    'Outlook calendar configured check fell back to owner-global scope because userId was not provided',
+  );
   return isMicrosoftConfigured();
 }
 

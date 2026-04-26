@@ -188,6 +188,45 @@ describe('Calendar API — mutation routes', () => {
     });
   });
 
+  it('normalizes absent optional event fields to explicit nulls for iOS decoding', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        {
+          id: 'evt-optional',
+          summary: 'No extras',
+          description: '   ',
+          start: '2026-04-19T16:00:00.000Z',
+          end: '2026-04-19T16:30:00.000Z',
+          location: undefined,
+          source: 'unknown',
+          categories: undefined,
+          color: undefined,
+        },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
+
+    const res = await dispatch('GET', '/events');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.events[0]).toEqual({
+      id: 'evt-optional',
+      title: 'No extras',
+      description: null,
+      start: '2026-04-19T16:00:00.000Z',
+      end: '2026-04-19T16:30:00.000Z',
+      location: null,
+      source: null,
+      categories: null,
+      color: null,
+      isAllDay: false,
+    });
+  });
+
   it('does not leak raw provider errors when event loading fails', async () => {
     mockGetEventsWithDiagnostics.mockRejectedValueOnce(new Error('outlook token refresh failed with raw upstream body'));
 

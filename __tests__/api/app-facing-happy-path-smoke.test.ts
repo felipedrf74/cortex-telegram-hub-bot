@@ -145,6 +145,8 @@ vi.mock('../../src/services/secretary-fastpath', () => ({
 
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
+  getUserTimezone: () => 'Europe/Lisbon',
+  getOwnerBootstrapUser: () => null,
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
   getUserByTelegramId: (...args: unknown[]) => mockGetUserById(...args),
   setUserLanguage: (...args: unknown[]) => mockSetUserLanguage(...args),
@@ -648,16 +650,16 @@ describe('app-facing happy path smoke', () => {
     });
     mockTaskProvider.getTasks.mockResolvedValue({ success: true, data: [] });
     mockTaskProvider.getAllPendingTasks.mockResolvedValue({ success: true, data: [] });
-    mockTaskProvider.getTask.mockResolvedValue({
+    mockTaskProvider.getTask.mockImplementation(async (_listId: string, taskId: string) => ({
       success: true,
       data: {
-        id: 'task-1',
+        id: taskId,
         title: 'Enviar recibos',
         status: 'notStarted',
         listId: 'list-1',
         listName: 'Tasks',
       },
-    });
+    }));
     mockTaskProvider.createTask.mockResolvedValue({
       success: true,
       data: {

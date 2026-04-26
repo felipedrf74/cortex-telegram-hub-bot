@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
+import { DateTime } from 'luxon';
 import {
   clearTenantScopeAnomaliesForTests,
   getTenantScopeAnomalies,
@@ -15,6 +16,7 @@ const mockGoogleCalendarEvents = vi.fn();
 const mockOutlookCalendarConfigured = vi.fn();
 const mockOutlookCalendarEvents = vi.fn();
 const mockGetUserById = vi.fn((userId: number) => ({ id: userId, first_name: 'Felipe' }));
+const mockGetUserTimezone = vi.fn(() => 'Europe/Lisbon');
 const mockRuntimeStatus = vi.fn(() => ({
   serviceStatus: 'online',
   databaseStatus: 'connected',
@@ -48,6 +50,7 @@ vi.mock('../../src/services/cache-store', () => ({
 vi.mock('../../src/services/user-service', () => ({
   getUserById: (...args: unknown[]) => mockGetUserById(...args),
   getUserLanguage: () => 'pt-BR',
+  getUserTimezone: (...args: unknown[]) => mockGetUserTimezone(...args),
 }));
 
 vi.mock('../../src/services/runtime-status', () => ({
@@ -189,6 +192,7 @@ describe('Dashboard API route', () => {
     mockOutlookCalendarConfigured.mockReset();
     mockOutlookCalendarEvents.mockReset();
     mockGetUserById.mockReset();
+    mockGetUserTimezone.mockReset();
     mockRuntimeStatus.mockReset();
     mockDashboardDbAll.mockReset();
     mockGetAllPendingTasks.mockReset();
@@ -201,6 +205,7 @@ describe('Dashboard API route', () => {
     mockOutlookCalendarConfigured.mockReturnValue(false);
     mockOutlookCalendarEvents.mockResolvedValue([]);
     mockGetUserById.mockImplementation((userId: number) => ({ id: userId, first_name: 'Felipe' }));
+    mockGetUserTimezone.mockReturnValue('Europe/Lisbon');
     mockRuntimeStatus.mockReturnValue({
       serviceStatus: 'online',
       databaseStatus: 'connected',
@@ -300,6 +305,32 @@ describe('Dashboard API route', () => {
       source: 'outlook',
       color: '#8E44AD',
     });
+  });
+
+  it('keeps multi-day events that overlap the one-day dashboard window', async () => {
+    mockGoogleCalendarConfigured.mockReturnValue(true);
+    const today = DateTime.now().setZone('Europe/Lisbon');
+    const eventStart = today.startOf('day').minus({ hours: 1 }).toUTC().toISO();
+    const eventEnd = today.startOf('day').plus({ minutes: 30 }).toUTC().toISO();
+    mockGoogleCalendarEvents.mockResolvedValue([
+      {
+        id: 'overnight',
+        summary: 'Overnight travel',
+        start: eventStart,
+        end: eventEnd,
+      },
+    ]);
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.calendar.today).toEqual([
+      expect.objectContaining({
+        id: 'overnight',
+        title: 'Overnight travel',
+      }),
+    ]);
   });
 
   it('sanitizes malformed dashboard event and task rows before returning them to iOS', async () => {

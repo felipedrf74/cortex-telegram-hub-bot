@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { DateTime } from 'luxon';
-import { config } from '../config';
 import { logger } from '../utils/logger';
 import { calculateReadiness } from './readiness-scorer';
 import { getEvents, type UnifiedCalendarEvent } from './unified-calendar';
@@ -17,6 +16,7 @@ import {
   type TrainingSession,
   type TrainingWeek,
 } from './training-plans';
+import { getUserTimezone } from './user-service';
 
 type TrainingLoad = 'hard' | 'moderate' | 'light' | 'rest' | 'unknown';
 type CalendarLoad = 'busy' | 'moderate' | 'light' | 'unknown';
@@ -72,7 +72,7 @@ export async function getFocusBlockRecommendation(
     preferredDate?: string;
   },
 ): Promise<FocusBlockRecommendation | null> {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = getUserTimezone(userId);
   const now = DateTime.now().setZone(zone);
   const durationMinutes = clamp(Math.round(opts?.durationMinutes ?? 90), 30, 180);
   const preferredDate = typeof opts?.preferredDate === 'string'
@@ -97,7 +97,7 @@ export async function getFocusBlockRecommendation(
     windowStartIso: startDate.toUTC().toISO()!,
     windowEndIso: endDate.toUTC().toISO()!,
   });
-  const trainingSchedule = buildTrainingSchedule(userId, startDate, horizonDays);
+  const trainingSchedule = buildTrainingSchedule(userId, startDate, horizonDays, zone);
 
   const hadCalendarData = calendarResult.status === 'fulfilled';
   const hadReadinessData = readiness?.score != null;
@@ -248,6 +248,7 @@ function buildTrainingSchedule(
   userId: number,
   startDate: DateTime,
   windowDays: number,
+  zone: string,
 ): Map<string, TrainingDaySummary> {
   const byDate = new Map<string, TrainingDaySummary>();
   const plans = getActivePlans(userId);
@@ -266,7 +267,7 @@ function buildTrainingSchedule(
     const weeks = getWeeksForPlan(plan.id);
     for (let offset = 0; offset < windowDays; offset += 1) {
       const date = startDate.plus({ days: offset });
-      const week = weekForDate(plan, weeks, date);
+      const week = weekForDate(plan, weeks, date, zone);
       if (!week) continue;
       const weekday = date.toFormat('EEEE');
       const sessions = getSessionsForWeek(week.id).filter((session) => session.day_of_week === weekday);
@@ -283,8 +284,8 @@ function buildTrainingSchedule(
   return byDate;
 }
 
-function weekForDate(plan: TrainingPlan, weeks: TrainingWeek[], date: DateTime): TrainingWeek | null {
-  const planStart = DateTime.fromISO(plan.start_date, { zone: config.app.timezone }).startOf('day');
+function weekForDate(plan: TrainingPlan, weeks: TrainingWeek[], date: DateTime, zone: string): TrainingWeek | null {
+  const planStart = DateTime.fromISO(plan.start_date, { zone }).startOf('day');
   const diffDays = Math.floor(date.startOf('day').diff(planStart, 'days').days);
   if (diffDays < 0) return null;
   const weekNumber = Math.floor(diffDays / 7) + 1;
@@ -399,7 +400,9 @@ function eventsForDate(events: UnifiedCalendarEvent[], isoDate: string, zone: st
 }
 
 function summarizeCalendarLoad(events: UnifiedCalendarEvent[]): { load: CalendarLoad; reasons: string[] } {
-  const dayEvents = events.filter((event) => !looksLikeTrainingEvent(event.summary || ''));
+  const dayEvents = events.filter((event) =>
+    !looksLikeTrainingEvent(event.summary || '') && !looksLikeFocusProtectionEvent(event.summary || '')
+  );
   if (dayEvents.length === 0) {
     return {
       load: 'light',
@@ -653,6 +656,10 @@ function hasTrainingAdjacency(
 
 function looksLikeTrainingEvent(summary: string): boolean {
   return /\b(workout|training|run|ride|swim|strength|gym|interval|tempo|recovery|corrida|treino|pedal|natação|natacao|musculação|musculacao)\b/i.test(summary);
+}
+
+function looksLikeFocusProtectionEvent(summary: string): boolean {
+  return /\b(focus time|focus block|deep work|protected focus|focus work|no meetings|do not disturb|tempo de foco|bloco de foco|trabalho profundo)\b/i.test(summary);
 }
 
 function dedupePreservingOrder(values: string[]): string[] {

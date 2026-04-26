@@ -8,6 +8,10 @@ vi.mock('../../../src/services/oauth-store', () => ({
   getTokens: (...args: unknown[]) => mockGetTokens(...args),
 }));
 
+vi.mock('../../../src/services/user-service', () => ({
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+}));
+
 import { NativeTaskAdapter } from '../../../src/services/task-store/native-adapter';
 import { getTaskProviderForUser } from '../../../src/services/task-store/task-router';
 
@@ -106,6 +110,45 @@ describe('task-router native wrapper', () => {
           title: 'Due today',
           listId: '7',
           listName: 'Inbox',
+        }),
+      ],
+    });
+  });
+
+  it('projects recurring native tasks into due-range reads', async () => {
+    vi.spyOn(NativeTaskAdapter.prototype, 'getTasks').mockResolvedValue({
+      tasks: [
+        {
+          id: 1,
+          provider: 'nexus',
+          externalId: '1',
+          projectId: 7,
+          projectName: 'Inbox',
+          title: 'Weekly review',
+          status: 'pending',
+          priority: 2,
+          dueDate: '2026-04-27T09:00:00.000Z',
+          recurrence: {
+            pattern: { type: 'weekly', interval: 1, daysOfWeek: ['monday'] },
+            range: { type: 'noEnd', startDate: '2026-04-27' },
+          },
+        },
+      ],
+    });
+
+    const provider = getTaskProviderForUser(42);
+    const result = await provider.getTasksDueInRange(
+      '2026-05-04T00:00:00.000Z',
+      '2026-05-04T23:59:59.000Z',
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      data: [
+        expect.objectContaining({
+          id: '1',
+          title: 'Weekly review',
+          dueDateTime: '2026-05-04T09:00:00.000Z',
         }),
       ],
     });

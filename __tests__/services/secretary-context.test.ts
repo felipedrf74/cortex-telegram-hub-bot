@@ -84,6 +84,10 @@ vi.mock('../../src/services/tool-executor', () => ({
 vi.mock('../../src/services/task-store/task-router', () => ({
   getTaskProviderForUser: vi.fn(),
 }));
+vi.mock('../../src/services/user-service', () => ({
+  getUserLanguage: vi.fn(() => 'en-US'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
+}));
 vi.mock('../../src/skills/registry', () => ({
   isSubmoduleEnabled: vi.fn(() => true),
 }));

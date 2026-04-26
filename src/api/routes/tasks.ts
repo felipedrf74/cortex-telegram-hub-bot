@@ -8,8 +8,8 @@ import { getCached, setCache, getCachedSWR, setCacheSWR, userCacheKey } from '..
 import { sendSuccess, sendError, sendInternalError } from '../response-helpers';
 import * as microsoftTodo from '../../services/microsoft-todo';
 import { getTaskProviderForUser, resolveTaskProvider } from '../../services/task-store/task-router';
-import { resolveTaskCreationList } from '../../services/task-store/task-list-resolution';
-import { getOwnerBootstrapUser } from '../../services/user-service';
+import { resolveTaskCreationList, TaskListResolutionError } from '../../services/task-store/task-list-resolution';
+import { getOwnerBootstrapUser, getUserTimezone } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
@@ -29,6 +29,31 @@ const TASKS_SWR_STALE = 600;   // 10 min stale grace for individual lists
 // triggering 50 background refreshes for the same key. Each key can have
 // at most one in-flight background fetch at a time.
 const swrInFlight = new Set<string>();
+const completeTaskInFlight = new Map<string, Promise<{ task: any; alreadyCompleted: boolean }>>();
+
+export function dateKeyInAppTimezone(
+  value: Date | string,
+  timezone = config.app.timezone || 'Europe/Lisbon',
+): string | null {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  try {
+    return date.toLocaleDateString('en-CA', { timeZone: timezone });
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+export function taskDueDateKey(
+  task: any,
+  timezone = config.app.timezone || 'Europe/Lisbon',
+): string | null {
+  const raw = task?.dueDateTime?.dateTime || task?.dueDateTime;
+  if (!raw) return null;
+  return dateKeyInAppTimezone(raw, timezone);
+}
+
 function swrRefresh(key: string, fn: () => Promise<void>): void {
   if (swrInFlight.has(key)) return;
   swrInFlight.add(key);
@@ -53,6 +78,35 @@ function getTodo(req?: any) {
     }
   }
   return microsoftTodo;
+}
+
+function sendTaskProviderError(
+  res: Response,
+  err: unknown,
+  operation: 'create' | 'read' | 'update' | 'delete',
+): void {
+  const raw = typeof err === 'string'
+    ? err
+    : (err && typeof err === 'object' && 'message' in err ? String((err as any).message) : '');
+  const message = raw.toLowerCase();
+  const status = typeof err === 'object' && err && 'status' in err ? Number((err as any).status) : undefined;
+
+  if (status === 401 || status === 403 || /\b(invalid_grant|unauthorized|forbidden|expired|reauth|token)\b/.test(message)) {
+    sendError(res, 'PROVIDER_AUTH_REQUIRED', 'Reconnect your task provider and try again.', 401);
+    return;
+  }
+
+  if (status === 429 || /\b(rate|quota|throttle)\b/.test(message)) {
+    sendError(res, 'PROVIDER_RATE_LIMITED', 'Your task provider is rate limited right now. Try again shortly.', 429);
+    return;
+  }
+
+  if ((status && status >= 500) || /\b(timeout|network|unavailable|temporar|econnreset|etimedout)\b/.test(message)) {
+    sendError(res, 'PROVIDER_TEMPORARY_UNAVAILABLE', 'Your task provider is temporarily unavailable. Try again shortly.', 503);
+    return;
+  }
+
+  sendInternalError(res, `Failed to ${operation} task`, { code: 'TASK_PROVIDER_FAILED' });
 }
 
 export function taskRoutes(): Router {
@@ -188,25 +242,20 @@ export function taskRoutes(): Router {
         setCache(userCacheKey(userId, 'fastpath:pending-tasks'), allTasks, TASKS_CACHE_TTL);
       }
 
-      // Lisbon timezone for date comparison
-      const now = new Date();
-      const todayStr = now.toLocaleDateString('en-CA', { timeZone: config.app.timezone });
-
-      function getDueDateLisbon(t: any): string | null {
-        const raw = t.dueDateTime?.dateTime || t.dueDateTime;
-        if (!raw) return null;
-        return new Date(raw).toLocaleDateString('en-CA', { timeZone: config.app.timezone });
-      }
+      // Use the configured app timezone for date-only comparisons so DST
+      // boundaries do not depend on the server's local clock zone.
+      const timezone = getUserTimezone(userId);
+      const todayStr = dateKeyInAppTimezone(new Date(), timezone) || new Date().toISOString().slice(0, 10);
 
       let filtered = allTasks;
       if (filter === 'overdue') {
         filtered = allTasks.filter((t: any) => {
-          const dueStr = getDueDateLisbon(t);
+          const dueStr = taskDueDateKey(t, timezone);
           return dueStr && dueStr < todayStr;
         });
       } else if (filter === 'dueToday') {
         filtered = allTasks.filter((t: any) => {
-          const dueStr = getDueDateLisbon(t);
+          const dueStr = taskDueDateKey(t, timezone);
           return dueStr === todayStr;
         });
       }
@@ -312,6 +361,7 @@ export function taskRoutes(): Router {
       const syncProvider = resolveTaskProvider(userId);
       const todo = getTodo(req);
       const { title, listName, dueDateTime, importance, body, recurrence } = req.body;
+      const timezone = getUserTimezone(userId);
 
       if (!title) {
         sendError(res, 'BAD_REQUEST', 'title is required');
@@ -328,30 +378,69 @@ export function taskRoutes(): Router {
         sendError(res, 'LIST_NOT_FOUND', `List "${label}" not found`, 404);
         return;
       }
+      const resolvedListId = String(list.id);
+      const resolvedListName = String(list.displayName || list.name || 'Tasks');
 
-      const result = await todo.createTask(list.id, list.displayName, {
+      const result = await todo.createTask(resolvedListId, resolvedListName, {
         title,
         dueDateTime: dueDateTime || undefined,
         importance: (importance || 'normal') as 'low' | 'normal' | 'high',
         body: body || undefined,
         recurrence: normalizeMicrosoftRecurrence(recurrence, dueDateTime || new Date()),
+        timeZone: timezone,
       });
 
       if (!result?.success) {
-        logger.error({ err: result?.error, list: list.displayName }, 'iOS tasks create failed at MS Graph');
-        sendInternalError(res, 'Failed to create task in Microsoft To Do', { code: 'CREATE_FAILED' });
+        const reconciled = await findTaskCreatedDespiteProviderFailure(todo, resolvedListId, resolvedListName, {
+          title,
+          dueDateTime: dueDateTime || undefined,
+        });
+        if (reconciled) {
+          invalidateTaskRouteCaches(resolvedListId, userId);
+          sendSuccess(
+            res,
+            {
+              task: normalizeTaskDto(reconciled, syncProvider, { listId: resolvedListId, listName: resolvedListName }),
+              reconciled: true,
+            },
+            { status: 201 },
+          );
+          return;
+        }
+        logger.error({ err: result?.error, list: resolvedListName }, 'iOS tasks create failed at MS Graph');
+        sendTaskProviderError(res, result?.error, 'create');
         return;
       }
 
+      const createdTask = result.data?.id
+        ? await resolveTaskDetail(
+            todo,
+            resolvedListId,
+            String(result.data.id),
+            resolvedListName,
+            result.data,
+          )
+        : result.data;
+
       // Invalidate task caches (new task changes list contents)
-      invalidateTaskRouteCaches(list.id, userId);
+      invalidateTaskRouteCaches(resolvedListId, userId);
 
       sendSuccess(
         res,
-        { task: normalizeTaskDto(result.data, syncProvider, { listId: list.id, listName: list.displayName }) },
+        { task: normalizeTaskDto(createdTask, syncProvider, { listId: resolvedListId, listName: resolvedListName }) },
         { status: 201 }
       );
     } catch (err: any) {
+      if (err instanceof TaskListResolutionError) {
+        sendError(
+          res,
+          err.code,
+          err.message,
+          err.code === 'TASK_LIST_AMBIGUOUS' ? 409 : 404,
+          err.details,
+        );
+        return;
+      }
       logger.error({ err }, 'iOS tasks create failed');
       sendInternalError(res, 'Failed to create task');
     }
@@ -362,21 +451,26 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo(req);
       const { listId, taskId } = req.params;
+      const userId = (req as any).userId;
       const listName = await resolveTaskListName(todo, listId, (req as any).userId);
+      const timezone = getUserTimezone(userId);
 
       const ALLOWED_FIELDS = new Set(['title', 'body', 'importance', 'status', 'dueDateTime']);
       const updates: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(req.body)) {
         if (ALLOWED_FIELDS.has(key)) updates[key] = value;
       }
+      if (Object.prototype.hasOwnProperty.call(updates, 'dueDateTime')) {
+        updates.timeZone = timezone;
+      }
 
       const result = await todo.updateTask(listId, taskId, updates, listName);
       const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
 
-      invalidateTaskRouteCaches(listId, (req as any).userId);
+      invalidateTaskRouteCaches(listId, userId);
       sendSuccess(
         res,
-        { task: normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName }) },
+        { task: normalizeTaskDto(task, resolveTaskProvider(userId), { listId, listName }) },
       );
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks update failed');
@@ -389,14 +483,26 @@ export function taskRoutes(): Router {
     try {
       const todo = getTodo(req);
       const { listId, taskId } = req.params;
-      const listName = await resolveTaskListName(todo, listId, (req as any).userId);
+      const userId = (req as any).userId;
+      const completeKey = `${userId || 'anon'}:${listId}:${taskId}`;
+      let completion = completeTaskInFlight.get(completeKey);
+      if (!completion) {
+        completion = completeTaskIdempotently(todo, listId, taskId, userId)
+          .finally(() => completeTaskInFlight.delete(completeKey));
+        completeTaskInFlight.set(completeKey, completion);
+      }
 
-      const result = await todo.completeTask(listId, taskId, listName);
-      const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
-      const normalizedTask = normalizeTaskDto(task, resolveTaskProvider((req as any).userId), { listId, listName });
+      const { task, alreadyCompleted } = await completion;
+      const normalizedTask = normalizeTaskDto(task, resolveTaskProvider(userId), {
+        listId,
+        listName: task?.listName,
+      });
 
-      invalidateTaskRouteCaches(listId, (req as any).userId);
-      sendSuccess(res, { task: normalizedTask, message: `✅ Completed: ${normalizedTask.title || 'task'}` });
+      sendSuccess(res, {
+        task: normalizedTask,
+        alreadyCompleted,
+        message: `✅ Completed: ${normalizedTask.title || 'task'}`,
+      });
     } catch (err: any) {
       logger.error({ err }, 'iOS tasks complete failed');
       sendInternalError(res, 'Failed to complete task');
@@ -548,6 +654,30 @@ export function taskRoutes(): Router {
     } catch (err: any) {
       logger.error({ err }, 'iOS task move failed');
       sendInternalError(res, 'Failed to move task');
+    }
+  });
+
+  /** DELETE /api/v1/tasks/lists/:listId — delete a task list/project when supported. */
+  router.delete('/lists/:listId', async (req, res: Response) => {
+    try {
+      const todo = getTodo(req);
+      const { listId } = req.params;
+      if (typeof todo.deleteList !== 'function') {
+        sendError(res, 'UNSUPPORTED', 'Task list deletion is not supported by the active task provider', 400);
+        return;
+      }
+
+      const result = await todo.deleteList(listId);
+      if (!result?.success) {
+        sendError(res, 'UNSUPPORTED', result?.error || 'Task list deletion is not supported by the active task provider', 400);
+        return;
+      }
+
+      invalidateTaskCaches({ userId: (req as any).userId, listIds: [listId], includeDerivedSurfaces: true });
+      sendSuccess(res, { deleted: true });
+    } catch (err: any) {
+      logger.error({ err }, 'iOS tasks list delete failed');
+      sendInternalError(res, 'Failed to delete task list');
     }
   });
 
@@ -796,14 +926,38 @@ async function resolveMutatedTask(
   candidate: any,
 ): Promise<any> {
   if (candidate?.title && (candidate?.listId || candidate?.listName)) return candidate;
+  const fallback = {
+    ...(candidate || { id: taskId }),
+    id: candidate?.id || taskId,
+    listId: candidate?.listId || listId,
+    listName: candidate?.listName || listName,
+  };
 
   try {
     const refreshed = await todo.getTasks(listId, listName);
     const tasks = Array.isArray(refreshed?.data) ? refreshed.data : [];
-    return tasks.find((task: any) => String(task.id) === String(taskId)) || candidate;
+    return tasks.find((task: any) => String(task.id) === String(taskId)) || fallback;
   } catch {
-    return candidate;
+    return fallback;
   }
+}
+
+async function completeTaskIdempotently(
+  todo: any,
+  listId: string,
+  taskId: string,
+  userId?: number,
+): Promise<{ task: any; alreadyCompleted: boolean }> {
+  const listName = await resolveTaskListName(todo, listId, userId);
+  const current = await resolveTaskDetail(todo, listId, taskId, listName, null);
+  if (String(current?.status || '').toLowerCase() === 'completed') {
+    return { task: current, alreadyCompleted: true };
+  }
+
+  const result = await todo.completeTask(listId, taskId, listName);
+  const task = await resolveMutatedTask(todo, listId, taskId, listName, result?.data || result);
+  invalidateTaskRouteCaches(listId, userId);
+  return { task, alreadyCompleted: false };
 }
 
 async function resolveTaskDetail(
@@ -823,4 +977,28 @@ async function resolveTaskDetail(
   }
 
   return resolveMutatedTask(todo, listId, taskId, listName, candidate || { id: taskId, listId, listName });
+}
+
+async function findTaskCreatedDespiteProviderFailure(
+  todo: any,
+  listId: string,
+  listName: string,
+  target: { title: string; dueDateTime?: string },
+): Promise<any | null> {
+  if (typeof todo?.getTasks !== 'function') return null;
+
+  try {
+    const result = await todo.getTasks(listId, listName, { status: 'notStarted' });
+    const tasks = Array.isArray(result?.data) ? result.data : [];
+    const wantedTitle = target.title.trim().toLowerCase();
+    return tasks.find((task: any) => {
+      const taskTitle = String(task?.title || '').trim().toLowerCase();
+      if (taskTitle !== wantedTitle) return false;
+      if (!target.dueDateTime) return true;
+      const due = String(task?.dueDateTime?.dateTime || task?.dueDateTime || '');
+      return due === target.dueDateTime;
+    }) || null;
+  } catch {
+    return null;
+  }
 }

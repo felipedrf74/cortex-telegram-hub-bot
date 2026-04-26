@@ -185,7 +185,8 @@ describe('Shopping List', () => {
     const list = generateShoppingList(1, '2024-06-17');
     expect(list.items).toHaveLength(2);
     const eggs = list.items.find(i => i.name === 'Eggs')!;
-    expect(eggs.quantity).toContain('+'); // aggregated quantities
+    expect(eggs.quantity).toBe('6');
+    expect(eggs.unit).toBe('pcs');
   });
 
   it('returns empty list for week with no meals', () => {

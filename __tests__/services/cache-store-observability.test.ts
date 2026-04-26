@@ -105,4 +105,20 @@ describe('cache-store observability', () => {
       expiredEntriesCleared: 2,
     });
   });
+
+  it('stores an SWR monotonic freshness boundary for clock-skew-safe reads', async () => {
+    mockRun.mockReturnValue({ changes: 1 });
+
+    const { setCacheSWR } = await import('../../src/services/cache-store');
+    setCacheSWR('swr-monotonic', { ok: true }, 30, 60);
+
+    const [, valueJson] = mockRun.mock.calls[0];
+    const envelope = JSON.parse(String(valueJson));
+    expect(envelope).toMatchObject({
+      __swr: 1,
+      value: { ok: true },
+    });
+    expect(typeof envelope.freshUntilMonotonic).toBe('number');
+    expect(envelope.freshUntilMonotonic).toBe(envelope.freshUntil);
+  });
 });

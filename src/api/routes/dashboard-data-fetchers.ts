@@ -11,6 +11,7 @@ import {
   getEvents as getOutlookCalendarEvents,
   isOutlookCalendarConfigured,
 } from '../../services/outlook-calendar';
+import { getUserTimezone } from '../../services/user-service';
 
 export type DashboardSectionStatus = 'ready' | 'degraded' | 'unavailable';
 
@@ -26,17 +27,26 @@ function dashboardReadinessCacheKeyFor(userId: number): string {
   return `dashboard-readiness:${userId}`;
 }
 
-function extractTime(dateInput: any): string {
+function extractTime(dateInput: any, timezone = config.app.timezone || 'Europe/Lisbon'): string {
   if (!dateInput) return '';
   const raw = typeof dateInput === 'string' ? dateInput : dateInput.dateTime || dateInput.date || String(dateInput);
   try {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
-      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.app.timezone });
+      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: timezone });
     }
   } catch {}
   const match = raw.match(/T(\d{2}:\d{2})/);
   return match ? match[1] : '';
+}
+
+function extractRawDateTime(dateInput: any): string | null {
+  if (!dateInput) return null;
+  if (typeof dateInput === 'string') return dateInput;
+  if (typeof dateInput === 'object') {
+    return coerceNullableString(dateInput.dateTime || dateInput.date);
+  }
+  return coerceNullableString(dateInput);
 }
 
 function extractTitle(e: any): string {
@@ -99,10 +109,12 @@ function normalizeBodyBattery(bb: any): number | null {
   return null;
 }
 
-export function mapCalendarEvent(e: any, source: string) {
+export function mapCalendarEvent(e: any, source: string, timezone = config.app.timezone || 'Europe/Lisbon') {
   const title = coerceString(extractTitle(e), '(No title)');
-  const start = extractTime(e?.start);
-  const end = extractTime(e?.end);
+  const start = extractTime(e?.start, timezone);
+  const end = extractTime(e?.end, timezone);
+  const rawStart = extractRawDateTime(e?.start);
+  const rawEnd = extractRawDateTime(e?.end);
   const explicitId = coerceNullableString(e?.id);
 
   return {
@@ -110,6 +122,8 @@ export function mapCalendarEvent(e: any, source: string) {
     title,
     start,
     end,
+    ...(rawStart ? { rawStart } : {}),
+    ...(rawEnd ? { rawEnd } : {}),
     source,
     category: coerceNullableString(Array.isArray(e?.categories) ? e.categories[0] : null),
     color: coerceNullableString(e?.color),
@@ -142,7 +156,7 @@ export async function fetchCalendar(userId?: number) {
 }
 
 async function fetchCalendarForUser(userId?: number) {
-  const zone = config.app.timezone || 'Europe/Lisbon';
+  const zone = getUserTimezone(userId);
   const today = DateTime.now().setZone(zone);
   const actualStart = today.startOf('day');
   const actualEnd = today.endOf('day');
@@ -162,7 +176,7 @@ async function fetchCalendarForUser(userId?: number) {
       provider: 'google',
       run: async () => {
         const events = await getGoogleCalendarEvents(start, end, userId);
-        return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'google')) : [];
+        return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'google', zone)) : [];
       },
     });
   }
@@ -173,7 +187,7 @@ async function fetchCalendarForUser(userId?: number) {
       provider: 'outlook',
       run: async () => {
         const events = await getOutlookCalendarEvents(start, end, userId);
-        return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'outlook')) : [];
+        return Array.isArray(events) ? events.map((e: any) => mapCalendarEvent(e, 'outlook', zone)) : [];
       },
     });
   }
@@ -209,7 +223,7 @@ async function fetchCalendarForUser(userId?: number) {
 
   const allEvents = allProviderEvents.sort((a, b) => a.start.localeCompare(b.start));
   return {
-    today: allEvents.filter((event) => eventOverlapsRange(event, actualStart, actualEnd)),
+    today: allEvents.filter((event) => eventOverlapsRange(event, actualStart, actualEnd, zone)),
     upcoming: [],
     ...buildSectionHealth(
       fulfilledProviders,
@@ -223,14 +237,27 @@ async function fetchCalendarForUser(userId?: number) {
 }
 
 function eventOverlapsRange(
-  event: { start?: string; end?: string },
+  event: { start?: any; end?: any; rawStart?: any; rawEnd?: any },
   rangeStart: DateTime,
   rangeEnd: DateTime,
+  timezone?: string,
 ): boolean {
-  const eventStart = DateTime.fromISO(String(event.start || ''), { zone: 'utc' });
-  const eventEnd = DateTime.fromISO(String(event.end || ''), { zone: 'utc' });
+  const zone = timezone || config.app.timezone || 'Europe/Lisbon';
+  const eventStart = parseCalendarBoundary(event.rawStart ?? event.start, zone);
+  const eventEnd = parseCalendarBoundary(event.rawEnd ?? event.end, zone);
   if (!eventStart.isValid || !eventEnd.isValid) return true;
   return eventEnd > rangeStart.toUTC() && eventStart < rangeEnd.toUTC();
+}
+
+function parseCalendarBoundary(input: any, zone: string): DateTime {
+  const raw = extractRawDateTime(input);
+  if (!raw) return DateTime.invalid('missing calendar boundary');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return DateTime.fromISO(raw, { zone }).startOf('day').toUTC();
+  }
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(raw);
+  const parsed = DateTime.fromISO(raw, hasExplicitZone ? { setZone: true } : { zone });
+  return parsed.isValid ? parsed.toUTC() : parsed;
 }
 
 export async function fetchTasks(userId: number) {
@@ -246,18 +273,19 @@ export async function fetchTasks(userId: number) {
     );
   }
 
+  const zone = getUserTimezone(userId);
   const now = new Date();
   // MS Graph stores due dates as T23:00:00 UTC for the "previous" day in European TZ.
   // Example: "due April 7" = "2026-04-06T23:00:00" in UTC = April 7 in Lisbon.
   // To compare correctly, use the DATE PORTION ONLY (first 10 chars of ISO string).
-  const todayStr = now.toLocaleDateString('en-CA', { timeZone: config.app.timezone }); // "2026-04-06"
+  const todayStr = now.toLocaleDateString('en-CA', { timeZone: zone }); // "2026-04-06"
 
   function getDueDateStr(t: any): string | null {
     const raw = t.dueDateTime?.dateTime || t.dueDateTime;
     if (!raw) return null;
     // MS Graph: "2026-04-06T23:00:00.0000000" → add 1 hour to get Lisbon date
     const d = new Date(raw);
-    return d.toLocaleDateString('en-CA', { timeZone: config.app.timezone }); // "2026-04-07"
+    return d.toLocaleDateString('en-CA', { timeZone: zone }); // "2026-04-07"
   }
 
   const overdue = tasks.filter((t: any) => {
@@ -378,7 +406,7 @@ export async function fetchTraining(userId: number) {
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {
-      const zone = config.app.timezone || 'Europe/Lisbon';
+      const zone = getUserTimezone(userId);
       const todayDow = DateTime.now().setZone(zone).toFormat('cccc');
       todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
     }
@@ -386,7 +414,7 @@ export async function fetchTraining(userId: number) {
 
   if (!todaySession) {
     try {
-      const zone = config.app.timezone || 'Europe/Lisbon';
+      const zone = getUserTimezone(userId);
       const today = DateTime.now().setZone(zone);
       const startOfDay = today.startOf('day');
       const endOfDay = today.endOf('day');
@@ -398,7 +426,7 @@ export async function fetchTraining(userId: number) {
       );
       const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
       const trainingEvent = (events || []).find((e: any) => {
-        if (!eventOverlapsRange(e, startOfDay, endOfDay)) return false;
+        if (!eventOverlapsRange(e, startOfDay, endOfDay, zone)) return false;
         const title = (e.subject || e.summary || e.title || '').toLowerCase();
         return keywords.some(kw => title.includes(kw));
       });

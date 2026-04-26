@@ -31,6 +31,7 @@ function createServices(overrides: Record<string, unknown> = {}) {
     resetGoogleClients: vi.fn(),
     resetMicrosoftClients: vi.fn(),
     syncProvider: vi.fn(async () => undefined),
+    invalidateIntegrationDerivedCaches: vi.fn(),
     ...overrides,
   };
 }
@@ -143,8 +144,26 @@ describe('portal oauth routes', () => {
 
     expect(services.exchangeCode).toHaveBeenCalledWith('outlook', 'code-2', 7);
     expect(services.storeTokens).toHaveBeenCalledWith(7, 'outlook', { access_token: 'token' });
+    expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'outlook');
     expect(services.resetMicrosoftClients).toHaveBeenCalled();
     expect(res.redirectedTo).toBe('me.nexushub.app://oauth/outlook?status=success');
+  });
+
+  it('invalidates calendar-derived caches after a valid Google OAuth callback stores tokens', async () => {
+    const services = createServices({
+      consumeNonce: vi.fn(() => ({ userId: 7, provider: 'google' })),
+    });
+    const routes = captureRoutes(services);
+
+    const res = await invoke(findRoute(routes, '/oauth/google/callback'), {
+      query: { code: 'code-g', state: 'ios:7:nonce-g' },
+    });
+
+    expect(services.exchangeCode).toHaveBeenCalledWith('google', 'code-g', 7);
+    expect(services.storeTokens).toHaveBeenCalledWith(7, 'google', { access_token: 'token' });
+    expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'google');
+    expect(services.resetGoogleClients).toHaveBeenCalled();
+    expect(res.redirectedTo).toBe('me.nexushub.app://oauth/google?status=success');
   });
 
   it('keeps service-loader failures inside the iOS OAuth callback error boundary', async () => {
@@ -169,6 +188,7 @@ describe('portal oauth routes', () => {
 
     expect(services.exchangeCode).toHaveBeenCalledWith('todoist', 'code-3', 7);
     expect(services.storeTokens).toHaveBeenCalledWith(7, 'todoist', { access_token: 'token' });
+    expect(services.invalidateIntegrationDerivedCaches).toHaveBeenCalledWith(7, 'todoist');
     expect(services.syncProvider).toHaveBeenCalledWith(7, 'todoist');
     expect(String(res.sent)).toContain('Your first sync is starting now');
   });

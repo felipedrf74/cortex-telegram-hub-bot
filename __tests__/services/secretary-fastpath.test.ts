@@ -63,6 +63,7 @@ vi.mock('../../src/skills/registry', () => ({
 // Bilingual tests below override `getUserLanguage` via `vi.mocked`.
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: vi.fn(() => 'pt-BR'),
+  getUserTimezone: vi.fn(() => 'Europe/Lisbon'),
   setUserLanguage: vi.fn(),
 }));
 

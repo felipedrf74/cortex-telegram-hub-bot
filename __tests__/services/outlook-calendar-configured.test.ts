@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   isMicrosoftConfigured: vi.fn(),
   getTokens: vi.fn(),
+  loggerWarn: vi.fn(),
   outlookClientId: 'mock-outlook-client-id' as string | undefined,
 }));
 
@@ -46,7 +47,7 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: (...args: unknown[]) => mocks.loggerWarn(...args),
     error: vi.fn(),
     debug: vi.fn(),
   },
@@ -58,6 +59,7 @@ describe('isOutlookCalendarConfigured — per-user vs owner scoping', () => {
   beforeEach(() => {
     mocks.isMicrosoftConfigured.mockReset();
     mocks.getTokens.mockReset();
+    mocks.loggerWarn.mockReset();
     mocks.outlookClientId = 'mock-outlook-client-id';
   });
 
@@ -117,6 +119,10 @@ describe('isOutlookCalendarConfigured — per-user vs owner scoping', () => {
 
       expect(isOutlookCalendarConfigured()).toBe(true);
       expect(mocks.getTokens).not.toHaveBeenCalled();
+      expect(mocks.loggerWarn).toHaveBeenCalledWith(
+        { provider: 'outlook', scope: 'owner_global' },
+        expect.stringContaining('owner-global scope'),
+      );
     });
 
     it('returns false when neither a per-user token nor owner config exists', () => {

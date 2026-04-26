@@ -212,6 +212,15 @@ interface SWREnvelope<T> {
   __swr: 1;
   value: T;
   freshUntil: number; // epoch ms
+  freshUntilMonotonic?: number; // monotonic epoch-ish ms for in-process clock skew safety
+}
+
+function monotonicNowMs(): number {
+  const perf = globalThis.performance;
+  if (perf && typeof perf.now === 'function' && Number.isFinite(perf.timeOrigin)) {
+    return perf.timeOrigin + perf.now();
+  }
+  return Date.now();
 }
 
 /**
@@ -251,7 +260,10 @@ export function getCachedSWR<T = unknown>(key: string): { value: T; fresh: boole
     }
 
     const env = parsed as SWREnvelope<T>;
-    const fresh = Date.now() < env.freshUntil;
+    const freshnessBoundary = typeof env.freshUntilMonotonic === 'number'
+      ? env.freshUntilMonotonic
+      : env.freshUntil;
+    const fresh = monotonicNowMs() < freshnessBoundary;
     if (!fresh) cacheStoreStats.staleHitCount += 1;
     return { value: env.value, fresh };
   } catch (err) {
@@ -282,12 +294,14 @@ export function setCacheSWR(
   try {
     const db = getDb();
     const stale = staleSeconds ?? freshSeconds * 5;
-    const freshUntil = Date.now() + freshSeconds * 1000;
+    const nowMs = monotonicNowMs();
+    const freshUntil = nowMs + freshSeconds * 1000;
     const expiresAt = new Date(Date.now() + stale * 1000).toISOString();
     const envelope: SWREnvelope<unknown> = {
       __swr: 1,
       value,
       freshUntil,
+      freshUntilMonotonic: freshUntil,
     };
     db.prepare(
       'INSERT OR REPLACE INTO api_cache (cache_key, value_json, expires_at) VALUES (?, ?, ?)',

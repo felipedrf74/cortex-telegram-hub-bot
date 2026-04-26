@@ -304,6 +304,7 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
 
   // Aggregate ingredients from linked recipes
   const itemMap = new Map<string, ShoppingItem>();
+  const quantityMap = new Map<string, NormalizedQuantity>();
   const existing = getShoppingList(userId, weekStart);
   const checkedByKey = new Map(
     (existing?.items ?? []).map((item) => [item.name.toLowerCase(), item.checked]),
@@ -318,9 +319,19 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
           const key = ing.name.toLowerCase();
           const existing = itemMap.get(key);
           if (existing) {
-            // Simple quantity aggregation — just append
-            existing.quantity = `${existing.quantity} + ${ing.quantity}`;
+            const merged = mergeIngredientQuantity(quantityMap.get(key), ing);
+            if (merged) {
+              quantityMap.set(key, merged);
+              const display = formatNormalizedQuantity(merged);
+              existing.quantity = display.quantity;
+              existing.unit = display.unit;
+            } else {
+              existing.quantity = appendQuantity(existing, ing);
+              existing.unit = '';
+            }
           } else {
+            const normalizedQuantity = normalizeIngredientQuantity(ing);
+            if (normalizedQuantity) quantityMap.set(key, normalizedQuantity);
             itemMap.set(key, {
               name: ing.name,
               quantity: ing.quantity,
@@ -355,6 +366,89 @@ export function generateShoppingList(userId: number, weekStart: string): Shoppin
 
   logger.info({ userId, weekStart, itemCount: items.length }, 'Shopping list generated');
   return parseShoppingList(row);
+}
+
+type QuantityFamily = 'mass' | 'volume' | 'count';
+
+interface NormalizedQuantity {
+  family: QuantityFamily;
+  baseValue: number;
+}
+
+function mergeIngredientQuantity(
+  existing: NormalizedQuantity | undefined,
+  ingredient: Ingredient,
+): NormalizedQuantity | null {
+  const next = normalizeIngredientQuantity(ingredient);
+  if (!existing || !next || existing.family !== next.family) return null;
+  return { family: existing.family, baseValue: existing.baseValue + next.baseValue };
+}
+
+function normalizeIngredientQuantity(ingredient: Ingredient): NormalizedQuantity | null {
+  const quantity = parseIngredientNumber(ingredient.quantity);
+  if (quantity == null) return null;
+
+  const unit = normalizeIngredientUnit(ingredient.unit);
+  switch (unit) {
+    case 'mg': return { family: 'mass', baseValue: quantity / 1000 };
+    case 'g': return { family: 'mass', baseValue: quantity };
+    case 'kg': return { family: 'mass', baseValue: quantity * 1000 };
+    case 'ml': return { family: 'volume', baseValue: quantity };
+    case 'l': return { family: 'volume', baseValue: quantity * 1000 };
+    case 'tsp': return { family: 'volume', baseValue: quantity * 5 };
+    case 'tbsp': return { family: 'volume', baseValue: quantity * 15 };
+    case 'cup': return { family: 'volume', baseValue: quantity * 240 };
+    case 'pcs': return { family: 'count', baseValue: quantity };
+    default: return null;
+  }
+}
+
+function parseIngredientNumber(value: string): number | null {
+  const normalized = String(value || '').trim().replace(',', '.');
+  if (!normalized) return null;
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeIngredientUnit(unit: string): string {
+  const normalized = String(unit || '').trim().toLowerCase();
+  if (['mg', 'milligram', 'milligrams', 'miligrama', 'miligramas'].includes(normalized)) return 'mg';
+  if (['g', 'gr', 'gram', 'grams', 'grama', 'gramas'].includes(normalized)) return 'g';
+  if (['kg', 'kilogram', 'kilograms', 'quilo', 'quilos'].includes(normalized)) return 'kg';
+  if (['ml', 'milliliter', 'milliliters', 'millilitre', 'millilitres', 'mililitro', 'mililitros'].includes(normalized)) return 'ml';
+  if (['l', 'lt', 'liter', 'liters', 'litre', 'litres', 'litro', 'litros'].includes(normalized)) return 'l';
+  if (['tsp', 'teaspoon', 'teaspoons', 'colher de cha', 'colher de chá'].includes(normalized)) return 'tsp';
+  if (['tbsp', 'tablespoon', 'tablespoons', 'colher de sopa'].includes(normalized)) return 'tbsp';
+  if (['cup', 'cups', 'xicara', 'xícara', 'xicaras', 'xícaras'].includes(normalized)) return 'cup';
+  if (['pc', 'pcs', 'piece', 'pieces', 'unit', 'units', 'un', 'unidade', 'unidades', 'dose', 'doses'].includes(normalized)) return 'pcs';
+  return normalized;
+}
+
+function formatNormalizedQuantity(quantity: NormalizedQuantity): { quantity: string; unit: string } {
+  if (quantity.family === 'mass') {
+    if (quantity.baseValue >= 1000) {
+      return { quantity: formatQuantityNumber(quantity.baseValue / 1000), unit: 'kg' };
+    }
+    return { quantity: formatQuantityNumber(quantity.baseValue), unit: 'g' };
+  }
+  if (quantity.family === 'volume') {
+    if (quantity.baseValue >= 1000) {
+      return { quantity: formatQuantityNumber(quantity.baseValue / 1000), unit: 'l' };
+    }
+    return { quantity: formatQuantityNumber(quantity.baseValue), unit: 'ml' };
+  }
+  return { quantity: formatQuantityNumber(quantity.baseValue), unit: 'pcs' };
+}
+
+function formatQuantityNumber(value: number): string {
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function appendQuantity(existing: ShoppingItem, ingredient: Ingredient): string {
+  const left = `${existing.quantity}${existing.unit ? ` ${existing.unit}` : ''}`.trim();
+  const right = `${ingredient.quantity}${ingredient.unit ? ` ${ingredient.unit}` : ''}`.trim();
+  return `${left} + ${right}`;
 }
 
 export function getShoppingList(userId: number, weekStart: string): ShoppingList | null {

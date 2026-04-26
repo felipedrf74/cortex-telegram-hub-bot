@@ -7,7 +7,7 @@ import { getConversationHistory, addToConversation } from '../state/conversation
 import { getActiveReminders, getRemindersForToday } from '../state/reminders';
 import { getEvents, hasConnectedCalendarForUser } from '../services/unified-calendar';
 import type { TodoTask } from '../services/microsoft-todo';
-import { now, startOfDay, endOfDay, formatDateTime } from '../utils/date-parser';
+import { formatDateTime } from '../utils/date-parser';
 import { executeToolCall } from '../services/tool-executor';
 import { getSharedMemorySummary } from '../state/shared-memory';
 import {
@@ -31,7 +31,8 @@ import {
 import { getTaskProviderForUser } from '../services/task-store/task-router';
 import { composeDailyBrief } from '../services/daily-brief-orchestrator';
 import { getUnreadMailSummaryForUser, isAnyMailConfiguredForUser } from '../services/unified-mail-pressure';
-import { getUserLanguage } from '../services/user-service';
+import { getUserLanguage, getUserTimezone } from '../services/user-service';
+import { DateTime } from 'luxon';
 
 const DOMAIN: DomainName = 'secretary';
 
@@ -117,11 +118,13 @@ async function buildStateContext(message: string = '', userId?: number): Promise
     return cached.value;
   }
 
+  const timezone = getUserTimezone(scopedUserId);
+  const localNow = DateTime.now().setZone(timezone);
   const parts: string[] = [];
-  parts.push(`${copy.todayLabel}: ${now().toFormat('cccc, LLLL dd yyyy, HH:mm')} (Europe/Lisbon)`);
+  parts.push(`${copy.todayLabel}: ${localNow.toFormat('cccc, LLLL dd yyyy, HH:mm')} (${timezone})`);
 
   // Build date range for Garmin: last 3 days
-  const today = now();
+  const today = localNow;
   const threeDaysAgo = today.minus({ days: 3 }).toFormat('yyyy-MM-dd');
   const todayStr = today.toFormat('yyyy-MM-dd');
 
@@ -132,7 +135,7 @@ async function buildStateContext(message: string = '', userId?: number): Promise
       : Promise.resolve(null),
     hasUserScope && needs.reminders && remindersEnabled ? Promise.resolve(getRemindersForToday(scopedUserId)) : Promise.resolve([]),
     hasCalendar && scopedUserId !== null
-      ? getEvents(startOfDay(), endOfDay(), scopedUserId).catch(() => [] as any[])
+      ? getEvents(localNow.startOf('day').toISO()!, localNow.endOf('day').toISO()!, scopedUserId).catch(() => [] as any[])
       : Promise.resolve([] as any[]),
     hasMail && scopedUserId !== null
       ? getUnreadMailSummaryForUser(scopedUserId).catch(() => null)
@@ -159,10 +162,10 @@ async function buildStateContext(message: string = '', userId?: number): Promise
       // overdue at 00:01 just because the timestamp is < now. This matches
       // MS Todo's own UI behavior and avoids double-counting today's tasks
       // as both "overdue" and "due today".
-      const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+      const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
       const dueDateStr = (t: typeof tasks[number]): string | null => {
         if (!t.dueDateTime) return null;
-        return new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+        return new Date(t.dueDateTime).toLocaleDateString('en-CA', { timeZone: timezone });
       };
       const overdue = tasks.filter((t: TodoTask) => {
         const d = dueDateStr(t);
