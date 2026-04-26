@@ -103,6 +103,28 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(athlete.goals.weeklySessionsTarget).toMatchObject({ strength: 5 });
   });
 
+  it('builds muscle-building weeks without running sessions', () => {
+    const plan = buildCoachKernelTrainingPlan({
+      userId: 506,
+      objective: 'Muscle Building',
+      durationWeeks: 4,
+      startDate: '2026-04-26',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 5,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+    });
+
+    expect(plan.sport).toBe('gym');
+    expect(plan.weeks?.[0]?.sessions?.every((session) => session.sessionType === 'gym')).toBe(true);
+  });
+
   it('seeds AthleteState.readiness from currentReadiness when provided', () => {
     // This is the core fix for QW#2. When the route supplies real
     // wearable readiness data the planner must consume it so guardrails

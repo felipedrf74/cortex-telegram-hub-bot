@@ -51,6 +51,36 @@ describe('coach-kernel planner', () => {
     expect(runSessions.length).toBeLessThanOrEqual(3);
   });
 
+  it('does not leak running sessions into strength-primary weeks', () => {
+    const strengthAthlete: AthleteState = {
+      ...sampleHybridAthlete,
+      profile: {
+        ...sampleHybridAthlete.profile,
+        primaryDiscipline: 'strength',
+      },
+      goals: {
+        ...sampleHybridAthlete.goals,
+        primaryFocus: 'strength',
+        secondaryFocus: undefined,
+        priorityOrder: ['strength'],
+        weeklySessionsTarget: { strength: 5 },
+        weeklyMinutesTarget: { strength: 240 },
+      },
+      currentBlock: {
+        ...sampleHybridAthlete.currentBlock,
+        discipline: 'strength',
+        phase: 'base',
+      },
+    };
+
+    const plan = buildWeekPlan(strengthAthlete, '2026-04-26');
+
+    expect(plan.discipline).toBe('strength');
+    expect(plan.sessions).not.toHaveLength(0);
+    expect(plan.sessions.every((session) => session.sport === 'strength')).toBe(true);
+    expect(plan.sessions.some((session) => session.sport === 'running')).toBe(false);
+  });
+
   it('builds a daily recommendation using deterministic weekly plan output', () => {
     const plan = buildWeekPlan(sampleMarathonAthlete, '2026-05-11');
     const day = buildDayPlan(sampleMarathonAthlete, plan, 'tuesday');

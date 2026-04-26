@@ -93,7 +93,7 @@ export function buildWeekPlan(athlete: AthleteState, weekStart: string): WeeklyP
 
   if (athlete.goals.primaryFocus === 'triathlon') {
     sessions = triathlonEngine.buildCandidateSessions(context);
-  } else if (athlete.goals.primaryFocus === 'hybrid' || athlete.goals.secondaryFocus === 'strength') {
+  } else if (athlete.goals.primaryFocus === 'hybrid') {
     const hybrid = resolveHybridPriority(athlete, phase);
     const hybridAthlete: AthleteState = {
       ...athlete,
