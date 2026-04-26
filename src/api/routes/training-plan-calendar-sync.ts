@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
-import { createEvent, getEvents, type UnifiedCalendarEvent } from '../../services/unified-calendar';
+import { getEvents, type UnifiedCalendarEvent } from '../../services/unified-calendar';
 import { isConnected } from '../../services/oauth-store';
 import {
   buildBusyWindows,
@@ -10,6 +10,7 @@ import {
   scheduleSessionWindow,
   type BusyWindow,
 } from './training-schedule-utils';
+import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 import { logger } from '../../utils/logger';
 
 export type TrainingPlanCalendarSyncResult =
@@ -282,7 +283,7 @@ export async function syncTrainingPlanCalendar(
     });
 
     try {
-      const event = await createEvent(
+      const event = await createTrainingCalendarEvent(
         {
           title: `${emojiForTrainingSession(item.sessionType)} ${item.title} (${item.durationMinutes}min)`,
           start: window.start.toISOString(),
@@ -291,6 +292,11 @@ export async function syncTrainingPlanCalendar(
         },
         calendarSource,
         userId,
+        {
+          userId,
+          sessionId: item.sessionId,
+          title: item.title,
+        },
       );
       trainingPlans.linkSessionToCalendar(item.sessionId, event.id, event.source);
       eventsCreated += 1;

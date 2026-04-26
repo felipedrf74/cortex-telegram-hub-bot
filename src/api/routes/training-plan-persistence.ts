@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
-import { createEvent } from '../../services/unified-calendar';
 import {
   buildRichSessionDescription,
   type AthleteProfiles,
@@ -13,6 +12,7 @@ import {
   scheduleSessionWindow,
   type BusyWindow,
 } from './training-schedule-utils';
+import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 
 const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
@@ -162,28 +162,29 @@ export async function persistGeneratedTrainingPlan(
   }
 
   let eventsCreated = 0;
-  await Promise.allSettled(
-    calendarEvents.map(async (eventPayload) => {
-      try {
-        const event = await createEvent(
-          {
-            title: eventPayload.title,
-            start: eventPayload.start,
-            end: eventPayload.end,
-            description: eventPayload.description,
-          },
-          undefined,
-          input.userId,
-        );
-        trainingPlans.linkSessionToCalendar(eventPayload.sessionId, event.id, event.source);
-        eventsCreated++;
-        return event;
-      } catch (err) {
-        logger.warn({ err, title: eventPayload.title }, 'Failed to create calendar event for session');
-        return null;
-      }
-    }),
-  );
+  for (const eventPayload of calendarEvents) {
+    try {
+      const event = await createTrainingCalendarEvent(
+        {
+          title: eventPayload.title,
+          start: eventPayload.start,
+          end: eventPayload.end,
+          description: eventPayload.description,
+        },
+        undefined,
+        input.userId,
+        {
+          userId: input.userId,
+          sessionId: eventPayload.sessionId,
+          title: eventPayload.title,
+        },
+      );
+      trainingPlans.linkSessionToCalendar(eventPayload.sessionId, event.id, event.source);
+      eventsCreated++;
+    } catch (err) {
+      logger.warn({ err, title: eventPayload.title }, 'Failed to create calendar event for session');
+    }
+  }
 
   return {
     planId: plan.id,

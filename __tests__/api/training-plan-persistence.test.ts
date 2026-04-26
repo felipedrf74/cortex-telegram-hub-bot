@@ -170,4 +170,49 @@ describe('training-plan-persistence', () => {
       'Failed to create calendar event for session',
     );
   });
+
+  it('creates calendar events sequentially to avoid provider write bursts', async () => {
+    let resolveFirst!: (value: { id: string; source: string }) => void;
+    mockCreateEvent
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFirst = resolve;
+      }))
+      .mockResolvedValueOnce({ id: 'evt-2', source: 'google' });
+
+    const pending = persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Strength block',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Lift A', durationMinutes: 45 },
+              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Lift B', durationMinutes: 45 },
+            ],
+          },
+        ],
+      },
+    });
+
+    await Promise.resolve();
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+
+    resolveFirst({ id: 'evt-1', source: 'google' });
+    const result = await pending;
+
+    expect(result.eventsCreated).toBe(2);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2001, 'evt-1', 'google');
+    expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
+  });
 });

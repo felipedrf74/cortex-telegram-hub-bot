@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   createEvent: vi.fn(),
   getEvents: vi.fn(),
   isConnected: vi.fn(),
+  loggerDebug: vi.fn(),
+  loggerWarn: vi.fn(),
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
@@ -24,6 +26,13 @@ vi.mock('../../src/services/unified-calendar', () => ({
 
 vi.mock('../../src/services/oauth-store', () => ({
   isConnected: mocks.isConnected,
+}));
+
+vi.mock('../../src/utils/logger', () => ({
+  logger: {
+    debug: mocks.loggerDebug,
+    warn: mocks.loggerWarn,
+  },
 }));
 
 import { syncTrainingPlanCalendar } from '../../src/api/routes/training-plan-calendar-sync';
@@ -93,6 +102,44 @@ describe('training-plan-calendar-sync', () => {
     // Run title uses the runner emoji.
     const wedPayload = mocks.createEvent.mock.calls[1][0];
     expect(wedPayload.title).toBe('🏃 Tempo Run (35min)');
+  });
+
+  it('retries Google rate-limit writes before reporting sync failure', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 17,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 170, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1700, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 40, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.createEvent
+      .mockRejectedValueOnce({
+        response: {
+          status: 403,
+          data: {
+            error: {
+              code: 403,
+              message: 'Rate Limit Exceeded',
+              errors: [{ reason: 'rateLimitExceeded', message: 'Rate Limit Exceeded' }],
+            },
+          },
+        },
+      })
+      .mockResolvedValueOnce({ id: 'evt-retry', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.sessionsFailed).toBe(0);
+      expect(result.data.message).toBe('1 session added to your calendar.');
+    }
+    expect(mocks.createEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(1700, 'evt-retry', 'google');
   });
 
   it('skips sessions that already have a calendar_event_id (idempotent retry)', async () => {
