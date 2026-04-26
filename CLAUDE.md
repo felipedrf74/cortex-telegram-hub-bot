@@ -12,17 +12,29 @@
 
 **Providers**: Gemini primary (2.5-flash / 2.5-flash-lite), Anthropic fallback (Claude Sonnet 4.6 / Haiku 4.5), OpenAI as secondary fallback. See `src/config.ts > providerRouting`.
 
-## Current Production Truth - 2026-04-25
+## Current Production Truth - 2026-04-26
 
-- Production backend is live at `4.14.75`; staging remains at `4.14.74`.
+- Production backend is live at `4.14.87`; staging remains at `4.14.86`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  346 test files / 5,477 tests.
+  349 test files / 5,539 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `80b6715`; code commit `688d30e` is the Training
-  plan-cancel hard-delete + rich session description release. Migration
-  `079_training_session_description.sql` is deployed with `4.14.75`.
+  online at deploy commit `d383936`; code commit `1885607` is the Secretary
+  audit closeout release. It makes task completion idempotent, reconciles task
+  creation after transient provider failures, uses per-user task due-date
+  windows instead of a Lisbon default, cascades remote task-list deletion where
+  supported, invalidates provider-derived task caches after OAuth reauth, uses
+  monotonic SWR cache freshness, expands recurring tasks into operational
+  reads, recognizes focus-time blocks, and normalizes Cooking shopping units
+  before aggregation.
+- The preceding `4.14.86` Secretary hardening release made calendar reads
+  honest about degraded/unavailable providers, normalized
+  all-day/cancelled/declined events, fixed configured-timezone and
+  cross-midnight calendar windows, escalated repeated SWR refresh misses, and
+  routed Todoist through the Todoist adapter instead of Microsoft To Do.
+- The preceding Training plan-cancel hard-delete + rich session description
+  release deployed migration `079_training_session_description.sql`.
 - Hardened staging operator-session smoke passed valid, expired, tampered,
   unauthorized role/scope, wrong-tenant, and static-token rejection paths.
 - External webhook/on-call staging drill passed alert creation, delivery,

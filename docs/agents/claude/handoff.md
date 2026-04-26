@@ -1,19 +1,31 @@
 # Claude Code — Tenant + Entitlement + Portal Hardening Handoff
 
-## Current Cross-Agent Truth - 2026-04-25
+## Current Cross-Agent Truth - 2026-04-26
 
 This section supersedes older branch/status notes below. Historical handoff
 content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production is live at `4.14.75`; staging remains at `4.14.74`.
+- Backend production is live at `4.14.87`; staging remains at `4.14.86`.
 - Full backend verification passed before the latest production deploy:
-  346 test files / 5,477 tests.
+  349 test files / 5,539 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `80b6715`; code commit `688d30e` is the Training
-  plan-cancel hard-delete + rich session description release. Migration
-  `079_training_session_description.sql` deployed with `4.14.75`.
+  online at deploy commit `d383936`; code commit `1885607` is the Secretary
+  audit closeout release. It makes task completion idempotent, reconciles task
+  creation after transient provider failures, uses per-user task due-date
+  windows instead of a Lisbon default, cascades remote task-list deletion where
+  supported, invalidates provider-derived task caches after OAuth reauth, uses
+  monotonic SWR cache freshness, expands recurring tasks into operational
+  reads, recognizes focus-time blocks, and normalizes Cooking shopping units
+  before aggregation.
+- The preceding `4.14.86` Secretary hardening release made calendar reads
+  honest about degraded/unavailable providers, normalized
+  all-day/cancelled/declined events, fixed configured-timezone and
+  cross-midnight calendar windows, escalated repeated SWR refresh misses, and
+  routed Todoist through the Todoist adapter instead of Microsoft To Do.
+- The preceding Training plan-cancel hard-delete + rich session description
+  release deployed migration `079_training_session_description.sql`.
 - Training plan cancel is now hard-delete: `cancelTrainingPlanForUser`
   removes calendar events first, then `deletePlanHard(planId, userId)`
   cascades through `training_weeks`, `training_sessions`, and
