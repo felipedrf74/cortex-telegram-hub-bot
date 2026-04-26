@@ -12,6 +12,7 @@ import {
 } from '../../services/cost-guardrail';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { generateTrainingPlanForUser } from './training-plan-generation';
+import { syncTrainingPlanCalendar } from './training-plan-calendar-sync';
 
 type TrainingScreenCacheInvalidator = (userId: number) => void;
 
@@ -115,6 +116,46 @@ export function registerTrainingPlanRoutes(
       sendError(res, 'INTERNAL', 'Failed to generate training plan. Please try again.', 500);
     } finally {
       releaseCostLock();
+    }
+  });
+
+  /**
+   * POST /api/v1/training/plan/sync-calendar
+   *
+   * Backfill calendar events for the user's active plan. Used as the
+   * recovery path when a plan was generated while the user's calendar
+   * provider was in `invalid_grant` (or any other failed state) — at
+   * generation time every `createEvent` failed and the plan landed with
+   * `eventsCreated: 0`. After the user reauths via the Connections
+   * sheet, calling this endpoint walks the plan and creates the missing
+   * calendar events. Idempotent: sessions that already have a
+   * `calendar_event_id` are reported as `sessionsAlreadySynced` and not
+   * touched on retry.
+   */
+  router.post('/plan/sync-calendar', async (req, res: Response) => {
+    const { userId } = req as AuthenticatedRequest;
+
+    try {
+      const result = await syncTrainingPlanCalendar(userId);
+      if (result.status === 'no_active_plan') {
+        sendSuccess(res, result.data);
+        return;
+      }
+      if (result.status === 'no_calendar') {
+        sendError(res, 'NO_CALENDAR', result.data.message, 409, result.data);
+        return;
+      }
+      if (result.data.eventsCreated > 0) {
+        // Calendar caches need to forget the empty pre-sync state so
+        // the next /training/week pull surfaces the freshly-linked
+        // start times instead of serving the cached `time: null`s.
+        invalidateCalendarCaches(userId);
+      }
+      invalidateTrainingScreenCaches(userId);
+      sendSuccess(res, result.data);
+    } catch (err: any) {
+      logger.error({ err, userId }, 'Training plan calendar sync failed');
+      sendInternalError(res, 'Failed to sync training plan to calendar');
     }
   });
 
