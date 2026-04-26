@@ -18,6 +18,7 @@ const mockSetCache = vi.fn();
 const mockClearCache = vi.fn();
 const mockClearCacheByPrefix = vi.fn();
 const mockGetFocusBlockRecommendation = vi.fn();
+const mockFilterCalendarEventsForTrainingScope = vi.fn();
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
@@ -46,6 +47,10 @@ vi.mock('../../src/config', () => ({
 
 vi.mock('../../src/services/focus-planner', () => ({
   getFocusBlockRecommendation: (...args: unknown[]) => mockGetFocusBlockRecommendation(...args),
+}));
+
+vi.mock('../../src/services/training-calendar-scope', () => ({
+  filterCalendarEventsForTrainingScope: (...args: unknown[]) => mockFilterCalendarEventsForTrainingScope(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -133,6 +138,7 @@ describe('Calendar API — mutation routes', () => {
     mockClearCache.mockReset();
     mockClearCacheByPrefix.mockReset();
     mockGetFocusBlockRecommendation.mockReset();
+    mockFilterCalendarEventsForTrainingScope.mockReset();
 
     mockGetCached.mockReturnValue(null);
     mockIsAnyCalendarConfigured.mockReturnValue(true);
@@ -145,6 +151,7 @@ describe('Calendar API — mutation routes', () => {
       warnings: [],
       sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
     });
+    mockFilterCalendarEventsForTrainingScope.mockImplementation((events) => events);
   });
 
   it('returns an empty events list when the authenticated user has no connected calendar', async () => {
@@ -186,6 +193,46 @@ describe('Calendar API — mutation routes', () => {
       source: 'outlook',
       color: '#8E44AD',
     });
+  });
+
+  it('filters training calendar events linked outside the authenticated user scope', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        {
+          id: 'foreign-training',
+          summary: '🏋️ Mobility + Recovery (29min)',
+          start: '2026-04-27T11:00:00.000Z',
+          end: '2026-04-27T11:29:00.000Z',
+          source: 'google',
+        },
+        {
+          id: 'manual-event',
+          summary: 'Manual focus block',
+          start: '2026-04-27T12:00:00.000Z',
+          end: '2026-04-27T12:30:00.000Z',
+          source: 'google',
+        },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
+    mockFilterCalendarEventsForTrainingScope.mockImplementation((events: any[], userId: number) => {
+      expect(userId).toBe(12);
+      return events.filter((event) => event.id !== 'foreign-training');
+    });
+
+    const res = await dispatch('GET', '/events');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.events).toHaveLength(1);
+    expect(res.body.data.events[0].id).toBe('manual-event');
+    expect(mockFilterCalendarEventsForTrainingScope).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: 'foreign-training' })]),
+      12,
+    );
   });
 
   it('normalizes absent optional event fields to explicit nulls for iOS decoding', async () => {

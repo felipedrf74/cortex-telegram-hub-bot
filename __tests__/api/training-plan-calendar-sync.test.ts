@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   createEvent: vi.fn(),
   getEvents: vi.fn(),
   isConnected: vi.fn(),
+  isTrainingCalendarEventUnclaimed: vi.fn(),
   loggerDebug: vi.fn(),
   loggerWarn: vi.fn(),
 }));
@@ -26,6 +27,10 @@ vi.mock('../../src/services/unified-calendar', () => ({
 
 vi.mock('../../src/services/oauth-store', () => ({
   isConnected: mocks.isConnected,
+}));
+
+vi.mock('../../src/services/training-calendar-scope', () => ({
+  isTrainingCalendarEventUnclaimed: mocks.isTrainingCalendarEventUnclaimed,
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -47,6 +52,7 @@ describe('training-plan-calendar-sync', () => {
     mocks.getEvents.mockResolvedValue([]);
     mocks.linkSessionToCalendar.mockReturnValue(true);
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'google');
+    mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(true);
   });
 
   it('returns no_active_plan when the user has no plan', async () => {
@@ -142,7 +148,7 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(1700, 'evt-retry', 'google');
   });
 
-  it('skips sessions that already have a calendar_event_id (idempotent retry)', async () => {
+  it('keeps sessions with a verified calendar_event_id idempotent on retry', async () => {
     mocks.getActivePlan.mockReturnValue({
       id: 8,
       user_id: 42,
@@ -153,6 +159,15 @@ describe('training-plan-calendar-sync', () => {
     mocks.getSessionsForWeek.mockReturnValue([
       { id: 200, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 45, description: '', status: 'pending', calendar_event_id: 'evt-existing', calendar_source: 'google' },
       { id: 201, day_of_week: 'Wednesday', session_type: 'run', title: 'Easy', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'evt-existing',
+        source: 'google',
+        summary: '💪 Lift (45min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:45:00.000Z',
+      },
     ]);
     mocks.createEvent.mockResolvedValueOnce({ id: 'evt-new', source: 'google' });
 
@@ -165,6 +180,36 @@ describe('training-plan-calendar-sync', () => {
     }
     expect(mocks.createEvent).toHaveBeenCalledTimes(1);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(201, 'evt-new', 'google');
+  });
+
+  it('repairs stale calendar_event_id links when the provider no longer returns the event', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 19,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 190, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 209, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 45, description: '', status: 'pending', calendar_event_id: 'evt-stale', calendar_source: 'google' },
+    ]);
+    mocks.getEvents.mockResolvedValue([]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-repaired', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.sessionsAlreadySynced).toBe(0);
+      expect(result.data.sessionsAttempted).toBe(1);
+    }
+    expect(mocks.createEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(209, 'evt-repaired', 'google');
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 209, calendarEventId: 'evt-stale', reason: 'missing_linked_event' }),
+      'syncTrainingPlanCalendar: repairing stale training calendar link',
+    );
   });
 
   it('links matching orphan calendar events instead of creating duplicates', async () => {
@@ -203,6 +248,40 @@ describe('training-plan-calendar-sync', () => {
     }
     expect(mocks.createEvent).not.toHaveBeenCalled();
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(208, 'orphan-recovery-run', 'google');
+  });
+
+  it('does not claim a matching training event already linked to another plan', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 20,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 2000, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 210, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'claimed-recovery-run',
+        source: 'google',
+        summary: '🏃 Recovery Run (30min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:30:00.000Z',
+      },
+    ]);
+    mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(false);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-new-run', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.sessionsLinked).toBe(0);
+    }
+    expect(mocks.isTrainingCalendarEventUnclaimed).toHaveBeenCalledWith('claimed-recovery-run', 'google');
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(210, 'evt-new-run', 'google');
   });
 
   it('does not touch past, completed, or skipped sessions', async () => {

@@ -151,7 +151,15 @@ describe('training-read-models', () => {
       },
     ];
     mockCalendarLookup = new Map([
-      ['evt-mon', { time: '06:00', event: { id: 'evt-mon' } }],
+      ['evt-mon', {
+        time: '06:00',
+        event: {
+          id: 'evt-mon',
+          summary: '💪 Strength + Core Support (40min)',
+          start: '2026-04-27T06:00:00.000Z',
+          end: '2026-04-27T06:40:00.000Z',
+        },
+      }],
     ]);
 
     const result = await getWeekPlan(42);
@@ -164,6 +172,76 @@ describe('training-read-models', () => {
       time: '06:00',
       calendarEventId: 'evt-mon',
       calendarSource: 'google',
+    });
+  });
+
+  it('marks stale stored calendar links as missing in the week plan read model', async () => {
+    mockActivePlan = { id: 12, name: 'Muscle Building', periodization: 'base', start_date: '2026-04-26' };
+    mockCurrentWeek = { id: 212, week_number: 1, focus: 'base' };
+    mockWeekSessions = [
+      {
+        id: 702,
+        day_of_week: 'Monday',
+        title: 'Strength Session',
+        session_type: 'gym',
+        calendar_event_id: 'evt-stale',
+        calendar_source: 'google',
+        duration_minutes: 60,
+        status: 'planned',
+        description: 'Strength work.',
+        exercises_json: JSON.stringify([]),
+      },
+    ];
+    mockCalendarLookup = new Map();
+
+    const result = await getWeekPlan(42);
+
+    expect(result.sessions[0]).toMatchObject({
+      id: '702',
+      title: 'Strength Session',
+      time: null,
+      calendarEventId: null,
+      calendarSource: null,
+    });
+  });
+
+  it('marks mismatched linked calendar events as missing in the week plan read model', async () => {
+    mockActivePlan = { id: 13, name: 'Muscle Building', periodization: 'base', start_date: '2026-04-26' };
+    mockCurrentWeek = { id: 213, week_number: 1, focus: 'base' };
+    mockWeekSessions = [
+      {
+        id: 703,
+        day_of_week: 'Monday',
+        title: 'Strength Session',
+        session_type: 'gym',
+        calendar_event_id: 'evt-old-plan',
+        calendar_source: 'google',
+        duration_minutes: 60,
+        status: 'planned',
+        description: 'Strength work.',
+        exercises_json: JSON.stringify([]),
+      },
+    ];
+    mockCalendarLookup = new Map([
+      ['evt-old-plan', {
+        time: '12:00',
+        event: {
+          id: 'evt-old-plan',
+          summary: '🏋️ Mobility + Recovery (29min)',
+          start: '2026-04-27T12:00:00.000Z',
+          end: '2026-04-27T12:29:00.000Z',
+        },
+      }],
+    ]);
+
+    const result = await getWeekPlan(42);
+
+    expect(result.sessions[0]).toMatchObject({
+      id: '703',
+      title: 'Strength Session',
+      time: null,
+      calendarEventId: null,
+      calendarSource: null,
     });
   });
 

@@ -6,7 +6,7 @@ import * as trainingPlans from '../../services/training-plans';
 import { calculateReadiness } from '../../services/readiness-scorer';
 import type { CoachKernelReadinessInput } from '../../services/training-coach-kernel-plan-generator';
 import { getActivitiesByDateForUser } from '../../services/garmin';
-import { buildCalendarEventLookup } from './training-calendar-lookup';
+import { buildCalendarEventLookup, type TrainingCalendarLookup } from './training-calendar-lookup';
 import {
   estimateCalendarDurationMinutes,
   humanizeSessionType,
@@ -61,7 +61,7 @@ export async function getTodaySession(userId: number) {
           // Production bug 2026-04-26: when calendar lookup threw, today's
           // card silently fell through to Garmin/calendar fallbacks and
           // the week list went empty even though the plan was real.
-          let calendarLookup: Map<string, { time: string | null }> = new Map();
+          let calendarLookup: TrainingCalendarLookup = new Map();
           try {
             const range = currentWeekDateRange(activePlan.start_date, currentWeek.week_number);
             calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
@@ -153,31 +153,39 @@ export async function getWeekPlan(userId: number) {
         // calendar await threw, the outer try/catch swallowed it, and
         // sessions stayed empty so iOS Week 1 showed "no sessions yet"
         // even though the plan/week/session rows were intact.
-        let calendarLookup: Map<string, { time: string | null }> = new Map();
+        let calendarLookup: TrainingCalendarLookup = new Map();
         try {
           const range = currentWeekDateRange(plan.start_date, weekNumber);
           calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
         } catch (err) {
           logger.debug({ err, userId }, 'getWeekPlan: calendar enrichment failed — rendering sessions without start times');
         }
-        sessions = weekSessions.map((s: any) => ({
-          id: s.id != null ? String(s.id) : undefined,
-          day: s.day_of_week || 'Monday',
-          type: s.title || humanizeSessionType(s.session_type),
-          title: s.title || humanizeSessionType(s.session_type),
-          sessionType: s.session_type || 'workout',
-          time: s.calendar_event_id ? calendarLookup.get(s.calendar_event_id)?.time ?? null : null,
-          calendarEventId: s.calendar_event_id || null,
-          calendarSource: s.calendar_source || null,
-          status: normalizeTrainingStatus(s.status),
-          description: s.description || null,
-          // Structured-sections companion to `description` so iOS can
-          // render typed cards. Older rows have NULL `description_json`
-          // and iOS falls back to the plain-text `description`.
-          descriptionSections: parseDescriptionSections(s.description_json),
-          duration: s.duration_minutes || null,
-          exercises: parseExercises(s.exercises_json),
-        }));
+        sessions = weekSessions.map((s: any) => {
+          const linkedCalendarEvent = s.calendar_event_id
+            ? calendarLookup.get(s.calendar_event_id) ?? null
+            : null;
+          const verifiedCalendarEventId = linkedCalendarEvent && calendarEventMatchesSession(s, linkedCalendarEvent.event)
+            ? s.calendar_event_id
+            : null;
+          return {
+            id: s.id != null ? String(s.id) : undefined,
+            day: s.day_of_week || 'Monday',
+            type: s.title || humanizeSessionType(s.session_type),
+            title: s.title || humanizeSessionType(s.session_type),
+            sessionType: s.session_type || 'workout',
+            time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
+            calendarEventId: verifiedCalendarEventId,
+            calendarSource: verifiedCalendarEventId ? s.calendar_source || null : null,
+            status: normalizeTrainingStatus(s.status),
+            description: s.description || null,
+            // Structured-sections companion to `description` so iOS can
+            // render typed cards. Older rows have NULL `description_json`
+            // and iOS falls back to the plain-text `description`.
+            descriptionSections: parseDescriptionSections(s.description_json),
+            duration: s.duration_minutes || null,
+            exercises: parseExercises(s.exercises_json),
+          };
+        });
       }
       const adh = currentWeek ? trainingPlans.getWeeklyAdherence?.(plan.id, currentWeek.id) : null;
       adherence = typeof adh === 'number'
@@ -265,6 +273,30 @@ export async function fetchCurrentReadinessForPlan(userId: number): Promise<Coac
     logger.debug({ err, userId }, 'fetchCurrentReadinessForPlan failed — plan generator will use neutral fallback');
     return null;
   }
+}
+
+function calendarEventMatchesSession(session: any, event: any): boolean {
+  if (!event) return false;
+  const eventTitle = normalizeCalendarTrainingTitle(event.summary || event.subject || event.title);
+  const sessionTitle = normalizeCalendarTrainingTitle(session.title || humanizeSessionType(session.session_type));
+  if (!eventTitle || !sessionTitle || eventTitle !== sessionTitle) return false;
+
+  const expectedDuration = Number(session.duration_minutes);
+  if (!Number.isFinite(expectedDuration) || expectedDuration <= 0) return true;
+  const actualDuration = estimateCalendarDurationMinutes(
+    typeof event.start === 'string' ? event.start : event.start?.dateTime ?? event.start?.date,
+    typeof event.end === 'string' ? event.end : event.end?.dateTime ?? event.end?.date,
+  );
+  return actualDuration == null || Math.abs(actualDuration - expectedDuration) <= 2;
+}
+
+function normalizeCalendarTrainingTitle(value: unknown): string {
+  return String(value || '')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .replace(/\(\s*\d+\s*min\s*\)\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
 function normalizeBodyBattery(bb: any): number | null {

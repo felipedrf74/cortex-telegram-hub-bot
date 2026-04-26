@@ -12,6 +12,7 @@ import {
 } from './training-schedule-utils';
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 import { logger } from '../../utils/logger';
+import { isTrainingCalendarEventUnclaimed } from '../../services/training-calendar-scope';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -119,7 +120,7 @@ function sessionDateFor(planStart: Date, weekNumber: number, dayOfWeek: string):
 
 /**
  * Backfill calendar events for an active training plan's sessions that
- * don't yet have a `calendar_event_id`. This is the recovery path for
+ * don't have a verified live calendar event. This is the recovery path for
  * plans that were generated while the user's calendar provider was in
  * `invalid_grant` (or any other error state) — at generation time every
  * `createEvent` failed and the plan landed with `eventsCreated: 0`. After
@@ -130,8 +131,9 @@ function sessionDateFor(planStart: Date, weekNumber: number, dayOfWeek: string):
  *   put yesterday's workout on the calendar — it's already history).
  * - Completed / skipped sessions are skipped (no point creating an event
  *   for a session the user already closed out).
- * - Sessions that already have a `calendar_event_id` are reported as
- *   `sessionsAlreadySynced` and not touched (idempotent on retry).
+ * - Sessions with a `calendar_event_id` are only reported as
+ *   `sessionsAlreadySynced` when that provider event is still visible and
+ *   matches the generated training block. Missing/stale links are repaired.
  * - Schedule preferences are read from the plan's `preferences_json` so
  *   the times are consistent with the original generation pass.
  */
@@ -156,11 +158,9 @@ export async function syncTrainingPlanCalendar(
   const planStart = new Date(plan.start_date);
   const calendarSource = preferredTrainingCalendarSource(userId);
 
-  // Walk every week / session up front so we can: (a) tell the caller
-  // how many sessions were already synced, (b) skip past or finished
-  // sessions, and (c) decide if there's actually anything to do before
-  // we go fetch busy-window data.
-  type Pending = {
+  // Walk every week / session up front so we can skip past or finished
+  // sessions, then verify existing calendar links against the provider.
+  type SyncCandidate = {
     sessionId: number;
     dayOfWeek: string;
     sessionType: string;
@@ -168,18 +168,15 @@ export async function syncTrainingPlanCalendar(
     durationMinutes: number;
     description: string;
     sessionDate: Date;
+    calendarEventId: string | null;
+    calendarSource: string | null;
   };
-  const pending: Pending[] = [];
-  let alreadySynced = 0;
+  const candidates: SyncCandidate[] = [];
   const weeks = trainingPlans.getWeeksForPlan(plan.id);
   for (const week of weeks) {
     const sessions = trainingPlans.getSessionsForWeek(week.id);
     for (const session of sessions) {
       const status = String(session.status || '').toLowerCase();
-      if (session.calendar_event_id) {
-        alreadySynced += 1;
-        continue;
-      }
       if (status === 'completed' || status === 'skipped') continue;
       const sessionType = String(session.session_type || '').toLowerCase();
       if (sessionType === 'rest') continue;
@@ -191,7 +188,7 @@ export async function syncTrainingPlanCalendar(
       const todayStart = new Date(now);
       todayStart.setHours(0, 0, 0, 0);
       if (dayStart.getTime() < todayStart.getTime()) continue;
-      pending.push({
+      candidates.push({
         sessionId: session.id,
         dayOfWeek: session.day_of_week,
         sessionType: session.session_type || 'training',
@@ -199,8 +196,89 @@ export async function syncTrainingPlanCalendar(
         durationMinutes: session.duration_minutes || 60,
         description: session.description || '',
         sessionDate,
+        calendarEventId: session.calendar_event_id || null,
+        calendarSource: session.calendar_source || null,
       });
     }
+  }
+
+  if (candidates.length === 0) {
+    return {
+      status: 'synced',
+      data: {
+        eventsCreated: 0,
+        sessionsAttempted: 0,
+        sessionsAlreadySynced: 0,
+        sessionsLinked: 0,
+        sessionsFailed: 0,
+        message: 'No future sessions left to sync.',
+      },
+    };
+  }
+
+  // Fetch busy windows ONCE for the entire span so each scheduling pass
+  // sees the same calendar state. If the calendar fetch itself throws
+  // (provider still degraded), we proceed with empty busy windows — the
+  // user explicitly asked for the sync and a wrong-but-present time is
+  // strictly better than another silent failure.
+  const earliest = candidates[0].sessionDate;
+  const latest = candidates[candidates.length - 1].sessionDate;
+  const startStr = earliest.toISOString().slice(0, 10);
+  const endStr = new Date(latest.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  let busyWindows: BusyWindow[] = [];
+  let calendarEvents: UnifiedCalendarEvent[] = [];
+  let calendarFetchSucceeded = false;
+  try {
+    const events = await getEvents(startStr, endStr, userId);
+    calendarEvents = events || [];
+    busyWindows = buildBusyWindows(calendarEvents);
+    calendarFetchSucceeded = true;
+  } catch (err) {
+    logger.debug({ err, userId }, 'syncTrainingPlanCalendar: getEvents failed — scheduling without busy-window constraints');
+  }
+
+  const scheduledWindows: BusyWindow[] = [];
+  const consumedExistingEventKeys = new Set<string>();
+  const pending: SyncCandidate[] = [];
+  let alreadySynced = 0;
+  for (const item of candidates) {
+    if (!item.calendarEventId) {
+      pending.push(item);
+      continue;
+    }
+
+    if (!calendarFetchSucceeded) {
+      alreadySynced += 1;
+      continue;
+    }
+
+    const linkedEvent = findLinkedCalendarEvent(item, calendarEvents);
+    if (linkedEvent && isMatchingGeneratedTrainingEvent(item, linkedEvent)) {
+      alreadySynced += 1;
+      const eventStart = new Date(linkedEvent.start);
+      const eventEnd = new Date(linkedEvent.end);
+      if (Number.isFinite(eventStart.getTime()) && Number.isFinite(eventEnd.getTime())) {
+        scheduledWindows.push({
+          startMs: eventStart.getTime(),
+          endMs: eventEnd.getTime(),
+          title: item.title,
+        });
+        consumedExistingEventKeys.add(`${linkedEvent.source}:${linkedEvent.id}`);
+      }
+      continue;
+    }
+
+    pending.push(item);
+    logger.warn(
+      {
+        userId,
+        sessionId: item.sessionId,
+        calendarEventId: item.calendarEventId,
+        calendarSource: item.calendarSource,
+        reason: linkedEvent ? 'mismatched_linked_event' : 'missing_linked_event',
+      },
+      'syncTrainingPlanCalendar: repairing stale training calendar link',
+    );
   }
 
   if (pending.length === 0) {
@@ -220,27 +298,6 @@ export async function syncTrainingPlanCalendar(
     };
   }
 
-  // Fetch busy windows ONCE for the entire span so each scheduling pass
-  // sees the same calendar state. If the calendar fetch itself throws
-  // (provider still degraded), we proceed with empty busy windows — the
-  // user explicitly asked for the sync and a wrong-but-present time is
-  // strictly better than another silent failure.
-  const earliest = pending[0].sessionDate;
-  const latest = pending[pending.length - 1].sessionDate;
-  const startStr = earliest.toISOString().slice(0, 10);
-  const endStr = new Date(latest.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  let busyWindows: BusyWindow[] = [];
-  let calendarEvents: UnifiedCalendarEvent[] = [];
-  try {
-    const events = await getEvents(startStr, endStr, userId);
-    calendarEvents = events || [];
-    busyWindows = buildBusyWindows(calendarEvents);
-  } catch (err) {
-    logger.debug({ err, userId }, 'syncTrainingPlanCalendar: getEvents failed — scheduling without busy-window constraints');
-  }
-
-  const scheduledWindows: BusyWindow[] = [];
-  const consumedExistingEventKeys = new Set<string>();
   let eventsCreated = 0;
   let sessionsLinked = 0;
   let sessionsFailed = 0;
@@ -383,10 +440,26 @@ function consumeMatchingExistingTrainingEvent(
     const key = `${event.source}:${event.id}`;
     if (consumedKeys.has(key)) continue;
     if (!isMatchingGeneratedTrainingEvent(item, event)) continue;
+    if (!isTrainingCalendarEventUnclaimed(event.id, event.source)) continue;
     consumedKeys.add(key);
     return event;
   }
   return null;
+}
+
+function findLinkedCalendarEvent(
+  item: {
+    calendarEventId: string | null;
+    calendarSource: string | null;
+  },
+  events: UnifiedCalendarEvent[],
+): UnifiedCalendarEvent | null {
+  if (!item.calendarEventId) return null;
+  return events.find((event) => {
+    if (event.id !== item.calendarEventId) return false;
+    if (!item.calendarSource) return true;
+    return event.source === item.calendarSource;
+  }) ?? null;
 }
 
 function isMatchingGeneratedTrainingEvent(

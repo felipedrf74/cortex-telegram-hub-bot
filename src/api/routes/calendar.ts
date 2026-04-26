@@ -33,6 +33,7 @@ import { invalidateCalendarCaches } from '../../services/calendar-cache-invalida
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { getFocusBlockRecommendation } from '../../services/focus-planner';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { filterCalendarEventsForTrainingScope } from '../../services/training-calendar-scope';
 
 const TODAY_TTL = 120; // 2 min — calendar can change mid-day from notifications
 const RANGE_TTL = 60;  // 1 min for arbitrary ranges
@@ -89,7 +90,8 @@ export function calendarRoutes(): Router {
         return;
       }
 
-      const formatted = result.events.map(formatEvent);
+      const visibleEvents = filterCalendarEventsForTrainingScope(result.events, userId);
+      const formatted = visibleEvents.map(formatEvent);
       const payload = {
         events: formatted,
         status: result.status,
@@ -369,7 +371,7 @@ export function calendarRoutes(): Router {
         });
         return;
       }
-      const formatted = result.events
+      const formatted = filterCalendarEventsForTrainingScope(result.events, userId)
         .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
         .map(formatEvent);
       const payload = {

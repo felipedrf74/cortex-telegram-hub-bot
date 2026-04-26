@@ -129,9 +129,9 @@ export function registerTrainingPlanRoutes(
    * generation time every `createEvent` failed and the plan landed with
    * `eventsCreated: 0`. After the user reauths via the Connections
    * sheet, calling this endpoint walks the plan and creates the missing
-   * calendar events. Idempotent: sessions that already have a
-   * `calendar_event_id` are reported as `sessionsAlreadySynced` and not
-   * touched on retry.
+   * calendar events. Idempotent: sessions that already have a verified
+   * provider event are reported as `sessionsAlreadySynced`; stale or
+   * missing provider links are repaired instead of silently no-oping.
    */
   router.post('/plan/sync-calendar', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
