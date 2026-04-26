@@ -1,7 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
-import { createEvent, getEvents } from '../../services/unified-calendar';
+import { createEvent, getEvents, type UnifiedCalendarEvent } from '../../services/unified-calendar';
+import { isConnected } from '../../services/oauth-store';
 import {
   buildBusyWindows,
   normalizePreferredTime,
@@ -36,6 +37,7 @@ export type TrainingPlanCalendarSyncResult =
         eventsCreated: number;
         sessionsAttempted: number;
         sessionsAlreadySynced: number;
+        sessionsLinked: number;
         sessionsFailed: number;
         message: string;
       };
@@ -151,6 +153,7 @@ export async function syncTrainingPlanCalendar(
 
   const preferences = readPlanPreferences(plan);
   const planStart = new Date(plan.start_date);
+  const calendarSource = preferredTrainingCalendarSource(userId);
 
   // Walk every week / session up front so we can: (a) tell the caller
   // how many sessions were already synced, (b) skip past or finished
@@ -206,6 +209,7 @@ export async function syncTrainingPlanCalendar(
         eventsCreated: 0,
         sessionsAttempted: 0,
         sessionsAlreadySynced: alreadySynced,
+        sessionsLinked: 0,
         sessionsFailed: 0,
         message:
           alreadySynced > 0
@@ -225,19 +229,39 @@ export async function syncTrainingPlanCalendar(
   const startStr = earliest.toISOString().slice(0, 10);
   const endStr = new Date(latest.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   let busyWindows: BusyWindow[] = [];
+  let calendarEvents: UnifiedCalendarEvent[] = [];
   try {
     const events = await getEvents(startStr, endStr, userId);
-    busyWindows = buildBusyWindows(events || []);
+    calendarEvents = events || [];
+    busyWindows = buildBusyWindows(calendarEvents);
   } catch (err) {
     logger.debug({ err, userId }, 'syncTrainingPlanCalendar: getEvents failed — scheduling without busy-window constraints');
   }
 
   const scheduledWindows: BusyWindow[] = [];
+  const consumedExistingEventKeys = new Set<string>();
   let eventsCreated = 0;
+  let sessionsLinked = 0;
   let sessionsFailed = 0;
   let firstError: Error | null = null;
 
   for (const item of pending) {
+    const existingEvent = consumeMatchingExistingTrainingEvent(item, calendarEvents, consumedExistingEventKeys);
+    if (existingEvent) {
+      trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
+      sessionsLinked += 1;
+      const eventStart = new Date(existingEvent.start);
+      const eventEnd = new Date(existingEvent.end);
+      if (Number.isFinite(eventStart.getTime()) && Number.isFinite(eventEnd.getTime())) {
+        scheduledWindows.push({
+          startMs: eventStart.getTime(),
+          endMs: eventEnd.getTime(),
+          title: item.title,
+        });
+      }
+      continue;
+    }
+
     const preferredTime = preferredTimeForSessionType(
       item.sessionType,
       preferences.preferredTime,
@@ -265,7 +289,7 @@ export async function syncTrainingPlanCalendar(
           end: window.end.toISOString(),
           description: item.description,
         },
-        undefined,
+        calendarSource,
         userId,
       );
       trainingPlans.linkSessionToCalendar(item.sessionId, event.id, event.source);
@@ -283,7 +307,7 @@ export async function syncTrainingPlanCalendar(
   // Detect "no calendar provider connected" specifically — that's the
   // signal we want to give the iOS UI a clear "go reconnect" message
   // instead of a generic "some events failed" toast.
-  if (eventsCreated === 0 && sessionsFailed === pending.length) {
+  if (eventsCreated === 0 && sessionsLinked === 0 && sessionsFailed === pending.length) {
     const noCalendar = firstError?.message?.toLowerCase().includes('no calendar provider');
     if (noCalendar) {
       return {
@@ -299,14 +323,21 @@ export async function syncTrainingPlanCalendar(
     }
   }
 
-  const remainingDay = pending.length - eventsCreated;
+  const resolvedCount = eventsCreated + sessionsLinked;
+  const remainingDay = pending.length - resolvedCount;
   let message: string;
-  if (eventsCreated === 0) {
+  if (resolvedCount === 0) {
     message = 'Could not create any calendar events. Check your calendar connection and try again.';
-  } else if (remainingDay === 0) {
+  } else if (remainingDay === 0 && eventsCreated === 0) {
+    message = `${sessionsLinked} existing ${sessionsLinked === 1 ? 'session was' : 'sessions were'} linked to your calendar.`;
+  } else if (remainingDay === 0 && sessionsLinked === 0) {
     message = `${eventsCreated} ${eventsCreated === 1 ? 'session' : 'sessions'} added to your calendar.`;
-  } else {
+  } else if (remainingDay === 0) {
+    message = `${resolvedCount} ${resolvedCount === 1 ? 'session' : 'sessions'} synced to your calendar.`;
+  } else if (sessionsLinked === 0) {
     message = `${eventsCreated} of ${pending.length} sessions added to your calendar; ${remainingDay} could not be created.`;
+  } else {
+    message = `${resolvedCount} of ${pending.length} sessions synced to your calendar; ${remainingDay} could not be created.`;
   }
 
   return {
@@ -315,8 +346,67 @@ export async function syncTrainingPlanCalendar(
       eventsCreated,
       sessionsAttempted: pending.length,
       sessionsAlreadySynced: alreadySynced,
+      sessionsLinked,
       sessionsFailed,
       message,
     },
   };
+}
+
+function preferredTrainingCalendarSource(userId: number): 'google' | 'outlook' | undefined {
+  try {
+    if (isConnected(userId, 'google')) return 'google';
+    if (isConnected(userId, 'outlook')) return 'outlook';
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function consumeMatchingExistingTrainingEvent(
+  item: {
+    sessionType: string;
+    title: string;
+    durationMinutes: number;
+    sessionDate: Date;
+  },
+  events: UnifiedCalendarEvent[],
+  consumedKeys: Set<string>,
+): UnifiedCalendarEvent | null {
+  for (const event of events) {
+    const key = `${event.source}:${event.id}`;
+    if (consumedKeys.has(key)) continue;
+    if (!isMatchingGeneratedTrainingEvent(item, event)) continue;
+    consumedKeys.add(key);
+    return event;
+  }
+  return null;
+}
+
+function isMatchingGeneratedTrainingEvent(
+  item: {
+    sessionType: string;
+    title: string;
+    durationMinutes: number;
+    sessionDate: Date;
+  },
+  event: UnifiedCalendarEvent,
+): boolean {
+  if (!event.id || (event.source !== 'google' && event.source !== 'outlook')) return false;
+  const expectedTitle = normalizeTrainingEventTitle(
+    `${emojiForTrainingSession(item.sessionType)} ${item.title} (${item.durationMinutes}min)`,
+  );
+  if (normalizeTrainingEventTitle(event.summary) !== expectedTitle) return false;
+
+  const eventStart = new Date(event.start);
+  const eventEnd = new Date(event.end);
+  if (!Number.isFinite(eventStart.getTime()) || !Number.isFinite(eventEnd.getTime())) return false;
+  if (eventStart.toISOString().slice(0, 10) !== item.sessionDate.toISOString().slice(0, 10)) return false;
+
+  const durationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
+  return Math.abs(durationMinutes - item.durationMinutes) <= 2;
+}
+
+function normalizeTrainingEventTitle(value: string | null | undefined): string {
+  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }

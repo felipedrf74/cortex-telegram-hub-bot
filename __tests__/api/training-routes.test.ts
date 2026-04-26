@@ -9,10 +9,12 @@ const mockClearCacheByPrefix = vi.fn();
 const mockGenerateCoachBriefing = vi.fn();
 const mockApplyCoachRecommendations = vi.fn();
 const mockGetLatestByType = vi.fn();
+const mockDeleteReportsByType = vi.fn();
 const mockGetEvents = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockDeleteEvent = vi.fn();
 const mockGetActivePlan = vi.fn();
+const mockGetActivePlans = vi.fn();
 const mockGetCurrentWeek = vi.fn();
 const mockGetSessionsForWeek = vi.fn();
 const mockGetWeeksForPlan = vi.fn();
@@ -43,6 +45,9 @@ const mockReadFinanceMeshContext = vi.fn();
 const mockReadContentMeshContext = vi.fn();
 const mockReadSecretaryMeshContext = vi.fn();
 const mockSetLastCoachState = vi.fn();
+const mockClearLastCoachState = vi.fn();
+const mockClearStoredPlansForAthlete = vi.fn();
+const mockGetStoredPlanCoveringDate = vi.fn();
 const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
@@ -68,6 +73,7 @@ vi.mock('../../src/services/garmin-coach', () => ({
 
 vi.mock('../../src/services/report-document-store', () => ({
   getLatestByType: (...args: unknown[]) => mockGetLatestByType(...args),
+  deleteReportsByType: (...args: unknown[]) => mockDeleteReportsByType(...args),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -82,6 +88,7 @@ vi.mock('../../src/services/calendar-cache-invalidator', () => ({
 
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: (...args: unknown[]) => mockGetActivePlan(...args),
+  getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
   getCurrentWeek: (...args: unknown[]) => mockGetCurrentWeek(...args),
   getSessionsForWeek: (...args: unknown[]) => mockGetSessionsForWeek(...args),
   getWeeksForPlan: (...args: unknown[]) => mockGetWeeksForPlan(...args),
@@ -127,6 +134,12 @@ vi.mock('../../src/services/cross-agent-learning', () => ({
 
 vi.mock('../../src/domains/domain-handler', () => ({
   setLastCoachState: (...args: unknown[]) => mockSetLastCoachState(...args),
+  clearLastCoachState: (...args: unknown[]) => mockClearLastCoachState(...args),
+}));
+
+vi.mock('../../src/services/coach-plan-registry', () => ({
+  clearStoredPlansForAthlete: (...args: unknown[]) => mockClearStoredPlansForAthlete(...args),
+  getStoredPlanCoveringDate: (...args: unknown[]) => mockGetStoredPlanCoveringDate(...args),
 }));
 
 vi.mock('../../src/services/signals-observability', () => ({
@@ -274,10 +287,12 @@ describe('Training API routes', () => {
     mockGenerateCoachBriefing.mockReset();
     mockApplyCoachRecommendations.mockReset();
     mockGetLatestByType.mockReset();
+    mockDeleteReportsByType.mockReset();
     mockGetEvents.mockReset();
     mockCreateEvent.mockReset();
     mockDeleteEvent.mockReset();
     mockGetActivePlan.mockReset();
+    mockGetActivePlans.mockReset();
     mockGetCurrentWeek.mockReset();
     mockGetSessionsForWeek.mockReset();
     mockGetWeeksForPlan.mockReset();
@@ -311,6 +326,9 @@ describe('Training API routes', () => {
     mockReadFinanceMeshContext.mockReset();
     mockReadContentMeshContext.mockReset();
     mockReadSecretaryMeshContext.mockReset();
+    mockClearLastCoachState.mockReset();
+    mockClearStoredPlansForAthlete.mockReset();
+    mockGetStoredPlanCoveringDate.mockReset();
     mockLoggerError.mockReset();
     mockBuildActiveSignalsResponse.mockReset();
     mockInvalidateCalendarCaches.mockReset();
@@ -318,10 +336,14 @@ describe('Training API routes', () => {
 
     mockGetCached.mockReturnValue(null);
     mockGetLatestByType.mockReturnValue(null);
+    mockDeleteReportsByType.mockReturnValue(0);
+    mockClearStoredPlansForAthlete.mockReturnValue(0);
+    mockGetStoredPlanCoveringDate.mockReturnValue(null);
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
     mockDeleteEvent.mockResolvedValue(undefined);
     mockGetActivePlan.mockReturnValue(null);
+    mockGetActivePlans.mockReturnValue([]);
     mockGetCurrentWeek.mockReturnValue(null);
     mockGetSessionsForWeek.mockReturnValue([]);
     mockGetWeeksForPlan.mockReturnValue([]);

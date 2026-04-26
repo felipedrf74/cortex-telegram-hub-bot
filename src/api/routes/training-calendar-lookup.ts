@@ -79,3 +79,19 @@ export function resetCalendarLookupCoalesceForTests(): void {
   calendarLookupInflight.clear();
   calendarLookupRecent.clear();
 }
+
+export function invalidateCalendarLookupCoalesce(userId?: number): void {
+  if (userId == null) {
+    calendarLookupInflight.clear();
+    calendarLookupRecent.clear();
+    return;
+  }
+
+  const prefix = `${userId}:`;
+  for (const key of calendarLookupInflight.keys()) {
+    if (key.startsWith(prefix)) calendarLookupInflight.delete(key);
+  }
+  for (const key of calendarLookupRecent.keys()) {
+    if (key.startsWith(prefix)) calendarLookupRecent.delete(key);
+  }
+}

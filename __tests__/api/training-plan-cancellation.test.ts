@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   deleteEvent: vi.fn(),
+  getEvents: vi.fn(),
   getActivePlan: vi.fn(),
+  getActivePlans: vi.fn(),
   getPlanById: vi.fn(),
   getWeeksForPlan: vi.fn(),
   getSessionsForWeek: vi.fn(),
@@ -14,10 +16,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   deleteEvent: mocks.deleteEvent,
+  getEvents: mocks.getEvents,
 }));
 
 vi.mock('../../src/services/training-plans', () => ({
   getActivePlan: mocks.getActivePlan,
+  getActivePlans: mocks.getActivePlans,
   getPlanById: mocks.getPlanById,
   getWeeksForPlan: mocks.getWeeksForPlan,
   getSessionsForWeek: mocks.getSessionsForWeek,
@@ -42,7 +46,9 @@ describe('training-plan-cancellation (hard delete)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.deleteEvent.mockResolvedValue({ ok: true });
+    mocks.getEvents.mockResolvedValue([]);
     mocks.getActivePlan.mockReturnValue(null);
+    mocks.getActivePlans.mockReturnValue([]);
     mocks.getPlanById.mockReturnValue(null);
     mocks.getWeeksForPlan.mockReturnValue([]);
     mocks.getSessionsForWeek.mockReturnValue([]);
@@ -103,6 +109,106 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteReportsByType).toHaveBeenCalledWith(12, ['coach_briefing', 'coach_phase']);
     expect(mocks.clearStoredPlansForAthlete).toHaveBeenCalledWith(12);
     expect(mocks.clearLastCoachState).toHaveBeenCalledWith(12);
+  });
+
+  it('deletes matching orphan generated calendar events before hard-delete', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 47,
+      user_id: 12,
+      start_date: '2026-04-20T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 8201, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 621,
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Recovery Run',
+        duration_minutes: 30,
+        status: 'pending',
+        calendar_event_id: null,
+        calendar_source: null,
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'orphan-a',
+        source: 'google',
+        summary: '🏃 Recovery Run (30min)',
+        start: '2026-04-20T07:00:00.000Z',
+        end: '2026-04-20T07:30:00.000Z',
+      },
+      {
+        id: 'orphan-b',
+        source: 'google',
+        summary: '🏃 Recovery Run (30min)',
+        start: '2026-04-20T08:00:00.000Z',
+        end: '2026-04-20T08:30:00.000Z',
+      },
+    ]);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(2);
+      expect(result.data.removedSessions).toBe(1);
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-a', 'google', 12);
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-b', 'google', 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(47, 12);
+  });
+
+  it('cancels every active plan when no specific plan id is provided', async () => {
+    mocks.getActivePlans.mockReturnValue([
+      { id: 70, user_id: 12, start_date: '2026-04-20T00:00:00.000Z' },
+      { id: 71, user_id: 12, start_date: '2026-04-20T00:00:00.000Z' },
+    ]);
+    mocks.getWeeksForPlan
+      .mockReturnValueOnce([{ id: 9001, week_number: 1 }])
+      .mockReturnValueOnce([{ id: 9002, week_number: 1 }]);
+    mocks.getSessionsForWeek
+      .mockReturnValueOnce([
+        { id: 701, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 45, status: 'pending', calendar_event_id: 'evt-lift', calendar_source: 'google' },
+      ])
+      .mockReturnValueOnce([
+        { id: 711, day_of_week: 'Tuesday', session_type: 'run', title: 'Run', duration_minutes: 30, status: 'pending', calendar_event_id: null, calendar_source: null },
+      ]);
+    mocks.deletePlanHard
+      .mockReturnValueOnce({
+        ok: true,
+        removedPlans: 1,
+        removedWeeks: 1,
+        removedSessions: 1,
+        removedCompletions: 0,
+      })
+      .mockReturnValueOnce({
+        ok: true,
+        removedPlans: 1,
+        removedWeeks: 1,
+        removedSessions: 1,
+        removedCompletions: 0,
+      });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.planId).toBe(70);
+      expect(result.data.planIds).toEqual([70, 71]);
+      expect(result.data.removedPlans).toBe(2);
+      expect(result.data.removedSessions).toBe(2);
+    }
+    expect(mocks.getActivePlan).not.toHaveBeenCalled();
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(70, 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(71, 12);
   });
 
   it('uses requested plan id when provided and rejects cross-user cancellation', async () => {

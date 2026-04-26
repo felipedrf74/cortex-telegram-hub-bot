@@ -742,8 +742,8 @@ export async function createCalendarBlockers(
   let calendarSource: 'outlook' | 'google' | undefined;
   try {
     const { isConnected } = require('./oauth-store');
-    if (isConnected(userId, 'outlook')) calendarSource = 'outlook';
-    else if (isConnected(userId, 'google')) calendarSource = 'google';
+    if (isConnected(userId, 'google')) calendarSource = 'google';
+    else if (isConnected(userId, 'outlook')) calendarSource = 'outlook';
   } catch { /* oauth-store not available */ }
 
   if (!calendarSource) {

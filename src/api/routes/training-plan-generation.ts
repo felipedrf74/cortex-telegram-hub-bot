@@ -28,6 +28,7 @@ import { resolveObjectiveProfileRequirement } from './training-profile-requireme
 import { buildDeterministicTrainingPlan } from './training-fallback-plan';
 import { fetchCurrentReadinessForPlan } from './training-read-models';
 import { persistGeneratedTrainingPlan } from './training-plan-persistence';
+import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { logger } from '../../utils/logger';
 
 export interface GenerateTrainingPlanForUserInput {
@@ -217,6 +218,19 @@ export async function generateTrainingPlanForUser(
       equipmentAdaptation,
     );
     usedFallbackTemplate = true;
+  }
+
+  try {
+    const cancellation = await cancelTrainingPlanForUser(userId);
+    if (cancellation.status === 'forbidden') {
+      logger.warn({ userId }, 'Existing active training plan was not user-owned during replacement; continuing with new plan creation');
+    }
+  } catch (err) {
+    // Replacing a plan should be best-effort: if old calendar cleanup
+    // has a transient provider problem, the new plan still needs to be
+    // created. The cancellation route always hard-deletes local plan
+    // rows when it can, and logs provider misses internally.
+    logger.warn({ err, userId }, 'Existing active training plan cleanup failed before new plan persistence');
   }
 
   const persistedPlan = await persistGeneratedTrainingPlan({

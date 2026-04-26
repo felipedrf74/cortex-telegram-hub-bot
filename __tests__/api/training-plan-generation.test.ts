@@ -18,6 +18,7 @@ const mockBuildCoachKernelTrainingPlan = vi.fn();
 const mockBuildDeterministicTrainingPlan = vi.fn();
 const mockFetchCurrentReadinessForPlan = vi.fn();
 const mockPersistGeneratedTrainingPlan = vi.fn();
+const mockCancelTrainingPlanForUser = vi.fn();
 const mockLoggerWarn = vi.fn();
 
 vi.mock('../../src/services/onboarding', () => ({
@@ -66,6 +67,10 @@ vi.mock('../../src/api/routes/training-read-models', () => ({
 
 vi.mock('../../src/api/routes/training-plan-persistence', () => ({
   persistGeneratedTrainingPlan: (...args: unknown[]) => mockPersistGeneratedTrainingPlan(...args),
+}));
+
+vi.mock('../../src/api/routes/training-plan-cancellation', () => ({
+  cancelTrainingPlanForUser: (...args: unknown[]) => mockCancelTrainingPlanForUser(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -125,6 +130,7 @@ describe('generateTrainingPlanForUser', () => {
     mockBuildDeterministicTrainingPlan.mockReset();
     mockFetchCurrentReadinessForPlan.mockReset();
     mockPersistGeneratedTrainingPlan.mockReset();
+    mockCancelTrainingPlanForUser.mockReset();
     mockLoggerWarn.mockReset();
 
     mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
@@ -154,6 +160,19 @@ describe('generateTrainingPlanForUser', () => {
       totalSessions: 4,
       eventsCreated: 3,
       weekSummaries: [{ weekNumber: 1, focus: 'base', sessionCount: 4 }],
+    });
+    mockCancelTrainingPlanForUser.mockResolvedValue({
+      status: 'not_found',
+      data: {
+        cancelled: false,
+        removedEvents: 0,
+        removedSessions: 0,
+        removedWeeks: 0,
+        removedCompletions: 0,
+        removedPlans: 0,
+        totalSessions: 0,
+        message: 'No active training plan to cancel.',
+      },
     });
   });
 
@@ -257,6 +276,7 @@ describe('generateTrainingPlanForUser', () => {
       notes: 'keep knees happy',
       currentReadiness: { score: 76 },
     }));
+    expect(mockCancelTrainingPlanForUser).toHaveBeenCalledWith(12);
 
     const persistInput = mockPersistGeneratedTrainingPlan.mock.calls[0][0];
     expect(persistInput.busyWindows).toEqual([

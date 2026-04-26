@@ -17,6 +17,7 @@ import {
 } from './training-calendar-utils';
 import {
   buildCalendarEventLookup,
+  invalidateCalendarLookupCoalesce,
   resetCalendarLookupCoalesceForTests,
 } from './training-calendar-lookup';
 import {
@@ -54,6 +55,7 @@ function resolveTrainingLanguage(req: Pick<AuthenticatedRequest, 'header'>, user
 }
 
 function invalidateTrainingScreenCaches(userId: number) {
+  invalidateCalendarLookupCoalesce(userId);
   invalidateTrainingDerivedCaches(userId);
 }
 

@@ -104,9 +104,10 @@ export function registerTrainingPlanRoutes(
         objective,
         durationWeeks: result.durationWeeks,
       }, 'Training plan generated and scheduled');
-      if (result.eventsCreated > 0) {
-        invalidateCalendarCaches(userId);
-      }
+      // Generation now replaces any existing active plan before
+      // persisting the new one, so calendar truth can change even when
+      // the new plan could not create calendar blocks.
+      invalidateCalendarCaches(userId);
       invalidateTrainingScreenCaches(userId);
 
       sendSuccess(res, result.data, { status: 201 });
@@ -145,7 +146,7 @@ export function registerTrainingPlanRoutes(
         sendError(res, 'NO_CALENDAR', result.data.message, 409, result.data);
         return;
       }
-      if (result.data.eventsCreated > 0) {
+      if (result.data.eventsCreated > 0 || result.data.sessionsLinked > 0) {
         // Calendar caches need to forget the empty pre-sync state so
         // the next /training/week pull surfaces the freshly-linked
         // start times instead of serving the cached `time: null`s.
