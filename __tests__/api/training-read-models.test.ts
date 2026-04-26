@@ -103,6 +103,63 @@ describe('training-read-models', () => {
     });
   });
 
+  it('returns the SQLite week sessions even when calendar enrichment throws', async () => {
+    // Repro of production bug 2026-04-26: Outlook tokens went bad
+    // (`invalid_grant`), `buildCalendarEventLookup` threw, the outer try
+    // swallowed the throw, and iOS Week 1 silently fell to "no sessions to
+    // follow this week yet" even though the plan was real. Calendar
+    // enrichment is decoration only (adds `time:`) and must never erase
+    // session content.
+    mockActivePlan = { id: 99, name: 'Strength Block', periodization: 'build', start_date: '2026-04-20T00:00:00.000Z' };
+    mockCurrentWeek = { id: 199, week_number: 1, focus: 'strength' };
+    mockWeekSessions = [
+      { id: 501, day_of_week: 'Monday', title: 'Strength + Core', session_type: 'gym', calendar_event_id: 'evt-mon', duration_minutes: 40, status: 'planned', description: 'Lifting day.', exercises_json: JSON.stringify([{ name: 'squat' }, { name: 'press' }]) },
+      { id: 502, day_of_week: 'Wednesday', title: 'Tempo Run', session_type: 'run', calendar_event_id: 'evt-wed', duration_minutes: 35, status: 'planned', description: 'Threshold.', exercises_json: null },
+    ];
+    const calendarMod = await import('../../src/api/routes/training-calendar-lookup');
+    (calendarMod.buildCalendarEventLookup as any).mockRejectedValueOnce(new Error('invalid_grant'));
+
+    const result = await getWeekPlan(42);
+
+    expect(result.plan).toMatchObject({ name: 'Strength Block', weekNumber: 1 });
+    expect(result.sessions).toHaveLength(2);
+    expect(result.sessions[0]).toMatchObject({ id: '501', title: 'Strength + Core', duration: 40 });
+    // Time is null because calendar enrichment was unavailable, but the
+    // structured session content (title/exercises/duration) is intact.
+    expect(result.sessions[0].time).toBeNull();
+    expect(result.sessions[0].exercises).toEqual([{ name: 'squat' }, { name: 'press' }]);
+  });
+
+  it('returns todays SQLite session even when calendar enrichment throws', async () => {
+    const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    mockActivePlan = { id: 100, name: 'Strength Block', periodization: 'build', start_date: '2026-04-20T00:00:00.000Z' };
+    mockCurrentWeek = { id: 200, week_number: 1, focus: 'strength' };
+    mockWeekSessions = [{
+      id: 600,
+      day_of_week: todayName,
+      title: 'Strength + Core Support',
+      session_type: 'gym',
+      calendar_event_id: 'evt-today',
+      duration_minutes: 40,
+      status: 'planned',
+      description: 'Recovery support day.',
+      exercises_json: JSON.stringify([{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }]),
+    }];
+    const calendarMod = await import('../../src/api/routes/training-calendar-lookup');
+    (calendarMod.buildCalendarEventLookup as any).mockRejectedValueOnce(new Error('invalid_grant'));
+
+    const result = await getTodaySession(42);
+
+    expect(result.session).not.toBeNull();
+    expect(result.session).toMatchObject({
+      id: '600',
+      type: 'Strength + Core Support',
+      duration: 40,
+    });
+    expect(result.session?.time).toBeNull();
+    expect(result.session?.exercises).toHaveLength(4);
+  });
+
   it('falls back to calendar-built week sessions when the active week has no stored sessions', async () => {
     const now = new Date();
     const start = new Date(now);

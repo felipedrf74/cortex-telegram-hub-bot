@@ -551,6 +551,7 @@ describe('app-facing happy path smoke', () => {
       {
         provider: 'google',
         connectedAt: `${todayIso}T07:00:00.000Z`,
+        lastReauthedAt: `${todayIso}T07:00:00.000Z`,
         scopes: ['calendar', 'gmail.readonly'],
       },
     ]);

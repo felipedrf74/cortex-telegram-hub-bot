@@ -416,6 +416,45 @@ describe('integration-status', () => {
       expect(byProvider.google.state).toBe('degraded');
       expect(byProvider.outlook.state).toBe('connected');
     });
+
+    it('clears degraded badge after the user reauths a previously failing provider', () => {
+      // Probe failures from BEFORE the reauth — the dead refresh token's
+      // signature. These must NOT keep the provider stuck at `degraded`
+      // once the user has supplied fresh tokens via OAuth, otherwise the
+      // in-app Reconnect button looks broken (Felipe reported this on
+      // 2026-04-26: "still getting invalid grant after retry").
+      // Probe timestamps mirror the production format
+      // (`datetime('now')` → 'YYYY-MM-DD HH:MM:SS', no T/Z) so the
+      // string comparison in `loadRecentProbes` matches real-world
+      // ordering. A pinned date in the past guarantees the seed predates
+      // SQLite's CURRENT_TIMESTAMP for `storeTokens`.
+      const insertProbe = testDb.prepare(
+        `INSERT INTO integration_health (provider, status, ts, error_message)
+         VALUES (?, 'fail', ?, ?)`,
+      );
+      insertProbe.run('google', '2025-01-01 22:00:00', 'invalid_grant');
+      insertProbe.run('google', '2025-01-01 22:30:00', 'invalid_grant');
+      insertProbe.run('google', '2025-01-01 23:00:00', 'invalid_grant');
+
+      // User completes OAuth → storeTokens sets updated_at to NOW (>> 2025).
+      seedGoogle(64);
+
+      const status = getProviderStatus(64, 'google');
+      expect(status.state).toBe('connected');
+      expect(status.reasonCode).toBeUndefined();
+    });
+
+    it('still degrades when fresh probe failures arrive AFTER a reauth', () => {
+      // Reauth happens first (storeTokens → updated_at = NOW), then 3 new
+      // probe failures stack up. Those failures are NOT pre-reauth signal —
+      // they are real evidence the new tokens are also broken.
+      seedGoogle(65);
+      seedProbeFailures('google', 3);
+
+      const status = getProviderStatus(65, 'google');
+      expect(status.state).toBe('degraded');
+      expect(status.reasonCode).toBe('PROBE_FAILING');
+    });
   });
 
   // ── Convenience helpers ──────────────────────────────────────────

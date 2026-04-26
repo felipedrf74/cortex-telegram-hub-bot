@@ -93,6 +93,7 @@ describe('Connections routes', () => {
         {
           provider: 'google',
           connectedAt: '2026-04-15T09:00:00Z',
+          lastReauthedAt: '2026-04-15T09:00:00Z',
           scopes: [
             'https://www.googleapis.com/auth/calendar',
             'https://www.googleapis.com/auth/gmail.readonly',

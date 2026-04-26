@@ -49,12 +49,25 @@ export async function getTodaySession(userId: number) {
         phase: currentWeek?.focus || activePlan.periodization || null,
       };
       if (currentWeek) {
-        const range = currentWeekDateRange(activePlan.start_date, currentWeek.week_number);
-        const calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
         const sessions = trainingPlans.getSessionsForWeek(currentWeek.id);
         const todayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
         const rawSession = sessions?.find((s: any) => s.day_of_week === todayName);
         if (rawSession) {
+          // Calendar enrichment is purely decorative — it adds the
+          // `time:` field. If Outlook/Google calendar is degraded
+          // (invalid_grant, rate-limit, transient error), buildCalendarEventLookup
+          // throws — we MUST NOT let that erase the real session
+          // (title, exercises, duration) we already loaded from SQLite.
+          // Production bug 2026-04-26: when calendar lookup threw, today's
+          // card silently fell through to Garmin/calendar fallbacks and
+          // the week list went empty even though the plan was real.
+          let calendarLookup: Map<string, { time: string | null }> = new Map();
+          try {
+            const range = currentWeekDateRange(activePlan.start_date, currentWeek.week_number);
+            calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
+          } catch (err) {
+            logger.debug({ err, userId }, 'getTodaySession: calendar enrichment failed — rendering session without start time');
+          }
           session = {
             id: rawSession.id != null ? String(rawSession.id) : null,
             type: rawSession.title || humanizeSessionType(rawSession.session_type),
@@ -132,8 +145,21 @@ export async function getWeekPlan(userId: number) {
       };
       const weekSessions = currentWeek ? trainingPlans.getSessionsForWeek(currentWeek.id) : [];
       if (Array.isArray(weekSessions) && weekSessions.length > 0) {
-        const range = currentWeekDateRange(plan.start_date, weekNumber);
-        const calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
+        // Calendar enrichment is purely decorative (adds `time:`). A
+        // calendar provider failure (invalid_grant, rate-limit, etc.)
+        // must NOT erase the user's plan from the Week view — we render
+        // the SQLite sessions as-is and just drop the start-time field.
+        // Production bug 2026-04-26: when Outlook tokens went bad, the
+        // calendar await threw, the outer try/catch swallowed it, and
+        // sessions stayed empty so iOS Week 1 showed "no sessions yet"
+        // even though the plan/week/session rows were intact.
+        let calendarLookup: Map<string, { time: string | null }> = new Map();
+        try {
+          const range = currentWeekDateRange(plan.start_date, weekNumber);
+          calendarLookup = await buildCalendarEventLookup(range.start, range.end, userId);
+        } catch (err) {
+          logger.debug({ err, userId }, 'getWeekPlan: calendar enrichment failed — rendering sessions without start times');
+        }
         sessions = weekSessions.map((s: any) => ({
           id: s.id != null ? String(s.id) : undefined,
           day: s.day_of_week || 'Monday',

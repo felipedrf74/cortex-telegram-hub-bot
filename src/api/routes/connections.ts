@@ -129,9 +129,11 @@ export function connectionRoutes(): Router {
       } | undefined;
 
       if (garmin?.status === 'active' && !connections.some((c) => c.provider === 'garmin')) {
+        const connectedAt = garmin.connected_at || new Date().toISOString();
         connections.push({
           provider: 'garmin',
-          connectedAt: garmin.connected_at || new Date().toISOString(),
+          connectedAt,
+          lastReauthedAt: connectedAt,
           scopes: ['activities', 'sleep', 'readiness'],
         });
       }

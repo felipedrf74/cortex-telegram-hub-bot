@@ -373,20 +373,29 @@ export function disconnectProvider(userId: number, provider: OAuthProvider): voi
 
 /**
  * Get all connected providers for a user.
+ *
+ * `lastReauthedAt` is the latest token-write timestamp (`updated_at`). It
+ * advances on every fresh OAuth exchange (and on successful background
+ * refreshes). Probe-derived degradation gating uses it as a "since" cutoff
+ * so probe failures recorded BEFORE the user's most recent reauth don't
+ * keep the provider stuck in `degraded` after they've already recovered
+ * the connection — see `probeDerivedState` in `integration-status.ts`.
  */
 export function getUserConnections(userId: number): Array<{
   provider: string;
   connectedAt: string;
+  lastReauthedAt: string;
   scopes: string[];
 }> {
   const db = getDb();
   const rows = db.prepare(
-    'SELECT provider, created_at, scopes FROM user_oauth_tokens WHERE user_id = ?'
+    'SELECT provider, created_at, updated_at, scopes FROM user_oauth_tokens WHERE user_id = ?'
   ).all(userId) as any[];
 
   return rows.map(r => ({
     provider: r.provider,
     connectedAt: r.created_at,
+    lastReauthedAt: r.updated_at || r.created_at,
     scopes: JSON.parse(r.scopes || '[]'),
   }));
 }

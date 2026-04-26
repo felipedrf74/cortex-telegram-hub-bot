@@ -290,9 +290,31 @@ type ProbeRow = {
   errorMessage: string | null;
 };
 
-function loadRecentProbes(provider: string, limit = DEGRADE_THRESHOLD + 1): ProbeRow[] {
+function loadRecentProbes(
+  provider: string,
+  limit = DEGRADE_THRESHOLD + 1,
+  since?: string | null,
+): ProbeRow[] {
   try {
     const db = getDb();
+    if (since) {
+      // After a fresh OAuth reauth, probe failures that predate the new
+      // tokens are stale signal — they were observations of the OLD refresh
+      // token. Filter them out at the SQL layer so the rolling-window count
+      // can never accidentally pin a just-reconnected provider to degraded
+      // until 3+ new probes happen to land successfully.
+      return db
+        .prepare(
+          `SELECT provider, status, ts, error_message AS errorMessage
+           FROM integration_health
+           WHERE provider = ?
+             AND status != 'skipped'
+             AND ts >= ?
+           ORDER BY id DESC
+           LIMIT ?`,
+        )
+        .all(provider, since, limit) as ProbeRow[];
+    }
     return db
       .prepare(
         `SELECT provider, status, ts, error_message AS errorMessage
@@ -317,7 +339,10 @@ function loadRecentProbes(provider: string, limit = DEGRADE_THRESHOLD + 1): Prob
  * but it's the best signal we have for "the external provider is struggling"
  * and a connected user's data would be stale during the same window.
  */
-function probeDerivedState(provider: string): {
+function probeDerivedState(
+  provider: string,
+  since?: string | null,
+): {
   degraded: boolean;
   lastCheckedAt: string | null;
   lastErrorMessage: string | null;
@@ -328,7 +353,7 @@ function probeDerivedState(provider: string): {
   if (provider !== 'google' && provider !== 'outlook' && provider !== 'garmin') {
     return { degraded: false, lastCheckedAt: null, lastErrorMessage: null };
   }
-  const rows = loadRecentProbes(provider);
+  const rows = loadRecentProbes(provider, DEGRADE_THRESHOLD + 1, since);
   if (rows.length === 0) {
     return { degraded: false, lastCheckedAt: null, lastErrorMessage: null };
   }
@@ -350,6 +375,14 @@ function probeDerivedState(provider: string): {
 type OAuthConnectionInfo = {
   provider: string;
   connectedAt: string;
+  /**
+   * Latest token-write timestamp (mirrors `user_oauth_tokens.updated_at`).
+   * Used as a "since" cutoff for probe-derived degradation gating: failures
+   * recorded before the user's most recent reauth are stale signal and must
+   * not keep them stuck in `degraded` after they've already recovered the
+   * connection.
+   */
+  lastReauthedAt: string;
   scopes: string[];
 };
 
@@ -397,7 +430,9 @@ function buildOAuthStatus(
     };
   }
   // 4. Token row exists: lean on probe history to decide healthy vs degraded.
-  const probe = probeDerivedState(provider);
+  //    Anchor probe gating at the user's most recent reauth so a fresh
+  //    OAuth exchange immediately clears stale `invalid_grant` failures.
+  const probe = probeDerivedState(provider, connection.lastReauthedAt);
   if (probe.degraded) {
     return {
       provider,
@@ -451,8 +486,10 @@ function buildGarminStatus(userId: number): ProviderIntegrationStatus {
     };
   }
 
-  // connected — check probe history for a degraded overlay.
-  const probe = probeDerivedState('garmin');
+  // connected — check probe history for a degraded overlay. Anchor at the
+  // Garmin row's `connected_at` so a fresh re-auth clears stale failures
+  // the same way OAuth providers do.
+  const probe = probeDerivedState('garmin', row?.connected_at);
   if (probe.degraded) {
     return {
       provider: 'garmin',
