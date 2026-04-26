@@ -164,6 +164,18 @@ async function dispatch(userId = 4, headers: Record<string, string> = {}, path =
   return res;
 }
 
+function todayAt(hour: number, minute = 0): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Lisbon',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const date = `${lookup.year}-${lookup.month}-${lookup.day}`;
+  return `${date}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00.000Z`;
+}
+
 describe('Dashboard API route', () => {
   beforeEach(() => {
     clearTenantScopeAnomaliesForTests();
@@ -272,8 +284,8 @@ describe('Dashboard API route', () => {
       {
         id: 'evt-1',
         summary: 'Content block',
-        start: '2026-04-19T16:00:00.000Z',
-        end: '2026-04-19T16:30:00.000Z',
+        start: todayAt(16),
+        end: todayAt(16, 30),
         categories: ['Content'],
         color: '#8E44AD',
       },
@@ -331,6 +343,7 @@ describe('Dashboard API route', () => {
       source: 'outlook',
       category: '99',
       color: '1234',
+      isAllDay: false,
     });
     expect(mapDashboardTask({
       id: null,
@@ -433,8 +446,8 @@ describe('Dashboard API route', () => {
       {
         id: 'evt-1',
         subject: 'Long Conditioning Session (60min)',
-        start: { dateTime: '2026-04-18T10:00:00.000Z' },
-        end: { dateTime: '2026-04-18T11:00:00.000Z' },
+        start: { dateTime: todayAt(10) },
+        end: { dateTime: todayAt(11) },
       },
     ]);
 
@@ -503,6 +516,23 @@ describe('Dashboard API route', () => {
     expect(res.body.data.calendar.warningCodes).not.toContain('GOOGLE_CALENDAR_UNAVAILABLE');
     expect(mockGoogleCalendarConfigured).toHaveBeenCalledWith(4);
     expect(mockGoogleCalendarEvents).toHaveBeenCalledWith(expect.any(String), expect.any(String), 4);
+  });
+
+  it('marks calendar unavailable when every configured provider rejects', async () => {
+    mockGoogleCalendarConfigured.mockReturnValue(true);
+    mockOutlookCalendarConfigured.mockReturnValue(true);
+    mockGoogleCalendarEvents.mockRejectedValue(new Error('google outage'));
+    mockOutlookCalendarEvents.mockRejectedValue(new Error('outlook outage'));
+
+    const res = await dispatch(4);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.data.calendar.status).toBe('unavailable');
+    expect(res.body.data.calendar.today).toEqual([]);
+    expect(res.body.data.calendar.warningCodes).toEqual(expect.arrayContaining([
+      'GOOGLE_CALENDAR_UNAVAILABLE',
+      'OUTLOOK_CALENDAR_UNAVAILABLE',
+    ]));
   });
 
   it('surfaces missing calendar integration honestly when no calendar is connected', async () => {

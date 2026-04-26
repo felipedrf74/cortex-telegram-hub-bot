@@ -14,11 +14,12 @@
  */
 
 import { Router, Response } from 'express';
+import { DateTime } from 'luxon';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import {
-  getEvents,
+  getEventsWithDiagnostics,
   createEvent,
   updateEvent,
   deleteEvent,
@@ -56,25 +57,47 @@ export function calendarRoutes(): Router {
   router.get('/events', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
     if (!hasConnectedCalendarForUser(userId)) {
-      sendSuccess(res, { events: [] });
+      sendSuccess(res, {
+        events: [],
+        status: 'unavailable',
+        warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+        warnings: ['No calendar integration is connected yet.'],
+      });
       return;
     }
 
     const { start, end } = parseRange(req.query.start as string | undefined, req.query.end as string | undefined);
     const cacheKey = userId ? `u:${userId}:calendar:events:${start}:${end}` : `calendar:events:${start}:${end}`;
 
-    const cached = getCached<any[]>(cacheKey);
+    const cached = getCached<any>(cacheKey);
     if (cached) {
-      sendSuccess(res, { events: cached }, { cached: true });
+      if (Array.isArray(cached)) {
+        sendSuccess(res, { events: cached, status: 'ready', warningCodes: [], warnings: [] }, { cached: true });
+      } else {
+        sendSuccess(res, cached, { cached: true });
+      }
       return;
     }
 
     try {
       // CHAT-M2: pass userId so unified-calendar checks per-user Outlook tokens
-      const events = await getEvents(start, end, userId);
-      const formatted = events.map(formatEvent);
-      setCache(cacheKey, formatted, RANGE_TTL);
-      sendSuccess(res, { events: formatted });
+      const result = await getEventsWithDiagnostics(start, end, userId);
+      if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+        sendError(res, 'CALENDAR_FETCH_FAILED', result.warnings[0] || 'Failed to fetch calendar events', 503, {
+          warningCodes: result.warningCodes,
+        });
+        return;
+      }
+
+      const formatted = result.events.map(formatEvent);
+      const payload = {
+        events: formatted,
+        status: result.status,
+        warningCodes: result.warningCodes,
+        warnings: result.warnings,
+      };
+      setCache(cacheKey, payload, RANGE_TTL);
+      sendSuccess(res, payload);
     } catch (err: any) {
       logger.error({ err }, 'iOS calendar/events failed');
       sendInternalError(res, 'Failed to fetch calendar events', { code: 'CALENDAR_FETCH_FAILED' });
@@ -314,24 +337,49 @@ export function calendarRoutes(): Router {
   router.get('/today', asyncHandler(async (req, res: Response) => {
     const userId = (req as AuthenticatedRequest).userId;
     if (!hasConnectedCalendarForUser(userId)) {
-      sendSuccess(res, { events: [], date: todayDateString() });
+      sendSuccess(res, {
+        events: [],
+        date: todayDateString(),
+        status: 'unavailable',
+        warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+        warnings: ['No calendar integration is connected yet.'],
+      });
       return;
     }
 
     const cacheKey = userId ? `u:${userId}:calendar:today:${todayDateString()}` : `calendar:today:${todayDateString()}`;
-    const cached = getCached<any[]>(cacheKey);
+    const cached = getCached<any>(cacheKey);
     if (cached) {
-      sendSuccess(res, { events: cached, date: todayDateString() }, { cached: true });
+      if (Array.isArray(cached)) {
+        sendSuccess(res, { events: cached, date: todayDateString(), status: 'ready', warningCodes: [], warnings: [] }, { cached: true });
+      } else {
+        sendSuccess(res, { ...cached, date: todayDateString() }, { cached: true });
+      }
       return;
     }
 
     try {
-      const { start, end } = todayRangeISO();
+      const { start, end } = todayFetchRangeISO();
+      const actualRange = todayRangeISO();
       // CHAT-M2: pass userId for per-user Outlook token resolution
-      const events = await getEvents(start, end, userId);
-      const formatted = events.map(formatEvent);
-      setCache(cacheKey, formatted, TODAY_TTL);
-      sendSuccess(res, { events: formatted, date: todayDateString() });
+      const result = await getEventsWithDiagnostics(start, end, userId);
+      if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+        sendError(res, 'CALENDAR_FETCH_FAILED', result.warnings[0] || 'Failed to fetch today\'s events', 503, {
+          warningCodes: result.warningCodes,
+        });
+        return;
+      }
+      const formatted = result.events
+        .filter((event) => eventOverlapsRange(event, actualRange.start, actualRange.end))
+        .map(formatEvent);
+      const payload = {
+        events: formatted,
+        status: result.status,
+        warningCodes: result.warningCodes,
+        warnings: result.warnings,
+      };
+      setCache(cacheKey, payload, TODAY_TTL);
+      sendSuccess(res, { ...payload, date: todayDateString() });
     } catch (err: any) {
       logger.error({ err }, 'iOS calendar/today failed');
       sendInternalError(res, 'Failed to fetch today\'s events', { code: 'CALENDAR_FETCH_FAILED' });
@@ -376,14 +424,20 @@ export function calendarRoutes(): Router {
  * Keeps the response stable as the underlying providers add fields.
  */
 function formatEvent(e: any) {
+  const rawTitle = e.summary || e.subject || e.title;
+  const title = typeof rawTitle === 'string'
+    ? (rawTitle.trim() || '(No title)')
+    : rawTitle == null
+      ? '(No title)'
+      : String(rawTitle);
   return {
-    id: e.id,
-    title: e.summary || e.subject || e.title || '(No title)',
-    description: e.description || null,
-    start: e.start,
-    end: e.end,
-    location: e.location || null,
-    source: e.source || null,
+    id: typeof e.id === 'string' ? e.id : '',
+    title,
+    description: typeof e.description === 'string' && e.description.trim() ? e.description : null,
+    start: typeof e.start === 'string' ? e.start : '',
+    end: typeof e.end === 'string' ? e.end : '',
+    location: typeof e.location === 'string' && e.location.trim() ? e.location : null,
+    source: parseCalendarSource(e.source) || null,
     categories: Array.isArray(e.categories) ? e.categories : null,
     color: typeof e.color === 'string' ? e.color : null,
     isAllDay: !!e.isAllDay,
@@ -403,10 +457,27 @@ function parseRange(startQ?: string, endQ?: string): { start: string; end: strin
 }
 
 function todayRangeISO(): { start: string; end: string } {
-  const now = new Date();
-  const start = new Date(now); start.setHours(0, 0, 0, 0);
-  const end = new Date(now); end.setHours(23, 59, 59, 999);
-  return { start: start.toISOString(), end: end.toISOString() };
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const today = DateTime.now().setZone(zone);
+  const start = today.startOf('day');
+  const end = today.endOf('day');
+  return {
+    start: start.toUTC().toISO()!,
+    end: end.toUTC().toISO()!,
+  };
+}
+
+function todayFetchRangeISO(): { start: string; end: string } {
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const today = DateTime.now().setZone(zone);
+  const start = today.startOf('day');
+  const end = today.endOf('day');
+  // Fetch a wider provider window so cross-midnight events that overlap today
+  // are not missed, then filter back to the actual day before responding.
+  return {
+    start: start.minus({ days: 1 }).toUTC().toISO()!,
+    end: end.plus({ days: 1 }).toUTC().toISO()!,
+  };
 }
 
 function todayDateString(): string {
@@ -422,4 +493,16 @@ function clampInt(
   const parsed = Number(rawValue);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, Math.round(parsed)));
+}
+
+function eventOverlapsRange(event: { start?: string; end?: string }, rangeStart: string, rangeEnd: string): boolean {
+  const actualStart = DateTime.fromISO(rangeStart, { zone: 'utc' });
+  const actualEnd = DateTime.fromISO(rangeEnd, { zone: 'utc' });
+  const eventStart = DateTime.fromISO(String(event.start || ''), { zone: 'utc' });
+  const eventEnd = DateTime.fromISO(String(event.end || ''), { zone: 'utc' });
+
+  if (!actualStart.isValid || !actualEnd.isValid) return false;
+  if (!eventStart.isValid || !eventEnd.isValid) return false;
+
+  return eventEnd > actualStart && eventStart < actualEnd;
 }

@@ -3,6 +3,7 @@
 import * as googleCal from './google-calendar';
 import * as outlookCal from './outlook-calendar';
 import { logger } from '../utils/logger';
+import { config } from '../config';
 import { normalizeMicrosoftRecurrence, type NormalizedRecurrence } from './recurrence-utils';
 
 export type CalendarSource = 'google' | 'outlook';
@@ -11,6 +12,31 @@ export interface UnifiedCalendarEvent extends googleCal.CalendarEvent {
   source: CalendarSource;
   /** When the same event exists on multiple calendars, lists all sources. */
   syncedSources?: CalendarSource[];
+}
+
+export type UnifiedCalendarFetchStatus = 'ready' | 'degraded' | 'unavailable';
+
+export interface UnifiedCalendarFetchResult {
+  events: UnifiedCalendarEvent[];
+  status: UnifiedCalendarFetchStatus;
+  warningCodes: string[];
+  warnings: string[];
+  sources: {
+    configured: CalendarSource[];
+    fulfilled: CalendarSource[];
+    failed: CalendarSource[];
+  };
+}
+
+class UnifiedCalendarUnavailableError extends Error {
+  constructor(
+    message: string,
+    readonly warningCodes: string[],
+    readonly warnings: string[],
+  ) {
+    super(message);
+    this.name = 'UnifiedCalendarUnavailableError';
+  }
 }
 
 export function isAnyCalendarConfigured(): boolean {
@@ -53,43 +79,93 @@ export function getConfiguredSources(): CalendarSource[] {
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<UnifiedCalendarEvent[]> {
-  const scopedUserId = resolveScopedUserId(userId);
-  const events: UnifiedCalendarEvent[] = [];
+  const result = await getEventsWithDiagnostics(startDate, endDate, userId);
+  if (result.status === 'unavailable' && result.sources.configured.length > 0) {
+    throw new UnifiedCalendarUnavailableError(
+      result.warnings[0] || 'Calendar data is unavailable right now.',
+      result.warningCodes,
+      result.warnings,
+    );
+  }
+  return result.events;
+}
 
-  // Fetch from both in parallel
-  const promises: Promise<void>[] = [];
+export async function getEventsWithDiagnostics(
+  startDate: string,
+  endDate: string,
+  userId?: number,
+): Promise<UnifiedCalendarFetchResult> {
+  const scopedUserId = resolveScopedUserId(userId);
+  const fetchers: Array<{
+    source: CalendarSource;
+    run: () => Promise<UnifiedCalendarEvent[]>;
+  }> = [];
 
   if (googleCal.isGoogleCalendarConfigured(scopedUserId ?? undefined)) {
-    promises.push(
-      googleCal.getEvents(startDate, endDate, scopedUserId ?? undefined)
-        .then((gEvents) => {
-          for (const e of gEvents) {
-            events.push({ ...e, source: 'google' });
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, 'Failed to fetch Google Calendar events');
-        })
-    );
+    fetchers.push({
+      source: 'google',
+      run: async () => {
+        const gEvents = await googleCal.getEvents(startDate, endDate, scopedUserId ?? undefined);
+        return gEvents.map((event) => ({ ...event, source: 'google' as const }));
+      },
+    });
   }
 
   // CHAT-M2: pass userId to isOutlookCalendarConfigured() so per-user
   // OAuth tokens (from iOS) are checked, not just the global owner token.
   if (outlookCal.isOutlookCalendarConfigured(scopedUserId ?? undefined)) {
-    promises.push(
-      outlookCal.getEvents(startDate, endDate, scopedUserId ?? undefined)
-        .then((oEvents) => {
-          for (const e of oEvents) {
-            events.push({ ...e, source: 'outlook' });
-          }
-        })
-        .catch((err) => {
-          logger.error({ err, userId }, 'Failed to fetch Outlook Calendar events');
-        })
-    );
+    fetchers.push({
+      source: 'outlook',
+      run: async () => {
+        const oEvents = await outlookCal.getEvents(startDate, endDate, scopedUserId ?? undefined);
+        return oEvents.map((event) => ({ ...event, source: 'outlook' as const }));
+      },
+    });
   }
 
-  await Promise.all(promises);
+  if (fetchers.length === 0) {
+    return {
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+      warnings: ['No calendar integration is connected yet.'],
+      sources: {
+        configured: [],
+        fulfilled: [],
+        failed: [],
+      },
+    };
+  }
+
+  const results = await Promise.allSettled(fetchers.map((fetcher) => fetcher.run()));
+  const events: UnifiedCalendarEvent[] = [];
+  const fulfilled: CalendarSource[] = [];
+  const failed: CalendarSource[] = [];
+  const warningCodes: string[] = [];
+  const warnings: string[] = [];
+
+  results.forEach((result, index) => {
+    const source = fetchers[index].source;
+    if (result.status === 'fulfilled') {
+      fulfilled.push(source);
+      events.push(...result.value);
+      return;
+    }
+
+    failed.push(source);
+    const code = source === 'google'
+      ? 'GOOGLE_CALENDAR_UNAVAILABLE'
+      : 'OUTLOOK_CALENDAR_UNAVAILABLE';
+    const warning = source === 'google'
+      ? 'Google Calendar is unavailable right now.'
+      : 'Outlook Calendar is unavailable right now.';
+    warningCodes.push(code);
+    warnings.push(warning);
+    logger.error(
+      { err: result.reason, userId: scopedUserId ?? undefined, source },
+      'Failed to fetch calendar provider events',
+    );
+  });
 
   // Deduplicate events that exist on both calendars
   const deduped = deduplicateEvents(events);
@@ -101,7 +177,24 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
     return aTime - bTime;
   });
 
-  return deduped;
+  const status: UnifiedCalendarFetchStatus =
+    fulfilled.length === fetchers.length
+      ? 'ready'
+      : fulfilled.length > 0
+        ? 'degraded'
+        : 'unavailable';
+
+  return {
+    events: deduped,
+    status,
+    warningCodes,
+    warnings,
+    sources: {
+      configured: fetchers.map((fetcher) => fetcher.source),
+      fulfilled,
+      failed,
+    },
+  };
 }
 
 export async function createEvent(
@@ -185,10 +278,34 @@ export async function deleteEvent(eventId: string, source: CalendarSource, userI
  */
 export function eventFingerprint(event: UnifiedCalendarEvent): string {
   const subject = (event.summary || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const allDayDate = normalizeAllDayStartDate(event);
+  if (allDayDate) {
+    return `${subject}|all-day:${allDayDate}`;
+  }
   // Round start time to the nearest minute to handle timezone conversion differences
   const startMs = new Date(event.start).getTime();
   const startMinute = Math.round(startMs / 60_000);
   return `${subject}|${startMinute}`;
+}
+
+function normalizeAllDayStartDate(event: UnifiedCalendarEvent): string | null {
+  const start = String(event.start || '').trim();
+  if (!start) return null;
+  const looksDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(start);
+  if (!event.isAllDay && !looksDateOnly) return null;
+  if (looksDateOnly) return start;
+
+  const datePrefix = start.match(/^(\d{4}-\d{2}-\d{2})T/);
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(start);
+  if (event.isAllDay && datePrefix && !hasExplicitZone) {
+    return datePrefix[1];
+  }
+
+  const parsed = new Date(start);
+  if (Number.isNaN(parsed.getTime())) return datePrefix?.[1] ?? null;
+  return parsed.toLocaleDateString('en-CA', {
+    timeZone: config.app.timezone || 'Europe/Lisbon',
+  });
 }
 
 /**

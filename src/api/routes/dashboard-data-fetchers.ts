@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { config } from '../../config';
+import { DateTime } from 'luxon';
 import { getCached, setCache } from '../../services/cache-store';
 import {
   getEvents as getGoogleCalendarEvents,
@@ -112,6 +113,7 @@ export function mapCalendarEvent(e: any, source: string) {
     source,
     category: coerceNullableString(Array.isArray(e?.categories) ? e.categories[0] : null),
     color: coerceNullableString(e?.color),
+    isAllDay: !!e?.isAllDay,
   };
 }
 
@@ -140,11 +142,12 @@ export async function fetchCalendar(userId?: number) {
 }
 
 async function fetchCalendarForUser(userId?: number) {
-  const today = new Date();
-  const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
-  const start = startOfDay.toISOString();
-  const end = endOfDay.toISOString();
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const today = DateTime.now().setZone(zone);
+  const actualStart = today.startOf('day');
+  const actualEnd = today.endOf('day');
+  const start = actualStart.minus({ days: 1 }).toUTC().toISO()!;
+  const end = actualEnd.plus({ days: 1 }).toUTC().toISO()!;
 
   const fetchers: Array<{
     provider: 'outlook' | 'google';
@@ -206,7 +209,7 @@ async function fetchCalendarForUser(userId?: number) {
 
   const allEvents = allProviderEvents.sort((a, b) => a.start.localeCompare(b.start));
   return {
-    today: allEvents,
+    today: allEvents.filter((event) => eventOverlapsRange(event, actualStart, actualEnd)),
     upcoming: [],
     ...buildSectionHealth(
       fulfilledProviders,
@@ -217,6 +220,17 @@ async function fetchCalendarForUser(userId?: number) {
       'Calendar data is unavailable right now.',
     ),
   };
+}
+
+function eventOverlapsRange(
+  event: { start?: string; end?: string },
+  rangeStart: DateTime,
+  rangeEnd: DateTime,
+): boolean {
+  const eventStart = DateTime.fromISO(String(event.start || ''), { zone: 'utc' });
+  const eventEnd = DateTime.fromISO(String(event.end || ''), { zone: 'utc' });
+  if (!eventStart.isValid || !eventEnd.isValid) return true;
+  return eventEnd > rangeStart.toUTC() && eventStart < rangeEnd.toUTC();
 }
 
 export async function fetchTasks(userId: number) {
@@ -364,20 +378,27 @@ export async function fetchTraining(userId: number) {
     const currentWeek = plan ? getCurrentWeek(plan.id) : null;
     const sessions = currentWeek ? getSessionsForWeek(currentWeek.id) : null;
     if (Array.isArray(sessions) && sessions.length > 0) {
-      const todayDow = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+      const zone = config.app.timezone || 'Europe/Lisbon';
+      const todayDow = DateTime.now().setZone(zone).toFormat('cccc');
       todaySession = sessions.find((s: any) => s?.day_of_week === todayDow) || null;
     }
   } catch {}
 
   if (!todaySession) {
     try {
-      const today = new Date();
-      const startOfDay = new Date(today); startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(today); endOfDay.setHours(23, 59, 59, 999);
+      const zone = config.app.timezone || 'Europe/Lisbon';
+      const today = DateTime.now().setZone(zone);
+      const startOfDay = today.startOf('day');
+      const endOfDay = today.endOf('day');
       const { getEvents } = require('../../services/unified-calendar');
-      const events = await getEvents(startOfDay.toISOString(), endOfDay.toISOString(), userId);
+      const events = await getEvents(
+        startOfDay.minus({ days: 1 }).toUTC().toISO()!,
+        endOfDay.plus({ days: 1 }).toUTC().toISO()!,
+        userId,
+      );
       const keywords = ['run', 'gym', 'swim', 'bike', 'cycle', 'training', 'workout', 'strength'];
       const trainingEvent = (events || []).find((e: any) => {
+        if (!eventOverlapsRange(e, startOfDay, endOfDay)) return false;
         const title = (e.subject || e.summary || e.title || '').toLowerCase();
         return keywords.some(kw => title.includes(kw));
       });

@@ -192,27 +192,30 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
         endDateTime: new Date(endDate).toISOString(),
         $orderby: 'start/dateTime',
         $top: 50,
-        $select: 'id,subject,start,end,bodyPreview,location,webLink,categories',
+        $select: 'id,subject,start,end,isAllDay,isCancelled,responseStatus,bodyPreview,location,webLink,categories',
       })
       .header('Prefer', `outlook.timezone="${config.app.timezone}"`)
       .get();
 
     const masterCategories = await getMasterCategories(userId);
 
-    return (response.value || []).map((event: any) => ({
-      id: event.id || '',
-      summary: event.subject || '(No title)',
-      start: event.start?.dateTime || '',
-      end: event.end?.dateTime || '',
-      description: event.bodyPreview || undefined,
-      location: event.location?.displayName || undefined,
-      htmlLink: event.webLink || undefined,
-      categories: Array.isArray(event.categories) ? event.categories : undefined,
-      color: resolveOutlookEventColor(
-        Array.isArray(event.categories) ? event.categories : undefined,
-        masterCategories
-      ),
-    }));
+    return (response.value || [])
+      .filter((event: any) => !event.isCancelled && event.responseStatus?.response !== 'declined')
+      .map((event: any) => ({
+        id: event.id || '',
+        summary: event.subject || '(No title)',
+        start: event.start?.dateTime || '',
+        end: event.end?.dateTime || '',
+        description: event.bodyPreview || undefined,
+        location: event.location?.displayName || undefined,
+        htmlLink: event.webLink || undefined,
+        categories: Array.isArray(event.categories) ? event.categories : undefined,
+        color: resolveOutlookEventColor(
+          Array.isArray(event.categories) ? event.categories : undefined,
+          masterCategories
+        ),
+        isAllDay: !!event.isAllDay,
+      }));
   } catch (err) {
     logger.error({ err }, 'Failed to fetch Outlook calendar events');
     throw err;
@@ -278,6 +281,7 @@ export async function createEvent(data: {
       end: response.end?.dateTime || data.end,
       description: response.bodyPreview || undefined,
       htmlLink: response.webLink || undefined,
+      isAllDay: !!response.isAllDay,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to create Outlook calendar event');
@@ -309,6 +313,7 @@ export async function updateEvent(data: {
       start: response.start?.dateTime || '',
       end: response.end?.dateTime || '',
       htmlLink: response.webLink || undefined,
+      isAllDay: !!response.isAllDay,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to update Outlook calendar event');

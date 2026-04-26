@@ -16,10 +16,13 @@
 
 import { getDb } from '../database';
 import { logger } from '../../utils/logger';
+import { isConnected } from '../oauth-store';
 import { NativeTaskAdapter } from './native-adapter';
+import { TodoistAdapter } from './todoist-adapter';
 
 // Singleton native adapter
 const nativeAdapter = new NativeTaskAdapter();
+const todoistAdapter = new TodoistAdapter();
 
 export type TaskProviderType = 'ms_todo' | 'todoist' | 'nexus';
 
@@ -28,9 +31,12 @@ export type TaskProviderType = 'ms_todo' | 'todoist' | 'nexus';
  * Checks oauth-store for connected providers.
  */
 export function resolveTaskProvider(userId: number): TaskProviderType {
-  try {
-    const { isConnected } = require('../oauth-store');
+  if (!Number.isInteger(userId) || userId <= 0) {
+    logger.warn({ userId }, 'Invalid userId passed to resolveTaskProvider; falling back to native tasks');
+    return 'nexus';
+  }
 
+  try {
     // Priority: MS To-Do > Todoist > Native
     if (isConnected(userId, 'outlook')) return 'ms_todo';
     if (isConnected(userId, 'todoist')) return 'todoist';
@@ -59,11 +65,205 @@ export function getTaskProviderForUser(userId: number) {
   }
 
   if (provider === 'todoist') {
-    return require('../microsoft-todo'); // TODO: wire todoist adapter
+    return createTodoistWrapper(userId);
   }
 
   // Native adapter — return a microsoft-todo-compatible wrapper
   return createNativeWrapper(userId);
+}
+
+function createTodoistWrapper(userId: number) {
+  return {
+    async getLists() {
+      const projects = await todoistAdapter.getProjects(userId);
+      return {
+        success: true,
+        data: projects.map((project) => ({
+          id: project.externalId,
+          displayName: project.name,
+          isOwner: true,
+          isShared: false,
+          wellknownListName: project.isDefault ? 'defaultList' : undefined,
+        })),
+      };
+    },
+
+    async getTasks(listId: string, listName?: string, filter?: { status?: string }) {
+      const result = await todoistAdapter.getTasks(userId, { projectId: String(listId) });
+      let tasks = result.tasks;
+      if (filter?.status) {
+        const normalized = filter.status === 'completed' ? 'completed' : 'pending';
+        tasks = tasks.filter((task) => task.status === normalized);
+      }
+      return {
+        success: true,
+        data: tasks.map((task) => taskToMsTodoShape(task, String(listId), listName || task.projectName || '')),
+      };
+    },
+
+    async getTask(listId: string, taskId: string, listName?: string) {
+      const result = await todoistAdapter.getTasks(userId, { projectId: String(listId) });
+      const task = result.tasks.find((candidate) => String(candidate.externalId) === String(taskId));
+      if (!task) {
+        return { success: false, data: null, error: 'Task not found' };
+      }
+      return {
+        success: true,
+        data: taskToMsTodoShape(task, String(listId), listName || task.projectName || ''),
+      };
+    },
+
+    async getAllPendingTasks() {
+      const result = await todoistAdapter.getTasks(userId);
+      const pending = result.tasks.filter((task) => task.status !== 'completed' && task.status !== 'cancelled');
+      return {
+        success: true,
+        data: pending.map((task) => taskToMsTodoShape(task, String(providerProjectId(task) || ''), task.projectName || '')),
+      };
+    },
+
+    async createTask(listId: string, listName: string, data: any) {
+      const dueDate = typeof data.dueDateTime === 'string' ? data.dueDateTime : undefined;
+      const created = await todoistAdapter.createTask(userId, {
+        title: data.title || '(Untitled)',
+        description: data.body || undefined,
+        status: 'pending',
+        priority: importanceToPriority(data.importance),
+        dueDate,
+        dueIsDatetime: !!dueDate && dueDate.includes('T'),
+        projectName: listName,
+        recurrence: data.recurrence || undefined,
+        providerData: {
+          project_id: String(listId),
+        },
+      } as any);
+      return {
+        success: true,
+        data: taskToMsTodoShape(created, String(listId), listName),
+      };
+    },
+
+    async updateTask(listId: string, taskId: string, data: any) {
+      if (data.status === 'completed') {
+        await todoistAdapter.completeTask(userId, taskId);
+        return { success: true, data: { id: taskId, status: 'completed' } };
+      }
+
+      await todoistAdapter.updateTask(userId, taskId, {
+        title: data.title,
+        description: data.body,
+        priority: data.importance ? importanceToPriority(data.importance) : undefined,
+        dueDate: data.dueDateTime || undefined,
+        dueIsDatetime: typeof data.dueDateTime === 'string' && data.dueDateTime.includes('T'),
+      });
+      return { success: true, data: { id: taskId, listId, status: data.status || 'notStarted' } };
+    },
+
+    async completeTask(_listId: string, taskId: string) {
+      await todoistAdapter.completeTask(userId, taskId);
+      return { success: true, data: { id: taskId, status: 'completed' } };
+    },
+
+    async deleteTask(_listId: string, taskId: string) {
+      await todoistAdapter.deleteTask(userId, taskId);
+      return { success: true, data: undefined };
+    },
+
+    async createList(_displayName: string) {
+      return {
+        success: false,
+        data: undefined,
+        error: 'Creating Todoist projects is not supported from Nexus yet.',
+      };
+    },
+
+    async deleteList(_listId: string) {
+      return {
+        success: false,
+        data: undefined,
+        error: 'Deleting Todoist projects is not supported from Nexus yet.',
+      };
+    },
+
+    async getDefaultList() {
+      const projects = await todoistAdapter.getProjects(userId);
+      const defaultList = projects.find((project) => project.isDefault) || projects[0];
+      if (!defaultList) return null;
+      return { id: defaultList.externalId, displayName: defaultList.name };
+    },
+
+    async findListByName(name: string) {
+      const projects = await todoistAdapter.getProjects(userId);
+      const found = projects.find((project) => project.name.toLowerCase() === name.toLowerCase());
+      if (!found) return null;
+      return { id: found.externalId, displayName: found.name };
+    },
+
+    async getTasksDueInRange(startDate: string, endDate: string) {
+      const result = await todoistAdapter.getTasks(userId);
+      const start = new Date(startDate).getTime();
+      const end = new Date(endDate).getTime();
+      const dueTasks = result.tasks.filter((task) => {
+        if (!task.dueDate) return false;
+        const due = new Date(task.dueDate).getTime();
+        return Number.isFinite(due) && due >= start && due <= end;
+      });
+      return {
+        success: true,
+        data: dueTasks.map((task) => taskToMsTodoShape(task, String(providerProjectId(task) || ''), task.projectName || '')),
+      };
+    },
+
+    async searchTasks(query: string) {
+      const normalizedQuery = String(query || '').trim().toLowerCase();
+      const result = await todoistAdapter.getTasks(userId);
+      const matches = result.tasks.filter((task) => {
+        if (!normalizedQuery) return true;
+        return [
+          task.title,
+          task.description,
+          task.notes,
+          task.projectName,
+          ...(task.tags || []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedQuery);
+      });
+      return {
+        success: true,
+        data: matches.map((task) => taskToMsTodoShape(task, String(providerProjectId(task) || ''), task.projectName || '')),
+      };
+    },
+
+    async getCompletedTasksInRange(startDate: string, endDate: string) {
+      const result = await todoistAdapter.getTasks(userId);
+      const start = new Date(startDate).getTime();
+      const end = new Date(endDate).getTime();
+      const completedTasks = result.tasks.filter((task) => {
+        if (!task.completedAt) return false;
+        const completed = new Date(task.completedAt).getTime();
+        return Number.isFinite(completed) && completed >= start && completed <= end;
+      });
+      return {
+        success: true,
+        data: completedTasks.map((task) => taskToMsTodoShape(task, String(providerProjectId(task) || ''), task.projectName || '')),
+      };
+    },
+
+    async getChecklistItems(_listId: string, _taskId: string) {
+      return { success: true, data: [] };
+    },
+
+    async addChecklistItem(_listId: string, _taskId: string, _displayName: string) {
+      return {
+        success: false,
+        data: null,
+        error: 'Checklist items are not supported by Todoist through Nexus yet.',
+      };
+    },
+  };
 }
 
 /**
@@ -336,7 +536,20 @@ function taskToMsTodoShape(t: any, listId: string, listName: string) {
     reminderDateTime: null,
     recurrence: t.recurrence || null,
     isReminderOn: false,
-    createdDateTime: t.completedAt || new Date().toISOString(),
+    createdDateTime: t.createdAt || t.createdDateTime || t.providerData?.created_at || t.providerData?.added_at || null,
     completedDateTime: t.completedAt || null,
   };
+}
+
+function importanceToPriority(importance: unknown): number {
+  if (importance === 'high') return 3;
+  if (importance === 'low') return 1;
+  return 2;
+}
+
+function providerProjectId(task: any): string | null {
+  const providerData = task?.providerData;
+  const raw = providerData?.project_id ?? providerData?.projectId;
+  if (typeof raw === 'string' || typeof raw === 'number') return String(raw);
+  return task?.projectId != null ? String(task.projectId) : null;
 }

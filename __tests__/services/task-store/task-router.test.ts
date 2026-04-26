@@ -1,15 +1,28 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockIsConnected = vi.fn(() => false);
+const mockGetTokens = vi.fn(() => null);
 
 vi.mock('../../../src/services/oauth-store', () => ({
-  isConnected: vi.fn(() => false),
+  isConnected: (...args: unknown[]) => mockIsConnected(...args),
+  getTokens: (...args: unknown[]) => mockGetTokens(...args),
 }));
 
 import { NativeTaskAdapter } from '../../../src/services/task-store/native-adapter';
 import { getTaskProviderForUser } from '../../../src/services/task-store/task-router';
 
 describe('task-router native wrapper', () => {
+  beforeEach(() => {
+    mockIsConnected.mockReset();
+    mockIsConnected.mockReturnValue(false);
+    mockGetTokens.mockReset();
+    mockGetTokens.mockReturnValue(null);
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('maps invalid AI list ids back to the user default native list before creating a task', async () => {
@@ -136,6 +149,84 @@ describe('task-router native wrapper', () => {
           title: 'Review training deck',
         }),
       ],
+    });
+  });
+
+  it('routes Todoist users to the Todoist adapter instead of Microsoft To Do', async () => {
+    mockIsConnected.mockImplementation((userId: number, provider: string) =>
+      userId === 42 && provider === 'todoist'
+    );
+    mockGetTokens.mockReturnValue({ accessToken: 'todoist-token' });
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 'todoist-inbox', name: 'Inbox', is_inbox_project: true, color: 'charcoal' },
+      ],
+    } as Response);
+
+    const provider = getTaskProviderForUser(42);
+    const result = await provider.getLists();
+
+    expect(fetchMock).toHaveBeenCalledWith('https://api.todoist.com/rest/v2/projects', {
+      headers: { Authorization: 'Bearer todoist-token' },
+    });
+    expect(result).toMatchObject({
+      success: true,
+      data: [
+        expect.objectContaining({
+          id: 'todoist-inbox',
+          displayName: 'Inbox',
+          wellknownListName: 'defaultList',
+        }),
+      ],
+    });
+  });
+
+  it('creates Todoist tasks with the requested Todoist project id', async () => {
+    mockIsConnected.mockImplementation((userId: number, provider: string) =>
+      userId === 42 && provider === 'todoist'
+    );
+    mockGetTokens.mockReturnValue({ accessToken: 'todoist-token' });
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 'task-123',
+        content: 'Review Secretary QA',
+        description: 'Audit follow-up',
+        priority: 3,
+        project_id: 'project-9',
+        due: { datetime: '2026-04-27T10:00:00.000Z' },
+        url: 'https://todoist.com/showTask?id=task-123',
+      }),
+    } as Response);
+
+    const provider = getTaskProviderForUser(42);
+    const result = await provider.createTask('project-9', 'Work', {
+      title: 'Review Secretary QA',
+      body: 'Audit follow-up',
+      importance: 'high',
+      dueDateTime: '2026-04-27T10:00:00.000Z',
+    });
+
+    const [, request] = fetchMock.mock.calls[0];
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.todoist.com/rest/v2/tasks');
+    expect(JSON.parse(String((request as RequestInit).body))).toMatchObject({
+      content: 'Review Secretary QA',
+      description: 'Audit follow-up',
+      priority: 3,
+      project_id: 'project-9',
+      due_datetime: '2026-04-27T10:00:00.000Z',
+    });
+    expect(result).toMatchObject({
+      success: true,
+      data: expect.objectContaining({
+        id: 'task-123',
+        listId: 'project-9',
+        listName: 'Work',
+        title: 'Review Secretary QA',
+      }),
     });
   });
 });

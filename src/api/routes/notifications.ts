@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { Router, Response } from 'express';
+import { DateTime } from 'luxon';
 import { AuthenticatedRequest } from '../auth-middleware';
 import { sendSuccess, sendError, asyncHandler } from '../response-helpers';
 import {
@@ -24,10 +25,12 @@ import { getEvents as getOutlookEvents } from '../../services/outlook-calendar';
 import { getEvents as getGoogleEvents } from '../../services/google-calendar';
 import { getCachedSWR, setCacheSWR } from '../../services/cache-store';
 import { logger } from '../../utils/logger';
+import { config } from '../../config';
 import { AITimeoutError, withTimeout } from '../../utils/timeout';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import { listTasks } from '../../services/task-store/task-service';
 import type { NormalizedTask } from '../../services/task-store/types';
+import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 
 type InboxItemKind = 'notification' | 'report' | 'email' | 'task' | 'event';
 type InboxAction = 'open_content' | 'open_report' | 'view_email' | 'open_tasks' | 'view_event';
@@ -230,7 +233,8 @@ function swrRefresh(key: string, fn: () => Promise<void>): void {
   if (inboxSWRInFlight.has(key)) return;
   inboxSWRInFlight.add(key);
   fn()
-    .catch((err) => logger.debug({ err, key }, 'Inbox SWR background refresh failed'))
+    .then(() => recordSWRRefreshSuccess(key))
+    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'notifications_route', operation: 'inbox_swr_refresh' }))
     .finally(() => inboxSWRInFlight.delete(key));
 }
 
@@ -242,14 +246,12 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
   warningCodes: string[];
   warnings: string[];
 }> {
-  const now = new Date();
-  const startOfDay = new Date(now);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(now);
-  endOfDay.setHours(23, 59, 59, 999);
-  const start = startOfDay.toISOString();
-  const end = endOfDay.toISOString();
-  const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' });
+  const zone = config.app.timezone || 'Europe/Lisbon';
+  const now = DateTime.now().setZone(zone);
+  const nowDate = now.toJSDate();
+  const start = now.startOf('day').toUTC().toISO()!;
+  const end = now.endOf('day').toUTC().toISO()!;
+  const todayStr = now.toISODate()!;
   const outlookConnected = isConnected(userId, 'outlook');
   const googleConnected = isConnected(userId, 'google');
 
@@ -318,7 +320,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
             const dueDateTime = task.dueDate || null;
             const dueIso = dueDateTime ? safeIso(dueDateTime) : null;
             const dueStr = dueIso
-              ? new Date(dueIso).toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' })
+              ? DateTime.fromISO(dueIso, { zone: 'utc' }).setZone(zone).toISODate()
               : null;
             const isOverdue = !!dueStr && dueStr < todayStr;
             const isDueToday = !!dueStr && dueStr === todayStr;
@@ -332,7 +334,7 @@ async function buildUnifiedInbox(userId: number, limit: number): Promise<{
               body: task.description || task.notes || (dueLabel ? `Due ${dueLabel}` : task.projectName || null),
               type: isOverdue ? 'task_overdue' : isDueToday ? 'task_due_today' : 'task_pending',
               status: isOverdue ? 'attention' : isDueToday ? 'due_today' : 'pending',
-              createdAt: dueIso || safeIso(now),
+              createdAt: dueIso || safeIso(nowDate),
               source: task.provider === 'ms_todo' ? 'microsoft_todo' : task.provider,
               priority: isOverdue ? 'high' as const : isDueToday ? 'medium' as const : inboxTaskPriority(task),
               action: 'open_tasks' as const,

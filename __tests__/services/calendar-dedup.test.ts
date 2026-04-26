@@ -42,6 +42,22 @@ function makeEvent(
   };
 }
 
+function makeAllDayEvent(
+  summary: string,
+  start: string,
+  end: string,
+  source: 'google' | 'outlook',
+): UnifiedCalendarEvent {
+  return {
+    id: `${source}-all-day`,
+    summary,
+    start,
+    end,
+    source,
+    isAllDay: true,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // EVENT FINGERPRINT
 // ═══════════════════════════════════════════════════════════════════
@@ -76,6 +92,13 @@ describe('eventFingerprint', () => {
     const b = makeEvent('Meeting', '2024-06-15T09:00:25Z', 'outlook');
     // Both round to the same minute
     expect(eventFingerprint(a)).toBe(eventFingerprint(b));
+  });
+
+  it('normalizes all-day date-only and timezone-shifted provider starts to the same day', () => {
+    const google = makeAllDayEvent('Holiday', '2026-04-25', '2026-04-26', 'google');
+    const outlook = makeAllDayEvent('Holiday', '2026-04-24T23:00:00.000Z', '2026-04-25T23:00:00.000Z', 'outlook');
+
+    expect(eventFingerprint(google)).toBe(eventFingerprint(outlook));
   });
 });
 
@@ -171,5 +194,16 @@ describe('deduplicateEvents', () => {
     ];
     const result = deduplicateEvents(events);
     expect(result).toHaveLength(1);
+  });
+
+  it('deduplicates all-day events from Google date fields and Outlook UTC fields', () => {
+    const events = [
+      makeAllDayEvent('Public Holiday', '2026-04-25', '2026-04-26', 'google'),
+      makeAllDayEvent('Public Holiday', '2026-04-24T23:00:00.000Z', '2026-04-25T23:00:00.000Z', 'outlook'),
+    ];
+
+    const result = deduplicateEvents(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].syncedSources).toEqual(expect.arrayContaining(['google', 'outlook']));
   });
 });

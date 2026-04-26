@@ -192,6 +192,10 @@ export class TodoistAdapter implements TaskProviderAdapter {
       priority: TODOIST_PRIORITY_FROM_NEXUS[task.priority] ?? 1,
     };
     if (task.description) body.description = task.description;
+    const projectId = typeof task.providerData?.project_id === 'string' || typeof task.providerData?.project_id === 'number'
+      ? String(task.providerData.project_id)
+      : null;
+    if (projectId) body.project_id = projectId;
     if (task.dueDate) {
       // Todoist supports either due_date (date only) or due_datetime (with time).
       if (task.dueIsDatetime) body.due_datetime = task.dueDate;

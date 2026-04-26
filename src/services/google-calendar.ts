@@ -62,6 +62,7 @@ export interface CalendarEvent {
   htmlLink?: string;
   categories?: string[];
   color?: string;
+  isAllDay?: boolean;
 }
 
 export async function getEvents(startDate: string, endDate: string, userId?: number): Promise<CalendarEvent[]> {
@@ -79,15 +80,18 @@ export async function getEvents(startDate: string, endDate: string, userId?: num
       GOOGLE_API_TIMEOUT_MS,
     );
 
-    return (response.data.items || []).map((event) => ({
-      id: event.id || '',
-      summary: event.summary || '(No title)',
-      start: event.start?.dateTime || event.start?.date || '',
-      end: event.end?.dateTime || event.end?.date || '',
-      description: event.description || undefined,
-      location: event.location || undefined,
-      htmlLink: event.htmlLink || undefined,
-    }));
+    return (response.data.items || [])
+      .filter((event) => event.status !== 'cancelled')
+      .map((event) => ({
+        id: event.id || '',
+        summary: event.summary || '(No title)',
+        start: event.start?.dateTime || event.start?.date || '',
+        end: event.end?.dateTime || event.end?.date || '',
+        description: event.description || undefined,
+        location: event.location || undefined,
+        htmlLink: event.htmlLink || undefined,
+        isAllDay: !event.start?.dateTime && !!event.start?.date,
+      }));
   } catch (err) {
     logger.error({ err }, 'Failed to fetch calendar events');
     throw err;
@@ -133,6 +137,7 @@ export async function createEvent(data: {
       end: response.data.end?.dateTime || data.end,
       description: response.data.description || undefined,
       htmlLink: response.data.htmlLink || undefined,
+      isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to create calendar event');
@@ -169,6 +174,7 @@ export async function updateEvent(data: {
       start: response.data.start?.dateTime || '',
       end: response.data.end?.dateTime || '',
       htmlLink: response.data.htmlLink || undefined,
+      isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
     };
   } catch (err) {
     logger.error({ err }, 'Failed to update calendar event');

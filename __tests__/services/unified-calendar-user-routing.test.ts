@@ -40,6 +40,8 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   createEvent,
+  getEvents,
+  getEventsWithDiagnostics,
   updateEvent,
   deleteEvent,
 } from '../../src/services/unified-calendar';
@@ -175,5 +177,65 @@ describe('UnifiedCalendar — per-user routing for calendar writes', () => {
 
     expect(mocks.outlookCreateEvent).not.toHaveBeenCalled();
     expect(mocks.googleCreateEvent).not.toHaveBeenCalled();
+  });
+
+  it('returns degraded diagnostics when one configured calendar provider fails', async () => {
+    mocks.googleConfigured.mockReturnValue(true);
+    mocks.outlookConfigured.mockReturnValue(true);
+    mocks.googleEvents.mockResolvedValue([
+      {
+        id: 'g-1',
+        summary: 'Gym',
+        start: '2026-04-27T11:30:00.000Z',
+        end: '2026-04-27T12:30:00.000Z',
+      },
+    ]);
+    mocks.outlookEvents.mockRejectedValue(new Error('outlook down'));
+
+    const result = await getEventsWithDiagnostics(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      42,
+    );
+
+    expect(result.status).toBe('degraded');
+    expect(result.events).toHaveLength(1);
+    expect(result.warningCodes).toEqual(['OUTLOOK_CALENDAR_UNAVAILABLE']);
+    expect(result.sources).toMatchObject({
+      configured: ['google', 'outlook'],
+      fulfilled: ['google'],
+      failed: ['outlook'],
+    });
+  });
+
+  it('throws from the legacy array API when every configured provider fails', async () => {
+    mocks.googleConfigured.mockReturnValue(true);
+    mocks.outlookConfigured.mockReturnValue(true);
+    mocks.googleEvents.mockRejectedValue(new Error('google down'));
+    mocks.outlookEvents.mockRejectedValue(new Error('outlook down'));
+
+    await expect(getEvents(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      42,
+    )).rejects.toThrow('Google Calendar is unavailable right now.');
+  });
+
+  it('reports unavailable instead of ready when no calendar provider is connected', async () => {
+    mocks.googleConfigured.mockReturnValue(false);
+    mocks.outlookConfigured.mockReturnValue(false);
+
+    const result = await getEventsWithDiagnostics(
+      '2026-04-27T00:00:00.000Z',
+      '2026-04-28T00:00:00.000Z',
+      42,
+    );
+
+    expect(result).toMatchObject({
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['CALENDAR_INTEGRATION_MISSING'],
+      sources: { configured: [], fulfilled: [], failed: [] },
+    });
   });
 });

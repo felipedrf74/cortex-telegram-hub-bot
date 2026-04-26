@@ -13,6 +13,7 @@ import { getOwnerBootstrapUser } from '../../services/user-service';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
 import { invalidateTaskCaches } from '../../services/task-cache-invalidator';
 import { normalizeMicrosoftRecurrence } from '../../services/recurrence-utils';
+import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 
 // Cache TTLs
 const LISTS_CACHE_TTL = 300;  // 5 min for list names (rarely change)
@@ -32,7 +33,9 @@ function swrRefresh(key: string, fn: () => Promise<void>): void {
   if (swrInFlight.has(key)) return;
   swrInFlight.add(key);
   // Detached so the response goes out immediately.
-  fn().catch((err) => logger.debug({ err, key }, 'SWR background refresh failed'))
+  fn()
+    .then(() => recordSWRRefreshSuccess(key))
+    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'tasks_route', operation: 'task_swr_refresh' }))
     .finally(() => swrInFlight.delete(key));
 }
 
@@ -136,6 +139,10 @@ export function taskRoutes(): Router {
       }
       const todo = getTodo(req);
       const result = await todo.createList(name.trim());
+      if (!result?.success) {
+        sendError(res, 'UNSUPPORTED', result?.error || 'Task list creation is not supported by the active task provider', 400);
+        return;
+      }
       invalidateTaskCaches({ userId, includeDerivedSurfaces: false });
       sendSuccess(res, result.data, { status: 201 });
     } catch (err: any) {

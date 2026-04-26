@@ -191,6 +191,13 @@ vi.mock('../../src/services/report-document-store', () => ({
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: vi.fn(async () => []),
+  getEventsWithDiagnostics: vi.fn(async () => ({
+    events: [],
+    status: 'ready',
+    warningCodes: [],
+    warnings: [],
+    sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+  })),
   createEvent: (...args: unknown[]) => mockCreateCalendarEvent(...args),
   updateEvent: (...args: unknown[]) => mockUpdateCalendarEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteCalendarEvent(...args),

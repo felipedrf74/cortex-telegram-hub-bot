@@ -14,6 +14,7 @@ import { getDailyQuotaStatus } from '../../services/cost-guardrail';
 import { composeDailyBrief } from '../../services/daily-brief-orchestrator';
 import { buildDashboardHomeViewState } from '../../services/dashboard-home-view-state';
 import { buildScreenContractMeta } from '../../services/screen-contract-meta';
+import { recordSWRRefreshFailure, recordSWRRefreshSuccess } from '../../services/swr-refresh-observability';
 import type { Lang } from '../../utils/i18n';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from '../../services/tenant-scope-observability';
 import {
@@ -56,7 +57,8 @@ function swrRefresh(key: string, fn: () => Promise<void>): void {
   if (swrInFlight.has(key)) return;
   swrInFlight.add(key);
   fn()
-    .catch((err) => logger.debug({ err, key }, 'Dashboard SWR background refresh failed'))
+    .then(() => recordSWRRefreshSuccess(key))
+    .catch((err) => recordSWRRefreshFailure(key, err, { source: 'dashboard_route', operation: 'dashboard_swr_refresh' }))
     .finally(() => swrInFlight.delete(key));
 }
 

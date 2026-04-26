@@ -1,5 +1,8 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
+import { DateTime } from 'luxon';
+import { config } from '../../config';
+
 export type BusyWindow = {
   startMs: number;
   endMs: number;
@@ -30,15 +33,59 @@ export function buildBusyWindows(events: any[]): BusyWindow[] {
   return (events || []).flatMap((event: any) => {
     const startRaw = event.start?.dateTime || event.startDateTime || event.start;
     const endRaw = event.end?.dateTime || event.endDateTime || event.end;
-    const start = new Date(startRaw || '');
-    const end = new Date(endRaw || '');
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return [];
+    const parsed = parseBusyWindowBounds(startRaw, endRaw, !!event.isAllDay);
+    if (!parsed || parsed.endMs <= parsed.startMs) return [];
     return [{
-      startMs: start.getTime(),
-      endMs: end.getTime(),
+      startMs: parsed.startMs,
+      endMs: parsed.endMs,
       title: event.subject || event.summary || event.title || '',
     }];
   }).sort((a, b) => a.startMs - b.startMs);
+}
+
+function parseBusyWindowBounds(
+  startRaw: unknown,
+  endRaw: unknown,
+  isAllDay: boolean,
+): { startMs: number; endMs: number } | null {
+  const startText = stringValue(startRaw);
+  const endText = stringValue(endRaw);
+  const dateOnlyStart = dateOnlyValue(startText);
+  const dateOnlyEnd = dateOnlyValue(endText);
+
+  if (isAllDay || dateOnlyStart || dateOnlyEnd) {
+    const zone = config.app.timezone || 'Europe/Lisbon';
+    const startDay = dateOnlyStart || dateOnlyValue(startText?.slice(0, 10));
+    if (!startDay) return null;
+    const endDay = dateOnlyEnd || dateOnlyValue(endText?.slice(0, 10));
+    const start = DateTime.fromISO(startDay, { zone }).startOf('day');
+    let end = endDay
+      ? DateTime.fromISO(endDay, { zone }).startOf('day')
+      : start.plus({ days: 1 });
+    if (!start.isValid || !end.isValid) return null;
+    if (end <= start) end = start.plus({ days: 1 });
+    return {
+      startMs: start.toUTC().toMillis(),
+      endMs: end.toUTC().toMillis(),
+    };
+  }
+
+  const start = new Date(startText || '');
+  const end = new Date(endText || '');
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return {
+    startMs: start.getTime(),
+    endMs: end.getTime(),
+  };
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function dateOnlyValue(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
 export function preferredTimeForSessionType(

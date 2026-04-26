@@ -6,6 +6,7 @@ import {
 } from '../../src/services/tenant-scope-observability';
 
 const mockGetEvents = vi.fn();
+const mockGetEventsWithDiagnostics = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockUpdateEvent = vi.fn();
 const mockDeleteEvent = vi.fn();
@@ -20,6 +21,7 @@ const mockGetFocusBlockRecommendation = vi.fn();
 
 vi.mock('../../src/services/unified-calendar', () => ({
   getEvents: (...args: unknown[]) => mockGetEvents(...args),
+  getEventsWithDiagnostics: (...args: unknown[]) => mockGetEventsWithDiagnostics(...args),
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
   updateEvent: (...args: unknown[]) => mockUpdateEvent(...args),
   deleteEvent: (...args: unknown[]) => mockDeleteEvent(...args),
@@ -119,6 +121,7 @@ describe('Calendar API — mutation routes', () => {
   beforeEach(() => {
     clearTenantScopeAnomaliesForTests();
     mockGetEvents.mockReset();
+    mockGetEventsWithDiagnostics.mockReset();
     mockCreateEvent.mockReset();
     mockUpdateEvent.mockReset();
     mockDeleteEvent.mockReset();
@@ -135,6 +138,13 @@ describe('Calendar API — mutation routes', () => {
     mockIsAnyCalendarConfigured.mockReturnValue(true);
     mockHasConnectedCalendarForUser.mockReturnValue(true);
     mockHasWritableCalendarForUser.mockReturnValue(true);
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['google'], fulfilled: ['google'], failed: [] },
+    });
   });
 
   it('returns an empty events list when the authenticated user has no connected calendar', async () => {
@@ -149,17 +159,23 @@ describe('Calendar API — mutation routes', () => {
   });
 
   it('returns event colors when the unified calendar provides them', async () => {
-    mockGetEvents.mockResolvedValue([
-      {
-        id: 'evt-1',
-        summary: 'Content block',
-        start: '2026-04-19T16:00:00.000Z',
-        end: '2026-04-19T16:30:00.000Z',
-        source: 'outlook',
-        categories: ['Content'],
-        color: '#8E44AD',
-      },
-    ]);
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        {
+          id: 'evt-1',
+          summary: 'Content block',
+          start: '2026-04-19T16:00:00.000Z',
+          end: '2026-04-19T16:30:00.000Z',
+          source: 'outlook',
+          categories: ['Content'],
+          color: '#8E44AD',
+        },
+      ],
+      status: 'ready',
+      warningCodes: [],
+      warnings: [],
+      sources: { configured: ['outlook'], fulfilled: ['outlook'], failed: [] },
+    });
 
     const res = await dispatch('GET', '/events');
 
@@ -173,7 +189,7 @@ describe('Calendar API — mutation routes', () => {
   });
 
   it('does not leak raw provider errors when event loading fails', async () => {
-    mockGetEvents.mockRejectedValueOnce(new Error('outlook token refresh failed with raw upstream body'));
+    mockGetEventsWithDiagnostics.mockRejectedValueOnce(new Error('outlook token refresh failed with raw upstream body'));
 
     const res = await dispatch('GET', '/events');
 
@@ -182,6 +198,52 @@ describe('Calendar API — mutation routes', () => {
     expect(res.body.error.code).toBe('CALENDAR_FETCH_FAILED');
     expect(res.body.error.message).toBe('Failed to fetch calendar events');
     expect(JSON.stringify(res.body)).not.toContain('outlook token refresh failed');
+  });
+
+  it('surfaces partial calendar provider failure without hiding surviving events', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [
+        {
+          id: 'evt-google',
+          summary: 'Strength',
+          start: '2026-04-27T11:30:00.000Z',
+          end: '2026-04-27T12:30:00.000Z',
+          source: 'google',
+        },
+      ],
+      status: 'degraded',
+      warningCodes: ['OUTLOOK_CALENDAR_UNAVAILABLE'],
+      warnings: ['Outlook Calendar is unavailable right now.'],
+      sources: { configured: ['google', 'outlook'], fulfilled: ['google'], failed: ['outlook'] },
+    });
+
+    const res = await dispatch('GET', '/events');
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.events).toHaveLength(1);
+    expect(res.body.data.status).toBe('degraded');
+    expect(res.body.data.warningCodes).toEqual(['OUTLOOK_CALENDAR_UNAVAILABLE']);
+  });
+
+  it('returns an unavailable error when all configured calendar providers fail', async () => {
+    mockGetEventsWithDiagnostics.mockResolvedValue({
+      events: [],
+      status: 'unavailable',
+      warningCodes: ['GOOGLE_CALENDAR_UNAVAILABLE', 'OUTLOOK_CALENDAR_UNAVAILABLE'],
+      warnings: ['Google Calendar is unavailable right now.', 'Outlook Calendar is unavailable right now.'],
+      sources: { configured: ['google', 'outlook'], fulfilled: [], failed: ['google', 'outlook'] },
+    });
+
+    const res = await dispatch('GET', '/events');
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('CALENDAR_FETCH_FAILED');
+    expect(res.body.error.details.warningCodes).toEqual([
+      'GOOGLE_CALENDAR_UNAVAILABLE',
+      'OUTLOOK_CALENDAR_UNAVAILABLE',
+    ]);
   });
 
   it('fails closed on invalid tenant scope before loading events', async () => {

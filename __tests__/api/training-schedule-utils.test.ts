@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { describe, expect, it } from 'vitest';
+import { DateTime } from 'luxon';
 import {
   buildBusyWindows,
   candidateTimesForPreferredTime,
@@ -47,6 +48,25 @@ describe('training schedule route utilities', () => {
     ]);
 
     expect(windows.map((window) => window.title)).toEqual(['Earlier', 'Later']);
+  });
+
+  it('normalizes all-day busy windows in the app timezone', () => {
+    const windows = buildBusyWindows([
+      {
+        title: 'Travel day',
+        isAllDay: true,
+        start: '2026-04-25',
+        end: '2026-04-26',
+      },
+    ]);
+
+    expect(windows).toEqual([
+      {
+        title: 'Travel day',
+        startMs: DateTime.fromISO('2026-04-25', { zone: 'Europe/Lisbon' }).startOf('day').toUTC().toMillis(),
+        endMs: DateTime.fromISO('2026-04-26', { zone: 'Europe/Lisbon' }).startOf('day').toUTC().toMillis(),
+      },
+    ]);
   });
 
   it('chooses preferred times by session type', () => {
