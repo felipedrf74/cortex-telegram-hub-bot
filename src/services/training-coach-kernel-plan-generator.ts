@@ -296,7 +296,7 @@ function resolvePrimaryFocus(objective: string, sessionsPerWeek: number, strengt
   if (/(corrida|running|run|10k|5k|trail|ultra)/i.test(lowerObjective)) return 'running';
   if (/(cycling|bike|ride|ciclismo)/i.test(lowerObjective)) return 'cycling';
   if (/(swim|swimming|natacao|natação)/i.test(lowerObjective)) return 'swimming';
-  if (/(hipertrofia|hypertrophy|strength|gym|massa|bodybuilding|força|muscula)/i.test(lowerObjective)) return 'strength';
+  if (/(hipertrofia|hypertrophy|muscle|strength|gym|massa|bodybuilding|força|muscula)/i.test(lowerObjective)) return 'strength';
   if (strengthSessionsPerWeek > 0 && sessionsPerWeek > strengthSessionsPerWeek) return 'hybrid';
   return 'hybrid';
 }

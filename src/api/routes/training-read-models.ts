@@ -167,6 +167,8 @@ export async function getWeekPlan(userId: number) {
           title: s.title || humanizeSessionType(s.session_type),
           sessionType: s.session_type || 'workout',
           time: s.calendar_event_id ? calendarLookup.get(s.calendar_event_id)?.time ?? null : null,
+          calendarEventId: s.calendar_event_id || null,
+          calendarSource: s.calendar_source || null,
           status: normalizeTrainingStatus(s.status),
           description: s.description || null,
           // Structured-sections companion to `description` so iOS can
@@ -402,16 +404,29 @@ async function buildWeekFromCalendar(userId: number): Promise<any[]> {
 }
 
 function currentWeekDateRange(planStartIso: string, weekNumber: number) {
-  const planStart = new Date(planStartIso);
-  const mondayOffset = planStart.getDay() === 0 ? -6 : 1 - planStart.getDay();
+  const safeWeekNumber = Math.max(1, Math.round(Number(weekNumber) || 1));
+  const start = parsePlanStartDate(planStartIso);
+  start.setUTCDate(start.getUTCDate() + ((safeWeekNumber - 1) * 7));
+  start.setUTCHours(0, 0, 0, 0);
 
-  const monday = new Date(planStart);
-  monday.setDate(planStart.getDate() + mondayOffset + ((weekNumber - 1) * 7));
-  monday.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  end.setUTCHours(23, 59, 59, 999);
 
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 999);
+  return { start, end };
+}
 
-  return { start: monday, end: sunday };
+function parsePlanStartDate(planStartIso: string): Date {
+  const match = String(planStartIso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  }
+
+  const parsed = new Date(planStartIso);
+  if (!Number.isNaN(parsed.getTime())) {
+    return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+  }
+
+  const fallback = new Date();
+  return new Date(Date.UTC(fallback.getUTCFullYear(), fallback.getUTCMonth(), fallback.getUTCDate()));
 }

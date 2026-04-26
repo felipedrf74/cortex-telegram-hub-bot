@@ -81,6 +81,28 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     expect(athlete.readiness.hrvStatus).toBeUndefined();
   });
 
+  it('classifies English muscle-building objectives as strength focus', () => {
+    const athlete = buildAthleteStateFromTrainingProfiles({
+      userId: 505,
+      objective: 'Muscle Building',
+      durationWeeks: 4,
+      startDate: '2026-04-26',
+      sessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
+      preferredTime: '12:00',
+      preferredCardioTime: '07:00',
+      preferredStrengthTime: '12:30',
+      longWorkoutDay: null,
+      notes: null,
+      fitnessProfile: null,
+      gymProfile: { equipment_access: 'Full gym' },
+      runProfile: null,
+    });
+
+    expect(athlete.goals.primaryFocus).toBe('strength');
+    expect(athlete.goals.weeklySessionsTarget).toMatchObject({ strength: 5 });
+  });
+
   it('seeds AthleteState.readiness from currentReadiness when provided', () => {
     // This is the core fix for QW#2. When the route supplies real
     // wearable readiness data the planner must consume it so guardrails

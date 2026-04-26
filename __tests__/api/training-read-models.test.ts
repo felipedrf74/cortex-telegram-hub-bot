@@ -48,6 +48,7 @@ import {
   getTodaySession,
   getWeekPlan,
 } from '../../src/api/routes/training-read-models';
+import { buildCalendarEventLookup } from '../../src/api/routes/training-calendar-lookup';
 
 describe('training-read-models', () => {
   beforeEach(() => {
@@ -61,6 +62,8 @@ describe('training-read-models', () => {
     mockGarminActivities = [];
     hoisted.calculateReadiness.mockReset();
     hoisted.getActivitiesByDateForUser.mockReset();
+    (buildCalendarEventLookup as any).mockReset();
+    (buildCalendarEventLookup as any).mockImplementation(async () => mockCalendarLookup);
     hoisted.calculateReadiness.mockImplementation(async () => mockReadinessResult);
     hoisted.getActivitiesByDateForUser.mockImplementation(async () => mockGarminActivities);
   });
@@ -128,6 +131,40 @@ describe('training-read-models', () => {
     // structured session content (title/exercises/duration) is intact.
     expect(result.sessions[0].time).toBeNull();
     expect(result.sessions[0].exercises).toEqual([{ name: 'squat' }, { name: 'press' }]);
+  });
+
+  it('enriches Sunday-start plans using the plan-start anchored week range', async () => {
+    mockActivePlan = { id: 11, name: 'Muscle Building', periodization: 'base', start_date: '2026-04-26' };
+    mockCurrentWeek = { id: 211, week_number: 1, focus: 'base' };
+    mockWeekSessions = [
+      {
+        id: 701,
+        day_of_week: 'Monday',
+        title: 'Strength + Core Support',
+        session_type: 'gym',
+        calendar_event_id: 'evt-mon',
+        calendar_source: 'google',
+        duration_minutes: 40,
+        status: 'planned',
+        description: 'Strength work.',
+        exercises_json: JSON.stringify([]),
+      },
+    ];
+    mockCalendarLookup = new Map([
+      ['evt-mon', { time: '06:00', event: { id: 'evt-mon' } }],
+    ]);
+
+    const result = await getWeekPlan(42);
+    const [rangeStart, rangeEnd] = (buildCalendarEventLookup as any).mock.calls[0];
+
+    expect(rangeStart.toISOString()).toBe('2026-04-26T00:00:00.000Z');
+    expect(rangeEnd.toISOString()).toBe('2026-05-02T23:59:59.999Z');
+    expect(result.sessions[0]).toMatchObject({
+      id: '701',
+      time: '06:00',
+      calendarEventId: 'evt-mon',
+      calendarSource: 'google',
+    });
   });
 
   it('returns todays SQLite session even when calendar enrichment throws', async () => {

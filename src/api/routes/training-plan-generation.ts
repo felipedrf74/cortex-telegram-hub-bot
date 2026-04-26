@@ -24,7 +24,11 @@ import {
   normalizePreferredTime,
   type BusyWindow,
 } from './training-schedule-utils';
-import { resolveObjectiveProfileRequirement } from './training-profile-requirements';
+import {
+  objectiveNeedsGymProfile,
+  objectiveNeedsRunningProfile,
+  resolveObjectiveProfileRequirement,
+} from './training-profile-requirements';
 import { buildDeterministicTrainingPlan } from './training-fallback-plan';
 import { fetchCurrentReadinessForPlan } from './training-read-models';
 import { persistGeneratedTrainingPlan } from './training-plan-persistence';
@@ -123,12 +127,16 @@ export async function generateTrainingPlanForUser(
 
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
   const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 4);
+  const gymOnlyObjective = objectiveNeedsGymProfile(objective) && !objectiveNeedsRunningProfile(objective);
+  const effectiveStrengthSessionsPerWeek = gymOnlyObjective
+    ? normalizedSessionsPerWeek
+    : normalizedStrengthSessionsPerWeek;
   const normalizedLongWorkoutDay = typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null;
 
   let sharedDecisionContext = '';
   let coordination = buildTrainingPlanCoordination({
     sessionsPerWeek: normalizedSessionsPerWeek,
-    strengthSessionsPerWeek: normalizedStrengthSessionsPerWeek,
+    strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
     longWorkoutDay: normalizedLongWorkoutDay,
     fitnessProfile,
     gymProfile,
@@ -160,7 +168,7 @@ export async function generateTrainingPlanForUser(
     sharedDecisionContext = sharedContextResult.status === 'fulfilled' ? sharedContextResult.value : '';
     coordination = buildTrainingPlanCoordination({
       sessionsPerWeek: normalizedSessionsPerWeek,
-      strengthSessionsPerWeek: normalizedStrengthSessionsPerWeek,
+      strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
       longWorkoutDay: normalizedLongWorkoutDay,
       fitnessProfile,
       gymProfile,
@@ -191,7 +199,7 @@ export async function generateTrainingPlanForUser(
         durationWeeks,
         startDate: startStr,
         sessionsPerWeek: normalizedSessionsPerWeek,
-        strengthSessionsPerWeek: normalizedStrengthSessionsPerWeek,
+        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
         preferredTime: normalizedPreferredTime,
         preferredCardioTime: normalizedPreferredCardioTime,
         preferredStrengthTime: normalizedPreferredStrengthTime,
@@ -212,7 +220,7 @@ export async function generateTrainingPlanForUser(
     planData = adaptTrainingPlanToAvailableEquipment(
       applyTrainingPlanCoordination(buildDeterministicTrainingPlan(objective, durationWeeks, {
         sessionsPerWeek: normalizedSessionsPerWeek,
-        strengthSessionsPerWeek: normalizedStrengthSessionsPerWeek,
+        strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
         longWorkoutDay: normalizedLongWorkoutDay,
       }), coordination),
       equipmentAdaptation,
