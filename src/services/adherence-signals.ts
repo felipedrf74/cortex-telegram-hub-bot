@@ -19,15 +19,14 @@
  * signal. A 0/0 week isn't "perfect adherence" — it's "no plan".
  *
  * Idempotency: re-running this function on the same user while a
- * signal of the relevant type is already active is a no-op. The bus
- * supports duplicate rows, but we want the UI + coach context to
- * see one signal per type per user at a time. The check reads the
- * active signals for this user and skips publishing if a matching
- * row already exists.
+ * signal for the same weekly adherence snapshot is already active
+ * is a no-op. Active rows from an older plan/week/session-count are
+ * dismissed before a fresh signal is published, so the UI + coach
+ * context see current plan truth instead of stale adherence copy.
  */
 
 import { DateTime } from 'luxon';
-import { readSignals } from './intelligence-bus';
+import { dismissSignal, readSignals } from './intelligence-bus';
 import {
   computeWeeklyAdherence,
   type WeeklyAdherence,
@@ -75,6 +74,90 @@ export interface AdherenceSignalResult {
 
 // ─── Core orchestrator ──────────────────────────────────────────
 
+type ActiveAdherenceSignal = {
+  id: number;
+  signal_type: 'low_adherence' | 'high_adherence';
+  payload: Record<string, unknown>;
+};
+
+function parseSignalPayload(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw !== 'string') {
+    return typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function readActiveAdherenceSignalsForUser(userId: number): ActiveAdherenceSignal[] {
+  try {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id, signal_type, payload
+      FROM agent_signals
+      WHERE user_id = ?
+        AND status = 'active'
+        AND signal_type IN ('low_adherence', 'high_adherence')
+      ORDER BY created_at DESC, id DESC
+    `).all(userId) as Array<{ id: number; signal_type: string; payload: unknown }>;
+
+    return rows
+      .filter((row): row is { id: number; signal_type: 'low_adherence' | 'high_adherence'; payload: unknown } =>
+        row.signal_type === 'low_adherence' || row.signal_type === 'high_adherence',
+      )
+      .map((row) => ({
+        id: row.id,
+        signal_type: row.signal_type,
+        payload: parseSignalPayload(row.payload),
+      }));
+  } catch (err) {
+    logger.warn({ err, userId }, 'adherence active-signal lookup failed');
+    return [];
+  }
+}
+
+function sameIsoInstant(a: unknown, b: string): boolean {
+  if (typeof a !== 'string') return false;
+  const left = DateTime.fromISO(a);
+  const right = DateTime.fromISO(b);
+  if (!left.isValid || !right.isValid) return a === b;
+  return left.toUTC().toISO() === right.toUTC().toISO();
+}
+
+function signalMatchesAdherenceSnapshot(
+  signal: ActiveAdherenceSignal,
+  targetType: 'low_adherence' | 'high_adherence',
+  adherence: WeeklyAdherence,
+): boolean {
+  const payload = signal.payload;
+  return signal.signal_type === targetType
+    && Number(payload.completed) === adherence.completed
+    && Number(payload.planned) === adherence.planned
+    && sameIsoInstant(payload.week_start, adherence.weekStart)
+    && sameIsoInstant(payload.week_end, adherence.weekEnd);
+}
+
+function dismissStaleAdherenceSignals(
+  userId: number,
+  signals: ActiveAdherenceSignal[],
+  keepId?: number,
+): void {
+  const stale = signals.filter((signal) => signal.id !== keepId);
+  for (const signal of stale) {
+    dismissSignal(signal.id);
+  }
+  if (stale.length > 0) {
+    logger.info(
+      { userId, staleIds: stale.map((signal) => signal.id), keptId: keepId ?? null },
+      'stale adherence signals dismissed',
+    );
+  }
+}
+
 /**
  * Compute this user's weekly adherence and publish the matching
  * signal if a threshold is crossed AND no active signal of that type
@@ -90,9 +173,11 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
   const adherence = computeWeeklyAdherence(userId, referenceDate);
 
   if (!adherence.hasActivePlan) {
+    dismissStaleAdherenceSignals(userId, readActiveAdherenceSignalsForUser(userId));
     return { adherence, action: 'skipped_no_plan' };
   }
   if (adherence.planned === 0) {
+    dismissStaleAdherenceSignals(userId, readActiveAdherenceSignalsForUser(userId));
     return { adherence, action: 'skipped_no_sessions' };
   }
 
@@ -102,6 +187,7 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
     adherence.ratio >= 1.0 && adherence.planned >= HIGH_ADHERENCE_MIN_PLANNED;
 
   if (!isLow && !isHigh) {
+    dismissStaleAdherenceSignals(userId, readActiveAdherenceSignalsForUser(userId));
     return { adherence, action: 'skipped_neutral' };
   }
 
@@ -111,6 +197,20 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
   // this read doesn't mark signals as consumed from the coaches'
   // perspective — the sport coaches have their own readers.
   const targetType = isLow ? 'low_adherence' : 'high_adherence';
+  const activeSignals = readActiveAdherenceSignalsForUser(userId);
+  const matchingSignal = activeSignals.find((signal) =>
+    signalMatchesAdherenceSnapshot(signal, targetType, adherence),
+  );
+  if (matchingSignal) {
+    dismissStaleAdherenceSignals(userId, activeSignals, matchingSignal.id);
+    logger.debug(
+      { userId, targetType, existingId: matchingSignal.id },
+      'matching adherence signal already active — skipping duplicate publish',
+    );
+    return { adherence, action: 'skipped_existing' };
+  }
+  dismissStaleAdherenceSignals(userId, activeSignals);
+
   try {
     const existing = readSignals(
       'adherence.orchestrator',
@@ -118,9 +218,17 @@ export function publishAdherenceSignalsForUser(userId: number, referenceDate?: D
       5,
       userId,
     );
-    if (existing.length > 0) {
+    const stillMatching = existing.find((signal) =>
+      signal.signal_type === targetType
+      && signalMatchesAdherenceSnapshot({
+        id: signal.id,
+        signal_type: signal.signal_type,
+        payload: signal.payload,
+      }, targetType, adherence),
+    );
+    if (stillMatching) {
       logger.debug(
-        { userId, targetType, existingIds: existing.map((s) => s.id) },
+        { userId, targetType, existingId: stillMatching.id },
         'adherence signal already active — skipping duplicate publish',
       );
       return { adherence, action: 'skipped_existing' };

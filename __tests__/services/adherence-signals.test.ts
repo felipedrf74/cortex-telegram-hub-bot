@@ -335,6 +335,105 @@ describe('publishAdherenceSignalsForUser', () => {
     expect(count.c).toBe(1);
   });
 
+  it('replaces stale low_adherence when the active plan snapshot changes', () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
+    seedPlanWithWeek({
+      userId: 1010,
+      referenceDate: ref,
+      sessionStatuses: ['pending', 'pending', 'pending', 'pending', 'pending'],
+      baseId: 28,
+    });
+
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, user_id)
+      VALUES
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?)
+    `).run(JSON.stringify({
+      completed: 0,
+      planned: 7,
+      adherence_pct: 0,
+      week_start: ref.minus({ weeks: 1 }).startOf('week').toISO(),
+      week_end: ref.minus({ weeks: 1 }).endOf('week').toISO(),
+    }), 1010);
+
+    const result = publishAdherenceSignalsForUser(1010, ref);
+    expect(result.action).toBe('published_low');
+    expect(result.adherence.planned).toBe(5);
+
+    const rows = testDb.prepare(`
+      SELECT status, payload
+      FROM agent_signals
+      WHERE signal_type = 'low_adherence' AND user_id = ?
+      ORDER BY id
+    `).all(1010) as Array<{ status: string; payload: string }>;
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].status).toBe('dismissed');
+    expect(rows[1].status).toBe('active');
+    expect(JSON.parse(rows[1].payload).planned).toBe(5);
+  });
+
+  it('dismisses stale adherence signals when the user returns to the neutral band', () => {
+    const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
+    seedPlanWithWeek({
+      userId: 1011,
+      referenceDate: ref,
+      sessionStatuses: ['completed', 'completed', 'completed', 'pending', 'pending'],
+      baseId: 29,
+    });
+
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, user_id)
+      VALUES
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?)
+    `).run(JSON.stringify({
+      completed: 0,
+      planned: 5,
+      adherence_pct: 0,
+      week_start: ref.startOf('week').toISO(),
+      week_end: ref.endOf('week').toISO(),
+    }), 1011);
+
+    const result = publishAdherenceSignalsForUser(1011, ref);
+    expect(result.action).toBe('skipped_neutral');
+
+    const active = testDb.prepare(`
+      SELECT COUNT(*) as count
+      FROM agent_signals
+      WHERE signal_type IN ('low_adherence', 'high_adherence')
+        AND user_id = ?
+        AND status = 'active'
+    `).get(1011) as { count: number };
+    expect(active.count).toBe(0);
+  });
+
+  it('dismisses stale adherence signals when there is no longer an active plan', () => {
+    testDb.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, user_id)
+      VALUES
+        ('session.analytics', 'low_adherence', ?, 'urgent', datetime('now', '+1 day'), ?)
+    `).run(JSON.stringify({
+      completed: 0,
+      planned: 7,
+      adherence_pct: 0,
+      week_start: '2026-04-06T00:00:00.000+01:00',
+      week_end: '2026-04-12T23:59:59.999+01:00',
+    }), 1012);
+
+    const result = publishAdherenceSignalsForUser(1012);
+    expect(result.action).toBe('skipped_no_plan');
+
+    const row = testDb.prepare(`
+      SELECT status
+      FROM agent_signals
+      WHERE signal_type = 'low_adherence' AND user_id = ?
+    `).get(1012) as { status: string };
+    expect(row.status).toBe('dismissed');
+  });
+
   it('does not cross-poison: user A published does not block user B publishing', () => {
     const ref = DateTime.fromISO('2026-04-08T12:00:00', { zone: 'Europe/Lisbon' });
     seedPlanWithWeek({
