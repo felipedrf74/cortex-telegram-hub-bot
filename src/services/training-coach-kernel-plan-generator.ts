@@ -234,7 +234,51 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   }
   const equipment = equipmentResolution.value;
 
-  const trainingHistory = resolveTrainingHistory(input, weeklyTargets);
+  // Slice 3.M (Layer 1, audit follow-up): resolve per-sport
+  // weekly-minutes with explicit provenance so the call site can
+  // log when running or cycling volume was inferred from
+  // `targets × constant` rather than read from real profile data.
+  // Downstream `lastWeekMinutesBySport` feeds ACWR load math; if
+  // the inferred number is wrong the ramp-up is mis-tuned. Before
+  // slice 3.M the inference was silent — the planner assumed
+  // 45min/running-session and 55min/cycling-session and operators
+  // had no way to tell which users had real data and which were
+  // running on heuristic. Strength and swimming use `targets ×
+  // constant` always (no real-data field on input), so they're
+  // not in scope for this slice's logging.
+  const runningPaceForHistory = resolveThresholdPace(input.runProfile) ?? 360;
+  const runningHistoryResolution = resolveRunningWeeklyMinutesWithSource(
+    input.runProfile,
+    weeklyTargets.running ?? 0,
+    runningPaceForHistory,
+  );
+  const cyclingHistoryResolution = resolveCyclingWeeklyMinutesWithSource(
+    input.runProfile,
+    weeklyTargets.cycling ?? 0,
+  );
+  if (runningHistoryResolution.source === 'inferred_from_targets') {
+    logger.warn({
+      surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.runningWeeklyMinutes',
+      userId: input.userId,
+      weeklyTarget: runningHistoryResolution.weeklyTarget,
+      minutesPerSession: runningHistoryResolution.minutesPerSession,
+      inferredMinutes: runningHistoryResolution.value,
+    }, 'Running weekly-minutes inferred from targets — no run_profile.weekly_mileage_km on profile; ACWR load math will use targets × 45min/session as the baseline');
+  }
+  if (cyclingHistoryResolution.source === 'inferred_from_targets') {
+    logger.warn({
+      surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.cyclingWeeklyMinutes',
+      userId: input.userId,
+      weeklyTarget: cyclingHistoryResolution.weeklyTarget,
+      minutesPerSession: cyclingHistoryResolution.minutesPerSession,
+      inferredMinutes: cyclingHistoryResolution.value,
+    }, 'Cycling weekly-minutes inferred from targets — no run_profile.weekly_hours bucket on profile; ACWR load math will use targets × 55min/session as the baseline');
+  }
+  const trainingHistory = resolveTrainingHistory(
+    weeklyTargets,
+    runningHistoryResolution,
+    cyclingHistoryResolution,
+  );
 
   // Slice 3.I (Layer 1, audit follow-up): emit a structured warning
   // when the experience-level resolver had to fall back to 'novice'
@@ -857,17 +901,131 @@ function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedK
   };
 }
 
+/**
+ * Per-sport weekly-minutes resolution provenance for endurance
+ * sports (running and cycling). Distinguishes three runtime
+ * cases the previous version silently conflated:
+ *
+ *   1. **`profile_data`** — the athlete's profile carried real
+ *      volume data (running mileage in km, cycling weekly hours
+ *      bucket). The minutes value came from converting that real
+ *      data; ACWR / training-load math is grounded in user-
+ *      supplied truth.
+ *   2. **`inferred_from_targets`** — no real data on the profile,
+ *      but the user has a non-zero weekly target. The resolver
+ *      multiplies the target by a heuristic minutes-per-session
+ *      constant (45 for running, 55 for cycling). Downstream
+ *      consumers including the ACWR load math will operate on a
+ *      synthesized number; if the heuristic is too high, ramp-up
+ *      gets suppressed (overtraining concern); too low and ramp-
+ *      up becomes too aggressive. Audit-flagged silent-default.
+ *   3. **`no_volume`** — neither real data nor a non-zero target.
+ *      `value: undefined` so the planner reads "no history at
+ *      all" instead of synthesizing a number from zero.
+ *
+ * Slice 3.M splits the inline ternaries in `resolveTrainingHistory`
+ * into pure exported functions that return this union. Strength
+ * and swimming are NOT covered by this slice because they have no
+ * real-data field on the input — every value is `targets ×
+ * constant` always, so there's no silent-fallback to surface.
+ */
+export type EnduranceMinutesResolution =
+  | {
+      value: number;
+      source: 'profile_data';
+      rawInputField: string;
+      rawInputValue: number;
+    }
+  | {
+      value: number;
+      source: 'inferred_from_targets';
+      weeklyTarget: number;
+      minutesPerSession: number;
+    }
+  | { value: undefined; source: 'no_volume' };
+
+const RUNNING_INFERENCE_MINUTES_PER_SESSION = 45;
+const CYCLING_INFERENCE_MINUTES_PER_SESSION = 55;
+const RUNNING_MINIMUM_INFERRED_MINUTES = 60;
+
+/**
+ * Resolve the user's last-week running minutes from profile data
+ * if available, otherwise infer from `weeklyRunningTarget × 45
+ * min/session`. Pinned by
+ * `__tests__/services/training-coach-kernel-training-history.test.ts`.
+ */
+export function resolveRunningWeeklyMinutesWithSource(
+  runProfile: Record<string, any> | null | undefined,
+  weeklyRunningTarget: number,
+  runningPaceSecondsPerKm: number,
+): EnduranceMinutesResolution {
+  const mileage = numericOrUndefined(runProfile?.weekly_mileage_km);
+  if (mileage !== undefined) {
+    const minutes = Math.max(
+      RUNNING_MINIMUM_INFERRED_MINUTES,
+      Math.round(mileage * (runningPaceSecondsPerKm / 60)),
+    );
+    return {
+      value: minutes,
+      source: 'profile_data',
+      rawInputField: 'run_profile.weekly_mileage_km',
+      rawInputValue: mileage,
+    };
+  }
+  if (weeklyRunningTarget > 0) {
+    return {
+      value: weeklyRunningTarget * RUNNING_INFERENCE_MINUTES_PER_SESSION,
+      source: 'inferred_from_targets',
+      weeklyTarget: weeklyRunningTarget,
+      minutesPerSession: RUNNING_INFERENCE_MINUTES_PER_SESSION,
+    };
+  }
+  return { value: undefined, source: 'no_volume' };
+}
+
+/**
+ * Resolve the user's last-week cycling minutes from profile data
+ * if available, otherwise infer from `weeklyCyclingTarget × 55
+ * min/session`. The "real data" path is bucketed via
+ * `weeklyHoursToMinutes` (`'< 3'` / `'3-6'` / `'6-10'` / `'10+'`).
+ */
+export function resolveCyclingWeeklyMinutesWithSource(
+  runProfile: Record<string, any> | null | undefined,
+  weeklyCyclingTarget: number,
+): EnduranceMinutesResolution {
+  const fromHours = weeklyHoursToMinutes(runProfile?.weekly_hours);
+  if (fromHours !== undefined) {
+    return {
+      value: fromHours,
+      source: 'profile_data',
+      rawInputField: 'run_profile.weekly_hours',
+      rawInputValue: fromHours,
+    };
+  }
+  if (weeklyCyclingTarget > 0) {
+    return {
+      value: weeklyCyclingTarget * CYCLING_INFERENCE_MINUTES_PER_SESSION,
+      source: 'inferred_from_targets',
+      weeklyTarget: weeklyCyclingTarget,
+      minutesPerSession: CYCLING_INFERENCE_MINUTES_PER_SESSION,
+    };
+  }
+  return { value: undefined, source: 'no_volume' };
+}
+
+/**
+ * Build the `TrainingHistory` from pre-resolved per-sport
+ * minutes. Strength and swimming use `targets × constant` always
+ * (no real-data field on input, no silent-fallback to surface).
+ */
 function resolveTrainingHistory(
-  input: CoachKernelTrainingPlanInput,
   weeklyTargets: Goals['weeklySessionsTarget'],
+  runningResolution: EnduranceMinutesResolution,
+  cyclingResolution: EnduranceMinutesResolution,
 ): TrainingHistory {
-  const runningPace = resolveThresholdPace(input.runProfile) ?? 360;
-  const runningMileageKm = numericOrUndefined(input.runProfile?.weekly_mileage_km);
-  const runningMinutes = runningMileageKm
-    ? Math.max(60, Math.round(runningMileageKm * (runningPace / 60)))
-    : (weeklyTargets.running ?? 0) * 45;
+  const runningMinutes = runningResolution.value;
+  const cyclingMinutes = cyclingResolution.value;
   const strengthMinutes = (weeklyTargets.strength ?? 0) * 45;
-  const cyclingMinutes = weeklyHoursToMinutes(input.runProfile?.weekly_hours) ?? (weeklyTargets.cycling ?? 0) * 55;
   const swimmingMinutes = (weeklyTargets.swimming ?? 0) * 40;
 
   return {
