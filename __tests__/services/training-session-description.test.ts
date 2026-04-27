@@ -38,28 +38,22 @@ const baseInput: SessionDescriptionInput = {
 
 describe('training-session-description', () => {
   describe('running easy run', () => {
-    it('emits header, badge, weekly progression, execution and warmup', () => {
+    it('emits header, badge, execution, cooldown mobility and warmup without macro-plan clutter', () => {
       const { sections } = buildRichSessionDescription(baseInput);
 
       expect(sections.header.planName).toBe('Lisbon Marathon Plan');
-      expect(sections.header.phase).toContain('Phase 1: Base');
-      expect(sections.header.phase).toContain('week 1 of 6');
+      expect(sections.header.phase).toBeUndefined();
       expect(sections.badge.emoji).toBe('🏃');
       expect(sections.badge.eyebrow).toBe('MONDAY EASY RUN');
       expect(sections.badge.title).toBe('Easy Run');
-      expect(sections.weeklyProgression).toHaveLength(6);
-      expect(sections.weeklyProgression?.[0]).toEqual(expect.objectContaining({
-        weekNumber: 1,
-        weekStart: 'Mar 9',
-      }));
-      expect(sections.weeklyProgression?.[3]?.note).toBe('DELOAD WEEK');
-      expect(sections.weeklyProgression?.[5]?.note).toBe('Pre-race taper');
+      expect(sections.weeklyProgression).toBeUndefined();
       expect(sections.execution).toBeDefined();
       expect(sections.execution?.find((i) => i.label === 'Pace')?.value).toMatch(/\/km$/);
       expect(sections.execution?.find((i) => i.label === 'HR')?.value).toContain('bpm');
       expect(sections.execution?.find((i) => i.label === 'RPE')?.value).toBe('4-5/10');
       expect(sections.warmup?.headline).toBe('WARM-UP');
       expect(sections.cooldown?.items[0]).toMatch(/walk/i);
+      expect(sections.cooldown?.items[0]).toMatch(/mobility/i);
       expect(sections.totalMinutesText).toMatch(/30 min total/);
     });
 
@@ -68,8 +62,8 @@ describe('training-session-description', () => {
 
       expect(text).toContain('Lisbon Marathon Plan');
       expect(text).toContain('🏃 MONDAY EASY RUN');
-      expect(text).toContain('WEEKLY PROGRESSION:');
-      expect(text).toContain('• Wk1 (Mar 9):');
+      expect(text).not.toContain('WEEKLY PROGRESSION:');
+      expect(text).not.toContain('Phase 1: Base');
       expect(text).toContain('EXECUTION:');
       expect(text).toContain('• Pace:');
       expect(text).toContain('• RPE: 4-5/10');

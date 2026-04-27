@@ -351,7 +351,7 @@ describe('generateTrainingPlanForUser', () => {
     }));
   });
 
-  it('treats English muscle-building goals as gym-only strength plans', async () => {
+  it('respects the requested gym volume for English muscle-building goals', async () => {
     await generateTrainingPlanForUser({
       userId: 12,
       objective: 'Muscle Building',
@@ -361,12 +361,12 @@ describe('generateTrainingPlanForUser', () => {
 
     expect(mockBuildTrainingPlanCoordination).toHaveBeenLastCalledWith(expect.objectContaining({
       sessionsPerWeek: 5,
-      strengthSessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
     }));
     expect(mockBuildCoachKernelTrainingPlan).toHaveBeenCalledWith(expect.objectContaining({
       objective: 'Muscle Building',
       sessionsPerWeek: 5,
-      strengthSessionsPerWeek: 5,
+      strengthSessionsPerWeek: 2,
     }));
   });
 });

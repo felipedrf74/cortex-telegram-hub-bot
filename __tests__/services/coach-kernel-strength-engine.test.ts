@@ -57,11 +57,49 @@ describe('coach-kernel strength engine', () => {
 
     expect(session.sessionType).toBe('strength_hypertrophy');
     expect(session.tags).toContain('hypertrophy');
+    expect(session.exercises?.length).toBeGreaterThanOrEqual(5);
     expect(mainLift).toMatchObject({
-      sets: 4,
+      sets: 3,
       reps: '6-10',
       rir: 1,
+      restSec: 90,
     });
+  });
+
+  it('rotates four weekly strength sessions instead of cloning the same generic lift', () => {
+    const sessions = buildStrengthSessions(sampleHybridAthlete);
+    const titles = sessions.map((session) => session.title);
+    const exerciseFingerprints = sessions.map((session) =>
+      (session.exercises ?? []).map((exercise) => exercise.exerciseId).join('|')
+    );
+
+    expect(sessions).toHaveLength(4);
+    expect(new Set(titles).size).toBe(4);
+    expect(new Set(exerciseFingerprints).size).toBe(4);
+    expect(sessions.every((session) => (session.exercises?.length ?? 0) >= 5)).toBe(true);
+  });
+
+  it('scales prescriptions by strength experience level', () => {
+    const novice = buildStrengthSessions({
+      ...sampleHybridAthlete,
+      profile: {
+        ...sampleHybridAthlete.profile,
+        experienceLevel: 'novice',
+      },
+    })[0];
+    const advanced = buildStrengthSessions({
+      ...sampleHybridAthlete,
+      profile: {
+        ...sampleHybridAthlete.profile,
+        experienceLevel: 'advanced',
+      },
+    })[0];
+
+    const noviceMainLift = novice.exercises?.find((exercise) => exercise.exerciseId === 'front_squat');
+    const advancedMainLift = advanced.exercises?.find((exercise) => exercise.exerciseId === 'front_squat');
+
+    expect(noviceMainLift).toMatchObject({ sets: 3, reps: '8-12', rir: 2 });
+    expect(advancedMainLift).toMatchObject({ sets: 4, reps: '6-10', rir: 1 });
   });
 
   it('trims duration to the real strength window instead of overflowing the day', () => {

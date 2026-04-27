@@ -40,14 +40,14 @@ function syncSessionClockFields(session: Session): Session {
 }
 
 function redReadyReplacementSessionType(session: Session): Session['sessionType'] {
-  if (session.sport === 'strength') return 'mobility';
+  if (session.sport === 'strength') return 'strength_maintenance';
   if (session.sport === 'cycling') return 'recovery_ride';
   if (session.sport === 'swimming') return 'recovery_swim';
   return 'recovery_run';
 }
 
 function redReadyReplacementTitle(session: Session): string {
-  if (session.sport === 'strength') return 'Mobility / Tissue Care';
+  if (session.sport === 'strength') return 'Technique Strength + Mobility';
   if (session.sport === 'cycling') return 'Recovery Ride';
   if (session.sport === 'swimming') return 'Recovery Swim';
   return 'Recovery Run';
@@ -167,7 +167,9 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
         ...session,
         sessionType: replacementSessionType,
         title: redReadyReplacementTitle(session),
-        description: 'Readiness is too low for the original prescription. Replace with recovery-focused work or full rest.',
+        description: session.sport === 'strength'
+          ? 'Readiness is too low for the original prescription. Keep the lift technical, light, and finish with mobility instead of creating a separate mobility session.'
+          : 'Readiness is too low for the original prescription. Replace with recovery-focused work or full rest.',
         intensityZone: 'recovery',
         fatigueCost: 'low',
         keySession: false,
@@ -197,7 +199,7 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
     status: red ? 'block' : 'warn',
     adjusted: true,
     message: red
-      ? 'Readiness is critically low. Hard work was replaced with recovery or mobility.'
+      ? 'Readiness is critically low. Hard work was replaced with recovery work or low-load strength.'
       : 'Readiness is strained. Hard work was downgraded before prescription.',
   }];
 }
@@ -306,19 +308,18 @@ function enforceScheduleConflicts(plan: WeeklyPlan, athlete: AthleteState): Guar
       ruleId: `schedule_conflict_${session.id}`,
       status: 'block',
       adjusted: true,
-      message: `${session.title} could not be placed safely and was replaced by mobility.`,
+      message: `${session.title} could not be placed safely and was deferred instead of creating a standalone mobility session.`,
     });
     return {
       ...session,
-      sessionType: 'mobility',
-      title: 'Mobility / Reset',
-      sport: 'strength',
+      sessionType: 'rest',
+      title: 'Rest / Recovery',
       intensityZone: 'recovery',
       fatigueCost: 'low',
-      durationMinutes: 20,
-      endTime: syncEndTime(session.startTime, 20),
-      plannedLoad: durationToLoad(20, 'recovery', 'low'),
-      tags: ['mobility'],
+      durationMinutes: 0,
+      endTime: undefined,
+      plannedLoad: 0,
+      tags: ['deferred'],
     };
   });
 

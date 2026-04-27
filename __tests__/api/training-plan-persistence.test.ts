@@ -110,7 +110,7 @@ describe('training-plan-persistence', () => {
     expect(mockCreateWeek).toHaveBeenCalledWith(expect.objectContaining({
       plan_id: 901,
       week_number: 1,
-      volume_sessions: 3,
+      volume_sessions: 2,
     }));
     expect(mockCreateSession).toHaveBeenCalledTimes(2);
     expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -169,6 +169,40 @@ describe('training-plan-persistence', () => {
       expect.objectContaining({ title: expect.stringContaining('Run') }),
       'Failed to create calendar event for session',
     );
+  });
+
+  it('does not persist standalone mobility sessions as calendar workouts', async () => {
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Hybrid block',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Lift', durationMinutes: 45, exercises: [{ name: 'Squat' }] },
+              { dayOfWeek: 'Tuesday', sessionType: 'mobility', title: 'Mobility + Recovery', durationMinutes: 30, exercises: [] },
+              { dayOfWeek: 'Wednesday', sessionType: 'gym', title: 'Mobility Reset', durationMinutes: 25, exercises: [] },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.eventsCreated).toBe(1);
+    expect(result.weekSummaries).toEqual([{ weekNumber: 1, focus: undefined, sessionCount: 1 }]);
+    expect(mockCreateSession).toHaveBeenCalledTimes(1);
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
   });
 
   it('creates calendar events sequentially to avoid provider write bursts', async () => {

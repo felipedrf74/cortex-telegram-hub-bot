@@ -37,11 +37,12 @@ import {
 
 // ─── Canonical types ─────────────────────────────────────────────────
 
-export type IntegrationProvider = OAuthProvider | 'garmin';
+export type IntegrationProvider = OAuthProvider | 'garmin' | 'apple_health';
 
 export const ALL_INTEGRATION_PROVIDERS: IntegrationProvider[] = [
   'google',
   'outlook',
+  'apple_health',
   'garmin',
   'strava',
   'whoop',
@@ -129,6 +130,10 @@ function isProviderConfigured(provider: IntegrationProvider): boolean {
     case 'garmin':
       // Garmin uses garth (username/password + MFA); no OAuth app required.
       return true;
+    case 'apple_health':
+      // Apple Health is device-local, not OAuth. The iOS app can always
+      // attempt to authorize it on compatible devices.
+      return true;
     case 'strava':
       return Boolean(process.env.STRAVA_CLIENT_ID && process.env.STRAVA_CLIENT_SECRET);
     case 'whoop':
@@ -189,6 +194,8 @@ export function capabilitiesForProvider(
       // clients that expected exactly these three labels don't have to
       // handle a new string before Gap 6 ships.
       return ['training', 'sleep', 'readiness'];
+    case 'apple_health':
+      return ['health', 'sleep', 'readiness', 'training'];
     case 'strava':
       return ['runs', 'rides', 'load'];
     case 'whoop':
@@ -387,7 +394,7 @@ type OAuthConnectionInfo = {
 };
 
 function isOAuthProvider(provider: IntegrationProvider): provider is OAuthProvider {
-  return provider !== 'garmin';
+  return provider !== 'garmin' && provider !== 'apple_health';
 }
 
 function buildOAuthStatus(
@@ -513,6 +520,61 @@ function buildGarminStatus(userId: number): ProviderIntegrationStatus {
   };
 }
 
+function buildAppleHealthStatus(userId: number): ProviderIntegrationStatus {
+  const baseCapabilities = capabilitiesForProvider('apple_health');
+
+  try {
+    const db = getDb();
+    const tableInfo = db.prepare(`PRAGMA table_info(apple_health_data)`).all() as Array<{ name: string }>;
+    const columns = new Set(tableInfo.map((row) => row.name));
+    const timestampExpression = columns.has('synced_at')
+      ? 'synced_at'
+      : columns.has('created_at')
+        ? 'created_at'
+        : 'date';
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const row = db
+      .prepare(
+        `SELECT
+           MAX(date) AS latest_date,
+           MAX(${timestampExpression}) AS connected_at
+         FROM apple_health_data
+         WHERE user_id = ?
+           AND date >= ?`,
+      )
+      .get(userId, thirtyDaysAgo) as { latest_date?: string | null; connected_at?: string | null } | undefined;
+
+    if (!row?.latest_date) {
+      return {
+        provider: 'apple_health',
+        state: 'disconnected',
+        connectedAt: null,
+        scopes: [],
+        capabilities: baseCapabilities,
+      };
+    }
+
+    return {
+      provider: 'apple_health',
+      state: 'connected',
+      connectedAt: row.connected_at ?? row.latest_date,
+      scopes: ['HealthKit read'],
+      capabilities: baseCapabilities,
+    };
+  } catch (err) {
+    logger.debug({ err, userId }, 'integration-status: apple health data unavailable');
+    return {
+      provider: 'apple_health',
+      state: 'disconnected',
+      connectedAt: null,
+      scopes: [],
+      capabilities: baseCapabilities,
+    };
+  }
+}
+
 // ─── Summary computation ─────────────────────────────────────────────
 
 function isUsableState(state: IntegrationState): boolean {
@@ -550,6 +612,7 @@ function computeCapabilityFlags(
     if (provider.provider === 'todoist' || provider.provider === 'notion') externalTasks = true;
     // Health: any wearable/health provider
     if (provider.provider === 'garmin') health = true;
+    if (provider.provider === 'apple_health') health = true;
     if (provider.provider === 'strava' || provider.provider === 'whoop' || provider.provider === 'fitbit') {
       health = true;
     }
@@ -606,6 +669,7 @@ export function getProviderStatus(
   provider: IntegrationProvider,
 ): ProviderIntegrationStatus {
   if (provider === 'garmin') return buildGarminStatus(userId);
+  if (provider === 'apple_health') return buildAppleHealthStatus(userId);
 
   const connections = safeGetUserConnections(userId);
   const connection = connections.find((c) => c.provider === provider);
@@ -630,6 +694,10 @@ export function getIntegrationSummary(userId: number): IntegrationSummary {
   for (const provider of ALL_INTEGRATION_PROVIDERS) {
     if (provider === 'garmin') {
       providers.push(buildGarminStatus(userId));
+      continue;
+    }
+    if (provider === 'apple_health') {
+      providers.push(buildAppleHealthStatus(userId));
       continue;
     }
     if (!isOAuthProvider(provider)) continue;

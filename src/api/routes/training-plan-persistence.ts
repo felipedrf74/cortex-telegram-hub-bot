@@ -102,11 +102,11 @@ export async function persistGeneratedTrainingPlan(
       week_number: weekData.weekNumber || 1,
       focus: weekData.focus || 'base',
       intensity_pct: weekData.intensityPct || 70,
-      volume_sessions: weekData.sessions?.length || 0,
+      volume_sessions: weekData.sessions?.filter((session) => !isNonScheduledTrainingSession(session)).length || 0,
     });
 
     for (const sessionData of weekData.sessions || []) {
-      if (sessionData.sessionType === 'rest') continue;
+      if (isNonScheduledTrainingSession(sessionData)) continue;
 
       const dayIndex = DAY_NAMES.indexOf(sessionData.dayOfWeek?.toLowerCase() || '');
       if (dayIndex < 0) continue;
@@ -193,9 +193,17 @@ export async function persistGeneratedTrainingPlan(
     weekSummaries: (input.planData.weeks || []).map((weekData) => ({
       weekNumber: weekData.weekNumber,
       focus: weekData.focus,
-      sessionCount: weekData.sessions?.filter((session) => session.sessionType !== 'rest').length || 0,
+      sessionCount: weekData.sessions?.filter((session) => !isNonScheduledTrainingSession(session)).length || 0,
     })),
   };
+}
+
+function isNonScheduledTrainingSession(session: GeneratedTrainingSession): boolean {
+  const type = String(session.sessionType || '').trim().toLowerCase();
+  if (type === 'rest' || type === 'mobility') return true;
+  const combined = `${type} ${session.title || ''}`.toLowerCase();
+  const exerciseCount = Array.isArray(session.exercises) ? session.exercises.length : 0;
+  return combined.includes('mobility') && exerciseCount === 0;
 }
 
 function scheduleSessionForPlan(input: {

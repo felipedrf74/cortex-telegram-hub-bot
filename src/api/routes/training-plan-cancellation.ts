@@ -338,7 +338,14 @@ function isMatchingGeneratedTrainingEvent(
   const expectedTitle = normalizeTrainingEventTitle(
     `${emojiForTrainingSession(sessionType)} ${title} (${durationMinutes}min)`,
   );
-  if (normalizeTrainingEventTitle(event.summary) !== expectedTitle) return false;
+  const eventTitle = normalizeTrainingEventTitle(event.summary);
+  const bareSessionTitle = normalizeTrainingEventTitle(title);
+  const durationToken = `${durationMinutes}min`;
+  const description = normalizeTrainingEventTitle(event.description);
+  const titleMatches = eventTitle === expectedTitle
+    || (bareSessionTitle.length > 0 && eventTitle.includes(bareSessionTitle) && eventTitle.includes(durationToken))
+    || (description.includes('coach plan') && description.includes(bareSessionTitle));
+  if (!titleMatches) return false;
 
   const eventStart = new Date(event.start);
   const eventEnd = new Date(event.end);
@@ -367,7 +374,12 @@ function emojiForTrainingSession(sessionType: string | null | undefined): string
 }
 
 function normalizeTrainingEventTitle(value: string | null | undefined): string {
-  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return String(value || '')
+    .replace(/[()]/g, ' ')
+    .replace(/[^\w\s:+/-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
 const DAY_INDEX_FROM_NAME: Record<string, number> = {

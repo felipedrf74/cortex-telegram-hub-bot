@@ -20,6 +20,13 @@ import {
 } from '../utils';
 
 type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
+type StrengthExperience = AthleteState['profile']['experienceLevel'];
+
+interface StrengthVariant {
+  title: string;
+  exerciseIds: string[];
+  tags: string[];
+}
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -55,6 +62,8 @@ function availableEquipment(athlete: AthleteState): Set<string> {
     equipment.add('pullup_bar');
     equipment.add('lat_pulldown');
     equipment.add('kettlebells');
+    equipment.add('dumbbells');
+    equipment.add('barbell');
   }
   if (athlete.equipment.hasBarbell) equipment.add('barbell');
   if (athlete.equipment.hasDumbbells) equipment.add('dumbbells');
@@ -99,52 +108,184 @@ function resolveExerciseCandidate(
   return patternFallback ?? null;
 }
 
-function prescriptionFor(exercise: Exercise, profile: StrengthProfile): Omit<ExercisePrescription, 'exerciseId' | 'name' | 'notes'> {
+function prescriptionFor(
+  exercise: Exercise,
+  profile: StrengthProfile,
+  experience: StrengthExperience,
+): Omit<ExercisePrescription, 'exerciseId' | 'name' | 'notes'> {
+  const mainPattern = ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern);
+  const accessoryPattern = ['single_leg', 'carry'].includes(exercise.movementPattern);
+  const supportPattern = exercise.movementPattern === 'core' || exercise.movementPattern === 'mobility';
+
   switch (profile) {
-    case 'maintenance':
+    case 'maintenance': {
+      const sets = experience === 'advanced' && mainPattern ? 3 : 2;
       return {
-        sets: 2,
-        reps: exercise.movementPattern === 'core' || exercise.movementPattern === 'mobility' ? '8-12' : '5-8',
+        sets,
+        reps: supportPattern ? '8-12' : '5-8',
         rir: 3,
+        restSec: mainPattern ? 90 : 45,
       };
-    case 'hypertrophy':
+    }
+    case 'hypertrophy': {
+      const sets = supportPattern ? 3 : experience === 'advanced' && mainPattern ? 4 : 3;
       return {
-        sets: exercise.movementPattern === 'core' || exercise.movementPattern === 'mobility' ? 3 : 4,
-        reps: exercise.movementPattern === 'core' || exercise.movementPattern === 'mobility' ? '8-12' : '6-10',
-        rir: 1,
+        sets,
+        reps: supportPattern ? '10-15' : experience === 'novice' ? '8-12' : '6-10',
+        rir: experience === 'novice' ? 2 : 1,
+        restSec: mainPattern ? 90 : 60,
       };
-    case 'max_strength':
+    }
+    case 'max_strength': {
+      const sets = mainPattern ? (experience === 'novice' ? 3 : 4) : 3;
       return {
-        sets: ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern) ? 4 : 3,
-        reps: ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern) ? '3-5' : '6-8',
-        rir: 2,
+        sets,
+        reps: mainPattern ? (experience === 'novice' ? '5-6' : '3-5') : '6-10',
+        rir: experience === 'novice' ? 3 : 2,
+        restSec: mainPattern ? 120 : 75,
       };
-    default:
+    }
+    default: {
+      const sets = mainPattern ? (experience === 'novice' ? 3 : 4) : accessoryPattern ? 3 : 2;
       return {
-        sets: ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern) ? 4 : 3,
-        reps: exercise.movementPattern === 'core' || exercise.movementPattern === 'mobility' ? '8-12' : '4-6',
-        rir: 2,
+        sets,
+        reps: supportPattern ? '10-15' : experience === 'novice' ? '8-10' : '5-8',
+        rir: experience === 'novice' ? 3 : 2,
+        restSec: mainPattern ? 105 : 60,
       };
+    }
   }
 }
 
-function resolveExercises(template: WorkoutTemplate, library: Exercise[], athlete: AthleteState, profile: StrengthProfile): ExercisePrescription[] {
+function strengthVariantFor(profile: StrengthProfile, targetSessions: number, index: number): StrengthVariant {
+  const profileTitle = profile === 'hypertrophy'
+    ? 'Hypertrophy'
+    : profile === 'max_strength'
+      ? 'Strength'
+      : profile === 'maintenance'
+        ? 'Maintenance'
+        : 'Strength';
+  const slot = Math.max(0, index) % Math.max(1, targetSessions);
+
+  if (targetSessions >= 4) {
+    const variants: StrengthVariant[] = [
+      {
+        title: `Lower Body ${profileTitle} A`,
+        exerciseIds: ['front_squat', 'romanian_deadlift', 'split_squat', 'dead_bug', 'farmer_carry'],
+        tags: ['lower_body', 'posterior_chain', 'core'],
+      },
+      {
+        title: `Upper Body ${profileTitle} A`,
+        exerciseIds: ['bench_press', 'pull_up', 'one_arm_dumbbell_row', 'push_up', 'hollow_hold'],
+        tags: ['upper_body', 'push', 'pull'],
+      },
+      {
+        title: `Lower Body ${profileTitle} B`,
+        exerciseIds: ['goblet_squat', 'single_leg_rdl', 'lunging_iso_hold', 'hip_hinge_band', 'bear_crawl'],
+        tags: ['lower_body', 'single_leg', 'core'],
+      },
+      {
+        title: `Upper Body ${profileTitle} B`,
+        exerciseIds: ['lat_pulldown', 'dumbbell_bench_press', 'one_arm_dumbbell_row', 'suitcase_carry', 'dead_bug'],
+        tags: ['upper_body', 'pull', 'carry'],
+      },
+    ];
+    return variants[slot] ?? variants[0];
+  }
+
+  if (targetSessions === 3) {
+    const variants: StrengthVariant[] = [
+      {
+        title: `Full Body ${profileTitle} A`,
+        exerciseIds: ['front_squat', 'bench_press', 'romanian_deadlift', 'pull_up', 'dead_bug'],
+        tags: ['full_body', 'core'],
+      },
+      {
+        title: `Lower Body + Core ${profileTitle}`,
+        exerciseIds: ['goblet_squat', 'single_leg_rdl', 'split_squat', 'farmer_carry', 'hollow_hold'],
+        tags: ['lower_body', 'core'],
+      },
+      {
+        title: `Upper Body + Trunk ${profileTitle}`,
+        exerciseIds: ['pull_up', 'dumbbell_bench_press', 'one_arm_dumbbell_row', 'push_up', 'bear_crawl'],
+        tags: ['upper_body', 'trunk'],
+      },
+    ];
+    return variants[slot] ?? variants[0];
+  }
+
+  if (targetSessions === 2) {
+    const variants: StrengthVariant[] = [
+      {
+        title: `Full Body ${profileTitle} A`,
+        exerciseIds: ['front_squat', 'bench_press', 'romanian_deadlift', 'pull_up', 'dead_bug'],
+        tags: ['full_body', 'main_lifts'],
+      },
+      {
+        title: `Full Body ${profileTitle} B`,
+        exerciseIds: ['goblet_squat', 'dumbbell_bench_press', 'single_leg_rdl', 'one_arm_dumbbell_row', 'suitcase_carry'],
+        tags: ['full_body', 'accessory'],
+      },
+    ];
+    return variants[slot] ?? variants[0];
+  }
+
+  return {
+    title: templateTitleForProfile(profile),
+    exerciseIds: templateExerciseFallback(profile),
+    tags: ['full_body', 'core'],
+  };
+}
+
+function templateTitleForProfile(profile: StrengthProfile): string {
+  if (profile === 'hypertrophy') return 'Full Body Hypertrophy';
+  if (profile === 'max_strength') return 'Full Body Strength';
+  if (profile === 'maintenance') return 'Strength Maintenance + Core';
+  return 'Strength + Core Support';
+}
+
+function templateExerciseFallback(profile: StrengthProfile): string[] {
+  if (profile === 'maintenance') {
+    return ['split_squat', 'bench_press', 'pull_up', 'dead_bug', 'hip_hinge_band'];
+  }
+  return ['front_squat', 'romanian_deadlift', 'pull_up', 'bench_press', 'dead_bug'];
+}
+
+function minimumExerciseCount(durationMinutes: number, experience: StrengthExperience): number {
+  if (durationMinutes >= 55) return experience === 'advanced' ? 6 : 5;
+  if (durationMinutes >= 40) return 5;
+  return 4;
+}
+
+function resolveExercises(
+  template: WorkoutTemplate,
+  library: Exercise[],
+  athlete: AthleteState,
+  profile: StrengthProfile,
+  variant: StrengthVariant,
+  durationMinutes: number,
+): ExercisePrescription[] {
   const equipment = availableEquipment(athlete);
   const libraryById = new Map(library.map((exercise) => [exercise.id, exercise]));
   const usedIds = new Set<string>();
-  const basePrescriptions = (template.defaultExercises ?? [])
+  const experience = athlete.profile.experienceLevel;
+  const desiredExerciseIds = [...variant.exerciseIds, ...(template.defaultExercises ?? [])]
+    .filter((exerciseId, index, all) => all.indexOf(exerciseId) === index);
+
+  const basePrescriptions = desiredExerciseIds
     .map<ExercisePrescription | null>((exerciseId) => {
       const original = libraryById.get(exerciseId) ?? null;
       const resolved = resolveExerciseCandidate(exerciseId, libraryById, equipment, usedIds);
       if (!resolved) return null;
       usedIds.add(resolved.id);
-      const prescription = prescriptionFor(resolved, profile);
+      const prescription = prescriptionFor(resolved, profile, experience);
       return {
         exerciseId: resolved.id,
         name: resolved.name,
         sets: prescription.sets,
         reps: prescription.reps,
         rir: prescription.rir,
+        restSec: prescription.restSec,
         notes: original && original.id !== resolved.id
           ? `Adjusted from ${original.name} to fit the athlete's available equipment.`
           : undefined,
@@ -154,21 +295,32 @@ function resolveExercises(template: WorkoutTemplate, library: Exercise[], athlet
 
   const prescriptions: ExercisePrescription[] = [...basePrescriptions];
 
-  if (prescriptions.length >= 4) return prescriptions;
+  const targetCount = minimumExerciseCount(durationMinutes, experience);
+  if (prescriptions.length >= targetCount) return prescriptions.slice(0, targetCount);
 
-  const fillerIds = ['dead_bug', 'hip_airplane', 'bear_crawl', 'worlds_greatest_stretch'];
+  const fillerIds = [
+    'push_up',
+    'hip_hinge_band',
+    'lunging_iso_hold',
+    'hollow_hold',
+    'bear_crawl',
+    'sandbag_hold',
+    'dead_bug',
+    'worlds_greatest_stretch',
+  ];
   for (const fillerId of fillerIds) {
-    if (prescriptions.length >= 4) break;
+    if (prescriptions.length >= targetCount) break;
     const filler = libraryById.get(fillerId);
     if (!filler || usedIds.has(filler.id) || !canPerformExercise(filler, equipment)) continue;
     usedIds.add(filler.id);
-    const prescription = prescriptionFor(filler, profile);
+    const prescription = prescriptionFor(filler, profile, experience);
     prescriptions.push({
       exerciseId: filler.id,
       name: filler.name,
       sets: prescription.sets,
       reps: prescription.reps,
       rir: prescription.rir,
+      restSec: prescription.restSec,
       notes: 'Fallback support movement added to keep the session complete with the athlete\'s current setup.',
     });
   }
@@ -183,7 +335,7 @@ function resolveStrengthDays(athlete: AthleteState, targetSessions: number): Day
   const generalDays = DAY_ORDER.filter((day) =>
     athlete.availability.weeklyWindows.some((window) => window.dayOfWeek === day && (!window.sports || window.sports.length === 0))
   );
-  const fallbackDays: DayOfWeek[] = ['monday', 'wednesday', 'friday'];
+  const fallbackDays: DayOfWeek[] = ['monday', 'wednesday', 'friday', 'saturday', 'tuesday', 'thursday', 'sunday'];
   const orderedDays = [...explicitStrengthDays, ...generalDays, ...fallbackDays]
     .filter((day, index, allDays) => allDays.indexOf(day) === index);
   return orderedDays.slice(0, targetSessions);
@@ -209,6 +361,7 @@ function resolveDurationForDay(template: WorkoutTemplate, athlete: AthleteState,
 
 function buildStrengthSession(
   template: WorkoutTemplate,
+  variant: StrengthVariant,
   dayOfWeek: DayOfWeek,
   durationMinutes: number,
   exercises: ExercisePrescription[],
@@ -218,8 +371,8 @@ function buildStrengthSession(
     id: createSessionId('strength', dayOfWeek, template.title),
     sport: 'strength',
     sessionType: template.sessionType,
-    title: template.title,
-    description: template.instructions.join(' '),
+    title: variant.title,
+    description: buildStrengthDescription(template, variant),
     dayOfWeek,
     durationMinutes,
     intensityZone: template.primaryZone,
@@ -227,10 +380,21 @@ function buildStrengthSession(
     keySession: false,
     plannedLoad: durationToLoad(durationMinutes, template.primaryZone, template.fatigueCost),
     sourceTemplateId: template.id,
-    tags,
+    tags: [...new Set([...tags, ...variant.tags])],
     exercises,
-    alternatives: ['Swap for lighter full-body support', 'Swap for core and mobility circuit'],
+    alternatives: ['Reduce one accessory set if recovery is low', 'Keep load lighter and finish the mobility cooldown'],
   };
+}
+
+function buildStrengthDescription(template: WorkoutTemplate, variant: StrengthVariant): string {
+  return [
+    template.instructions.join(' '),
+    variant.tags.includes('upper_body')
+      ? 'Pair upper-body work with trunk stability and leave legs fresher for endurance work.'
+      : variant.tags.includes('lower_body')
+        ? 'Keep lower-body reps technically clean; stop before form breaks.'
+        : 'Use this as a balanced whole-body lift with controlled effort.',
+  ].join(' ');
 }
 
 export const strengthEngine: SportEngine = {
@@ -251,21 +415,31 @@ export const strengthEngine: SportEngine = {
     const sessionType = preferredSessionType(strengthProfile);
     const targetSessions = clamp(maintenance ? Math.min(requestedSessions, 2) : requestedSessions, 0, 4);
     const template = templateFor(templates, sessionType);
-    const exercises = resolveExercises(template, context.knowledge.exercises, context.athlete, strengthProfile);
     const days = resolveStrengthDays(context.athlete, targetSessions);
 
-    return days.slice(0, targetSessions).map((dayOfWeek) =>
-      buildStrengthSession(
+    return days.slice(0, targetSessions).map((dayOfWeek, index) => {
+      const durationMinutes = resolveDurationForDay(template, context.athlete, dayOfWeek);
+      const variant = strengthVariantFor(strengthProfile, targetSessions, index);
+      const exercises = resolveExercises(
         template,
+        context.knowledge.exercises,
+        context.athlete,
+        strengthProfile,
+        variant,
+        durationMinutes,
+      );
+      return buildStrengthSession(
+        template,
+        variant,
         dayOfWeek,
-        resolveDurationForDay(template, context.athlete, dayOfWeek),
+        durationMinutes,
         exercises,
         maintenance
           ? ['maintenance', 'lower_body', 'core']
           : strengthProfile === 'hypertrophy'
             ? ['hypertrophy', 'full_body', 'lower_body', 'core']
             : ['full_body', 'lower_body', 'core'],
-      )
-    );
+      );
+    });
   },
 };

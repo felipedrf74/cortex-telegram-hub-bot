@@ -133,6 +133,15 @@ function seedGarmin(
     .run(userId, 'felipe@example.com', '{}', status);
 }
 
+function seedAppleHealth(userId: number, date = new Date().toISOString().slice(0, 10)): void {
+  testDb
+    .prepare(
+      `INSERT INTO apple_health_data (user_id, data_type, date, data_json, source_name)
+       VALUES (?, 'daily_summary', ?, ?, 'ios_app')`,
+    )
+    .run(userId, date, JSON.stringify({ steps: 4200, totalSleepMinutes: 430 }));
+}
+
 function seedProbeFailures(provider: string, count: number): void {
   for (let i = 0; i < count; i += 1) {
     testDb
@@ -179,6 +188,7 @@ describe('integration-status', () => {
 
       expect(byProvider.google.state).toBe('disconnected');
       expect(byProvider.outlook.state).toBe('disconnected');
+      expect(byProvider.apple_health.state).toBe('disconnected');
       expect(byProvider.garmin.state).toBe('disconnected');
       // whoop is coming_soon regardless of env
       expect(byProvider.whoop.state).toBe('coming_soon');
@@ -288,6 +298,28 @@ describe('integration-status', () => {
       expect(summary.capabilities.health).toBe(true);
       expect(summary.capabilities.mail).toBe(false);
       expect(summary.capabilities.calendar).toBe(false);
+    });
+  });
+
+  describe('Apple Health only (device-local health user)', () => {
+    it('reports apple_health:connected when iOS has synced recent HealthKit data', () => {
+      seedAppleHealth(144);
+      const summary = getIntegrationSummary(144);
+      const appleHealth = summary.providers.find((p) => p.provider === 'apple_health')!;
+
+      expect(appleHealth.state).toBe('connected');
+      expect(appleHealth.capabilities).toEqual(['health', 'sleep', 'readiness', 'training']);
+      expect(appleHealth.scopes).toEqual(['HealthKit read']);
+    });
+
+    it('exposes hasHealth without implying mail or calendar', () => {
+      seedAppleHealth(144);
+      const summary = getIntegrationSummary(144);
+
+      expect(summary.capabilities.health).toBe(true);
+      expect(summary.capabilities.mail).toBe(false);
+      expect(summary.capabilities.calendar).toBe(false);
+      expect(hasUsableHealthProvider(144)).toBe(true);
     });
   });
 
@@ -529,7 +561,7 @@ describe('integration-status', () => {
       const summary = getIntegrationSummary(100);
       const providers = summary.providers.map((p) => p.provider).sort();
       expect(providers).toEqual(
-        ['google', 'outlook', 'garmin', 'strava', 'whoop', 'fitbit', 'todoist', 'notion'].sort(),
+        ['google', 'outlook', 'garmin', 'apple_health', 'strava', 'whoop', 'fitbit', 'todoist', 'notion'].sort(),
       );
     });
 

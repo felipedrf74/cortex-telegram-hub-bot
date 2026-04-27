@@ -200,6 +200,7 @@ export interface ExercisePrescription {
   sets: number;
   reps: string;
   rir?: number;
+  restSec?: number;
   notes?: string;
 }
 
@@ -305,4 +306,3 @@ export interface CoachKnowledgeBase {
   principles: Record<string, unknown>;
   docs: Record<string, string>;
 }
-

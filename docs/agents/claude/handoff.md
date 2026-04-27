@@ -1,17 +1,35 @@
 # Claude Code — Tenant + Entitlement + Portal Hardening Handoff
 
-## Current Cross-Agent Truth - 2026-04-26
+## Current Cross-Agent Truth - 2026-04-27
 
 This section supersedes older branch/status notes below. Historical handoff
 content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production is live at `4.14.88`; staging remains at `4.14.87`.
+- Backend production and staging are live at `4.14.89`.
 - Full backend verification passed before the latest production deploy:
-  350 test files / 5,547 tests.
+  351 test files / 5,557 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `927b16a`; code commit `9c4a4a0` is the Training
+  online at deploy commit `5447fe8`; staging was aligned to `4.14.89` after
+  production promote and passed the 17/17 staging smoke.
+- `4.14.89` closes the latest Training intelligence + Apple Health/Home warmup
+  batch: Training generation respects weekly session/gym volume, supports
+  distinct same-day run/gym slots, avoids new-plan sessions in the past, removes
+  generated calendar/agenda events on plan cancellation, folds mobility/cooldown
+  into workout descriptions instead of standalone mobility sessions, strips
+  redundant week-planning prose from session descriptions, and enriches gym
+  sessions by profile experience and time budget. Integration status reports
+  `apple_health` when recent HealthKit rows exist. iOS HealthKit connect is
+  idempotent, stores per-user local Apple Health truth, auto-syncs on
+  launch/connect, merges local HealthKit truth into Connections/Home/Training,
+  and prevents Home from showing warmup repeatedly after initial bootstrap.
+  Verification passed focused backend Apple Health/connections tests, full
+  backend `npm run verify`, full iOS scheme tests, local beta smoke, simulator
+  Home tab-switch smoke, staging smoke 17/17, and production health. Remaining
+  caveat: real Apple Watch/HealthKit ingestion still needs signed TestFlight
+  validation on Jaqueline's physical device.
+- The preceding `4.14.88` release is the Training
   stale calendar-link repair release. It verifies linked provider events before
   treating sessions as synced, repairs missing or mismatched Google Calendar
   events, exposes stale calendar links as missing in Week Plan read models, and

@@ -33,6 +33,7 @@ import { buildDeterministicTrainingPlan } from './training-fallback-plan';
 import { fetchCurrentReadinessForPlan } from './training-read-models';
 import { persistGeneratedTrainingPlan } from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
+import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
 import { logger } from '../../utils/logger';
 
 export interface GenerateTrainingPlanForUserInput {
@@ -128,9 +129,11 @@ export async function generateTrainingPlanForUser(
   const normalizedSessionsPerWeek = clampNumber(sessionsPerWeek, 5, 3, 7);
   const normalizedStrengthSessionsPerWeek = clampNumber(strengthSessionsPerWeek, 0, 0, 4);
   const gymOnlyObjective = objectiveNeedsGymProfile(objective) && !objectiveNeedsRunningProfile(objective);
-  const effectiveStrengthSessionsPerWeek = gymOnlyObjective
-    ? normalizedSessionsPerWeek
-    : normalizedStrengthSessionsPerWeek;
+  const effectiveStrengthSessionsPerWeek = normalizedStrengthSessionsPerWeek > 0
+    ? normalizedStrengthSessionsPerWeek
+    : gymOnlyObjective
+      ? Math.min(normalizedSessionsPerWeek, 4)
+      : 0;
   const normalizedLongWorkoutDay = typeof longWorkoutDay === 'string' ? longWorkoutDay.trim() : null;
 
   let sharedDecisionContext = '';
@@ -227,6 +230,17 @@ export async function generateTrainingPlanForUser(
     );
     usedFallbackTemplate = true;
   }
+
+  planData = adaptTrainingPlanToAvailableEquipment(
+    enforceRequestedTrainingPlanVolume(planData, {
+      sessionsPerWeek: normalizedSessionsPerWeek,
+      strengthSessionsPerWeek: effectiveStrengthSessionsPerWeek,
+      preferredCardioTime: normalizedPreferredCardioTime,
+      preferredStrengthTime: normalizedPreferredStrengthTime,
+      startDate: startStr,
+    }),
+    equipmentAdaptation,
+  );
 
   try {
     const cancellation = await cancelTrainingPlanForUser(userId);

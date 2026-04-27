@@ -327,8 +327,13 @@ function resolveWeeklyTargets(
       return { cycling: total, strength: strength };
     case 'swimming':
       return { swimming: total, strength: strength };
-    case 'strength':
-      return { strength: Math.max(total, strength || total) };
+    case 'strength': {
+      const strengthTarget = Math.min(strength || Math.min(total, 4), total, 4);
+      const aerobicSupport = Math.max(0, total - strengthTarget);
+      return aerobicSupport > 0
+        ? { running: aerobicSupport, strength: strengthTarget }
+        : { strength: strengthTarget };
+    }
     case 'hybrid':
     default: {
       const strengthTarget = Math.max(1, Math.min(strength || 2, total - 2));
@@ -611,6 +616,7 @@ function convertSessionToLegacy(session: Session): CoordinatedTrainingSession {
       sets: exercise.sets,
       reps: exercise.reps,
       rpe: exercise.rir != null ? `RIR ${exercise.rir}` : undefined,
+      rest_sec: exercise.restSec,
     })) ?? [],
     preferredStartTime: session.startTime ?? null,
   };

@@ -165,10 +165,10 @@ function buildSections(input: SessionDescriptionInput): SessionSections {
   return {
     header: {
       planName: normalizePlanName(input.planName, input.objective),
-      phase: phaseLabel(input.weekFocus, input.weekNumber, input.totalWeeks),
+      phase: undefined,
     },
     badge: buildBadge(input),
-    weeklyProgression: buildWeeklyProgression(input),
+    weeklyProgression: undefined,
     execution: buildExecution(input, sport),
     exercises: buildExercises(input.session.exercises),
     warmup: buildWarmup(input.session.sessionType, sport),
@@ -514,7 +514,7 @@ function buildWarmup(sessionType: string, sport: SportFamily): SessionSections['
 function buildCooldown(sessionType: string, sport: SportFamily): SessionSections['cooldown'] {
   switch (sport) {
     case 'running':
-      return { headline: 'COOL-DOWN', items: ['5 min walk + light stretching'] };
+      return { headline: 'COOL-DOWN', items: ['5 min walk + calf, hip, and hamstring mobility'] };
     case 'cycling':
       return { headline: 'COOL-DOWN', items: ['5 min easy spin to flush legs'] };
     case 'swimming':
@@ -523,10 +523,10 @@ function buildCooldown(sessionType: string, sport: SportFamily): SessionSections
       if (sessionType === 'strength_max' || sessionType === 'strength_hypertrophy') {
         return {
           headline: 'COOL-DOWN',
-          items: ['Stretch hip flexors and hamstrings for 10 min after the session'],
+          items: ['8-10 min mobility for hips, T-spine, hamstrings, and the muscles trained'],
         };
       }
-      return { headline: 'COOL-DOWN', items: ['2-3 min mobility for the muscles trained'] };
+      return { headline: 'COOL-DOWN', items: ['5 min mobility for the muscles trained'] };
     }
     default:
       return undefined;

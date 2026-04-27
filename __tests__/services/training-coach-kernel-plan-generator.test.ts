@@ -100,17 +100,17 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     expect(athlete.goals.primaryFocus).toBe('strength');
-    expect(athlete.goals.weeklySessionsTarget).toMatchObject({ strength: 5 });
+    expect(athlete.goals.weeklySessionsTarget).toMatchObject({ running: 3, strength: 2 });
   });
 
-  it('builds muscle-building weeks without running sessions', () => {
+  it('builds muscle-building weeks with requested gym volume plus aerobic support', () => {
     const plan = buildCoachKernelTrainingPlan({
       userId: 506,
       objective: 'Muscle Building',
       durationWeeks: 4,
       startDate: '2026-04-26',
       sessionsPerWeek: 5,
-      strengthSessionsPerWeek: 5,
+      strengthSessionsPerWeek: 4,
       preferredTime: '12:00',
       preferredCardioTime: '07:00',
       preferredStrengthTime: '12:30',
@@ -122,7 +122,8 @@ describe('buildCoachKernelTrainingPlan — side effects', () => {
     });
 
     expect(plan.sport).toBe('gym');
-    expect(plan.weeks?.[0]?.sessions?.every((session) => session.sessionType === 'gym')).toBe(true);
+    expect(plan.weeks?.[0]?.sessions?.filter((session) => session.sessionType === 'gym')).toHaveLength(4);
+    expect(plan.weeks?.[0]?.sessions?.some((session) => session.sessionType === 'run')).toBe(true);
   });
 
   it('seeds AthleteState.readiness from currentReadiness when provided', () => {

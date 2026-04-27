@@ -229,7 +229,7 @@ describe('Connections routes', () => {
     // One row per connectable provider, including coming_soon and not_configured.
     const providerNames = integrations.map((i: any) => i.provider).sort();
     expect(providerNames).toEqual(
-      ['google', 'outlook', 'garmin', 'strava', 'whoop', 'fitbit', 'todoist', 'notion'].sort(),
+      ['google', 'outlook', 'garmin', 'apple_health', 'strava', 'whoop', 'fitbit', 'todoist', 'notion'].sort(),
     );
   });
 

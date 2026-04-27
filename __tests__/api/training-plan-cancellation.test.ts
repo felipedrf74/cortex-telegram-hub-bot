@@ -166,6 +166,49 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(47, 12);
   });
 
+  it('deletes orphan generated events when old titles drift but rich descriptions still identify the plan', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 48,
+      user_id: 12,
+      start_date: '2026-04-20T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 8301, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 631,
+        day_of_week: 'Wednesday',
+        session_type: 'gym',
+        title: 'Upper Body Strength A',
+        duration_minutes: 48,
+        status: 'pending',
+        calendar_event_id: null,
+        calendar_source: null,
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'orphan-rich',
+        source: 'google',
+        summary: 'Strength Session',
+        start: '2026-04-22T12:00:00.000Z',
+        end: '2026-04-22T12:48:00.000Z',
+        description: 'Muscle Building — Coach Plan\n\nUpper Body Strength A\nEXERCISES:',
+      },
+    ]);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('orphan-rich', 'google', 12);
+  });
+
   it('cancels every active plan when no specific plan id is provided', async () => {
     mocks.getActivePlans.mockReturnValue([
       { id: 70, user_id: 12, start_date: '2026-04-20T00:00:00.000Z' },
