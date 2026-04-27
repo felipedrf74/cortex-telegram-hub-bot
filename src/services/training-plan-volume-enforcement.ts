@@ -1,6 +1,9 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession } from './training-plan-coordination';
+import { loadCoachKnowledge } from './coach-kernel/knowledge-loader';
+import { buildStrengthSupportVariant } from './coach-kernel/support-session-builder';
+import type { CoachKnowledgeBase } from './coach-kernel/types';
 
 const DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 const DAY_LABEL: Record<string, string> = {
@@ -244,8 +247,8 @@ function buildStrengthSupportSession(
   request: TrainingPlanVolumeRequest,
   index: number,
 ): CoordinatedTrainingSession {
-  const variants = strengthSupportVariants();
-  const variant = variants[index % variants.length] ?? variants[0];
+  const knowledge = safeLoadCoachKnowledge();
+  const variant = buildStrengthSupportVariant(index, knowledge);
   const planSport = String(sport || '').toLowerCase();
   return {
     dayOfWeek: DAY_LABEL[dayOfWeek] ?? dayOfWeek,
@@ -256,6 +259,21 @@ function buildStrengthSupportSession(
     description: 'Strength slot added to preserve the requested weekly gym volume while keeping the load controlled.',
     exercises: variant.exercises,
   };
+}
+
+/**
+ * Defensive loader. The coach knowledge files ship with the package
+ * so the happy path never fails, but if a constrained test
+ * environment can't reach them we let `buildStrengthSupportVariant`
+ * fall back to its `MIN_CREDIBLE_STRENGTH_MINUTES` floor instead of
+ * crashing the volume-enforcement pass.
+ */
+function safeLoadCoachKnowledge(): CoachKnowledgeBase | undefined {
+  try {
+    return loadCoachKnowledge();
+  } catch {
+    return undefined;
+  }
 }
 
 function buildCardioSupportSession(
@@ -286,59 +304,6 @@ function buildCardioSupportSession(
     description: 'Aerobic support added to reach the requested weekly frequency without turning recovery days into hard sessions.',
     exercises: [],
   };
-}
-
-function strengthSupportVariants(): Array<{
-  title: string;
-  durationMinutes: number;
-  exercises: Array<Record<string, unknown>>;
-}> {
-  return [
-    {
-      title: 'Lower Body Strength A',
-      durationMinutes: 50,
-      exercises: [
-        { name: 'Front Squat / Goblet Squat', sets: 4, reps: '6-8', rpe: '7', rest_sec: 90 },
-        { name: 'Romanian Deadlift', sets: 3, reps: '8-10', rpe: '7', rest_sec: 90 },
-        { name: 'Split Squat', sets: 3, reps: '8/side', rpe: '7', rest_sec: 75 },
-        { name: 'Farmer Carry', sets: 3, reps: '40m', rpe: '7', rest_sec: 60 },
-        { name: 'Dead Bug', sets: 3, reps: '10/side', rpe: '6', rest_sec: 30 },
-      ],
-    },
-    {
-      title: 'Upper Body Strength A',
-      durationMinutes: 48,
-      exercises: [
-        { name: 'Bench Press / Push-Up', sets: 4, reps: '6-10', rpe: '7', rest_sec: 90 },
-        { name: 'Pull-Up / Lat Pulldown', sets: 4, reps: '6-10', rpe: '7', rest_sec: 90 },
-        { name: 'One-Arm Row', sets: 3, reps: '10/side', rpe: '7', rest_sec: 60 },
-        { name: 'Suitcase Carry', sets: 3, reps: '30m/side', rpe: '7', rest_sec: 60 },
-        { name: 'Hollow Hold', sets: 3, reps: '25-35s', rpe: '6', rest_sec: 30 },
-      ],
-    },
-    {
-      title: 'Lower Body Strength B',
-      durationMinutes: 45,
-      exercises: [
-        { name: 'Goblet Squat', sets: 3, reps: '10-12', rpe: '7', rest_sec: 75 },
-        { name: 'Single-Leg Romanian Deadlift', sets: 3, reps: '8/side', rpe: '7', rest_sec: 75 },
-        { name: 'Lunge Iso Hold', sets: 3, reps: '25s/side', rpe: '7', rest_sec: 60 },
-        { name: 'Banded Hip Hinge', sets: 3, reps: '12', rpe: '6', rest_sec: 45 },
-        { name: 'Bear Crawl', sets: 3, reps: '20m', rpe: '6', rest_sec: 45 },
-      ],
-    },
-    {
-      title: 'Upper Body Strength B',
-      durationMinutes: 45,
-      exercises: [
-        { name: 'Dumbbell Bench Press', sets: 3, reps: '8-12', rpe: '7', rest_sec: 75 },
-        { name: 'Lat Pulldown / Row', sets: 3, reps: '8-12', rpe: '7', rest_sec: 75 },
-        { name: 'Push-Up', sets: 3, reps: '8-12', rpe: '7', rest_sec: 60 },
-        { name: 'Sandbag Hold / Farmer Carry', sets: 3, reps: '30-40s', rpe: '7', rest_sec: 60 },
-        { name: 'Dead Bug', sets: 3, reps: '10/side', rpe: '6', rest_sec: 30 },
-      ],
-    },
-  ];
 }
 
 function sortSessions(sessions: CoordinatedTrainingSession[]): CoordinatedTrainingSession[] {
