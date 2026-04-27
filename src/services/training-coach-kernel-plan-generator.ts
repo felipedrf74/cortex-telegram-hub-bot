@@ -175,7 +175,34 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   const weeklyTargets = resolveWeeklyTargets(primaryFocus, input);
   const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile);
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
-  const equipment = resolveEquipmentAccess(input.fitnessProfile, input.gymProfile);
+
+  // Slice 3.J (Layer 1, audit follow-up): emit a structured warning
+  // when the equipment-access resolver had to fall back. Before
+  // slice 3.J a user typing "Crossfit box" or "Hotel gym" got
+  // `hasGym/hasBarbell/hasDumbbells: false` silently, which forced
+  // the strength engine into bodyweight/band-only patterns even
+  // though they had a fully-equipped facility. The log now
+  // distinguishes "missing" (prompt the user to fill in equipment)
+  // from "unrecognized" (grow the matcher's keyword list).
+  const equipmentResolution = resolveEquipmentAccessWithSource(input.fitnessProfile, input.gymProfile);
+  if (equipmentResolution.source === 'fallback') {
+    logger.warn({
+      surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.equipmentAccess',
+      userId: input.userId,
+      reason: equipmentResolution.reason,
+      rawInput: equipmentResolution.rawInput ?? null,
+      rawGymProfile: typeof input.gymProfile?.equipment_access === 'string'
+        ? input.gymProfile.equipment_access
+        : null,
+      rawFitnessProfile: typeof input.fitnessProfile?.available_equipment === 'string'
+        ? input.fitnessProfile.available_equipment
+        : null,
+    }, equipmentResolution.reason === 'unrecognized'
+      ? 'Equipment-access resolver fell back — profile contained vocabulary not yet in matchEquipmentKeywords; user may have lost barbell/dumbbell access in their plan'
+      : 'Equipment-access resolver fell back — no equipment data on profile; planner will use fallback (no gym, no barbell, no dumbbells)');
+  }
+  const equipment = equipmentResolution.value;
+
   const trainingHistory = resolveTrainingHistory(input, weeklyTargets);
 
   // Slice 3.I (Layer 1, audit follow-up): emit a structured warning
@@ -443,32 +470,192 @@ function resolveConstraints(
   return constraints;
 }
 
+/**
+ * The fields the planner reads to decide what equipment the athlete
+ * has access to. Both are loose JSON columns at the DB boundary, so
+ * the resolver below treats them as `unknown` and tells the caller
+ * exactly which source produced the answer (and which keywords
+ * inside that source matched).
+ */
+type EquipmentProfileSource = 'gym_profile.equipment_access' | 'fitness_profile.available_equipment';
+
+/**
+ * The "user has nothing recognizable" equipment shape. Track is the
+ * only field assumed-true (running outdoors is universally
+ * available); everything else defaults false. Same shape as the
+ * pre-slice-3.J fallback so the planner-output contract is
+ * preserved.
+ */
+const FALLBACK_EQUIPMENT_ACCESS: EquipmentAccess = {
+  hasGym: false,
+  hasBarbell: false,
+  hasDumbbells: false,
+  hasBikeTrainer: false,
+  hasPool: false,
+  hasTrack: true,
+  notes: [],
+};
+
+/**
+ * Result of resolving the athlete's equipment access from loose
+ * profile data. The discriminated union exists so the caller can
+ * distinguish three runtime cases the previous version silently
+ * conflated:
+ *
+ *   1. The profile records a recognized vocabulary string (e.g.
+ *      "Full gym + bands") → `source` names the field that produced
+ *      the answer and `matchedKeywords` lists every keyword inside
+ *      the string that contributed.
+ *   2. The profile records an UNRECOGNIZED string (e.g. "Crossfit
+ *      box", "Hotel gym", "YMCA") → `source: 'fallback'`,
+ *      `reason: 'unrecognized'`, `rawInput` carries the literal
+ *      strings so the call-site logger can flag the new vocabulary
+ *      for the matcher list to absorb. Before slice 3.J, a real
+ *      gym user typing "Crossfit box" got their barbell and
+ *      dumbbell access silently set to `false`, forcing the
+ *      strength engine into bodyweight/band-only patterns even
+ *      though they had a fully-equipped facility.
+ *   3. The profile has nothing recognizable at all → `source: 'fallback'`,
+ *      `reason: 'missing'`. This is the "fresh user with empty
+ *      onboarding" case — distinct from (2) because the operator
+ *      action is different (prompt to fill in equipment vs grow
+ *      the keyword list).
+ *
+ * `value` is always the `EquipmentAccess` shape the planner
+ * actually uses; the `source` separation gives the call site clean
+ * material for structured logging and future telemetry / UX hooks.
+ */
+export type EquipmentAccessResolution =
+  | {
+      value: EquipmentAccess;
+      source: EquipmentProfileSource;
+      matchedKeywords: string[];
+    }
+  | {
+      value: EquipmentAccess;
+      source: 'fallback';
+      reason: 'missing' | 'unrecognized';
+      rawInput?: string;
+    };
+
+/**
+ * Pure, exported variant of `resolveEquipmentAccess` that carries
+ * the resolution provenance. Pinned by
+ * `__tests__/services/training-coach-kernel-equipment-access.test.ts`.
+ *
+ * Source-preference order is `gym_profile.equipment_access` first,
+ * then `fitness_profile.available_equipment` — same precedence the
+ * pre-slice-3.J string-coalescing chain implied.
+ */
+export function resolveEquipmentAccessWithSource(
+  fitnessProfile?: Record<string, any> | null,
+  gymProfile?: Record<string, any> | null,
+): EquipmentAccessResolution {
+  const gymRaw = pickEquipmentString(gymProfile?.equipment_access);
+  if (gymRaw !== null) {
+    const matched = matchEquipmentKeywords(gymRaw);
+    if (matched.matchedKeywords.length > 0) {
+      return { value: matched.value, source: 'gym_profile.equipment_access', matchedKeywords: matched.matchedKeywords };
+    }
+  }
+
+  const fitnessRaw = pickEquipmentString(fitnessProfile?.available_equipment);
+  if (fitnessRaw !== null) {
+    const matched = matchEquipmentKeywords(fitnessRaw);
+    if (matched.matchedKeywords.length > 0) {
+      return { value: matched.value, source: 'fitness_profile.available_equipment', matchedKeywords: matched.matchedKeywords };
+    }
+  }
+
+  // Neither source matched. Distinguish "user typed something we
+  // didn't recognize" from "user typed nothing" so the call-site
+  // logger can prompt different operator actions.
+  const presentInputs = [gymRaw, fitnessRaw].filter((s): s is string => s !== null);
+  if (presentInputs.length === 0) {
+    return { value: FALLBACK_EQUIPMENT_ACCESS, source: 'fallback', reason: 'missing' };
+  }
+  return {
+    value: FALLBACK_EQUIPMENT_ACCESS,
+    source: 'fallback',
+    reason: 'unrecognized',
+    rawInput: presentInputs.join(' | '),
+  };
+}
+
+/**
+ * Wrapper preserved for the existing call-site signature so other
+ * consumers don't change. New callers (and the call site that wants
+ * to log fallbacks) should use `resolveEquipmentAccessWithSource`
+ * directly.
+ */
 function resolveEquipmentAccess(
   fitnessProfile?: Record<string, any> | null,
   gymProfile?: Record<string, any> | null,
 ): EquipmentAccess {
-  const raw = String(
-    gymProfile?.equipment_access
-      ?? fitnessProfile?.available_equipment
-      ?? '',
-  ).toLowerCase();
+  return resolveEquipmentAccessWithSource(fitnessProfile, gymProfile).value;
+}
 
-  const hasFullGym = raw.includes('full gym') || raw.includes('full commercial');
-  const hasGarageGym = raw.includes('garage');
-  const hasHomeBasic = raw.includes('home gym') || raw.includes('basic');
-  const hasBodyweightOnly = raw.includes('bodyweight');
+/**
+ * Trim and reject empty strings or non-strings. Returns the
+ * normalized non-empty string, or `null` if the input doesn't carry
+ * usable text.
+ */
+function pickEquipmentString(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * Walk the recognized vocabulary against `raw`. Returns both the
+ * derived `EquipmentAccess` shape AND every keyword that matched,
+ * so the resolver can report which tokens drove the answer.
+ *
+ * The keyword set is the same that the pre-slice-3.J implementation
+ * used (`'full gym'`, `'full commercial'`, `'garage'`, `'home gym'`,
+ * `'basic'`, `'bodyweight'`, `'band'`). Future vocabulary additions
+ * (`'crossfit'`, `'hotel'`, `'university'`, `'ymca'`, `'box'`,
+ * `'studio'`) should land here in their own slices, ideally after
+ * the call-site fallback log surfaces them in production.
+ */
+function matchEquipmentKeywords(raw: string): { value: EquipmentAccess; matchedKeywords: string[] } {
+  const lower = raw.toLowerCase();
+  const matchedKeywords: string[] = [];
+
+  const hasFullGym = lower.includes('full gym');
+  if (hasFullGym) matchedKeywords.push('full gym');
+  const hasFullCommercial = lower.includes('full commercial');
+  if (hasFullCommercial) matchedKeywords.push('full commercial');
+  const hasGarageGym = lower.includes('garage');
+  if (hasGarageGym) matchedKeywords.push('garage');
+  const hasHomeGym = lower.includes('home gym');
+  if (hasHomeGym) matchedKeywords.push('home gym');
+  const hasBasic = lower.includes('basic');
+  if (hasBasic) matchedKeywords.push('basic');
+  const hasBodyweightOnly = lower.includes('bodyweight');
+  if (hasBodyweightOnly) matchedKeywords.push('bodyweight');
+  const hasBands = lower.includes('band');
+  if (hasBands) matchedKeywords.push('band');
+
+  // Capability derivation matches the pre-slice-3.J behavior so
+  // sample-athlete tests stay green.
+  const isFullCommercialOrGym = hasFullGym || hasFullCommercial;
+  const hasHomeBasic = hasHomeGym || hasBasic;
 
   return {
-    hasGym: hasFullGym || hasGarageGym || hasHomeBasic,
-    hasBarbell: hasFullGym || hasGarageGym,
-    hasDumbbells: hasFullGym || hasGarageGym || hasHomeBasic,
-    hasBikeTrainer: false,
-    hasPool: false,
-    hasTrack: true,
-    notes: compact([
-      hasBodyweightOnly ? 'Bodyweight-only setup.' : null,
-      raw.includes('band') ? 'Resistance bands available.' : null,
-    ]),
+    value: {
+      hasGym: isFullCommercialOrGym || hasGarageGym || hasHomeBasic,
+      hasBarbell: isFullCommercialOrGym || hasGarageGym,
+      hasDumbbells: isFullCommercialOrGym || hasGarageGym || hasHomeBasic,
+      hasBikeTrainer: false,
+      hasPool: false,
+      hasTrack: true,
+      notes: compact([
+        hasBodyweightOnly ? 'Bodyweight-only setup.' : null,
+        hasBands ? 'Resistance bands available.' : null,
+      ]),
+    },
+    matchedKeywords,
   };
 }
 
