@@ -76,6 +76,14 @@ export interface TrainingSession {
   intensity_text: string | null;
   calendar_event_id: string | null;
   calendar_source: string | null;
+  /**
+   * Slice 1.B (coach-engine refactor, 2026-04-27) — set to 1 by the
+   * planner when it could not land the session at the user's preferred
+   * time. iOS uses this to render a ⚠️ chip so the user knows the time
+   * was a fallback (e.g., 06:30 because the day was fully booked) rather
+   * than a deliberate planner choice. Migration 080 backfills 0.
+   */
+  preferred_time_unavailable: number;
   status: 'pending' | 'completed' | 'skipped' | 'moved';
   created_at: string;
   updated_at: string;
@@ -130,6 +138,12 @@ export interface CreateSessionInput {
   intensity_text?: string;
   calendar_event_id?: string;
   calendar_source?: string;
+  /**
+   * Slice 1.B — set to true when the planner had to fall back from the
+   * user's preferred time because the day was already booked. Persisted
+   * as `preferred_time_unavailable INTEGER` (1/0). See migration 080.
+   */
+  preferred_time_unavailable?: boolean;
 }
 
 export interface LogCompletionInput {
@@ -361,14 +375,15 @@ export function createSession(input: CreateSessionInput): TrainingSession {
     INSERT INTO training_sessions
       (week_id, plan_id, day_of_week, session_type, title, description,
        description_json, exercises_json, duration_minutes, intensity_text,
-       calendar_event_id, calendar_source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       calendar_event_id, calendar_source, preferred_time_unavailable)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.week_id, input.plan_id, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
     input.exercises_json ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
     input.calendar_event_id ?? null, input.calendar_source ?? null,
+    input.preferred_time_unavailable ? 1 : 0,
   );
   return db.prepare('SELECT * FROM training_sessions WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingSession;

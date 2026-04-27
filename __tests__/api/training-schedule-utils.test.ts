@@ -99,5 +99,91 @@ describe('training schedule route utilities', () => {
 
     expect(scheduled.start.getHours()).toBe(6);
     expect(scheduled.end.getHours()).toBe(7);
+    expect(scheduled.preferredTimeUnavailable).toBe(false);
+  });
+
+  it('returns preferredTimeUnavailable=false when the exact preferred time is free', () => {
+    const day = new Date(2026, 3, 20);
+    const scheduled = scheduleSessionWindow(day, 60, '12:00', [], []);
+
+    expect(scheduled.start.getHours()).toBe(12);
+    expect(scheduled.preferredTimeUnavailable).toBe(false);
+  });
+
+  it('walks the day for ANY free 60-min window when the friendly band is fully booked', () => {
+    // Slice 1.B regression net: previously, when the symmetric ±2.5h band
+    // around the preferred time was fully booked, the planner would
+    // silently fall back to the literal preferred time — landing the
+    // session ON TOP of an existing meeting. The new behavior walks the
+    // day and either finds a free 60-min window OR signals
+    // preferredTimeUnavailable=true.
+    //
+    // Friendly-band candidates for `preferredTime: '12:00'` cover 09:30
+    // through 14:30 (±150-min), with session ends up to 15:30. Block
+    // 09:00–15:30 to force every candidate to overlap.
+    const day = new Date(2026, 3, 20);
+    const blockStart = new Date(day);
+    blockStart.setHours(9, 0, 0, 0);
+    const blockEnd = new Date(day);
+    blockEnd.setHours(15, 30, 0, 0);
+    const busyWindows: BusyWindow[] = [{
+      startMs: blockStart.getTime(),
+      endMs: blockEnd.getTime(),
+      title: 'Long meeting',
+    }];
+
+    const scheduled = scheduleSessionWindow(day, 60, '12:00', busyWindows, []);
+
+    expect(scheduled.preferredTimeUnavailable).toBe(true);
+    // Day-walk should land at the earliest free slot — 05:00–06:00.
+    expect(scheduled.start.getHours()).toBe(5);
+    expect(scheduled.end.getHours()).toBe(6);
+    // Sanity: rendered slot must not overlap the busy window.
+    const slotStart = scheduled.start.getTime();
+    const slotEnd = scheduled.end.getTime();
+    expect(slotStart >= blockEnd.getTime() || slotEnd <= blockStart.getTime()).toBe(true);
+  });
+
+  it('falls back to the safe 06:30 marker when the entire 05:00-21:00 window is booked', () => {
+    const day = new Date(2026, 3, 20);
+    // Block the whole working day. The planner should NOT silently land
+    // a session on top of any of these — it should mark the slot
+    // unavailable and drop to a deterministic safe time so iOS can show
+    // a ⚠️ chip.
+    const blockStart = new Date(day);
+    blockStart.setHours(5, 0, 0, 0);
+    const blockEnd = new Date(day);
+    blockEnd.setHours(21, 0, 0, 0);
+    const busyWindows: BusyWindow[] = [{
+      startMs: blockStart.getTime(),
+      endMs: blockEnd.getTime(),
+      title: 'All day',
+    }];
+
+    const scheduled = scheduleSessionWindow(day, 60, '12:00', busyWindows, []);
+
+    expect(scheduled.preferredTimeUnavailable).toBe(true);
+    expect(scheduled.start.getHours()).toBe(6);
+    expect(scheduled.start.getMinutes()).toBe(30);
+  });
+
+  it('treats already-scheduled siblings as busy (no two sessions on top of each other)', () => {
+    const day = new Date(2026, 3, 20);
+    const sib1Start = new Date(day);
+    sib1Start.setHours(7, 0, 0, 0);
+    const sib1End = new Date(day);
+    sib1End.setHours(8, 0, 0, 0);
+    const scheduledWindows: BusyWindow[] = [{
+      startMs: sib1Start.getTime(),
+      endMs: sib1End.getTime(),
+      title: 'AM run',
+    }];
+
+    const scheduled = scheduleSessionWindow(day, 60, '07:00', [], scheduledWindows);
+
+    expect(scheduled.preferredTimeUnavailable).toBe(false);
+    // 07:00 is taken by sibling, planner walks to 06:00 or 08:00
+    const hour = scheduled.start.getHours();
+    expect([6, 8]).toContain(hour);
   });
 });

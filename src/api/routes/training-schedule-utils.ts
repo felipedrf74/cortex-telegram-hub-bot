@@ -139,30 +139,81 @@ function overlapsRange(startMs: number, endMs: number, windows: BusyWindow[]): b
   return windows.some((window) => startMs < window.endMs && endMs > window.startMs);
 }
 
+/**
+ * Result of attempting to schedule a session into a day's free time.
+ *
+ * `preferredTimeUnavailable: true` means the user's preferred time (and
+ * the symmetric ±60/±90/±120/±150-minute candidates) all overlapped with
+ * either real provider events (`busyWindows`) or other sessions already
+ * placed earlier in this generation pass (`scheduledWindows`). The
+ * scheduler walked the day to find ANY free 60-min window. If even the
+ * day-walk failed, the result still has `preferredTimeUnavailable: true`
+ * but the time falls back to a deterministic safe slot (06:30) so the
+ * iOS UI can render an "attention needed" chip instead of silently
+ * landing the session on top of a meeting.
+ */
+export interface ScheduleSessionResult {
+  start: Date;
+  end: Date;
+  preferredTimeUnavailable: boolean;
+}
+
+const DAY_WALK_START_MINUTES = 5 * 60;     // 05:00 — earliest the planner is willing to go
+const DAY_WALK_END_MINUTES = 21 * 60;      // 21:00 — latest the planner is willing to go
+const DAY_WALK_STEP_MINUTES = 30;
+const SAFE_FALLBACK_TIME_MINUTES = 6 * 60 + 30;  // 06:30 — a "you owe me a real time" marker
+
+function tryWindowAt(
+  sessionDate: Date,
+  startMinutes: number,
+  durationMinutes: number,
+  busyWindows: BusyWindow[],
+  scheduledWindows: BusyWindow[],
+): { start: Date; end: Date } | null {
+  const start = new Date(sessionDate);
+  start.setHours(Math.floor(startMinutes / 60), startMinutes % 60, 0, 0);
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  if (overlapsRange(start.getTime(), end.getTime(), busyWindows)) return null;
+  if (overlapsRange(start.getTime(), end.getTime(), scheduledWindows)) return null;
+  return { start, end };
+}
+
 export function scheduleSessionWindow(
   sessionDate: Date,
   durationMinutes: number,
   preferredTime: string,
   busyWindows: BusyWindow[],
   scheduledWindows: BusyWindow[],
-): { start: Date; end: Date } {
+): ScheduleSessionResult {
+  // Stage 1: try the preferred time + symmetric ±1/±1.5/±2/±2.5 candidates.
+  // This is the friendly fit where the user gets close to their stated
+  // preference even if there's a meeting at the exact preferred slot.
   const candidates = candidateTimesForPreferredTime(preferredTime);
-
   for (const candidate of candidates) {
-    const [hours, minutes] = candidate.split(':').map(Number);
-    const start = new Date(sessionDate);
-    start.setHours(hours, minutes, 0, 0);
-    const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
-    if (!overlapsRange(start.getTime(), end.getTime(), busyWindows) && !overlapsRange(start.getTime(), end.getTime(), scheduledWindows)) {
-      return { start, end };
-    }
+    const candidateMinutes = minutesFromTimeString(candidate);
+    const slot = tryWindowAt(sessionDate, candidateMinutes, durationMinutes, busyWindows, scheduledWindows);
+    if (slot) return { ...slot, preferredTimeUnavailable: false };
   }
 
-  const [fallbackHours, fallbackMinutes] = preferredTime.split(':').map(Number);
-  const fallbackStart = new Date(sessionDate);
-  fallbackStart.setHours(fallbackHours || 12, fallbackMinutes || 0, 0, 0);
+  // Stage 2: nothing in the friendly band is free. Walk the whole day in
+  // 30-min increments looking for ANY free 60-min window. This protects
+  // the user from the historical bug where the planner would land a
+  // session on top of an existing meeting because the fallback path
+  // ignored busy windows entirely.
+  for (let m = DAY_WALK_START_MINUTES; m + durationMinutes <= DAY_WALK_END_MINUTES; m += DAY_WALK_STEP_MINUTES) {
+    const slot = tryWindowAt(sessionDate, m, durationMinutes, busyWindows, scheduledWindows);
+    if (slot) return { ...slot, preferredTimeUnavailable: true };
+  }
+
+  // Stage 3: the day is fully booked from 05:00–21:00. Return a
+  // deterministic safe fallback (06:30) flagged as unavailable. The iOS
+  // UI is expected to show a ⚠️ chip on these sessions so the user knows
+  // they should resolve the conflict manually.
+  const fallback = new Date(sessionDate);
+  fallback.setHours(Math.floor(SAFE_FALLBACK_TIME_MINUTES / 60), SAFE_FALLBACK_TIME_MINUTES % 60, 0, 0);
   return {
-    start: fallbackStart,
-    end: new Date(fallbackStart.getTime() + durationMinutes * 60 * 1000),
+    start: fallback,
+    end: new Date(fallback.getTime() + durationMinutes * 60 * 1000),
+    preferredTimeUnavailable: true,
   };
 }

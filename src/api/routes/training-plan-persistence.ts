@@ -11,6 +11,7 @@ import {
   preferredTimeForSessionType,
   scheduleSessionWindow,
   type BusyWindow,
+  type ScheduleSessionResult,
 } from './training-schedule-utils';
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 
@@ -147,6 +148,7 @@ export async function persistGeneratedTrainingPlan(
         exercises_json: JSON.stringify(sessionData.exercises || []),
         duration_minutes: durationMinutes,
         intensity_text: `RPE ${weekData.intensityPct || 70}%`,
+        preferred_time_unavailable: scheduledWindow.preferredTimeUnavailable,
       });
 
       calendarEvents.push({
@@ -219,7 +221,7 @@ function scheduleSessionForPlan(input: {
   busyWindows: BusyWindow[];
   scheduledWindows: BusyWindow[];
   title: string;
-}): { start: Date; end: Date } {
+}): ScheduleSessionResult {
   const weekStart = new Date(input.now);
   weekStart.setDate(weekStart.getDate() + ((input.weekNumber - 1) * 7));
 

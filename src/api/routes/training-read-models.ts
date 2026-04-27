@@ -15,8 +15,105 @@ import {
   normalizeTrainingStatus,
   parseExercises,
 } from './training-calendar-utils';
+import { readinessResultToSnapshot } from '../../services/coach-kernel/readiness-snapshot-adapter';
+import { adaptSessionForReadiness, type AdaptationContext } from '../../services/coach-kernel/adaptation-engine';
+import type { Session, SessionType, Sport, ReadinessSnapshot } from '../../services/coach-kernel/types';
 
 const READINESS_TTL = 5 * 60; // 5 minutes — intraday energy reserve should move during the day
+
+/**
+ * Map the user-facing iOS sessionType label (e.g. `'gym'`, `'run'`) to a
+ * coach-kernel `SessionType` enum value. Returns `null` when the label is
+ * missing or doesn't fit a kernel category — the caller skips adaptation
+ * in that case (better to render the original session than to misclassify).
+ */
+function inferKernelSessionType(rawSessionType: string | null | undefined, status: string | null | undefined): SessionType | null {
+  const normalized = (rawSessionType ?? '').toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'rest' || status === 'rest') return 'rest';
+  if (normalized === 'mobility' || normalized === 'recovery_mobility') return 'mobility';
+  if (normalized === 'gym' || normalized.startsWith('strength')) return 'strength_hypertrophy';
+  if (normalized === 'recovery_run') return 'recovery_run';
+  if (normalized === 'recovery_ride') return 'recovery_ride';
+  if (normalized === 'recovery_swim') return 'recovery_swim';
+  // The iOS DTO uses coarse sport labels — for adaptation purposes we
+  // only need a "kind" the engine can rule on. Map running/cycling/swimming
+  // to a generic threshold/aerobic session — the engine's branch logic
+  // doesn't depend on the precise SessionType for non-recovery cases.
+  if (normalized === 'run') return 'easy_run';
+  if (normalized === 'ride' || normalized === 'bike' || normalized === 'cycling') return 'endurance_ride';
+  if (normalized === 'swim' || normalized === 'swimming') return 'aerobic_swim';
+  return null;
+}
+
+function inferKernelSport(rawSessionType: string | null | undefined): Sport | null {
+  const normalized = (rawSessionType ?? '').toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'gym' || normalized.startsWith('strength')) return 'strength';
+  if (normalized === 'run' || normalized.startsWith('recovery_run') || normalized.endsWith('_run')) return 'running';
+  if (normalized === 'ride' || normalized === 'bike' || normalized === 'cycling' || normalized.endsWith('_ride')) return 'cycling';
+  if (normalized === 'swim' || normalized === 'swimming' || normalized.endsWith('_swim')) return 'swimming';
+  return null;
+}
+
+export interface SessionAdaptation {
+  /** Multiplier applied to prescribed intensity. Always in [0, 1]. */
+  intensityDownshiftPct: number;
+  /** Original sessionType before adaptation. Set ONLY when the engine
+   *  swapped the type (red readiness or injury). Undefined when intensity
+   *  was simply downshifted. */
+  originalSessionType?: string;
+  /** Why the adapter changed the session. iOS uses this to pick a chip
+   *  color and explanatory copy. */
+  reason: 'red_readiness' | 'orange_readiness' | 'injury_safe_swap' | 'no_change';
+  /** Code-emitted explanation. Stable across runs given the same inputs. */
+  explanation: string;
+}
+
+/**
+ * Apply readiness-aware adaptation to an iOS-shaped session DTO. Returns
+ * `null` when adaptation could not be performed (e.g., session has no
+ * recognizable sport/type). Pure function — no I/O, no DB.
+ *
+ * iOS consumes the result via the `adaptation` field on the session DTO
+ * to render the "easy day" / "swapped to recovery" chip.
+ */
+export function adaptDtoSessionForReadiness(
+  dtoSession: { sessionType: string | null; status?: string | null },
+  snapshot: ReadinessSnapshot,
+  injuryAffectsSession?: boolean,
+): SessionAdaptation | null {
+  const sport = inferKernelSport(dtoSession.sessionType);
+  const sessionType = inferKernelSessionType(dtoSession.sessionType, dtoSession.status ?? null);
+  if (!sport || !sessionType) return null;
+
+  const kernelSession: Session = {
+    id: 'dto',
+    sport,
+    sessionType,
+    title: '',
+    description: '',
+    dayOfWeek: 'monday',
+    durationMinutes: 0,
+    intensityZone: 'aerobic',
+    fatigueCost: 'medium',
+    keySession: false,
+    plannedLoad: 0,
+    tags: [],
+  };
+
+  const ctx: AdaptationContext = {
+    readiness: snapshot,
+    injuryAffectsSession,
+  };
+  const adapted = adaptSessionForReadiness(kernelSession, ctx);
+  return {
+    intensityDownshiftPct: adapted.intensityDownshiftPct ?? 1.0,
+    originalSessionType: adapted.originalSessionType,
+    reason: adapted.adaptationReason,
+    explanation: adapted.adaptationExplanation,
+  };
+}
 
 /**
  * Parse the `description_json` column into a structured object for
@@ -77,6 +174,7 @@ export async function getTodaySession(userId: number) {
             status: normalizeTrainingStatus(rawSession.status),
             notes: rawSession.description || null,
             exercises: parseExercises(rawSession.exercises_json),
+            preferredTimeUnavailable: Number(rawSession.preferred_time_unavailable) === 1,
           };
         }
       }
@@ -112,6 +210,40 @@ export async function getTodaySession(userId: number) {
     }
   }
 
+  // Slice 1.C — best-effort readiness-aware adaptation. We call the cached
+  // `getReadiness(userId)` (5-min TTL) so this is cheap on the hot path.
+  // If readiness is unavailable, adaptation is skipped and the session
+  // renders as written.
+  let adaptation: SessionAdaptation | null = null;
+  if (session) {
+    try {
+      const readinessSummary = await getReadiness(userId);
+      const snapshot = readinessResultToSnapshot({
+        score: typeof readinessSummary?.score === 'number' ? readinessSummary.score : undefined,
+        sleepHours: readinessSummary?.factors?.sleepScore != null ? undefined : undefined,
+        hrvStatus: readinessSummary?.factors?.hrvStatus === 'down'
+          ? 'low'
+          : readinessSummary?.factors?.hrvStatus === 'up'
+            ? 'high'
+            : readinessSummary?.factors?.hrvStatus === 'stable'
+              ? 'normal'
+              : undefined,
+        energyReserve: typeof readinessSummary?.factors?.bodyBattery === 'number'
+          ? readinessSummary.factors.bodyBattery
+          : undefined,
+        reasoning: typeof readinessSummary?.reasonCode === 'string'
+          ? undefined
+          : undefined,
+      });
+      adaptation = adaptDtoSessionForReadiness(
+        { sessionType: session.sessionType ?? null, status: session.status ?? null },
+        snapshot,
+      );
+    } catch (err) {
+      logger.debug({ err, userId }, 'getTodaySession: readiness-aware adaptation skipped');
+    }
+  }
+
   return {
     session: session ? {
       id: session.id ? String(session.id) : null,
@@ -122,6 +254,14 @@ export async function getTodaySession(userId: number) {
       status: session.status || 'planned',
       notes: session.notes || null,
       exercises: session.exercises || null,
+      // Default to false when the session source is calendar/garmin
+      // fallback (which never has a planner-derived flag).
+      preferredTimeUnavailable: session.preferredTimeUnavailable === true,
+      // Slice 1.C — readiness-aware adaptation. Null when adaptation
+      // could not be inferred (unknown sessionType, no readiness data,
+      // calendar/garmin fallback session). iOS only renders the chip
+      // when this is non-null AND `reason !== 'no_change'`.
+      adaptation,
     } : null,
     plan,
   };
@@ -184,6 +324,11 @@ export async function getWeekPlan(userId: number) {
             descriptionSections: parseDescriptionSections(s.description_json),
             duration: s.duration_minutes || null,
             exercises: parseExercises(s.exercises_json),
+            // Slice 1.B (coach-engine refactor) — surface the planner's
+            // "could not land at preferred time" verdict to iOS so the
+            // Week Plan shows a ⚠️ chip rather than silently letting the
+            // user discover the wrong time when a meeting overlaps.
+            preferredTimeUnavailable: Number(s.preferred_time_unavailable) === 1,
           };
         });
       }
