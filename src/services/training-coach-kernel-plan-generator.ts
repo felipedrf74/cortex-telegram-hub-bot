@@ -260,6 +260,32 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     }, 'Experience-level resolver fell back to novice — profile fields missing or vocabulary unrecognized');
   }
 
+  // Slice 3.L (Layer 1, audit follow-up): emit a structured warning
+  // when the strength-goal resolver had to fall back. Strength goal
+  // drives prescription template selection — `'hypertrophy'`,
+  // `'max_strength'`, `'athletic'`, and `'maintenance'` produce
+  // different rep ranges, intensity, and exercise selection. Before
+  // slice 3.L every unrecognized goal silently collapsed to
+  // `'athletic'`: the user typed something specific
+  // ("powerbuilding", "general fitness", "tone") and got a generic
+  // template. The log distinguishes 'missing' (prompt the user to
+  // fill in) from 'unrecognized' (grow the matcher's keyword list).
+  const strengthGoalResolution = resolveStrengthGoalWithSource(input.gymProfile);
+  if (strengthGoalResolution.source === 'fallback') {
+    logger.warn({
+      surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.strengthGoal',
+      userId: input.userId,
+      reason: strengthGoalResolution.reason,
+      rawInput: strengthGoalResolution.rawInput ?? null,
+      rawGymProfile: typeof input.gymProfile?.primary_goal === 'string'
+        ? input.gymProfile.primary_goal
+        : null,
+      fallbackValue: strengthGoalResolution.value,
+    }, strengthGoalResolution.reason === 'unrecognized'
+      ? 'Strength-goal resolver fell back to athletic — profile contained vocabulary not yet in STRENGTH_GOAL_KEYWORDS; user may receive a generic prescription template instead of the one they implied'
+      : 'Strength-goal resolver fell back to athletic — no primary_goal data on profile; planner will use the generic athletic prescription template');
+  }
+
   return {
     profile: {
       athleteId: input.userId,
@@ -277,7 +303,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
     goals: {
       primaryFocus,
       secondaryFocus: weeklyTargets.strength ? 'strength' : undefined,
-      strengthGoal: resolveStrengthGoal(input.gymProfile),
+      strengthGoal: strengthGoalResolution.value,
       raceCalendar,
       priorityOrder: resolvePriorityOrder(primaryFocus),
       weeklySessionsTarget: weeklyTargets,
@@ -860,12 +886,135 @@ function resolveTrainingHistory(
   };
 }
 
+/**
+ * Vocabulary table for the strength-goal matcher. Order matters
+ * — earlier entries take precedence under `String.includes`-based
+ * scanning. So `'powerlifting'` appears BEFORE `'strength'` even
+ * though both map to `'max_strength'`: a user who typed
+ * "Powerlifting strength" gets `matchedKeyword: 'powerlifting'`
+ * (the more specific intent) rather than the generic `'strength'`.
+ *
+ * The keyword set is deliberately the same as the pre-slice-3.L
+ * implementation (`'hypertrophy'`, `'powerlifting'`, `'strength'`,
+ * `'support'`). Adding new tokens like `'maintenance'` or
+ * `'powerbuilding'` would shift inputs that previously fell
+ * through to `'athletic'` into a different bucket — that's a real
+ * behavior change and belongs in a separate vocabulary-expansion
+ * slice once the call-site fallback log surfaces what users
+ * actually type.
+ */
+const STRENGTH_GOAL_KEYWORDS: ReadonlyArray<{
+  pattern: string;
+  keyword: string;
+  goal: NonNullable<Goals['strengthGoal']>;
+}> = [
+  { pattern: 'hypertrophy', keyword: 'hypertrophy', goal: 'hypertrophy' },
+  { pattern: 'powerlifting', keyword: 'powerlifting', goal: 'max_strength' },
+  { pattern: 'strength', keyword: 'strength', goal: 'max_strength' },
+  { pattern: 'support', keyword: 'support', goal: 'maintenance' },
+];
+
+/**
+ * The "user has nothing recognizable" strength goal. Same
+ * `'athletic'` value the pre-slice-3.L resolver returned so the
+ * planner-output contract is preserved.
+ */
+const FALLBACK_STRENGTH_GOAL: NonNullable<Goals['strengthGoal']> = 'athletic';
+
+/**
+ * Result of resolving the athlete's strength goal from loose
+ * profile data. The discriminated union exists so the caller can
+ * distinguish three runtime cases the previous version silently
+ * conflated:
+ *
+ *   1. The profile records a recognized vocabulary token (e.g.
+ *      `"Hypertrophy block"`, `"powerlifting peak"`) → `source`
+ *      names the field that produced the answer and
+ *      `matchedKeyword` records which token in
+ *      `STRENGTH_GOAL_KEYWORDS` matched.
+ *   2. The profile records an UNRECOGNIZED token (e.g.
+ *      `"powerbuilding"`, `"functional fitness"`, `"general
+ *      fitness"`) → `source: 'fallback'`, `reason: 'unrecognized'`,
+ *      `rawInput` carries the literal string so the call-site
+ *      logger can flag the new vocabulary for the matcher list to
+ *      absorb. Before slice 3.L every unrecognized goal silently
+ *      collapsed to `'athletic'` — the user typed something
+ *      specific, the planner picked a generic template.
+ *   3. The profile has nothing → `source: 'fallback'`,
+ *      `reason: 'missing'`. Different operator action: prompt the
+ *      user to fill in their goal.
+ *
+ * `value` is always the strength goal the planner actually uses.
+ * The `source` separation gives the call site clean material for
+ * structured logging and future telemetry / UX hooks.
+ *
+ * Downstream impact: `Goals['strengthGoal']` drives strength
+ * prescription template selection — `'hypertrophy'` produces
+ * different rep ranges, intensity, and exercise selection than
+ * `'max_strength'` / `'athletic'` / `'maintenance'`. So a
+ * fallback to `'athletic'` for a user who typed "powerbuilding"
+ * is a real plan-shape difference, not just a labeling concern.
+ */
+export type StrengthGoalResolution =
+  | {
+      value: NonNullable<Goals['strengthGoal']>;
+      source: 'gym_profile.primary_goal';
+      matchedKeyword: string;
+    }
+  | {
+      value: NonNullable<Goals['strengthGoal']>;
+      source: 'fallback';
+      reason: 'missing' | 'unrecognized';
+      rawInput?: string;
+    };
+
+/**
+ * Pure, exported variant of `resolveStrengthGoal` that carries
+ * the resolution provenance. Pinned by
+ * `__tests__/services/training-coach-kernel-strength-goal.test.ts`.
+ */
+export function resolveStrengthGoalWithSource(
+  gymProfile?: Record<string, any> | null,
+): StrengthGoalResolution {
+  const raw = pickStrengthGoalString(gymProfile?.primary_goal);
+  if (raw === null) {
+    return { value: FALLBACK_STRENGTH_GOAL, source: 'fallback', reason: 'missing' };
+  }
+
+  const lower = raw.toLowerCase();
+  for (const entry of STRENGTH_GOAL_KEYWORDS) {
+    if (lower.includes(entry.pattern)) {
+      return { value: entry.goal, source: 'gym_profile.primary_goal', matchedKeyword: entry.keyword };
+    }
+  }
+
+  return {
+    value: FALLBACK_STRENGTH_GOAL,
+    source: 'fallback',
+    reason: 'unrecognized',
+    rawInput: raw,
+  };
+}
+
+/**
+ * Wrapper preserved for the existing call-site signature so other
+ * consumers don't change. New callers (and the call site that
+ * wants to log fallbacks) should use
+ * `resolveStrengthGoalWithSource` directly.
+ */
 function resolveStrengthGoal(gymProfile?: Record<string, any> | null): Goals['strengthGoal'] {
-  const goal = String(gymProfile?.primary_goal ?? '').toLowerCase();
-  if (goal.includes('hypertrophy')) return 'hypertrophy';
-  if (goal.includes('strength') || goal.includes('powerlifting')) return 'max_strength';
-  if (goal.includes('support')) return 'maintenance';
-  return 'athletic';
+  return resolveStrengthGoalWithSource(gymProfile).value;
+}
+
+/**
+ * Trim and reject empty/non-string inputs. Returns the trimmed
+ * non-empty string, or `null` if the input doesn't carry usable
+ * text. Mirrors `pickEquipmentString` in slice 3.J.
+ */
+function pickStrengthGoalString(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 function resolvePriorityOrder(primaryFocus: CoachingDiscipline): Goals['priorityOrder'] {
