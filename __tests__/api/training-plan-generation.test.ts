@@ -19,7 +19,11 @@ const mockBuildDeterministicTrainingPlan = vi.fn();
 const mockFetchCurrentReadinessForPlan = vi.fn();
 const mockPersistGeneratedTrainingPlan = vi.fn();
 const mockCancelTrainingPlanForUser = vi.fn();
+// Slice 4.D.2 — saga inspects post-cancellation state via these.
+const mockGetActivePlans = vi.fn();
+const mockFindOrphanedOwnerships = vi.fn();
 const mockLoggerWarn = vi.fn();
+const mockLoggerError = vi.fn();
 
 vi.mock('../../src/services/onboarding', () => ({
   getProfile: (...args: unknown[]) => mockGetProfile(...args),
@@ -73,11 +77,19 @@ vi.mock('../../src/api/routes/training-plan-cancellation', () => ({
   cancelTrainingPlanForUser: (...args: unknown[]) => mockCancelTrainingPlanForUser(...args),
 }));
 
+vi.mock('../../src/services/training-plans', () => ({
+  getActivePlans: (...args: unknown[]) => mockGetActivePlans(...args),
+}));
+
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  findOrphanedOwnerships: (...args: unknown[]) => mockFindOrphanedOwnerships(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
     info: vi.fn(),
-    error: vi.fn(),
+    error: (...args: unknown[]) => mockLoggerError(...args),
     debug: vi.fn(),
     trace: vi.fn(),
     child: vi.fn().mockReturnThis(),
@@ -131,7 +143,13 @@ describe('generateTrainingPlanForUser', () => {
     mockFetchCurrentReadinessForPlan.mockReset();
     mockPersistGeneratedTrainingPlan.mockReset();
     mockCancelTrainingPlanForUser.mockReset();
+    mockGetActivePlans.mockReset();
+    mockFindOrphanedOwnerships.mockReset();
     mockLoggerWarn.mockReset();
+    mockLoggerError.mockReset();
+    // Slice 4.D.2 defaults — clean state, no orphans, no remaining plans.
+    mockGetActivePlans.mockReturnValue([]);
+    mockFindOrphanedOwnerships.mockReturnValue([]);
 
     mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
       if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };
@@ -368,5 +386,117 @@ describe('generateTrainingPlanForUser', () => {
       sessionsPerWeek: 5,
       strengthSessionsPerWeek: 2,
     }));
+  });
+
+  // ─── Slice 4.D.2 — pre-persist cancellation saga ─────────────────────
+
+  describe('pre-persist cancellation saga (slice 4.D.2)', () => {
+    it('aborts the persist with cancellation_failed when the cancellation throws AND the prior plan is still active', async () => {
+      mockCancelTrainingPlanForUser.mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'));
+      mockGetActivePlans.mockReturnValue([{ id: 999, status: 'active' }]);
+
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        objective: 'Lisbon Marathon',
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      });
+
+      expect(result.status).toBe('cancellation_failed');
+      if (result.status === 'cancellation_failed') {
+        expect(result.data.activePlansRemaining).toBe(1);
+        expect(result.data.reason).toContain('SQLITE_BUSY');
+        expect(String(result.data.message)).toContain('Could not finalize cancellation');
+      }
+      // Critical: persist must NOT run when the saga aborts.
+      expect(mockPersistGeneratedTrainingPlan).not.toHaveBeenCalled();
+      expect(mockLoggerError).toHaveBeenCalled();
+    });
+
+    it('proceeds with persist when cancellation throws but no active plans remain (post-delete throw)', async () => {
+      mockCancelTrainingPlanForUser.mockRejectedValueOnce(new Error('Narrative cleanup failed'));
+      mockGetActivePlans.mockReturnValue([]);
+
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        objective: 'Lisbon Marathon',
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      });
+
+      expect(result.status).toBe('created');
+      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
+      // Should warn about post-delete throw, not error.
+      expect(mockLoggerWarn).toHaveBeenCalled();
+    });
+
+    it('warns and continues when cancellation succeeds with orphaned external events', async () => {
+      mockCancelTrainingPlanForUser.mockResolvedValueOnce({
+        status: 'cancelled',
+        data: {
+          cancelled: true,
+          planId: 99,
+          removedEvents: 3,
+          removedSessions: 10,
+          removedWeeks: 4,
+          removedCompletions: 0,
+          removedPlans: 1,
+          totalSessions: 10,
+          message: 'Plan cancelled',
+        },
+      });
+      mockFindOrphanedOwnerships.mockReturnValue([
+        { id: 1, calendar_event_id: 'evt-orphan-1', calendar_source: 'google', status: 'active' },
+        { id: 2, calendar_event_id: 'evt-orphan-2', calendar_source: 'outlook', status: 'active' },
+      ]);
+
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        objective: 'Lisbon Marathon',
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      });
+
+      expect(result.status).toBe('created');
+      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
+      // The saga should warn that reconciliation is queued.
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ orphanedEventCount: 2 }),
+        expect.stringContaining('reconciliation queued'),
+      );
+    });
+
+    it('continues silently when cancellation reports no active plan (first-time generation)', async () => {
+      // Default mock from beforeEach already returns 'not_found'.
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        objective: 'Lisbon Marathon',
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      });
+
+      expect(result.status).toBe('created');
+      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
+      // No saga warnings/errors for clean first-time generation.
+      expect(mockLoggerError).not.toHaveBeenCalled();
+    });
+
+    it('handles forbidden cancellation by warning and proceeding', async () => {
+      mockCancelTrainingPlanForUser.mockResolvedValueOnce({ status: 'forbidden' });
+
+      const result = await generateTrainingPlanForUser({
+        userId: 12,
+        objective: 'Lisbon Marathon',
+        sessionsPerWeek: 5,
+        strengthSessionsPerWeek: 2,
+      });
+
+      expect(result.status).toBe('created');
+      expect(mockPersistGeneratedTrainingPlan).toHaveBeenCalledTimes(1);
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 12 }),
+        expect.stringContaining('not user-owned'),
+      );
+    });
   });
 });

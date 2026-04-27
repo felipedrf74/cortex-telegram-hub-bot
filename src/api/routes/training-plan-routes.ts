@@ -101,6 +101,28 @@ export function registerTrainingPlanRoutes(
         return;
       }
 
+      // Slice 4.D.2 — saga abort. The pre-persist cancellation
+      // could not finalize the local hard-delete of the prior
+      // plan, so creating a new plan would corrupt state. We
+      // surface a 409 with an actionable reason instead.
+      if (result.status === 'cancellation_failed') {
+        logger.warn(
+          { userId, reason: result.data.reason, activePlansRemaining: result.data.activePlansRemaining },
+          'Training plan generation aborted by cancellation saga',
+        );
+        sendError(
+          res,
+          'CANCELLATION_FAILED',
+          result.data.message,
+          409,
+          {
+            reason: result.data.reason,
+            activePlansRemaining: result.data.activePlansRemaining,
+          },
+        );
+        return;
+      }
+
       logger.info({
         userId,
         planId: result.planId,
