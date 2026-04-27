@@ -8,6 +8,14 @@ const mockCreateSession = vi.fn();
 const mockLinkSessionToCalendar = vi.fn();
 const mockCreateEvent = vi.fn();
 const mockLoggerWarn = vi.fn();
+const mockLoggerInfo = vi.fn();
+// Slice 4.D — the lifecycle module hits the real DB. Mocked here so
+// the existing persistence-layer unit test can keep its in-memory
+// stub shape. The pure logic of the lifecycle module is exercised by
+// __tests__/services/training-plan-lifecycle.test.ts.
+const mockGetPlanVersion = vi.fn();
+const mockFindExistingOwnership = vi.fn();
+const mockRecordCalendarOwnership = vi.fn();
 
 vi.mock('../../src/services/training-plans', () => ({
   createPlan: (...args: unknown[]) => mockCreatePlan(...args),
@@ -20,9 +28,16 @@ vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: (...args: unknown[]) => mockCreateEvent(...args),
 }));
 
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  getPlanVersion: (...args: unknown[]) => mockGetPlanVersion(...args),
+  findExistingOwnership: (...args: unknown[]) => mockFindExistingOwnership(...args),
+  recordCalendarOwnership: (...args: unknown[]) => mockRecordCalendarOwnership(...args),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    info: (...args: unknown[]) => mockLoggerInfo(...args),
   },
 }));
 
@@ -36,12 +51,21 @@ describe('training-plan-persistence', () => {
     mockLinkSessionToCalendar.mockReset();
     mockCreateEvent.mockReset();
     mockLoggerWarn.mockReset();
+    mockLoggerInfo.mockReset();
+    mockGetPlanVersion.mockReset();
+    mockFindExistingOwnership.mockReset();
+    mockRecordCalendarOwnership.mockReset();
 
     mockCreatePlan.mockReturnValue({ id: 901 });
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
     let sessionId = 2000;
     mockCreateSession.mockImplementation(() => ({ id: ++sessionId }));
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
+    // Slice 4.D defaults: fresh plan_version=1, no prior ownership rows,
+    // ownership recorder reports clean inserts.
+    mockGetPlanVersion.mockReturnValue(1);
+    mockFindExistingOwnership.mockReturnValue(null);
+    mockRecordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 1 });
   });
 
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {

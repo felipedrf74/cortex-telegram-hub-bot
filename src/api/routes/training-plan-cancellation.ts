@@ -11,6 +11,7 @@ import * as trainingPlans from '../../services/training-plans';
 import { clearStoredPlansForAthlete } from '../../services/coach-plan-registry';
 import { deleteReportsByType } from '../../services/report-document-store';
 import { clearLastCoachState } from '../../domains/domain-handler';
+import { markCalendarOwnershipDeleted } from '../../services/training-plan-lifecycle';
 
 /**
  * Successful plan-cancellation payload.
@@ -143,6 +144,32 @@ export async function cancelTrainingPlanForUser(
     );
     const planRemovedEvents = deletionResults.filter(result => result.status === 'fulfilled').length;
     removedEvents += planRemovedEvents;
+
+    // Slice 4.D — record the cancellation outcome on the audit table
+    // so future reconcilers can distinguish events we intentionally
+    // removed (status='deleted') from events that became orphaned
+    // because their delete failed transiently (status='orphaned').
+    // The local hard-delete still proceeds — orphan reconciliation
+    // is a follow-up concern, not a blocker for cancellation success.
+    deletionResults.forEach((result, idx) => {
+      const target = deletionTargets[idx];
+      if (!target) return;
+      if (result.status === 'fulfilled') {
+        markCalendarOwnershipDeleted({
+          eventId: target.eventId,
+          source: target.source,
+          reason: 'plan_cancelled',
+          status: 'deleted',
+        });
+      } else {
+        markCalendarOwnershipDeleted({
+          eventId: target.eventId,
+          source: target.source,
+          reason: 'plan_cancelled_external_delete_failed',
+          status: 'orphaned',
+        });
+      }
+    });
 
     if (planRemovedEvents < deletionTargets.length) {
       logger.warn({

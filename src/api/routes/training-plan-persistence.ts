@@ -6,6 +6,11 @@ import {
   type AthleteProfiles,
   type SessionDescriptionInput,
 } from '../../services/training-session-description';
+import {
+  findExistingOwnership,
+  getPlanVersion,
+  recordCalendarOwnership,
+} from '../../services/training-plan-lifecycle';
 import { logger } from '../../utils/logger';
 import {
   preferredTimeForSessionType,
@@ -163,8 +168,29 @@ export async function persistGeneratedTrainingPlan(
     }
   }
 
+  // Slice 4.D — idempotent calendar create. Capture the plan_version
+  // once at the top of the loop; any retry of this persistence pass
+  // (e.g. a network blip + client retry) will see the same version
+  // and the (plan_id, plan_version, session_id) ownership row, so
+  // we can skip event re-creation cleanly. The DB-level unique index
+  // on (plan_id, plan_version, event_id, source) is the safety
+  // backstop for concurrent races we can't detect at the app layer.
+  const planVersionForOwnership = getPlanVersion(plan.id) ?? 1;
   let eventsCreated = 0;
+  let eventsAlreadyOwned = 0;
   for (const eventPayload of calendarEvents) {
+    const existing = findExistingOwnership({
+      planId: plan.id,
+      planVersion: planVersionForOwnership,
+      sessionId: eventPayload.sessionId,
+    });
+    if (existing) {
+      // A previous run of this loop already created + recorded the
+      // event for this session. Skip to avoid duplicate calendar
+      // entries on retry. The session row was already linked then.
+      eventsAlreadyOwned++;
+      continue;
+    }
     try {
       const event = await createTrainingCalendarEvent(
         {
@@ -182,10 +208,33 @@ export async function persistGeneratedTrainingPlan(
         },
       );
       trainingPlans.linkSessionToCalendar(eventPayload.sessionId, event.id, event.source);
+      // Record ownership AFTER the session linkage write so we never
+      // record an audit row for an event whose local linkage failed.
+      // The recorder is idempotent; concurrent races degrade to a
+      // safe no-op.
+      recordCalendarOwnership({
+        planId: plan.id,
+        planVersion: planVersionForOwnership,
+        sessionId: eventPayload.sessionId,
+        userId: input.userId,
+        eventId: event.id,
+        source: event.source,
+      });
       eventsCreated++;
     } catch (err) {
       logger.warn({ err, title: eventPayload.title }, 'Failed to create calendar event for session');
     }
+  }
+  if (eventsAlreadyOwned > 0) {
+    logger.info(
+      {
+        planId: plan.id,
+        planVersion: planVersionForOwnership,
+        eventsCreated,
+        eventsAlreadyOwned,
+      },
+      'persistGeneratedTrainingPlan: idempotent retry — some events already owned',
+    );
   }
 
   return {

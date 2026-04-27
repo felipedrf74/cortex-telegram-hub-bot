@@ -170,6 +170,16 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
+// Slice 4.D — lifecycle audit module touches the real DB. Stubbed here
+// for the integration-style training routes test. The lifecycle module
+// itself is exercised by training-plan-lifecycle.test.ts.
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  getPlanVersion: vi.fn(() => 1),
+  findExistingOwnership: vi.fn(() => null),
+  recordCalendarOwnership: vi.fn(() => ({ ok: true, created: true, ownershipId: 1 })),
+  markCalendarOwnershipDeleted: vi.fn(() => ({ ok: true, rowsAffected: 1 })),
+}));
+
 import { looksLikeTrainingCalendarEvent, trainingRoutes } from '../../src/api/routes/training';
 
 interface MockRes {
