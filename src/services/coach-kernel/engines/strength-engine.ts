@@ -23,6 +23,10 @@ import {
   suggestCorrection,
   validateSessionCoherence,
 } from '../session-coherence';
+import {
+  applyBiomechanicsSafetySubstitutions,
+  orderExercisesForSession,
+} from '../biomechanics-and-ordering';
 
 type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
 type StrengthExperience = AthleteState['profile']['experienceLevel'];
@@ -635,13 +639,31 @@ export const strengthEngine: SportEngine = {
       // (e.g. goblet_squat) still picks up its own equipment fallback
       // chain (e.g. bodyweight_squat) if the user has no dumbbells.
       const variant = applyBeginnerSubstitutions(baseVariant, context.athlete.profile.experienceLevel);
-      const exercises = resolveExercises(
+      const baseExercises = resolveExercises(
         template,
         context.knowledge.exercises,
         context.athlete,
         strengthProfile,
         variant,
         durationMinutes,
+      );
+      // Slice 4.H — biomechanics-aware substitution. After equipment
+      // + beginner substitutions have produced the prescription list,
+      // walk it once more and swap any exercise whose
+      // contraindication flags clash with the user's declared pain
+      // areas. Beginner-safe + biomechanics-safe + equipment-safe is
+      // a strict superset of the pre-slice substitution coverage.
+      const safetyResult = applyBiomechanicsSafetySubstitutions(
+        baseExercises,
+        context.athlete,
+        context.knowledge.exercises,
+      );
+      // Slice 4.H — sort the prescription list compound→accessory→
+      // core→mobility so the heaviest work hits while the user is
+      // freshest. Stable within each phase.
+      const exercises = orderExercisesForSession(
+        safetyResult.prescriptions,
+        context.knowledge.exercises,
       );
       const rawSession = buildStrengthSession(
         template,
