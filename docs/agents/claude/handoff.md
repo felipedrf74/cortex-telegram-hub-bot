@@ -7,14 +7,37 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.91`.
+- Backend production and staging are live at `4.14.92`.
 - Full backend verification passed before the latest production deploy:
-  354 test files / 5,597 tests.
+  355 test files / 5,612 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `dbb519e`; release source landed at backend commit
-  `e8f85fc`; staging was aligned to `4.14.90` before the promote and passed
+  online at deploy commit `0ec039a`; release source landed at backend commit
+  `4b16ba0`; staging was aligned to `4.14.91` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.91` is **coach-engine slice 2** — two backend sub-slices that
+- `4.14.92` is **coach-engine slice 3.H** — duration-aware strength
+  target exercise count. The previously file-scoped
+  `minimumExerciseCount` was renamed to `targetExerciseCount` and
+  exported from `services/coach-kernel/engines/strength-engine.ts`.
+  Two new low-end tiers were added without touching the existing
+  30+ minute behavior:
+  - `duration < 25 → 2` (NEW — 15–24 min "express" block)
+  - `25 ≤ duration < 30 → 3` (NEW — short block)
+  - 30–39 → 4 (UNCHANGED), 40–54 → 5 (UNCHANGED),
+    ≥55 advanced → 6 (UNCHANGED), ≥55 others → 5 (UNCHANGED).
+  Before slice 3.H the function floored at 4 even for a 15-min
+  block, producing over-prescribed sessions athletes either rushed
+  through or abandoned. Every "unchanged" tier is regression-pinned
+  by the new test file
+  `__tests__/services/coach-kernel-strength-engine-target-exercise-count.test.ts`
+  so a future change that accidentally shifts a 30+ minute case
+  fails the boundary tests rather than quietly altering production
+  plans. Verification: focused 23-test slice green (8 existing + 15
+  new), `npx tsc --noEmit` clean, full regression
+  `npm run verify` 355 / 5,612 green, staging smoke 17/17,
+  production deploy gate 17/17, production health passed for
+  content engine + portal + bot.
+
+- The preceding `4.14.91` is **coach-engine slice 2** — two backend sub-slices that
   close the next batch of audit gaps:
   - **2.A — Beginner gym differentiation**: novices now get safer
     pattern-teaching exercises (goblet_squat instead of front_squat,

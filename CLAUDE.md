@@ -14,16 +14,41 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.91`.
+- Production backend and staging are live at `4.14.92`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  354 test files / 5,597 tests.
+  355 test files / 5,612 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `dbb519e`; release source landed at backend commit
-  `e8f85fc`; staging was aligned to `4.14.90` before promote and passed the
-  17/17 staging smoke.
-- `4.14.91` shipped **coach-engine slice 2**:
+  online at deploy commit `0ec039a`; release source landed at backend commit
+  `4b16ba0`; staging was aligned to `4.14.91` before the promote and passed
+  the 17/17 staging smoke.
+- `4.14.92` shipped **coach-engine slice 3.H — duration-aware strength
+  target exercise count**:
+  - Renamed the previously file-scoped `minimumExerciseCount` to
+    `targetExerciseCount` and exported it from
+    `services/coach-kernel/engines/strength-engine.ts`. The function
+    acts as both the floor (filler top-up when a variant is short)
+    and the cap (`prescriptions.slice(0, targetCount)` when the
+    variant overflows).
+  - Added two new low-end tiers without touching the existing 30+
+    minute behavior: `duration < 25 → 2`, `25 ≤ duration < 30 → 3`.
+    Before slice 3.H the function floored at 4 even for a 15-min
+    "express" block, producing over-prescribed sessions athletes
+    rushed (poor quality) or abandoned partway through (defeating
+    the plan).
+  - Existing tiers preserved: 30–39 → 4, 40–54 → 5, ≥55 advanced → 6,
+    ≥55 others → 5. Every "unchanged" tier is regression-pinned by
+    the new test class so a future change that accidentally shifts
+    a 30+ minute case fails the boundary tests rather than quietly
+    altering production plans.
+  Verification: 23-test focused slice (8 existing + 15 new in
+  `coach-kernel-strength-engine-target-exercise-count.test.ts`)
+  green, full backend regression `npm run verify` 355 / 5,612 green,
+  staging smoke 17/17, production deploy gate 17/17, production
+  health passed for content engine + portal + bot.
+
+- The preceding `4.14.91` shipped **coach-engine slice 2**:
   - **2.A beginner gym differentiation**: `coach-kernel/engines/strength-engine.ts`
     now applies a beginner-safe substitution layer when
     `experienceLevel === 'novice'`. Maps front_squat → goblet_squat,
