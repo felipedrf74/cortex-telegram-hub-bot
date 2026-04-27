@@ -14,16 +14,71 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.94`.
+- Production backend and staging are live at `4.14.95`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  357 test files / 5,649 tests.
+  358 test files / 5,675 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `436f620`; release source landed at backend commit
-  `e1e3499`; staging was aligned to `4.14.93` before the promote and passed
+  online at deploy commit `71be392`; release source landed at backend commit
+  `4944a60`; staging was aligned to `4.14.94` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.94` shipped **coach-engine slice 3.J — explicit equipment-access
+- `4.14.95` shipped **coach-engine slice 3.K — explicit primary-focus
+  resolution provenance (Layer 1, audit follow-up)**:
+  - The previous `resolvePrimaryFocus` in
+    `services/training-coach-kernel-plan-generator.ts` matched the
+    objective string against six regex patterns and silently
+    returned `'hybrid'` when none matched. Downstream
+    `resolveWeeklyTargets`, `resolveRaceCalendar`, and
+    `resolvePriorityOrder` all switch on `primaryFocus`, so a
+    silent fallback to `'hybrid'` produced a globally different
+    plan shape compared to a recognized objective — same input
+    weekly volume, totally different output. The audit flagged
+    this as one of the highest-leverage Layer 1 silent defaults.
+  - The new exported `resolvePrimaryFocusWithSource()` returns
+    a discriminated union distinguishing THREE runtime cases the
+    previous version produced as identical `'hybrid'` outputs:
+    `{ value, source: 'objective_keyword', matchedKeyword }` for
+    recognized vocabulary, `{ value: 'hybrid',
+    source: 'inferred_volume_split' }` for the intentional hybrid
+    inference (user has both endurance and strength sessions),
+    or `{ value: 'hybrid', source: 'fallback',
+    reason: 'missing' | 'unrecognized', rawInput? }` otherwise.
+  - Implementation refactored from regex literals into a sorted
+    `OBJECTIVE_KEYWORDS` lookup table walked via `String.includes`.
+    Order is significant — most specific subdiscipline first, so
+    "Half Ironman" matches `'half ironman'` (not `'ironman'`),
+    "Trail running" matches `'trail'` (not `'running'`),
+    "Swimming endurance" matches `'swimming'` (not `'swim'`).
+  - **Byproduct fix**: the legacy `/70\\.3/` regex had a
+    double-backslash typo that matched a literal backslash
+    followed by any char — so a user typing just "70.3" used to
+    fall through to `'hybrid'`. The substring rewrite naturally
+    fixes this; "70.3" now correctly maps to `'triathlon'`.
+  - The single existing call site in
+    `buildAthleteStateFromTrainingProfiles` now consumes the rich
+    form and emits a structured pino warning at warning level
+    when fallback fires (NOT for the intentional volume-split
+    inference), with different message text for missing vs
+    unrecognized so future alert routing can prioritize the
+    latter.
+  - 26 new unit tests in
+    `__tests__/services/training-coach-kernel-primary-focus.test.ts`
+    pin every recognition path (every keyword in every discipline
+    + match-specificity ordering for "half ironman" / "trail
+    running" / "swimming endurance" + the 70.3 typo regression
+    + volume-split intentional-hybrid + match precedence + four
+    fallback subcases + case insensitivity).
+  Verification: `npx tsc --noEmit` clean, focused 79-test slice
+  (26 new + 20 equipment + 17 experience + 8 plan-generator + 8
+  strength-engine) green, full backend regression `npm run verify`
+  358 / 5,675 green, staging smoke 17/17, production deploy gate
+  17/17, production health passed for content engine + portal +
+  bot. Four remaining silent-default sites can each adopt the
+  same shape (`resolveStrengthGoal`, `resolveThresholdPace`,
+  `resolveTrainingHistory`, the `numericOrUndefined` chains).
+
+- The preceding `4.14.94` shipped **coach-engine slice 3.J — explicit equipment-access
   resolution provenance (Layer 1, audit follow-up)**:
   - The previous `resolveEquipmentAccess` in
     `services/training-coach-kernel-plan-generator.ts` string-matched

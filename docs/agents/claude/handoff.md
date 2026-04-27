@@ -7,14 +7,46 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.94`.
+- Backend production and staging are live at `4.14.95`.
 - Full backend verification passed before the latest production deploy:
-  357 test files / 5,649 tests.
+  358 test files / 5,675 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `436f620`; release source landed at backend commit
-  `e1e3499`; staging was aligned to `4.14.93` before the promote and passed
+  online at deploy commit `71be392`; release source landed at backend commit
+  `4944a60`; staging was aligned to `4.14.94` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.94` is **coach-engine slice 3.J — explicit equipment-access
+- `4.14.95` is **coach-engine slice 3.K — explicit primary-focus
+  resolution provenance** (Layer 1, audit follow-up). The previous
+  `resolvePrimaryFocus` in
+  `services/training-coach-kernel-plan-generator.ts` matched the
+  objective string against six regex patterns and silently
+  returned `'hybrid'` when none matched. Because
+  `resolveWeeklyTargets`, `resolveRaceCalendar`, and
+  `resolvePriorityOrder` all switch on `primaryFocus`, a silent
+  fallback to `'hybrid'` produced a globally different plan shape
+  compared to a recognized objective — same input weekly volume,
+  totally different output. The new exported
+  `resolvePrimaryFocusWithSource()` returns a richer union than
+  3.I/3.J because there's a legitimate INTENTIONAL hybrid path
+  (volume-split inference): `{ value, source: 'objective_keyword',
+  matchedKeyword }` for recognized vocab,
+  `{ value: 'hybrid', source: 'inferred_volume_split' }` for
+  intentional hybrid (volume signal supports the call), or
+  `{ value: 'hybrid', source: 'fallback', reason: 'missing' |
+  'unrecognized', rawInput? }` otherwise. The call site logs ONLY
+  on the fallback path — intentional volume-split is silent.
+  Implementation refactored from regex literals into a sorted
+  `OBJECTIVE_KEYWORDS` lookup table; order is significant ("half
+  ironman" before "ironman", "trail" before "running", etc.).
+  Byproduct fix: legacy `/70\\.3/` regex had a backslash typo
+  ("70.3" used to fall through); substring rewrite fixes it.
+  26 new unit tests pin every recognition path. Verification:
+  typecheck clean, focused 79-test slice green, full regression
+  `npm run verify` 358 / 5,675 green, staging smoke 17/17,
+  production deploy gate 17/17, production health passed for
+  content engine + portal + bot. Four remaining silent-default
+  sites can each adopt the same shape.
+
+- The preceding `4.14.94` was **coach-engine slice 3.J — explicit equipment-access
   resolution provenance** (Layer 1, audit follow-up). The previous
   `resolveEquipmentAccess` in
   `services/training-coach-kernel-plan-generator.ts` string-matched
