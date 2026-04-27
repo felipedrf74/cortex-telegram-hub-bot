@@ -7,14 +7,44 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.93`.
+- Backend production and staging are live at `4.14.94`.
 - Full backend verification passed before the latest production deploy:
-  356 test files / 5,629 tests.
+  357 test files / 5,649 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `6f996b9`; release source landed at backend commit
-  `6d4f9a9`; staging was aligned to `4.14.92` before the promote and passed
+  online at deploy commit `436f620`; release source landed at backend commit
+  `e1e3499`; staging was aligned to `4.14.93` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.93` is **coach-engine slice 3.I — explicit experience-level
+- `4.14.94` is **coach-engine slice 3.J — explicit equipment-access
+  resolution provenance** (Layer 1, audit follow-up). The previous
+  `resolveEquipmentAccess` in
+  `services/training-coach-kernel-plan-generator.ts` string-matched
+  against a known keyword list and silently returned
+  `hasGym/hasBarbell/hasDumbbells: false` when the input didn't
+  match. A real-gym user typing "Crossfit box", "Hotel gym",
+  "YMCA", or "University rec center" got their barbell and
+  dumbbell access stripped silently — the strength engine then
+  fell into bodyweight/band-only patterns even though the user
+  had a fully-equipped facility. The new exported
+  `resolveEquipmentAccessWithSource()` returns
+  `{ value, source: 'gym_profile.equipment_access' | 'fitness_profile.available_equipment',
+     matchedKeywords }` for recognized vocab, or `{ value, source: 'fallback',
+     reason: 'missing' | 'unrecognized', rawInput? }` otherwise.
+  The `'unrecognized'` branch carries the raw input so the
+  call-site logger emits an actionable signal — new vocabulary
+  in production logs becomes a prompt to grow
+  `matchEquipmentKeywords`. Implementation refactored into pure
+  helpers (`pickEquipmentString` + `matchEquipmentKeywords`).
+  Capability derivation matches the pre-slice-3.J behavior exactly
+  so sample-athlete tests stay green. 20 new unit tests pin every
+  recognition path including the killer unrecognized-vocabulary
+  examples. Verification: typecheck clean, focused 53-test slice
+  green, full regression `npm run verify` 357 / 5,649 green,
+  staging smoke 17/17, production deploy gate 17/17, production
+  health passed for content engine + portal + bot. Five remaining
+  silent-default sites can each adopt the same shape in their own
+  bounded slices.
+
+- The preceding `4.14.93` was **coach-engine slice 3.I — explicit experience-level
   resolution provenance** (Layer 1, audit follow-up). The previous
   `resolveExperienceLevel` in
   `services/training-coach-kernel-plan-generator.ts` silently

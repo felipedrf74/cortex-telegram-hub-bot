@@ -14,16 +14,68 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.93`.
+- Production backend and staging are live at `4.14.94`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  356 test files / 5,629 tests.
+  357 test files / 5,649 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `6f996b9`; release source landed at backend commit
-  `6d4f9a9`; staging was aligned to `4.14.92` before the promote and passed
+  online at deploy commit `436f620`; release source landed at backend commit
+  `e1e3499`; staging was aligned to `4.14.93` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.93` shipped **coach-engine slice 3.I — explicit experience-level
+- `4.14.94` shipped **coach-engine slice 3.J — explicit equipment-access
+  resolution provenance (Layer 1, audit follow-up)**:
+  - The previous `resolveEquipmentAccess` in
+    `services/training-coach-kernel-plan-generator.ts` string-matched
+    against a known keyword list (`'full gym'` / `'garage'` /
+    `'home gym'` / `'basic'` / `'bodyweight'` / `'band'`) and
+    silently returned `hasGym/hasBarbell/hasDumbbells: false` when
+    the input didn't match any keyword. A real-gym user typing
+    "Crossfit box", "Hotel gym", "YMCA", or "University rec center"
+    got their barbell and dumbbell access stripped silently — the
+    strength engine then fell into bodyweight/band-only patterns
+    even though the user had a fully-equipped facility.
+  - Slice 3.J applies the slice 3.I template with a richer fallback
+    discriminator: the new exported
+    `resolveEquipmentAccessWithSource()` returns
+    `{ value, source: 'gym_profile.equipment_access' | 'fitness_profile.available_equipment',
+       matchedKeywords }` for recognized vocabulary OR
+    `{ value, source: 'fallback', reason: 'missing' | 'unrecognized', rawInput? }`
+    otherwise. The `'unrecognized'` branch carries the raw input
+    so the call-site logger emits an actionable signal when new
+    vocabulary appears in production — operators can absorb it
+    into `matchEquipmentKeywords` in a follow-up slice. The
+    `'missing'` branch tags the case where both profiles literally
+    have no equipment data (different operator action: prompt the
+    user to fill it in).
+  - Implementation refactored into pure helpers:
+    `pickEquipmentString` trims and rejects empty/non-strings;
+    `matchEquipmentKeywords` walks the vocabulary and returns both
+    the EquipmentAccess shape AND the keyword list that produced
+    it. Capability derivation matches the pre-slice-3.J behavior
+    exactly so sample-athlete tests stay green.
+  - The single existing call site in
+    `buildAthleteStateFromTrainingProfiles` now consumes the rich
+    form and emits a structured pino warning at warning level when
+    fallback fires, with different message text for missing vs
+    unrecognized so future alert routing can prioritize the
+    latter.
+  - 20 new unit tests in
+    `__tests__/services/training-coach-kernel-equipment-access.test.ts`
+    pin every recognition path including the killer "Crossfit
+    box" / "Hotel gym" / "YMCA" / "University rec center"
+    examples.
+  Verification: `npx tsc --noEmit` clean, focused 53-test slice
+  (20 new + 17 experience-level + 8 plan-generator + 8
+  strength-engine) green, full backend regression `npm run verify`
+  357 / 5,649 green, staging smoke 17/17, production deploy gate
+  17/17, production health passed for content engine + portal + bot.
+  Five remaining silent-default sites can each adopt the same
+  shape (`resolveStrengthGoal`, `resolveThresholdPace`,
+  `resolvePrimaryFocus`, `resolveTrainingHistory`, the
+  `numericOrUndefined` chains).
+
+- The preceding `4.14.93` shipped **coach-engine slice 3.I — explicit experience-level
   resolution provenance (Layer 1, audit follow-up)**:
   - The previous `resolveExperienceLevel` in
     `services/training-coach-kernel-plan-generator.ts` silently
