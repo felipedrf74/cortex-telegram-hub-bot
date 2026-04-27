@@ -20,6 +20,7 @@ import type {
 import { DAY_ORDER } from './coach-kernel/utils';
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
+import { logger } from '../utils/logger';
 
 /** Current readiness measurements used to seed the planner's
  *  `AthleteState.readiness`. When provided the generator uses these real
@@ -177,11 +178,35 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
   const equipment = resolveEquipmentAccess(input.fitnessProfile, input.gymProfile);
   const trainingHistory = resolveTrainingHistory(input, weeklyTargets);
 
+  // Slice 3.I (Layer 1, audit follow-up): emit a structured warning
+  // when the experience-level resolver had to fall back to 'novice'
+  // because the profile data couldn't produce a recognized answer.
+  // Before slice 3.I a missing field was silently identical to a
+  // confirmed novice, which mattered downstream because
+  // slice 2.A's BEGINNER_SAFE_SUBSTITUTIONS layer keys on
+  // `experienceLevel === 'novice'`. Carrying the raw inputs in the
+  // log line lets operators see whether the cause was missing data
+  // or a new vocabulary word the resolver should learn.
+  const experienceResolution = resolveExperienceLevelWithSource(input.fitnessProfile, input.gymProfile);
+  if (experienceResolution.source === 'fallback') {
+    logger.warn({
+      surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.experienceLevel',
+      userId: input.userId,
+      rawFitnessProfile: typeof input.fitnessProfile?.experience_level === 'string'
+        ? input.fitnessProfile.experience_level
+        : null,
+      rawGymProfile: typeof input.gymProfile?.training_age === 'string'
+        ? input.gymProfile.training_age
+        : null,
+      fallbackValue: experienceResolution.value,
+    }, 'Experience-level resolver fell back to novice — profile fields missing or vocabulary unrecognized');
+  }
+
   return {
     profile: {
       athleteId: input.userId,
       name: 'Nexus Hub Athlete',
-      experienceLevel: resolveExperienceLevel(input.fitnessProfile, input.gymProfile),
+      experienceLevel: experienceResolution.value,
       primaryDiscipline: primaryFocus,
       thresholdPaceSecondsPerKm: resolveThresholdPace(input.runProfile),
       cyclingFtpWatts: numericOrUndefined(input.runProfile?.ftp_watts ?? input.fitnessProfile?.ftp_watts),
@@ -547,14 +572,112 @@ function buildAvailabilityWindows(
   return windows;
 }
 
+/**
+ * The fields the planner reads to decide whether an athlete is novice,
+ * intermediate, or advanced. Both are loose JSON columns at the DB
+ * boundary, so the resolver below treats them as `unknown` and tells
+ * the caller exactly which source produced the answer.
+ */
+type ExperienceProfileSource = 'fitness_profile.experience_level' | 'gym_profile.training_age';
+
+/**
+ * Result of resolving the athlete's strength experience level from
+ * loose profile data. The discriminated union exists so the caller
+ * can distinguish two cases the previous version silently
+ * conflated:
+ *
+ *   1. The profile has a recognized value → `source` names the
+ *      field that produced the answer and `matchedKeyword` records
+ *      which vocabulary token matched. Downstream slice 2.A
+ *      (`BEGINNER_SAFE_SUBSTITUTIONS`) acts on a CONFIRMED novice.
+ *   2. The profile has nothing recognizable → `source: 'fallback'`.
+ *      Either both fields were absent / empty, or both contained
+ *      strings we don't recognize (e.g. `"expert"`, `"semi-pro"`).
+ *      The companion call-site logger captures the raw inputs so
+ *      operators can tell missing-data from new-vocabulary at a
+ *      glance and decide whether to absorb the new word into
+ *      `matchExperienceFromString`. Before slice 3.I both subcases
+ *      were silent; a fresh user with an empty profile was
+ *      indistinguishable from a confirmed novice.
+ *
+ * `value` is always the experience level the planner actually uses
+ * (the previous behavior of "default to novice on anything
+ * unknown" is preserved at the planner-output layer), but the
+ * `source` separation gives the call site clean material for
+ * structured logging and future telemetry / UX hooks.
+ */
+export type ExperienceLevelResolution =
+  | { value: AthleteState['profile']['experienceLevel']; source: ExperienceProfileSource; matchedKeyword: string }
+  | { value: 'novice'; source: 'fallback' };
+
+/**
+ * Pure, exported variant of {@link resolveExperienceLevel} that
+ * carries the resolution provenance. The companion
+ * `resolveExperienceLevel` keeps the original return shape for
+ * callers that don't care about the source.
+ *
+ * Pinned by `__tests__/services/training-coach-kernel-experience-level.test.ts`.
+ */
+export function resolveExperienceLevelWithSource(
+  fitnessProfile?: Record<string, any> | null,
+  gymProfile?: Record<string, any> | null,
+): ExperienceLevelResolution {
+  const fromFitness = matchExperienceFromString(fitnessProfile?.experience_level);
+  if (fromFitness) {
+    return { ...fromFitness, source: 'fitness_profile.experience_level' };
+  }
+  const fromGym = matchExperienceFromString(gymProfile?.training_age);
+  if (fromGym) {
+    return { ...fromGym, source: 'gym_profile.training_age' };
+  }
+  return { value: 'novice', source: 'fallback' };
+}
+
+/**
+ * Wrapper preserved for the existing call-site signature so other
+ * consumers don't change. New callers (and the call site that wants
+ * to log fallbacks) should use `resolveExperienceLevelWithSource`
+ * directly.
+ */
 function resolveExperienceLevel(
   fitnessProfile?: Record<string, any> | null,
   gymProfile?: Record<string, any> | null,
 ): AthleteState['profile']['experienceLevel'] {
-  const experience = String(fitnessProfile?.experience_level ?? gymProfile?.training_age ?? '').toLowerCase();
-  if (experience.includes('advanced') || experience.includes('5+')) return 'advanced';
-  if (experience.includes('intermediate') || experience.includes('1-3') || experience.includes('3-5')) return 'intermediate';
-  return 'novice';
+  return resolveExperienceLevelWithSource(fitnessProfile, gymProfile).value;
+}
+
+/**
+ * Match a single profile string against the known experience-level
+ * vocabulary. Returns `null` for missing/empty/unrecognized inputs
+ * so the caller can decide which source-tag to attach.
+ *
+ * The keyword list is the same set the previous string-includes
+ * implementation used (`'advanced'`, `'5+'`, `'intermediate'`,
+ * `'1-3'`, `'3-5'`) plus explicit recognition of `'novice'` /
+ * `'beginner'` / `'<1'`. Before slice 3.I a profile literally
+ * saying `"novice"` was indistinguishable from a missing field —
+ * both fell through the if-chain and returned `'novice'` via
+ * fallback. Now the explicit-match path tags the source so the
+ * audit-trail log only fires on TRULY missing data.
+ */
+function matchExperienceFromString(
+  raw: unknown,
+): { value: AthleteState['profile']['experienceLevel']; matchedKeyword: string } | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  if (normalized.includes('advanced')) return { value: 'advanced', matchedKeyword: 'advanced' };
+  if (normalized.includes('5+')) return { value: 'advanced', matchedKeyword: '5+' };
+  if (normalized.includes('intermediate')) return { value: 'intermediate', matchedKeyword: 'intermediate' };
+  if (normalized.includes('1-3')) return { value: 'intermediate', matchedKeyword: '1-3' };
+  if (normalized.includes('3-5')) return { value: 'intermediate', matchedKeyword: '3-5' };
+  if (normalized.includes('novice')) return { value: 'novice', matchedKeyword: 'novice' };
+  if (normalized.includes('beginner')) return { value: 'novice', matchedKeyword: 'beginner' };
+  if (normalized.includes('<1')) return { value: 'novice', matchedKeyword: '<1' };
+  // Unrecognized vocabulary — let the caller fall through to the
+  // `'fallback' / 'missing'` path so the audit-trail log captures
+  // the new word and we can absorb it into this list later.
+  return null;
 }
 
 function resolveThresholdPace(runProfile?: Record<string, any> | null): number | undefined {
