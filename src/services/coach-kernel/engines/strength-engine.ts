@@ -219,7 +219,40 @@ function applyBeginnerSubstitutions(
   };
 }
 
-function strengthVariantFor(profile: StrengthProfile, targetSessions: number, index: number): StrengthVariant {
+/**
+ * Pick the strength-session variant for a given (profile,
+ * targetSessions, dayIndex, weekIndex) combination.
+ *
+ * Slice 4.C — multi-week rotation. Pre-slice the `slot` was computed
+ * from `dayIndex` alone, so Week 1 day 1 = Week 5 day 1 = Week 12
+ * day 1 across an 8-week plan ("Lower Body A on Monday, every
+ * Monday"). The audit flagged this as a multi-week variant gap
+ * compounding regression #2.
+ *
+ * The fix shifts the slot by `weekIndex` modulo the variant count.
+ * For 4-session weeks (4 variants in pool):
+ *   week 0 → slots [Lower A, Upper A, Lower B, Upper B]
+ *   week 1 → slots [Upper A, Lower B, Upper B, Lower A] (shifted +1)
+ *   week 2 → slots [Lower B, Upper B, Lower A, Upper A] (shifted +2)
+ *   week 3 → slots [Upper B, Lower A, Upper A, Lower B] (shifted +3)
+ *   week 4 → back to week-0 ordering
+ *
+ * The variant count for 4-session plans is 4, so this gives a
+ * 4-week macro-rotation: any specific (slot, week-mod-4) pair
+ * produces a distinct variant. Weekly variety preserved (slice 4.B
+ * primary-pattern alternation) and multi-week variety added without
+ * tracking history in AthleteState — pure deterministic rotation
+ * indexed on the planner's existing `currentBlock.weekIndex`.
+ *
+ * Signature is backward compatible: when `weekIndex` is omitted (or
+ * zero), behavior matches the pre-slice-4.C form exactly.
+ */
+function strengthVariantFor(
+  profile: StrengthProfile,
+  targetSessions: number,
+  index: number,
+  weekIndex: number = 0,
+): StrengthVariant {
   const profileTitle = profile === 'hypertrophy'
     ? 'Hypertrophy'
     : profile === 'max_strength'
@@ -227,7 +260,13 @@ function strengthVariantFor(profile: StrengthProfile, targetSessions: number, in
       : profile === 'maintenance'
         ? 'Maintenance'
         : 'Strength';
-  const slot = Math.max(0, index) % Math.max(1, targetSessions);
+  // Slice 4.C — slot shifted by weekIndex so successive weeks don't
+  // ship identical day→variant mappings. We modulo-twice (once on
+  // weekIndex itself, once on the sum) so a callsite passing a very
+  // large weekIndex value can't overflow the bounds.
+  const safeWeekShift = Math.max(0, Math.trunc(weekIndex));
+  const variantCount = Math.max(1, targetSessions);
+  const slot = (Math.max(0, index) + safeWeekShift) % variantCount;
 
   if (targetSessions >= 4) {
     const variants: StrengthVariant[] = [
@@ -581,9 +620,16 @@ export const strengthEngine: SportEngine = {
     const template = templateFor(templates, sessionType);
     const days = resolveStrengthDays(context.athlete, targetSessions);
 
+    // Slice 4.C — read weekIndex once at the top so all variant
+    // calls in this loop share it. weekIndex is 1-based in
+    // currentBlock (see plan-generator: `weekIndex: 1` on initial
+    // build), so we subtract 1 to get a 0-based macro-rotation
+    // anchor.
+    const weekIndexForRotation = Math.max(0, (context.athlete.currentBlock.weekIndex ?? 1) - 1);
+
     return days.slice(0, targetSessions).map((dayOfWeek, index) => {
       const durationMinutes = resolveDurationForDay(template, context.athlete, dayOfWeek);
-      const baseVariant = strengthVariantFor(strengthProfile, targetSessions, index);
+      const baseVariant = strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation);
       // Slice 2.A — beginner substitutions are applied to the variant
       // BEFORE equipment-aware resolution so the substituted exercise
       // (e.g. goblet_squat) still picks up its own equipment fallback

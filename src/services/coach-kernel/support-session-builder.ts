@@ -157,13 +157,22 @@ export const STRENGTH_SUPPORT_VARIANT_COUNT = VARIANT_BLUEPRINTS.length;
  * estimator already accounts for warmup + transitions + cooldown,
  * so the returned number is a real claim the coherence gate can
  * trust.
+ *
+ * Slice 4.C — multi-week rotation. `weekIndex` (0-based) shifts the
+ * blueprint pick by `weekIndex` so successive weeks don't ship the
+ * same support-session pair on the same days. Mirrors the
+ * strength-engine's `strengthVariantFor` macro-rotation. When
+ * omitted the behavior matches the pre-slice-4.C form exactly.
  */
 export function buildStrengthSupportVariant(
   slotIndex: number,
   knowledge?: CoachKnowledgeBase,
+  weekIndex: number = 0,
 ): StrengthSupportVariant {
   const safeIndex = Math.abs(Math.trunc(slotIndex || 0));
-  const blueprint = VARIANT_BLUEPRINTS[safeIndex % VARIANT_BLUEPRINTS.length];
+  const safeWeekShift = Math.max(0, Math.trunc(weekIndex || 0));
+  const rotated = (safeIndex + safeWeekShift) % VARIANT_BLUEPRINTS.length;
+  const blueprint = VARIANT_BLUEPRINTS[rotated];
   const exercises: ExercisePrescription[] = blueprint.exercises.map((ex) => ({ ...ex }));
 
   let durationMinutes: number;

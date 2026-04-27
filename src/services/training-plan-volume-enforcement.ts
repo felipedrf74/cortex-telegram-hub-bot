@@ -54,7 +54,9 @@ export function enforceRequestedTrainingPlanVolume(
     sessions = convertExtraStrengthToCardio(sessions, strengthTarget, cloned.sport, request);
     sessions = spreadSameTypeCollisions(sessions, allowedDays);
     sessions = trimToActiveTarget(sessions, activeTarget, strengthTarget);
-    sessions = fillMissingStrength(sessions, strengthTarget, allowedDays, cloned.sport, request);
+    // Slice 4.C — pass weekNumber so the support-session-builder
+    // rotation shifts each week (0-based shift = weekNumber - 1).
+    sessions = fillMissingStrength(sessions, strengthTarget, allowedDays, cloned.sport, request, weekNumber);
     sessions = fillMissingActiveSessions(sessions, activeTarget, allowedDays, cloned.sport, request);
 
     return {
@@ -186,12 +188,13 @@ function fillMissingStrength(
   allowedDays: string[],
   sport: string | undefined,
   request: TrainingPlanVolumeRequest,
+  weekNumber: number = 1,
 ): CoordinatedTrainingSession[] {
   const next = [...sessions];
   while (countStrength(next) < strengthTarget) {
     const day = chooseInsertionDay(next, allowedDays, 'strength');
     if (!day) break;
-    next.push(buildStrengthSupportSession(day, sport, request, countStrength(next)));
+    next.push(buildStrengthSupportSession(day, sport, request, countStrength(next), weekNumber));
   }
   return next;
 }
@@ -246,9 +249,14 @@ function buildStrengthSupportSession(
   sport: string | undefined,
   request: TrainingPlanVolumeRequest,
   index: number,
+  weekNumber: number = 1,
 ): CoordinatedTrainingSession {
   const knowledge = safeLoadCoachKnowledge();
-  const variant = buildStrengthSupportVariant(index, knowledge);
+  // Slice 4.C — weekNumber is 1-based in the volume-enforcement
+  // loop; convert to 0-based for the rotation shift so week 1 has
+  // shift 0 (matches strengthVariantFor's macro-rotation anchor).
+  const weekShift = Math.max(0, weekNumber - 1);
+  const variant = buildStrengthSupportVariant(index, knowledge, weekShift);
   const planSport = String(sport || '').toLowerCase();
   return {
     dayOfWeek: DAY_LABEL[dayOfWeek] ?? dayOfWeek,
