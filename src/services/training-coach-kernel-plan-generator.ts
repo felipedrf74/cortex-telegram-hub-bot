@@ -171,7 +171,38 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
 }
 
 export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTrainingPlanInput): AthleteState {
-  const primaryFocus = resolvePrimaryFocus(input.objective, input.sessionsPerWeek, input.strengthSessionsPerWeek);
+  // Slice 3.K (Layer 1, audit follow-up): emit a structured warning
+  // when the primary-focus resolver had to fall back. This is the
+  // highest-leverage silent default in the file —
+  // `resolveWeeklyTargets`, `resolveRaceCalendar`, and
+  // `resolvePriorityOrder` all switch on `primaryFocus`, so a
+  // silent fallback to 'hybrid' produces a globally different plan
+  // shape than a recognized objective. The log distinguishes
+  // 'missing' (empty objective string — onboarding probably
+  // skipped the field) from 'unrecognized' (the user typed
+  // something the keyword table doesn't yet cover; absorb new
+  // vocabulary into OBJECTIVE_KEYWORDS in a follow-up slice).
+  // The 'inferred_volume_split' source is INTENTIONAL hybrid
+  // classification supported by volume signal — not a fallback,
+  // so no log is emitted for that case.
+  const primaryFocusResolution = resolvePrimaryFocusWithSource(
+    input.objective,
+    input.sessionsPerWeek,
+    input.strengthSessionsPerWeek,
+  );
+  if (primaryFocusResolution.source === 'fallback') {
+    logger.warn({
+      surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.primaryFocus',
+      userId: input.userId,
+      reason: primaryFocusResolution.reason,
+      rawInput: primaryFocusResolution.rawInput ?? null,
+      sessionsPerWeek: input.sessionsPerWeek,
+      strengthSessionsPerWeek: input.strengthSessionsPerWeek,
+    }, primaryFocusResolution.reason === 'unrecognized'
+      ? 'Primary-focus resolver fell back to hybrid — objective string contained vocabulary not yet in OBJECTIVE_KEYWORDS; weekly targets, race calendar, and priority order will all use the hybrid default'
+      : 'Primary-focus resolver fell back to hybrid — objective string was empty; weekly targets, race calendar, and priority order will all use the hybrid default');
+  }
+  const primaryFocus = primaryFocusResolution.value;
   const weeklyTargets = resolveWeeklyTargets(primaryFocus, input);
   const raceCalendar = resolveRaceCalendar(primaryFocus, input.objective, input.runProfile);
   const constraints = resolveConstraints(input.fitnessProfile, input.runProfile, input.notes);
@@ -361,16 +392,157 @@ function scoreToReadinessLevel(score: number, hasHighInjury: boolean): Readiness
   return 'red';
 }
 
+/**
+ * Vocabulary table for the objective-string matcher. Order matters
+ * — earlier entries take precedence under
+ * `String.includes`-based scanning. So "half ironman" must come
+ * BEFORE "ironman" (substring), "running" BEFORE "run", and
+ * "swimming" BEFORE "swim" so the more specific keyword wins.
+ *
+ * The legacy regex used `70\\.3` (a double-backslash typo that
+ * matched a literal backslash followed by any character — so the
+ * pattern never actually matched the user input "70.3"). The
+ * substring approach here naturally fixes that: a user typing
+ * just "70.3" now correctly maps to triathlon. This is a
+ * byproduct improvement, not a deliberate behavior change.
+ */
+const OBJECTIVE_KEYWORDS: ReadonlyArray<{
+  pattern: string;
+  keyword: string;
+  discipline: CoachingDiscipline;
+}> = [
+  // Triathlon — most specific first
+  { pattern: 'half ironman', keyword: 'half ironman', discipline: 'triathlon' },
+  { pattern: 'ironman', keyword: 'ironman', discipline: 'triathlon' },
+  { pattern: '70.3', keyword: '70.3', discipline: 'triathlon' },
+  { pattern: 'triathlon', keyword: 'triathlon', discipline: 'triathlon' },
+  { pattern: 'triatlo', keyword: 'triatlo', discipline: 'triathlon' },
+  // Marathon — most specific first
+  { pattern: 'meia maratona', keyword: 'meia maratona', discipline: 'marathon' },
+  { pattern: 'half marathon', keyword: 'half marathon', discipline: 'marathon' },
+  { pattern: 'marathon', keyword: 'marathon', discipline: 'marathon' },
+  // Running — most specific subdiscipline keywords first so a
+  // user typing "Trail running" gets `matchedKeyword: 'trail'`,
+  // not the more generic 'running'. Then 'running' before 'run'
+  // so "Running training" wins on 'running'.
+  { pattern: 'trail', keyword: 'trail', discipline: 'running' },
+  { pattern: 'ultra', keyword: 'ultra', discipline: 'running' },
+  { pattern: '10k', keyword: '10k', discipline: 'running' },
+  { pattern: '5k', keyword: '5k', discipline: 'running' },
+  { pattern: 'corrida', keyword: 'corrida', discipline: 'running' },
+  { pattern: 'running', keyword: 'running', discipline: 'running' },
+  { pattern: 'run', keyword: 'run', discipline: 'running' },
+  // Cycling
+  { pattern: 'cycling', keyword: 'cycling', discipline: 'cycling' },
+  { pattern: 'ciclismo', keyword: 'ciclismo', discipline: 'cycling' },
+  { pattern: 'bike', keyword: 'bike', discipline: 'cycling' },
+  { pattern: 'ride', keyword: 'ride', discipline: 'cycling' },
+  // Swimming — "swimming" before "swim"
+  { pattern: 'swimming', keyword: 'swimming', discipline: 'swimming' },
+  { pattern: 'swim', keyword: 'swim', discipline: 'swimming' },
+  { pattern: 'natação', keyword: 'natação', discipline: 'swimming' },
+  { pattern: 'natacao', keyword: 'natacao', discipline: 'swimming' },
+  // Strength
+  { pattern: 'hipertrofia', keyword: 'hipertrofia', discipline: 'strength' },
+  { pattern: 'hypertrophy', keyword: 'hypertrophy', discipline: 'strength' },
+  { pattern: 'bodybuilding', keyword: 'bodybuilding', discipline: 'strength' },
+  { pattern: 'muscle', keyword: 'muscle', discipline: 'strength' },
+  { pattern: 'strength', keyword: 'strength', discipline: 'strength' },
+  { pattern: 'massa', keyword: 'massa', discipline: 'strength' },
+  { pattern: 'força', keyword: 'força', discipline: 'strength' },
+  { pattern: 'muscula', keyword: 'muscula', discipline: 'strength' },
+  { pattern: 'gym', keyword: 'gym', discipline: 'strength' },
+];
+
+/**
+ * Result of resolving the athlete's primary discipline from the
+ * objective string and weekly volume. The discriminated union
+ * exists so the caller can distinguish three runtime cases the
+ * previous version silently produced as identical `'hybrid'`
+ * outputs:
+ *
+ *   1. Recognized keyword in `objective` → `source: 'objective_keyword'`,
+ *      `matchedKeyword` names which token in `OBJECTIVE_KEYWORDS`
+ *      drove the answer.
+ *   2. Volume-split inference fired (`strengthSessionsPerWeek > 0
+ *      && sessionsPerWeek > strengthSessionsPerWeek`) →
+ *      `source: 'inferred_volume_split'`. This is an INTENTIONAL
+ *      hybrid classification supported by explicit volume signal.
+ *   3. Neither path matched → `source: 'fallback'`, with
+ *      `reason: 'missing'` (empty/whitespace objective) or
+ *      `reason: 'unrecognized'` (non-empty but no keyword matched
+ *      AND the volume split didn't fire). `rawInput` carries the
+ *      raw objective so the call-site logger can flag new
+ *      vocabulary for `OBJECTIVE_KEYWORDS` to absorb.
+ *
+ * Downstream consumers care a lot about `value` —
+ * `resolveWeeklyTargets`, `resolveRaceCalendar`,
+ * `resolvePriorityOrder` all switch on `primaryFocus`, so a
+ * silent fallback to `'hybrid'` produces a *globally different
+ * plan shape* compared to a recognized objective. The audit
+ * flagged this as one of the highest-leverage Layer 1 silent
+ * defaults; slice 3.K now makes it observable.
+ */
+export type PrimaryFocusResolution =
+  | { value: CoachingDiscipline; source: 'objective_keyword'; matchedKeyword: string }
+  | { value: 'hybrid'; source: 'inferred_volume_split' }
+  | { value: 'hybrid'; source: 'fallback'; reason: 'missing' | 'unrecognized'; rawInput?: string };
+
+/**
+ * Pure, exported variant of `resolvePrimaryFocus` that carries
+ * the resolution provenance. Pinned by
+ * `__tests__/services/training-coach-kernel-primary-focus.test.ts`.
+ */
+export function resolvePrimaryFocusWithSource(
+  objective: string,
+  sessionsPerWeek: number,
+  strengthSessionsPerWeek: number,
+): PrimaryFocusResolution {
+  const trimmed = objective.trim();
+  const lower = trimmed.toLowerCase();
+
+  // 1. Recognized keyword wins (most specific path).
+  const matched = matchObjectiveKeyword(lower);
+  if (matched) {
+    return { value: matched.discipline, source: 'objective_keyword', matchedKeyword: matched.keyword };
+  }
+
+  // 2. Volume-split inference is an INTENTIONAL hybrid call.
+  // Distinct from fallback because the planner has explicit
+  // signal (the user asked for both endurance and strength
+  // sessions) supporting the choice.
+  if (strengthSessionsPerWeek > 0 && sessionsPerWeek > strengthSessionsPerWeek) {
+    return { value: 'hybrid', source: 'inferred_volume_split' };
+  }
+
+  // 3. Silent fallback path — distinguish missing from unrecognized.
+  if (trimmed.length === 0) {
+    return { value: 'hybrid', source: 'fallback', reason: 'missing' };
+  }
+  return { value: 'hybrid', source: 'fallback', reason: 'unrecognized', rawInput: trimmed };
+}
+
+/**
+ * Wrapper preserved for the existing call-site signature so other
+ * consumers don't change. New callers (and the call site that
+ * wants to log fallbacks) should use
+ * `resolvePrimaryFocusWithSource` directly.
+ */
 function resolvePrimaryFocus(objective: string, sessionsPerWeek: number, strengthSessionsPerWeek: number): CoachingDiscipline {
-  const lowerObjective = objective.toLowerCase();
-  if (/(triathlon|triatlo|70\\.3|ironman|half ironman)/i.test(lowerObjective)) return 'triathlon';
-  if (/(marathon|meia maratona|half marathon)/i.test(lowerObjective)) return 'marathon';
-  if (/(corrida|running|run|10k|5k|trail|ultra)/i.test(lowerObjective)) return 'running';
-  if (/(cycling|bike|ride|ciclismo)/i.test(lowerObjective)) return 'cycling';
-  if (/(swim|swimming|natacao|natação)/i.test(lowerObjective)) return 'swimming';
-  if (/(hipertrofia|hypertrophy|muscle|strength|gym|massa|bodybuilding|força|muscula)/i.test(lowerObjective)) return 'strength';
-  if (strengthSessionsPerWeek > 0 && sessionsPerWeek > strengthSessionsPerWeek) return 'hybrid';
-  return 'hybrid';
+  return resolvePrimaryFocusWithSource(objective, sessionsPerWeek, strengthSessionsPerWeek).value;
+}
+
+/**
+ * Walk `OBJECTIVE_KEYWORDS` in order, returning the first match.
+ * Order is significant — see the table comment.
+ */
+function matchObjectiveKeyword(lower: string): { discipline: CoachingDiscipline; keyword: string } | null {
+  for (const entry of OBJECTIVE_KEYWORDS) {
+    if (lower.includes(entry.pattern)) {
+      return { discipline: entry.discipline, keyword: entry.keyword };
+    }
+  }
+  return null;
 }
 
 function resolveWeeklyTargets(
