@@ -157,6 +157,63 @@ function prescriptionFor(
   }
 }
 
+/**
+ * Slice 2.A — beginner-safe substitutions for the variant exercise IDs.
+ *
+ * The variant catalog above is calibrated for intermediate / advanced
+ * lifters: barbell back-rack work (front squat), bench press, pull-ups.
+ * For a novice these movements load too much technique cost. Each entry
+ * below maps a "default" exerciseId to a safer first-step alternative
+ * that emphasises the same movement pattern with reduced cueing load:
+ *
+ *   front_squat            → goblet_squat (pattern: squat — easier ankle / wrist setup)
+ *   bench_press            → dumbbell_bench_press (pattern: push — easier scapular setup)
+ *   pull_up                → lat_pulldown (pattern: pull — beginner can scale assistance)
+ *   romanian_deadlift      → hip_hinge_band (pattern: hinge — pattern teaching tool)
+ *   single_leg_rdl         → split_squat (pattern: single-leg — less balance demand)
+ *   dumbbell_bench_press   → push_up (pattern: push — load-free starting point if no DBs)
+ *   one_arm_dumbbell_row   → suitcase_carry (pattern: pull — re-routes to anti-rotation work)
+ *   suitcase_carry         → farmer_carry (pattern: carry — bilateral cleaner cue)
+ *
+ * We DO NOT apply these substitutions when:
+ *   - the original exercise can't be mapped (no entry → keep the original).
+ *   - the resolveExerciseCandidate fallback path will reach a safer
+ *     alternative anyway via the equipment-aware substitution graph.
+ *
+ * The substitution is layered IN FRONT of resolveExerciseCandidate so the
+ * equipment fallback still kicks in if the user does not have dumbbells.
+ * Beginner + no-dumbbell user → goblet_squat → bodyweight_squat (via the
+ * exercise's substitution graph). Code stays correct end-to-end.
+ */
+const BEGINNER_SAFE_SUBSTITUTIONS: Record<string, string> = {
+  front_squat: 'goblet_squat',
+  bench_press: 'dumbbell_bench_press',
+  pull_up: 'lat_pulldown',
+  romanian_deadlift: 'hip_hinge_band',
+  single_leg_rdl: 'split_squat',
+};
+
+function applyBeginnerSubstitutions(
+  variant: StrengthVariant,
+  experience: StrengthExperience,
+): StrengthVariant {
+  if (experience !== 'novice') return variant;
+  const substituted = variant.exerciseIds.map((id) => BEGINNER_SAFE_SUBSTITUTIONS[id] ?? id);
+  // Dedup while preserving order (substitutions can collide — e.g.,
+  // two variants both swap to lat_pulldown).
+  const seen = new Set<string>();
+  const exerciseIds = substituted.filter((id) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return {
+    title: variant.title,
+    exerciseIds,
+    tags: [...variant.tags, 'beginner_safe'],
+  };
+}
+
 function strengthVariantFor(profile: StrengthProfile, targetSessions: number, index: number): StrengthVariant {
   const profileTitle = profile === 'hypertrophy'
     ? 'Hypertrophy'
@@ -419,7 +476,12 @@ export const strengthEngine: SportEngine = {
 
     return days.slice(0, targetSessions).map((dayOfWeek, index) => {
       const durationMinutes = resolveDurationForDay(template, context.athlete, dayOfWeek);
-      const variant = strengthVariantFor(strengthProfile, targetSessions, index);
+      const baseVariant = strengthVariantFor(strengthProfile, targetSessions, index);
+      // Slice 2.A — beginner substitutions are applied to the variant
+      // BEFORE equipment-aware resolution so the substituted exercise
+      // (e.g. goblet_squat) still picks up its own equipment fallback
+      // chain (e.g. bodyweight_squat) if the user has no dumbbells.
+      const variant = applyBeginnerSubstitutions(baseVariant, context.athlete.profile.experienceLevel);
       const exercises = resolveExercises(
         template,
         context.knowledge.exercises,

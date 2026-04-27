@@ -54,6 +54,7 @@ export function registerTrainingPlanRoutes(
       strengthSessionsPerWeek = 2,
       longWorkoutDay,
       notes,
+      twoADayPreference,
     } = req.body;
 
     if (!objective || typeof objective !== 'string') {
@@ -89,6 +90,10 @@ export function registerTrainingPlanRoutes(
         strengthSessionsPerWeek,
         longWorkoutDay,
         notes,
+        twoADayPreference: typeof twoADayPreference === 'string'
+          && (twoADayPreference === 'never' || twoADayPreference === 'optional' || twoADayPreference === 'preferred')
+          ? twoADayPreference
+          : undefined,
       });
 
       if (result.status === 'needs_profile') {

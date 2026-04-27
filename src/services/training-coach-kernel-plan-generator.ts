@@ -61,6 +61,26 @@ export interface CoachKernelTrainingPlanInput {
    *  back to a neutral yellow seed (70) so existing callers that don't
    *  pass readiness remain functional. */
   currentReadiness?: CoachKernelReadinessInput | null;
+  /**
+   * Slice 2.B (coach-engine refactor 2026-04-27) — explicit two-a-day
+   * preference from the user. Drives `availability.maxSessionsPerDay`:
+   *
+   *   `'preferred'` → always allow 2 sessions/day. The planner will
+   *                   schedule run AM + gym PM on the same day when the
+   *                   weekly volume warrants it AND
+   *                   `preferredCardioTime`/`preferredStrengthTime`
+   *                   provide enough separation between sessions.
+   *   `'optional'`  → existing volume-based inference (kicks in when the
+   *                   weekly target hits ≥5 sessions with strength
+   *                   present).
+   *   `'never'`     → cap at 1 session/day. Volume that can't fit
+   *                   within `7 * 1` slots gets compressed via the
+   *                   guardrail layer.
+   *
+   * When omitted, the generator behaves exactly as before
+   * (`'optional'` semantics) — additive change only.
+   */
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
 }
 
 const DAY_NAME_MAP: Record<DayOfWeek, string> = {
@@ -190,7 +210,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
         swimming: normalizeTime(input.preferredCardioTime, input.preferredTime),
         strength: normalizeTime(input.preferredStrengthTime, input.preferredTime),
       },
-      maxSessionsPerDay: weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1,
+      maxSessionsPerDay: resolveMaxSessionsPerDay(input.twoADayPreference, weeklyTargets),
     },
     equipment,
     trainingHistory,
@@ -710,6 +730,33 @@ function defaultLongSessionDay(primaryFocus: CoachingDiscipline): DayOfWeek {
 
 function totalTargetSessions(targets: Goals['weeklySessionsTarget']): number {
   return Object.values(targets).reduce((sum, value) => sum + (value ?? 0), 0);
+}
+
+/**
+ * Slice 2.B — explicit two-a-day routing.
+ *
+ * Three-state preference maps to the planner's `maxSessionsPerDay`:
+ *   - `'preferred'`: always allow 2 sessions/day. The planner will use
+ *     the existing `preferredCardioTime` / `preferredStrengthTime` split
+ *     (e.g. 07:00 cardio + 18:00 strength) to space the day's two
+ *     sessions adequately.
+ *   - `'optional'` or `null` / `undefined`: keep the existing volume-
+ *     based inference — 2/day only when strength is in the mix AND
+ *     total weekly sessions ≥ 5. This is the default so callers that
+ *     don't pass a preference (legacy clients, tests, internal code)
+ *     keep the previous behavior.
+ *   - `'never'`: cap at 1 session/day. Volume that doesn't fit gets
+ *     compressed via the guardrail layer.
+ */
+export function resolveMaxSessionsPerDay(
+  preference: 'never' | 'optional' | 'preferred' | null | undefined,
+  weeklyTargets: Goals['weeklySessionsTarget'],
+): number {
+  if (preference === 'preferred') return 2;
+  if (preference === 'never') return 1;
+  // optional / nullish — fall back to the volume-based inference that
+  // was the existing default before slice 2.B added the explicit field.
+  return weeklyTargets.strength && totalTargetSessions(weeklyTargets) >= 5 ? 2 : 1;
 }
 
 function offsetDate(startDate: string, offsetDays: number): string {

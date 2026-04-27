@@ -47,6 +47,13 @@ export interface GenerateTrainingPlanForUserInput {
   strengthSessionsPerWeek?: unknown;
   longWorkoutDay?: unknown;
   notes?: unknown;
+  /**
+   * Slice 2.B — explicit two-a-day preference. Routes to
+   * `availability.maxSessionsPerDay` inside the kernel input. When
+   * omitted the generator behaves exactly as before (volume-based
+   * inference) — additive, fully backward-compatible.
+   */
+  twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
 }
 
 export type TrainingPlanGenerationResult =
@@ -76,6 +83,7 @@ export async function generateTrainingPlanForUser(
     strengthSessionsPerWeek = 2,
     longWorkoutDay,
     notes,
+    twoADayPreference,
   } = input;
   const durationWeeks = input.durationWeeks ?? 4;
 
@@ -212,6 +220,7 @@ export async function generateTrainingPlanForUser(
         gymProfile,
         runProfile,
         currentReadiness,
+        twoADayPreference,
       }), coordination),
       equipmentAdaptation,
     );
