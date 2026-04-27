@@ -7,14 +7,43 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.95`.
+- Backend production and staging are live at `4.14.96`.
 - Full backend verification passed before the latest production deploy:
-  358 test files / 5,675 tests.
+  359 test files / 5,694 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `71be392`; release source landed at backend commit
-  `4944a60`; staging was aligned to `4.14.94` before the promote and passed
+  online at deploy commit `39f5614`; release source landed at backend commit
+  `b1d41e0`; staging was aligned to `4.14.95` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.95` is **coach-engine slice 3.K — explicit primary-focus
+- `4.14.96` is **coach-engine slice 3.L — explicit strength-goal
+  resolution provenance** (Layer 1, audit follow-up). The previous
+  `resolveStrengthGoal` in
+  `services/training-coach-kernel-plan-generator.ts` matched the
+  `gym_profile.primary_goal` string against four keywords and
+  silently returned `'athletic'` when none matched. Since
+  `Goals['strengthGoal']` drives strength prescription template
+  selection — `'hypertrophy'`, `'max_strength'`, `'athletic'`,
+  `'maintenance'` produce different rep ranges, intensity, and
+  exercise selection — a silent fallback to `'athletic'` for a
+  user typing `"powerbuilding"` / `"general fitness"` / `"tone"`
+  was a real plan-shape difference. The new exported
+  `resolveStrengthGoalWithSource()` returns the slice-3.J two-
+  branch union — `{ value, source: 'gym_profile.primary_goal',
+  matchedKeyword }` for recognized vocab, or
+  `{ value, source: 'fallback', reason: 'missing' | 'unrecognized',
+  rawInput? }` otherwise. Implementation refactored from inline
+  if-chain into sorted `STRENGTH_GOAL_KEYWORDS` lookup table;
+  `'powerlifting'` precedes `'strength'` so the more specific
+  intent wins on shared substrings. Vocabulary discipline:
+  `'maintenance'` and `'powerbuilding'` are NOT added — those
+  would be real behavior changes belonging in a separate slice.
+  19 new unit tests pin every recognition path. Verification:
+  typecheck clean, focused 98-test slice green, full regression
+  `npm run verify` 359 / 5,694 green, staging smoke 17/17,
+  production deploy gate 17/17, production health passed for
+  content engine + portal + bot. Three remaining silent-default
+  sites can each adopt the same shape.
+
+- The preceding `4.14.95` was **coach-engine slice 3.K — explicit primary-focus
   resolution provenance** (Layer 1, audit follow-up). The previous
   `resolvePrimaryFocus` in
   `services/training-coach-kernel-plan-generator.ts` matched the

@@ -14,16 +14,74 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.95`.
+- Production backend and staging are live at `4.14.96`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  358 test files / 5,675 tests.
+  359 test files / 5,694 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `71be392`; release source landed at backend commit
-  `4944a60`; staging was aligned to `4.14.94` before the promote and passed
+  online at deploy commit `39f5614`; release source landed at backend commit
+  `b1d41e0`; staging was aligned to `4.14.95` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.95` shipped **coach-engine slice 3.K — explicit primary-focus
+- `4.14.96` shipped **coach-engine slice 3.L — explicit strength-goal
+  resolution provenance (Layer 1, audit follow-up)**:
+  - The previous `resolveStrengthGoal` in
+    `services/training-coach-kernel-plan-generator.ts` matched the
+    `gym_profile.primary_goal` string against four keywords
+    (`'hypertrophy'`, `'powerlifting'`, `'strength'`, `'support'`)
+    and silently returned `'athletic'` when none matched. Since
+    `Goals['strengthGoal']` drives strength prescription template
+    selection — `'hypertrophy'` / `'max_strength'` / `'athletic'`
+    / `'maintenance'` produce different rep ranges, intensity, and
+    exercise selection — a silent fallback to `'athletic'` for a
+    user typing `"powerbuilding"` / `"general fitness"` / `"tone"`
+    was a real plan-shape difference, not just a labeling
+    concern.
+  - The new exported `resolveStrengthGoalWithSource()` returns the
+    same two-branch discriminated union slice 3.J established:
+    `{ value, source: 'gym_profile.primary_goal', matchedKeyword }`
+    for recognized vocabulary, or
+    `{ value, source: 'fallback', reason: 'missing' | 'unrecognized', rawInput? }`
+    otherwise. `'unrecognized'` carries the raw input so the
+    call-site logger emits an actionable signal when new
+    vocabulary appears in production.
+  - Implementation refactored from the inline if-chain into a
+    sorted `STRENGTH_GOAL_KEYWORDS` lookup table walked via
+    `String.includes`. Order matters — `'powerlifting'` appears
+    BEFORE `'strength'` (both map to `'max_strength'`) so a user
+    typing "Powerlifting strength" gets
+    `matchedKeyword: 'powerlifting'` (more specific intent).
+  - **Vocabulary discipline**: slice 3.L deliberately preserves
+    the existing keyword set exactly. Adding `'maintenance'` or
+    `'powerbuilding'` would shift inputs from `'athletic'` to a
+    different bucket — a real behavior change that belongs in a
+    separate vocabulary-expansion slice once the call-site
+    fallback log surfaces what users actually type. Pinned by
+    the new `test_unrecognized_for_literal_word_maintenance`.
+  - The single existing call site in
+    `buildAthleteStateFromTrainingProfiles` now consumes the rich
+    form and emits a structured pino warning at warning level
+    when fallback fires, with different message text for missing
+    vs unrecognized so future alert routing can prioritize the
+    latter.
+  - 19 new unit tests in
+    `__tests__/services/training-coach-kernel-strength-goal.test.ts`
+    pin every recognition path (4 vocabulary keywords + match-
+    precedence rules + 4 fallback subcases including the killer
+    "powerbuilding" / "general fitness" / "tone" examples + non-
+    string-type rejection + whitespace handling + scope-discipline
+    assertion).
+  Verification: `npx tsc --noEmit` clean, focused 98-test slice
+  (19 new + 26 primary-focus + 20 equipment + 17 experience + 8
+  plan-generator + 8 strength-engine) green, full backend
+  regression `npm run verify` 359 / 5,694 green, staging smoke
+  17/17, production deploy gate 17/17, production health passed
+  for content engine + portal + bot. Three remaining
+  silent-default sites can each adopt the same shape
+  (`resolveThresholdPace`, `resolveTrainingHistory`, the
+  `numericOrUndefined` chains).
+
+- The preceding `4.14.95` shipped **coach-engine slice 3.K — explicit primary-focus
   resolution provenance (Layer 1, audit follow-up)**:
   - The previous `resolvePrimaryFocus` in
     `services/training-coach-kernel-plan-generator.ts` matched the
