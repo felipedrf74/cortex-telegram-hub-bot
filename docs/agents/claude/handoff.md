@@ -7,15 +7,52 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.89`.
+- Backend production and staging are live at `4.14.90`.
 - Full backend verification passed before the latest production deploy:
-  351 test files / 5,557 tests.
+  353 test files / 5,588 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `5447fe8`; release source/docs were pushed at backend
-  commit `ca20398`; staging was aligned to `4.14.89` after production promote
-  and passed the 17/17 staging smoke.
-- `4.14.89` closes the latest Training intelligence + Apple Health/Home warmup
-  batch: Training generation respects weekly session/gym volume, supports
+  online at deploy commit `e401f2f`; release source landed at backend commit
+  `3d35ecd` and iOS commit `6d82c15`; staging was aligned to `4.14.89` before
+  the promote and passed the 17/17 staging smoke.
+- `4.14.90` is **coach-engine slice 1** — three sub-slices that close the
+  highest-value gaps in the 8-layer engine audit performed at the start of
+  the 2026-04-27 session:
+  - **1.A — Readiness snapshot adapter**: new
+    `services/coach-kernel/readiness-snapshot-adapter.ts` extracts the
+    score → `ReadinessLevel` rule into a pure, public, unit-tested
+    function shared between the planner and the adaptation engine.
+    Sleep-as-floor / no-wearable conservatism / high-injury cap-at-orange
+    are explicit (14 unit tests).
+  - **1.B — Calendar-aware scheduler**: a regression where the planner
+    fell back to the literal preferred time when the friendly ±2.5h band
+    was busy — landing a session on top of an existing meeting — is now
+    fixed via a three-stage scheduler (friendly band → day-walk → safe
+    06:30 marker). Returns
+    `ScheduleSessionResult { start, end, preferredTimeUnavailable }`.
+    Migration `080` adds `preferred_time_unavailable` to
+    `training_sessions`. iOS Week Plan renders a ⚠️ chip when the
+    planner had to compromise the time (5 new schedule-utils tests).
+  - **1.C — Deterministic adaptation engine**: new
+    `services/coach-kernel/adaptation-engine.ts` exposes a pure
+    `adaptSessionForReadiness(session, ctx) → AdaptedSession`. Red →
+    swap intensity work to recovery_run/ride/swim/mobility at 60% cap;
+    orange → 80% cap; high-severity injury affecting the session sport
+    → mobility swap at 50%; already-gentle sessions pass through. iOS
+    today hero prepends a code-emitted (no-LLM) adaptation explanation
+    when the adapter changed the session (13 unit tests).
+  Verification: `npx tsc --noEmit` clean, focused training-domain tests
+  (10 files / 116 cases) green, full backend regression `npm test`
+  353 files / 5,588 tests green, iOS `xcodebuild build` green, iOS
+  `./scripts/beta-smoke-local.sh` green (16-suite XCTest slice +
+  simulator compile + doc-drift gate). The smoke script's doc-drift
+  regex was updated this release to accept both legacy and current
+  "Backend production [and staging] are live at" wording — rg's default
+  regex engine doesn't support PCRE non-greedy `.*?`, so the fix uses a
+  literal alternation. Slice-1 dossier is at
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/reports/coach-engine-slice-1-2026-04-27.md`.
+- The preceding `4.14.89` Training intelligence + Apple Health/Home
+  warmup batch is still live underneath. It included: Training generation
+  respects weekly session/gym volume, supports
   distinct same-day run/gym slots, avoids new-plan sessions in the past, removes
   generated calendar/agenda events on plan cancellation, folds mobility/cooldown
   into workout descriptions instead of standalone mobility sessions, strips
