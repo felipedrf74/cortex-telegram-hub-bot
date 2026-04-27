@@ -14,16 +14,38 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.90`.
+- Production backend and staging are live at `4.14.91`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  353 test files / 5,588 tests.
+  354 test files / 5,597 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `e401f2f`; release source landed at backend commit
-  `3d35ecd` and iOS commit `6d82c15`; staging was aligned to `4.14.89` before
-  promote and passed the 17/17 staging smoke.
-- `4.14.90` shipped **coach-engine slice 1**:
+  online at deploy commit `dbb519e`; release source landed at backend commit
+  `e8f85fc`; staging was aligned to `4.14.90` before promote and passed the
+  17/17 staging smoke.
+- `4.14.91` shipped **coach-engine slice 2**:
+  - **2.A beginner gym differentiation**: `coach-kernel/engines/strength-engine.ts`
+    now applies a beginner-safe substitution layer when
+    `experienceLevel === 'novice'`. Maps front_squat → goblet_squat,
+    bench_press → dumbbell_bench_press, pull_up → lat_pulldown,
+    romanian_deadlift → hip_hinge_band, single_leg_rdl → split_squat. Runs
+    BEFORE the equipment-aware fallback so swapped exercises still
+    adapt to dumbbell-only / no-gym setups. Substituted variants tagged
+    `beginner_safe`. Intermediate + advanced lifters unchanged.
+  - **2.B explicit two-a-day preference**: new exported
+    `resolveMaxSessionsPerDay(preference, weeklyTargets)` and
+    `twoADayPreference` field on `CoachKernelTrainingPlanInput` +
+    `GenerateTrainingPlanForUserInput`. `'preferred'` → 2/day;
+    `'never'` → 1/day; `'optional'` / null / undefined → legacy
+    volume-based inference. `POST /api/v1/training/plan/generate`
+    accepts the field with strict enum validation. iOS picker UI is the
+    natural follow-up — the API is ready when iOS adopts it.
+  Verification: backend `npx tsc --noEmit` clean, 11 focused training-
+  domain test files / 101 cases green, full backend regression 354 /
+  5,597 green, iOS `xcodebuild build` green, iOS
+  `scripts/beta-smoke-local.sh` green.
+
+- The preceding `4.14.90` shipped **coach-engine slice 1**:
   - new `services/coach-kernel/readiness-snapshot-adapter.ts` extracts the
     score → `ReadinessLevel` rule into a pure, public, unit-tested function
     shared between the planner and the new adaptation engine. Sleep-as-floor,

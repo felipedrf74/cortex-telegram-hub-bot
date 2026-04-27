@@ -7,14 +7,44 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.90`.
+- Backend production and staging are live at `4.14.91`.
 - Full backend verification passed before the latest production deploy:
-  353 test files / 5,588 tests.
+  354 test files / 5,597 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `e401f2f`; release source landed at backend commit
-  `3d35ecd` and iOS commit `6d82c15`; staging was aligned to `4.14.89` before
-  the promote and passed the 17/17 staging smoke.
-- `4.14.90` is **coach-engine slice 1** — three sub-slices that close the
+  online at deploy commit `dbb519e`; release source landed at backend commit
+  `e8f85fc`; staging was aligned to `4.14.90` before the promote and passed
+  the 17/17 staging smoke.
+- `4.14.91` is **coach-engine slice 2** — two backend sub-slices that
+  close the next batch of audit gaps:
+  - **2.A — Beginner gym differentiation**: novices now get safer
+    pattern-teaching exercises (goblet_squat instead of front_squat,
+    dumbbell_bench_press instead of bench_press, lat_pulldown instead
+    of pull_up, hip_hinge_band instead of romanian_deadlift, split_squat
+    instead of single_leg_rdl). Substitution runs in
+    `services/coach-kernel/engines/strength-engine.ts` BEFORE the
+    equipment-aware fallback so swapped exercises still adapt to
+    dumbbell-only setups. Substituted variants tagged `beginner_safe`
+    (8 unit tests).
+  - **2.B — Explicit two-a-day preference**: new exported
+    `resolveMaxSessionsPerDay(preference, weeklyTargets)` from
+    `services/training-coach-kernel-plan-generator.ts`. `'preferred'`
+    always returns 2; `'never'` always returns 1; `'optional'` / null /
+    undefined fall through to the legacy volume-based inference (2/day
+    when strength + total ≥ 5). New `twoADayPreference` field on the
+    kernel input and `POST /api/v1/training/plan/generate` request body,
+    with strict enum validation. iOS picker UI is the natural follow-up
+    (7 unit tests).
+  Verification: `npx tsc --noEmit` clean, 11 focused training-domain
+  test files / 101 cases green, full backend regression `npm test` 354
+  files / 5,597 tests green, iOS `xcodebuild build` green, iOS
+  `./scripts/beta-smoke-local.sh` green. The slice-1 dossier at
+  `/Users/felipedominguez/Desktop/Nexus Hub IOS/reports/coach-engine-slice-1-2026-04-27.md`
+  describes the still-open gaps from the original 8-layer audit; the
+  candidates for slice 3 are onboarding → typed `AthleteProfile`
+  (Layer 1), gender / cycle-aware physiology (Layer 1), and the
+  plan-level vs session-level card split (Layer 8).
+
+- The preceding `4.14.90` is **coach-engine slice 1** — three sub-slices that close the
   highest-value gaps in the 8-layer engine audit performed at the start of
   the 2026-04-27 session:
   - **1.A — Readiness snapshot adapter**: new
