@@ -3,6 +3,7 @@
 import type { EngineContext, SportEngine } from './interfaces';
 import type { DayOfWeek, Session, SessionType, WorkoutTemplate } from '../types';
 import { clamp, createSessionId, durationToLoad } from '../utils';
+import { pickAvailableDays, pickKeyDay } from '../availability-day-picker';
 
 function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): WorkoutTemplate {
   const match = templates.find((template) => template.sessionType === sessionType);
@@ -39,14 +40,24 @@ export const cyclingEngine: SportEngine = {
     const keyMinutes = clamp(Math.round(targetMinutes * 0.22), 45, 75);
     const fillerMinutes = clamp(Math.round((targetMinutes - longRideMinutes - keyMinutes) / Math.max(1, targetSessions - 2)), 40, 75);
 
+    // Slice 4.F — availability-aware day picks. Falls back to the
+    // canonical legacy defaults when the user has no availability
+    // declared (brand-new user case, no behavior change there).
+    const keyDayPreferences: DayOfWeek[] = ['wednesday', 'tuesday', 'thursday', 'monday', 'friday'];
+    const longDayPreferences: DayOfWeek[] = ['saturday', 'sunday'];
+    const keyDay = pickKeyDay(context.athlete, 'cycling', keyDayPreferences);
+    const longDay = pickKeyDay(context.athlete, 'cycling', longDayPreferences);
+
     const sessions: Session[] = [
-      buildRideSession(templateFor(templates, 'threshold_ride'), 'wednesday', keyMinutes, ['key_ride']),
-      buildRideSession(templateFor(templates, 'endurance_ride'), 'saturday', longRideMinutes, ['long_session']),
+      buildRideSession(templateFor(templates, 'threshold_ride'), keyDay, keyMinutes, ['key_ride']),
+      buildRideSession(templateFor(templates, 'endurance_ride'), longDay, longRideMinutes, ['long_session']),
     ];
 
-    const fillerDays: DayOfWeek[] = ['monday', 'friday', 'thursday'];
+    const fillerPreferences: DayOfWeek[] = ['monday', 'friday', 'thursday'];
+    const fillerDays = pickAvailableDays(context.athlete, 'cycling', fillerPreferences, fillerPreferences.length);
     for (const dayOfWeek of fillerDays) {
       if (sessions.length >= targetSessions) break;
+      if (sessions.find((session) => session.dayOfWeek === dayOfWeek)) continue;
       sessions.push(buildRideSession(templateFor(templates, 'recovery_ride'), dayOfWeek, fillerMinutes, ['support_ride']));
     }
 

@@ -185,6 +185,10 @@ export interface AthleteState {
   compliance: ComplianceSummary;
 }
 
+export type ExerciseComplexity = 'beginner' | 'intermediate' | 'advanced' | 'expert';
+export type SpinalLoading = 'low' | 'moderate' | 'high';
+export type ExercisePrimaryPurpose = 'strength' | 'hypertrophy' | 'power' | 'stability' | 'mobility' | 'conditioning';
+
 export interface Exercise {
   id: string;
   name: string;
@@ -192,6 +196,26 @@ export interface Exercise {
   equipment: string[];
   fatigueCost: FatigueCost;
   substitutions: string[];
+  /**
+   * Slice 4.G — enriched metadata. All optional so legacy callers
+   * keep working; the `exercise-metadata.ts` helper provides sensible
+   * defaults derived from movementPattern + equipment when fields
+   * are absent.
+   */
+  /** Technique cost. Used by slice 4.H to keep novices off expert lifts. */
+  complexity?: ExerciseComplexity;
+  /** How much axial load the lift puts on the spine. */
+  spinalLoading?: SpinalLoading;
+  /** Worked one side at a time. Used to balance left/right scheduling. */
+  unilateral?: boolean;
+  /** Primary intent when picking between candidates of the same pattern. */
+  primaryPurpose?: ExercisePrimaryPurpose;
+  /** Free-text flags that the substitution layer can match against
+   *  user-declared discomfort areas (e.g. 'low_back_strain', 'knee_pain'). */
+  contraindicationFlags?: string[];
+  /** Warmup needs the engine should fold into the session warmup
+   *  (e.g. 'hip_mobility', 'thoracic_rotation'). */
+  warmupNeeds?: string[];
 }
 
 export interface ExercisePrescription {

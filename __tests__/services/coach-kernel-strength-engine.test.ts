@@ -52,12 +52,24 @@ describe('coach-kernel strength engine', () => {
   });
 
   it('uses hypertrophy-specific prescriptions when hypertrophy is the strength goal', () => {
-    const [session] = buildStrengthSessions(sampleHybridAthlete);
-    const mainLift = session.exercises?.find((exercise) => exercise.exerciseId === 'front_squat');
+    // Slice 4.C — multi-week rotation shifts the day→variant
+    // mapping by `currentBlock.weekIndex - 1`. sampleHybridAthlete
+    // is at weekIndex=2 so slot 0 lands on Upper-Body-A, not
+    // Lower-Body-A. Look across ALL sessions for the front_squat
+    // lift rather than pinning it to a specific slot — the
+    // semantic intent is "advanced lifters with hypertrophy goal
+    // receive front_squat with hypertrophy prescription somewhere
+    // in the week", not "at session 0".
+    const sessions = buildStrengthSessions(sampleHybridAthlete);
+    const sessionWithFrontSquat = sessions.find((session) =>
+      session.exercises?.some((ex) => ex.exerciseId === 'front_squat'),
+    );
+    expect(sessionWithFrontSquat).toBeDefined();
+    const mainLift = sessionWithFrontSquat!.exercises?.find((ex) => ex.exerciseId === 'front_squat');
 
-    expect(session.sessionType).toBe('strength_hypertrophy');
-    expect(session.tags).toContain('hypertrophy');
-    expect(session.exercises?.length).toBeGreaterThanOrEqual(5);
+    expect(sessionWithFrontSquat!.sessionType).toBe('strength_hypertrophy');
+    expect(sessionWithFrontSquat!.tags).toContain('hypertrophy');
+    expect(sessionWithFrontSquat!.exercises?.length).toBeGreaterThanOrEqual(5);
     expect(mainLift).toMatchObject({
       sets: 3,
       reps: '6-10',
@@ -85,33 +97,44 @@ describe('coach-kernel strength engine', () => {
     // beginner-safe substitution layer swaps front_squat → goblet_squat
     // (same squat pattern, lower technique cost). Advanced lifters keep
     // front_squat. Both branches still apply experience-aware sets/reps.
-    const novice = buildStrengthSessions({
+    //
+    // Slice 4.C — search ACROSS all sessions for the squat-pattern
+    // lift; multi-week rotation can land it on any of the slots.
+    const noviceSessions = buildStrengthSessions({
       ...sampleHybridAthlete,
       profile: {
         ...sampleHybridAthlete.profile,
         experienceLevel: 'novice',
       },
-    })[0];
-    const advanced = buildStrengthSessions({
+    });
+    const advancedSessions = buildStrengthSessions({
       ...sampleHybridAthlete,
       profile: {
         ...sampleHybridAthlete.profile,
         experienceLevel: 'advanced',
       },
-    })[0];
+    });
 
-    const noviceSquat = novice.exercises?.find((exercise) => exercise.exerciseId === 'goblet_squat');
-    const advancedSquat = advanced.exercises?.find((exercise) => exercise.exerciseId === 'front_squat');
+    const noviceSquat = noviceSessions
+      .flatMap((s) => s.exercises ?? [])
+      .find((ex) => ex.exerciseId === 'goblet_squat');
+    const advancedSquat = advancedSessions
+      .flatMap((s) => s.exercises ?? [])
+      .find((ex) => ex.exerciseId === 'front_squat');
 
     // Novice gets goblet squat (safer pattern teaching tool) with the
     // gentler hypertrophy prescription.
     expect(noviceSquat).toMatchObject({ sets: 3, reps: '8-12', rir: 2 });
     // Advanced keeps the front squat with the heavier prescription.
     expect(advancedSquat).toMatchObject({ sets: 4, reps: '6-10', rir: 1 });
-    // Sanity: novices should NOT receive front_squat anywhere in the session.
-    expect(novice.exercises?.find((ex) => ex.exerciseId === 'front_squat')).toBeUndefined();
-    // Advanced should NOT receive the beginner replacement.
-    expect(advanced.exercises?.find((ex) => ex.exerciseId === 'goblet_squat')).toBeUndefined();
+    // Sanity: novices should NOT receive front_squat anywhere in any session.
+    expect(noviceSessions.flatMap((s) => s.exercises ?? []).find((ex) => ex.exerciseId === 'front_squat')).toBeUndefined();
+    // Note: advanced lifters DO receive goblet_squat as the canonical
+    // Lower-Body-B squat (it's not a beginner substitution there;
+    // both novice and advanced share the Lower-B variant which uses
+    // goblet_squat). The beginner-safe layer only swaps Lower-Body-A's
+    // front_squat → goblet_squat, which is verified by the noviceSquat
+    // assertion above and the front_squat sanity check.
   });
 
   it('routes novice lifters to beginner-safe substitutions across the variant catalog', () => {
@@ -119,39 +142,52 @@ describe('coach-kernel strength engine', () => {
     // each pattern's swap so a future regression (e.g. accidentally
     // serving advanced exercises to a novice) trips this test instead
     // of leaking into production plans.
-    const novice = buildStrengthSessions({
+    //
+    // Slice 4.C — multi-week rotation means slot 0 is no longer
+    // guaranteed to be Lower-Body-A. Look across all sessions of
+    // the week instead.
+    const noviceSessions = buildStrengthSessions({
       ...sampleHybridAthlete,
       profile: {
         ...sampleHybridAthlete.profile,
         experienceLevel: 'novice',
       },
-    })[0];
+    });
 
-    const noviceIds = (novice.exercises ?? []).map((ex) => ex.exerciseId);
+    const noviceIds = noviceSessions.flatMap((s) => (s.exercises ?? []).map((ex) => ex.exerciseId));
 
-    // squat pattern: goblet_squat instead of front_squat
+    // squat pattern: goblet_squat instead of front_squat — must
+    // appear somewhere in the week.
     expect(noviceIds).toContain('goblet_squat');
     expect(noviceIds).not.toContain('front_squat');
 
-    // The session must also be tagged so downstream renderers can flag
+    // Every session in a novice's week must carry the
+    // beginner_safe tag — downstream renderers use this to flag
     // beginner-safe sessions in the iOS UI.
-    expect(novice.tags).toContain('beginner_safe');
+    for (const session of noviceSessions) {
+      expect(session.tags).toContain('beginner_safe');
+    }
   });
 
   it('keeps intermediate lifters on the standard variant (no beginner substitutions)', () => {
-    const intermediate = buildStrengthSessions({
+    // Slice 4.C — search across the week's sessions; rotation can
+    // land front_squat on any slot.
+    const intermediateSessions = buildStrengthSessions({
       ...sampleHybridAthlete,
       profile: {
         ...sampleHybridAthlete.profile,
         experienceLevel: 'intermediate',
       },
-    })[0];
+    });
 
-    const ids = (intermediate.exercises ?? []).map((ex) => ex.exerciseId);
+    const ids = intermediateSessions.flatMap((s) => (s.exercises ?? []).map((ex) => ex.exerciseId));
     // Intermediate keeps the original variant exercises (front_squat is
     // the canonical squat in the hypertrophy lower-body variant).
     expect(ids).toContain('front_squat');
-    expect(intermediate.tags).not.toContain('beginner_safe');
+    // No session should carry the beginner_safe tag for intermediates.
+    for (const session of intermediateSessions) {
+      expect(session.tags).not.toContain('beginner_safe');
+    }
   });
 
   it('trims duration to the real strength window instead of overflowing the day', () => {

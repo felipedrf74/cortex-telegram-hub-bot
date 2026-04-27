@@ -34,6 +34,8 @@ import { fetchCurrentReadinessForPlan } from './training-read-models';
 import { persistGeneratedTrainingPlan } from './training-plan-persistence';
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
+import * as trainingPlans from '../../services/training-plans';
+import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
 import { logger } from '../../utils/logger';
 
 export interface GenerateTrainingPlanForUserInput {
@@ -68,7 +70,97 @@ export type TrainingPlanGenerationResult =
       eventsCreated: number;
       totalSessions: number;
       durationWeeks: number;
+    }
+  /**
+   * Slice 4.D.2 — saga abort. The pre-persist cancellation of the
+   * existing plan failed in a way that's NOT safe to ignore: the old
+   * plan rows are still in the DB. Creating a new plan on top would
+   * leave the user with two active plans + two calendar event sets.
+   * The route surfaces this so iOS can render an actionable retry
+   * banner instead of silently producing a corrupt double-plan
+   * state.
+   */
+  | {
+      status: 'cancellation_failed';
+      data: {
+        message: string;
+        reason: string;
+        activePlansRemaining: number;
+      };
     };
+
+/**
+ * Slice 4.D.2 — saga taxonomy for the pre-persist cancellation step.
+ *
+ * The audit identified silent error suppression in the catch block
+ * around `cancelTrainingPlanForUser` as compounding root cause #4 of
+ * regression #3. Previously we logged + continued unconditionally,
+ * which produced a double-plan state when the local hard-delete
+ * failed (e.g. SQLite was locked, the cancellation route's narrative
+ * cleanup threw before the local delete, etc.).
+ *
+ * The new shape distinguishes:
+ *   - `success`           — old plan + events fully cleaned up.
+ *   - `no_active_plan`    — first-time user, nothing to cancel.
+ *   - `external_partial`  — local delete OK; some calendar deletes
+ *                            failed transiently. Safe to continue;
+ *                            orphans are queued via the slice 4.D
+ *                            ownership audit table.
+ *   - `forbidden`         — old plan was owned by a different user
+ *                            (rare; route handles this explicitly).
+ *                            Continue with new plan.
+ *   - `local_delete_failed` — DANGEROUS. Old plan rows are still in
+ *                            the DB. Caller MUST abort the persist.
+ */
+type CancellationSagaOutcome =
+  | { kind: 'success'; removedEvents: number }
+  | { kind: 'no_active_plan' }
+  | { kind: 'external_partial'; orphanedEventCount: number }
+  | { kind: 'forbidden' }
+  | { kind: 'local_delete_failed'; reason: string; activePlansRemaining: number };
+
+async function runPrePersistCancellationSaga(userId: number): Promise<CancellationSagaOutcome> {
+  try {
+    const cancellation = await cancelTrainingPlanForUser(userId);
+    if (cancellation.status === 'forbidden') {
+      return { kind: 'forbidden' };
+    }
+    if (cancellation.status === 'not_found') {
+      return { kind: 'no_active_plan' };
+    }
+    // Status is 'cancelled' — local hard-delete succeeded. The slice
+    // 4.D ownership audit table tells us whether any external calendar
+    // deletes failed (status='orphaned' rows). Those are reconcilable;
+    // the saga can safely proceed.
+    const orphans = findOrphanedOwnerships(userId);
+    if (orphans.length > 0) {
+      return { kind: 'external_partial', orphanedEventCount: orphans.length };
+    }
+    return { kind: 'success', removedEvents: cancellation.data.removedEvents };
+  } catch (err) {
+    // The throw landed somewhere inside `cancelTrainingPlanForUser`.
+    // We can't tell from here whether the local hard-delete already
+    // ran. Conservative inspection: if any active plans remain for
+    // this user, the cancellation didn't finish — abort. If none
+    // remain, the throw was post-delete (e.g. narrative cleanup), so
+    // continuing is safe but we mark it as external-partial so the
+    // ownership reconciler picks up any remaining orphans.
+    const remainingPlans = trainingPlans.getActivePlans?.(userId) ?? [];
+    const reason = err instanceof Error ? err.message : String(err);
+    if (remainingPlans.length > 0) {
+      return {
+        kind: 'local_delete_failed',
+        reason,
+        activePlansRemaining: remainingPlans.length,
+      };
+    }
+    logger.warn(
+      { err, userId },
+      'Cancellation threw post-delete; saga continuing with reconciliation queued',
+    );
+    return { kind: 'external_partial', orphanedEventCount: -1 };
+  }
+}
 
 export async function generateTrainingPlanForUser(
   input: GenerateTrainingPlanForUserInput,
@@ -251,17 +343,48 @@ export async function generateTrainingPlanForUser(
     equipmentAdaptation,
   );
 
-  try {
-    const cancellation = await cancelTrainingPlanForUser(userId);
-    if (cancellation.status === 'forbidden') {
-      logger.warn({ userId }, 'Existing active training plan was not user-owned during replacement; continuing with new plan creation');
-    }
-  } catch (err) {
-    // Replacing a plan should be best-effort: if old calendar cleanup
-    // has a transient provider problem, the new plan still needs to be
-    // created. The cancellation route always hard-deletes local plan
-    // rows when it can, and logs provider misses internally.
-    logger.warn({ err, userId }, 'Existing active training plan cleanup failed before new plan persistence');
+  // Slice 4.D.2 — saga for pre-persist cancellation. The previous
+  // silent catch produced a double-plan state when the local
+  // hard-delete failed; the new saga inspects post-cancellation
+  // database state and aborts the persist when the old plan rows
+  // are still present.
+  const cancellationOutcome = await runPrePersistCancellationSaga(userId);
+
+  switch (cancellationOutcome.kind) {
+    case 'forbidden':
+      logger.warn(
+        { userId },
+        'Existing active training plan was not user-owned during replacement; continuing with new plan creation',
+      );
+      break;
+    case 'external_partial':
+      logger.warn(
+        { userId, orphanedEventCount: cancellationOutcome.orphanedEventCount },
+        'Pre-persist cancellation: local delete OK but some external calendar deletes failed; reconciliation queued via ownership audit',
+      );
+      break;
+    case 'local_delete_failed':
+      logger.error(
+        {
+          userId,
+          reason: cancellationOutcome.reason,
+          activePlansRemaining: cancellationOutcome.activePlansRemaining,
+        },
+        'Pre-persist cancellation: LOCAL DELETE FAILED — aborting new plan persist to avoid double-plan corruption',
+      );
+      return {
+        status: 'cancellation_failed',
+        data: {
+          message:
+            'Could not finalize cancellation of the existing plan. The old plan is still active. Please retry in a moment.',
+          reason: cancellationOutcome.reason,
+          activePlansRemaining: cancellationOutcome.activePlansRemaining,
+        },
+      };
+    case 'success':
+    case 'no_active_plan':
+      // Clean state — proceed.
+      break;
   }
 
   const persistedPlan = await persistGeneratedTrainingPlan({

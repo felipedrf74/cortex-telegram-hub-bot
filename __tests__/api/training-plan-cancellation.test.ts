@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   clearStoredPlansForAthlete: vi.fn(),
   deleteReportsByType: vi.fn(),
   clearLastCoachState: vi.fn(),
+  // Slice 4.D — the lifecycle module hits the real DB; mocked for
+  // this route-level unit test. The lifecycle module's own logic is
+  // exercised by training-plan-lifecycle.test.ts.
+  markCalendarOwnershipDeleted: vi.fn(),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -38,6 +42,10 @@ vi.mock('../../src/services/report-document-store', () => ({
 
 vi.mock('../../src/domains/domain-handler', () => ({
   clearLastCoachState: mocks.clearLastCoachState,
+}));
+
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  markCalendarOwnershipDeleted: mocks.markCalendarOwnershipDeleted,
 }));
 
 import { cancelTrainingPlanForUser } from '../../src/api/routes/training-plan-cancellation';

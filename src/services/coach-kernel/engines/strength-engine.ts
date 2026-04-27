@@ -18,6 +18,15 @@ import {
   findWindowsForDay,
   timeToMinutes,
 } from '../utils';
+import {
+  MIN_CREDIBLE_STRENGTH_MINUTES,
+  suggestCorrection,
+  validateSessionCoherence,
+} from '../session-coherence';
+import {
+  applyBiomechanicsSafetySubstitutions,
+  orderExercisesForSession,
+} from '../biomechanics-and-ordering';
 
 type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
 type StrengthExperience = AthleteState['profile']['experienceLevel'];
@@ -214,7 +223,40 @@ function applyBeginnerSubstitutions(
   };
 }
 
-function strengthVariantFor(profile: StrengthProfile, targetSessions: number, index: number): StrengthVariant {
+/**
+ * Pick the strength-session variant for a given (profile,
+ * targetSessions, dayIndex, weekIndex) combination.
+ *
+ * Slice 4.C — multi-week rotation. Pre-slice the `slot` was computed
+ * from `dayIndex` alone, so Week 1 day 1 = Week 5 day 1 = Week 12
+ * day 1 across an 8-week plan ("Lower Body A on Monday, every
+ * Monday"). The audit flagged this as a multi-week variant gap
+ * compounding regression #2.
+ *
+ * The fix shifts the slot by `weekIndex` modulo the variant count.
+ * For 4-session weeks (4 variants in pool):
+ *   week 0 → slots [Lower A, Upper A, Lower B, Upper B]
+ *   week 1 → slots [Upper A, Lower B, Upper B, Lower A] (shifted +1)
+ *   week 2 → slots [Lower B, Upper B, Lower A, Upper A] (shifted +2)
+ *   week 3 → slots [Upper B, Lower A, Upper A, Lower B] (shifted +3)
+ *   week 4 → back to week-0 ordering
+ *
+ * The variant count for 4-session plans is 4, so this gives a
+ * 4-week macro-rotation: any specific (slot, week-mod-4) pair
+ * produces a distinct variant. Weekly variety preserved (slice 4.B
+ * primary-pattern alternation) and multi-week variety added without
+ * tracking history in AthleteState — pure deterministic rotation
+ * indexed on the planner's existing `currentBlock.weekIndex`.
+ *
+ * Signature is backward compatible: when `weekIndex` is omitted (or
+ * zero), behavior matches the pre-slice-4.C form exactly.
+ */
+function strengthVariantFor(
+  profile: StrengthProfile,
+  targetSessions: number,
+  index: number,
+  weekIndex: number = 0,
+): StrengthVariant {
   const profileTitle = profile === 'hypertrophy'
     ? 'Hypertrophy'
     : profile === 'max_strength'
@@ -222,7 +264,13 @@ function strengthVariantFor(profile: StrengthProfile, targetSessions: number, in
       : profile === 'maintenance'
         ? 'Maintenance'
         : 'Strength';
-  const slot = Math.max(0, index) % Math.max(1, targetSessions);
+  // Slice 4.C — slot shifted by weekIndex so successive weeks don't
+  // ship identical day→variant mappings. We modulo-twice (once on
+  // weekIndex itself, once on the sum) so a callsite passing a very
+  // large weekIndex value can't overflow the bounds.
+  const safeWeekShift = Math.max(0, Math.trunc(weekIndex));
+  const variantCount = Math.max(1, targetSessions);
+  const slot = (Math.max(0, index) + safeWeekShift) % variantCount;
 
   if (targetSessions >= 4) {
     const variants: StrengthVariant[] = [
@@ -496,6 +544,66 @@ function buildStrengthDescription(template: WorkoutTemplate, variant: StrengthVa
   ].join(' ');
 }
 
+/**
+ * Slice 4.A coherence gate. Validates that the produced strength
+ * session's exercise list at realistic set/rest/transition times
+ * actually fills the claimed `durationMinutes`. Applies the
+ * suggested correction (shrink the claim to match content, or
+ * trim trailing accessories) before the session is surfaced.
+ *
+ * For "rebuild" verdicts (session estimated below
+ * MIN_CREDIBLE_STRENGTH_MINUTES), Slice 4.A falls back to
+ * shrinking the claim to MIN_CREDIBLE_STRENGTH_MINUTES — at
+ * minimum the user sees an honest duration. Slice 4.A.2 will add
+ * the actual rebuild path that injects more exercises when the
+ * variant came in too sparse.
+ *
+ * Pinned by `__tests__/services/coach-kernel-session-coherence.test.ts`
+ * (helpers) and `__tests__/services/coach-kernel-strength-engine.test.ts`
+ * (integration).
+ */
+function applyCoherenceGate(
+  session: Session,
+  template: WorkoutTemplate,
+  context: EngineContext,
+): Session {
+  const verdict = validateSessionCoherence(session, context.knowledge);
+  if (verdict.ok) return session;
+
+  const correction = suggestCorrection(verdict, session);
+
+  switch (correction.type) {
+    case 'accept':
+      return session;
+
+    case 'shrinkDuration': {
+      return {
+        ...session,
+        durationMinutes: correction.newDurationMinutes,
+        plannedLoad: durationToLoad(correction.newDurationMinutes, template.primaryZone, template.fatigueCost),
+      };
+    }
+
+    case 'rebuild': {
+      // Slice 4.A fallback: shrink to a credible minimum so the
+      // user at least sees an honest duration. Slice 4.A.2 will
+      // implement true rebuild (inject more exercises until the
+      // session estimates at the claimed duration).
+      const fallbackDuration = MIN_CREDIBLE_STRENGTH_MINUTES;
+      return {
+        ...session,
+        durationMinutes: fallbackDuration,
+        plannedLoad: durationToLoad(fallbackDuration, template.primaryZone, template.fatigueCost),
+      };
+    }
+
+    case 'trimContent': {
+      const trimmedExercises = (session.exercises ?? []).slice(0, correction.keepExerciseCount);
+      return { ...session, exercises: trimmedExercises };
+    }
+  }
+}
+
 export const strengthEngine: SportEngine = {
   buildCandidateSessions(context: EngineContext): Session[] {
     const templates = context.knowledge.workoutTemplates.filter((template) => template.sport === 'strength');
@@ -516,15 +624,22 @@ export const strengthEngine: SportEngine = {
     const template = templateFor(templates, sessionType);
     const days = resolveStrengthDays(context.athlete, targetSessions);
 
+    // Slice 4.C — read weekIndex once at the top so all variant
+    // calls in this loop share it. weekIndex is 1-based in
+    // currentBlock (see plan-generator: `weekIndex: 1` on initial
+    // build), so we subtract 1 to get a 0-based macro-rotation
+    // anchor.
+    const weekIndexForRotation = Math.max(0, (context.athlete.currentBlock.weekIndex ?? 1) - 1);
+
     return days.slice(0, targetSessions).map((dayOfWeek, index) => {
       const durationMinutes = resolveDurationForDay(template, context.athlete, dayOfWeek);
-      const baseVariant = strengthVariantFor(strengthProfile, targetSessions, index);
+      const baseVariant = strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation);
       // Slice 2.A — beginner substitutions are applied to the variant
       // BEFORE equipment-aware resolution so the substituted exercise
       // (e.g. goblet_squat) still picks up its own equipment fallback
       // chain (e.g. bodyweight_squat) if the user has no dumbbells.
       const variant = applyBeginnerSubstitutions(baseVariant, context.athlete.profile.experienceLevel);
-      const exercises = resolveExercises(
+      const baseExercises = resolveExercises(
         template,
         context.knowledge.exercises,
         context.athlete,
@@ -532,7 +647,25 @@ export const strengthEngine: SportEngine = {
         variant,
         durationMinutes,
       );
-      return buildStrengthSession(
+      // Slice 4.H — biomechanics-aware substitution. After equipment
+      // + beginner substitutions have produced the prescription list,
+      // walk it once more and swap any exercise whose
+      // contraindication flags clash with the user's declared pain
+      // areas. Beginner-safe + biomechanics-safe + equipment-safe is
+      // a strict superset of the pre-slice substitution coverage.
+      const safetyResult = applyBiomechanicsSafetySubstitutions(
+        baseExercises,
+        context.athlete,
+        context.knowledge.exercises,
+      );
+      // Slice 4.H — sort the prescription list compound→accessory→
+      // core→mobility so the heaviest work hits while the user is
+      // freshest. Stable within each phase.
+      const exercises = orderExercisesForSession(
+        safetyResult.prescriptions,
+        context.knowledge.exercises,
+      );
+      const rawSession = buildStrengthSession(
         template,
         variant,
         dayOfWeek,
@@ -544,6 +677,11 @@ export const strengthEngine: SportEngine = {
             ? ['hypertrophy', 'full_body', 'lower_body', 'core']
             : ['full_body', 'lower_body', 'core'],
       );
+      // Slice 4.A — gate the produced session through the coherence
+      // validator. Sessions whose claimed duration doesn't match
+      // their content density are corrected (claim shrunk, or
+      // trailing accessories trimmed) before surfacing.
+      return applyCoherenceGate(rawSession, template, context);
     });
   },
 };

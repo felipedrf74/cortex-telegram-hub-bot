@@ -3,41 +3,121 @@
     "id": "front_squat",
     "name": "Front Squat",
     "movementPattern": "squat",
-    "equipment": ["barbell", "rack"],
+    "equipment": [
+      "barbell",
+      "rack"
+    ],
     "fatigueCost": "high",
-    "substitutions": ["goblet_squat", "split_squat"]
+    "substitutions": [
+      "goblet_squat",
+      "split_squat"
+    ],
+    "complexity": "advanced",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": [
+      "low_back",
+      "wrist_mobility"
+    ],
+    "warmupNeeds": [
+      "hip_mobility",
+      "ankle_mobility",
+      "thoracic_extension",
+      "wrist_mobility"
+    ]
   },
   {
     "id": "romanian_deadlift",
     "name": "Romanian Deadlift",
     "movementPattern": "hinge",
-    "equipment": ["barbell", "dumbbells"],
+    "equipment": [
+      "barbell",
+      "dumbbells"
+    ],
     "fatigueCost": "high",
-    "substitutions": ["single_leg_rdl", "hip_hinge_band"]
+    "substitutions": [
+      "single_leg_rdl",
+      "hip_hinge_band"
+    ],
+    "complexity": "intermediate",
+    "spinalLoading": "high",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "contraindicationFlags": [
+      "low_back"
+    ],
+    "warmupNeeds": [
+      "hip_mobility",
+      "hamstring_warmup"
+    ]
   },
   {
     "id": "pull_up",
     "name": "Pull-Up",
     "movementPattern": "pull",
-    "equipment": ["pullup_bar"],
+    "equipment": [
+      "pullup_bar"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["lat_pulldown", "one_arm_dumbbell_row", "ring_row"]
+    "substitutions": [
+      "lat_pulldown",
+      "one_arm_dumbbell_row",
+      "ring_row"
+    ],
+    "complexity": "advanced",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": [
+      "shoulder_warmup",
+      "scapular_activation"
+    ]
   },
   {
     "id": "bench_press",
     "name": "Bench Press",
     "movementPattern": "push",
-    "equipment": ["barbell", "bench"],
+    "equipment": [
+      "barbell",
+      "bench"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["dumbbell_bench_press", "push_up"]
+    "substitutions": [
+      "dumbbell_bench_press",
+      "push_up"
+    ],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "strength",
+    "warmupNeeds": [
+      "shoulder_warmup"
+    ],
+    "contraindicationFlags": [
+      "shoulder_impingement"
+    ]
   },
   {
     "id": "split_squat",
     "name": "Split Squat",
     "movementPattern": "single_leg",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["step_up", "lunging_iso_hold"]
+    "substitutions": [
+      "step_up",
+      "lunging_iso_hold"
+    ],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": [
+      "hip_mobility",
+      "ankle_mobility"
+    ]
   },
   {
     "id": "dead_bug",
@@ -45,15 +125,35 @@
     "movementPattern": "core",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["hollow_hold", "bear_crawl"]
+    "substitutions": [
+      "hollow_hold",
+      "bear_crawl"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability"
   },
   {
     "id": "farmer_carry",
     "name": "Farmer Carry",
     "movementPattern": "carry",
-    "equipment": ["dumbbells", "kettlebells"],
+    "equipment": [
+      "dumbbells",
+      "kettlebells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["suitcase_carry", "sandbag_hold"]
+    "substitutions": [
+      "suitcase_carry",
+      "sandbag_hold"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "conditioning",
+    "warmupNeeds": [
+      "grip_warmup"
+    ]
   },
   {
     "id": "hip_airplane",
@@ -61,23 +161,53 @@
     "movementPattern": "mobility",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["worlds_greatest_stretch", "cossack_squat"]
+    "substitutions": [
+      "worlds_greatest_stretch",
+      "cossack_squat"
+    ]
   },
   {
     "id": "goblet_squat",
     "name": "Goblet Squat",
     "movementPattern": "squat",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["split_squat", "cossack_squat"]
+    "substitutions": [
+      "split_squat",
+      "cossack_squat"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "moderate",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": [
+      "hip_mobility",
+      "ankle_mobility"
+    ]
   },
   {
     "id": "single_leg_rdl",
     "name": "Single-Leg Romanian Deadlift",
     "movementPattern": "hinge",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["hip_hinge_band", "hip_airplane"]
+    "substitutions": [
+      "hip_hinge_band",
+      "hip_airplane"
+    ],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability",
+    "warmupNeeds": [
+      "hip_mobility",
+      "hamstring_warmup",
+      "balance_prep"
+    ]
   },
   {
     "id": "hip_hinge_band",
@@ -85,31 +215,68 @@
     "movementPattern": "hinge",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["single_leg_rdl"]
+    "substitutions": [
+      "single_leg_rdl"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": [
+      "hip_mobility"
+    ]
   },
   {
     "id": "lat_pulldown",
     "name": "Lat Pulldown",
     "movementPattern": "pull",
-    "equipment": ["lat_pulldown"],
+    "equipment": [
+      "lat_pulldown"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["one_arm_dumbbell_row", "ring_row"]
+    "substitutions": [
+      "one_arm_dumbbell_row",
+      "ring_row"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": [
+      "shoulder_warmup"
+    ]
   },
   {
     "id": "one_arm_dumbbell_row",
     "name": "One-Arm Dumbbell Row",
     "movementPattern": "pull",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["ring_row"]
+    "substitutions": [
+      "ring_row"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "strength",
+    "warmupNeeds": [
+      "shoulder_warmup",
+      "thoracic_rotation"
+    ]
   },
   {
     "id": "ring_row",
     "name": "Ring Row",
     "movementPattern": "pull",
-    "equipment": ["pullup_bar"],
+    "equipment": [
+      "pullup_bar"
+    ],
     "fatigueCost": "low",
-    "substitutions": ["one_arm_dumbbell_row"]
+    "substitutions": [
+      "one_arm_dumbbell_row"
+    ]
   },
   {
     "id": "push_up",
@@ -117,23 +284,48 @@
     "movementPattern": "push",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["dumbbell_bench_press"]
+    "substitutions": [
+      "dumbbell_bench_press"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": [
+      "shoulder_warmup"
+    ]
   },
   {
     "id": "dumbbell_bench_press",
     "name": "Dumbbell Bench Press",
     "movementPattern": "push",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["push_up"]
+    "substitutions": [
+      "push_up"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "hypertrophy",
+    "warmupNeeds": [
+      "shoulder_warmup"
+    ]
   },
   {
     "id": "step_up",
     "name": "Step-Up",
     "movementPattern": "single_leg",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["lunging_iso_hold", "split_squat"]
+    "substitutions": [
+      "lunging_iso_hold",
+      "split_squat"
+    ]
   },
   {
     "id": "lunging_iso_hold",
@@ -141,7 +333,13 @@
     "movementPattern": "single_leg",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["step_up"]
+    "substitutions": [
+      "step_up"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "stability"
   },
   {
     "id": "hollow_hold",
@@ -149,7 +347,14 @@
     "movementPattern": "core",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["dead_bug", "bear_crawl"]
+    "substitutions": [
+      "dead_bug",
+      "bear_crawl"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability"
   },
   {
     "id": "bear_crawl",
@@ -157,15 +362,30 @@
     "movementPattern": "core",
     "equipment": [],
     "fatigueCost": "medium",
-    "substitutions": ["dead_bug", "hollow_hold"]
+    "substitutions": [
+      "dead_bug",
+      "hollow_hold"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "stability"
   },
   {
     "id": "suitcase_carry",
     "name": "Suitcase Carry",
     "movementPattern": "carry",
-    "equipment": ["dumbbells"],
+    "equipment": [
+      "dumbbells"
+    ],
     "fatigueCost": "medium",
-    "substitutions": ["sandbag_hold"]
+    "substitutions": [
+      "sandbag_hold"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "moderate",
+    "unilateral": true,
+    "primaryPurpose": "conditioning"
   },
   {
     "id": "sandbag_hold",
@@ -173,7 +393,13 @@
     "movementPattern": "carry",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["suitcase_carry"]
+    "substitutions": [
+      "suitcase_carry"
+    ],
+    "complexity": "beginner",
+    "spinalLoading": "low",
+    "unilateral": false,
+    "primaryPurpose": "conditioning"
   },
   {
     "id": "worlds_greatest_stretch",
@@ -181,7 +407,10 @@
     "movementPattern": "mobility",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["hip_airplane", "cossack_squat"]
+    "substitutions": [
+      "hip_airplane",
+      "cossack_squat"
+    ]
   },
   {
     "id": "cossack_squat",
@@ -189,6 +418,17 @@
     "movementPattern": "mobility",
     "equipment": [],
     "fatigueCost": "low",
-    "substitutions": ["worlds_greatest_stretch", "split_squat"]
+    "substitutions": [
+      "worlds_greatest_stretch",
+      "split_squat"
+    ],
+    "complexity": "intermediate",
+    "spinalLoading": "low",
+    "unilateral": true,
+    "primaryPurpose": "mobility",
+    "warmupNeeds": [
+      "hip_mobility",
+      "ankle_mobility"
+    ]
   }
 ]
