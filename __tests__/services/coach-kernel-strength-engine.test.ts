@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadCoachKnowledge } from '../../src/services/coach-kernel';
-import { strengthEngine } from '../../src/services/coach-kernel/engines/strength-engine';
+import {
+  repairUnderfilledStrengthSession,
+  strengthEngine,
+} from '../../src/services/coach-kernel/engines/strength-engine';
+import {
+  estimateStrengthSessionMinutes,
+  validateSessionCoherence,
+} from '../../src/services/coach-kernel/session-coherence';
 import { sampleHybridAthlete, sampleMarathonAthlete } from '../../src/services/coach-kernel/seed/sample-athletes';
-import type { AthleteState } from '../../src/services/coach-kernel/types';
+import type { AthleteState, Session } from '../../src/services/coach-kernel/types';
 
 function buildStrengthSessions(athlete: AthleteState, weekStart = '2026-05-04') {
   return strengthEngine.buildCandidateSessions({
@@ -71,11 +78,12 @@ describe('coach-kernel strength engine', () => {
     expect(sessionWithFrontSquat!.tags).toContain('hypertrophy');
     expect(sessionWithFrontSquat!.exercises?.length).toBeGreaterThanOrEqual(5);
     expect(mainLift).toMatchObject({
-      sets: 3,
       reps: '6-10',
       rir: 1,
       restSec: 90,
     });
+    expect(mainLift!.sets).toBeGreaterThanOrEqual(3);
+    expect(mainLift!.sets).toBeLessThanOrEqual(4);
   });
 
   it('rotates four weekly strength sessions instead of cloning the same generic lift', () => {
@@ -212,5 +220,50 @@ describe('coach-kernel strength engine', () => {
 
     expect(session.dayOfWeek).toBe('monday');
     expect(session.durationMinutes).toBe(35);
+  });
+
+  it('rebuilds a sparse high-duration strength session instead of only shrinking the label', () => {
+    const knowledge = loadCoachKnowledge();
+    const template = knowledge.workoutTemplates.find((item) => item.sessionType === 'strength_hypertrophy');
+    expect(template).toBeDefined();
+    const sparseSession: Session = {
+      id: 'sparse-strength',
+      sport: 'strength',
+      sessionType: 'strength_hypertrophy',
+      title: 'Lower Body Strength A',
+      description: 'Sparse regression case.',
+      dayOfWeek: 'monday',
+      durationMinutes: 48,
+      intensityZone: 'aerobic',
+      fatigueCost: 'medium',
+      keySession: false,
+      plannedLoad: 100,
+      sourceTemplateId: 'strength_hypertrophy',
+      tags: ['lower_body', 'hypertrophy'],
+      exercises: [
+        { exerciseId: 'dead_bug', name: 'Dead Bug', sets: 2, reps: '10-15', restSec: 60 },
+      ],
+      alternatives: [],
+    };
+
+    const repaired = repairUnderfilledStrengthSession(
+      sparseSession,
+      template!,
+      {
+        athlete: sampleHybridAthlete,
+        phase: sampleHybridAthlete.currentBlock.phase,
+        knowledge,
+        weekStart: '2026-05-04',
+      },
+    );
+    const estimated = estimateStrengthSessionMinutes(repaired, knowledge);
+    const verdict = validateSessionCoherence(repaired, knowledge);
+
+    expect(repaired.exercises?.length).toBeGreaterThanOrEqual(4);
+    expect(repaired.tags).toContain('coherence_rebuilt');
+    expect(repaired.durationMinutes).toBe(48);
+    expect(estimated).toBeGreaterThanOrEqual(38);
+    expect(verdict.ok).toBe(true);
+    expect(new Set((repaired.exercises ?? []).map((exercise) => exercise.exerciseId)).size).toBe(repaired.exercises?.length);
   });
 });

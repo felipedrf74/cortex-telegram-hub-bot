@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
   getEvents: vi.fn(),
   isConnected: vi.fn(),
   isTrainingCalendarEventUnclaimed: vi.fn(),
+  getPlanVersion: vi.fn(),
+  findExistingOwnership: vi.fn(),
+  recordCalendarOwnership: vi.fn(),
   loggerDebug: vi.fn(),
   loggerWarn: vi.fn(),
 }));
@@ -33,6 +36,12 @@ vi.mock('../../src/services/training-calendar-scope', () => ({
   isTrainingCalendarEventUnclaimed: mocks.isTrainingCalendarEventUnclaimed,
 }));
 
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  getPlanVersion: mocks.getPlanVersion,
+  findExistingOwnership: mocks.findExistingOwnership,
+  recordCalendarOwnership: mocks.recordCalendarOwnership,
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     debug: mocks.loggerDebug,
@@ -53,6 +62,9 @@ describe('training-plan-calendar-sync', () => {
     mocks.linkSessionToCalendar.mockReturnValue(true);
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'google');
     mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(true);
+    mocks.getPlanVersion.mockReturnValue(3);
+    mocks.findExistingOwnership.mockReturnValue(null);
+    mocks.recordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 99 });
   });
 
   it('returns no_active_plan when the user has no plan', async () => {
@@ -102,6 +114,22 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-mon', 'google');
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(101, 'evt-wed', 'google');
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith({
+      planId: 7,
+      planVersion: 3,
+      sessionId: 100,
+      userId: 42,
+      eventId: 'evt-mon',
+      source: 'google',
+    });
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith({
+      planId: 7,
+      planVersion: 3,
+      sessionId: 101,
+      userId: 42,
+      eventId: 'evt-wed',
+      source: 'google',
+    });
     // Strength title prefix uses the dumbbell emoji + duration suffix.
     const monPayload = mocks.createEvent.mock.calls[0][0];
     expect(monPayload.title).toBe('💪 Strength + Core (40min)');
@@ -248,6 +276,60 @@ describe('training-plan-calendar-sync', () => {
     }
     expect(mocks.createEvent).not.toHaveBeenCalled();
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(208, 'orphan-recovery-run', 'google');
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith({
+      planId: 18,
+      planVersion: 3,
+      sessionId: 208,
+      userId: 42,
+      eventId: 'orphan-recovery-run',
+      source: 'google',
+    });
+  });
+
+  it('re-links a session from active ownership without creating a duplicate event', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 21,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 2100, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 211, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 40, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.findExistingOwnership.mockReturnValue({
+      id: 990,
+      plan_id: 21,
+      plan_version: 3,
+      session_id: 211,
+      user_id: 42,
+      calendar_event_id: 'owned-lift',
+      calendar_source: 'google',
+      status: 'active',
+      created_at: '2026-04-20T00:00:00Z',
+      deleted_at: null,
+      delete_reason: null,
+    });
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'owned-lift',
+        source: 'google',
+        summary: '💪 Lift (40min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:40:00.000Z',
+      },
+    ]);
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsLinked).toBe(1);
+      expect(result.data.message).toBe('1 existing session was linked to your calendar.');
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(211, 'owned-lift', 'google');
   });
 
   it('does not claim a matching training event already linked to another plan', async () => {

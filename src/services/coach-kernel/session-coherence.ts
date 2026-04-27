@@ -32,11 +32,10 @@
  * estimated minutes diverge from claimed by more than the tolerance
  * (default 20%) is corrected before surfacing.
  *
- * Out of scope for 4.A: the full rebuild path that injects new
- * exercises when the existing list is too sparse to credibly fill
- * the slot. For now, "rebuild" verdicts fall back to "shrink the
- * claim to a sane minimum" so the user at least sees an honest
- * duration. Slice 4.A.2 (later) will implement true rebuild.
+ * The validator stays pure: it reports when a rebuild is required.
+ * The strength engine owns the catalog-aware repair pass that adds
+ * compatible exercises or set volume before falling back to a smaller
+ * truthful duration.
  *
  * Other modalities (running, cycling, swimming): the duration of a
  * run/ride/swim is BY DEFINITION the session length — there is no
@@ -340,11 +339,8 @@ export type CorrectiveAction =
  *                                important leading exercises, drop
  *                                trailing accessories)
  *
- * The "rebuild" path is structural (Slice 4.A.2 will implement
- * actual exercise injection). For Slice 4.A, callers should treat
- * `rebuild` as "shrink the claim to MIN_CREDIBLE_STRENGTH_MINUTES"
- * as a fallback — at least the user sees an honest duration even
- * if the session is sparse.
+ * The "rebuild" path is structural. Callers should try a catalog-
+ * aware repair before falling back to MIN_CREDIBLE_STRENGTH_MINUTES.
  *
  * For `trimContent`, the keep count is computed from the estimated
  * minutes: if the session is 50% over the claim, drop the bottom
@@ -371,7 +367,7 @@ export function suggestCorrection(
     return {
       type: 'rebuild',
       targetExtraExercises: 2,
-      reason: `Session estimated at only ${verdict.estimatedMinutes}min for a ${verdict.claimedMinutes}min slot — below MIN_CREDIBLE_STRENGTH_MINUTES (${MIN_CREDIBLE_STRENGTH_MINUTES}min). Slice 4.A.2 will rebuild; for now caller should fall back to shrinkDuration.`,
+      reason: `Session estimated at only ${verdict.estimatedMinutes}min for a ${verdict.claimedMinutes}min slot — below MIN_CREDIBLE_STRENGTH_MINUTES (${MIN_CREDIBLE_STRENGTH_MINUTES}min). Caller should try a catalog-aware rebuild before falling back to shrinkDuration.`,
     };
   }
 

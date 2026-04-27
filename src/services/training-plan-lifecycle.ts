@@ -188,10 +188,13 @@ export function markCalendarOwnershipDeleted(
 ): { ok: boolean; rowsAffected: number } {
   const db = getDb();
   const status = input.status ?? 'deleted';
+  const statusPredicate = status === 'deleted'
+    ? "status IN ('active', 'orphaned')"
+    : "status = 'active'";
   const result = db.prepare(`
     UPDATE training_agenda_event_ownership
     SET status = ?, deleted_at = datetime('now'), delete_reason = ?
-    WHERE calendar_event_id = ? AND calendar_source = ? AND status = 'active'
+    WHERE calendar_event_id = ? AND calendar_source = ? AND ${statusPredicate}
   `).run(status, input.reason ?? null, input.eventId, input.source);
   return { ok: true, rowsAffected: result.changes };
 }
@@ -230,6 +233,23 @@ export function findOrphanedOwnerships(userId: number): AgendaEventOwnership[] {
       AND o.status = 'active'
       AND ts.id IS NULL
     ORDER BY o.created_at ASC
+  `).all(userId) as AgendaEventOwnership[];
+}
+
+/**
+ * Find ownership rows whose prior external delete failed and still
+ * need a precise retry. These rows are the real reconciliation queue;
+ * `findOrphanedOwnerships` above catches the FK-cascade aftermath
+ * before a row has been marked terminal.
+ */
+export function findOwnershipsNeedingReconciliation(userId: number): AgendaEventOwnership[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT *
+    FROM training_agenda_event_ownership
+    WHERE user_id = ?
+      AND status = 'orphaned'
+    ORDER BY COALESCE(deleted_at, created_at) ASC, id ASC
   `).all(userId) as AgendaEventOwnership[];
 }
 

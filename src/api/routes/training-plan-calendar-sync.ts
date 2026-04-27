@@ -13,6 +13,11 @@ import {
 import { createTrainingCalendarEvent } from './training-calendar-event-writer';
 import { logger } from '../../utils/logger';
 import { isTrainingCalendarEventUnclaimed } from '../../services/training-calendar-scope';
+import {
+  findExistingOwnership,
+  getPlanVersion,
+  recordCalendarOwnership,
+} from '../../services/training-plan-lifecycle';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -157,6 +162,7 @@ export async function syncTrainingPlanCalendar(
   const preferences = readPlanPreferences(plan);
   const planStart = new Date(plan.start_date);
   const calendarSource = preferredTrainingCalendarSource(userId);
+  const planVersion = getPlanVersion(plan.id) ?? 1;
 
   // Walk every week / session up front so we can skip past or finished
   // sessions, then verify existing calendar links against the provider.
@@ -241,7 +247,46 @@ export async function syncTrainingPlanCalendar(
   const consumedExistingEventKeys = new Set<string>();
   const pending: SyncCandidate[] = [];
   let alreadySynced = 0;
+  let ownershipRelinked = 0;
   for (const item of candidates) {
+    const existingOwnership = findExistingOwnership({
+      planId: plan.id,
+      planVersion,
+      sessionId: item.sessionId,
+    });
+
+    if (!item.calendarEventId && existingOwnership) {
+      if (!calendarFetchSucceeded) {
+        trainingPlans.linkSessionToCalendar(
+          item.sessionId,
+          existingOwnership.calendar_event_id,
+          existingOwnership.calendar_source,
+        );
+        ownershipRelinked += 1;
+        continue;
+      }
+
+      const ownedEvent = calendarEvents.find((event) =>
+        event.id === existingOwnership.calendar_event_id
+        && event.source === existingOwnership.calendar_source
+      );
+      if (ownedEvent && isMatchingGeneratedTrainingEvent(item, ownedEvent)) {
+        trainingPlans.linkSessionToCalendar(item.sessionId, ownedEvent.id, ownedEvent.source);
+        ownershipRelinked += 1;
+        const eventStart = new Date(ownedEvent.start);
+        const eventEnd = new Date(ownedEvent.end);
+        if (Number.isFinite(eventStart.getTime()) && Number.isFinite(eventEnd.getTime())) {
+          scheduledWindows.push({
+            startMs: eventStart.getTime(),
+            endMs: eventEnd.getTime(),
+            title: item.title,
+          });
+          consumedExistingEventKeys.add(`${ownedEvent.source}:${ownedEvent.id}`);
+        }
+        continue;
+      }
+    }
+
     if (!item.calendarEventId) {
       pending.push(item);
       continue;
@@ -254,6 +299,14 @@ export async function syncTrainingPlanCalendar(
 
     const linkedEvent = findLinkedCalendarEvent(item, calendarEvents);
     if (linkedEvent && isMatchingGeneratedTrainingEvent(item, linkedEvent)) {
+      recordTrainingCalendarOwnership({
+        planId: plan.id,
+        planVersion,
+        sessionId: item.sessionId,
+        userId,
+        eventId: linkedEvent.id,
+        source: linkedEvent.source,
+      });
       alreadySynced += 1;
       const eventStart = new Date(linkedEvent.start);
       const eventEnd = new Date(linkedEvent.end);
@@ -288,10 +341,12 @@ export async function syncTrainingPlanCalendar(
         eventsCreated: 0,
         sessionsAttempted: 0,
         sessionsAlreadySynced: alreadySynced,
-        sessionsLinked: 0,
+        sessionsLinked: ownershipRelinked,
         sessionsFailed: 0,
         message:
-          alreadySynced > 0
+          ownershipRelinked > 0
+            ? `${ownershipRelinked} existing ${ownershipRelinked === 1 ? 'session was' : 'sessions were'} linked to your calendar.`
+            : alreadySynced > 0
             ? 'Your plan is already on the calendar.'
             : 'No future sessions left to sync.',
       },
@@ -299,7 +354,7 @@ export async function syncTrainingPlanCalendar(
   }
 
   let eventsCreated = 0;
-  let sessionsLinked = 0;
+  let sessionsLinked = ownershipRelinked;
   let sessionsFailed = 0;
   let firstError: Error | null = null;
 
@@ -307,6 +362,14 @@ export async function syncTrainingPlanCalendar(
     const existingEvent = consumeMatchingExistingTrainingEvent(item, calendarEvents, consumedExistingEventKeys);
     if (existingEvent) {
       trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
+      recordTrainingCalendarOwnership({
+        planId: plan.id,
+        planVersion,
+        sessionId: item.sessionId,
+        userId,
+        eventId: existingEvent.id,
+        source: existingEvent.source,
+      });
       sessionsLinked += 1;
       const eventStart = new Date(existingEvent.start);
       const eventEnd = new Date(existingEvent.end);
@@ -356,6 +419,14 @@ export async function syncTrainingPlanCalendar(
         },
       );
       trainingPlans.linkSessionToCalendar(item.sessionId, event.id, event.source);
+      recordTrainingCalendarOwnership({
+        planId: plan.id,
+        planVersion,
+        sessionId: item.sessionId,
+        userId,
+        eventId: event.id,
+        source: event.source,
+      });
       eventsCreated += 1;
     } catch (err) {
       sessionsFailed += 1;
@@ -386,8 +457,10 @@ export async function syncTrainingPlanCalendar(
     }
   }
 
+  const linkedFromPending = sessionsLinked - ownershipRelinked;
+  const resolvedPendingCount = eventsCreated + linkedFromPending;
   const resolvedCount = eventsCreated + sessionsLinked;
-  const remainingDay = pending.length - resolvedCount;
+  const remainingDay = pending.length - resolvedPendingCount;
   let message: string;
   if (resolvedCount === 0) {
     message = 'Could not create any calendar events. Check your calendar connection and try again.';
@@ -414,6 +487,29 @@ export async function syncTrainingPlanCalendar(
       message,
     },
   };
+}
+
+function recordTrainingCalendarOwnership(input: {
+  planId: number;
+  planVersion: number;
+  sessionId: number;
+  userId: number;
+  eventId: string;
+  source: string;
+}): void {
+  const result = recordCalendarOwnership(input);
+  if (!result.ok) {
+    logger.warn(
+      {
+        planId: input.planId,
+        planVersion: input.planVersion,
+        sessionId: input.sessionId,
+        eventId: input.eventId,
+        source: input.source,
+      },
+      'syncTrainingPlanCalendar: failed to record agenda ownership',
+    );
+  }
 }
 
 function preferredTrainingCalendarSource(userId: number): 'google' | 'outlook' | undefined {

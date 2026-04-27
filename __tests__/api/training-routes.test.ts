@@ -51,6 +51,7 @@ const mockGetStoredPlanCoveringDate = vi.fn();
 const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
+const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -178,6 +179,13 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
   findExistingOwnership: vi.fn(() => null),
   recordCalendarOwnership: vi.fn(() => ({ ok: true, created: true, ownershipId: 1 })),
   markCalendarOwnershipDeleted: vi.fn(() => ({ ok: true, rowsAffected: 1 })),
+  findOrphanedOwnerships: vi.fn(() => []),
+}));
+
+vi.mock('../../src/services/training-agenda-reconciliation', () => ({
+  reconcileOrphanedTrainingAgendaEvents: (...args: unknown[]) => (
+    mockReconcileOrphanedTrainingAgendaEvents(...args)
+  ),
 }));
 
 import { looksLikeTrainingCalendarEvent, trainingRoutes } from '../../src/api/routes/training';
@@ -342,6 +350,7 @@ describe('Training API routes', () => {
     mockLoggerError.mockReset();
     mockBuildActiveSignalsResponse.mockReset();
     mockInvalidateCalendarCaches.mockReset();
+    mockReconcileOrphanedTrainingAgendaEvents.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
@@ -352,6 +361,11 @@ describe('Training API routes', () => {
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
     mockDeleteEvent.mockResolvedValue(undefined);
+    mockReconcileOrphanedTrainingAgendaEvents.mockResolvedValue({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+    });
     mockGetActivePlan.mockReturnValue(null);
     mockGetActivePlans.mockReturnValue([]);
     mockGetCurrentWeek.mockReturnValue(null);

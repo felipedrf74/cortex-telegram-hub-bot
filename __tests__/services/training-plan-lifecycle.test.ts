@@ -61,6 +61,7 @@ import {
   findExistingOwnership,
   findOrphanedOwnerships,
   findOwnershipsForPlan,
+  findOwnershipsNeedingReconciliation,
   getPlanVersion,
   incrementPlanVersion,
   markCalendarOwnershipDeleted,
@@ -242,6 +243,34 @@ describe('training-plan-lifecycle — markCalendarOwnershipDeleted', () => {
     expect(row.status).toBe('orphaned');
   });
 
+  it('can reconcile an orphaned row back to deleted after a retry succeeds', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-1', source: 'google',
+    });
+    markCalendarOwnershipDeleted({
+      eventId: 'evt-1',
+      source: 'google',
+      reason: 'plan_cancelled_external_delete_failed',
+      status: 'orphaned',
+    });
+
+    const result = markCalendarOwnershipDeleted({
+      eventId: 'evt-1',
+      source: 'google',
+      reason: 'orphan_reconciled',
+      status: 'deleted',
+    });
+
+    expect(result.rowsAffected).toBe(1);
+    const row = testDb.prepare(`
+      SELECT status, delete_reason FROM training_agenda_event_ownership WHERE calendar_event_id = ?
+    `).get('evt-1') as { status: string; delete_reason: string };
+    expect(row.status).toBe('deleted');
+    expect(row.delete_reason).toBe('orphan_reconciled');
+  });
+
   it('is idempotent: second call on already-deleted row affects 0 rows', () => {
     seedPlan({ id: 1, userId: 100 });
     seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
@@ -298,6 +327,44 @@ describe('training-plan-lifecycle — findOrphanedOwnerships', () => {
     });
     const orphans = findOrphanedOwnerships(100);
     expect(orphans.length).toBe(0);
+  });
+});
+
+describe('training-plan-lifecycle — findOwnershipsNeedingReconciliation', () => {
+  it('returns rows marked orphaned after external calendar deletion failed', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-1', source: 'google',
+    });
+    markCalendarOwnershipDeleted({
+      eventId: 'evt-1',
+      source: 'google',
+      reason: 'plan_cancelled_external_delete_failed',
+      status: 'orphaned',
+    });
+
+    const rows = findOwnershipsNeedingReconciliation(100);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].calendar_event_id).toBe('evt-1');
+    expect(rows[0].status).toBe('orphaned');
+  });
+
+  it('does not return deleted rows after reconciliation', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-1', source: 'google',
+    });
+    markCalendarOwnershipDeleted({
+      eventId: 'evt-1',
+      source: 'google',
+      reason: 'plan_cancelled',
+      status: 'deleted',
+    });
+
+    expect(findOwnershipsNeedingReconciliation(100)).toHaveLength(0);
   });
 });
 

@@ -19,7 +19,9 @@ import {
   timeToMinutes,
 } from '../utils';
 import {
+  DEFAULT_COHERENCE_TOLERANCE_PCT,
   MIN_CREDIBLE_STRENGTH_MINUTES,
+  estimateStrengthSessionMinutes,
   suggestCorrection,
   validateSessionCoherence,
 } from '../session-coherence';
@@ -27,6 +29,12 @@ import {
   applyBiomechanicsSafetySubstitutions,
   orderExercisesForSession,
 } from '../biomechanics-and-ordering';
+import {
+  exerciseConflictsWithUserPain,
+  getExerciseComplexity,
+  getExercisePrimaryPurpose,
+  getExerciseSpinalLoading,
+} from '../exercise-metadata';
 
 type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
 type StrengthExperience = AthleteState['profile']['experienceLevel'];
@@ -475,6 +483,287 @@ function resolveExercises(
   return prescriptions;
 }
 
+type StrengthMovementPattern = Exercise['movementPattern'];
+
+const FULL_BODY_REBUILD_PATTERN_ORDER: StrengthMovementPattern[] = [
+  'squat',
+  'push',
+  'hinge',
+  'pull',
+  'single_leg',
+  'carry',
+  'core',
+];
+
+function rebuildPatternOrderFor(session: Session): StrengthMovementPattern[] {
+  const tags = new Set(session.tags ?? []);
+  if (tags.has('upper_body')) {
+    return ['push', 'pull', 'push', 'pull', 'carry', 'core'];
+  }
+  if (tags.has('lower_body')) {
+    return ['squat', 'hinge', 'single_leg', 'carry', 'core'];
+  }
+  return FULL_BODY_REBUILD_PATTERN_ORDER;
+}
+
+function countExercisesByPattern(
+  prescriptions: ExercisePrescription[],
+  libraryById: Map<string, Exercise>,
+): Map<StrengthMovementPattern, number> {
+  const counts = new Map<StrengthMovementPattern, number>();
+  for (const prescription of prescriptions) {
+    const exercise = libraryById.get(prescription.exerciseId);
+    if (!exercise) continue;
+    counts.set(exercise.movementPattern, (counts.get(exercise.movementPattern) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function complexityPenalty(exercise: Exercise, experience: StrengthExperience): number {
+  const complexity = getExerciseComplexity(exercise);
+  if (experience !== 'novice') return complexity === 'expert' ? 8 : 0;
+  if (complexity === 'expert') return 40;
+  if (complexity === 'advanced') return 20;
+  if (complexity === 'intermediate') return 6;
+  return 0;
+}
+
+function scoreRebuildCandidate(args: {
+  exercise: Exercise;
+  profile: StrengthProfile;
+  experience: StrengthExperience;
+  painAreas: string[];
+}): number {
+  const { exercise, profile, experience, painAreas } = args;
+  let score = 100;
+  score -= complexityPenalty(exercise, experience);
+  if (exerciseConflictsWithUserPain(exercise, painAreas)) score -= 50;
+
+  const purpose = getExercisePrimaryPurpose(exercise);
+  if (profile === 'hypertrophy' && (purpose === 'hypertrophy' || purpose === 'strength')) score += 8;
+  if (profile === 'max_strength' && purpose === 'strength') score += 8;
+  if (profile === 'athletic' && (purpose === 'strength' || purpose === 'conditioning' || purpose === 'stability')) score += 6;
+  if (profile === 'maintenance' && getExerciseSpinalLoading(exercise) === 'high') score -= 8;
+  if (exercise.fatigueCost === 'low') score += 4;
+  if (exercise.fatigueCost === 'very_high') score -= 12;
+  return score;
+}
+
+function selectRebuildExercise(args: {
+  pattern: StrengthMovementPattern;
+  library: Exercise[];
+  equipment: Set<string>;
+  usedIds: Set<string>;
+  athlete: AthleteState;
+  profile: StrengthProfile;
+}): Exercise | null {
+  const painAreas = (args.athlete.readiness?.painFlags ?? [])
+    .map((flag) => flag.area ?? '')
+    .filter(Boolean);
+  const candidates = args.library
+    .filter((exercise) =>
+      exercise.movementPattern === args.pattern
+      && !args.usedIds.has(exercise.id)
+      && canPerformExercise(exercise, args.equipment)
+    )
+    .map((exercise) => ({
+      exercise,
+      score: scoreRebuildCandidate({
+        exercise,
+        profile: args.profile,
+        experience: args.athlete.profile.experienceLevel,
+        painAreas,
+      }),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  return candidates[0]?.exercise ?? null;
+}
+
+function selectNextRebuildExercise(args: {
+  prescriptions: ExercisePrescription[];
+  library: Exercise[];
+  libraryById: Map<string, Exercise>;
+  equipment: Set<string>;
+  usedIds: Set<string>;
+  athlete: AthleteState;
+  profile: StrengthProfile;
+  patternOrder: StrengthMovementPattern[];
+}): Exercise | null {
+  const counts = countExercisesByPattern(args.prescriptions, args.libraryById);
+  const orderedPatterns = [...args.patternOrder].sort((left, right) => {
+    const countDelta = (counts.get(left) ?? 0) - (counts.get(right) ?? 0);
+    if (countDelta !== 0) return countDelta;
+    return args.patternOrder.indexOf(left) - args.patternOrder.indexOf(right);
+  });
+
+  for (const pattern of orderedPatterns) {
+    const exercise = selectRebuildExercise({
+      pattern,
+      library: args.library,
+      equipment: args.equipment,
+      usedIds: args.usedIds,
+      athlete: args.athlete,
+      profile: args.profile,
+    });
+    if (exercise) return exercise;
+  }
+  return null;
+}
+
+function targetLowerBoundMinutes(durationMinutes: number): number {
+  return Math.round(durationMinutes * (1 - DEFAULT_COHERENCE_TOLERANCE_PCT));
+}
+
+function maxSetsForCoherence(
+  exercise: Exercise | undefined,
+  profile: StrengthProfile,
+  experience: StrengthExperience,
+): number {
+  if (!exercise) return 4;
+  if (exercise.movementPattern === 'mobility') return 2;
+  if (exercise.movementPattern === 'core') return 3;
+  if (exercise.movementPattern === 'carry') return 4;
+  const mainPattern = ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern);
+  if (!mainPattern) return 4;
+  if (experience === 'novice') return 3;
+  if (profile === 'hypertrophy' && experience === 'advanced') return 5;
+  return 4;
+}
+
+function densifyPrescriptionsForTarget(args: {
+  prescriptions: ExercisePrescription[];
+  libraryById: Map<string, Exercise>;
+  knowledge: EngineContext['knowledge'];
+  profile: StrengthProfile;
+  experience: StrengthExperience;
+  targetMinutes: number;
+}): ExercisePrescription[] {
+  const next = args.prescriptions.map((exercise) => ({ ...exercise }));
+  const priority = next
+    .map((prescription, index) => {
+      const exercise = args.libraryById.get(prescription.exerciseId);
+      const pattern = exercise?.movementPattern;
+      const rank = pattern === 'squat' || pattern === 'hinge'
+        ? 0
+        : pattern === 'push' || pattern === 'pull' || pattern === 'single_leg'
+          ? 1
+          : pattern === 'carry'
+            ? 2
+            : 3;
+      return { index, rank };
+    })
+    .sort((left, right) => left.rank - right.rank || left.index - right.index);
+
+  for (let guard = 0; guard < 24; guard++) {
+    const estimated = estimateStrengthSessionMinutes({ exercises: next }, args.knowledge);
+    if (estimated >= args.targetMinutes) break;
+    const candidate = priority.find(({ index }) => {
+      const prescription = next[index];
+      const exercise = args.libraryById.get(prescription.exerciseId);
+      return prescription.sets < maxSetsForCoherence(exercise, args.profile, args.experience);
+    });
+    if (!candidate) break;
+    next[candidate.index] = {
+      ...next[candidate.index],
+      sets: next[candidate.index].sets + 1,
+      notes: next[candidate.index].notes
+        ? `${next[candidate.index].notes} | Set volume increased by coherence rebuild.`
+        : 'Set volume increased by coherence rebuild.',
+    };
+  }
+
+  return next;
+}
+
+/**
+ * Fill a sparse strength session until its actual prescription can
+ * credibly support the claimed duration. This is the missing second
+ * half of the coherence gate: under-filled sessions are corrected by
+ * adding compatible movement patterns before we consider shrinking
+ * the visible duration.
+ */
+export function repairUnderfilledStrengthSession(
+  session: Session,
+  template: WorkoutTemplate,
+  context: EngineContext,
+): Session {
+  if (session.sport !== 'strength') return session;
+
+  const library = context.knowledge.exercises;
+  const libraryById = new Map(library.map((exercise) => [exercise.id, exercise]));
+  const equipment = availableEquipment(context.athlete);
+  const profile = resolveStrengthProfile(context, session.tags.includes('maintenance'));
+  const patternOrder = rebuildPatternOrderFor(session);
+  const targetCount = targetExerciseCount(session.durationMinutes, context.athlete.profile.experienceLevel);
+  const usedIds = new Set((session.exercises ?? []).map((exercise) => exercise.exerciseId));
+  let prescriptions = (session.exercises ?? []).map((exercise) => ({ ...exercise }));
+  const targetMinutes = targetLowerBoundMinutes(session.durationMinutes);
+
+  for (let attempts = 0; attempts < library.length && prescriptions.length < targetCount; attempts++) {
+    const estimate = estimateStrengthSessionMinutes({ exercises: prescriptions }, context.knowledge);
+    if (estimate >= targetMinutes) break;
+
+    const exercise = selectNextRebuildExercise({
+      prescriptions,
+      library,
+      libraryById,
+      equipment,
+      usedIds,
+      athlete: context.athlete,
+      profile,
+      patternOrder,
+    });
+    if (!exercise) {
+      break;
+    }
+
+    usedIds.add(exercise.id);
+    const prescription = prescriptionFor(exercise, profile, context.athlete.profile.experienceLevel);
+    prescriptions.push({
+      exerciseId: exercise.id,
+      name: exercise.name,
+      sets: prescription.sets,
+      reps: prescription.reps,
+      rir: prescription.rir,
+      restSec: prescription.restSec,
+      notes: 'Added by the coherence rebuild so the session content matches the planned duration.',
+    });
+  }
+
+  prescriptions = densifyPrescriptionsForTarget({
+    prescriptions,
+    libraryById,
+    knowledge: context.knowledge,
+    profile,
+    experience: context.athlete.profile.experienceLevel,
+    targetMinutes,
+  });
+
+  const safetyResult = applyBiomechanicsSafetySubstitutions(
+    prescriptions,
+    context.athlete,
+    context.knowledge.exercises,
+  );
+  prescriptions = orderExercisesForSession(
+    safetyResult.prescriptions,
+    context.knowledge.exercises,
+  );
+
+  const estimatedMinutes = estimateStrengthSessionMinutes({ exercises: prescriptions }, context.knowledge);
+  const finalDuration = estimatedMinutes >= targetMinutes
+    ? session.durationMinutes
+    : Math.max(MIN_CREDIBLE_STRENGTH_MINUTES, estimatedMinutes);
+
+  return {
+    ...session,
+    exercises: prescriptions,
+    durationMinutes: finalDuration,
+    plannedLoad: durationToLoad(finalDuration, template.primaryZone, template.fatigueCost),
+    tags: [...new Set([...(session.tags ?? []), 'coherence_rebuilt'])],
+  };
+}
+
 function resolveStrengthDays(athlete: AthleteState, targetSessions: number): DayOfWeek[] {
   const explicitStrengthDays = DAY_ORDER.filter((day) =>
     athlete.availability.weeklyWindows.some((window) => window.dayOfWeek === day && window.sports?.includes('strength'))
@@ -552,11 +841,10 @@ function buildStrengthDescription(template: WorkoutTemplate, variant: StrengthVa
  * trim trailing accessories) before the session is surfaced.
  *
  * For "rebuild" verdicts (session estimated below
- * MIN_CREDIBLE_STRENGTH_MINUTES), Slice 4.A falls back to
- * shrinking the claim to MIN_CREDIBLE_STRENGTH_MINUTES — at
- * minimum the user sees an honest duration. Slice 4.A.2 will add
- * the actual rebuild path that injects more exercises when the
- * variant came in too sparse.
+ * MIN_CREDIBLE_STRENGTH_MINUTES), the gate first runs the catalog-
+ * aware repair pass: add missing movement patterns, then densify
+ * set volume on the main lifts. Only if the catalog cannot make the
+ * session coherent does it shrink to a truthful smaller duration.
  *
  * Pinned by `__tests__/services/coach-kernel-session-coherence.test.ts`
  * (helpers) and `__tests__/services/coach-kernel-strength-engine.test.ts`
@@ -569,6 +857,12 @@ function applyCoherenceGate(
 ): Session {
   const verdict = validateSessionCoherence(session, context.knowledge);
   if (verdict.ok) return session;
+
+  if (verdict.reason === 'underfilled') {
+    const repaired = repairUnderfilledStrengthSession(session, template, context);
+    const repairedVerdict = validateSessionCoherence(repaired, context.knowledge);
+    if (repairedVerdict.ok) return repaired;
+  }
 
   const correction = suggestCorrection(verdict, session);
 
@@ -585,10 +879,6 @@ function applyCoherenceGate(
     }
 
     case 'rebuild': {
-      // Slice 4.A fallback: shrink to a credible minimum so the
-      // user at least sees an honest duration. Slice 4.A.2 will
-      // implement true rebuild (inject more exercises until the
-      // session estimates at the claimed duration).
       const fallbackDuration = MIN_CREDIBLE_STRENGTH_MINUTES;
       return {
         ...session,
@@ -599,7 +889,16 @@ function applyCoherenceGate(
 
     case 'trimContent': {
       const trimmedExercises = (session.exercises ?? []).slice(0, correction.keepExerciseCount);
-      return { ...session, exercises: trimmedExercises };
+      const estimatedMinutes = estimateStrengthSessionMinutes({ exercises: trimmedExercises }, context.knowledge);
+      const nextDuration = estimatedMinutes <= session.durationMinutes * (1 + DEFAULT_COHERENCE_TOLERANCE_PCT)
+        ? session.durationMinutes
+        : estimatedMinutes;
+      return {
+        ...session,
+        exercises: trimmedExercises,
+        durationMinutes: nextDuration,
+        plannedLoad: durationToLoad(nextDuration, template.primaryZone, template.fatigueCost),
+      };
     }
   }
 }
