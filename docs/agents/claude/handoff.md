@@ -7,14 +7,41 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.92`.
+- Backend production and staging are live at `4.14.93`.
 - Full backend verification passed before the latest production deploy:
-  355 test files / 5,612 tests.
+  356 test files / 5,629 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `0ec039a`; release source landed at backend commit
-  `4b16ba0`; staging was aligned to `4.14.91` before the promote and passed
+  online at deploy commit `6f996b9`; release source landed at backend commit
+  `6d4f9a9`; staging was aligned to `4.14.92` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.92` is **coach-engine slice 3.H** — duration-aware strength
+- `4.14.93` is **coach-engine slice 3.I — explicit experience-level
+  resolution provenance** (Layer 1, audit follow-up). The previous
+  `resolveExperienceLevel` in
+  `services/training-coach-kernel-plan-generator.ts` silently
+  conflated three runtime cases (recognized vocab, unrecognized
+  vocab, missing data) into a single `'novice'` output. The new
+  exported `resolveExperienceLevelWithSource()` returns a
+  discriminated union — `{ value, source: 'fitness_profile.experience_level'
+  | 'gym_profile.training_age', matchedKeyword }` for recognized
+  vocab, or `{ value: 'novice', source: 'fallback' }` otherwise.
+  The single call site in `buildAthleteStateFromTrainingProfiles`
+  emits a structured pino warning carrying both raw inputs when
+  fallback fires, so operators distinguish missing data from new
+  vocabulary at a glance. Vocabulary expanded with `'novice'` /
+  `'beginner'` / `'<1'` so an EXPLICIT-novice profile is now
+  distinguishable from missing data via the source. Planner output
+  unchanged. 17 new unit tests pin every recognition path.
+  Foundational pattern — subsequent Layer 1 slices
+  (gender / cycle physiology, typed AthleteProfile contract) and the
+  other six silent-default sites (`resolveStrengthGoal`,
+  `resolveEquipmentAccess`, `resolveThresholdPace`, etc.) can adopt
+  the same shape in their own slices. Verification: typecheck
+  clean, focused 33-test slice green, full regression
+  `npm run verify` 356 / 5,629 green, staging smoke 17/17,
+  production deploy gate 17/17, production health passed for
+  content engine + portal + bot.
+
+- The preceding `4.14.92` is **coach-engine slice 3.H** — duration-aware strength
   target exercise count. The previously file-scoped
   `minimumExerciseCount` was renamed to `targetExerciseCount` and
   exported from `services/coach-kernel/engines/strength-engine.ts`.

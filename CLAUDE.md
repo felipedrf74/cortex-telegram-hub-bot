@@ -14,16 +14,63 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.92`.
+- Production backend and staging are live at `4.14.93`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  355 test files / 5,612 tests.
+  356 test files / 5,629 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `0ec039a`; release source landed at backend commit
-  `4b16ba0`; staging was aligned to `4.14.91` before the promote and passed
+  online at deploy commit `6f996b9`; release source landed at backend commit
+  `6d4f9a9`; staging was aligned to `4.14.92` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.92` shipped **coach-engine slice 3.H — duration-aware strength
+- `4.14.93` shipped **coach-engine slice 3.I — explicit experience-level
+  resolution provenance (Layer 1, audit follow-up)**:
+  - The previous `resolveExperienceLevel` in
+    `services/training-coach-kernel-plan-generator.ts` silently
+    defaulted to `'novice'` when profile data was missing OR contained
+    vocabulary the resolver didn't recognize. Three runtime cases
+    collapsed to the same output: explicit "novice" / "beginner",
+    unrecognized words like "expert" / "semi-pro", and truly missing
+    data. Downstream slice 2.A's `BEGINNER_SAFE_SUBSTITUTIONS` fires
+    on `experienceLevel === 'novice'`, so a fresh user with no
+    profile data got the same exercise treatment as a confirmed
+    novice — and operators had no visibility into which case fired.
+  - Slice 3.I introduces the new exported
+    `resolveExperienceLevelWithSource()` returning a discriminated
+    union: `{ value, source: 'fitness_profile.experience_level' |
+    'gym_profile.training_age', matchedKeyword }` for recognized
+    vocab, or `{ value: 'novice', source: 'fallback' }` otherwise.
+    The companion `resolveExperienceLevel()` keeps the original
+    return shape for unchanged callers.
+  - The single existing call site in
+    `buildAthleteStateFromTrainingProfiles()` now consumes the rich
+    form and emits a structured pino warning at warning level when
+    fallback fires, carrying both raw inputs (fitness_profile and
+    gym_profile fields) so operators distinguish missing data from
+    new vocabulary the resolver should learn.
+  - Vocabulary expanded to recognize `'novice'` / `'beginner'` /
+    `'<1'` explicitly, so a profile that EXPLICITLY records novice is
+    now distinguishable from missing data via the `source`
+    discriminator. Planner output is unchanged — both still produce
+    `experienceLevel: 'novice'`.
+  - 17 new unit tests in
+    `__tests__/services/training-coach-kernel-experience-level.test.ts`
+    pin every recognition path (fitness vs gym preference, every
+    vocab token, non-string-type rejection, whitespace handling,
+    fallback subcases). Foundational pattern for subsequent Layer 1
+    slices — gender / cycle physiology and the broader typed
+    AthleteProfile contract will both build on this
+    "explicit provenance + structured fallback log" shape; each
+    silent-default site (`resolveStrengthGoal`, `resolveEquipmentAccess`,
+    `resolveThresholdPace`, etc.) can adopt the same shape in its
+    own slice.
+  Verification: `npx tsc --noEmit` clean, focused 33-test slice
+  (17 new + 8 plan-generator + 8 strength-engine) green, full
+  backend regression `npm run verify` 356 / 5,629 green, staging
+  smoke 17/17, production deploy gate 17/17, production health
+  passed for content engine + portal + bot.
+
+- The preceding `4.14.92` shipped **coach-engine slice 3.H — duration-aware strength
   target exercise count**:
   - Renamed the previously file-scoped `minimumExerciseCount` to
     `targetExerciseCount` and exported it from
