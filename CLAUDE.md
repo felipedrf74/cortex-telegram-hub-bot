@@ -14,16 +14,108 @@
 
 ## Current Production Truth - 2026-04-27
 
-- Production backend and staging are live at `4.14.97`.
+- Production backend is live at `4.14.99` (deploy bump from `4.14.98`).
+- Staging is aligned to `4.14.98`.
 - Current deployed branch: `main`.
 - Historical beta recovery branch: `beta/single-agent-rc`.
 - Full backend verification passed before the latest production deploy:
-  360 test files / 5,715 tests.
+  368 test files / 5,875 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `d1e5850`; release source landed at backend commit
-  `4fc4a18`; staging was aligned to `4.14.96` before the promote and passed
-  the 17/17 staging smoke.
-- `4.14.97` shipped **coach-engine slice 3.M — explicit endurance
+  online at deploy commit `d7b9502`; merge commit `384ab52` brought the
+  Training engine + agenda orchestration overhaul into main; staging was
+  aligned to `4.14.98` before the promote and passed the 17/17 staging smoke.
+- `4.14.99` shipped the **Training engine + agenda orchestration overhaul
+  (8 slices closing 3 audit-confirmed regressions + deepening Layers
+  2/3/5/7/8)** as a single batch promote:
+
+  - **Slice 4.A `f09383c`** — `SessionCoherenceValidator` closes regression #1
+    (volume × time mismatch). New `src/services/coach-kernel/session-coherence.ts`
+    with deterministic estimator + verdict + corrective-action types. Wired into
+    `applyCoherenceGate` after every strength session build; rebuilds/shrinks/
+    trims content when claimed minutes diverge from estimated by >20%. 27 pin
+    tests cover parseRepsForTimeEstimate / estimateExerciseSetSeconds /
+    estimateStrengthSessionMinutes / validateSessionCoherence / suggestCorrection
+    + the 48-min Dead Bug regression.
+
+  - **Slice 4.B `8fe0e58`** — Catalog-grounded support-session builder closes
+    regression #2 (variety failure). New `support-session-builder.ts` with 4
+    variants using real catalog `exerciseId`s + estimator-derived
+    `durationMinutes`. Replaces the legacy `strengthSupportVariants()`
+    text-string injection in `training-plan-volume-enforcement.ts`. Beginner-
+    safe defaults consistent with slice 2.A. Movement-pattern rotation makes
+    "two consecutive identical strength sessions" structurally impossible.
+    15 pin tests.
+
+  - **Slice 4.D `6b19b72`** — Plan lifecycle ownership audit table + idempotent
+    agenda sync closes regression #3 root causes #2+#3. Migration 081 adds
+    `fitness_training_plans.plan_version` + non-cascaded
+    `training_agenda_event_ownership` table with CHECK constraint + UNIQUE
+    backstop on `(plan_id, plan_version, event_id, source)`. New
+    `training-plan-lifecycle.ts` (291 LOC) with 7 helpers. Persistence loop is
+    now idempotent on retry; cancellation marks ownership rows as `'deleted'`
+    or `'orphaned'` with reason. 20 pin tests.
+
+  - **Slice 4.D.2 `e1cedd8`** — Pre-persist cancellation saga closes
+    regression #3 root causes #1+#4 (transaction wrapping + silent error
+    suppression). New `runPrePersistCancellationSaga` with 5-branch
+    discriminated outcome (`success | no_active_plan | external_partial |
+    forbidden | local_delete_failed`). When local hard-delete fails the
+    saga aborts the persist instead of producing a double-plan corruption,
+    returning new `'cancellation_failed'` status (HTTP 409). 5 saga pin tests.
+
+  - **Slice 4.E `48352a3`** — Real metrics history reads close Layer-8 critical
+    synthesis gap. New `src/services/training-history.ts` reads
+    `training_completions` joined with `training_sessions` + scoped by user_id
+    via plan FK. 4-week rolling window in 7-day buckets. Sport normalization
+    handles all aliases. `resolveTrainingHistory` accepts an optional
+    `realHistory` arg and OVERRIDES the synthesized 4-copy series when real
+    data exists per sport. ACWR math now runs against real adherence + duration.
+    17 pin tests.
+
+  - **Slice 4.C `0686891`** — Multi-week variant rotation closes the cross-
+    week variety gap. `strengthVariantFor` and `buildStrengthSupportVariant`
+    take an optional `weekIndex` parameter; slot is shifted by the week index
+    modulo the variant pool size. For 4-session weeks, gives a 4-week
+    macro-rotation: any (slot, week-mod-4) pair produces a distinct variant.
+    `currentBlock.weekIndex` (1-based) feeds the shift via subtract-1. 9 pin
+    tests + 4 pre-existing strength-engine tests updated to flatMap across
+    sessions instead of pinning slot 0.
+
+  - **Slice 4.F `61b2cb7`** — Availability-aware day picks across running/
+    cycling/swimming engines. New `availability-day-picker.ts` with 4
+    helpers. Engines now pick days from preference lists where the user has
+    declared availability windows for the sport. Falls back to legacy hardcoded
+    defaults when no availability data exists (brand-new user). 15 pin tests.
+    NOTE: the audit's "goal→split→role mapping" half deferred to a follow-up
+    slice.
+
+  - **Slice 4.G `7c35e06`** — Catalog metadata enrichment foundation. Adds 6
+    new optional fields to `Exercise` (complexity, spinalLoading, unilateral,
+    primaryPurpose, contraindicationFlags, warmupNeeds). 20 of 24 exercises
+    seeded with explicit values in `exercises.json`. New
+    `exercise-metadata.ts` with 7 helpers + smart defaults derived from
+    movementPattern + equipment for un-seeded exercises. 35 pin tests.
+
+  - **Slice 4.H `08273a4`** — Biomechanics-aware substitution + session-order
+    logic. New `biomechanics-and-ordering.ts` with two pure helpers:
+    `applyBiomechanicsSafetySubstitutions` (swaps an exercise to its first
+    non-conflicting catalog substitution when the user's painFlags conflict
+    with its contraindicationFlags), `orderExercisesForSession` (5-tier
+    phase ordering: squat/hinge → push/pull/single_leg → carry → core →
+    mobility). Both wired into the strength engine pipeline after equipment
+    resolution. 17 pin tests.
+
+  Verification: `npx tsc --noEmit` clean per slice; full backend regression
+  368 / 5,875 green; 17/17 staging smoke green per slice; final batch
+  staging smoke green; production deploy gate 17/17 + content engine + status
+  portal + bot online + DB integrity_check ok. Three documents track the
+  overhaul: `docs/training/training-engine-final-report.md` (14-section
+  populated report), `docs/training/training-engine-gap-analysis.md` (Phase 0
+  audit), `docs/training/training-engine-open-items.md` (Critical/High empty;
+  Medium/Low list deferred enhancements: Layer 6 week-level adaptability,
+  Layer 9 progression, goal→split mapping, Layer 10 explainability polish).
+
+- The preceding `4.14.97` shipped **coach-engine slice 3.M — explicit endurance
   weekly-minutes provenance (Layer 1, audit follow-up)**:
   - The previous `resolveTrainingHistory` in
     `services/training-coach-kernel-plan-generator.ts` had two
