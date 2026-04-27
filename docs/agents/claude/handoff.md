@@ -7,14 +7,45 @@ content is retained only for provenance.
 
 - Current deployed backend branch: `main`.
 - Historical backend beta recovery branch: `beta/single-agent-rc`.
-- Backend production and staging are live at `4.14.96`.
+- Backend production and staging are live at `4.14.97`.
 - Full backend verification passed before the latest production deploy:
-  359 test files / 5,694 tests.
+  360 test files / 5,715 tests.
 - Production deploy health passed for content engine, status portal, and bot
-  online at deploy commit `39f5614`; release source landed at backend commit
-  `b1d41e0`; staging was aligned to `4.14.95` before the promote and passed
+  online at deploy commit `d1e5850`; release source landed at backend commit
+  `4fc4a18`; staging was aligned to `4.14.96` before the promote and passed
   the 17/17 staging smoke.
-- `4.14.96` is **coach-engine slice 3.L — explicit strength-goal
+- `4.14.97` is **coach-engine slice 3.M — explicit endurance
+  weekly-minutes provenance** (Layer 1, audit follow-up). The
+  previous `resolveTrainingHistory` in
+  `services/training-coach-kernel-plan-generator.ts` had two
+  silent-fallback ternaries — running silently used
+  `weeklyTargets.running × 45 min/session` when mileage was
+  missing, and cycling silently used `weeklyTargets.cycling × 55
+  min/session` when the hours bucket was missing. Both fed
+  `lastWeekMinutesBySport` which feeds ACWR load math; if the
+  heuristic was wrong, ramp-up was mis-tuned. Slice 3.M splits
+  the inline ternaries into two pure exported functions
+  (`resolveRunningWeeklyMinutesWithSource`,
+  `resolveCyclingWeeklyMinutesWithSource`) returning a
+  three-branch discriminated union: `profile_data` (real data),
+  `inferred_from_targets` (silent fallback now visible), or
+  `no_volume` (neither). Constants extracted as named consts
+  (45min/running, 55min/cycling, 60min running floor).
+  `resolveTrainingHistory` becomes a pure builder over the
+  pre-resolved values. The call site emits per-sport structured
+  pino warnings on the `inferred_from_targets` branch with
+  surfaces
+  `coach-kernel.buildAthleteStateFromTrainingProfiles.runningWeeklyMinutes`
+  and `.cyclingWeeklyMinutes`. Strength and swimming use `targets
+  × constant` always (no real-data field on input) so they're not
+  in scope. 21 new unit tests pin both resolvers' branches.
+  Verification: typecheck clean, focused 119-test slice green,
+  full regression `npm run verify` 360 / 5,715 green, staging
+  smoke 17/17, production deploy gate 17/17, production health
+  passed for content engine + portal + bot. Two remaining
+  silent-default sites can each adopt the same shape.
+
+- The preceding `4.14.96` was **coach-engine slice 3.L — explicit strength-goal
   resolution provenance** (Layer 1, audit follow-up). The previous
   `resolveStrengthGoal` in
   `services/training-coach-kernel-plan-generator.ts` matched the
