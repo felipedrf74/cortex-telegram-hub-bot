@@ -18,6 +18,11 @@ import {
   findWindowsForDay,
   timeToMinutes,
 } from '../utils';
+import {
+  MIN_CREDIBLE_STRENGTH_MINUTES,
+  suggestCorrection,
+  validateSessionCoherence,
+} from '../session-coherence';
 
 type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
 type StrengthExperience = AthleteState['profile']['experienceLevel'];
@@ -496,6 +501,66 @@ function buildStrengthDescription(template: WorkoutTemplate, variant: StrengthVa
   ].join(' ');
 }
 
+/**
+ * Slice 4.A coherence gate. Validates that the produced strength
+ * session's exercise list at realistic set/rest/transition times
+ * actually fills the claimed `durationMinutes`. Applies the
+ * suggested correction (shrink the claim to match content, or
+ * trim trailing accessories) before the session is surfaced.
+ *
+ * For "rebuild" verdicts (session estimated below
+ * MIN_CREDIBLE_STRENGTH_MINUTES), Slice 4.A falls back to
+ * shrinking the claim to MIN_CREDIBLE_STRENGTH_MINUTES — at
+ * minimum the user sees an honest duration. Slice 4.A.2 will add
+ * the actual rebuild path that injects more exercises when the
+ * variant came in too sparse.
+ *
+ * Pinned by `__tests__/services/coach-kernel-session-coherence.test.ts`
+ * (helpers) and `__tests__/services/coach-kernel-strength-engine.test.ts`
+ * (integration).
+ */
+function applyCoherenceGate(
+  session: Session,
+  template: WorkoutTemplate,
+  context: EngineContext,
+): Session {
+  const verdict = validateSessionCoherence(session, context.knowledge);
+  if (verdict.ok) return session;
+
+  const correction = suggestCorrection(verdict, session);
+
+  switch (correction.type) {
+    case 'accept':
+      return session;
+
+    case 'shrinkDuration': {
+      return {
+        ...session,
+        durationMinutes: correction.newDurationMinutes,
+        plannedLoad: durationToLoad(correction.newDurationMinutes, template.primaryZone, template.fatigueCost),
+      };
+    }
+
+    case 'rebuild': {
+      // Slice 4.A fallback: shrink to a credible minimum so the
+      // user at least sees an honest duration. Slice 4.A.2 will
+      // implement true rebuild (inject more exercises until the
+      // session estimates at the claimed duration).
+      const fallbackDuration = MIN_CREDIBLE_STRENGTH_MINUTES;
+      return {
+        ...session,
+        durationMinutes: fallbackDuration,
+        plannedLoad: durationToLoad(fallbackDuration, template.primaryZone, template.fatigueCost),
+      };
+    }
+
+    case 'trimContent': {
+      const trimmedExercises = (session.exercises ?? []).slice(0, correction.keepExerciseCount);
+      return { ...session, exercises: trimmedExercises };
+    }
+  }
+}
+
 export const strengthEngine: SportEngine = {
   buildCandidateSessions(context: EngineContext): Session[] {
     const templates = context.knowledge.workoutTemplates.filter((template) => template.sport === 'strength');
@@ -532,7 +597,7 @@ export const strengthEngine: SportEngine = {
         variant,
         durationMinutes,
       );
-      return buildStrengthSession(
+      const rawSession = buildStrengthSession(
         template,
         variant,
         dayOfWeek,
@@ -544,6 +609,11 @@ export const strengthEngine: SportEngine = {
             ? ['hypertrophy', 'full_body', 'lower_body', 'core']
             : ['full_body', 'lower_body', 'core'],
       );
+      // Slice 4.A — gate the produced session through the coherence
+      // validator. Sessions whose claimed duration doesn't match
+      // their content density are corrected (claim shrunk, or
+      // trailing accessories trimmed) before surfacing.
+      return applyCoherenceGate(rawSession, template, context);
     });
   },
 };
