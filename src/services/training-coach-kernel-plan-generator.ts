@@ -20,6 +20,10 @@ import type {
 import { DAY_ORDER } from './coach-kernel/utils';
 import { recordWeeklyPlan } from './coach-plan-registry';
 import type { CoordinatedTrainingPlan, CoordinatedTrainingSession, CoordinatedTrainingWeek } from './training-plan-coordination';
+import {
+  readTrainingHistoryFromCompletions,
+  type RealTrainingHistory,
+} from './training-history';
 import { logger } from '../utils/logger';
 
 /** Current readiness measurements used to seed the planner's
@@ -274,10 +278,41 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       inferredMinutes: cyclingHistoryResolution.value,
     }, 'Cycling weekly-minutes inferred from targets — no run_profile.weekly_hours bucket on profile; ACWR load math will use targets × 55min/session as the baseline');
   }
+  // Slice 4.E (audit Layer-8 Critical) — read REAL completion
+  // history per sport per week so ACWR math runs against actual
+  // adherence + duration, not 4 copies of one synthesized number.
+  // Read failure (DB hiccup) degrades to undefined so the synthesis
+  // fallback below keeps the planner alive.
+  let realHistory: RealTrainingHistory | undefined;
+  try {
+    realHistory = readTrainingHistoryFromCompletions(input.userId);
+  } catch (err) {
+    logger.warn(
+      { surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.realHistory', userId: input.userId, err },
+      'Failed to read real training history; falling back to synthesis',
+    );
+    realHistory = undefined;
+  }
+  if (realHistory && realHistory.hasAnyHistory) {
+    logger.info(
+      {
+        surface: 'coach-kernel.buildAthleteStateFromTrainingProfiles.realHistory',
+        userId: input.userId,
+        rawCompletionCount: realHistory.rawCompletionCount,
+        hasRunningHistory: realHistory.lastWeekMinutesBySport.running !== undefined,
+        hasStrengthHistory: realHistory.lastWeekMinutesBySport.strength !== undefined,
+        hasCyclingHistory: realHistory.lastWeekMinutesBySport.cycling !== undefined,
+        hasSwimmingHistory: realHistory.lastWeekMinutesBySport.swimming !== undefined,
+      },
+      'Real training history loaded; ACWR math will run against actual completion data',
+    );
+  }
+
   const trainingHistory = resolveTrainingHistory(
     weeklyTargets,
     runningHistoryResolution,
     cyclingHistoryResolution,
+    realHistory,
   );
 
   // Slice 3.I (Layer 1, audit follow-up): emit a structured warning
@@ -1017,29 +1052,42 @@ export function resolveCyclingWeeklyMinutesWithSource(
  * Build the `TrainingHistory` from pre-resolved per-sport
  * minutes. Strength and swimming use `targets × constant` always
  * (no real-data field on input, no silent-fallback to surface).
+ *
+ * Slice 4.E (audit Layer-8 Critical) — when `realHistory` is
+ * supplied AND has data for a sport, the real per-week series
+ * REPLACES the synthesized 4-copy series. Sports without real
+ * data fall back to the synthesis layer (brand-new user case).
+ * Mixing real + synth is intentional: a runner who logged
+ * running for 3 weeks but never logged a strength session gets
+ * real running history and synthesized strength history rather
+ * than no strength baseline at all.
  */
 function resolveTrainingHistory(
   weeklyTargets: Goals['weeklySessionsTarget'],
   runningResolution: EnduranceMinutesResolution,
   cyclingResolution: EnduranceMinutesResolution,
+  realHistory?: RealTrainingHistory,
 ): TrainingHistory {
   const runningMinutes = runningResolution.value;
   const cyclingMinutes = cyclingResolution.value;
   const strengthMinutes = (weeklyTargets.strength ?? 0) * 45;
   const swimmingMinutes = (weeklyTargets.swimming ?? 0) * 40;
 
+  const realLast = realHistory?.lastWeekMinutesBySport ?? {};
+  const realSeries = realHistory?.trailing4WeekMinutesBySport ?? {};
+
   return {
     lastWeekMinutesBySport: {
-      running: runningMinutes || undefined,
-      strength: strengthMinutes || undefined,
-      cycling: cyclingMinutes || undefined,
-      swimming: swimmingMinutes || undefined,
+      running: realLast.running ?? (runningMinutes || undefined),
+      strength: realLast.strength ?? (strengthMinutes || undefined),
+      cycling: realLast.cycling ?? (cyclingMinutes || undefined),
+      swimming: realLast.swimming ?? (swimmingMinutes || undefined),
     },
     trailing4WeekMinutesBySport: {
-      running: runningMinutes ? buildTrailingSeries(runningMinutes) : undefined,
-      strength: strengthMinutes ? buildTrailingSeries(strengthMinutes) : undefined,
-      cycling: cyclingMinutes ? buildTrailingSeries(cyclingMinutes) : undefined,
-      swimming: swimmingMinutes ? buildTrailingSeries(swimmingMinutes) : undefined,
+      running: realSeries.running ?? (runningMinutes ? buildTrailingSeries(runningMinutes) : undefined),
+      strength: realSeries.strength ?? (strengthMinutes ? buildTrailingSeries(strengthMinutes) : undefined),
+      cycling: realSeries.cycling ?? (cyclingMinutes ? buildTrailingSeries(cyclingMinutes) : undefined),
+      swimming: realSeries.swimming ?? (swimmingMinutes ? buildTrailingSeries(swimmingMinutes) : undefined),
     },
   };
 }
