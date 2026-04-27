@@ -308,7 +308,49 @@ function templateExerciseFallback(profile: StrengthProfile): string[] {
   return ['front_squat', 'romanian_deadlift', 'pull_up', 'bench_press', 'dead_bug'];
 }
 
-function minimumExerciseCount(durationMinutes: number, experience: StrengthExperience): number {
+/**
+ * Target number of exercises to include in a strength session of the
+ * given duration, for the given experience level.
+ *
+ * The result is used at the call site as both the floor (the engine
+ * tops up with fillers when a variant is short) AND the cap
+ * (`prescriptions.slice(0, targetCount)` if the variant overflows).
+ * The function name was previously `minimumExerciseCount`, which only
+ * told half the story — it's the target, not just the minimum.
+ *
+ * ## Why the duration tiers exist
+ *
+ * Each working set runs ~2 minutes (3 reps × tempo + 60–90s rest), and
+ * a 3-set exercise consumes ~6–8 minutes once you add transitions.
+ * Reserve ~5 minutes for warmup + cooldown. So:
+ *
+ *   - 15-min "express" block: 2 exercises max (compound + 1 accessory)
+ *   - 25-min block: 3 exercises (compound + 2 accessories, no isolation)
+ *   - 30+ min: existing tiering already gives a sane prescription
+ *
+ * Before slice 3.H the function floored at 4 even for a 15-min window,
+ * which produced over-prescribed sessions the athlete would either rush
+ * through (poor quality) or skip the last 1–2 lifts on (defeating the
+ * plan). The two new low-end tiers fix that without changing any
+ * 30+ minute prescription.
+ *
+ * Boundary semantics:
+ *
+ *   - duration < 25 → 2
+ *   - 25 ≤ duration < 30 → 3
+ *   - 30 ≤ duration < 40 → 4 (unchanged)
+ *   - 40 ≤ duration < 55 → 5 (unchanged)
+ *   - duration ≥ 55, advanced → 6 (unchanged)
+ *   - duration ≥ 55, others   → 5 (unchanged)
+ *
+ * Pinned by `coach-kernel-strength-engine-target-exercise-count.test.ts`.
+ */
+export function targetExerciseCount(
+  durationMinutes: number,
+  experience: StrengthExperience,
+): number {
+  if (durationMinutes < 25) return 2;
+  if (durationMinutes < 30) return 3;
   if (durationMinutes >= 55) return experience === 'advanced' ? 6 : 5;
   if (durationMinutes >= 40) return 5;
   return 4;
@@ -352,7 +394,7 @@ function resolveExercises(
 
   const prescriptions: ExercisePrescription[] = [...basePrescriptions];
 
-  const targetCount = minimumExerciseCount(durationMinutes, experience);
+  const targetCount = targetExerciseCount(durationMinutes, experience);
   if (prescriptions.length >= targetCount) return prescriptions.slice(0, targetCount);
 
   const fillerIds = [
