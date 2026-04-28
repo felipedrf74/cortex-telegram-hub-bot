@@ -4,13 +4,13 @@ Date: 2026-04-28
 
 ## Coverage Summary
 
-The open-item work has strong local automated coverage and weak staging/runtime proof in the two areas that explicitly required staging. Calendar and cross-skill staging harnesses exist, but both were blocked by missing staging prerequisites.
+The open-item work has strong local automated coverage and the previously missing staging/runtime proof has now been run for the critical provider and cross-skill gates. Calendar and cross-skill staging harnesses passed after staging prerequisites were prepared, exercised, and cleaned up.
 
 | Priority | Area | Automated Tests | Smoke / Runtime Evidence | Status |
 |---:|---|---|---|---|
-| 1 | Constrained-week capacity reconciliation | 28 focused backend tests; typecheck; Training benchmark `99/100` across 156 cases. | No real Secretary-busy-window staging run. | Local pass, staging/product partial. |
-| 2 | Session identity / plan version / shape hash | 63 focused backend tests; typecheck. | No real Google/Outlook provider read-back. | Local pass, provider proof missing. |
-| 3 | Google/Outlook calendar staging smoke | Harness/runbook created. | Blocked before provider clients loaded. | Blocked. |
+| 1 | Constrained-week capacity reconciliation | 28 focused backend tests; typecheck; Training benchmark `99/100` across 156 cases. | Secretary conflict path covered in seeded cross-skill staging smoke. | Local and staging pass; production post-deploy check still required. |
+| 2 | Session identity / plan version / shape hash | 63 focused backend tests; typecheck. | Google and Outlook staging provider read-back passed. | Local and staging pass; production post-deploy check still required. |
+| 3 | Google/Outlook calendar staging smoke | Harness/runbook created. | Google run `training-calendar-smoke-20260428165035-7ljwng`; Outlook run `training-calendar-smoke-20260428165107-7fsbbr`; cleanup passed. | Pass. |
 | 4 | iOS rich payload smoke | 28 `TrainingPresentationTests`; 58 broader affected tests. | XcodeBuildMCP `build_run_sim`, Home snapshot, Training snapshot passed on live account. | Pass with synthetic visual gap. |
 | 5 | Rich iOS feedback UI | `TrainingFeedbackPayloadTests`; targeted ViewModel/service tests. | Focused simulator unit tests passed. | Unit pass, backend persistence smoke missing. |
 | 6 | Poor-recovery variation | Focused poor-recovery tests and broader guardrail/planner/adaptation tests. | No staging needed. | Backend pass. |
@@ -78,13 +78,14 @@ Evidence files:
 
 Run result:
 
-- Run ID: `training-calendar-smoke-20260428052526-x2dxv4`
-- Status: `blocked`
-- Google: blocked at prerequisites.
-- Outlook: blocked at prerequisites.
-- Cleanup: not needed because no live writes ran.
+- Google run ID: `training-calendar-smoke-20260428165035-7ljwng`
+- Outlook run ID: `training-calendar-smoke-20260428165107-7fsbbr`
+- Status: `passed`
+- Google: create/update/same-shape regenerate/changed-shape replace/cancel/retry passed with read-back.
+- Outlook: create/update/same-shape regenerate/changed-shape replace/cancel/retry passed with read-back.
+- Cleanup: exact-event cleanup passed for both providers.
 
-This is not a pass. It is a ready harness with missing staging prerequisites.
+This is now a staging-provider pass. Production-safe post-deploy checks remain required.
 
 ### Priority 6: Poor-Recovery Variation
 
@@ -259,4 +260,3 @@ Limit:
 5. Route-level serialization tests for `profileQuality` and `decisionReasons`.
 6. Direct engine capacity input from real Secretary busy windows.
 7. Durable representation of deferred/unscheduled sessions if product wants them visible after reload.
-

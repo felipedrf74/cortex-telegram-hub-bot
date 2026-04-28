@@ -99,13 +99,13 @@ Do not include these unless separately reviewed and justified:
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
 | Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done and pushed at `b99098e`; code payload at `b8f9be7` |
-| Backend full verification | `npm run verify` pass on committed candidate | Passed: 382 files / 5,994 tests |
+| Backend full verification | `npm run verify` pass on committed candidate | Passed latest local gate: 383 files / 6,001 tests |
 | Training evaluation harness | Persona/scenario eval pass with result path documented | Passed: 99/100, 156 cases |
-| Google calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
-| Outlook calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
-| Cross-skill staging | Secretary, Cooking, Finance, Content flows against staging/test tenant | Blocked/missing staging prerequisites |
+| Google calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Passed: `training-calendar-smoke-20260428165035-7ljwng` |
+| Outlook calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Passed: `training-calendar-smoke-20260428165107-7fsbbr` |
+| Cross-skill staging | Secretary, Cooking, Finance, Content flows against staging/test tenant | Passed: `training-cross-skill-smoke-20260428164946-829lm7`; fixture cleanup verified |
 | iOS companion smoke | iOS simulator against local engine/backend or fixtures; no decode/render blockers | Local rich-fixture smoke and authenticated E2E passed; full iOS scheme passed |
-| Migration rehearsal | Apply migration 082 to staging clone with backup/restore evidence | Local clone passed; true staging/predeploy proof required before release |
+| Migration rehearsal | Apply migration 082 to staging clone with backup/restore evidence | Local clone and true staging clone passed; production-predeploy snapshot remains a deployment condition |
 
 ## Do-Not-Merge List
 

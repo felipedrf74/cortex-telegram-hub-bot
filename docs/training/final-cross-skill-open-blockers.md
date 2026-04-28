@@ -1,56 +1,38 @@
 # Final Training Cross-Skill Open Blockers
 
-Date: 2026-04-28  
-Run ID: `training-cross-skill-smoke-20260428142925-1lc554`
+Updated: 2026-04-28
 
-## Production Blockers
+## Summary
 
-| ID | Severity | Area | Status | Blocker | Required Resolution |
-| --- | --- | --- | --- | --- | --- |
-| XSKILL-P1-001 | P1 | Staging prerequisites | Open | No staging-mode env, staging smoke flag, isolated staging user ID, or staging DB path was available. | Provide a staging env file or exported vars with `STAGING=true`/`NODE_ENV=staging`, `TRAINING_CROSS_SKILL_STAGING_SMOKE=1`, `TRAINING_CROSS_SKILL_STAGING_USER_ID`, and staging/test `DATABASE_PATH`. |
-| XSKILL-P1-002 | P1 | Staging fixture data | Open | No real seeded staging tenant was available to prove Secretary/Cooking/Finance/Content signals. | Seed an isolated staging user with the required cross-skill data, then rerun the smoke. |
-| XSKILL-P1-003 | P1 | Runtime proof | Open | Local fixture contracts passed, but real staging runtime checks did not run. | Rerun the final gate and require runtime flow pass/blocked/fail evidence per flow. |
+The prior Training-centered cross-skill staging blockers are **closed**.
 
-## Flow-Specific Blockers
+The real staging smoke passed against isolated staging user `1` after seeding staging-only Finance and Training milestone fixtures and then cleaning them precisely.
 
-| Flow | Status | Missing Proof |
+## Closed Blockers
+
+| ID | Severity | Area | Previous blocker | Closure evidence |
+| --- | --- | --- | --- | --- |
+| XSKILL-P1-001 | P1 | Staging prerequisites | No staging env/user/database. | Closed: real staging run used staging env, staging DB, and user `1`. |
+| XSKILL-P1-002 | P1 | Staging fixture data | No real seeded staging tenant for Finance and Training milestone proof. | Closed: `training-cross-skill-staging-fixtures.ts` seeded two Finance rows and one temporary Training plan/week/session, then cleanup removed them. |
+| XSKILL-P1-003 | P1 | Runtime proof | Only local fixtures had passed. | Closed: seeded runtime run `training-cross-skill-smoke-20260428164946-829lm7` passed all staging flows. |
+
+## Flow Status
+
+| Flow | Status | Evidence |
 | --- | --- | --- |
-| Secretary conflicts | Blocked | Real staging conflict/unavailable-window signal and Training coordination reaction. |
-| Cooking fueling gaps | Blocked | Real staging fueling/meal coverage gap with one useful deduped warning. |
-| Finance budget constraints | Blocked | Real staging budget/equipment constraint affecting Training recommendations. |
-| Content workload signals | Blocked | Real staging content workload/filming signal and Training schedule friction reaction. |
-| Shared context integrity | Blocked | Live user/tenant scoping and no stale/cross-tenant signal leakage. |
+| Secretary conflicts | Closed / pass | Real staging Secretary context produced busy/fragmented/deadline pressure; Training coordination protected schedule constraints. |
+| Cooking fueling gaps | Closed / pass | Real staging Cooking context exposed meal/fueling status and Training remained conservative without duplicate warning noise. |
+| Finance budget constraints | Closed / pass | Seeded staging Finance pressure produced `budget_remaining`, `expense_anomaly`, `affordability=tight`, and `lowCostBias=true`. |
+| Content workload signals | Closed / pass | Real staging Content next-execution data produced schedule friction with `protectFilmingDay=wednesday`. |
+| Training-to-Content milestone | Closed / pass | Seeded Training hard session produced `content_capture_opportunity`. |
+| Shared context integrity | Closed / pass | Runtime check confirmed all contexts scoped to user `1`. |
 
-## Non-Blocking Local Evidence
+## Remaining Notes
 
-The local fixture path passed and remains useful regression coverage:
-
-- Secretary conflict creates modular/reflow guidance.
-- Cooking fueling gap creates one specific warning line.
-- Finance budget constraint creates low-cost/selective-spend bias.
-- Content workload protects filming day.
-- Training can emit a `content_capture_opportunity` signal.
-
-This evidence does not replace staging proof.
-
-## Exact Rerun Command
-
-```bash
-npm run build
-TRAINING_CROSS_SKILL_STAGING_ENV_FILE=/path/to/staging-cross-skill.env \
-TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH=docs/training/final-cross-skill-staging-results.md \
-scripts/training-cross-skill-staging-smoke.sh
-```
-
-The env file must include or export:
-
-```bash
-STAGING=true
-TRAINING_CROSS_SKILL_STAGING_SMOKE=1
-TRAINING_CROSS_SKILL_STAGING_USER_ID=<isolated staging user id>
-DATABASE_PATH=<staging/test db path>
-```
+- No P0/P1 cross-skill staging blocker remains.
+- The staging seed tool is intentionally gated and should not be used outside staging smoke runs.
+- The run emitted Outlook token-refresh warnings while reading calendar-derived context. They are noisy but did not affect pass/fail.
 
 ## Current Gate Verdict
 
-Cross-skill staging gate remains **open** and should not be marked production-ready.
+Cross-skill staging gate: **closed / pass**.

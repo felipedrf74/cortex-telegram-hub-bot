@@ -842,6 +842,9 @@ function loadRuntimeCalendarClient(): SmokeCalendarClient {
   // Lazy requires keep dotenv/env-file loading before config and provider
   // modules initialize. This script is intentionally not imported by runtime.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const database = require('../services/database') as typeof import('../services/database');
+  database.initDatabase();
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const unified = require('../services/unified-calendar') as typeof import('../services/unified-calendar');
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const oauthStore = require('../services/oauth-store') as typeof import('../services/oauth-store');

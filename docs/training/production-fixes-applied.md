@@ -54,13 +54,13 @@ The key behavior change is that the engine no longer silently turns impossible s
 - Focused changed suites: passed.
 - Operational-switch and staging-harness safety suites: passed, 23 tests.
 - Focused Training blocker suite: passed, 13 files / 140 tests.
-- Full backend verify: passed, 382 files / 5,994 tests.
+- Full backend verify: passed, 383 files / 6,001 tests.
 - Training eval: passed, 99/100 across 156 cases.
 - Focused iOS Training/importer suites: passed.
 - Full iOS scheme: passed after aligning dashboard hero presentation tests with the localized calendar display contract.
 - Authenticated local iOS simulator journey: passed, 43 authenticated REST calls across 19 endpoints with local runner user `2`, all HTTP 200.
-- Calendar staging smoke: blocked safely due missing staging credentials/env; no writes made.
-- Cross-skill staging smoke: local fixture contracts passed; staging runtime blocked due missing env/test tenant.
+- Calendar staging smoke: Google and Outlook staging provider lifecycles passed with read-back and exact-event cleanup.
+- Cross-skill staging smoke: seeded staging runtime passed for Secretary, Cooking, Finance, Content workload, Training-to-Content milestone, and shared-context scope; fixture cleanup verified.
 
 ## Remaining Risks
 

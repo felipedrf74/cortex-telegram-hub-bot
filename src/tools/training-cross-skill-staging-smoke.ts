@@ -976,6 +976,14 @@ async function main(): Promise<void> {
 function loadRuntimeCrossSkillReader(): RuntimeCrossSkillReader {
   // Lazy requires keep dotenv/env-file loading before config and storage modules initialize.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const database = require('../services/database') as typeof import('../services/database');
+  database.initDatabase();
+  // Match the runtime boot wiring so training signal reads see the same
+  // user-scoped intelligence-bus rows that the server would expose.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const bus = require('../services/intelligence-bus') as typeof import('../services/intelligence-bus');
+  bus.setDbProvider(() => database.getDb() as any);
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mesh = require('../services/cross-agent-learning') as typeof import('../services/cross-agent-learning');
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const shared = require('../services/shared-decision-context') as typeof import('../services/shared-decision-context');

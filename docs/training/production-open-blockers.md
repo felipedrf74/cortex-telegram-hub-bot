@@ -18,13 +18,15 @@ Backend P0/P1 **code blockers addressed in this hardening pass**:
 - Training generation, Training calendar writes/sync, and Training-originated cross-skill signal publishing now have explicit env-controlled operational kill switches.
 - calendar and cross-skill staging smoke dry-runs now report runtime proof as `blocked`, preventing false-green release evidence.
 
-Remaining blockers are now **release trust gates**, not known backend implementation gaps:
+Remaining blockers are now **deployment process conditions**, not known backend implementation gaps:
 
-- real Google staging calendar lifecycle smoke is still blocked by missing staging credentials/env;
-- real Outlook staging calendar lifecycle smoke is still blocked by missing staging credentials/env;
-- iOS rich-payload simulator smoke has now run against a local backend listener with deterministic Training fixtures, and the DEBUG-only auth importer enabled a fully authenticated local simulator journey across major iOS-facing endpoints;
-- migration 082 local clone apply/restore rehearsal passed; a true staging DB clone rehearsal is still required before any production DB migration;
-- final merge hygiene is now closed and the backend/iOS candidate branches have been pushed for review; human review and remaining external trust gates are still required before any deployment process.
+- real Google staging calendar lifecycle smoke passed with read-back and cleanup proof;
+- real Outlook staging calendar lifecycle smoke passed with read-back and cleanup proof;
+- seeded Training-centered cross-skill staging smoke passed and fixture cleanup was verified;
+- migration 082 local clone and true staging clone apply/restore rehearsals passed;
+- iOS rich-payload simulator smoke has run against a local backend listener with deterministic Training fixtures, and the DEBUG-only auth importer enabled a fully authenticated local simulator journey across major iOS-facing endpoints;
+- GPT-5.5 runtime claims are restrained: Training plan generation is deterministic/rule-based in this release, and release copy must not claim GPT-5.5 execution;
+- final merge hygiene is closed and the backend/iOS candidate branches have been reviewed. Production deployment still requires the standard release process, production-predeploy DB snapshot, and explicit human deployment approval.
 
 ## P0 Production Blockers
 
@@ -40,7 +42,7 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 - Status: **fixed for packaged local candidate**
 - Evidence:
-  - `npm run verify` passed: 382 files / 5,994 tests on the packaged release-candidate code.
+  - `npm run verify` passed: 383 files / 6,001 tests on the packaged release-candidate code.
   - Focused Training blocker suite passed: 14 files / 139 tests.
   - Affected operational-switch/smoke-harness suite passed: 4 files / 23 tests.
   - Training eval passed: 99/100, 156 cases.
@@ -48,26 +50,19 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 ### P0-03 Google Calendar Staging Lifecycle Smoke
 
-- Status: **blocked externally; not fixed by local code**
-- Latest final gate run: `training-calendar-smoke-20260428142908-61fokl`
-- Result: blocked before writes; no production/staging calendar data touched.
-- Missing prerequisites:
-  - `STAGING=true` or `NODE_ENV=staging`
-  - `TRAINING_CALENDAR_STAGING_SMOKE=1`
-  - `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1`
-  - `TRAINING_CALENDAR_STAGING_USER_ID=<staging user id>`
-  - `OAUTH_ENCRYPTION_KEY`
-  - `DATABASE_PATH=<staging database path>`
-  - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
-- Required before production calendar claims: create/update/regenerate/cancel/retry with read-back and precise cleanup on a staging Google calendar.
+- Status: **closed / pass**
+- Latest final gate run: `training-calendar-smoke-20260428165035-7ljwng`
+- Result: passed real Google create/update/same-shape regenerate/changed-shape replace/cancel/retry with provider read-back and exact-event cleanup.
+- Cleanup failures: none.
+- Evidence: `docs/training/final-calendar-staging-results.md`.
 
 ### P0-04 Outlook Calendar Staging Lifecycle Smoke
 
-- Status: **blocked externally; not fixed by local code**
-- Latest final gate run: `training-calendar-smoke-20260428142908-61fokl`
-- Result: blocked before writes; no calendar data touched.
-- Missing prerequisites: same staging env/user/database/OAuth set as P0-03, plus Outlook client credentials.
-- Required before production calendar claims: create/update/regenerate/cancel/retry with read-back and precise cleanup on a staging Outlook calendar.
+- Status: **closed / pass**
+- Latest final gate run: `training-calendar-smoke-20260428165107-7fsbbr`
+- Result: passed real Outlook create/update/same-shape regenerate/changed-shape replace/cancel/retry with provider read-back and exact-event cleanup.
+- Cleanup failures: none.
+- Evidence: `docs/training/final-calendar-staging-results.md`.
 
 ### P0-05 iOS Simulator Rich Training Smoke
 
@@ -92,28 +87,24 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 ### P0-07 Calendar Event Identity Marker Update Gap
 
-- Status: **fixed in backend code; staging proof still required**
+- Status: **fixed in backend code and provider-staging proven**
 - Root cause: provider update APIs could update time/title but leave stale Training identity markers.
 - Fix: unified calendar update supports `new_description`; Google and Outlook update adapters pass refreshed description/body markers.
 - Tests:
   - `__tests__/api/training-plan-calendar-sync.test.ts` verifies same-shape regeneration updates the existing event with `planVersion` and session marker changes.
-- Remaining requirement: real provider staging read-back for Google/Outlook.
+- Staging proof: Google run `training-calendar-smoke-20260428165035-7ljwng`; Outlook run `training-calendar-smoke-20260428165107-7fsbbr`.
 
 ## P1 Must-Fix Before Release
 
 ### P1-01 Cross-Skill Staging Smoke
 
-- Status: **blocked externally**
-- Latest run: `training-cross-skill-smoke-20260428142925-1lc554`
+- Status: **closed / pass**
+- Latest run: `training-cross-skill-smoke-20260428164946-829lm7`
 - Local fixture contracts: passed.
-- Real staging runtime: blocked.
-- Missing prerequisites:
-  - `STAGING=true` or `NODE_ENV=staging`
-  - `TRAINING_CROSS_SKILL_STAGING_SMOKE=1`
-  - `TRAINING_CROSS_SKILL_STAGING_USER_ID=<staging test user id>`
-  - `DATABASE_PATH=<staging database path>`
-- Harness hardening added on 2026-04-28: runtime flow checks now require actual seeded Secretary/Cooking/Finance/Content signal data and cannot pass on empty context shells.
-- Required before broad beta: seeded staging tenant proof for Secretary conflicts, Cooking fueling gaps, Finance constraints, and Content workload signals.
+- Real staging runtime: passed after staging-only seed/status/cleanup through `src/tools/training-cross-skill-staging-fixtures.ts`.
+- Runtime flows passed: Secretary conflict, Cooking fueling gap, Finance budget constraint, Content workload, Training-to-Content milestone, and shared context scoping.
+- Cleanup proof: two seeded Finance rows and one temporary Training plan were removed; post-cleanup status reported `activeFixturePlans=0` and `activeFixtureFinanceRows=0`.
+- Evidence: `docs/training/final-cross-skill-staging-results.md`.
 
 ### P1-02 Secretary Busy Windows / Impossible Calendar Slots
 
@@ -137,9 +128,10 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 ### P1-04 GPT-5.5 Intelligence Routing
 
-- Status: **release-copy/config gate, not fixed in code**
+- Status: **closed by release-copy restraint**
 - Rationale: current Training hardening is deterministic engine work. This pass did not change provider/model routing.
-- Required before claiming GPT-5.5 execution: explicit staging/prod config evidence of the selected high-intelligence model route, or avoid that claim in release copy.
+- Evidence: runtime/model audit found Training plan generation makes zero AI calls; the only Training-adjacent model path is nightly coach analysis routed through the existing Gemini/Anthropic configuration. Release copy must avoid claiming GPT-5.5 execution for this release.
+- Required before any future GPT-5.5 claim: explicit provider/model routing evidence and bounded runtime validation.
 
 ### P1-04b Training Operational Kill Switches
 
@@ -189,17 +181,17 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 ### P1-08 Training Identity Migration Rollback
 
-- Status: **partially closed; true staging clone still required**
+- Status: **closed for staging clone proof; production-predeploy snapshot remains a deployment condition**
 - Evidence: `docs/training/migration-082-rollback-rehearsal.md`
 - Local result: a copied local DB was migrated through 081, snapshotted, migrated with `082_training_session_identity_shape_hash.sql`, verified for identity columns/indexes, exercised with old-style and new-style Training inserts, and restored from the pre-082 snapshot.
-- Remaining requirement before production DB migration: repeat on a true staging database clone or explicitly capture the production pre-deploy snapshot/restore procedure in the deployment gate. The local rehearsal must not be represented as real staging proof.
+- True staging clone result: online backup clone at `/home/dominguez/telegram-hub-bot-staging/data/release-rehearsal/training-082/20260428T162206/` was restored, migrated with 082, exercised with old-style/new-style Training inserts and ownership rows, integrity-checked, then restored back to pre-082 state.
+- Remaining deployment condition: take a production-predeploy snapshot immediately before applying migrations and keep snapshot restore instructions available during rollout.
 
 ## P2 / P3 Remaining Work
 
 - Legacy unmarked orphan event reconciliation dry-run.
 - Outlook full-body marker read-back helper if body preview cannot verify markers.
 - Debug-only iOS rich Training fixture injection.
-- Repeatable staging seed/cleanup scripts for cross-skill smoke.
 - Feedback offline draft/retry queue.
 - Per-exercise set/load feedback capture.
 - Recovery threshold calibration with beta telemetry.

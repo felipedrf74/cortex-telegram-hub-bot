@@ -5,7 +5,7 @@ Branch: `release/training-engine-production-hardening`
 
 ## Summary
 
-Backend validation passed locally for the production-critical Training hardening changes. iOS local compatibility also passed, including the full iOS test scheme after updating stale dashboard timezone expectations. Real provider staging smokes remain blocked by missing staging credentials/environments and are not counted as passed.
+Backend validation passed locally for the production-critical Training hardening changes. iOS local compatibility also passed, including the full iOS test scheme after updating stale dashboard timezone expectations. Google/Outlook provider staging smokes and seeded cross-skill staging smoke have since passed with cleanup evidence in the final gate docs.
 
 ## Commands Run
 
@@ -84,8 +84,22 @@ npm run verify
 Result: **pass**
 
 - `tsc --noEmit` passed
-- 382 test files passed
-- 5,994 tests passed
+- 383 test files passed
+- 6,001 tests passed
+
+### Final Staging Deploy Path Check
+
+```bash
+./scripts/deploy-staging.sh
+```
+
+Result: **pass**
+
+- Typecheck/build completed.
+- Staging rsync excluded local env, DB, `.local`, `.codex`, and `.claude/worktrees` artifacts.
+- Staging services restarted under PM2.
+- Staging content-engine health passed.
+- Staging portal health passed using signed session auth when `PORTAL_REQUIRE_SESSION_AUTH=true`.
 
 ### Training Evaluation Harness
 

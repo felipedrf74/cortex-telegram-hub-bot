@@ -2,9 +2,9 @@
 
 Generated: 2026-04-28
 
-Latest calendar staging gate: `training-calendar-smoke-20260428142908-61fokl` on 2026-04-28. Result: **blocked / no-go** because staging env, staging user, database, OAuth encryption key, and Google/Outlook client credentials were not available in the execution environment.
+Latest calendar staging gates: Google `training-calendar-smoke-20260428165035-7ljwng` and Outlook `training-calendar-smoke-20260428165107-7fsbbr` on 2026-04-28. Result: **pass** with real provider read-back and cleanup proof.
 
-Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Migration 082 local clone apply/restore rehearsal passed, but true staging database proof is still pending. Google/Outlook staging calendar proof and runtime cross-skill staging proof are still missing, so release status remains **NO-GO**.
+Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Migration 082 local and true staging clone apply/restore rehearsals passed. Runtime cross-skill staging smoke passed after staging-only seed/cleanup. Release status is now **GO WITH CONDITIONS**: production-predeploy DB snapshot, no GPT-5.5 runtime claim in release copy, standard staging/promote process, and post-deploy production-safe validation.
 
 This is the release gate checklist for the Training / Coach engine. A criterion is complete only when there is concrete evidence, not an intention, harness, or mock-only result.
 
@@ -44,25 +44,25 @@ Real provider staging proof is mandatory before production calendar claims.
 
 ### Google Calendar
 
-- [ ] staging user has connected Google Calendar through real OAuth;
-- [ ] smoke creates Training events with test ownership markers;
-- [ ] smoke reads events back from Google after creation;
-- [ ] same-shape regenerate/update does not duplicate events;
-- [ ] changed-shape regenerate replaces or updates according to identity rules;
-- [ ] cancel removes only owned Training events;
-- [ ] retry remains idempotent;
-- [ ] precise cleanup succeeds;
-- [ ] report includes event IDs and cleanup status.
+- [x] staging user has connected Google Calendar through real OAuth;
+- [x] smoke creates Training events with test ownership markers;
+- [x] smoke reads events back from Google after creation;
+- [x] same-shape regenerate/update does not duplicate events;
+- [x] changed-shape regenerate replaces or updates according to identity rules;
+- [x] cancel removes only owned Training events;
+- [x] retry remains idempotent;
+- [x] precise cleanup succeeds;
+- [x] report includes event IDs and cleanup status.
 
 ### Outlook Calendar
 
-- [ ] staging user has connected Outlook Calendar through real OAuth;
-- [ ] smoke creates Training events with test ownership markers;
-- [ ] smoke reads events back from Outlook after creation;
+- [x] staging user has connected Outlook Calendar through real OAuth;
+- [x] smoke creates Training events with test ownership markers;
+- [x] smoke reads events back from Outlook after creation;
 - [ ] provider-specific full-body/marker read-back is available if `bodyPreview` is insufficient;
-- [ ] update/regenerate/cancel/retry scenarios pass;
-- [ ] precise cleanup succeeds;
-- [ ] report includes event IDs and cleanup status.
+- [x] update/regenerate/cancel/retry scenarios pass;
+- [x] precise cleanup succeeds;
+- [x] report includes event IDs and cleanup status.
 
 ## 4. Training Identity And Lifecycle Gates
 
@@ -77,8 +77,8 @@ Plan/session identity is production-ready only when:
 - [ ] stale older plan versions cannot appear active;
 - [x] migration applies on a copied local clone;
 - [x] rollback/snapshot restore path is documented and rehearsed locally;
-- [ ] migration applies on a true staging clone;
-- [ ] true staging snapshot restore is rehearsed or pre-deploy snapshot/restore is explicitly accepted as the deployment gate.
+- [x] migration applies on a true staging clone;
+- [x] true staging snapshot restore is rehearsed or pre-deploy snapshot/restore is explicitly accepted as the deployment gate.
 
 ## 5. Constrained-Week And Scheduling Gates
 
@@ -166,13 +166,13 @@ Cross-skill Training orchestration is production-ready only when either it is fu
 
 Required validation:
 
-- [ ] staging Secretary conflict causes reflow/compression/unscheduled state;
-- [ ] Cooking fueling gap produces one useful warning, not repeated noise;
-- [ ] Finance budget/equipment constraints affect training choices when supported;
-- [ ] Content workload/milestone signals are consumed/emitted where supported;
-- [ ] tenant/user scoping is verified;
+- [x] staging Secretary conflict causes reflow/compression/unscheduled state;
+- [x] Cooking fueling gap produces one useful warning, not repeated noise;
+- [x] Finance budget/equipment constraints affect training choices when supported;
+- [x] Content workload/milestone signals are consumed/emitted where supported;
+- [x] tenant/user scoping is verified;
 - [ ] stale context does not drive new plans;
-- [ ] source of each cross-skill signal is visible in diagnostics.
+- [x] source of each cross-skill signal is visible in diagnostics.
 
 ## 11. GPT-5.5 Intelligence-Readiness Gate
 
@@ -186,11 +186,13 @@ The release can claim GPT-5.5 Extra High Intelligence-level coaching only when:
 
 If these are not true, release copy must avoid claiming GPT-5.5 execution and should describe the release as deterministic engine hardening plus richer coaching architecture.
 
+Current decision: **do not claim GPT-5.5 execution** for this release. Training plan generation is deterministic/rule-based in the audited runtime path.
+
 ## 12. Security, Tenant, And Privacy Gates
 
 - [ ] no cross-tenant Training plan/event/session leakage tests fail;
-- [ ] calendar smoke uses test tenants only;
-- [ ] staging smokes do not touch production calendars;
+- [x] calendar smoke uses test tenants only;
+- [x] staging smokes do not touch production calendars;
 - [ ] Training logs do not leak health, schedule, OAuth, or feedback PII;
 - [x] iOS debug auth shortcuts are gated to debug/simulator/local smoke only;
 - [ ] Health/training telemetry is redacted according to existing app policy.
@@ -199,8 +201,8 @@ If these are not true, release copy must avoid claiming GPT-5.5 execution and sh
 
 - [ ] backend backup branch/tag exists;
 - [x] database migration rollback/snapshot restore is rehearsed locally;
-- [ ] database migration rollback/snapshot restore is rehearsed on true staging data or explicitly handled as a deployment preflight;
-- [ ] calendar cleanup strategy for test and production rollback is precise and ownership-based;
+- [x] database migration rollback/snapshot restore is rehearsed on true staging data or explicitly handled as a deployment preflight;
+- [x] calendar cleanup strategy for test and production rollback is precise and ownership-based;
 - [x] feature flags or config kill switches are identified for Training plan generation/calendar sync if available;
 - [ ] rollback owner and command sequence are documented.
 
@@ -208,19 +210,21 @@ If these are not true, release copy must avoid claiming GPT-5.5 execution and sh
 
 Go only if all P0 gates are complete and all P1 gates are either complete or explicitly scoped out with owner approval.
 
-Current status as of this report: **NO-GO**.
+Current status as of this report: **GO WITH CONDITIONS**.
 
 ## 15. Release-Candidate Evidence Added On 2026-04-28
 
-- Backend full verify passed: 382 test files / 5,994 tests.
+- Backend full verify passed: 383 test files / 6,001 tests.
 - Training eval harness passed: 99/100 across 156 persona/scenario cases.
 - iOS focused Training suites passed through `xcodebuild test`.
 - iOS `scripts/beta-smoke-local.sh` passed.
 - DEBUG-only iOS local auth importer policy tests passed 15/15.
 - Authenticated local simulator journey produced 43 authenticated REST calls across 19 endpoints, all with the local runner's user ID and HTTP 200 responses.
+- Google calendar staging lifecycle smoke passed with read-back and cleanup proof.
+- Outlook calendar staging lifecycle smoke passed with read-back and cleanup proof.
+- Seeded cross-skill staging smoke passed and fixture cleanup was verified.
+- Migration 082 true staging clone apply/restore proof passed.
 - Full iOS scheme passed after dashboard hero presentation tests were aligned with the localized calendar display contract.
 - Local iOS simulator smoke rendered rich Training payloads against a local backend listener with deterministic fixtures.
 - Local backend and simulator app were shut down after smoke; no listener remained on port `8200`.
-- Migration 082 local clone rehearsal passed; report recorded at `docs/training/migration-082-rollback-rehearsal.md`.
-- Google/Outlook staging calendar lifecycle remains blocked by missing staging provider prerequisites.
-- Runtime cross-skill staging remains blocked by missing staging tenant/database prerequisites.
+- Migration 082 local and true staging clone rehearsals passed; report recorded at `docs/training/migration-082-rollback-rehearsal.md`.

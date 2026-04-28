@@ -6,18 +6,18 @@ Date: 2026-04-28
 
 Candidate branch: `release/training-engine-production-candidate`
 
-Current status: not production-ready. This checklist must be completed before deployment.
+Current status: GO WITH CONDITIONS. External staging gates are complete; deployment still requires production-predeploy DB snapshot, final release-copy review, owner approval, and post-deploy validation.
 
 ## Migration Checklist
 
 | Item | Required state | Status |
 | --- | --- | --- |
 | Migration 082 reviewed | `migrations/082_training_session_identity_shape_hash.sql` reviewed for additive-only behavior | Complete for local review: nullable columns + indexes only |
-| Staging DB snapshot | Snapshot exists before applying migration 082 | Pending |
-| Staging clone rehearsal | Migration applied to staging clone and route/tests run against it | Pending true staging clone; local clone rehearsal passed in `docs/training/migration-082-rollback-rehearsal.md` |
-| Rollback rehearsal | DB snapshot restore or additive-column rollback behavior verified | Local snapshot restore passed; true staging snapshot restore pending |
+| Staging DB snapshot | Snapshot exists before applying migration 082 | Complete for staging clone; production-predeploy snapshot still required at deployment time |
+| Staging clone rehearsal | Migration applied to staging clone and route/tests run against it | Complete: true staging clone apply/restore proof passed in `docs/training/migration-082-rollback-rehearsal.md` |
+| Rollback rehearsal | DB snapshot restore or additive-column rollback behavior verified | Complete for local and true staging clone; production-predeploy snapshot remains required |
 | Old-code compatibility | Commit `a3f1b78` verified to ignore added columns/indexes | Partial: local SQL compatibility passed; rollback commit boot/test still pending |
-| Index impact | Index creation timing and DB size impact understood | Local clone: 2 ms / +8,192 bytes; staging/prod timing pending |
+| Index impact | Index creation timing and DB size impact understood | Local clone: 2 ms / +8,192 bytes; staging clone applied successfully; production timing still requires normal migration monitoring |
 
 ## Required Runtime Environment
 
@@ -31,7 +31,7 @@ Verify these exist in staging and production before release:
 | `PORTAL_TOKEN` | Operator/status portal auth where applicable | Required |
 | `AI_CALL_TIMEOUT_MS` | Model call timeout guard | Required |
 | `GEMINI_API_KEY` or `OPENAI_API_KEY` | Model provider access | Required |
-| Provider routing config | Must match intended model/provider behavior | Pending review |
+| Provider routing config | Must match intended model/provider behavior | Reviewed: Training plan generation is deterministic/rule-based; do not claim GPT-5.5 runtime execution |
 
 Optional emergency controls, default enabled:
 
@@ -51,14 +51,14 @@ Required for the calendar staging gate:
 
 | Variable | Notes | Status |
 | --- | --- | --- |
-| `TRAINING_CALENDAR_STAGING_ENV_FILE` | Points to staging-only env file | Pending |
-| `TRAINING_CALENDAR_STAGING_SMOKE=1` | Enables smoke harness | Pending |
-| `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1` | Explicit live-write consent for staging calendars only | Pending |
-| `TRAINING_CALENDAR_STAGING_USER_ID` | Test/staging user with Google/Outlook integrations | Pending |
-| `TRAINING_CALENDAR_STAGING_PROVIDERS=google,outlook` | Provider list | Pending |
-| `TRAINING_CALENDAR_STAGING_RESULTS_PATH` | Results output path | Optional but recommended |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google staging OAuth app | Pending |
-| `OUTLOOK_CLIENT_ID` / `OUTLOOK_CLIENT_SECRET` | Outlook staging OAuth app | Pending |
+| `TRAINING_CALENDAR_STAGING_ENV_FILE` | Points to staging-only env file | Not needed in final run; staging server `.env` plus explicit exported flags used |
+| `TRAINING_CALENDAR_STAGING_SMOKE=1` | Enables smoke harness | Complete |
+| `TRAINING_CALENDAR_STAGING_ALLOW_LIVE_WRITES=1` | Explicit live-write consent for staging calendars only | Complete |
+| `TRAINING_CALENDAR_STAGING_USER_ID` | Test/staging user with Google/Outlook integrations | Complete: `1` |
+| `TRAINING_CALENDAR_STAGING_PROVIDERS=google,outlook` | Provider list | Complete via provider-specific runs |
+| `TRAINING_CALENDAR_STAGING_RESULTS_PATH` | Results output path | Complete |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google staging OAuth app | Complete on staging server |
+| `OUTLOOK_CLIENT_ID` / `OUTLOOK_CLIENT_SECRET` | Outlook staging OAuth app | Complete on staging server |
 
 Safety rules:
 
@@ -72,12 +72,15 @@ Required for the cross-skill staging gate:
 
 | Variable | Notes | Status |
 | --- | --- | --- |
-| `TRAINING_CROSS_SKILL_STAGING_ENV_FILE` | Points to staging-only env file | Pending |
-| `TRAINING_CROSS_SKILL_STAGING_SMOKE=1` | Enables harness | Pending |
-| `TRAINING_CROSS_SKILL_STAGING_USER_ID` | Test/staging user | Pending |
-| `TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH` | Results output path | Optional but recommended |
-| Staging Secretary data | Conflicting meeting/task windows | Pending |
-| Staging Cooking data | Fueling gap / meal coverage scenario | Pending |
+| `TRAINING_CROSS_SKILL_STAGING_ENV_FILE` | Points to staging-only env file | Not needed in final run; staging server `.env` plus explicit exported flags used |
+| `TRAINING_CROSS_SKILL_STAGING_SMOKE=1` | Enables harness | Complete |
+| `TRAINING_CROSS_SKILL_STAGING_USER_ID` | Test/staging user | Complete: `1` |
+| `TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH` | Results output path | Complete |
+| `TRAINING_CROSS_SKILL_STAGING_FIXTURE_WRITE=1` | Allows gated seed/cleanup writes | Complete for seed/cleanup only |
+| Staging Secretary data | Conflicting meeting/task windows | Complete |
+| Staging Cooking data | Fueling gap / meal coverage scenario | Complete |
+| Staging Finance data | Budget/equipment constraint | Complete through staging-only fixture seed |
+| Staging Content/Training milestone data | Content workload and Training-to-Content signal | Complete through real content context plus staging-only Training fixture |
 | Staging Finance data | Equipment or budget constraint scenario | Pending |
 | Staging Content data | Workload or milestone signal scenario | Pending |
 

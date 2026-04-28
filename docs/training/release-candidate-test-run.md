@@ -7,9 +7,9 @@ Deployment: not run
 
 ## Summary
 
-The automated backend gate is green after one test-only correction. The first full backend verification exposed an outdated calendar-persistence test that expected a raw session title in warning logs. The production behavior had already been hardened to log scoped IDs instead of calendar/session title text, so the assertion was updated to verify `userId`, `planId`, `planVersion`, `sessionId`, and absence of `title`.
+The automated backend gate is green after two test-only corrections. The first full backend verification exposed an outdated calendar-persistence test that expected a raw session title in warning logs. The production behavior had already been hardened to log scoped IDs instead of calendar/session title text, so the assertion was updated to verify `userId`, `planId`, `planVersion`, `sessionId`, and absence of `title`. A later full-suite run exposed cross-test environment contamination from Training calendar kill-switch flags; the persistence suite now clears the relevant operational-switch env in `beforeEach`.
 
-The Training evaluation harness passed with a 99/100 aggregate quality score across 156 persona/scenario cases. Real Google/Outlook and cross-skill staging gates remain blocked by missing staging prerequisites, so this run does not claim full release readiness.
+The Training evaluation harness passed with a 99/100 aggregate quality score across 156 persona/scenario cases. Real Google/Outlook calendar staging and seeded cross-skill staging gates have since passed; the release still requires production-predeploy snapshot and production-safe post-deploy validation.
 
 ## Commands And Results
 
@@ -17,12 +17,12 @@ The Training evaluation harness passed with a 99/100 aggregate quality score acr
 | --- | --- | --- | --- |
 | Backend full verify, first run | `npm run verify` | Failed in `__tests__/api/training-plan-persistence.test.ts`; stale privacy-era assertion expected raw `title` in calendar failure logs. | Fixed and rerun. |
 | Focused backend retest | `npx vitest run __tests__/api/training-plan-persistence.test.ts __tests__/utils/logger-redaction.test.ts` | Passed: 2 files / 8 tests. | Clear. |
-| Backend full verify, final run | `npm run verify` | Passed: typecheck plus 382 test files / 5,994 tests. | Clear. |
+| Backend full verify, final run | `npm run verify` | Passed: typecheck plus 383 test files / 6,001 tests. | Clear. |
 | Training eval harness | `npm run eval:training` | Passed: 99/100, 156 cases. | Clear, with P2 quality follow-up below. |
-| Backend commit hook validation | `npm run typecheck` and `npm test` | Passed while creating `b8f9be7`: 382 files / 5,994 tests. | Clear. |
+| Backend commit hook validation | `npm run typecheck` and `npm test` | Passed while creating `b8f9be7`; latest full verify passed 383 files / 6,001 tests after staging-gate updates. | Clear. |
 | iOS full scheme | `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro"` | Passed on `537abf6`; result bundle `Test-Nexus Hub-2026.04.28_14-09-36-+0100.xcresult`. | Clear for local pre-release compatibility. |
-| Google/Outlook staging calendar smoke | `npm run smoke:training-calendar:staging` | Blocked with exit code 2 by missing staging env/secrets. No provider lifecycle was run. | Release blocker unless provider gate is waived. |
-| Cross-skill staging smoke | `npm run smoke:training-cross-skill:staging` | Local fixture contract checks passed; runtime staging smoke blocked with exit code 2 by missing staging env/database user. | Release blocker unless staging gate is waived. |
+| Google/Outlook staging calendar smoke | `node dist/tools/training-calendar-staging-smoke.js` on staging with approved provider env | Passed Google run `training-calendar-smoke-20260428165035-7ljwng` and Outlook run `training-calendar-smoke-20260428165107-7fsbbr`. | Clear for staging gate. |
+| Cross-skill staging smoke | `node dist/tools/training-cross-skill-staging-fixtures.js` seed/cleanup plus `node dist/tools/training-cross-skill-staging-smoke.js` | Passed seeded staging run `training-cross-skill-smoke-20260428164946-829lm7`; cleanup verified zero fixture rows/plans. | Clear for staging gate. |
 
 ## Fix Applied During Test Run
 
