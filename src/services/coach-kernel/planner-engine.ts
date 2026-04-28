@@ -5,10 +5,12 @@ import type {
   AthleteState,
   BlockPhase,
   DailyRecommendation,
+  GuardrailResult,
   Session,
+  TrainingDecisionReason,
   WeeklyPlan,
 } from './types';
-import { clamp, findWindowsForDay, resolvePreferredStartTime, withDuration } from './utils';
+import { clamp } from './utils';
 import { runningEngine } from './engines/running-engine';
 import { cyclingEngine } from './engines/cycling-engine';
 import { swimmingEngine } from './engines/swimming-engine';
@@ -16,6 +18,15 @@ import { strengthEngine } from './engines/strength-engine';
 import { triathlonEngine } from './engines/triathlon-engine';
 import { resolveHybridPriority } from './engines/hybrid-engine';
 import { applyGuardrails } from './guardrails';
+import { profileFollowUpNotes } from '../training-profile-model';
+import { logger } from '../../utils/logger';
+import { buildWeeklyDecisionNotes, dedupeDecisionLines } from './decision-trail';
+import {
+  analyzeTrainingFeedback,
+  applyFeedbackToAthleteState,
+  applyFeedbackToWeeklyPlan,
+} from './feedback-analysis';
+import { isActiveTrainingSession, reconcileWeeklyCapacity } from './capacity-reconciliation';
 
 function hasHighImpactInjuryConstraint(athlete: AthleteState): boolean {
   return athlete.constraints.some((constraint) =>
@@ -64,94 +75,123 @@ function inferPhase(athlete: AthleteState, weekStart: string): BlockPhase {
   return 'build';
 }
 
-function scheduleSessions(athlete: AthleteState, sessions: Session[]): Session[] {
-  return sessions.map((session) => {
-    const matchingWindow = findWindowsForDay(athlete.availability, session.dayOfWeek, session.sport)[0]
-      ?? findWindowsForDay(athlete.availability, session.dayOfWeek)[0];
-    if (!matchingWindow) return session;
-    const startTime = resolvePreferredStartTime(athlete, session.sport, matchingWindow);
-    return {
-      ...session,
-      startTime,
-      endTime: withDuration(startTime, session.durationMinutes),
-    };
-  });
-}
-
-function reschedulePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
+function reconcilePlanSessions(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
+  const reconciliation = reconcileWeeklyCapacity(athlete, weeklyPlan.sessions);
+  const guardrailDecisionReasons = decisionReasonsFromGuardrails(weeklyPlan.guardrailResults);
   return {
     ...weeklyPlan,
-    sessions: scheduleSessions(athlete, weeklyPlan.sessions),
+    sessions: reconciliation.sessions,
+    guardrailResults: [
+      ...weeklyPlan.guardrailResults,
+      ...reconciliation.guardrailResults,
+    ],
+    decisionReasons: dedupeDecisionReasons([
+      ...(weeklyPlan.decisionReasons ?? []),
+      ...guardrailDecisionReasons,
+      ...reconciliation.decisionReasons,
+    ]),
   };
 }
 
 export function buildWeekPlan(athlete: AthleteState, weekStart: string): WeeklyPlan {
-  const phase = inferPhase(athlete, weekStart);
+  const feedbackAnalysis = analyzeTrainingFeedback(athlete);
+  const coachingAthlete = applyFeedbackToAthleteState(athlete, feedbackAnalysis);
+  const phase = inferPhase(coachingAthlete, weekStart);
   const knowledge = loadCoachKnowledge();
-  const context = { athlete, phase, knowledge, weekStart };
+  const context = { athlete: coachingAthlete, phase, knowledge, weekStart };
   let sessions: Session[] = [];
+  const planningNotes: string[] = [];
 
-  if (athlete.goals.primaryFocus === 'triathlon') {
+  if (coachingAthlete.goals.primaryFocus === 'triathlon') {
     sessions = triathlonEngine.buildCandidateSessions(context);
-  } else if (athlete.goals.primaryFocus === 'hybrid') {
-    const hybrid = resolveHybridPriority(athlete, phase);
+  } else if (coachingAthlete.goals.primaryFocus === 'hybrid') {
+    const hybrid = resolveHybridPriority(coachingAthlete, phase);
+    planningNotes.push(...hybrid.notes);
     const hybridAthlete: AthleteState = {
-      ...athlete,
+      ...coachingAthlete,
       goals: {
-        ...athlete.goals,
+        ...coachingAthlete.goals,
         weeklySessionsTarget: {
-          ...athlete.goals.weeklySessionsTarget,
+          ...coachingAthlete.goals.weeklySessionsTarget,
           running: hybrid.adjustedRunSessions,
+          cycling: hybrid.adjustedCyclingSessions,
           strength: hybrid.adjustedStrengthSessions,
         },
       },
     };
-    sessions = [
-      ...runningEngine.buildCandidateSessions({ ...context, athlete: hybridAthlete }),
-      ...strengthEngine.buildCandidateSessions({ ...context, athlete: hybridAthlete }),
-    ];
+    if ((hybrid.adjustedRunSessions ?? 0) > 0) {
+      sessions.push(...runningEngine.buildCandidateSessions({ ...context, athlete: hybridAthlete }));
+    }
+    if ((hybrid.adjustedCyclingSessions ?? 0) > 0) {
+      sessions.push(...cyclingEngine.buildCandidateSessions({ ...context, athlete: hybridAthlete }));
+    }
+    if ((hybrid.adjustedStrengthSessions ?? 0) > 0) {
+      sessions.push(...strengthEngine.buildCandidateSessions({ ...context, athlete: hybridAthlete }));
+    }
   } else {
-    if ((athlete.goals.weeklySessionsTarget.running ?? 0) > 0 || athlete.goals.primaryFocus === 'marathon' || athlete.goals.primaryFocus === 'running') {
+    if ((coachingAthlete.goals.weeklySessionsTarget.running ?? 0) > 0 || coachingAthlete.goals.primaryFocus === 'marathon' || coachingAthlete.goals.primaryFocus === 'running') {
       sessions.push(...runningEngine.buildCandidateSessions(context));
     }
-    if ((athlete.goals.weeklySessionsTarget.cycling ?? 0) > 0 || athlete.goals.primaryFocus === 'cycling') {
+    if ((coachingAthlete.goals.weeklySessionsTarget.cycling ?? 0) > 0 || coachingAthlete.goals.primaryFocus === 'cycling') {
       sessions.push(...cyclingEngine.buildCandidateSessions(context));
     }
-    if ((athlete.goals.weeklySessionsTarget.swimming ?? 0) > 0 || athlete.goals.primaryFocus === 'swimming') {
+    if ((coachingAthlete.goals.weeklySessionsTarget.swimming ?? 0) > 0 || coachingAthlete.goals.primaryFocus === 'swimming') {
       sessions.push(...swimmingEngine.buildCandidateSessions(context));
     }
-    if ((athlete.goals.weeklySessionsTarget.strength ?? 0) > 0 || athlete.goals.primaryFocus === 'strength') {
+    if ((coachingAthlete.goals.weeklySessionsTarget.strength ?? 0) > 0 || coachingAthlete.goals.primaryFocus === 'strength') {
       sessions.push(...strengthEngine.buildCandidateSessions(context));
     }
   }
 
-  sessions = scheduleSessions(athlete, sessions);
   const plan: WeeklyPlan = {
-    athleteId: athlete.profile.athleteId,
+    athleteId: coachingAthlete.profile.athleteId,
     weekStart,
-    discipline: athlete.goals.primaryFocus,
+    discipline: coachingAthlete.goals.primaryFocus,
     phase,
     sessions,
     notes: [
-      `Phase: ${phase}`,
-      `Readiness: ${athlete.readiness.level}`,
-      `Compliance: ${Math.round(athlete.compliance.trailing14DayCompliance * 100)}%`,
+      ...profileFollowUpNotes(coachingAthlete.profileQuality),
+      ...planningNotes,
     ],
     guardrailResults: [],
   };
 
-  return reschedulePlanSessions(athlete, applyGuardrails(plan, athlete));
+  const guardedPlan = reconcilePlanSessions(
+    coachingAthlete,
+    applyGuardrails(applyFeedbackToWeeklyPlan(plan, feedbackAnalysis), coachingAthlete),
+  );
+  const finalPlan: WeeklyPlan = {
+    ...guardedPlan,
+    notes: buildWeeklyDecisionNotes(guardedPlan, coachingAthlete),
+  };
+
+  logger.debug({
+    athleteId: finalPlan.athleteId,
+    weekStart: finalPlan.weekStart,
+    discipline: finalPlan.discipline,
+    phase: finalPlan.phase,
+    sessionCount: finalPlan.sessions.length,
+    activeSessionCount: finalPlan.sessions.filter(isActiveTrainingSession).length,
+    adjustedGuardrails: finalPlan.guardrailResults
+      .filter((result) => result.adjusted)
+      .map((result) => result.ruleId),
+    feedbackDecisionCount: feedbackAnalysis.decisions.length,
+    decisionNoteCount: finalPlan.notes.length,
+  }, 'coach-kernel week plan built');
+
+  return finalPlan;
 }
 
 export function buildDayPlan(athlete: AthleteState, weeklyPlan: WeeklyPlan, dayOfWeek: Session['dayOfWeek']): DailyRecommendation {
-  const session = weeklyPlan.sessions.find((item) => item.dayOfWeek === dayOfWeek) ?? null;
+  const daySessions = weeklyPlan.sessions.filter((item) => item.dayOfWeek === dayOfWeek);
+  const session = daySessions.find(isActiveTrainingSession) ?? daySessions[0] ?? null;
   // Preserve ALL guardrails that fired during plan generation so downstream
   // consumers can surface every adjustment reason, not only readiness /
   // schedule. Volume-growth and deload guardrails are just as explanatory
   // for "why is today what it is" — the prior filter silently dropped them.
   const guardrailResults = [...weeklyPlan.guardrailResults];
   const alternatives = session
-    ? weeklyPlan.sessions.filter((item) => item.dayOfWeek === dayOfWeek && item.id !== session.id).slice(0, 2)
+    ? daySessions.filter((item) => item.id !== session.id && isActiveTrainingSession(item)).slice(0, 2)
     : [];
 
   // Build a rationale list that enumerates every adjusted guardrail so
@@ -161,9 +201,17 @@ export function buildDayPlan(athlete: AthleteState, weeklyPlan: WeeklyPlan, dayO
   const adjustedGuardrailMessages = weeklyPlan.guardrailResults
     .filter((result) => result.adjusted && typeof result.message === 'string' && result.message.trim().length > 0)
     .map((result) => `✳ ${result.message}`);
+  const decisionReasonMessages = [
+    ...(weeklyPlan.decisionReasons ?? []),
+    ...(session?.decisionReasons ?? []),
+  ]
+    .filter((reason) => reason.severity !== 'info')
+    .map((reason) => `✳ ${reason.text}`);
 
-  const baseRationale = session
+  const baseRationale = session && isActiveTrainingSession(session)
     ? `Today's primary prescription is ${session.title} because it fits the ${weeklyPlan.phase} phase.`
+    : session?.scheduleReason
+    ? session.scheduleReason
     : 'No primary session is scheduled for today.';
 
   return {
@@ -171,13 +219,35 @@ export function buildDayPlan(athlete: AthleteState, weeklyPlan: WeeklyPlan, dayO
     readinessLevel: athlete.readiness.level,
     session,
     alternatives,
-    rationale: [
+    rationale: dedupeDecisionLines([
       baseRationale,
+      ...decisionReasonMessages,
       ...adjustedGuardrailMessages,
       ...weeklyPlan.notes,
-    ],
+    ]),
     guardrailResults,
   };
+}
+
+function decisionReasonsFromGuardrails(guardrails: GuardrailResult[]): TrainingDecisionReason[] {
+  return guardrails.flatMap((guardrail) => guardrail.decisionReasons ?? []);
+}
+
+function dedupeDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecisionReason[] {
+  const seen = new Set<string>();
+  const output: TrainingDecisionReason[] = [];
+  for (const reason of reasons) {
+    const key = [
+      reason.code,
+      reason.affectedEntity.type,
+      reason.affectedEntity.id ?? '',
+      reason.text.trim().toLowerCase().replace(/\s+/g, ' '),
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(reason);
+  }
+  return output;
 }
 
 export function adjustForFatigue(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
@@ -193,12 +263,29 @@ export function adjustForFatigue(athlete: AthleteState, weeklyPlan: WeeklyPlan):
   const adjustedPlan: WeeklyPlan = {
     ...weeklyPlan,
     phase: fatiguePhase,
-    notes: [
+    notes: dedupeDecisionLines([
       ...weeklyPlan.notes.filter((note) => !note.startsWith('Readiness override:')),
       `Readiness override: ${athlete.readiness.level} shifted this week to ${fatiguePhase}.`,
-    ],
+    ]),
   };
-  return reschedulePlanSessions(adjustedState, applyGuardrails(adjustedPlan, adjustedState));
+  const guardedPlan = reconcilePlanSessions(adjustedState, applyGuardrails(adjustedPlan, adjustedState));
+  const finalPlan: WeeklyPlan = {
+    ...guardedPlan,
+    notes: buildWeeklyDecisionNotes(guardedPlan, adjustedState),
+  };
+
+  logger.debug({
+    athleteId: finalPlan.athleteId,
+    readiness: athlete.readiness.level,
+    fromPhase: weeklyPlan.phase,
+    toPhase: finalPlan.phase,
+    adjustedGuardrails: finalPlan.guardrailResults
+      .filter((result) => result.adjusted)
+      .map((result) => result.ruleId),
+    decisionNoteCount: finalPlan.notes.length,
+  }, 'coach-kernel fatigue adjustment applied');
+
+  return finalPlan;
 }
 
 export function replaceSession(weeklyPlan: WeeklyPlan, sessionId: string, replacement: Session): WeeklyPlan {
@@ -209,7 +296,7 @@ export function replaceSession(weeklyPlan: WeeklyPlan, sessionId: string, replac
 }
 
 export function resolveScheduleConflicts(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {
-  return reschedulePlanSessions(athlete, applyGuardrails(weeklyPlan, athlete));
+  return reconcilePlanSessions(athlete, applyGuardrails(weeklyPlan, athlete));
 }
 
 export function progressStrengthBlock(athlete: AthleteState, weeklyPlan: WeeklyPlan): WeeklyPlan {

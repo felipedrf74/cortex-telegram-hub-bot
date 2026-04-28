@@ -440,6 +440,8 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       weeks: persistedPlan.weekSummaries,
+      profileQuality: planData.profileQuality ?? null,
+      decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
       fallbackTemplateUsed: usedFallbackTemplate,
       message: usedFallbackTemplate
         ? `Plan created with a reliable fallback template. ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`

@@ -383,3 +383,87 @@ export function suggestCorrection(
     reason: `Session estimated at ${verdict.estimatedMinutes}min for a ${verdict.claimedMinutes}min slot (${(verdict.deviationPct * 100).toFixed(0)}% over). Trimming trailing accessory work to the first ${keepExerciseCount} exercises.`,
   };
 }
+
+export interface TrimOverstuffedStrengthOptions {
+  minimumExerciseCount?: number;
+  tag?: string;
+  alternative?: string;
+}
+
+export function trimOverstuffedStrengthSessionToDuration(
+  session: Session,
+  knowledge: CoachKnowledgeBase,
+  options: TrimOverstuffedStrengthOptions = {},
+): { session: Session; changed: boolean; verdict: CoherenceVerdict } {
+  const initialVerdict = validateSessionCoherence(session, knowledge);
+  if (
+    session.sport !== 'strength'
+    || !session.exercises?.length
+    || initialVerdict.ok
+    || initialVerdict.reason !== 'overstuffed'
+  ) {
+    return { session, changed: false, verdict: initialVerdict };
+  }
+
+  const minimumExerciseCount = options.minimumExerciseCount
+    ?? (session.durationMinutes <= 30 ? 2 : session.durationMinutes <= 45 ? 3 : 4);
+  let exercises = session.exercises.map((exercise) => ({ ...exercise }));
+  let next: Session = { ...session, exercises };
+  let verdict: CoherenceVerdict = initialVerdict;
+  let changed = false;
+
+  for (let iteration = 0; iteration < 12; iteration++) {
+    if (verdict.ok || verdict.reason !== 'overstuffed') break;
+
+    if (exercises.length > minimumExerciseCount) {
+      exercises = exercises.slice(0, -1);
+      changed = true;
+    } else {
+      const reducerIndex = lastExerciseWithReducibleSets(exercises);
+      if (reducerIndex < 0) break;
+      exercises = exercises.map((exercise, index) => index === reducerIndex
+        ? reduceExerciseForTimeCap(exercise)
+        : exercise);
+      changed = true;
+    }
+
+    next = { ...next, exercises };
+    verdict = validateSessionCoherence(next, knowledge);
+  }
+
+  if (!changed) return { session, changed: false, verdict };
+
+  return {
+    session: {
+      ...next,
+      tags: [...new Set([...next.tags, options.tag ?? 'duration_coherent'])],
+      alternatives: [
+        ...new Set([
+          ...(next.alternatives ?? []),
+          options.alternative ?? 'Trailing strength volume was trimmed so the session matches the scheduled duration.',
+        ]),
+      ],
+    },
+    changed: true,
+    verdict,
+  };
+}
+
+function lastExerciseWithReducibleSets(exercises: ExercisePrescription[]): number {
+  for (let index = exercises.length - 1; index >= 0; index--) {
+    if (exercises[index].sets > 1) return index;
+  }
+  return -1;
+}
+
+function reduceExerciseForTimeCap(exercise: ExercisePrescription): ExercisePrescription {
+  return {
+    ...exercise,
+    sets: Math.max(1, exercise.sets - 1),
+    restSec: Math.min(exercise.restSec ?? 60, 60),
+    rir: exercise.rir != null ? Math.max(exercise.rir, 3) : 3,
+    notes: exercise.notes
+      ? `${exercise.notes} Time cap: reduced set volume to keep the session honest.`
+      : 'Time cap: reduced set volume to keep the session honest.',
+  };
+}

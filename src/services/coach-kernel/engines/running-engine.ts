@@ -11,6 +11,32 @@ function templateFor(templates: WorkoutTemplate[], sessionType: SessionType): Wo
   return match;
 }
 
+function templateByIdOrType(templates: WorkoutTemplate[], templateId: string, fallbackType: SessionType): WorkoutTemplate {
+  return templates.find((template) => template.id === templateId) ?? templateFor(templates, fallbackType);
+}
+
+function constraintText(context: EngineContext): string {
+  return [
+    ...(context.athlete.equipment.notes ?? []),
+    ...context.athlete.constraints.map((constraint) => constraint.description),
+  ].join(' ').toLowerCase();
+}
+
+function isTravelOrLimitedWeek(context: EngineContext): boolean {
+  return /travel|hotel|trip|limited equipment|away/.test(constraintText(context));
+}
+
+function hasHybridStrengthPressure(context: EngineContext): boolean {
+  return context.athlete.goals.primaryFocus === 'hybrid'
+    && (context.athlete.goals.weeklySessionsTarget.strength ?? 0) >= 2;
+}
+
+function hasLowRecoverySignal(context: EngineContext): boolean {
+  return context.athlete.readiness.level === 'orange'
+    || context.athlete.readiness.level === 'red'
+    || context.athlete.readiness.soreness === 'high';
+}
+
 function buildRunSession(
   template: WorkoutTemplate,
   dayOfWeek: DayOfWeek,
@@ -35,6 +61,41 @@ function buildRunSession(
   };
 }
 
+function keyRunTemplateFor(context: EngineContext, templates: WorkoutTemplate[]): WorkoutTemplate {
+  const weekSlot = Math.max(0, context.athlete.currentBlock.weekIndex - 1) % 3;
+  if (context.athlete.profile.experienceLevel === 'novice') {
+    return templateByIdOrType(templates, 'run_fartlek_controlled', 'easy_run');
+  }
+  if (context.phase === 'peak') {
+    return templateByIdOrType(templates, weekSlot === 0 ? 'run_threshold' : 'run_interval', 'threshold_run');
+  }
+  if (context.phase === 'base') {
+    return templateByIdOrType(templates, weekSlot === 2 ? 'run_hill_repeats' : 'run_tempo_progression', 'threshold_run');
+  }
+  if (weekSlot === 0) return templateByIdOrType(templates, 'run_interval', 'interval_run');
+  if (weekSlot === 1) return templateByIdOrType(templates, 'run_tempo_progression', 'threshold_run');
+  return templateByIdOrType(templates, 'run_hill_repeats', 'interval_run');
+}
+
+function supportRunTemplateFor(
+  context: EngineContext,
+  templates: WorkoutTemplate[],
+  supportIndex: number,
+  finalSupport: boolean,
+): WorkoutTemplate {
+  if (isTravelOrLimitedWeek(context)) return templateByIdOrType(templates, 'run_travel_treadmill_easy', 'easy_run');
+  if (context.athlete.profile.experienceLevel === 'novice') {
+    return templateByIdOrType(templates, 'run_walk_beginner', 'easy_run');
+  }
+  if (hasLowRecoverySignal(context)) return templateFor(templates, 'recovery_run');
+  if (hasHybridStrengthPressure(context) && supportIndex % 2 === 0) {
+    return templateByIdOrType(templates, 'run_hybrid_flush', 'recovery_run');
+  }
+  if (finalSupport) return templateFor(templates, 'recovery_run');
+  if (supportIndex % 2 === 1) return templateByIdOrType(templates, 'run_strides_aerobic', 'easy_run');
+  return templateFor(templates, 'easy_run');
+}
+
 export const runningEngine: SportEngine = {
   buildCandidateSessions(context: EngineContext): Session[] {
     const templates = context.knowledge.workoutTemplates.filter((template) => template.sport === 'running');
@@ -47,9 +108,7 @@ export const runningEngine: SportEngine = {
     const remainingMinutes = Math.max(targetMinutes - longRunMinutes - keyMinutes, 40);
     const fillerMinutes = Math.max(30, Math.round(remainingMinutes / Math.max(1, targetSessions - 2)));
     const longRunDay = context.athlete.availability.preferredLongSessionDay ?? 'sunday';
-    const keyTemplate = context.phase === 'peak'
-      ? templateFor(templates, 'threshold_run')
-      : templateFor(templates, 'interval_run');
+    const keyTemplate = keyRunTemplateFor(context, templates);
 
     // Slice 4.F — availability-aware key-day pick. When the user has
     // declared availability for running, pick the first day in the
@@ -61,7 +120,7 @@ export const runningEngine: SportEngine = {
     const keyDay = pickKeyDay(context.athlete, 'running', keyDayPreferences);
 
     const sessions: Session[] = [
-      buildRunSession(keyTemplate, keyDay, keyMinutes, ['key_run']),
+      buildRunSession(keyTemplate, keyDay, keyMinutes, ['key_run', keyTemplate.id]),
       buildRunSession(templateFor(templates, 'long_run'), longRunDay, longRunMinutes, ['long_session']),
     ];
 
@@ -72,20 +131,17 @@ export const runningEngine: SportEngine = {
     // produces a session list and the scheduler can attempt slotting).
     const fillerPreferences: DayOfWeek[] = ['monday', 'thursday', 'friday', 'saturday', 'wednesday'];
     const fillerDays = pickAvailableDays(context.athlete, 'running', fillerPreferences, 3);
-    for (const dayOfWeek of fillerDays) {
+    for (const [supportIndex, dayOfWeek] of fillerDays.entries()) {
       if (sessions.length >= targetSessions) break;
-      const template = sessions.length === targetSessions - 1
-        ? templateFor(templates, 'recovery_run')
-        : templateFor(templates, 'easy_run');
+      const template = supportRunTemplateFor(context, templates, supportIndex, sessions.length === targetSessions - 1);
       const duration = template.sessionType === 'recovery_run'
         ? Math.max(25, fillerMinutes - 10)
         : fillerMinutes;
       if (!sessions.find((session) => session.dayOfWeek === dayOfWeek)) {
-        sessions.push(buildRunSession(template, dayOfWeek, duration, ['support_run']));
+        sessions.push(buildRunSession(template, dayOfWeek, duration, ['support_run', template.id]));
       }
     }
 
     return sessions;
   },
 };
-

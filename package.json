@@ -4,7 +4,7 @@
   "description": "Nexus Hub — AI-powered creator operating system with multi-domain routing",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html && mkdir -p dist/services/coach-kernel && cp -R src/services/coach-kernel/knowledge dist/services/coach-kernel/knowledge",
+    "build": "tsc && cp src/portal/portal.html dist/portal/portal.html && cp src/portal/landing.html dist/portal/landing.html && rm -rf dist/services/coach-kernel/knowledge && mkdir -p dist/services/coach-kernel/knowledge && cp -R src/services/coach-kernel/knowledge/* dist/services/coach-kernel/knowledge/",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
@@ -12,6 +12,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
+    "eval:training": "npm run build && node dist/tools/training-eval-harness.js",
+    "smoke:training-calendar:staging": "npm run build && node dist/tools/training-calendar-staging-smoke.js",
+    "smoke:training-cross-skill:staging": "npm run build && node dist/tools/training-cross-skill-staging-smoke.js",
     "typecheck": "tsc --noEmit",
     "preflight:owner-bootstrap": "node dist/tools/owner-bootstrap-preflight.js --strict",
     "portal:session:mint": "node dist/tools/portal-session-token.js",

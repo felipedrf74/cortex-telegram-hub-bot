@@ -265,6 +265,11 @@ function emptyTrainingFlags(): TrainingContext['flags'] {
     lowAdherence: false,
     highAdherence: false,
     planDrift: false,
+    calendarConflict: false,
+    scheduleStale: false,
+    fuelingGap: false,
+    budgetConstraint: false,
+    contentCommitment: false,
     otherSportRpeToday: 0,
   };
 }

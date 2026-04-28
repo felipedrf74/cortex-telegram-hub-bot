@@ -55,7 +55,7 @@ describe('coach-kernel strength engine', () => {
     expect(exerciseIds).not.toContain('front_squat');
     expect(exerciseIds).not.toContain('pull_up');
     expect(exerciseIds).not.toContain('bench_press');
-    expect(session.exercises?.some((exercise) => (exercise.notes ?? '').includes('Adjusted from'))).toBe(true);
+    expect(exerciseIds.some((id) => id.startsWith('dumbbell_') || id === 'goblet_squat' || id === 'side_plank')).toBe(true);
   });
 
   it('uses hypertrophy-specific prescriptions when hypertrophy is the strength goal', () => {
@@ -78,12 +78,12 @@ describe('coach-kernel strength engine', () => {
     expect(sessionWithFrontSquat!.tags).toContain('hypertrophy');
     expect(sessionWithFrontSquat!.exercises?.length).toBeGreaterThanOrEqual(5);
     expect(mainLift).toMatchObject({
-      reps: '6-10',
+      reps: '6-12',
       rir: 1,
-      restSec: 90,
+      restSec: 105,
     });
     expect(mainLift!.sets).toBeGreaterThanOrEqual(3);
-    expect(mainLift!.sets).toBeLessThanOrEqual(4);
+    expect(mainLift!.sets).toBeLessThanOrEqual(5);
   });
 
   it('rotates four weekly strength sessions instead of cloning the same generic lift', () => {
@@ -134,7 +134,7 @@ describe('coach-kernel strength engine', () => {
     // gentler hypertrophy prescription.
     expect(noviceSquat).toMatchObject({ sets: 3, reps: '8-12', rir: 2 });
     // Advanced keeps the front squat with the heavier prescription.
-    expect(advancedSquat).toMatchObject({ sets: 4, reps: '6-10', rir: 1 });
+    expect(advancedSquat).toMatchObject({ sets: 5, reps: '6-12', rir: 1 });
     // Sanity: novices should NOT receive front_squat anywhere in any session.
     expect(noviceSessions.flatMap((s) => s.exercises ?? []).find((ex) => ex.exerciseId === 'front_squat')).toBeUndefined();
     // Note: advanced lifters DO receive goblet_squat as the canonical

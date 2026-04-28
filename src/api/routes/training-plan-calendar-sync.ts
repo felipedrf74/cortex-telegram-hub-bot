@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import * as trainingPlans from '../../services/training-plans';
-import { getEvents, type UnifiedCalendarEvent } from '../../services/unified-calendar';
+import { deleteEvent, getEvents, updateEvent, type CalendarSource, type UnifiedCalendarEvent } from '../../services/unified-calendar';
 import { isConnected } from '../../services/oauth-store';
 import {
   buildBusyWindows,
@@ -15,9 +15,17 @@ import { logger } from '../../utils/logger';
 import { isTrainingCalendarEventUnclaimed } from '../../services/training-calendar-scope';
 import {
   findExistingOwnership,
+  findReusableOwnershipBySessionIdentity,
   getPlanVersion,
+  markCalendarOwnershipDeleted,
   recordCalendarOwnership,
 } from '../../services/training-plan-lifecycle';
+import {
+  appendTrainingIdentityMarker,
+  buildTrainingSessionIdentityKey,
+  computeTrainingSessionShapeHash,
+  parseTrainingIdentityMarker,
+} from '../../services/training-session-identity';
 
 export type TrainingPlanCalendarSyncResult =
   | {
@@ -168,6 +176,8 @@ export async function syncTrainingPlanCalendar(
   // sessions, then verify existing calendar links against the provider.
   type SyncCandidate = {
     sessionId: number;
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
     dayOfWeek: string;
     sessionType: string;
     title: string;
@@ -176,14 +186,16 @@ export async function syncTrainingPlanCalendar(
     sessionDate: Date;
     calendarEventId: string | null;
     calendarSource: string | null;
+    staleLinkedEvent?: UnifiedCalendarEvent | null;
   };
   const candidates: SyncCandidate[] = [];
   const weeks = trainingPlans.getWeeksForPlan(plan.id);
   for (const week of weeks) {
     const sessions = trainingPlans.getSessionsForWeek(week.id);
+    const ordinals = new Map<string, number>();
     for (const session of sessions) {
       const status = String(session.status || '').toLowerCase();
-      if (status === 'completed' || status === 'skipped') continue;
+      if (status === 'completed' || status === 'skipped' || isInactiveScheduleStatus(status)) continue;
       const sessionType = String(session.session_type || '').toLowerCase();
       if (sessionType === 'rest') continue;
       const sessionDate = sessionDateFor(planStart, week.week_number, session.day_of_week);
@@ -194,8 +206,31 @@ export async function syncTrainingPlanCalendar(
       const todayStart = new Date(now);
       todayStart.setHours(0, 0, 0, 0);
       if (dayStart.getTime() < todayStart.getTime()) continue;
+      const ordinalKey = [
+        String(session.day_of_week || '').trim().toLowerCase(),
+        String(session.session_type || 'training').trim().toLowerCase(),
+      ].join('|');
+      const ordinal = (ordinals.get(ordinalKey) ?? 0) + 1;
+      ordinals.set(ordinalKey, ordinal);
+      const sessionIdentityKey = session.session_identity_key || buildTrainingSessionIdentityKey({
+        planId: plan.id,
+        weekNumber: week.week_number,
+        dayOfWeek: session.day_of_week,
+        sessionType: session.session_type || 'training',
+        ordinal,
+      });
+      const sessionShapeHash = session.session_shape_hash || computeTrainingSessionShapeHash({
+        sessionType: session.session_type || 'training',
+        title: session.title || 'Training session',
+        durationMinutes: session.duration_minutes || 60,
+        intensityText: session.intensity_text || null,
+        exercises: session.exercises_json || [],
+        descriptionSections: session.description_json || null,
+      });
       candidates.push({
         sessionId: session.id,
+        sessionIdentityKey,
+        sessionShapeHash,
         dayOfWeek: session.day_of_week,
         sessionType: session.session_type || 'training',
         title: session.title || 'Training session',
@@ -254,24 +289,51 @@ export async function syncTrainingPlanCalendar(
       planVersion,
       sessionId: item.sessionId,
     });
+    const reusableOwnership = existingOwnership
+      ? null
+      : findReusableOwnershipBySessionIdentity({
+        planId: plan.id,
+        userId,
+        sessionIdentityKey: item.sessionIdentityKey,
+        sessionShapeHash: item.sessionShapeHash,
+      });
+    const ownershipToRelink = existingOwnership ?? reusableOwnership;
 
-    if (!item.calendarEventId && existingOwnership) {
+    if (!item.calendarEventId && ownershipToRelink) {
       if (!calendarFetchSucceeded) {
         trainingPlans.linkSessionToCalendar(
           item.sessionId,
-          existingOwnership.calendar_event_id,
-          existingOwnership.calendar_source,
+          ownershipToRelink.calendar_event_id,
+          ownershipToRelink.calendar_source,
         );
         ownershipRelinked += 1;
         continue;
       }
 
       const ownedEvent = calendarEvents.find((event) =>
-        event.id === existingOwnership.calendar_event_id
-        && event.source === existingOwnership.calendar_source
+        event.id === ownershipToRelink.calendar_event_id
+        && event.source === ownershipToRelink.calendar_source
       );
-      if (ownedEvent && isMatchingGeneratedTrainingEvent(item, ownedEvent)) {
+      if (ownedEvent && isMatchingGeneratedTrainingEvent(item, ownedEvent, plan.id, { allowLegacyTitleMatch: true })) {
+        await updateSameShapeEventIfNeeded({
+          planId: plan.id,
+          planVersion,
+          item,
+          event: ownedEvent,
+          preferences,
+          userId,
+        });
         trainingPlans.linkSessionToCalendar(item.sessionId, ownedEvent.id, ownedEvent.source);
+        recordTrainingCalendarOwnership({
+          planId: plan.id,
+          planVersion,
+          sessionId: item.sessionId,
+          userId,
+          eventId: ownedEvent.id,
+          source: ownedEvent.source,
+          sessionIdentityKey: item.sessionIdentityKey,
+          sessionShapeHash: item.sessionShapeHash,
+        });
         ownershipRelinked += 1;
         const eventStart = new Date(ownedEvent.start);
         const eventEnd = new Date(ownedEvent.end);
@@ -298,7 +360,15 @@ export async function syncTrainingPlanCalendar(
     }
 
     const linkedEvent = findLinkedCalendarEvent(item, calendarEvents);
-    if (linkedEvent && isMatchingGeneratedTrainingEvent(item, linkedEvent)) {
+    if (linkedEvent && isMatchingGeneratedTrainingEvent(item, linkedEvent, plan.id, { allowLegacyTitleMatch: true })) {
+      await updateSameShapeEventIfNeeded({
+        planId: plan.id,
+        planVersion,
+        item,
+        event: linkedEvent,
+        preferences,
+        userId,
+      });
       recordTrainingCalendarOwnership({
         planId: plan.id,
         planVersion,
@@ -306,6 +376,8 @@ export async function syncTrainingPlanCalendar(
         userId,
         eventId: linkedEvent.id,
         source: linkedEvent.source,
+        sessionIdentityKey: item.sessionIdentityKey,
+        sessionShapeHash: item.sessionShapeHash,
       });
       alreadySynced += 1;
       const eventStart = new Date(linkedEvent.start);
@@ -321,7 +393,7 @@ export async function syncTrainingPlanCalendar(
       continue;
     }
 
-    pending.push(item);
+    pending.push({ ...item, staleLinkedEvent: linkedEvent });
     logger.warn(
       {
         userId,
@@ -359,7 +431,7 @@ export async function syncTrainingPlanCalendar(
   let firstError: Error | null = null;
 
   for (const item of pending) {
-    const existingEvent = consumeMatchingExistingTrainingEvent(item, calendarEvents, consumedExistingEventKeys);
+    const existingEvent = consumeMatchingExistingTrainingEvent(item, plan.id, calendarEvents, consumedExistingEventKeys);
     if (existingEvent) {
       trainingPlans.linkSessionToCalendar(item.sessionId, existingEvent.id, existingEvent.source);
       recordTrainingCalendarOwnership({
@@ -369,6 +441,8 @@ export async function syncTrainingPlanCalendar(
         userId,
         eventId: existingEvent.id,
         source: existingEvent.source,
+        sessionIdentityKey: item.sessionIdentityKey,
+        sessionShapeHash: item.sessionShapeHash,
       });
       sessionsLinked += 1;
       const eventStart = new Date(existingEvent.start);
@@ -380,6 +454,13 @@ export async function syncTrainingPlanCalendar(
           title: item.title,
         });
       }
+      await deleteStaleLinkedTrainingEvent({
+        userId,
+        planId: plan.id,
+        planVersion,
+        sessionId: item.sessionId,
+        staleEvent: item.staleLinkedEvent,
+      });
       continue;
     }
 
@@ -396,6 +477,26 @@ export async function syncTrainingPlanCalendar(
       busyWindows,
       scheduledWindows,
     );
+    if (window.noAvailableSlot) {
+      trainingPlans.updateSession(item.sessionId, {
+        status: 'unscheduled',
+        calendar_event_id: null,
+        calendar_source: null,
+      });
+      sessionsFailed += 1;
+      logger.warn(
+        {
+          userId,
+          planId: plan.id,
+          planVersion,
+          sessionId: item.sessionId,
+          title: item.title,
+          reason: window.unavailableReason,
+        },
+        'syncTrainingPlanCalendar: session left unscheduled because no valid calendar slot remained',
+      );
+      continue;
+    }
     scheduledWindows.push({
       startMs: window.start.getTime(),
       endMs: window.end.getTime(),
@@ -408,7 +509,13 @@ export async function syncTrainingPlanCalendar(
           title: `${emojiForTrainingSession(item.sessionType)} ${item.title} (${item.durationMinutes}min)`,
           start: window.start.toISOString(),
           end: window.end.toISOString(),
-          description: item.description,
+          description: appendTrainingIdentityMarker(item.description, {
+            planId: plan.id,
+            planVersion,
+            sessionId: item.sessionId,
+            sessionIdentityKey: item.sessionIdentityKey,
+            sessionShapeHash: item.sessionShapeHash,
+          }),
         },
         calendarSource,
         userId,
@@ -426,6 +533,15 @@ export async function syncTrainingPlanCalendar(
         userId,
         eventId: event.id,
         source: event.source,
+        sessionIdentityKey: item.sessionIdentityKey,
+        sessionShapeHash: item.sessionShapeHash,
+      });
+      await deleteStaleLinkedTrainingEvent({
+        userId,
+        planId: plan.id,
+        planVersion,
+        sessionId: item.sessionId,
+        staleEvent: item.staleLinkedEvent,
       });
       eventsCreated += 1;
     } catch (err) {
@@ -489,6 +605,65 @@ export async function syncTrainingPlanCalendar(
   };
 }
 
+async function deleteStaleLinkedTrainingEvent(input: {
+  userId: number;
+  planId: number;
+  planVersion: number;
+  sessionId: number;
+  staleEvent?: UnifiedCalendarEvent | null;
+}): Promise<void> {
+  const stale = input.staleEvent;
+  if (!stale || !stale.id || !isWritableCalendarSource(stale.source)) return;
+
+  try {
+    await deleteEvent(stale.id, stale.source, input.userId);
+    markCalendarOwnershipDeleted({
+      eventId: stale.id,
+      source: stale.source,
+      reason: 'training_sync_replaced_stale_event',
+      status: 'deleted',
+      userId: input.userId,
+      planId: input.planId,
+    });
+    logger.info(
+      {
+        userId: input.userId,
+        planId: input.planId,
+        planVersion: input.planVersion,
+        sessionId: input.sessionId,
+        staleEventId: stale.id,
+        source: stale.source,
+      },
+      'syncTrainingPlanCalendar: deleted stale linked calendar event after repair',
+    );
+  } catch (err) {
+    markCalendarOwnershipDeleted({
+      eventId: stale.id,
+      source: stale.source,
+      reason: 'training_sync_stale_event_delete_failed',
+      status: 'orphaned',
+      userId: input.userId,
+      planId: input.planId,
+    });
+    logger.warn(
+      {
+        err,
+        userId: input.userId,
+        planId: input.planId,
+        planVersion: input.planVersion,
+        sessionId: input.sessionId,
+        staleEventId: stale.id,
+        source: stale.source,
+      },
+      'syncTrainingPlanCalendar: failed to delete stale linked calendar event after repair',
+    );
+  }
+}
+
+function isWritableCalendarSource(value: unknown): value is CalendarSource {
+  return value === 'google' || value === 'outlook';
+}
+
 function recordTrainingCalendarOwnership(input: {
   planId: number;
   planVersion: number;
@@ -496,6 +671,8 @@ function recordTrainingCalendarOwnership(input: {
   userId: number;
   eventId: string;
   source: string;
+  sessionIdentityKey?: string | null;
+  sessionShapeHash?: string | null;
 }): void {
   const result = recordCalendarOwnership(input);
   if (!result.ok) {
@@ -524,18 +701,21 @@ function preferredTrainingCalendarSource(userId: number): 'google' | 'outlook' |
 
 function consumeMatchingExistingTrainingEvent(
   item: {
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
     sessionType: string;
     title: string;
     durationMinutes: number;
     sessionDate: Date;
   },
+  planId: number,
   events: UnifiedCalendarEvent[],
   consumedKeys: Set<string>,
 ): UnifiedCalendarEvent | null {
   for (const event of events) {
     const key = `${event.source}:${event.id}`;
     if (consumedKeys.has(key)) continue;
-    if (!isMatchingGeneratedTrainingEvent(item, event)) continue;
+    if (!isMatchingGeneratedTrainingEvent(item, event, planId, { allowLegacyTitleMatch: false })) continue;
     if (!isTrainingCalendarEventUnclaimed(event.id, event.source)) continue;
     consumedKeys.add(key);
     return event;
@@ -560,14 +740,26 @@ function findLinkedCalendarEvent(
 
 function isMatchingGeneratedTrainingEvent(
   item: {
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
     sessionType: string;
     title: string;
     durationMinutes: number;
     sessionDate: Date;
   },
   event: UnifiedCalendarEvent,
+  planId: number,
+  options: { allowLegacyTitleMatch: boolean },
 ): boolean {
   if (!event.id || (event.source !== 'google' && event.source !== 'outlook')) return false;
+  const marker = parseTrainingIdentityMarker(event.description);
+  if (marker?.sessionIdentityKey && marker?.sessionShapeHash) {
+    return marker.planId === planId
+      && marker.sessionIdentityKey === item.sessionIdentityKey
+      && marker.sessionShapeHash === item.sessionShapeHash;
+  }
+  if (!options.allowLegacyTitleMatch) return false;
+
   const expectedTitle = normalizeTrainingEventTitle(
     `${emojiForTrainingSession(item.sessionType)} ${item.title} (${item.durationMinutes}min)`,
   );
@@ -580,6 +772,109 @@ function isMatchingGeneratedTrainingEvent(
 
   const durationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
   return Math.abs(durationMinutes - item.durationMinutes) <= 2;
+}
+
+async function updateSameShapeEventIfNeeded(input: {
+  planId: number;
+  planVersion: number;
+  item: {
+    sessionId: number;
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
+    sessionType: string;
+    title: string;
+    durationMinutes: number;
+    sessionDate: Date;
+    description: string;
+  };
+  event: UnifiedCalendarEvent;
+  preferences: PlanPreferences;
+  userId: number;
+}): Promise<void> {
+  const { item, event, preferences, userId, planId, planVersion } = input;
+  if (!isWritableCalendarSource(event.source)) return;
+  const currentStart = new Date(event.start);
+  const currentEnd = new Date(event.end);
+  if (!Number.isFinite(currentStart.getTime()) || !Number.isFinite(currentEnd.getTime())) return;
+
+  const desired = preferredWindowForItem(item, preferences);
+  const currentDurationMinutes = Math.round((currentEnd.getTime() - currentStart.getTime()) / 60000);
+  const currentDate = currentStart.toISOString().slice(0, 10);
+  const desiredDate = desired.start.toISOString().slice(0, 10);
+  const startMatches = Math.abs(currentStart.getTime() - desired.start.getTime()) <= 2 * 60_000;
+  const durationMatches = Math.abs(currentDurationMinutes - item.durationMinutes) <= 2;
+  if (currentDate === desiredDate && startMatches && durationMatches) return;
+
+  try {
+    await updateEvent(
+      {
+        event_id: event.id,
+        new_title: `${emojiForTrainingSession(item.sessionType)} ${item.title} (${item.durationMinutes}min)`,
+        new_start: desired.start.toISOString(),
+        new_end: desired.end.toISOString(),
+        new_description: appendTrainingIdentityMarker(item.description, {
+          planId,
+          planVersion,
+          sessionId: item.sessionId,
+          sessionIdentityKey: item.sessionIdentityKey,
+          sessionShapeHash: item.sessionShapeHash,
+        }),
+      },
+      event.source,
+      userId,
+    );
+    logger.info(
+      {
+        userId,
+        eventId: event.id,
+        source: event.source,
+        currentDate,
+        desiredDate,
+        currentDurationMinutes,
+        desiredDurationMinutes: item.durationMinutes,
+      },
+      'syncTrainingPlanCalendar: updated same-shape training event after regeneration',
+    );
+  } catch (err) {
+    logger.warn(
+      { err, userId, eventId: event.id, source: event.source },
+      'syncTrainingPlanCalendar: failed to update same-shape training event; leaving existing event linked',
+    );
+  }
+}
+
+function isInactiveScheduleStatus(status: string): boolean {
+  return status === 'unscheduled'
+    || status === 'deferred'
+    || status === 'dropped'
+    || status === 'cancelled'
+    || status === 'superseded';
+}
+
+function preferredWindowForItem(
+  item: {
+    sessionType: string;
+    durationMinutes: number;
+    sessionDate: Date;
+  },
+  preferences: PlanPreferences,
+): { start: Date; end: Date } {
+  const preferredTime = preferredTimeForSessionType(
+    item.sessionType,
+    preferences.preferredTime,
+    preferences.preferredCardioTime,
+    preferences.preferredStrengthTime,
+  );
+  const [hour, minute] = preferredTime.split(':').map((value) => Number(value));
+  const start = new Date(item.sessionDate);
+  start.setHours(
+    Number.isFinite(hour) ? hour : 12,
+    Number.isFinite(minute) ? minute : 0,
+    0,
+    0,
+  );
+  const end = new Date(start.getTime() + item.durationMinutes * 60_000);
+  return { start, end };
 }
 
 function normalizeTrainingEventTitle(value: string | null | undefined): string {

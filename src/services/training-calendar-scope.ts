@@ -29,7 +29,7 @@ export function getTrainingCalendarEventOwners(
   try {
     const db = getDb();
     const normalizedSource = normalizeCalendarSource(source);
-    const rows = normalizedSource
+    const sessionRows = normalizedSource
       ? db.prepare(`
           SELECT
             ts.calendar_event_id AS eventId,
@@ -55,8 +55,36 @@ export function getTrainingCalendarEventOwners(
           JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
           WHERE ts.calendar_event_id = ?
         `).all(normalizedEventId);
+    const ownershipRows = normalizedSource
+      ? db.prepare(`
+          SELECT
+            o.calendar_event_id AS eventId,
+            o.calendar_source AS source,
+            COALESCE(o.session_id, 0) AS sessionId,
+            o.plan_id AS planId,
+            o.user_id AS userId,
+            o.status AS planStatus
+          FROM training_agenda_event_ownership o
+          WHERE o.calendar_event_id = ?
+            AND o.calendar_source = ?
+            AND o.status IN ('active', 'orphaned')
+        `).all(normalizedEventId, normalizedSource)
+      : db.prepare(`
+          SELECT
+            o.calendar_event_id AS eventId,
+            o.calendar_source AS source,
+            COALESCE(o.session_id, 0) AS sessionId,
+            o.plan_id AS planId,
+            o.user_id AS userId,
+            o.status AS planStatus
+          FROM training_agenda_event_ownership o
+          WHERE o.calendar_event_id = ?
+            AND o.status IN ('active', 'orphaned')
+        `).all(normalizedEventId);
 
-    return rows.map(normalizeOwnerRow).filter(Boolean) as TrainingCalendarEventOwner[];
+    return dedupeOwners(
+      [...sessionRows, ...ownershipRows].map(normalizeOwnerRow).filter(Boolean) as TrainingCalendarEventOwner[],
+    );
   } catch (err) {
     logger.debug({ err, eventId: normalizedEventId, source }, 'Training calendar scope lookup failed');
     return [];
@@ -83,7 +111,7 @@ export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike
   try {
     const db = getDb();
     const placeholders = eventIds.map(() => '?').join(',');
-    const rows = db.prepare(`
+    const sessionRows = db.prepare(`
       SELECT
         ts.calendar_event_id AS eventId,
         ts.calendar_source AS source,
@@ -95,9 +123,21 @@ export function filterCalendarEventsForTrainingScope<T extends CalendarEventLike
       JOIN fitness_training_plans ftp ON ftp.id = ts.plan_id
       WHERE ts.calendar_event_id IN (${placeholders})
     `).all(...eventIds);
+    const ownershipRows = db.prepare(`
+      SELECT
+        o.calendar_event_id AS eventId,
+        o.calendar_source AS source,
+        COALESCE(o.session_id, 0) AS sessionId,
+        o.plan_id AS planId,
+        o.user_id AS userId,
+        o.status AS planStatus
+      FROM training_agenda_event_ownership o
+      WHERE o.calendar_event_id IN (${placeholders})
+        AND o.status IN ('active', 'orphaned')
+    `).all(...eventIds);
 
     const ownersById = new Map<string, TrainingCalendarEventOwner[]>();
-    for (const rawRow of rows) {
+    for (const rawRow of [...sessionRows, ...ownershipRows]) {
       const owner = normalizeOwnerRow(rawRow);
       if (!owner) continue;
       const list = ownersById.get(owner.eventId) ?? [];
@@ -152,4 +192,23 @@ function normalizeOwnerRow(row: unknown): TrainingCalendarEventOwner | null {
     userId,
     planStatus: String(candidate.planStatus || '').toLowerCase(),
   };
+}
+
+function dedupeOwners(owners: TrainingCalendarEventOwner[]): TrainingCalendarEventOwner[] {
+  const seen = new Set<string>();
+  const result: TrainingCalendarEventOwner[] = [];
+  for (const owner of owners) {
+    const key = [
+      owner.eventId,
+      owner.source ?? '',
+      owner.sessionId,
+      owner.planId,
+      owner.userId,
+      owner.planStatus,
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(owner);
+  }
+  return result;
 }

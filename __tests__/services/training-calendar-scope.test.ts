@@ -103,6 +103,25 @@ describe('training-calendar-scope', () => {
     ]);
   });
 
+  it('treats ownership-table orphan rows as claimed so new plans do not adopt stale events', () => {
+    rows = [
+      {
+        eventId: 'evt-orphaned',
+        source: 'google',
+        sessionId: 0,
+        planId: 22,
+        userId: 30,
+        planStatus: 'orphaned',
+      },
+    ];
+
+    expect(isTrainingCalendarEventUnclaimed('evt-orphaned', 'google')).toBe(false);
+    expect(filterCalendarEventsForTrainingScope([
+      { id: 'evt-orphaned', source: 'google' },
+      { id: 'manual-workout', source: 'google' },
+    ], 30).map((event) => event.id)).toEqual(['manual-workout']);
+  });
+
   it('fails open if the database is unavailable so calendar reads still render', () => {
     mocks.getDb.mockImplementationOnce(() => {
       throw new Error('Database not initialized');

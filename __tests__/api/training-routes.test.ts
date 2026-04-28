@@ -179,7 +179,14 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
   findExistingOwnership: vi.fn(() => null),
   recordCalendarOwnership: vi.fn(() => ({ ok: true, created: true, ownershipId: 1 })),
   markCalendarOwnershipDeleted: vi.fn(() => ({ ok: true, rowsAffected: 1 })),
+  findOwnershipsForPlan: vi.fn(() => []),
   findOrphanedOwnerships: vi.fn(() => []),
+}));
+
+vi.mock('../../src/services/training-calendar-scope', () => ({
+  isTrainingCalendarEventUnclaimed: vi.fn(() => true),
+  getTrainingCalendarEventOwners: vi.fn(() => []),
+  filterCalendarEventsForTrainingScope: (events: unknown[]) => events,
 }));
 
 vi.mock('../../src/services/training-agenda-reconciliation', () => ({
@@ -286,8 +293,21 @@ async function dispatch(
   return res;
 }
 
+function resetTrainingOperationalEnvForTests(): void {
+  delete process.env.TRAINING_ENGINE_ENABLED;
+  delete process.env.TRAINING_ENGINE_DISABLED;
+  delete process.env.TRAINING_PLAN_GENERATION_ENABLED;
+  delete process.env.TRAINING_PLAN_GENERATION_DISABLED;
+  delete process.env.TRAINING_CALENDAR_WRITES_ENABLED;
+  delete process.env.TRAINING_CALENDAR_WRITES_DISABLED;
+  delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
+  delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
+}
+
 describe('Training API routes', () => {
   beforeEach(async () => {
+    resetTrainingOperationalEnvForTests();
+
     // Hardening audit 2026-04-20: reset the new calendar-lookup
     // coalescing cache between tests so a prior test's mocked
     // `getEvents` response doesn't leak into the next (the cache has
@@ -830,6 +850,34 @@ describe('Training API routes', () => {
     });
   });
 
+  it('blocks plan generation when the Training generation kill switch is disabled', async () => {
+    process.env.TRAINING_PLAN_GENERATION_ENABLED = 'false';
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Lisbon Marathon October 2026',
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('TRAINING_GENERATION_DISABLED');
+    expect(res.body.error.details).toEqual({ operation: 'plan_generation' });
+    expect(mockIsUserOverDailyCap).not.toHaveBeenCalled();
+    expect(mockBuildCoachKernelTrainingPlan).not.toHaveBeenCalled();
+  });
+
+  it('blocks calendar sync when the Training calendar kill switch is disabled', async () => {
+    process.env.TRAINING_CALENDAR_SYNC_DISABLED = '1';
+
+    const res = await dispatch('POST', '/plan/sync-calendar', {}, {});
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('TRAINING_CALENDAR_SYNC_DISABLED');
+    expect(res.body.error.details).toEqual({ operation: 'calendar_writes' });
+    expect(mockGetActivePlan).not.toHaveBeenCalled();
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+  });
+
   it('requires the running questionnaire before generating a marathon plan', async () => {
     mockGetProfile.mockImplementation((_userId: number, profile: string) => {
       if (profile === 'fitness') return { experienceLevel: 'Intermediate' };
@@ -929,6 +977,68 @@ describe('Training API routes', () => {
     expect(runStart.getTime()).toBeLessThan(gymStart.getTime());
     expect((gymStart.getTime() - runStart.getTime()) / 60000).toBeGreaterThanOrEqual(300);
     expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(12);
+  });
+
+  it('returns profile quality and decision reasons from the generated plan payload', async () => {
+    mockGetProfile.mockImplementation((_userId: number, profile: string) => {
+      if (profile === 'fitness') return { experienceLevel: 'Intermediate', available_equipment: 'Full gym' };
+      if (profile === 'triathlon-running') return { target_race: 'Half marathon' };
+      return null;
+    });
+    mockBuildCoachKernelTrainingPlan.mockReturnValue({
+      ...makeKernelPlan(),
+      profileQuality: {
+        completenessScore: 0.66,
+        confidenceScore: 0.61,
+        missingCriticalFields: ['available_duration'],
+        followUpPrompts: [
+          {
+            id: 'training.followup.available_duration',
+            field: 'available_duration',
+            prompt: 'How long can your weekday sessions realistically be?',
+            reason: 'Duration is needed to avoid overfilling your week.',
+            priority: 'high',
+          },
+        ],
+      },
+      decisionReasons: [
+        {
+          code: 'schedule_compressed',
+          message: 'Compressed because only one valid training window was available.',
+          severity: 'info',
+          source: 'capacity_reconciliation',
+          affectedEntity: { type: 'week', id: 'week-1' },
+          evidence: { beforeMinutes: 45, afterMinutes: 25 },
+        },
+      ],
+    });
+
+    const res = await dispatch('POST', '/plan/generate', {}, {
+      objective: 'Half marathon with limited weekday time',
+      sessionsPerWeek: 4,
+      strengthSessionsPerWeek: 1,
+      preferredTime: '07:00',
+    });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.profileQuality).toEqual(expect.objectContaining({
+      completenessScore: 0.66,
+      confidenceScore: 0.61,
+      missingCriticalFields: ['available_duration'],
+    }));
+    expect(res.body.data.profileQuality.followUpPrompts).toEqual([
+      expect.objectContaining({
+        id: 'training.followup.available_duration',
+        field: 'available_duration',
+      }),
+    ]);
+    expect(res.body.data.decisionReasons).toEqual([
+      expect.objectContaining({
+        code: 'schedule_compressed',
+        source: 'capacity_reconciliation',
+      }),
+    ]);
   });
 
   it('marks a session as skipped and returns updated weekly adherence', async () => {

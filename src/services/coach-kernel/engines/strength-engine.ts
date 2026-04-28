@@ -35,6 +35,7 @@ import {
   getExercisePrimaryPurpose,
   getExerciseSpinalLoading,
 } from '../exercise-metadata';
+import { logger } from '../../../utils/logger';
 
 type StrengthProfile = 'maintenance' | 'hypertrophy' | 'max_strength' | 'athletic';
 type StrengthExperience = AthleteState['profile']['experienceLevel'];
@@ -81,6 +82,9 @@ function availableEquipment(athlete: AthleteState): Set<string> {
     equipment.add('kettlebells');
     equipment.add('dumbbells');
     equipment.add('barbell');
+    equipment.add('leg_press');
+    equipment.add('cable_stack');
+    equipment.add('chest_press_machine');
   }
   if (athlete.equipment.hasBarbell) equipment.add('barbell');
   if (athlete.equipment.hasDumbbells) equipment.add('dumbbells');
@@ -133,6 +137,16 @@ function prescriptionFor(
   const mainPattern = ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern);
   const accessoryPattern = ['single_leg', 'carry'].includes(exercise.movementPattern);
   const supportPattern = exercise.movementPattern === 'core' || exercise.movementPattern === 'mobility';
+  const purpose = getExercisePrimaryPurpose(exercise);
+
+  if (purpose === 'power') {
+    return {
+      sets: experience === 'advanced' ? 5 : 4,
+      reps: '3-6',
+      rir: 3,
+      restSec: 105,
+    };
+  }
 
   switch (profile) {
     case 'maintenance': {
@@ -145,21 +159,21 @@ function prescriptionFor(
       };
     }
     case 'hypertrophy': {
-      const sets = supportPattern ? 3 : experience === 'advanced' && mainPattern ? 4 : 3;
+      const sets = supportPattern ? 3 : experience === 'novice' ? 3 : experience === 'advanced' && mainPattern ? 5 : mainPattern ? 4 : 3;
       return {
         sets,
-        reps: supportPattern ? '10-15' : experience === 'novice' ? '8-12' : '6-10',
+        reps: supportPattern ? '10-15' : accessoryPattern ? '10-15' : experience === 'novice' ? '8-12' : '6-12',
         rir: experience === 'novice' ? 2 : 1,
-        restSec: mainPattern ? 90 : 60,
+        restSec: mainPattern ? 105 : 60,
       };
     }
     case 'max_strength': {
-      const sets = mainPattern ? (experience === 'novice' ? 3 : 4) : 3;
+      const sets = mainPattern ? (experience === 'novice' ? 3 : experience === 'advanced' ? 5 : 4) : 3;
       return {
         sets,
         reps: mainPattern ? (experience === 'novice' ? '5-6' : '3-5') : '6-10',
         rir: experience === 'novice' ? 3 : 2,
-        restSec: mainPattern ? 120 : 75,
+        restSec: mainPattern ? 150 : 75,
       };
     }
     default: {
@@ -172,6 +186,21 @@ function prescriptionFor(
       };
     }
   }
+}
+
+function compactPrescriptionForWindow(
+  prescription: Omit<ExercisePrescription, 'exerciseId' | 'name' | 'notes'>,
+  exercise: Exercise,
+  durationMinutes: number,
+): Omit<ExercisePrescription, 'exerciseId' | 'name' | 'notes'> {
+  if (durationMinutes >= 30) return prescription;
+
+  const mainPattern = ['squat', 'hinge', 'push', 'pull'].includes(exercise.movementPattern);
+  return {
+    ...prescription,
+    sets: Math.min(prescription.sets, 2),
+    restSec: Math.min(prescription.restSec ?? (mainPattern ? 60 : 45), mainPattern ? 60 : 45),
+  };
 }
 
 /**
@@ -208,6 +237,14 @@ const BEGINNER_SAFE_SUBSTITUTIONS: Record<string, string> = {
   pull_up: 'lat_pulldown',
   romanian_deadlift: 'hip_hinge_band',
   single_leg_rdl: 'split_squat',
+  leg_press: 'bodyweight_squat',
+  machine_chest_press: 'dumbbell_floor_press',
+  incline_dumbbell_press: 'dumbbell_floor_press',
+  seated_cable_row: 'band_row',
+  cable_pull_through: 'glute_bridge',
+  dumbbell_overhead_press: 'push_up',
+  dumbbell_reverse_lunge: 'lunging_iso_hold',
+  kettlebell_swing: 'hip_hinge_band',
 };
 
 function applyBeginnerSubstitutions(
@@ -281,47 +318,93 @@ function strengthVariantFor(
   const slot = (Math.max(0, index) + safeWeekShift) % variantCount;
 
   if (targetSessions >= 4) {
-    const variants: StrengthVariant[] = [
-      {
-        title: `Lower Body ${profileTitle} A`,
-        exerciseIds: ['front_squat', 'romanian_deadlift', 'split_squat', 'dead_bug', 'farmer_carry'],
-        tags: ['lower_body', 'posterior_chain', 'core'],
-      },
-      {
-        title: `Upper Body ${profileTitle} A`,
-        exerciseIds: ['bench_press', 'pull_up', 'one_arm_dumbbell_row', 'push_up', 'hollow_hold'],
-        tags: ['upper_body', 'push', 'pull'],
-      },
-      {
-        title: `Lower Body ${profileTitle} B`,
-        exerciseIds: ['goblet_squat', 'single_leg_rdl', 'lunging_iso_hold', 'hip_hinge_band', 'bear_crawl'],
-        tags: ['lower_body', 'single_leg', 'core'],
-      },
-      {
-        title: `Upper Body ${profileTitle} B`,
-        exerciseIds: ['lat_pulldown', 'dumbbell_bench_press', 'one_arm_dumbbell_row', 'suitcase_carry', 'dead_bug'],
-        tags: ['upper_body', 'pull', 'carry'],
-      },
-    ];
+    const variants: StrengthVariant[] = profile === 'hypertrophy'
+      ? [
+          {
+            title: 'Lower Hypertrophy - Quad Bias',
+            exerciseIds: ['front_squat', 'dumbbell_reverse_lunge', 'leg_press', 'calf_raise', 'pallof_press'],
+            tags: ['lower_body', 'quad_bias', 'hypertrophy', 'core'],
+          },
+          {
+            title: 'Upper Hypertrophy - Push/Pull',
+            exerciseIds: ['incline_dumbbell_press', 'seated_cable_row', 'dumbbell_overhead_press', 'lat_pulldown', 'plank'],
+            tags: ['upper_body', 'push', 'pull', 'hypertrophy'],
+          },
+          {
+            title: 'Lower Hypertrophy - Posterior Chain',
+            exerciseIds: ['romanian_deadlift', 'dumbbell_hip_thrust', 'single_leg_rdl', 'cable_pull_through', 'dead_bug'],
+            tags: ['lower_body', 'posterior_chain', 'hypertrophy', 'carry'],
+          },
+          {
+            title: 'Upper Hypertrophy - Pull/Trunk',
+            exerciseIds: ['pull_up', 'machine_chest_press', 'seated_cable_row', 'suitcase_carry', 'side_plank'],
+            tags: ['upper_body', 'pull', 'trunk', 'hypertrophy'],
+          },
+        ]
+      : profile === 'max_strength'
+        ? [
+            {
+              title: 'Lower Max Strength - Squat/Hinge',
+              exerciseIds: ['front_squat', 'romanian_deadlift', 'split_squat', 'dead_bug', 'farmer_carry'],
+              tags: ['lower_body', 'max_strength', 'posterior_chain', 'core'],
+            },
+            {
+              title: 'Upper Max Strength - Press/Pull',
+              exerciseIds: ['bench_press', 'pull_up', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'side_plank'],
+              tags: ['upper_body', 'max_strength', 'push', 'pull'],
+            },
+            {
+              title: 'Lower Strength Support - Unilateral',
+              exerciseIds: ['goblet_squat', 'single_leg_rdl', 'dumbbell_reverse_lunge', 'glute_bridge', 'bear_crawl'],
+              tags: ['lower_body', 'single_leg', 'support', 'core'],
+            },
+            {
+              title: 'Upper Strength Support - Volume',
+              exerciseIds: ['lat_pulldown', 'dumbbell_bench_press', 'inverted_row', 'suitcase_carry', 'hollow_hold'],
+              tags: ['upper_body', 'support', 'pull', 'carry'],
+            },
+          ]
+        : [
+            {
+              title: `Lower Body ${profileTitle} A`,
+              exerciseIds: ['front_squat', 'romanian_deadlift', 'split_squat', 'dead_bug', 'farmer_carry'],
+              tags: ['lower_body', 'posterior_chain', 'core'],
+            },
+            {
+              title: `Upper Body ${profileTitle} A`,
+              exerciseIds: ['bench_press', 'pull_up', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'hollow_hold'],
+              tags: ['upper_body', 'push', 'pull'],
+            },
+            {
+              title: `Lower Body ${profileTitle} B`,
+              exerciseIds: ['kettlebell_swing', 'goblet_squat', 'single_leg_rdl', 'lunging_iso_hold', 'bear_crawl'],
+              tags: ['lower_body', 'power', 'single_leg', 'core'],
+            },
+            {
+              title: `Upper Body ${profileTitle} B`,
+              exerciseIds: ['lat_pulldown', 'dumbbell_bench_press', 'inverted_row', 'suitcase_carry', 'side_plank'],
+              tags: ['upper_body', 'pull', 'carry'],
+            },
+          ];
     return variants[slot] ?? variants[0];
   }
 
   if (targetSessions === 3) {
     const variants: StrengthVariant[] = [
       {
-        title: `Full Body ${profileTitle} A`,
-        exerciseIds: ['front_squat', 'bench_press', 'romanian_deadlift', 'pull_up', 'dead_bug'],
-        tags: ['full_body', 'core'],
+        title: `Full Body ${profileTitle} - Squat/Press`,
+        exerciseIds: ['front_squat', 'dumbbell_bench_press', 'romanian_deadlift', 'pull_up', 'side_plank'],
+        tags: ['full_body', 'squat', 'push', 'core'],
       },
       {
-        title: `Lower Body + Core ${profileTitle}`,
-        exerciseIds: ['goblet_squat', 'single_leg_rdl', 'split_squat', 'farmer_carry', 'hollow_hold'],
-        tags: ['lower_body', 'core'],
+        title: `Lower + Posterior Chain ${profileTitle}`,
+        exerciseIds: ['goblet_squat', 'single_leg_rdl', 'dumbbell_reverse_lunge', 'farmer_carry', 'pallof_press'],
+        tags: ['lower_body', 'posterior_chain', 'single_leg', 'core'],
       },
       {
-        title: `Upper Body + Trunk ${profileTitle}`,
-        exerciseIds: ['pull_up', 'dumbbell_bench_press', 'one_arm_dumbbell_row', 'push_up', 'bear_crawl'],
-        tags: ['upper_body', 'trunk'],
+        title: `Upper + Athletic Trunk ${profileTitle}`,
+        exerciseIds: ['pull_up', 'dumbbell_overhead_press', 'one_arm_dumbbell_row', 'push_up', 'plank'],
+        tags: ['upper_body', 'trunk', 'push', 'pull'],
       },
     ];
     return variants[slot] ?? variants[0];
@@ -330,14 +413,14 @@ function strengthVariantFor(
   if (targetSessions === 2) {
     const variants: StrengthVariant[] = [
       {
-        title: `Full Body ${profileTitle} A`,
-        exerciseIds: ['front_squat', 'bench_press', 'romanian_deadlift', 'pull_up', 'dead_bug'],
-        tags: ['full_body', 'main_lifts'],
+        title: `Full Body ${profileTitle} - Main Lifts`,
+        exerciseIds: ['front_squat', 'dumbbell_bench_press', 'romanian_deadlift', 'pull_up', 'pallof_press'],
+        tags: ['full_body', 'main_lifts', 'squat', 'hinge'],
       },
       {
-        title: `Full Body ${profileTitle} B`,
-        exerciseIds: ['goblet_squat', 'dumbbell_bench_press', 'single_leg_rdl', 'one_arm_dumbbell_row', 'suitcase_carry'],
-        tags: ['full_body', 'accessory'],
+        title: `Full Body ${profileTitle} - Unilateral Support`,
+        exerciseIds: ['goblet_squat', 'dumbbell_overhead_press', 'single_leg_rdl', 'band_row', 'suitcase_carry'],
+        tags: ['full_body', 'accessory', 'single_leg', 'trunk'],
       },
     ];
     return variants[slot] ?? variants[0];
@@ -350,6 +433,41 @@ function strengthVariantFor(
   };
 }
 
+function isLimitedStrengthSetup(athlete: AthleteState): boolean {
+  const equipmentNotes = (athlete.equipment.notes ?? []).join(' ').toLowerCase();
+  const constraintNotes = athlete.constraints.map((constraint) => constraint.description).join(' ').toLowerCase();
+  return !athlete.equipment.hasGym
+    || /hotel|travel|limited equipment|home/.test(`${equipmentNotes} ${constraintNotes}`);
+}
+
+function limitedEquipmentVariantFor(
+  profile: StrengthProfile,
+  targetSessions: number,
+  index: number,
+  weekIndex: number,
+): StrengthVariant | null {
+  const slot = (Math.max(0, index) + Math.max(0, weekIndex)) % Math.max(1, Math.min(targetSessions, 3));
+  const label = profile === 'hypertrophy' ? 'Hypertrophy' : profile === 'max_strength' ? 'Strength' : 'Strength';
+  const variants: StrengthVariant[] = [
+    {
+      title: `Limited Equipment ${label} - Squat/Push`,
+      exerciseIds: ['goblet_squat', 'dumbbell_bench_press', 'one_arm_dumbbell_row', 'glute_bridge', 'side_plank'],
+      tags: ['limited_equipment', 'hotel_gym', 'full_body', 'squat', 'push'],
+    },
+    {
+      title: `Limited Equipment ${label} - Hinge/Pull`,
+      exerciseIds: ['single_leg_rdl', 'one_arm_dumbbell_row', 'split_squat', 'pallof_press', 'suitcase_carry'],
+      tags: ['limited_equipment', 'hotel_gym', 'full_body', 'hinge', 'pull'],
+    },
+    {
+      title: `Limited Equipment ${label} - Density`,
+      exerciseIds: ['bodyweight_squat', 'push_up', 'lateral_lunge', 'band_row', 'plank'],
+      tags: ['limited_equipment', 'hotel_gym', 'short_session', 'minimum_effective_dose'],
+    },
+  ];
+  return variants[slot] ?? null;
+}
+
 function templateTitleForProfile(profile: StrengthProfile): string {
   if (profile === 'hypertrophy') return 'Full Body Hypertrophy';
   if (profile === 'max_strength') return 'Full Body Strength';
@@ -359,7 +477,10 @@ function templateTitleForProfile(profile: StrengthProfile): string {
 
 function templateExerciseFallback(profile: StrengthProfile): string[] {
   if (profile === 'maintenance') {
-    return ['split_squat', 'bench_press', 'pull_up', 'dead_bug', 'hip_hinge_band'];
+    return ['bodyweight_squat', 'dumbbell_floor_press', 'band_row', 'pallof_press', 'hip_hinge_band'];
+  }
+  if (profile === 'hypertrophy') {
+    return ['goblet_squat', 'dumbbell_floor_press', 'band_row', 'glute_bridge', 'side_plank'];
   }
   return ['front_squat', 'romanian_deadlift', 'pull_up', 'bench_press', 'dead_bug'];
 }
@@ -433,7 +554,11 @@ function resolveExercises(
       const resolved = resolveExerciseCandidate(exerciseId, libraryById, equipment, usedIds);
       if (!resolved) return null;
       usedIds.add(resolved.id);
-      const prescription = prescriptionFor(resolved, profile, experience);
+      const prescription = compactPrescriptionForWindow(
+        prescriptionFor(resolved, profile, experience),
+        resolved,
+        durationMinutes,
+      );
       return {
         exerciseId: resolved.id,
         name: resolved.name,
@@ -454,9 +579,23 @@ function resolveExercises(
   if (prescriptions.length >= targetCount) return prescriptions.slice(0, targetCount);
 
   const fillerIds = [
+    'bodyweight_squat',
+    'pallof_press',
+    'plank',
+    'band_row',
+    'leg_press',
+    'seated_cable_row',
+    'machine_chest_press',
+    'cable_pull_through',
+    'dumbbell_hip_thrust',
+    'dumbbell_overhead_press',
+    'glute_bridge',
+    'dumbbell_floor_press',
     'push_up',
     'hip_hinge_band',
+    'calf_raise',
     'lunging_iso_hold',
+    'side_plank',
     'hollow_hold',
     'bear_crawl',
     'sandbag_hold',
@@ -468,7 +607,11 @@ function resolveExercises(
     const filler = libraryById.get(fillerId);
     if (!filler || usedIds.has(filler.id) || !canPerformExercise(filler, equipment)) continue;
     usedIds.add(filler.id);
-    const prescription = prescriptionFor(filler, profile, experience);
+    const prescription = compactPrescriptionForWindow(
+      prescriptionFor(filler, profile, experience),
+      filler,
+      durationMinutes,
+    );
     prescriptions.push({
       exerciseId: filler.id,
       name: filler.name,
@@ -744,7 +887,21 @@ export function repairUnderfilledStrengthSession(
     prescriptions,
     context.athlete,
     context.knowledge.exercises,
+    {
+      durationMinutes: session.durationMinutes,
+      sessionRole: session.tags.join(' '),
+    },
   );
+  if (safetyResult.swappedFromIds.length > 0 || safetyResult.unresolvedConflictIds.length > 0) {
+    logger.debug({
+      athleteId: context.athlete.profile.athleteId,
+      sessionId: session.id,
+      sessionType: session.sessionType,
+      surface: 'coherence_rebuild',
+      swappedFromIds: safetyResult.swappedFromIds,
+      unresolvedConflictIds: safetyResult.unresolvedConflictIds,
+    }, 'coach-kernel strength safety substitutions evaluated');
+  }
   prescriptions = orderExercisesForSession(
     safetyResult.prescriptions,
     context.knowledge.exercises,
@@ -858,13 +1015,39 @@ function applyCoherenceGate(
   const verdict = validateSessionCoherence(session, context.knowledge);
   if (verdict.ok) return session;
 
+  logger.debug({
+    athleteId: context.athlete.profile.athleteId,
+    sessionId: session.id,
+    sessionType: session.sessionType,
+    reason: verdict.reason,
+    claimedMinutes: verdict.claimedMinutes,
+    estimatedMinutes: verdict.estimatedMinutes,
+    deviationPct: verdict.deviationPct,
+  }, 'coach-kernel strength session coherence adjustment required');
+
   if (verdict.reason === 'underfilled') {
     const repaired = repairUnderfilledStrengthSession(session, template, context);
     const repairedVerdict = validateSessionCoherence(repaired, context.knowledge);
-    if (repairedVerdict.ok) return repaired;
+    if (repairedVerdict.ok) {
+      logger.debug({
+        athleteId: context.athlete.profile.athleteId,
+        sessionId: repaired.id,
+        sessionType: repaired.sessionType,
+        claimedMinutes: repairedVerdict.claimedMinutes,
+        estimatedMinutes: repairedVerdict.estimatedMinutes,
+        exerciseCount: repaired.exercises?.length ?? 0,
+      }, 'coach-kernel strength session coherence repaired');
+      return repaired;
+    }
   }
 
   const correction = suggestCorrection(verdict, session);
+  logger.debug({
+    athleteId: context.athlete.profile.athleteId,
+    sessionId: session.id,
+    sessionType: session.sessionType,
+    correction: correction.type,
+  }, 'coach-kernel strength session coherence fallback selected');
 
   switch (correction.type) {
     case 'accept':
@@ -932,7 +1115,10 @@ export const strengthEngine: SportEngine = {
 
     return days.slice(0, targetSessions).map((dayOfWeek, index) => {
       const durationMinutes = resolveDurationForDay(template, context.athlete, dayOfWeek);
-      const baseVariant = strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation);
+      const baseVariant = isLimitedStrengthSetup(context.athlete)
+        ? limitedEquipmentVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation)
+          ?? strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation)
+        : strengthVariantFor(strengthProfile, targetSessions, index, weekIndexForRotation);
       // Slice 2.A — beginner substitutions are applied to the variant
       // BEFORE equipment-aware resolution so the substituted exercise
       // (e.g. goblet_squat) still picks up its own equipment fallback
@@ -956,7 +1142,21 @@ export const strengthEngine: SportEngine = {
         baseExercises,
         context.athlete,
         context.knowledge.exercises,
+        {
+          durationMinutes,
+          sessionRole: variant.tags.join(' '),
+        },
       );
+      if (safetyResult.swappedFromIds.length > 0 || safetyResult.unresolvedConflictIds.length > 0) {
+        logger.debug({
+          athleteId: context.athlete.profile.athleteId,
+          sessionType,
+          dayOfWeek,
+          surface: 'initial_resolution',
+          swappedFromIds: safetyResult.swappedFromIds,
+          unresolvedConflictIds: safetyResult.unresolvedConflictIds,
+        }, 'coach-kernel strength safety substitutions evaluated');
+      }
       // Slice 4.H — sort the prescription list compound→accessory→
       // core→mobility so the heaviest work hits while the user is
       // freshest. Stable within each phase.
@@ -971,10 +1171,12 @@ export const strengthEngine: SportEngine = {
         durationMinutes,
         exercises,
         maintenance
-          ? ['maintenance', 'lower_body', 'core']
+          ? ['maintenance']
           : strengthProfile === 'hypertrophy'
-            ? ['hypertrophy', 'full_body', 'lower_body', 'core']
-            : ['full_body', 'lower_body', 'core'],
+            ? ['hypertrophy']
+            : strengthProfile === 'max_strength'
+              ? ['max_strength']
+              : ['athletic_strength'],
       );
       // Slice 4.A — gate the produced session through the coherence
       // validator. Sessions whose claimed duration doesn't match

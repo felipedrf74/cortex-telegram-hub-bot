@@ -42,12 +42,26 @@ import {
   publishLowReadiness,
   publishTrainingSessionScheduled,
   publishCalendarConflict,
+  publishTrainingScheduleStale,
+  publishFuelingGapRisk,
+  publishTrainingBudgetConstraint,
   readTrainingContext,
   readScheduledTrainingSessions,
   consumeSignal,
   formatTrainingContextForPrompt,
   TRAINING_SOURCE,
 } from '../../src/services/training-signals';
+
+function resetTrainingOperationalEnvForTests(): void {
+  delete process.env.TRAINING_ENGINE_ENABLED;
+  delete process.env.TRAINING_ENGINE_DISABLED;
+  delete process.env.TRAINING_CROSS_SKILL_SIGNALS_ENABLED;
+  delete process.env.TRAINING_CROSS_SKILL_SIGNALS_DISABLED;
+}
+
+beforeEach(() => {
+  resetTrainingOperationalEnvForTests();
+});
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -100,6 +114,16 @@ describe('per-user signal isolation', () => {
     const row = testDb.prepare('SELECT user_id, signal_type FROM agent_signals WHERE id = ?').get(id) as any;
     expect(row.user_id).toBe(101);
     expect(row.signal_type).toBe('running_load_today');
+  });
+
+  it('publishSessionLoad honors the cross-skill signal kill switch', () => {
+    process.env.TRAINING_CROSS_SKILL_SIGNALS_ENABLED = 'false';
+
+    const id = publishSessionLoad({ userId: 101, sport: 'running', rpe: 7, distance_km: 10 });
+
+    expect(id).toBe(-1);
+    const count = testDb.prepare('SELECT COUNT(*) AS count FROM agent_signals').get() as { count: number };
+    expect(count.count).toBe(0);
   });
 
   it('user A signals do not leak to user B', () => {
@@ -284,6 +308,60 @@ describe('signal C — calendar conflict detection', () => {
 
     const row = testDb.prepare('SELECT priority FROM agent_signals WHERE id = ?').get(conflictId) as any;
     expect(row.priority).toBe('urgent');
+    const ctx = readTrainingContext({ userId: 603, sport: 'running' });
+    expect(ctx.flags.calendarConflict).toBe(true);
+  });
+
+  it('schedule stale signals tell sport coaches to reflow before showing old sessions', () => {
+    const id = publishTrainingScheduleStale({
+      userId: 604,
+      reason: 'Availability changed after Secretary moved the hard session',
+      affectedSessionIds: ['session-1'],
+      dates: ['2026-04-16'],
+    });
+    expect(id).toBeGreaterThan(0);
+
+    const ctx = readTrainingContext({ userId: 604, sport: 'gym' });
+    expect(ctx.flags.scheduleStale).toBe(true);
+    const block = formatTrainingContextForPrompt(ctx, 'gym');
+    expect(block).toContain('TRAINING SCHEDULE STALE');
+    expect(block).toContain('Availability changed');
+    expect(block).toContain('resync');
+  });
+
+  it('cooking fueling gap risk is consumed as one deduped Training input', () => {
+    publishFuelingGapRisk({
+      userId: 605,
+      hardDatesMissingMeals: ['2026-04-17'],
+      trainingDatesMissingMeals: ['2026-04-17', '2026-04-18'],
+      status: 'at_risk',
+    });
+    const ctx = readTrainingContext({ userId: 605, sport: 'running' });
+
+    expect(ctx.flags.fuelingGap).toBe(true);
+    const block = formatTrainingContextForPrompt(ctx, 'running');
+    expect(block).toContain('FUELING GAP');
+    expect(block).toContain('2026-04-17');
+    expect(block).toContain('do not repeat generic fueling warnings');
+    expect(block.match(/FUELING GAP/g)).toHaveLength(1);
+  });
+
+  it('finance budget constraints steer Training away from paid gear/subscription asks', () => {
+    publishTrainingBudgetConstraint({
+      userId: 606,
+      month: '2026-04',
+      budgetMode: 'tight',
+      trainingSpendMode: 'minimum_effective_dose',
+      supplementMode: 'pause',
+      remainingRatio: 0.06,
+    });
+    const ctx = readTrainingContext({ userId: 606, sport: 'gym' });
+
+    expect(ctx.flags.budgetConstraint).toBe(true);
+    const block = formatTrainingContextForPrompt(ctx, 'gym');
+    expect(block).toContain('FINANCE CONSTRAINT');
+    expect(block).toContain('minimum_effective_dose');
+    expect(block).toContain('Avoid paid gear');
   });
 });
 
@@ -363,5 +441,7 @@ describe('TRAINING_SOURCE constants', () => {
     expect(TRAINING_SOURCE.SWIM_COACH).toBe('triathlon.swim');
     expect(TRAINING_SOURCE.WELLNESS_SYNC).toBe('garmin.sync');
     expect(TRAINING_SOURCE.SECRETARY_CALENDAR).toBe('secretary.calendar');
+    expect(TRAINING_SOURCE.COOKING_FUELING).toBe('cooking.fueling');
+    expect(TRAINING_SOURCE.FINANCE_PLANNING).toBe('finance.training');
   });
 });

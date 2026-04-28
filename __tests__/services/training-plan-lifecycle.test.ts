@@ -62,6 +62,7 @@ import {
   findOrphanedOwnerships,
   findOwnershipsForPlan,
   findOwnershipsNeedingReconciliation,
+  findReusableOwnershipBySessionIdentity,
   getPlanVersion,
   incrementPlanVersion,
   markCalendarOwnershipDeleted,
@@ -118,6 +119,8 @@ describe('training-plan-lifecycle — migration 081', () => {
     expect(names.has('user_id')).toBe(true);
     expect(names.has('calendar_event_id')).toBe(true);
     expect(names.has('calendar_source')).toBe(true);
+    expect(names.has('session_identity_key')).toBe(true);
+    expect(names.has('session_shape_hash')).toBe(true);
     expect(names.has('status')).toBe(true);
     expect(names.has('created_at')).toBe(true);
     expect(names.has('deleted_at')).toBe(true);
@@ -328,6 +331,18 @@ describe('training-plan-lifecycle — findOrphanedOwnerships', () => {
     const orphans = findOrphanedOwnerships(100);
     expect(orphans.length).toBe(0);
   });
+
+  it('does not treat an existing unlinked session as an orphan while sync can still relink it', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-1', source: 'google',
+    });
+
+    const orphans = findOrphanedOwnerships(100);
+
+    expect(orphans.length).toBe(0);
+  });
 });
 
 describe('training-plan-lifecycle — findOwnershipsNeedingReconciliation', () => {
@@ -427,6 +442,55 @@ describe('training-plan-lifecycle — findExistingOwnership', () => {
   });
 });
 
+describe('training-plan-lifecycle — findReusableOwnershipBySessionIdentity', () => {
+  it('finds reusable active ownership by logical identity and shape across plan versions', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      userId: 100,
+      eventId: 'evt-same-shape',
+      source: 'google',
+      sessionIdentityKey: 'plan:1|week:1|day:monday|type:gym|slot:1',
+      sessionShapeHash: 'shape-a',
+    });
+
+    const found = findReusableOwnershipBySessionIdentity({
+      planId: 1,
+      userId: 100,
+      sessionIdentityKey: 'plan:1|week:1|day:monday|type:gym|slot:1',
+      sessionShapeHash: 'shape-a',
+    });
+
+    expect(found).not.toBeNull();
+    expect(found!.calendar_event_id).toBe('evt-same-shape');
+  });
+
+  it('does not reuse ownership when the material shape changed', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    recordCalendarOwnership({
+      planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      userId: 100,
+      eventId: 'evt-old-shape',
+      source: 'google',
+      sessionIdentityKey: 'plan:1|week:1|day:monday|type:gym|slot:1',
+      sessionShapeHash: 'shape-old',
+    });
+
+    expect(findReusableOwnershipBySessionIdentity({
+      planId: 1,
+      userId: 100,
+      sessionIdentityKey: 'plan:1|week:1|day:monday|type:gym|slot:1',
+      sessionShapeHash: 'shape-new',
+    })).toBeNull();
+  });
+});
+
 describe('training-plan-lifecycle — findOwnershipsForPlan', () => {
   it('returns all ownership rows for a plan across versions and statuses', () => {
     seedPlan({ id: 1, userId: 100 });
@@ -443,5 +507,40 @@ describe('training-plan-lifecycle — findOwnershipsForPlan', () => {
     const byEvent = new Map(rows.map((r) => [r.calendar_event_id, r]));
     expect(byEvent.get('evt-old')!.status).toBe('deleted');
     expect(byEvent.get('evt-new')!.status).toBe('active');
+  });
+});
+
+describe('training-plan-lifecycle — scoped ownership transitions', () => {
+  it('does not mark another user or plan when the provider event id collides', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    seedPlan({ id: 2, userId: 200 });
+    seedSession({ id: 11, planId: 2, weekId: 21, userId: 200 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, userId: 100, eventId: 'evt-shared', source: 'google',
+    });
+    recordCalendarOwnership({
+      planId: 2, planVersion: 1, sessionId: 11, userId: 200, eventId: 'evt-shared', source: 'google',
+    });
+
+    const result = markCalendarOwnershipDeleted({
+      eventId: 'evt-shared',
+      source: 'google',
+      reason: 'plan_cancelled',
+      userId: 100,
+      planId: 1,
+    });
+
+    expect(result.rowsAffected).toBe(1);
+    const rows = testDb.prepare(`
+      SELECT plan_id, user_id, status
+      FROM training_agenda_event_ownership
+      WHERE calendar_event_id = ?
+      ORDER BY plan_id ASC
+    `).all('evt-shared') as Array<{ plan_id: number; user_id: number; status: string }>;
+    expect(rows).toEqual([
+      { plan_id: 1, user_id: 100, status: 'deleted' },
+      { plan_id: 2, user_id: 200, status: 'active' },
+    ]);
   });
 });

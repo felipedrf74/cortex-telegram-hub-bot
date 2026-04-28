@@ -37,6 +37,7 @@ import type { AthleteState, Exercise, ExercisePrescription } from './types';
 import {
   exerciseConflictsWithUserPain,
   getExerciseComplexity,
+  getExerciseIsUnilateral,
   getExercisePrimaryPurpose,
   getExerciseSpinalLoading,
 } from './exercise-metadata';
@@ -44,6 +45,12 @@ import {
 // ─────────────────────────────────────────────────────────────────
 // Pain-aware substitution
 // ─────────────────────────────────────────────────────────────────
+
+export interface BiomechanicsSafetyContext {
+  availableEquipment?: ReadonlySet<string> | ReadonlyArray<string>;
+  sessionRole?: string;
+  durationMinutes?: number;
+}
 
 interface BiomechanicsSubstitutionResult {
   prescriptions: ExercisePrescription[];
@@ -71,12 +78,18 @@ export function applyBiomechanicsSafetySubstitutions(
   prescriptions: ReadonlyArray<ExercisePrescription>,
   athlete: AthleteState,
   exerciseCatalog: ReadonlyArray<Exercise>,
+  context: BiomechanicsSafetyContext = {},
 ): BiomechanicsSubstitutionResult {
   const painAreas = (athlete.readiness?.painFlags ?? [])
     .map((flag) => flag.area ?? '')
     .filter((area) => area.length > 0);
 
-  if (painAreas.length === 0) {
+  const hasRiskSignal = prescriptions.some((prescription) => {
+    const exercise = exerciseCatalog.find((item) => item.id === prescription.exerciseId);
+    return Boolean(exercise && shouldConsiderSafetySubstitution(exercise, athlete, painAreas, context));
+  });
+
+  if (!hasRiskSignal) {
     return {
       prescriptions: prescriptions.map((p) => ({ ...p })),
       swappedFromIds: [],
@@ -91,24 +104,27 @@ export function applyBiomechanicsSafetySubstitutions(
   const next = prescriptions.map((prescription) => {
     const exercise = catalog.get(prescription.exerciseId);
     if (!exercise) return { ...prescription };
-    if (!exerciseConflictsWithUserPain(exercise, painAreas)) {
+    if (!shouldConsiderSafetySubstitution(exercise, athlete, painAreas, context)) {
       return { ...prescription };
     }
 
-    // Try each substitution. First candidate that doesn't conflict
-    // with the same pain areas wins.
-    for (const subId of exercise.substitutions ?? []) {
-      const candidate = catalog.get(subId);
-      if (!candidate) continue;
-      if (exerciseConflictsWithUserPain(candidate, painAreas)) continue;
+    const candidate = selectBestSafetySubstitute({
+      original: exercise,
+      catalog,
+      athlete,
+      painAreas,
+      context,
+    });
+
+    if (candidate) {
       swappedFromIds.push(prescription.exerciseId);
       return {
         ...prescription,
         exerciseId: candidate.id,
         name: candidate.name,
         notes: prescription.notes
-          ? `${prescription.notes} | Substituted for ${prescription.name} (pain area)`
-          : `Substituted for ${prescription.name} (pain area)`,
+          ? `${prescription.notes} | ${substitutionNote(prescription.name, exercise, candidate, athlete, painAreas, context)}`
+          : substitutionNote(prescription.name, exercise, candidate, athlete, painAreas, context),
       };
     }
 
@@ -123,6 +139,215 @@ export function applyBiomechanicsSafetySubstitutions(
     swappedFromIds,
     unresolvedConflictIds,
   };
+}
+
+function shouldConsiderSafetySubstitution(
+  exercise: Exercise,
+  athlete: AthleteState,
+  painAreas: string[],
+  context: BiomechanicsSafetyContext,
+): boolean {
+  if (exerciseConflictsWithUserPain(exercise, painAreas)) return true;
+  if (!canPerformExercise(exercise, resolveEquipment(context.availableEquipment, athlete))) return true;
+
+  const complexity = getExerciseComplexity(exercise);
+  const spinalLoading = getExerciseSpinalLoading(exercise);
+  const fatigued = athlete.readiness?.level === 'red'
+    || athlete.readiness?.level === 'orange'
+    || athlete.readiness?.soreness === 'high'
+    || (athlete.readiness?.score ?? 100) < 55;
+  const novice = athlete.profile.experienceLevel === 'novice';
+  const shortWindow = typeof context.durationMinutes === 'number' && context.durationMinutes < 25;
+
+  if (novice && (complexity === 'advanced' || complexity === 'expert')) return true;
+  if (fatigued && (exercise.fatigueCost === 'high' || exercise.fatigueCost === 'very_high')) return true;
+  if (fatigued && spinalLoading === 'high') return true;
+  if (shortWindow && (exercise.fatigueCost === 'very_high' || complexity === 'expert')) return true;
+
+  return false;
+}
+
+function selectBestSafetySubstitute(args: {
+  original: Exercise;
+  catalog: ReadonlyMap<string, Exercise>;
+  athlete: AthleteState;
+  painAreas: string[];
+  context: BiomechanicsSafetyContext;
+}): Exercise | null {
+  const equipment = resolveEquipment(args.context.availableEquipment, args.athlete);
+  const directCandidates = collectSafetyCandidates(args.original, args.catalog)
+    .map((candidate) => ({
+      candidate,
+      score: scoreSafetyCandidate({
+        original: args.original,
+        candidate,
+        athlete: args.athlete,
+        painAreas: args.painAreas,
+        equipment,
+        context: args.context,
+      }),
+    }))
+    .filter((entry) => entry.score > Number.NEGATIVE_INFINITY)
+    .sort((left, right) => right.score - left.score);
+
+  if (directCandidates[0]) return directCandidates[0].candidate;
+
+  const fallbackCandidates = collectPatternFallbackCandidates(args.original, args.catalog)
+    .map((candidate) => ({
+      candidate,
+      score: scoreSafetyCandidate({
+        original: args.original,
+        candidate,
+        athlete: args.athlete,
+        painAreas: args.painAreas,
+        equipment,
+        context: args.context,
+      }),
+    }))
+    .filter((entry) => entry.score > Number.NEGATIVE_INFINITY)
+    .sort((left, right) => right.score - left.score);
+
+  return fallbackCandidates[0]?.candidate ?? null;
+}
+
+function collectSafetyCandidates(
+  original: Exercise,
+  catalog: ReadonlyMap<string, Exercise>,
+): Exercise[] {
+  const queued = [...(original.substitutions ?? [])];
+  const seen = new Set<string>([original.id]);
+  const candidates: Exercise[] = [];
+
+  while (queued.length > 0) {
+    const id = queued.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const exercise = catalog.get(id);
+    if (!exercise) continue;
+    candidates.push(exercise);
+    queued.push(...(exercise.substitutions ?? []));
+  }
+
+  return candidates;
+}
+
+function collectPatternFallbackCandidates(
+  original: Exercise,
+  catalog: ReadonlyMap<string, Exercise>,
+): Exercise[] {
+  const directIds = new Set(collectSafetyCandidates(original, catalog).map((exercise) => exercise.id));
+  return Array.from(catalog.values()).filter((exercise) =>
+    exercise.id !== original.id
+    && !directIds.has(exercise.id)
+    && exercise.movementPattern === original.movementPattern
+  );
+}
+
+function scoreSafetyCandidate(args: {
+  original: Exercise;
+  candidate: Exercise;
+  athlete: AthleteState;
+  painAreas: string[];
+  equipment: ReadonlySet<string>;
+  context: BiomechanicsSafetyContext;
+}): number {
+  if (!canPerformExercise(args.candidate, args.equipment)) return Number.NEGATIVE_INFINITY;
+  if (exerciseConflictsWithUserPain(args.candidate, args.painAreas)) return Number.NEGATIVE_INFINITY;
+
+  const originalPurpose = getExercisePrimaryPurpose(args.original);
+  const candidatePurpose = getExercisePrimaryPurpose(args.candidate);
+  const complexity = getExerciseComplexity(args.candidate);
+  const spinalLoading = getExerciseSpinalLoading(args.candidate);
+  const fatigued = args.athlete.readiness?.level === 'red'
+    || args.athlete.readiness?.level === 'orange'
+    || args.athlete.readiness?.soreness === 'high'
+    || (args.athlete.readiness?.score ?? 100) < 55;
+  const novice = args.athlete.profile.experienceLevel === 'novice';
+  const shortWindow = typeof args.context.durationMinutes === 'number' && args.context.durationMinutes < 25;
+  const role = (args.context.sessionRole ?? '').toLowerCase();
+
+  let score = 100;
+  if (args.candidate.movementPattern === args.original.movementPattern) score += 18;
+  if (candidatePurpose === originalPurpose) score += 10;
+  if (candidatePurpose === 'stability' && fatigued) score += 6;
+  if (candidatePurpose === 'mobility' && (fatigued || shortWindow)) score += 5;
+  if (role.includes('hypertrophy') && candidatePurpose === 'hypertrophy') score += 6;
+  if (role.includes('strength') && candidatePurpose === 'strength') score += 6;
+
+  if (complexity === 'beginner') score += novice || fatigued ? 14 : 3;
+  if (complexity === 'intermediate') score += novice ? -8 : 2;
+  if (complexity === 'advanced') score -= novice ? 32 : fatigued ? 14 : 0;
+  if (complexity === 'expert') score -= novice ? 60 : fatigued ? 32 : 10;
+
+  if (spinalLoading === 'high') score -= fatigued ? 38 : novice ? 20 : 4;
+  if (spinalLoading === 'moderate') score -= fatigued ? 10 : novice ? 6 : 0;
+  if (spinalLoading === 'low') score += fatigued || novice ? 10 : 2;
+
+  if (args.candidate.fatigueCost === 'low') score += fatigued || shortWindow ? 12 : 2;
+  if (args.candidate.fatigueCost === 'high') score -= fatigued ? 24 : shortWindow ? 10 : 2;
+  if (args.candidate.fatigueCost === 'very_high') score -= fatigued ? 48 : 16;
+
+  if (getExerciseIsUnilateral(args.candidate)) {
+    score += args.original.movementPattern === 'single_leg' ? 8 : 0;
+    score -= shortWindow ? 4 : 0;
+  }
+
+  return score;
+}
+
+function substitutionNote(
+  originalName: string,
+  original: Exercise,
+  candidate: Exercise,
+  athlete: AthleteState,
+  painAreas: string[],
+  context: BiomechanicsSafetyContext,
+): string {
+  const reasons: string[] = [];
+  if (exerciseConflictsWithUserPain(original, painAreas)) reasons.push('pain area / discomfort flag');
+  if (!canPerformExercise(original, resolveEquipment(context.availableEquipment, athlete))) reasons.push('equipment');
+  const fatigued = athlete.readiness?.level === 'red'
+    || athlete.readiness?.level === 'orange'
+    || athlete.readiness?.soreness === 'high'
+    || (athlete.readiness?.score ?? 100) < 55;
+  if (fatigued && (getExerciseSpinalLoading(original) === 'high' || original.fatigueCost === 'high' || original.fatigueCost === 'very_high')) {
+    reasons.push('fatigue safety');
+  }
+  if (athlete.profile.experienceLevel === 'novice' && (getExerciseComplexity(original) === 'advanced' || getExerciseComplexity(original) === 'expert')) {
+    reasons.push('skill match');
+  }
+  if (typeof context.durationMinutes === 'number' && context.durationMinutes < 25) reasons.push('short-window fit');
+
+  const reason = reasons.length > 0 ? reasons.join(', ') : 'safety fit';
+  return `Substituted for ${originalName} (${reason}: ${candidate.name})`;
+}
+
+function resolveEquipment(
+  provided: BiomechanicsSafetyContext['availableEquipment'],
+  athlete: AthleteState,
+): ReadonlySet<string> {
+  if (provided instanceof Set) return provided;
+  if (Array.isArray(provided)) return new Set(provided);
+  const equipment = new Set<string>();
+  if (athlete.equipment.hasGym) {
+    equipment.add('rack');
+    equipment.add('bench');
+    equipment.add('pullup_bar');
+    equipment.add('lat_pulldown');
+    equipment.add('kettlebells');
+    equipment.add('dumbbells');
+    equipment.add('barbell');
+  }
+  if (athlete.equipment.hasBarbell) equipment.add('barbell');
+  if (athlete.equipment.hasDumbbells) equipment.add('dumbbells');
+  if (athlete.equipment.hasBikeTrainer) equipment.add('bike_trainer');
+  if (athlete.equipment.hasPool) equipment.add('pool');
+  if (athlete.equipment.hasTrack) equipment.add('track');
+  return equipment;
+}
+
+function canPerformExercise(exercise: Exercise, equipment: ReadonlySet<string>): boolean {
+  return exercise.equipment.every((requirement) => equipment.has(requirement));
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -7,6 +7,11 @@ import type {
   SecretaryMeshContext,
   TrainingMeshContext,
 } from './cross-agent-learning';
+import type {
+  TrainingDecisionReason,
+  TrainingProfileFollowUpQuestion,
+  TrainingProfileMissingData,
+} from './coach-kernel/types';
 
 export interface CoordinatedTrainingSession {
   dayOfWeek: string;
@@ -16,6 +21,11 @@ export interface CoordinatedTrainingSession {
   description?: string;
   exercises?: any[];
   preferredStartTime?: string | null;
+  scheduleState?: string;
+  scheduleAdjustments?: string[];
+  scheduleReason?: string;
+  decisionReasons?: TrainingDecisionReason[];
+  originalDayOfWeek?: string | null;
 }
 
 export interface CoordinatedTrainingWeek {
@@ -23,6 +33,17 @@ export interface CoordinatedTrainingWeek {
   focus?: string;
   intensityPct?: number;
   sessions?: CoordinatedTrainingSession[];
+  decisionReasons?: TrainingDecisionReason[];
+}
+
+export interface CoordinatedTrainingProfileQuality {
+  completenessScore: number;
+  confidenceScore: number;
+  confidenceBand: 'high' | 'medium' | 'low';
+  planQualityLimited: boolean;
+  planningRiskFlags: string[];
+  missingCriticalData: TrainingProfileMissingData[];
+  followUpPrompts: TrainingProfileFollowUpQuestion[];
 }
 
 export interface CoordinatedTrainingPlan {
@@ -30,6 +51,8 @@ export interface CoordinatedTrainingPlan {
   sport?: string;
   periodization?: string;
   weeks?: CoordinatedTrainingWeek[];
+  profileQuality?: CoordinatedTrainingProfileQuality;
+  decisionReasons?: TrainingDecisionReason[];
 }
 
 export interface TrainingPlanCoordinationInput {

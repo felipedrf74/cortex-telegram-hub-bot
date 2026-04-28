@@ -12,9 +12,12 @@ import type {
   RaceEvent,
   ReadinessLevel,
   ReadinessSnapshot,
+  NormalizedTrainingProfile,
   Session,
   Sport,
+  TrainingDecisionReason,
   TrainingHistory,
+  TrainingProfileQuality,
   WeeklyPlan,
 } from './coach-kernel/types';
 import { DAY_ORDER } from './coach-kernel/utils';
@@ -24,6 +27,9 @@ import {
   readTrainingHistoryFromCompletions,
   type RealTrainingHistory,
 } from './training-history';
+import {
+  extractNormalizedTrainingProfile,
+} from './training-profile-model';
 import { logger } from '../utils/logger';
 
 /** Current readiness measurements used to seed the planner's
@@ -86,6 +92,8 @@ export interface CoachKernelTrainingPlanInput {
    * (`'optional'` semantics) — additive change only.
    */
   twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  recentlyAskedFollowUpIds?: string[] | null;
+  resolvedFollowUpIds?: string[] | null;
 }
 
 const DAY_NAME_MAP: Record<DayOfWeek, string> = {
@@ -135,6 +143,7 @@ const SESSION_TYPE_LABEL_MAP: Record<Session['sessionType'], string> = {
 export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput): CoordinatedTrainingPlan {
   const athlete = buildAthleteStateFromTrainingProfiles(input);
   let rollingAthlete = athlete;
+  const rawWeeklyPlans: WeeklyPlan[] = [];
 
   const weeks: CoordinatedTrainingWeek[] = Array.from({ length: input.durationWeeks }, (_, index) => {
     const weekNumber = index + 1;
@@ -157,6 +166,7 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     };
 
     const weeklyPlan = buildWeekPlan(weekAthlete, weekStart);
+    rawWeeklyPlans.push(weeklyPlan);
     // Retain the raw WeeklyPlan (for guardrail reasoning) AND the
     // AthleteState that produced it (so the home-view route can re-run
     // `adjustForFatigue` with today's live readiness). The legacy
@@ -171,6 +181,8 @@ export function buildCoachKernelTrainingPlan(input: CoachKernelTrainingPlanInput
     sport: legacyPlanSport(athlete.goals.primaryFocus),
     periodization: 'block',
     weeks,
+    profileQuality: trainingPlanProfileQuality(athlete.profileQuality),
+    decisionReasons: dedupeTrainingDecisionReasons(rawWeeklyPlans.flatMap((plan) => plan.decisionReasons ?? [])),
   };
 }
 
@@ -365,6 +377,22 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       : 'Strength-goal resolver fell back to athletic — no primary_goal data on profile; planner will use the generic athletic prescription template');
   }
 
+  const priorityOrder = resolvePriorityOrder(primaryFocus);
+  const maxSessionsPerDay = resolveMaxSessionsPerDay(input.twoADayPreference, weeklyTargets);
+  const normalizedTrainingProfile = extractNormalizedTrainingProfile(input, {
+    primaryFocus,
+    priorityOrder,
+    weeklyTargets,
+    strengthGoal: strengthGoalResolution.value,
+    raceCalendar,
+    equipment,
+    equipmentSource: equipmentResolution.source === 'fallback' ? 'fallback' : 'provided',
+    experienceLevel: experienceResolution.value,
+    experienceSource: experienceResolution.source === 'fallback' ? 'fallback' : 'provided',
+    constraints,
+    maxSessionsPerDay,
+  });
+
   return {
     profile: {
       athleteId: input.userId,
@@ -379,18 +407,20 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       restingHeartRate: numericOrUndefined(input.fitnessProfile?.resting_heart_rate),
       bodyWeightKg: numericOrUndefined(input.fitnessProfile?.weight_kg),
     },
+    normalizedTrainingProfile,
+    profileQuality: normalizedTrainingProfile.quality,
     goals: {
       primaryFocus,
       secondaryFocus: weeklyTargets.strength ? 'strength' : undefined,
       strengthGoal: strengthGoalResolution.value,
       raceCalendar,
-      priorityOrder: resolvePriorityOrder(primaryFocus),
+      priorityOrder,
       weeklySessionsTarget: weeklyTargets,
       weeklyMinutesTarget: resolveWeeklyMinutesTarget(weeklyTargets, trainingHistory.lastWeekMinutesBySport),
     },
     constraints,
     availability: {
-      weeklyWindows: buildAvailabilityWindows(input, weeklyTargets),
+      weeklyWindows: buildAvailabilityWindows(input, weeklyTargets, normalizedTrainingProfile),
       preferredLongSessionDay: normalizeDayOfWeek(input.longWorkoutDay) ?? defaultLongSessionDay(primaryFocus),
       preferredTimesBySport: {
         running: normalizeTime(input.preferredCardioTime, input.preferredTime),
@@ -398,7 +428,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
         swimming: normalizeTime(input.preferredCardioTime, input.preferredTime),
         strength: normalizeTime(input.preferredStrengthTime, input.preferredTime),
       },
-      maxSessionsPerDay: resolveMaxSessionsPerDay(input.twoADayPreference, weeklyTargets),
+      maxSessionsPerDay,
     },
     equipment,
     trainingHistory,
@@ -415,7 +445,7 @@ export function buildAthleteStateFromTrainingProfiles(input: CoachKernelTraining
       volumeProgressionPct: 6,
       lastDeloadWeekIndex: undefined,
     },
-    recentSessions: [],
+    recentSessions: realHistory?.recentSessions ?? [],
     readiness: buildReadinessSnapshot(input, constraints),
     compliance: {
       trailing14DayCompliance: 0.82,
@@ -1257,9 +1287,18 @@ function resolveWeeklyMinutesTarget(
 function buildAvailabilityWindows(
   input: CoachKernelTrainingPlanInput,
   targets: Goals['weeklySessionsTarget'],
+  normalizedProfile?: NormalizedTrainingProfile,
 ) {
   const cardioStart = normalizeTime(input.preferredCardioTime, input.preferredTime);
   const strengthStart = normalizeTime(input.preferredStrengthTime, input.preferredTime);
+  const weakProfile = normalizedProfile?.quality.planQualityLimited === true
+    || (normalizedProfile?.quality.confidenceScore ?? 100) < 65;
+  const cardioDuration = normalizedProfile?.availableSessionDurations.enduranceMinutes
+    ?? normalizedProfile?.availableSessionDurations.genericMinutes
+    ?? (weakProfile ? 45 : 135);
+  const strengthDuration = normalizedProfile?.availableSessionDurations.strengthMinutes
+    ?? normalizedProfile?.availableSessionDurations.genericMinutes
+    ?? (weakProfile ? 35 : 90);
   const windows: AthleteState['availability']['weeklyWindows'] = [];
 
   for (const dayOfWeek of DAY_ORDER) {
@@ -1267,7 +1306,7 @@ function buildAvailabilityWindows(
       windows.push({
         dayOfWeek,
         start: cardioStart,
-        end: addMinutes(cardioStart, 135),
+        end: addMinutes(cardioStart, cardioDuration),
         sports: ['running', 'cycling', 'swimming'],
         label: 'Cardio window',
       });
@@ -1276,7 +1315,7 @@ function buildAvailabilityWindows(
       windows.push({
         dayOfWeek,
         start: strengthStart,
-        end: addMinutes(strengthStart, 90),
+        end: addMinutes(strengthStart, strengthDuration),
         sports: ['strength'],
         label: 'Strength window',
       });
@@ -1284,6 +1323,19 @@ function buildAvailabilityWindows(
   }
 
   return windows;
+}
+
+function trainingPlanProfileQuality(quality: TrainingProfileQuality | undefined): CoordinatedTrainingPlan['profileQuality'] | undefined {
+  if (!quality) return undefined;
+  return {
+    completenessScore: quality.completenessScore,
+    confidenceScore: quality.confidenceScore,
+    confidenceBand: quality.confidenceBand,
+    planQualityLimited: quality.planQualityLimited,
+    planningRiskFlags: [...quality.planningRiskFlags],
+    missingCriticalData: [...quality.missingCriticalData],
+    followUpPrompts: [...quality.followUpQuestions],
+  };
 }
 
 /**
@@ -1458,6 +1510,7 @@ function convertWeeklyPlanToLegacyWeek(weeklyPlan: WeeklyPlan, weekNumber: numbe
     focus: weeklyPlan.phase,
     intensityPct: PHASE_INTENSITY[weeklyPlan.phase],
     sessions: weeklyPlan.sessions.map(convertSessionToLegacy),
+    decisionReasons: weeklyPlan.decisionReasons,
   };
 }
 
@@ -1476,7 +1529,29 @@ function convertSessionToLegacy(session: Session): CoordinatedTrainingSession {
       rest_sec: exercise.restSec,
     })) ?? [],
     preferredStartTime: session.startTime ?? null,
+    scheduleState: session.scheduleState,
+    scheduleAdjustments: session.scheduleAdjustments,
+    scheduleReason: session.scheduleReason,
+    decisionReasons: session.decisionReasons,
+    originalDayOfWeek: session.originalDayOfWeek ? DAY_NAME_MAP[session.originalDayOfWeek] : null,
   };
+}
+
+function dedupeTrainingDecisionReasons(reasons: TrainingDecisionReason[]): TrainingDecisionReason[] {
+  const seen = new Set<string>();
+  const output: TrainingDecisionReason[] = [];
+  for (const reason of reasons) {
+    const key = [
+      reason.code,
+      reason.affectedEntity.type,
+      reason.affectedEntity.id ?? '',
+      reason.text.trim().toLowerCase().replace(/\s+/g, ' '),
+    ].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(reason);
+  }
+  return output;
 }
 
 function legacyPlanSport(primaryFocus: CoachingDiscipline): CoordinatedTrainingPlan['sport'] {

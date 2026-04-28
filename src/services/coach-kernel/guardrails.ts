@@ -1,7 +1,10 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
-import type { AthleteState, GuardrailResult, Session, WeeklyPlan } from './types';
+import type { AthleteState, ExercisePrescription, GuardrailResult, Session, TrainingDecisionReason, WeeklyPlan } from './types';
+import { loadCoachKnowledge } from './knowledge-loader';
+import { trimOverstuffedStrengthSessionToDuration } from './session-coherence';
 import { cloneSessions, dayIndex, durationToLoad, isKeyEnduranceSession, isLowerBodyStrength, nextDaysFrom, sumMinutes, DAY_ORDER } from './utils';
+import { adaptSessionForPoorRecovery } from './poor-recovery-variation';
 
 function compareDays(left: string, right: string): number {
   return dayIndex(left as any) - dayIndex(right as any);
@@ -9,12 +12,19 @@ function compareDays(left: string, right: string): number {
 
 function scaleSessionDuration(session: Session, factor: number): Session {
   const durationMinutes = Math.max(15, Math.round(session.durationMinutes * factor));
-  return {
+  const scaled = {
     ...session,
     durationMinutes,
     endTime: syncEndTime(session.startTime, durationMinutes),
     plannedLoad: durationToLoad(durationMinutes, session.intensityZone, session.fatigueCost),
   };
+  if (session.sport !== 'strength' || durationMinutes >= session.durationMinutes || !session.exercises?.length) {
+    return scaled;
+  }
+  return trimOverstuffedStrengthSessionToDuration(scaled, loadCoachKnowledge(), {
+    tag: 'guardrail_duration_coherent',
+    alternative: 'Guardrail duration reduction trimmed trailing strength volume so the session matches the shorter slot.',
+  }).session;
 }
 
 function syncEndTime(startTime: string | undefined, durationMinutes: number): string | undefined {
@@ -39,18 +49,38 @@ function syncSessionClockFields(session: Session): Session {
   };
 }
 
-function redReadyReplacementSessionType(session: Session): Session['sessionType'] {
-  if (session.sport === 'strength') return 'strength_maintenance';
-  if (session.sport === 'cycling') return 'recovery_ride';
-  if (session.sport === 'swimming') return 'recovery_swim';
-  return 'recovery_run';
+function sessionReason(args: TrainingDecisionReason): TrainingDecisionReason {
+  return args;
 }
 
-function redReadyReplacementTitle(session: Session): string {
-  if (session.sport === 'strength') return 'Technique Strength + Mobility';
-  if (session.sport === 'cycling') return 'Recovery Ride';
-  if (session.sport === 'swimming') return 'Recovery Swim';
-  return 'Recovery Run';
+function techniqueStrengthExercisesForRedReadiness(session: Session): ExercisePrescription[] | undefined {
+  const exercises = session.exercises?.slice(0, 2) ?? [];
+  if (exercises.length === 0) return undefined;
+
+  return exercises.map((exercise) => ({
+    ...exercise,
+    sets: Math.min(2, Math.max(1, exercise.sets)),
+    reps: normalizeTechniqueReps(exercise.reps),
+    rir: Math.max(exercise.rir ?? 0, 4),
+    restSec: Math.min(exercise.restSec ?? 45, 45),
+    notes: appendTechniqueNote(exercise.notes),
+  }));
+}
+
+function normalizeTechniqueReps(reps: string): string {
+  const lower = reps.toLowerCase();
+  if (lower.includes('sec') || lower.includes('hold') || lower.includes('m')) return reps;
+  if (lower.includes('each') || lower.includes('per side') || lower.includes('per leg') || lower.includes('per arm')) {
+    return '6-8 each side';
+  }
+  return '6-8';
+}
+
+function appendTechniqueNote(notes: string | undefined): string {
+  const techniqueNote = 'Technique only: light load, smooth tempo, stop far from failure.';
+  if (!notes || notes.trim().length === 0) return techniqueNote;
+  if (notes.includes(techniqueNote)) return notes;
+  return `${notes} ${techniqueNote}`;
 }
 
 function enforceVolumeGrowth(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult[] {
@@ -107,6 +137,17 @@ function enforceVolumeGrowth(plan: WeeklyPlan, athlete: AthleteState): Guardrail
       adjusted: true,
       message: `${sport} volume jumped too quickly (${planned}min vs ${previous}min). Non-key volume was trimmed to ${allowed}min.`,
       metadata: { previous, planned, allowed },
+      decisionReasons: [sessionReason({
+        code: 'volume_growth_trimmed',
+        text: `${sport} volume was reduced from ${planned} to ${allowed} minutes because the prior week was ${previous} minutes and the safe growth cap was exceeded.`,
+        severity: 'warning',
+        affectedEntity: { type: 'week' },
+        sourceConstraint: { type: 'volume', label: `${sport} weekly growth cap` },
+        before: { previousMinutes: previous, plannedMinutes: planned },
+        after: { allowedMinutes: allowed },
+        preservedIntent: 'Preserved the week structure while trimming non-key volume first.',
+        evidence: [`previous_minutes=${previous}`, `planned_minutes=${planned}`, `allowed_minutes=${allowed}`],
+      })],
     });
   }
 
@@ -145,6 +186,21 @@ function enforceDeload(plan: WeeklyPlan, athlete: AthleteState): GuardrailResult
     status: 'warn',
     adjusted: true,
     message: 'Deload triggered by block timing, compliance, readiness, or pain flags. Weekly volume and intensity were reduced.',
+    decisionReasons: [sessionReason({
+      code: 'recovery_volume_reduced',
+      text: 'Weekly volume and intensity were reduced because deload, compliance, readiness, or pain signals called for a lower-stress week.',
+      severity: 'warning',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'recovery', label: 'deload/readiness guardrail' },
+      before: { phase: plan.phase },
+      after: { phase: 'deload' },
+      preservedIntent: 'Preserved training rhythm while reducing fatigue risk.',
+      evidence: [
+        `readiness=${athlete.readiness.level}/${athlete.readiness.score}`,
+        `compliance=${athlete.compliance.trailing14DayCompliance}`,
+        `pain_flags=${athlete.readiness.painFlags.length}`,
+      ],
+    })],
   }];
 }
 
@@ -158,24 +214,28 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
   }
 
   const red = athlete.readiness.level === 'red';
-  plan.sessions = plan.sessions.map((session) => {
-    if (!isKeyEnduranceSession(session) && session.sport !== 'strength') return session;
-    if (red) {
-      const replacementSessionType = redReadyReplacementSessionType(session);
-      const replacementDuration = Math.max(20, Math.round(session.durationMinutes * 0.5));
+  const adaptationMessages: string[] = [];
+  const scenarioCounts: Record<string, number> = {};
+  const originalSessions = cloneSessions(plan.sessions);
+
+  plan.sessions = plan.sessions.map((session, sessionIndex) => {
+    if (!shouldAdaptSessionForReadiness(session, red)) return session;
+    if (red || session.fatigueCost === 'high' || session.fatigueCost === 'very_high' || session.keySession) {
+      const adaptation = adaptSessionForPoorRecovery({
+        athlete,
+        session,
+        weekSessions: originalSessions,
+        sessionIndex,
+      });
+      adaptationMessages.push(adaptation.explanation);
+      scenarioCounts[adaptation.scenario] = (scenarioCounts[adaptation.scenario] ?? 0) + 1;
       return {
-        ...session,
-        sessionType: replacementSessionType,
-        title: redReadyReplacementTitle(session),
-        description: session.sport === 'strength'
-          ? 'Readiness is too low for the original prescription. Keep the lift technical, light, and finish with mobility instead of creating a separate mobility session.'
-          : 'Readiness is too low for the original prescription. Replace with recovery-focused work or full rest.',
-        intensityZone: 'recovery',
-        fatigueCost: 'low',
-        keySession: false,
-        durationMinutes: replacementDuration,
-        plannedLoad: durationToLoad(replacementDuration, 'recovery', 'low'),
-        tags: [...session.tags.filter((tag) => tag !== 'key_run' && tag !== 'key_ride'), 'readiness_adjusted'],
+        ...adaptation.session,
+        exercises: adaptation.session.sport !== 'strength'
+          ? adaptation.session.exercises
+          : adaptation.session.sessionType === 'mobility'
+            ? undefined
+            : techniqueStrengthExercisesForRedReadiness(session),
       };
     }
 
@@ -199,9 +259,38 @@ function enforceReadiness(plan: WeeklyPlan, athlete: AthleteState): GuardrailRes
     status: red ? 'block' : 'warn',
     adjusted: true,
     message: red
-      ? 'Readiness is critically low. Hard work was replaced with recovery work or low-load strength.'
-      : 'Readiness is strained. Hard work was downgraded before prescription.',
+      ? 'Readiness is critically low. Hard work was replaced with varied low-fatigue recovery, technique, or mobility options.'
+      : 'Readiness is strained. High-stress work was downgraded before prescription, with recovery variants used where fatigue risk was high.',
+    decisionReasons: [sessionReason({
+      code: red ? 'recovery_volume_reduced' : 'recovery_intensity_reduced',
+      text: red
+        ? 'Hard work was replaced with low-fatigue recovery, technique, or mobility options because readiness is critically low.'
+        : 'High-stress work was downgraded before prescription because recovery signals are strained.',
+      severity: red ? 'block' : 'warning',
+      affectedEntity: { type: 'week' },
+      sourceConstraint: { type: 'recovery', label: `${athlete.readiness.level} readiness` },
+      before: { readiness: athlete.readiness.level, score: athlete.readiness.score },
+      after: { recoveryScenarios: scenarioCounts },
+      preservedIntent: 'Preserved weekly continuity while reducing recovery risk.',
+      evidence: [
+        `readiness=${athlete.readiness.level}/${athlete.readiness.score}`,
+        `adapted_sessions=${adaptationMessages.length}`,
+      ],
+    })],
+    metadata: {
+      recoveryScenarios: scenarioCounts,
+      examples: adaptationMessages.slice(0, 4),
+    },
   }];
+}
+
+function shouldAdaptSessionForReadiness(session: Session, red: boolean): boolean {
+  if (session.sessionType === 'rest' || session.durationMinutes <= 0) return false;
+  if (red) return session.sport === 'strength' || session.keySession || session.fatigueCost !== 'low';
+  return session.sport === 'strength'
+    || session.keySession
+    || session.fatigueCost === 'high'
+    || session.fatigueCost === 'very_high';
 }
 
 function moveSessionToSaferDay(plan: WeeklyPlan, session: Session, blockedDays: Set<string>): Session {
@@ -228,6 +317,22 @@ function enforceInterference(plan: WeeklyPlan): GuardrailResult[] {
         status: 'warn',
         adjusted: true,
         message: `${session.title} conflicted with a key endurance day and was moved or softened.`,
+        decisionReasons: [sessionReason({
+          code: 'interference_reflowed',
+          text: `${session.title} was moved or softened because it conflicted with a key endurance day.`,
+          severity: 'warning',
+          affectedEntity: {
+            type: 'session',
+            id: session.id,
+            title: session.title,
+            dayOfWeek: session.dayOfWeek,
+          },
+          sourceConstraint: { type: 'interference', label: 'key endurance spacing' },
+          before: { dayOfWeek: session.dayOfWeek, sessionType: session.sessionType },
+          after: { protectedDays: [...keyDays] },
+          preservedIntent: 'Protected the key endurance session while keeping lower-body support work feasible.',
+          evidence: [`key_days=${[...keyDays].join(',')}`, `session_day=${session.dayOfWeek}`],
+        })],
       });
       const moved = moveSessionToSaferDay(plan, session, new Set([session.dayOfWeek, previousDay, nextDay]));
       if (moved.dayOfWeek !== session.dayOfWeek) return moved;
@@ -273,6 +378,17 @@ function enforceScheduleConflicts(plan: WeeklyPlan, athlete: AthleteState): Guar
         status: 'warn',
         adjusted: true,
         message: `Schedule density exceeded the weekly limit, so ${dropped.length} low-priority sessions were dropped or deferred.`,
+        decisionReasons: [sessionReason({
+          code: 'schedule_density_trimmed',
+          text: `${dropped.length} low-priority session${dropped.length === 1 ? '' : 's'} were dropped or deferred because the weekly session limit was ${maxTotalSessions}.`,
+          severity: 'warning',
+          affectedEntity: { type: 'week' },
+          sourceConstraint: { type: 'capacity', label: 'weekly session density' },
+          before: { plannedSessions: plan.sessions.length },
+          after: { keptSessions: kept.length, droppedSessions: dropped.length },
+          preservedIntent: 'Preserved higher-priority and key sessions first.',
+          evidence: [`max_sessions=${maxTotalSessions}`, `dropped=${dropped.map((session) => session.id).join(',')}`],
+        })],
         metadata: { droppedSessionIds: dropped.map((session) => session.id) },
       });
     }
@@ -299,6 +415,22 @@ function enforceScheduleConflicts(plan: WeeklyPlan, athlete: AthleteState): Guar
         status: 'warn',
         adjusted: true,
         message: `${session.title} was moved to ${targetDay} to respect session density and time windows.`,
+        decisionReasons: [sessionReason({
+          code: 'session_reflowed',
+          text: `${session.title} moved from ${session.dayOfWeek} to ${targetDay} to respect session density and time windows.`,
+          severity: 'notice',
+          affectedEntity: {
+            type: 'session',
+            id: session.id,
+            title: session.title,
+            dayOfWeek: targetDay,
+          },
+          sourceConstraint: { type: 'capacity', label: 'max sessions per day' },
+          before: { dayOfWeek: session.dayOfWeek },
+          after: { dayOfWeek: targetDay },
+          preservedIntent: `Preserved the ${session.sport} ${session.sessionType.replace(/_/g, ' ')} intent.`,
+          evidence: [`max_sessions_per_day=${athlete.availability.maxSessionsPerDay}`],
+        })],
       });
       return { ...session, dayOfWeek: targetDay };
     }
@@ -309,6 +441,22 @@ function enforceScheduleConflicts(plan: WeeklyPlan, athlete: AthleteState): Guar
       status: 'block',
       adjusted: true,
       message: `${session.title} could not be placed safely and was deferred instead of creating a standalone mobility session.`,
+      decisionReasons: [sessionReason({
+        code: 'low_priority_deferred',
+        text: `${session.title} was deferred because no safe session-density slot remained.`,
+        severity: 'block',
+        affectedEntity: {
+          type: 'session',
+          id: session.id,
+          title: session.title,
+          dayOfWeek: session.dayOfWeek,
+        },
+        sourceConstraint: { type: 'capacity', label: 'max sessions per day' },
+        before: { dayOfWeek: session.dayOfWeek, sessionType: session.sessionType },
+        after: { scheduleState: 'deferred', sessionType: 'rest' },
+        preservedIntent: 'Avoided creating a misleading standalone session when the week had no safe capacity.',
+        evidence: [`max_sessions_per_day=${athlete.availability.maxSessionsPerDay}`],
+      })],
     });
     return {
       ...session,

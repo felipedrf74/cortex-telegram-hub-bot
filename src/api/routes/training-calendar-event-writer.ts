@@ -5,6 +5,7 @@ import {
   type CalendarSource,
   type UnifiedCalendarEvent,
 } from '../../services/unified-calendar';
+import { assertTrainingCalendarWritesEnabled } from '../../services/training-operational-switches';
 import { logger } from '../../utils/logger';
 
 type CalendarEventPayload = {
@@ -29,6 +30,8 @@ export async function createTrainingCalendarEvent(
   userId: number,
   context: WriteContext,
 ): Promise<UnifiedCalendarEvent> {
+  assertTrainingCalendarWritesEnabled();
+
   const retryDelays = trainingCalendarRetryDelaysMs();
   let attempt = 0;
 
@@ -49,7 +52,7 @@ export async function createTrainingCalendarEvent(
           err,
           userId,
           sessionId: context.sessionId,
-          title: context.title ?? data.title,
+          titleLength: String(context.title ?? data.title ?? '').length,
           attempt,
           retryDelayMs,
         },

@@ -146,16 +146,17 @@ function overlapsRange(startMs: number, endMs: number, windows: BusyWindow[]): b
  * the symmetric ±60/±90/±120/±150-minute candidates) all overlapped with
  * either real provider events (`busyWindows`) or other sessions already
  * placed earlier in this generation pass (`scheduledWindows`). The
- * scheduler walked the day to find ANY free 60-min window. If even the
- * day-walk failed, the result still has `preferredTimeUnavailable: true`
- * but the time falls back to a deterministic safe slot (06:30) so the
- * iOS UI can render an "attention needed" chip instead of silently
- * landing the session on top of a meeting.
+ * scheduler walked the day to find ANY free window. If even the day-walk
+ * failed, `noAvailableSlot` is true. Callers must not create a calendar
+ * event from that fallback marker; they should persist an explicit
+ * unscheduled/deferred state instead.
  */
 export interface ScheduleSessionResult {
   start: Date;
   end: Date;
   preferredTimeUnavailable: boolean;
+  noAvailableSlot?: boolean;
+  unavailableReason?: string;
 }
 
 const DAY_WALK_START_MINUTES = 5 * 60;     // 05:00 — earliest the planner is willing to go
@@ -206,14 +207,17 @@ export function scheduleSessionWindow(
   }
 
   // Stage 3: the day is fully booked from 05:00–21:00. Return a
-  // deterministic safe fallback (06:30) flagged as unavailable. The iOS
-  // UI is expected to show a ⚠️ chip on these sessions so the user knows
-  // they should resolve the conflict manually.
+  // deterministic fallback marker for legacy callers, but explicitly
+  // flag it as not schedulable. Training persistence and calendar sync
+  // must treat this as an unscheduled session, never as an event to
+  // create at 06:30.
   const fallback = new Date(sessionDate);
   fallback.setHours(Math.floor(SAFE_FALLBACK_TIME_MINUTES / 60), SAFE_FALLBACK_TIME_MINUTES % 60, 0, 0);
   return {
     start: fallback,
     end: new Date(fallback.getTime() + durationMinutes * 60 * 1000),
     preferredTimeUnavailable: true,
+    noAvailableSlot: true,
+    unavailableReason: 'No valid free calendar window remained between 05:00 and 21:00.',
   };
 }

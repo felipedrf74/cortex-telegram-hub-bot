@@ -35,7 +35,7 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
-import type { Sport } from './coach-kernel/types';
+import type { FatigueCost, IntensityZone, RecentSession, SessionType, Sport } from './coach-kernel/types';
 
 export interface TrainingHistoryReadOptions {
   /**
@@ -80,6 +80,7 @@ export interface RealTrainingHistory {
    */
   hasAnyHistory: boolean;
   rawCompletionCount: number;
+  recentSessions: RecentSession[];
 }
 
 const SPORTS: ReadonlyArray<Sport> = ['running', 'strength', 'cycling', 'swimming'];
@@ -105,6 +106,29 @@ function normalizeSessionTypeToSport(sessionType: string | null | undefined): Sp
   if (['swim', 'swimming', 'natacao', 'natação',
        'technique_swim', 'aerobic_swim', 'threshold_swim', 'speed_swim', 'recovery_swim'].includes(value)) return 'swimming';
   if (['strength_hypertrophy', 'strength_max', 'strength_maintenance'].includes(value)) return 'strength';
+  return null;
+}
+
+function normalizeSessionTypeToKernelType(sessionType: string | null | undefined): SessionType | null {
+  if (!sessionType) return null;
+  const value = sessionType.toLowerCase().trim();
+  if (['gym', 'strength', 'lifting', 'weights', 'weight'].includes(value)) return 'strength_hypertrophy';
+  if (['run', 'running', 'corrida', 'easy_run'].includes(value)) return 'easy_run';
+  if (['long_run'].includes(value)) return 'long_run';
+  if (['threshold_run', 'tempo_run'].includes(value)) return 'threshold_run';
+  if (['interval_run'].includes(value)) return 'interval_run';
+  if (['recovery_run'].includes(value)) return 'recovery_run';
+  if (['ride', 'bike', 'biking', 'cycle', 'cycling', 'ciclismo', 'pedal', 'endurance_ride'].includes(value)) return 'endurance_ride';
+  if (['tempo_ride'].includes(value)) return 'tempo_ride';
+  if (['threshold_ride'].includes(value)) return 'threshold_ride';
+  if (['vo2_ride'].includes(value)) return 'vo2_ride';
+  if (['recovery_ride'].includes(value)) return 'recovery_ride';
+  if (['swim', 'swimming', 'natacao', 'natação', 'aerobic_swim'].includes(value)) return 'aerobic_swim';
+  if (['technique_swim'].includes(value)) return 'technique_swim';
+  if (['threshold_swim'].includes(value)) return 'threshold_swim';
+  if (['speed_swim'].includes(value)) return 'speed_swim';
+  if (['recovery_swim'].includes(value)) return 'recovery_swim';
+  if (['strength_hypertrophy', 'strength_max', 'strength_maintenance', 'brick', 'mobility', 'rest'].includes(value)) return value as SessionType;
   return null;
 }
 
@@ -148,12 +172,28 @@ export function readTrainingHistoryFromCompletions(
   // plans don't appear here (their completions were cascaded
   // away), which is the right behavior — they're historical
   // residue, not coaching signal.
-  let rows: Array<{ session_type: string | null; completed_at: string; duration_minutes: number | null }> = [];
+  let rows: Array<{
+    session_id: number;
+    session_type: string | null;
+    completed_at: string;
+    planned_duration_minutes: number | null;
+    actual_duration_minutes: number | null;
+    rpe_overall: number | null;
+    soreness_level: number | null;
+    energy_level: number | null;
+    actual_exercises_json: string | null;
+  }> = [];
   try {
     rows = db.prepare(`
       SELECT ts.session_type AS session_type,
+             ts.id AS session_id,
              tc.completed_at AS completed_at,
-             COALESCE(tc.duration_minutes, ts.duration_minutes, 0) AS duration_minutes
+             ts.duration_minutes AS planned_duration_minutes,
+             COALESCE(tc.duration_minutes, ts.duration_minutes, 0) AS actual_duration_minutes,
+             tc.rpe_overall AS rpe_overall,
+             tc.soreness_level AS soreness_level,
+             tc.energy_level AS energy_level,
+             tc.actual_exercises_json AS actual_exercises_json
       FROM training_completions tc
       JOIN training_sessions ts ON ts.id = tc.session_id
       JOIN fitness_training_plans ftp ON ftp.id = tc.plan_id
@@ -197,13 +237,14 @@ export function readTrainingHistoryFromCompletions(
     if (!sport) continue;
     const weekIndex = bucketWeekIndex(row.completed_at, asOf);
     if (weekIndex < 0 || weekIndex > 3) continue;
-    const minutes = Math.max(0, Math.round(row.duration_minutes ?? 0));
+    const minutes = Math.max(0, Math.round(row.actual_duration_minutes ?? 0));
     perSportPerWeek[sport][weekIndex] += minutes;
     perSportHasAny[sport] = true;
   }
 
   const trailing4WeekMinutesBySport: RealTrainingHistory['trailing4WeekMinutesBySport'] = {};
   const lastWeekMinutesBySport: RealTrainingHistory['lastWeekMinutesBySport'] = {};
+  const recentSessions: RecentSession[] = [];
   for (const sport of SPORTS) {
     if (!perSportHasAny[sport]) continue;
     // perSportPerWeek[sport] is [week0(latest), week1, week2, week3(oldest)]
@@ -218,11 +259,40 @@ export function readTrainingHistoryFromCompletions(
     lastWeekMinutesBySport[sport] = series[3]; // most-recent (week 0)
   }
 
+  for (const row of rows.slice(-12)) {
+    const sport = normalizeSessionTypeToSport(row.session_type);
+    const sessionType = normalizeSessionTypeToKernelType(row.session_type);
+    if (!sport || !sessionType) continue;
+    const actualMinutes = Math.max(0, Math.round(row.actual_duration_minutes ?? 0));
+    const plannedMinutes = Math.max(0, Math.round(row.planned_duration_minutes ?? actualMinutes));
+    const distanceKm = extractDistanceKm(row.actual_exercises_json);
+    recentSessions.push({
+      id: `completion-${row.session_id}-${row.completed_at}`,
+      sport,
+      sessionType,
+      completedAt: row.completed_at,
+      durationMinutes: actualMinutes,
+      plannedDurationMinutes: plannedMinutes,
+      actualDurationMinutes: actualMinutes,
+      intensityZone: inferIntensityZone(sessionType),
+      fatigueCost: inferFatigueCost(sessionType),
+      rpe: row.rpe_overall ?? undefined,
+      sorenessLevel: row.soreness_level ?? undefined,
+      energyLevel: row.energy_level ?? undefined,
+      distanceKm: distanceKm > 0 ? distanceKm : undefined,
+      completionStatus: plannedMinutes > 0 && actualMinutes < plannedMinutes * 0.72 ? 'partial' : 'completed',
+      completed: true,
+      keySession: isLikelyKeySession(sessionType),
+      feedbackTags: inferFeedbackTags(row, plannedMinutes, actualMinutes),
+    });
+  }
+
   return {
     lastWeekMinutesBySport,
     trailing4WeekMinutesBySport,
     hasAnyHistory: SPORTS.some((s) => perSportHasAny[s]),
     rawCompletionCount: rows.length,
+    recentSessions,
   };
 }
 
@@ -247,5 +317,88 @@ function emptyHistory(): RealTrainingHistory {
     trailing4WeekMinutesBySport: {},
     hasAnyHistory: false,
     rawCompletionCount: 0,
+    recentSessions: [],
   };
+}
+
+function inferIntensityZone(sessionType: SessionType): IntensityZone {
+  if (sessionType.includes('recovery') || sessionType === 'mobility' || sessionType === 'rest') return 'recovery';
+  if (sessionType.includes('threshold')) return 'threshold';
+  if (sessionType.includes('interval') || sessionType === 'vo2_ride' || sessionType === 'speed_swim') return 'vo2';
+  if (sessionType.includes('tempo')) return 'tempo';
+  return 'aerobic';
+}
+
+function inferFatigueCost(sessionType: SessionType): FatigueCost {
+  if (sessionType.includes('recovery') || sessionType === 'mobility' || sessionType === 'rest') return 'low';
+  if (sessionType.includes('threshold') || sessionType.includes('interval') || sessionType === 'vo2_ride') return 'high';
+  if (sessionType === 'long_run' || sessionType === 'endurance_ride' || sessionType === 'strength_max') return 'high';
+  return 'medium';
+}
+
+function isLikelyKeySession(sessionType: SessionType): boolean {
+  return sessionType === 'long_run'
+    || sessionType === 'threshold_run'
+    || sessionType === 'interval_run'
+    || sessionType === 'threshold_ride'
+    || sessionType === 'vo2_ride'
+    || sessionType === 'strength_max';
+}
+
+function inferFeedbackTags(
+  row: {
+    rpe_overall: number | null;
+    soreness_level: number | null;
+    actual_exercises_json: string | null;
+  },
+  plannedMinutes: number,
+  actualMinutes: number,
+): RecentSession['feedbackTags'] {
+  const tags = new Set<NonNullable<RecentSession['feedbackTags']>[number]>();
+  if (row.rpe_overall != null && row.rpe_overall >= 9) tags.add('too_hard');
+  if (row.rpe_overall != null && row.rpe_overall <= 5) tags.add('too_easy');
+  if (row.soreness_level != null && row.soreness_level >= 8) tags.add('pain');
+  if (plannedMinutes > 0 && actualMinutes >= plannedMinutes * 1.25) tags.add('too_long');
+  const raw = row.actual_exercises_json?.toLowerCase() ?? '';
+  if (raw.includes('substitut')) tags.add('substitution');
+  if (raw.includes('travel') || raw.includes('hotel')) tags.add('travel');
+  return Array.from(tags);
+}
+
+function extractDistanceKm(rawJson: string | null): number {
+  if (!rawJson) return 0;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    return 0;
+  }
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object'
+      ? [parsed, (parsed as Record<string, unknown>).metrics].filter(Boolean)
+      : [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const value = candidate as Record<string, unknown>;
+    const directKm = numberFromUnknown(value.distance_km ?? value.distanceKm ?? value.km);
+    if (directKm != null && directKm > 0) return directKm;
+    const distance = numberFromUnknown(value.distance);
+    if (distance != null && distance > 0) {
+      const unit = typeof value.unit === 'string' ? value.unit.toLowerCase() : 'km';
+      if (unit === 'm' || unit === 'meters' || unit === 'metres') return distance / 1000;
+      if (unit === 'mi' || unit === 'mile' || unit === 'miles') return distance * 1.609344;
+      return distance;
+    }
+  }
+  return 0;
+}
+
+function numberFromUnknown(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }

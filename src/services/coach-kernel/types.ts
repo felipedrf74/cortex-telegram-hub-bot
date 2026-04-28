@@ -120,9 +120,19 @@ export interface RecentSession {
   sessionType: SessionType;
   completedAt: string;
   durationMinutes: number;
+  plannedDurationMinutes?: number;
+  actualDurationMinutes?: number;
   intensityZone: IntensityZone;
   fatigueCost: FatigueCost;
   rpe?: number;
+  rir?: number;
+  sorenessLevel?: number;
+  energyLevel?: number;
+  distanceKm?: number;
+  paceSecondsPerKm?: number;
+  cyclingIntensity?: number;
+  completionStatus?: 'completed' | 'partial' | 'skipped';
+  feedbackTags?: Array<'too_hard' | 'too_easy' | 'too_long' | 'underload' | 'substitution' | 'pain' | 'travel' | 'time_loss'>;
   completed: boolean;
   keySession?: boolean;
   missedReason?: string;
@@ -146,6 +156,49 @@ export interface ComplianceSummary {
   bySport: Partial<Record<Sport, number>>;
   missedKeySessions: number;
   consecutiveMisses: number;
+}
+
+export type TrainingFeedbackDecisionCode =
+  | 'low_recovery_deload'
+  | 'high_soreness_downshift'
+  | 'poor_adherence_reentry'
+  | 'missed_key_session_rebuild'
+  | 'duration_compression'
+  | 'too_long_duration_cap'
+  | 'too_hard_intensity_downshift'
+  | 'too_easy_progression'
+  | 'positive_progression'
+  | 'plateau_variation'
+  | 'repeated_substitution_review';
+
+export interface TrainingFeedbackDecision {
+  code: TrainingFeedbackDecisionCode;
+  severity: 'info' | 'watch' | 'action' | 'block';
+  sport?: Sport;
+  reason: string;
+  evidence: string[];
+  volumeMultiplier?: number;
+  intensityMultiplier?: number;
+  durationMultiplier?: number;
+}
+
+export interface TrainingFeedbackAnalysis {
+  generatedAt: string;
+  sampleSize: number;
+  completionCounts: {
+    completed: number;
+    partial: number;
+    skipped: number;
+  };
+  adherenceClass: 'strong' | 'steady' | 'fragile' | 'broken';
+  recoveryClass: 'ready' | 'watch' | 'strained' | 'critical';
+  difficultyBias: 'too_easy' | 'balanced' | 'too_hard' | 'too_long' | 'mixed';
+  progressionState: 'build' | 'hold' | 'deload' | 'reentry' | 'variation';
+  averageRpe?: number;
+  averageSoreness?: number;
+  averageDurationRatio?: number;
+  decisions: TrainingFeedbackDecision[];
+  notes: string[];
 }
 
 export interface CurrentBlock {
@@ -172,8 +225,125 @@ export interface AthleteProfile {
   bodyWeightKg?: number;
 }
 
+export type TrainingProfileQualityCategory =
+  | 'goals'
+  | 'experience'
+  | 'schedule'
+  | 'duration'
+  | 'modality'
+  | 'equipment'
+  | 'limitations'
+  | 'recovery'
+  | 'consistency'
+  | 'markers'
+  | 'preferences'
+  | 'sex_gender';
+
+export interface TrainingProfileMissingData {
+  key: string;
+  category: TrainingProfileQualityCategory;
+  severity: 'critical' | 'important' | 'optional';
+  reason: string;
+}
+
+export interface TrainingProfileFollowUpQuestion {
+  id: string;
+  category: TrainingProfileQualityCategory;
+  field: string;
+  priority: 'high' | 'medium' | 'low';
+  prompt: string;
+  reason: string;
+  answerType: 'choice' | 'multi_choice' | 'number' | 'text';
+  options?: string[];
+  planningRisk?: string;
+  resolvesMissingKeys?: string[];
+}
+
+export interface TrainingProfileQuality {
+  completenessScore: number;
+  confidenceScore: number;
+  confidenceBand: 'high' | 'medium' | 'low';
+  planQualityLimited: boolean;
+  planningRiskFlags: string[];
+  missingCriticalData: TrainingProfileMissingData[];
+  followUpQuestions: TrainingProfileFollowUpQuestion[];
+  sourceSummary: Partial<Record<TrainingProfileQualityCategory, 'provided' | 'inferred' | 'missing'>>;
+}
+
+export interface NormalizedTrainingProfile {
+  athleteId: number;
+  goals: {
+    primaryFocus: CoachingDiscipline;
+    secondaryFocus?: Sport | 'strength';
+    strengthGoal?: NonNullable<Goals['strengthGoal']>;
+    raceCalendar: RaceEvent[];
+  };
+  experience: {
+    level: AthleteProfile['experienceLevel'];
+    source: 'provided' | 'fallback';
+  };
+  availableDays: Partial<Record<Sport, number>>;
+  availableSessionDurations: {
+    genericMinutes?: number;
+    enduranceMinutes?: number;
+    strengthMinutes?: number;
+  };
+  modalityPreferences: {
+    priorityOrder: Array<Sport | 'strength'>;
+    requestedSessions: Partial<Record<Sport, number>>;
+    preferredTimesBySport: Partial<Record<Sport, string>>;
+    twoADayPreference?: 'never' | 'optional' | 'preferred' | null;
+  };
+  equipment: EquipmentAccess & {
+    source: 'provided' | 'fallback';
+  };
+  environment: {
+    hasGym: boolean;
+    hasOutdoorRunAccess: boolean;
+    hasBikeTrainer: boolean;
+    hasPool: boolean;
+    notes: string[];
+  };
+  scheduleConstraints: {
+    preferredLongSessionDay?: DayOfWeek;
+    maxSessionsPerDay: number;
+    declaredConstraints: string[];
+  };
+  discomfortFlags: PainFlag[];
+  recoveryBaseline: {
+    score?: number;
+    sleepHours?: number;
+    hrvStatus?: ReadinessSnapshot['hrvStatus'];
+    energyReserve?: number;
+    source: 'wearable' | 'missing';
+  };
+  consistencyTendencies: {
+    declaredWeeklyFrequency?: number;
+    adherenceRisk: 'low' | 'medium' | 'high';
+    signals: string[];
+  };
+  currentMarkers: {
+    runningWeeklyMileageKm?: number;
+    easyPaceMinPerKm?: string;
+    cyclingFtpWatts?: number;
+    bodyWeightKg?: number;
+    squat1RmKg?: number;
+    bench1RmKg?: number;
+    deadlift1RmKg?: number;
+  };
+  sexGenderContext?: {
+    value: string;
+    source: 'fitness_profile' | 'gym_profile' | 'run_profile';
+    planningUse: 'not_used_by_default' | 'relevant_only_with_explicit_context';
+  };
+  quality: TrainingProfileQuality;
+}
+
 export interface AthleteState {
   profile: AthleteProfile;
+  normalizedTrainingProfile?: NormalizedTrainingProfile;
+  profileQuality?: TrainingProfileQuality;
+  feedbackAnalysis?: TrainingFeedbackAnalysis;
   goals: Goals;
   constraints: Constraint[];
   availability: Availability;
@@ -242,7 +412,61 @@ export interface WorkoutTemplate {
   instructions: string[];
   constraints: string[];
   defaultExercises?: string[];
+  sessionRole?: string;
+  experienceFit?: Array<AthleteProfile['experienceLevel']>;
+  equipmentProfile?: string[];
+  variantTags?: string[];
+  recoveryScenarioTags?: string[];
+  timeRangeMinutes?: {
+    min: number;
+    max: number;
+  };
+  progressionTarget?: string;
+  substitutionFamily?: string;
 }
+
+export type TrainingDecisionReasonCode =
+  | 'session_compressed'
+  | 'session_capped'
+  | 'session_reflowed'
+  | 'session_unscheduled'
+  | 'weekly_frequency_capped'
+  | 'low_priority_deferred'
+  | 'recovery_volume_reduced'
+  | 'recovery_intensity_reduced'
+  | 'volume_growth_trimmed'
+  | 'schedule_density_trimmed'
+  | 'interference_reflowed';
+
+export interface TrainingDecisionReason {
+  code: TrainingDecisionReasonCode;
+  text: string;
+  severity: 'info' | 'notice' | 'warning' | 'block';
+  affectedEntity: {
+    type: 'week' | 'session';
+    id?: string;
+    title?: string;
+    dayOfWeek?: DayOfWeek;
+  };
+  sourceConstraint?: {
+    type: 'capacity' | 'time' | 'travel' | 'calendar' | 'recovery' | 'fatigue' | 'interference' | 'volume' | 'equipment';
+    id?: string;
+    label?: string;
+  };
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  preservedIntent?: string;
+  evidence?: string[];
+}
+
+export type SessionScheduleState =
+  | 'scheduled'
+  | 'compressed'
+  | 'reflowed'
+  | 'capped'
+  | 'deferred'
+  | 'unscheduled'
+  | 'dropped';
 
 export interface Session {
   id: string;
@@ -262,6 +486,18 @@ export interface Session {
   tags: string[];
   exercises?: ExercisePrescription[];
   alternatives?: string[];
+  scheduleState?: SessionScheduleState;
+  scheduleAdjustments?: SessionScheduleState[];
+  scheduleReason?: string;
+  decisionReasons?: TrainingDecisionReason[];
+  originalDayOfWeek?: DayOfWeek;
+  capacityWindow?: {
+    dayOfWeek: DayOfWeek;
+    start: string;
+    end: string;
+    label?: string;
+    capacityMinutes: number;
+  };
 }
 
 export interface GuardrailResult {
@@ -270,6 +506,7 @@ export interface GuardrailResult {
   message: string;
   adjusted?: boolean;
   metadata?: Record<string, unknown>;
+  decisionReasons?: TrainingDecisionReason[];
 }
 
 export interface WeeklyPlan {
@@ -280,6 +517,7 @@ export interface WeeklyPlan {
   sessions: Session[];
   notes: string[];
   guardrailResults: GuardrailResult[];
+  decisionReasons?: TrainingDecisionReason[];
 }
 
 export interface DailyRecommendation {
