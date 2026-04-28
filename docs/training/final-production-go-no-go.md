@@ -20,7 +20,7 @@ The previously blocking external release trust gates have now been closed or con
 
 Remaining conditions before actual production deployment:
 
-- take a production-predeploy DB snapshot and keep restore instructions available during rollout;
+- production-predeploy DB snapshot has been taken and restore instructions must remain available during rollout;
 - use the standard Nexus staging/promote process only;
 - keep Training kill switches available in deployment notes;
 - run production-safe post-deploy checks with test tenant/user only;
@@ -39,6 +39,7 @@ Local iOS simulator proof is valid as pre-release compatibility evidence because
 | Internal agenda / identity path | Provider smokes used staging DB/user/OAuth and identity marker paths | Pass for release gate | Continue post-deploy checks |
 | Cross-skill staging | `training-cross-skill-smoke-20260428164946-829lm7` | Pass | Staging proof complete after seed/cleanup |
 | Migration 082 | Local clone and true staging clone rehearsals passed | Pass with deployment condition | Production-predeploy snapshot remains mandatory |
+| Production-predeploy DB snapshot | `/home/dominguez/backups/nexushub/predeploy-training-20260428T173458Z/bot-pre-training-release.db`, integrity_check=`ok`, 26,714,112 bytes | Pass | Keep available through rollout |
 | Security / tenancy | `docs/training/final-security-tenancy-review.md` reports no open P0/P1 auth or tenancy blockers after log redaction fixes | Pass at code/test level | Post-deploy provider checks still required |
 | iOS local simulator | Rich fixture smoke plus authenticated local API journey passed | Pass as pre-release compatibility proof | Requires post-deploy production-safe validation |
 | Staging deployment path | `./scripts/deploy-staging.sh` passed after staging-gate tool updates; staging portal health now uses signed session auth when required | Pass | Production still requires the documented promote path and explicit approval |
@@ -213,9 +214,9 @@ The production deployment command path is documented, but was not executed by th
 - [x] Outlook staging lifecycle passed with event read-back and cleanup.
 - [x] Cross-skill staging smoke passed.
 - [x] Runtime model claim restrained: no GPT-5.5 execution claim.
-- [ ] Production-predeploy DB snapshot is taken.
-- [ ] Final release copy reviewed for model/runtime claims.
-- [ ] Owner explicitly approves production deployment.
+- [x] Production-predeploy DB snapshot is taken.
+- [x] Final release copy reviewed for model/runtime claims.
+- [x] Owner explicitly approves production deployment.
 - [ ] Post-deploy production-safe validation is run.
 
 Current final verdict: **GO WITH CONDITIONS**.

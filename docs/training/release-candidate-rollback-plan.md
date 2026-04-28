@@ -26,6 +26,12 @@ Proposed production release tag if promoted:
 
 - `v4.14.100-training-engine-production-hardening`
 
+Production-predeploy Training snapshot captured before rollout:
+
+- `/home/dominguez/backups/nexushub/predeploy-training-20260428T173458Z/bot-pre-training-release.db`
+- size: 26,714,112 bytes
+- `PRAGMA integrity_check`: `ok`
+
 Do not create or push release tags until the candidate is reviewed and the final staging-gate closure commit is on the release branch.
 
 ## Pre-Deployment Rollback
@@ -92,7 +98,7 @@ No down migration is currently present. SQLite column rollback is not the primar
 
 Required before production:
 
-1. Take a database snapshot/copy immediately before applying migration 082.
+1. Take a database snapshot/copy immediately before applying migration 082. Completed for this rollout at `/home/dominguez/backups/nexushub/predeploy-training-20260428T173458Z/bot-pre-training-release.db`.
 2. Apply migration 082 on a staging clone first.
 3. Run lifecycle tests/smokes against the migrated clone.
 4. Verify older code at `a3f1b78` ignores the additive columns.
