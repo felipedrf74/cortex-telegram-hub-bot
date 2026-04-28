@@ -26,7 +26,7 @@ Proposed production release tag if promoted:
 
 - `v4.14.100-training-engine-production-hardening`
 
-Do not create or push tags until the candidate is reviewed.
+Do not create or push release tags until the candidate is reviewed and the final staging-gate closure commit is on the release branch.
 
 ## Pre-Deployment Rollback
 
@@ -97,12 +97,12 @@ Required before production:
 3. Run lifecycle tests/smokes against the migrated clone.
 4. Verify older code at `a3f1b78` ignores the additive columns.
 
-Local rehearsal update, 2026-04-28:
+Migration rehearsal update, 2026-04-28:
 
 - `docs/training/migration-082-rollback-rehearsal.md` records a successful local clone rehearsal.
-- Source was a copy of `data/bot.db`, not a true staging database.
 - Pending migrations through 081 were applied to the copy, migration 082 was applied in 2 ms, identity columns/indexes were verified, old-style SQL inserts still worked with nullable identity fields, and snapshot restore removed the 082 columns/indexes.
-- This improves confidence in the rollback strategy but does not replace the required staging clone rehearsal.
+- A true staging online-backup clone at `/home/dominguez/telegram-hub-bot-staging/data/release-rehearsal/training-082/20260428T162206/` was also restored, migrated with 082, exercised with old-style/new-style Training inserts and ownership rows, integrity-checked, and restored back to pre-082 state.
+- This closes the staging-clone rehearsal gate. A production-predeploy DB snapshot remains mandatory immediately before production rollout.
 
 Rollback options:
 
@@ -176,8 +176,8 @@ Backend RC fields are expected to be additive and backward-compatible. If an iOS
 
 Known iOS companion branch:
 
-- iOS repo branch: `feature/ios-training-local-engine-smoke`
-- This branch is not included in the backend RC.
+- iOS repo branch: `release/ios-training-engine-local-smoke-candidate`
+- This branch is not included in the backend RC; coordinate it as the companion frontend release if iOS code changes are being shipped.
 
 ## Cross-Skill Rollback
 

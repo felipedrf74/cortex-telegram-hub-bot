@@ -4,9 +4,9 @@ Date: 2026-04-28
 
 ## Executive Summary
 
-Release candidate branch `release/training-engine-production-candidate` has been pushed to `origin` at commit `b99098e` (`docs(training): record latest staging gate attempts`). The production code payload remains `b8f9be7` (`feat(training): harden coach engine release gates`); `b99098e` records the latest staging-gate and local migration rehearsal evidence after validation.
+Release candidate branch `release/training-engine-production-candidate` was previously pushed to `origin` at commit `b99098e` (`docs(training): record latest staging gate attempts`). The staging-gate closure payload is now committed locally at `733b38e` (`chore(training): close staging release gates`) and should be pushed to the backend RC branches before production deployment preparation continues. The production code payload remains `b8f9be7` (`feat(training): harden coach engine release gates`); `733b38e` adds final staging evidence, harness runtime initialization fixes, cross-skill staging fixtures, deployment-script health-check hardening, and full verify proof.
 
-The prior packaging blocker is closed: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are now committed into a clean candidate branch and pushed for review. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. This remains a review candidate only: it still needs human review plus provider staging, cross-skill staging, true staging/predeploy migration rollback proof, and runtime-model proof before production.
+The prior packaging blocker is closed: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are committed into a clean candidate branch. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. Provider staging, cross-skill staging, true staging clone migration rehearsal, model-claim restraint, and human review evidence are now complete. Production deployment still requires the standard production-predeploy DB snapshot, release-copy restraint, explicit owner deployment approval, and post-deploy validation.
 
 Current production/reference baseline: `origin/main` at `a3f1b78` (`docs: record 4.14.99 Training engine overhaul release`).
 
@@ -15,13 +15,12 @@ Current RC branch:
 ```bash
 git switch release/training-engine-production-candidate
 git rev-parse --short HEAD
-# b8f9be7
-# code payload
-# b99098e
-# current pushed branch head
+# b8f9be7   # code payload
+# b99098e   # previous pushed branch head
+# 733b38e   # local staging-gate closure commit, push before deployment
 ```
 
-No production deploy, push, or merge has been performed.
+No production deploy has been performed from this release candidate.
 
 ## Branch Inventory
 
@@ -29,8 +28,8 @@ No production deploy, push, or merge has been performed.
 | --- | --- | ---: | --- | --- |
 | Current production baseline | `origin/main`, `main` | `a3f1b78` | Stable reference | Use as rollback baseline |
 | Training overhaul already landed | `feature/training-engine-intelligence-and-agenda-overhaul` | local `5c276e0`, origin `08273a4` | Already merged into `main` via 4.14.99 release docs | Do not re-merge |
-| Second-opinion hardening base | `release/training-engine-production-hardening` | `b99098e` | Pushed review branch; code payload at `b8f9be7` | Source for RC review |
-| Release candidate | `release/training-engine-production-candidate` | `b99098e` | Pushed review branch; code payload at `b8f9be7` | Review only; production still blocked by external gates |
+| Second-opinion hardening base | `release/training-engine-production-hardening` | `b99098e` remote / `733b38e` local staging-gate closure | Pushed review branch needs final staging-gate push; code payload at `b8f9be7` | Source for RC review |
+| Release candidate | `release/training-engine-production-candidate` | `b99098e` remote / `733b38e` local staging-gate closure | Pushed review branch needs final staging-gate push; code payload at `b8f9be7` | Production deploy prep only after final push and production-predeploy snapshot |
 | Constrained-week work | packaged in RC | `b8f9be7` | Included | Keep |
 | Session identity work | packaged in RC | `b8f9be7` | Included with migration 082 | Keep; local migration rehearsal passed, true staging/predeploy proof still required |
 | Calendar staging smoke | packaged in RC | `b8f9be7` | Guarded harness/docs included | Keep; real provider smoke still blocked |
@@ -63,10 +62,10 @@ Packaging status:
 | 3 | Profile model and follow-up prompts | Medium | Included in `b8f9be7` | Profile/route tests passed |
 | 4 | Constrained-week reconciliation | High | Included in `b8f9be7` | Constrained-week/persistence/calendar tests passed |
 | 5 | Decision reasons and compression explanations | Medium | Included in `b8f9be7` | Decision trail/route tests passed |
-| 6 | Session identity and shape hash | High | Included in `b8f9be7` with migration 082 | Identity/lifecycle/calendar tests passed; local migration rollback rehearsal passed; true staging/predeploy proof still open |
+| 6 | Session identity and shape hash | High | Included in `b8f9be7` with migration 082 | Identity/lifecycle/calendar tests passed; local and true staging clone migration rollback rehearsals passed |
 | 7 | Security/tenant/log hardening | High | Included in `b8f9be7` | Full verify passed |
-| 8 | Calendar staging smoke harness | High as release gate | Included in `b8f9be7`; dry-run rows now `blocked`, not `pass` | Harness tests passed; real provider smoke blocked |
-| 9 | Cross-skill staging smoke harness | Medium | Included in `b8f9be7`; dry-run rows now `blocked`, not `pass` | Harness tests passed; real staging smoke blocked |
+| 8 | Calendar staging smoke harness | High as release gate | Included in `b8f9be7`; runtime DB init fix and final evidence in `733b38e` | Google/Outlook real provider smokes passed with read-back and cleanup |
+| 9 | Cross-skill staging smoke harness | Medium | Included in `b8f9be7`; runtime DB init + staging fixture tool in `733b38e` | Seeded staging runtime smoke passed and cleanup verified |
 | 10 | Evaluation harness and final docs | Low | Included in `b8f9be7`; generated `reports/` excluded | Eval passed 99/100 |
 
 ## Files Requiring Extra Review Before Inclusion
@@ -98,7 +97,7 @@ Do not include these unless separately reviewed and justified:
 
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
-| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done and pushed at `b99098e`; code payload at `b8f9be7` |
+| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Code payload at `b8f9be7`; final staging-gate closure at local `733b38e`, push required |
 | Backend full verification | `npm run verify` pass on committed candidate | Passed latest local gate: 383 files / 6,001 tests |
 | Training evaluation harness | Persona/scenario eval pass with result path documented | Passed: 99/100, 156 cases |
 | Google calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Passed: `training-calendar-smoke-20260428165035-7ljwng` |
@@ -112,12 +111,12 @@ Do not include these unless separately reviewed and justified:
 The candidate must not be merged or pushed for production while any of these are true:
 
 - The RC branch has uncommitted Training code changes after future edits.
-- Google or Outlook staging read-back is missing and not explicitly waived by the owner.
-- Migration 082 has not been rehearsed against a true staging/predeploy database clone with rollback proof.
 - Calendar cleanup uses broad date/title matching instead of ownership metadata.
 - Any P0/P1 security or tenant scoping test fails.
 - Any generated/test-only artifact is staged accidentally.
+- Production-predeploy DB snapshot has not been taken for the deployment window.
+- Release copy makes unproven GPT-5.5 runtime claims.
 
 ## Current Release Recommendation
 
-Treat `b99098e` as the pushed backend RC review branch head, with production code payload at `b8f9be7`; treat `b1aad7f` as the pushed iOS companion branch head, with iOS code payload at `537abf6`. Keep production status as NO-GO until provider staging gates are resolved or formally waived, cross-skill staging is resolved or scoped, true staging/predeploy migration rollback is proven, and runtime-model claims match real configuration.
+Treat `733b38e` as the local backend RC staging-gate closure commit to push to `release/training-engine-production-candidate` and `release/training-engine-production-hardening`, with production code payload at `b8f9be7`; treat `b1aad7f` as the pushed iOS companion branch head, with iOS code payload at `537abf6`. Production status is **GO WITH CONDITIONS** after final push: take the production-predeploy DB snapshot, keep release copy free of GPT-5.5 runtime claims, use the standard deploy path, and run production-safe post-deploy validation.
