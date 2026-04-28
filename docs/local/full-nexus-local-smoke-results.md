@@ -6,7 +6,7 @@ Branch: `feature/local-full-nexus-product-engine-smoke-environment`
 | Smoke | Command | Result | Notes |
 | --- | --- | --- | --- |
 | Script syntax | `bash -n scripts/full-nexus-local-engine.sh` | Pass | Runner parses successfully. |
-| Doctor | `scripts/full-nexus-local-engine.sh doctor` | Pass | Confirmed branch `feature/local-full-nexus-product-engine-smoke-environment`, commit `d0d0c41`, Node `v25.7.0`, npm `11.10.1`, local DB path, model calls disabled. |
+| Doctor | `scripts/full-nexus-local-engine.sh doctor` | Pass | Confirmed branch `feature/local-full-nexus-product-engine-smoke-environment`, packaged backend candidate commit `b8f9be7`, Node `v25.7.0`, npm `11.10.1`, local DB path, model calls disabled. |
 | Detached start | `scripts/full-nexus-local-engine.sh start` | Partial in Codex shell | Backend built and answered public `/api/v1/`, but detached child was reaped after command completion by the Codex shell. Added `up` attached mode for this environment. |
 | Attached start/health | `scripts/full-nexus-local-engine.sh up` plus `scripts/full-nexus-local-engine.sh health` | Pass | Backend stayed alive attached, listened on `127.0.0.1:8200`, and `/api/v1/` returned `status=online`. |
 | Local auth token | `scripts/full-nexus-local-engine.sh auth-token` | Pass | Created local sandbox user `2` and normalized `.local/full-nexus/local-ios-auth.json` with top-level `accessToken`. |

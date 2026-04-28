@@ -100,8 +100,10 @@ Result: **pass**
 
 - Score: 99/100
 - Cases: 156
-- Latest JSON: `reports/training-eval/production-unblock-20260428/training-eval-2026-04-28T12-48-25-364Z.json`
-- Latest Markdown: `reports/training-eval/production-unblock-20260428/training-eval-2026-04-28T12-48-25-364Z.md`
+- Latest post-packaging rerun output was written outside the repo to avoid committing generated artifacts:
+  - `/tmp/nexus-training-eval-production-candidate/training-eval-2026-04-28T13-09-20-605Z.json`
+  - `/tmp/nexus-training-eval-production-candidate/training-eval-2026-04-28T13-09-20-605Z.md`
+- Curated committed baseline remains in `docs/training/eval-baseline-results.md` and `docs/training/eval-baseline-results.json`.
 
 ### iOS Local Compatibility
 
@@ -124,6 +126,8 @@ Result: **pass**
 - Focused Training/importer suites passed.
 - Full iOS scheme passed after updating `DashboardHeroPresentationTests` to assert against the localized `CalendarEvent` display contract instead of pre-timezone-fix UTC strings.
 - Authenticated local simulator journey passed separately through the full local product runner: 43 authenticated REST calls across 19 endpoints, all `userId: 2`, all HTTP 200.
+- Post-packaging full iOS scheme result bundle:
+  `/Users/felipedominguez/Library/Developer/Xcode/DerivedData/Nexus_Hub-gsoqdyrpqmkkotdmfddhuhobycvu/Logs/Test/Test-Nexus Hub-2026.04.28_14-09-36-+0100.xcresult`
 
 ### Calendar Staging Smoke
 

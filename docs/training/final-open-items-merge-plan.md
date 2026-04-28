@@ -4,13 +4,12 @@ Date: 2026-04-28
 
 ## Merge Recommendation
 
-Do not merge the current priority branches by branch pointer alone. Most backend priority branches point at `d0d0c41`, while the actual work is present as local modified/untracked files. The safest path is:
+Do not merge the old priority branches by branch pointer alone. Most historical backend priority branches still point at `d0d0c41`, but the actual work has now been packaged into the clean local backend candidate `b8f9be7` and iOS companion candidate `537abf6`. The safest path is:
 
-1. Create a clean integration branch from the intended backend base.
-2. Commit the Training work in reviewable slices.
-3. Run full local gates on that integration branch.
-4. Run staging calendar and cross-skill gates.
-5. Coordinate iOS compatibility/feedback branches after backend contract names are frozen.
+1. Use `b8f9be7` as the backend review candidate and `537abf6` as the iOS companion review candidate.
+2. Do not cherry-pick from the stale marker branches unless a reviewer intentionally wants to inspect history.
+3. Run staging calendar and cross-skill gates.
+4. Coordinate iOS compatibility/feedback release from the companion candidate after backend contract names are frozen.
 
 ## Recommended Backend Commit Order
 
@@ -148,4 +147,3 @@ Required pass conditions:
 5. Wire Secretary busy windows directly into the engine capacity model.
 6. Add API/iOS rendering tests for `profileQuality` and `decisionReasons`.
 7. Decide product treatment for deferred/unscheduled sessions after reload.
-

@@ -4,9 +4,9 @@ Date: 2026-04-28
 
 ## Executive Summary
 
-Release candidate branch `release/training-engine-production-candidate` exists locally at commit `d0d0c41` (`feat(training): codex second opinion hardening`). It was created from `release/training-engine-production-hardening` and has not been pushed.
+Release candidate branch `release/training-engine-production-candidate` exists locally at commit `b8f9be7` (`feat(training): harden coach engine release gates`). It was created from `release/training-engine-production-hardening` and has not been pushed.
 
-This branch is a packaging branch, not yet a deployable release artifact. The branch currently carries a large dirty working tree with the Training open-item work, staging smoke harnesses, tests, docs, and generated artifacts. Because most Training follow-up feature branches point to the same commit (`d0d0c41`), the safe release path is not to merge by branch pointer. The safe path is to commit the current work into reviewable slices on the candidate branch, excluding unsafe/staging-only/generated material.
+The prior packaging blocker is closed locally: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are now committed into a clean local candidate. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. This remains a local release candidate only: it still needs human review/push plus provider staging, cross-skill staging, migration rollback, and runtime-model proof before production.
 
 Current production/reference baseline: `origin/main` at `a3f1b78` (`docs: record 4.14.99 Training engine overhaul release`).
 
@@ -15,7 +15,7 @@ Current RC branch:
 ```bash
 git switch release/training-engine-production-candidate
 git rev-parse --short HEAD
-# d0d0c41
+# b8f9be7
 ```
 
 No production deploy, push, or merge has been performed.
@@ -26,22 +26,22 @@ No production deploy, push, or merge has been performed.
 | --- | --- | ---: | --- | --- |
 | Current production baseline | `origin/main`, `main` | `a3f1b78` | Stable reference | Use as rollback baseline |
 | Training overhaul already landed | `feature/training-engine-intelligence-and-agenda-overhaul` | local `5c276e0`, origin `08273a4` | Already merged into `main` via 4.14.99 release docs | Do not re-merge |
-| Second-opinion hardening base | `release/training-engine-production-hardening` | `d0d0c41` | Local hardening branch | Source for RC packaging |
-| Release candidate | `release/training-engine-production-candidate` | `d0d0c41` | Created locally; dirty worktree carried | Package here, do not push yet |
-| Constrained-week work | `feature/training-constrained-week-capacity-reconciliation` | `d0d0c41` | Branch pointer only; real work dirty | Include selected files from worktree |
-| Session identity work | `feature/training-session-identity-plan-version-shape-hash` | `d0d0c41` | Branch pointer only; real work dirty | Include selected files plus migration |
-| Calendar staging smoke | `feature/training-calendar-staging-smoke` | `d0d0c41` | Harness/docs in worktree | Include guarded harness/docs only |
-| Cross-skill staging smoke | `feature/training-cross-skill-staging-smoke` | `d0d0c41` | Harness/docs in worktree | Include guarded harness/docs only |
-| Eval harness | `feature/training-engine-eval-harness` | `d0d0c41` | Tool/docs in worktree | Include harness and baseline docs, exclude generated reports unless intentionally archived |
-| Catalog expansion | `feature/training-catalog-expansion` | `d0d0c41` | Catalog/data/tests in worktree | Include after schema/metadata review |
-| Poor recovery variation | `feature/training-poor-recovery-variation` | `d0d0c41` | Engine/tests/docs in worktree | Include |
-| Weak-profile follow-up | `feature/training-weak-profile-followup-prompts` | `d0d0c41` | Engine/tests/docs in worktree | Include |
-| Schedule explanations | `feature/training-schedule-compression-explanations` | `d0d0c41` | Decision trail/docs/tests in worktree | Include |
-| iOS local smoke/readiness | iOS repo `feature/ios-training-local-engine-smoke` | `f7da7b7` | Separate repository | Do not merge into backend RC; coordinate as companion iOS release |
+| Second-opinion hardening base | `release/training-engine-production-hardening` | `b8f9be7` | Clean local hardening branch | Source for RC review |
+| Release candidate | `release/training-engine-production-candidate` | `b8f9be7` | Clean local candidate; not pushed | Review/push only after remaining gates are accepted |
+| Constrained-week work | packaged in RC | `b8f9be7` | Included | Keep |
+| Session identity work | packaged in RC | `b8f9be7` | Included with migration 082 | Keep; migration rollback still required |
+| Calendar staging smoke | packaged in RC | `b8f9be7` | Guarded harness/docs included | Keep; real provider smoke still blocked |
+| Cross-skill staging smoke | packaged in RC | `b8f9be7` | Guarded harness/docs included | Keep; real staging tenant smoke still blocked |
+| Eval harness | packaged in RC | `b8f9be7` | Included; generated reports excluded | Keep |
+| Catalog expansion | packaged in RC | `b8f9be7` | Included with schema/metadata tests | Keep |
+| Poor recovery variation | packaged in RC | `b8f9be7` | Included | Keep |
+| Weak-profile follow-up | packaged in RC | `b8f9be7` | Included | Keep |
+| Schedule explanations | packaged in RC | `b8f9be7` | Included | Keep |
+| iOS local smoke/readiness | iOS repo `release/ios-training-engine-local-smoke-candidate` | `537abf6` | Separate repository, clean local companion | Coordinate as companion iOS release |
 
 ## Merge Strategy
 
-Because the follow-up branches are not independent commits, use a controlled packaging strategy:
+The follow-up branches have been collapsed into the clean local RC. For any future merge or push, keep the controlled packaging strategy:
 
 1. Stay on `release/training-engine-production-candidate`.
 2. Review and stage files by slice, not by `git add .`.
@@ -51,20 +51,20 @@ Because the follow-up branches are not independent commits, use a controlled pac
 6. Run full backend verification before declaring the RC review-ready.
 7. Keep the production release blocked until Google/Outlook staging read-back and cross-skill staging blockers are resolved or explicitly waived.
 
-Recommended commit order:
+Packaging status:
 
-| Order | Slice | Include | Exclude | Risk | Required tests | Status |
-| ---: | --- | --- | --- | --- | --- | --- |
-| 1 | Catalog depth and metadata | `src/services/coach-kernel/knowledge/**`, catalog validators/tests, catalog docs | Random unused templates, cosmetic-only catalog bloat | Medium | Catalog depth tests, planner tests, eval harness | Planned |
-| 2 | Poor-recovery variation | `poor-recovery-variation.ts`, guardrails/planner hooks, recovery tests/docs | Randomized recovery selection | Medium | Poor recovery, guardrails, planner, eval poor-recovery personas | Planned |
-| 3 | Profile model and follow-up prompts | `training-profile-model.ts`, route serialization, profile tests/docs | Mandatory long questionnaire UX blockers | Medium | Profile model/follow-up tests, route tests | Planned |
-| 4 | Constrained-week reconciliation | `capacity-reconciliation.ts`, planner/schedule/persistence integration, constrained-week docs/tests | UI-only schedule hiding, hardcoded travel cases | High | Constrained-week, planner, calendar-sync, lifecycle tests | Planned |
-| 5 | Decision reasons and compression explanations | `decision-trail.ts`, schedule explanation mapping, route/read-model fields, docs/tests | Generic duplicate copy everywhere | Medium | Decision trail, compression explanation, route tests | Planned |
-| 6 | Session identity and shape hash | `training-session-identity.ts`, `migrations/082_training_session_identity_shape_hash.sql`, agenda ownership/scope/calendar provider changes, docs/tests | Broad date/title cleanup, identity matching by title only | High | Identity, agenda reconciliation, cancellation, persistence, provider marker tests | Planned |
-| 7 | Security/tenant/log hardening | Logger redaction, calendar/user scoping updates, security docs/tests | Sensitive payload logging, weakened auth guards | High | Security tenancy tests, logger redaction tests, route auth tests | Planned |
-| 8 | Calendar staging smoke harness | `scripts/training-calendar-staging-smoke.sh`, `src/tools/training-calendar-staging-smoke.ts`, runbook/results/open-blockers docs | Any real credentials, production calendar access, broad cleanup helpers | Low for runtime, High as release gate | Harness tests plus real staging read-back before release | Planned |
-| 9 | Cross-skill staging smoke harness | `scripts/training-cross-skill-staging-smoke.sh`, `src/tools/training-cross-skill-staging-smoke.ts`, docs | Destructive cross-skill test data, production tenants | Medium | Harness tests plus staging flow validation before release | Planned |
-| 10 | Evaluation harness and final docs | `src/tools/training-eval-harness.ts`, `src/services/coach-kernel/evaluation/**`, evaluation docs | Large generated `reports/` unless release artifact policy says yes | Low | Eval harness all personas, docs check | Planned |
+| Order | Slice | Risk | Packaging status | Validation status |
+| ---: | --- | --- | --- | --- |
+| 1 | Catalog depth and metadata | Medium | Included in `b8f9be7`; generated reports excluded | Catalog/planner/eval tests passed |
+| 2 | Poor-recovery variation | Medium | Included in `b8f9be7` | Poor recovery tests/eval passed |
+| 3 | Profile model and follow-up prompts | Medium | Included in `b8f9be7` | Profile/route tests passed |
+| 4 | Constrained-week reconciliation | High | Included in `b8f9be7` | Constrained-week/persistence/calendar tests passed |
+| 5 | Decision reasons and compression explanations | Medium | Included in `b8f9be7` | Decision trail/route tests passed |
+| 6 | Session identity and shape hash | High | Included in `b8f9be7` with migration 082 | Identity/lifecycle/calendar tests passed; migration rollback still open |
+| 7 | Security/tenant/log hardening | High | Included in `b8f9be7` | Full verify passed |
+| 8 | Calendar staging smoke harness | High as release gate | Included in `b8f9be7`; dry-run rows now `blocked`, not `pass` | Harness tests passed; real provider smoke blocked |
+| 9 | Cross-skill staging smoke harness | Medium | Included in `b8f9be7`; dry-run rows now `blocked`, not `pass` | Harness tests passed; real staging smoke blocked |
+| 10 | Evaluation harness and final docs | Low | Included in `b8f9be7`; generated `reports/` excluded | Eval passed 99/100 |
 
 ## Files Requiring Extra Review Before Inclusion
 
@@ -95,20 +95,20 @@ Do not include these unless separately reviewed and justified:
 
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
-| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Not done |
-| Backend full verification | `npm run verify` pass on committed candidate | Last pass observed on dirty worktree: 380 files / 5981 tests |
-| Training evaluation harness | Persona/scenario eval pass with result path documented | Last pass observed on dirty worktree: 99/100 |
+| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done locally at `b8f9be7` |
+| Backend full verification | `npm run verify` pass on committed candidate | Passed: 382 files / 5,994 tests |
+| Training evaluation harness | Persona/scenario eval pass with result path documented | Passed: 99/100, 156 cases |
 | Google calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
 | Outlook calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
 | Cross-skill staging | Secretary, Cooking, Finance, Content flows against staging/test tenant | Blocked/missing staging prerequisites |
-| iOS companion smoke | iOS simulator against local engine/backend or fixtures; no decode/render blockers | Local rich-fixture smoke passed; authenticated E2E remains P2 |
+| iOS companion smoke | iOS simulator against local engine/backend or fixtures; no decode/render blockers | Local rich-fixture smoke and authenticated E2E passed; full iOS scheme passed |
 | Migration rehearsal | Apply migration 082 to staging clone with backup/restore evidence | Required before release |
 
 ## Do-Not-Merge List
 
 The candidate must not be merged or pushed for production while any of these are true:
 
-- The RC branch still has uncommitted Training code changes.
+- The RC branch has uncommitted Training code changes after future edits.
 - Google or Outlook staging read-back is missing and not explicitly waived by the owner.
 - Migration 082 has not been rehearsed against a database clone with rollback proof.
 - Calendar cleanup uses broad date/title matching instead of ownership metadata.
@@ -117,5 +117,4 @@ The candidate must not be merged or pushed for production while any of these are
 
 ## Current Release Recommendation
 
-Proceed with RC packaging on `release/training-engine-production-candidate`, but keep production status as NO-GO until the branch is cleanly sliced, provider staging gates are resolved or formally waived, and migration rollback is proven.
-
+Treat `b8f9be7` as the local backend RC review candidate and `537abf6` as the local iOS companion candidate. Keep production status as NO-GO until provider staging gates are resolved or formally waived, cross-skill staging is resolved or scoped, migration rollback is proven, and runtime-model claims match real configuration.

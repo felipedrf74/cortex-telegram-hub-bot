@@ -24,26 +24,27 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 - real Outlook staging calendar lifecycle smoke is still blocked by missing staging credentials/env;
 - iOS rich-payload simulator smoke has now run against a local backend listener with deterministic Training fixtures, and the DEBUG-only auth importer enabled a fully authenticated local simulator journey across major iOS-facing endpoints;
 - database migration/rollback rehearsal still needs a staging clone;
-- final merge hygiene still requires committing/reviewing the release branch before deployment.
+- final merge hygiene is now closed locally with packaged backend/iOS candidate commits, but the candidates still need human review/push before any deployment process.
 
 ## P0 Production Blockers
 
 ### P0-01 Clean Integration Candidate
 
-- Status: **partially addressed / merge gate remains**
+- Status: **fixed locally; review/push gate remains**
 - Source: `docs/training/final-open-items-consolidation-report.md`, backend git status.
-- What changed: backup branch/tag were created and work is isolated on `release/training-engine-production-hardening`.
-- Evidence: full backend verify and Training eval passed on this branch working tree.
-- Remaining requirement: commit intended Training changes into a clean reviewed candidate before staging/promotion. Do not deploy from an uncommitted dirty tree.
+- What changed: intended backend Training changes were packaged into `b8f9be7` on `release/training-engine-production-hardening` and `release/training-engine-production-candidate`; intended iOS companion changes were packaged into `537abf6` on `release/ios-training-engine-local-smoke-candidate`.
+- Evidence: backend and iOS worktrees were clean after the packaging commits; backend commit hook ran `npm run typecheck` and `npm test`; full backend verify/eval and full iOS scheme evidence are recorded below.
+- Remaining requirement: human review and push. Do not deploy from an unreviewed local-only candidate.
 
 ### P0-02 Full Backend Verification
 
-- Status: **fixed for current branch working tree**
+- Status: **fixed for packaged local candidate**
 - Evidence:
-  - `npm run verify` passed: 380 files / 5,981 tests on the latest release-candidate rerun.
-  - Focused Training blocker suite passed: 13 files / 140 tests.
+  - `npm run verify` passed: 382 files / 5,994 tests on the packaged release-candidate code.
+  - Focused Training blocker suite passed: 14 files / 139 tests.
+  - Affected operational-switch/smoke-harness suite passed: 4 files / 23 tests.
   - Training eval passed: 99/100, 156 cases.
-- Remaining requirement: rerun after final commit/merge because the branch is not yet a clean immutable candidate.
+- Remaining requirement: rerun after any further code changes or after merge conflict resolution. No rerun is required for the already-packaged `b8f9be7` candidate unless it changes.
 
 ### P0-03 Google Calendar Staging Lifecycle Smoke
 
@@ -176,11 +177,14 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 ### P1-07 iOS QA Critical Gates
 
-- Status: **partially addressed**
+- Status: **fixed for local pre-release compatibility; external device/provider validation remains**
 - Evidence:
   - local iOS Training rich-payload smoke ran through XcodeBuildMCP with the local backend listener online;
   - focused Training DTO/presentation/feedback/view-model tests passed;
-  - `scripts/beta-smoke-local.sh` passed.
+  - `scripts/beta-smoke-local.sh` passed;
+  - DEBUG-only local-auth importer policy tests passed 15/15;
+  - authenticated simulator launch against the full local backend produced 43 authenticated REST calls across 19 iOS-facing endpoints, all with the local runner's user ID and HTTP 200 responses;
+  - full iOS scheme passed on `iPhone 17 Pro` after the stale dashboard hero presentation tests were aligned with the localized calendar display contract.
 - Remaining requirement before public iOS beta: signed TestFlight/device smoke for real auth/provider state and post-deploy production-safe Training validation.
 
 ### P1-08 Training Identity Migration Rollback

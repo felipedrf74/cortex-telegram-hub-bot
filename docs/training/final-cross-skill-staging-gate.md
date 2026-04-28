@@ -1,9 +1,9 @@
 # Final Training Cross-Skill Staging Gate
 
-Date: 2026-04-28  
-Backend branch: `release/training-engine-production-hardening`  
-Backend commit: `d0d0c41`  
-Package version: `4.14.99`  
+Date: 2026-04-28
+Backend branch: `release/training-engine-production-hardening`
+Backend commit: `b8f9be7`
+Package version: `4.14.99`
 Run ID: `training-cross-skill-smoke-20260428105013-bj5mtb`
 
 ## Executive Summary

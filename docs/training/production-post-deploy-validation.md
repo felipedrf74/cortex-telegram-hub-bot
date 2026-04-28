@@ -27,7 +27,7 @@ No post-deploy production validation was executed because no deployment occurred
 
 The following evidence remains valid as pre-release validation only:
 
-- backend full verify passed on local dirty worktree evidence;
+- backend full verify passed on the packaged local candidate (`b8f9be7`);
 - Training evaluation harness passed at 99/100 across 156 cases;
 - iOS local-engine rich Training smoke passed against local backend listener and deterministic fixtures;
 - local backend resources were shut down after iOS smoke.
@@ -52,4 +52,3 @@ After a future approved deployment, run only production-safe checks:
 ## Current Validation Result
 
 **Not applicable / blocked.** Production is unchanged because deployment did not run.
-

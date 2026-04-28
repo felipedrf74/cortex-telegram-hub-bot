@@ -7,7 +7,7 @@ Date: 2026-04-28
 | ID | Severity | Area | Risk | Current Evidence | Required Action |
 |---|---|---|---|---|---|
 | OI-R001 | Critical | Calendar lifecycle | Real Google/Outlook Training lifecycle has not passed staging read-back. | Calendar smoke result is `blocked` for both providers. | Run staging smoke with real test user, OAuth tokens, read-back, and cleanup. |
-| OI-R002 | High | Merge hygiene | Priority branches mostly point to `d0d0c41` and the work is in a dirty local tree. | `git status` shows many modified/untracked runtime/test/doc files. | Split into coherent commits or use a clean integration branch before merge. |
+| OI-R002 | High | Merge hygiene | The earlier dirty-tree packaging risk could have hidden or over-included work. | Closed locally: backend candidate `b8f9be7` and iOS companion `537abf6` are clean local commits. | Human review/push still required; rerun affected gates after any merge conflict resolution. |
 | OI-R003 | High | Cross-skill runtime | Cross-skill staging smoke has not run against real seeded data. | Local fixture contracts passed; staging prerequisites blocked. | Seed isolated staging user and rerun smoke. |
 | OI-R004 | High | Feedback adaptation | iOS can send rich feedback, but backend persistence/adaptation of all fields is not proven. | iOS tests passed; feedback docs list backend persistence confirmation as high priority. | Add backend route/storage/adaptation tests for all adaptive fields. |
 | OI-R005 | Medium | iOS rich state visual proof | Capped/reflowed/unscheduled/canceled/superseded rich states lack screenshot-level simulator proof. | Live simulator ran, but synthetic states are fixture/unit-level only. | Add debug fixture injection and XcodeBuildMCP/XCUITest screenshot smoke. |
@@ -23,8 +23,9 @@ Date: 2026-04-28
 These must be closed before production promotion if Training calendar trust is part of the release promise:
 
 1. `OI-R001` real Google/Outlook staging lifecycle smoke.
-2. `OI-R002` clean merge/commit hygiene.
-3. Full backend typecheck/test/eval on the final integration branch.
+2. Full backend typecheck/test/eval after any future merge conflict resolution.
+
+Resolved locally: `OI-R002` clean merge/commit hygiene is no longer a code packaging blocker for the local candidates.
 
 ## Beta Readiness Risks
 
@@ -59,4 +60,3 @@ For a beta where users actively create, sync, cancel, and regenerate Training pl
 Do not accept missing calendar staging proof silently. The engine has become much smarter, but stale or duplicate calendar events are the kind of failure users immediately notice and stop trusting.
 
 The only acceptable shortcut would be an explicit beta flag that keeps Training calendar sync limited or clearly labels it as experimental until Google and Outlook staging smoke passes.
-

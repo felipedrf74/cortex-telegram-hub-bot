@@ -1,8 +1,8 @@
 # Training Release Candidate Test Run
 
-Date: 2026-04-28  
-Backend branch: `release/training-engine-production-hardening` at `d0d0c41`  
-iOS branch used for local smoke: `feature/ios-training-local-engine-smoke` at `f7da7b7`  
+Date: 2026-04-28
+Backend branch: `release/training-engine-production-hardening` / `release/training-engine-production-candidate` at `b8f9be7`
+iOS branch used for local smoke: `release/ios-training-engine-local-smoke-candidate` at `537abf6`
 Deployment: not run
 
 ## Summary
@@ -17,8 +17,10 @@ The Training evaluation harness passed with a 99/100 aggregate quality score acr
 | --- | --- | --- | --- |
 | Backend full verify, first run | `npm run verify` | Failed in `__tests__/api/training-plan-persistence.test.ts`; stale privacy-era assertion expected raw `title` in calendar failure logs. | Fixed and rerun. |
 | Focused backend retest | `npx vitest run __tests__/api/training-plan-persistence.test.ts __tests__/utils/logger-redaction.test.ts` | Passed: 2 files / 8 tests. | Clear. |
-| Backend full verify, final run | `npm run verify` | Passed: typecheck plus 380 test files / 5,981 tests. | Clear. |
+| Backend full verify, final run | `npm run verify` | Passed: typecheck plus 382 test files / 5,994 tests. | Clear. |
 | Training eval harness | `npm run eval:training` | Passed: 99/100, 156 cases. | Clear, with P2 quality follow-up below. |
+| Backend commit hook validation | `npm run typecheck` and `npm test` | Passed while creating `b8f9be7`: 382 files / 5,994 tests. | Clear. |
+| iOS full scheme | `xcodebuild test -project "Nexus Hub.xcodeproj" -scheme "Nexus Hub" -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17 Pro"` | Passed on `537abf6`; result bundle `Test-Nexus Hub-2026.04.28_14-09-36-+0100.xcresult`. | Clear for local pre-release compatibility. |
 | Google/Outlook staging calendar smoke | `npm run smoke:training-calendar:staging` | Blocked with exit code 2 by missing staging env/secrets. No provider lifecycle was run. | Release blocker unless provider gate is waived. |
 | Cross-skill staging smoke | `npm run smoke:training-cross-skill:staging` | Local fixture contract checks passed; runtime staging smoke blocked with exit code 2 by missing staging env/database user. | Release blocker unless staging gate is waived. |
 
@@ -51,4 +53,3 @@ Cross-skill staging prerequisites still missing:
 ## Release Candidate Verdict
 
 Automated backend regression and evaluation gates passed. The release candidate is not fully releasable yet because real staging proof for Google/Outlook calendar lifecycle and cross-skill orchestration is still missing.
-

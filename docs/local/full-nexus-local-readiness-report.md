@@ -2,7 +2,7 @@
 
 Date: 2026-04-28  
 Branch: `feature/local-full-nexus-product-engine-smoke-environment`  
-Backend base commit: `d0d0c41`
+Backend base commit: `b8f9be7`
 
 Rollback safety:
 

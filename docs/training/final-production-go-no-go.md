@@ -1,9 +1,9 @@
 # Training Engine Final Production Go / No-Go
 
-Date: 2026-04-28  
-Backend RC branch reviewed: `release/training-engine-production-candidate` at `d0d0c41`  
-Backend hardening branch evidence: `release/training-engine-production-hardening` at `d0d0c41`  
-iOS local-smoke branch evidence: `feature/ios-training-local-engine-smoke` at `f7da7b7`  
+Date: 2026-04-28
+Backend RC branch reviewed: `release/training-engine-production-candidate` at `b8f9be7`
+Backend hardening branch evidence: `release/training-engine-production-hardening` at `b8f9be7`
+iOS local-smoke branch evidence: `release/ios-training-engine-local-smoke-candidate` at `537abf6`
 Deployment: not run
 
 ## 1. Final Verdict
@@ -12,13 +12,13 @@ Deployment: not run
 
 The Training engine is substantially improved and locally validated, but production release is not supportable yet because critical release trust gates remain open:
 
-1. The release candidate branch is not a clean immutable artifact; the intended Training work is still spread across a large dirty worktree.
-2. Google Calendar staging lifecycle read-back has not run.
-3. Outlook Calendar staging lifecycle read-back has not run.
-4. Cross-skill staging runtime smoke has not run against seeded staging data.
-5. Migration 082 rollback has not been rehearsed on a staging clone.
+1. Google Calendar staging lifecycle read-back has not run.
+2. Outlook Calendar staging lifecycle read-back has not run.
+3. Cross-skill staging runtime smoke has not run against seeded staging data.
+4. Migration 082 rollback has not been rehearsed on a staging clone.
+5. GPT-5.5 runtime/provider proof and release-copy restraint still need final staging evidence.
 
-Post-review update: the local-auth iOS harness gap has been closed, and dedicated Training operational kill switches have been added/tested for generation, calendar writes/sync, and cross-skill signal publishing. These reduce operational risk but do not override the remaining provider staging and clean-candidate blockers.
+Post-review update: the release work has been packaged into clean local backend/iOS candidate commits, the local-auth iOS harness gap has been closed, and dedicated Training operational kill switches have been added/tested for generation, calendar writes/sync, and cross-skill signal publishing. These reduce operational risk but do not override the remaining provider staging, migration rollback, cross-skill staging, and runtime-model proof gates.
 
 Local iOS simulator proof is valid as pre-release compatibility evidence because it ran against a local backend listener and upgraded-engine-shaped fixtures, and resource shutdown was confirmed. It is not production iOS proof and must be followed by production-safe post-deploy validation if/when the backend ships.
 
@@ -26,9 +26,9 @@ Local iOS simulator proof is valid as pre-release compatibility evidence because
 
 | Area | Evidence | Status | Production interpretation |
 | --- | --- | --- | --- |
-| Backend automated tests | `npm run verify` passed: 382 test files / 5,994 tests in `docs/training/production-test-results.md` | Pass | Strong local code confidence, must rerun on clean RC commit |
+| Backend automated tests | `npm run verify` passed: 382 test files / 5,994 tests in `docs/training/production-test-results.md`; commit hook also ran `npm run typecheck` and `npm test` on `b8f9be7` | Pass | Strong local code confidence on the packaged RC |
 | Training evaluation harness | 99/100 across 156 cases in `docs/training/release-candidate-test-run.md` and `docs/training/production-readiness-criteria.md` | Pass | Strong coach-quality regression confidence |
-| Functional hardening | Constrained-week, inactive state, marker refresh, profile quality, and decision reasons documented in `docs/training/production-fixes-applied.md` | Pass locally | Backend behavior improved, still needs clean packaging |
+| Functional hardening | Constrained-week, inactive state, marker refresh, profile quality, decision reasons, dry-run smoke safety, and operational switches documented in `docs/training/production-fixes-applied.md` | Pass locally | Backend behavior improved, still needs staging/provider proof |
 | Google Calendar staging | `docs/training/final-calendar-staging-results.md` shows prerequisite block; providers run: none | Fail / blocked | Production blocker unless explicitly waived |
 | Outlook Calendar staging | Same final calendar staging result; providers run: none | Fail / blocked | Production blocker unless explicitly waived |
 | Internal agenda staging | Not run because staging DB/user missing | Fail / blocked | Production blocker |
@@ -37,18 +37,18 @@ Local iOS simulator proof is valid as pre-release compatibility evidence because
 | iOS local simulator | `docs/ios/release-candidate-local-ios-smoke-results.md`, `docs/ios/final-training-ios-smoke-results.md`, and `docs/local/full-nexus-local-smoke-results.md` show rich fixture smoke plus authenticated local API journey passed | Pass as local pre-release compatibility proof | Requires post-deploy production-safe validation |
 | Local resource shutdown | `docs/ios/release-candidate-local-engine-shutdown-confirmation.md` confirms backend/app stopped and port 8200 clear | Pass | Local smoke complete, no resource burn |
 | Rollback | `docs/training/release-candidate-rollback-plan.md` documents rollback path | Partial | Migration rollback rehearsal still missing |
-| RC merge hygiene | `docs/training/release-candidate-merge-plan.md` says candidate branch exists but dirty worktree remains | Fail / blocked | Production blocker |
+| RC merge hygiene | Backend candidate `b8f9be7` and iOS candidate `537abf6` were committed locally with clean worktrees after validation | Pass locally | Review/push still pending; no longer the release-blocking defect |
 
 ## 3. Functional Readiness
 
 | Capability | Assessment | Evidence | Remaining risk |
 | --- | --- | --- | --- |
-| Training plans | Improved and locally tested | Full verify, eval harness, production fixes docs | Must be packaged into clean RC commits |
+| Training plans | Improved and locally tested | Full verify, eval harness, production fixes docs | Must be staging-validated before production |
 | Constrained/travel weeks | Improved | Fully booked days now become explicit `unscheduled` instead of fake times | Needs staging calendar proof with real conflicts |
 | Recovery variation | Improved | Poor-recovery tests/eval included in local suite | Beta telemetry should calibrate thresholds |
 | Profile follow-ups | Backend route fixed | `profileQuality` and follow-up prompts serialized | iOS production display and answer loop still needs product proof |
 | Schedule compression explanations | Backend route fixed | `decisionReasons` serialized and tested | iOS grouping/display is local-smoke proven only |
-| Catalog depth | Improved | Eval 99/100 and catalog tests in worktree | Review generated catalog churn before commit |
+| Catalog depth | Improved | Eval 99/100 and catalog tests in packaged candidate | Continue reviewing catalog additions for unused template bloat |
 | Feedback handling | Backend analysis tests pass; iOS feedback payload tests pass | Local fixture feedback flow passed | End-to-end persistence causing future plan adaptation remains a P2/P1 product-claim gate |
 | GPT-5.5 intelligence quality | Architecture supports richer reasoning; deterministic validators/eval exist | Docs and eval harness | Runtime model/provider proof is missing; do not claim GPT-5.5 execution in release copy |
 | Avoidance of hardcoded outputs | Stronger than prior engine | Scenario-based eval and tests | Continue reviewing catalog additions for unused template bloat |
@@ -80,10 +80,10 @@ Local iOS proof is valid for pre-release compatibility, with clear boundaries.
 
 | Item | Value |
 | --- | --- |
-| iOS branch | `feature/ios-training-local-engine-smoke` |
-| iOS commit | `f7da7b7` |
+| iOS branch | `release/ios-training-engine-local-smoke-candidate` |
+| iOS commit | `537abf6` |
 | Backend branch used | `release/training-engine-production-hardening` |
-| Backend commit used | `d0d0c41` |
+| Backend commit used | `b8f9be7` |
 | Local API | `http://127.0.0.1:8200` |
 | Simulator | `iPhone 17 Pro`, iOS Simulator 26.4.1 |
 | Rich fixture launch args | `-NEXUSQATrainingFixture rich-v1 -nexus_allow_local_backend YES -nexus_base_url http://127.0.0.1:8200` |
@@ -169,7 +169,7 @@ Remaining security/privacy risks:
 | Monitoring | Needs final setup | Must monitor calendar sync failures, duplicate events, generation failures, feedback errors, and provider auth expiration. |
 | Resource control | Local smoke clean | Port 8200 shutdown confirmed after iOS smoke. |
 | Staging resource control | Not proven | Provider/cross-skill staging not run. |
-| Release packaging | Not ready | Dirty worktree remains. |
+| Release packaging | Improved | Clean local backend and iOS candidate commits exist; review/push has not been performed. |
 
 Operational verdict: **improved, but not production-ready yet**.
 
@@ -179,10 +179,11 @@ Operational verdict: **improved, but not production-ready yet**.
 
 | ID | Blocker | Required closure |
 | --- | --- | --- |
-| P0-1 | RC branch is not clean/reviewable | Commit selected work into reviewable slices; `git status --short` clean; rerun verify/eval |
-| P0-2 | Google Calendar staging lifecycle not run | Real staging create/update/regenerate/cancel/retry read-back and cleanup, or explicit owner waiver |
-| P0-3 | Outlook Calendar staging lifecycle not run | Same as Google, or explicit owner waiver |
-| P0-4 | Calendar safety not proven against real providers | Provider event IDs, identity markers, stale cleanup, and retry idempotency verified by read-back |
+| P0-1 | Google Calendar staging lifecycle not run | Real staging create/update/regenerate/cancel/retry read-back and cleanup, or explicit owner waiver |
+| P0-2 | Outlook Calendar staging lifecycle not run | Same as Google, or explicit owner waiver |
+| P0-3 | Calendar safety not proven against real providers | Provider event IDs, identity markers, stale cleanup, and retry idempotency verified by read-back |
+
+Resolved local P0: clean backend/iOS candidate packaging is closed locally (`b8f9be7`, `537abf6`) with clean worktrees and post-packaging validation evidence. It still requires human review and push before any release process.
 
 ### P1 Blockers / Must-Fix Or Explicitly Accept
 
@@ -192,7 +193,6 @@ Operational verdict: **improved, but not production-ready yet**.
 | P1-2 | Cross-skill staging runtime not run | Seeded staging tenant smoke or explicit scoped release decision |
 | P1-3 | GPT-5.5 runtime not proven | Verify model/provider routing or avoid runtime claims |
 | P1-4 | Feature flag / operational kill switch unclear | **Fixed in code**: use `TRAINING_ENGINE_DISABLED=1`, `TRAINING_PLAN_GENERATION_DISABLED=1`, `TRAINING_CALENDAR_WRITES_DISABLED=1`/`TRAINING_CALENDAR_SYNC_DISABLED=1`, or `TRAINING_CROSS_SKILL_SIGNALS_DISABLED=1` as scoped disable paths. Keep as operational checklist item, not a code blocker. |
-| P1-5 | Clean committed candidate tests missing | Rerun full verify/eval after final RC commits |
 
 ## 10. Deferrable Open Items
 
@@ -286,38 +286,33 @@ Do not deploy this Training RC to production today.
 
 Recommended next action:
 
-1. Package the dirty worktree into clean commits on `release/training-engine-production-candidate`.
-2. Exclude generated reports, secrets, staging envs, local DBs, and test-only leakage.
-3. Rerun:
-
-```bash
-npm run verify
-npm run eval:training -- --week-start 2026-04-27 --fail-under 95 --out-dir reports/training-eval/production-candidate
-```
-
-4. Rehearse migration 082 on a staging DB clone.
-5. Run real Google/Outlook staging calendar lifecycle smokes:
+1. Review and push the packaged local backend/iOS candidate commits only after human approval:
+   - backend `b8f9be7`
+   - iOS `537abf6`
+2. Rehearse migration 082 on a staging DB clone.
+3. Run real Google/Outlook staging calendar lifecycle smokes:
 
 ```bash
 TRAINING_CALENDAR_STAGING_RESULTS_PATH=docs/training/final-calendar-staging-results.md \
 npm run smoke:training-calendar:staging
 ```
 
-6. Run real cross-skill staging smoke:
+4. Run real cross-skill staging smoke:
 
 ```bash
 TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH=docs/training/final-cross-skill-staging-results.md \
 npm run smoke:training-cross-skill:staging
 ```
 
-7. If all gates pass, deploy to staging only:
+5. Confirm GPT-5.5 runtime/provider configuration or remove runtime-model claims from release copy.
+6. If all gates pass, deploy to staging only:
 
 ```bash
 ./scripts/deploy-staging.sh
 ./scripts/staging-smoke.sh
 ```
 
-8. Promote to production only after staging soaks and final owner approval:
+7. Promote to production only after staging soaks and final owner approval:
 
 ```bash
 ./scripts/promote-to-prod.sh
@@ -329,11 +324,11 @@ These commands are release path documentation only. They were not executed in th
 
 Production can move from NO-GO to GO only when all of the following are true:
 
-- [ ] `release/training-engine-production-candidate` is clean and reviewable.
-- [ ] All intended source, test, migration, script, and documentation changes are committed intentionally.
-- [ ] Generated artifacts/secrets/local DBs are excluded.
-- [ ] `npm run verify` passes on the clean candidate commit.
-- [ ] Training eval harness passes on the clean candidate commit.
+- [x] `release/training-engine-production-candidate` is clean and reviewable locally.
+- [x] All intended source, test, migration, script, and documentation changes are committed intentionally in local candidate commits.
+- [x] Generated artifacts/secrets/local DBs are excluded from local candidate commits.
+- [x] `npm run verify` passes on the clean candidate commit.
+- [x] Training eval harness passes on the clean candidate commit.
 - [ ] Migration 082 has been rehearsed on a staging clone with rollback proof.
 - [ ] Google staging lifecycle passes with event read-back and cleanup.
 - [ ] Outlook staging lifecycle passes with event read-back and cleanup.
