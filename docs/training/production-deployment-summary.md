@@ -1,12 +1,14 @@
 # Training Production Deployment Summary
 
 Date: 2026-04-28  
-Status before deploy: **GO WITH CONDITIONS**
+Status: **deployed successfully / monitoring**
 
 ## Release Candidate
 
 - Backend RC branch: `release/training-engine-production-candidate`
-- Backend RC head before deploy version bump: `cef5888`
+- Backend RC head before deploy version bump: `7369d76`
+- Deployed version-bump commit: `4b82e79`
+- Production backend version: `4.14.100`
 - Companion iOS branch evidence: `release/ios-training-engine-local-smoke-candidate`
 - Production baseline / rollback: `a3f1b78`
 
@@ -27,12 +29,12 @@ Status before deploy: **GO WITH CONDITIONS**
 - Production-safe post-deploy validation must run after deployment.
 - Calendar production tests must use only approved safe test tenant/calendar data.
 
-## Deployment Command
+## Deployment Result
 
-Use the documented process:
+The documented process was executed:
 
 ```bash
 ./scripts/deploy.sh
 ```
 
-No alternative deployment path is approved by this package.
+No alternative deployment path was used. Post-deploy read-only checks passed; production-safe Training mutation/calendar checks remain deferred until an approved safe test tenant/calendar exists.

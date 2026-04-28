@@ -1,78 +1,64 @@
 # Training Production Deployment Log
 
 Date: 2026-04-28  
-Attempted by: Codex  
-Requested action: production deployment  
-Result: **blocked before deployment / no deployment executed**
+Operator: Codex  
+Deployment result: **deployed successfully**
 
 ## Summary
 
-Explicit human approval to deploy was present in the prompt, but the documented Nexus release gate still reports **NO-GO for production deployment**. Per the non-negotiable deployment rule, deployment stopped before any staging or production release command was run.
+The Training engine release was deployed to production through the documented Nexus production deploy path:
 
-No production files were deployed, no production process was restarted, no migration was applied, no calendar writes were attempted, and no rollback was required.
+```bash
+./scripts/deploy.sh
+```
 
-## Release Candidate Checked
+No alternate deployment path was used. The deploy script ran the full validation gate before touching the server, built the TypeScript bundle, validated production environment requirements, bumped the backend version, stopped production services, created a production backup including `data/bot.db`, synced files with the hardened excludes, rebuilt native modules, restarted PM2 services, and completed health checks.
+
+## Release Candidate
 
 | Item | Value |
 | --- | --- |
-| Backend repo | `/Users/felipedominguez/Desktop/Custom Connectors/Cortex/cortex-telegram-hub-bot` |
-| Current branch | `release/training-engine-production-candidate` |
-| Current commit | `b8f9be7` |
-| Go/no-go source | `docs/training/final-production-go-no-go.md` |
-| Recorded verdict | **NO-GO for production deployment** |
+| Backend branch | `release/training-engine-production-candidate` |
+| Pre-deploy code/docs commit | `7369d76` |
+| Deployed version-bump commit | `4b82e79` |
+| Deployed version | `4.14.100` |
+| Previous production version | `4.14.99` |
+| Production path | `/home/dominguez/telegram-hub-bot` |
+| Production server | `dominguez@serverdominguez` |
 
-## Pre-Deploy Gate Results
+## Pre-Deploy Validation
 
-| Gate | Required | Observed | Result |
-| --- | --- | --- | --- |
-| Human approval | Explicit approval in prompt | Present | Pass |
-| Final GO / GO WITH CONDITIONS | Final go/no-go must be GO, or all conditions satisfied | `docs/training/final-production-go-no-go.md` says **NO-GO** | **Block** |
-| Clean release candidate | Clean, reviewable candidate branch | Backend branch head `b99098e` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are pushed for review | Pass for review packaging |
-| Google calendar staging | Real staging read-back lifecycle proof | Not run; prerequisites missing | **Block** |
-| Outlook calendar staging | Real staging read-back lifecycle proof | Not run; prerequisites missing | **Block** |
-| Cross-skill staging | Seeded staging tenant runtime smoke | Not run; prerequisites missing | **Block** |
-| Migration rollback | Migration 082 rehearsal on staging clone | Local clone apply/restore passed; true staging/predeploy proof still missing | **Block** |
-| Local iOS compatibility | Local-engine simulator smoke and shutdown | Passed and shutdown confirmed in iOS docs | Pass as pre-release compatibility proof |
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Full backend verification | Pass | Deploy script ran `npm run verify`: 383 test files / 6,001 tests passed. |
+| TypeScript build | Pass | `npm run build` completed before server sync. |
+| Production `.env` validation | Pass | Required production keys were present. |
+| Production-predeploy DB snapshot | Pass | `/home/dominguez/backups/nexushub/predeploy-training-20260428T173458Z/bot-pre-training-release.db`, `integrity_check=ok`. |
+| Standard deploy backup | Pass | Deploy script created a backup with `bot.db included: 1`. |
+| Staging provider gates | Pass | Google and Outlook staging calendar smokes had already passed with read-back and cleanup. |
+| Cross-skill staging gate | Pass | Seeded Training-centered cross-skill staging smoke had already passed with cleanup verified. |
+| Migration 082 rehearsal | Pass | Local and true staging clone apply/restore rehearsals had passed before deploy. |
 
-## Commands Not Executed
+## Production Changes Applied
 
-The documented release path was **not** executed:
+- Backend package version bumped from `4.14.99` to `4.14.100`.
+- Migration `082_training_session_identity_shape_hash.sql` applied during production startup.
+- PM2 services restarted:
+  - `nexus-hub`
+  - `content-engine`
+- Production process list was saved through PM2.
 
-```bash
-./scripts/deploy-staging.sh
-./scripts/staging-smoke.sh
-./scripts/promote-to-prod.sh
-```
+## Deploy Script Health Result
 
-No production deployment command was run.
-
-## Deployment Artifacts
-
-| Artifact | Status |
+| Check | Result |
 | --- | --- |
-| Production deploy | Not run |
-| Staging deploy | Not run |
-| Production tag/version bump | Not created |
-| Database migration | Not applied |
-| Calendar staging writes | Not run |
-| Production calendar writes | Not run |
-| Rollback | Not needed |
+| Content engine health | Pass |
+| Status portal snapshot | Pass, reported `4.14.100` |
+| Bot process | Pass, `online` |
+| PM2 production services | Pass, `nexus-hub` and `content-engine` online |
 
-## Stop Reason
+## Notes
 
-Deployment was stopped because the release gate explicitly says:
-
-- final verdict: **NO-GO for production deployment**;
-- Google/Outlook staging calendar proof is missing;
-- cross-skill staging proof is missing;
-- true staging/predeploy migration rollback proof is missing; local clone rehearsal passed.
-
-## Next Required Actions Before Deployment
-
-1. Review the pushed backend candidate `b99098e` and iOS companion `b1aad7f`; production approval remains separate.
-2. Rehearse migration 082 on a true staging database clone with rollback proof, or complete an explicit deployment-preflight snapshot/restore gate.
-3. Run Google and Outlook staging calendar lifecycle smokes with read-back and cleanup.
-4. Run cross-skill staging smoke against a seeded staging test tenant.
-5. Verify runtime model/provider configuration or keep GPT-5.5 runtime claims out of release copy.
-6. Update `docs/training/final-production-go-no-go.md` to GO or GO WITH CONDITIONS only when evidence supports it.
-7. Re-run this deployment workflow only after the documented release gate changes.
+- The deploy script patched for this release excludes local/staging artifacts such as `.env.*`, `.local`, `.codex`, `.claude/worktrees`, and local database files from production sync.
+- No production calendar smoke writes were performed during deployment. Provider write/read-back lifecycle proof remains from staging, and production calendar writes should only be tested with an approved safe production test tenant/calendar.
+- No rollback was needed.

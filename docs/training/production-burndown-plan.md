@@ -6,7 +6,7 @@ Backup: `backup/training-prod-hardening-pre-20260428-1004` / `backup-training-pr
 
 ## 1. Executive Summary
 
-Current backend readiness: **release-hardening branch is packaged, locally green, and staging-gate cleared, but not production-cleared until the standard deployment preflight is complete**.
+Current backend readiness: **released to production at `4.14.100` with post-deploy read-only health green; production-safe mutation proof remains deferred until an approved safe test tenant/user/calendar is available**.
 
 This pass closed the production-critical backend gaps that were still allowing impossible schedules or stale calendar identity state:
 
@@ -21,14 +21,15 @@ The backend test gate is strong for the packaged local candidate:
 - focused Training blocker suite: 14 files / 139 tests passed;
 - Training eval: 99/100 across 156 cases.
 
-The former external trust gates have now been closed: Google and Outlook provider smokes passed with read-back/cleanup, seeded cross-skill staging passed with cleanup, and migration 082 passed on both local and true-staging clones. Remaining conditions are deployment-process gates:
+The former external trust gates have now been closed: Google and Outlook provider smokes passed with read-back/cleanup, seeded cross-skill staging passed with cleanup, migration 082 passed on both local and true-staging clones, and production deployment completed through `./scripts/deploy.sh`.
 
-- iOS rich Training simulator smoke and authenticated local API journey have passed locally, but signed/post-deploy proof remains external;
-- production-predeploy DB snapshot must be taken immediately before rollout;
-- release copy must avoid GPT-5.5 runtime claims because Training plan generation is deterministic/rule-based in this release;
-- the standard Nexus staging/promote process and production-safe post-deploy validation are still required.
+Remaining conditions are now post-release validation/monitoring gates:
 
-Production is realistic after those deployment preflights. It is not honest to call production healthy before the post-deploy checks pass.
+- iOS rich Training simulator smoke and authenticated local API journey have passed locally, but signed production iOS/device proof remains external;
+- release copy must continue to avoid GPT-5.5 runtime claims because Training plan generation is deterministic/rule-based in this release;
+- production-safe Training mutation/calendar checks require an approved safe production test tenant/user/calendar.
+
+Production read-only health is green. It is not honest to claim production calendar mutation proof until a safe production test calendar is provided.
 
 ## 2. Open Task Inventory
 
@@ -48,7 +49,7 @@ Production is realistic after those deployment preflights. It is not honest to c
 | P1-05 | Profile quality/follow-up route | Personalization | High | Backend fixed | Weak-profile prompts can reach clients | Route now serializes `profileQuality` | iOS render/answer proof |
 | P1-06 | Decision reasons route | Explainability | High | Backend fixed | Compression/reflow reasons can reach clients | Route now serializes `decisionReasons` | iOS grouped render proof |
 | P1-07 | iOS QA Training gates | iOS release | High | Fixed locally; external device gate remains | Runtime UX may regress | Local rich fixture smoke + authenticated local API journey + full iOS scheme passed | Signed TestFlight/provider validation |
-| P1-08 | Migration rollback drill | Data safety | High | Partially closed | Real deployment DB rollback still needs staging/predeploy proof | Local clone rehearsal passed; true staging DB unavailable | Repeat apply/rollback/snapshot restore on true staging clone or deployment preflight snapshot |
+| P1-08 | Migration rollback drill | Data safety | High | Closed for release | Migration rollback path has staging and production-predeploy evidence | Local clone, true staging clone, and production-predeploy snapshot evidence exist | Keep snapshot path available during monitoring window |
 
 ## 3. GPT-5.5 Intelligence-Readiness Review
 
@@ -59,8 +60,8 @@ Production is realistic after those deployment preflights. It is not honest to c
 | Feedback loop | Partially proven | Medium | Engine feedback-analysis tests pass; end-to-end rich iOS feedback remains open. |
 | Catalog/dependency structures | Improved by prior work | Low/medium | Full verify and Training eval covered current catalog work. |
 | Explanations/decision trail | Improved | Medium until iOS rendering | Backend serializes reasons; frontend display remains the productization step. |
-| Schedule/calendar lifecycle | Locally stronger | High until staging | Real provider lifecycle smoke is mandatory. |
-| Cross-skill context | Fixture-proven only | Medium | Staging tenant validation remains blocked. |
+| Schedule/calendar lifecycle | Staging-provider proven | Medium until production-safe mutation | Google/Outlook staging provider lifecycle passed; production writes remain deferred without safe test calendar. |
+| Cross-skill context | Staging-runtime proven | Medium | Seeded staging tenant validation passed and cleanup was verified. |
 | Evaluation harness | Good | Low | Final eval passed 99/100. |
 | Model/provider config | Not proven | Medium/high for claims | Do not claim GPT-5.5 execution until config/runtime evidence exists. |
 
@@ -78,26 +79,24 @@ Production is realistic after those deployment preflights. It is not honest to c
 | iOS simulator rich Training smoke | Passed locally | Rich fixture smoke, authenticated local journey, and full iOS scheme passed on `537abf6` |
 | Security/tenant checks | Passed via full verify | Existing tenant/security suites passed in `npm run verify` |
 | Backward compatibility | Locally preserved | Additive route fields; inactive states preserve rows and skip calendar creation |
-| Production rollback readiness | Partial | Backup branch/tag exists; DB migration rollback passed locally but still needs true staging/predeploy snapshot proof |
+| Production rollback readiness | Ready | Backup branch/tag exists; migration rollback passed locally and on true staging clone; production-predeploy snapshot captured |
 
 ## 5. Final Execution Order
 
-1. Review the pushed backend candidate `b99098e` (code payload `b8f9be7`) and iOS companion `b1aad7f` (code payload `537abf6`).
-2. Run Google staging calendar smoke with read-back and cleanup.
-3. Run Outlook staging calendar smoke with read-back and cleanup.
-4. Rehearse migration apply/rollback on a true staging clone, or record an explicit deployment preflight snapshot/restore gate; local clone rehearsal is already complete.
-5. Run cross-skill staging smoke on an isolated staging test tenant.
-6. Confirm runtime model/provider configuration or keep GPT-5.5 runtime claims out of release copy.
-7. Confirm rich feedback submit persists and changes future coaching before making adaptive-learning claims.
-8. Update API/release docs, then make final go/no-go.
+1. Monitor production `4.14.100` service health, DB integrity, Training logs, calendar sync failures, duplicate agenda events, and model/provider cost/latency.
+2. Run production-safe authenticated API/iOS smoke when an approved safe production token is available.
+3. Run production-safe Training create/cancel/regenerate and constrained-week checks only for an approved safe test tenant/user.
+4. Run production calendar create/read/delete only against an approved safe test calendar.
+5. Confirm rich feedback submit persists and changes future coaching before making broader adaptive-learning claims.
+6. Run signed TestFlight/device validation for iOS rich Training states and provider-auth paths.
 
 ## 6. Do-Not-Merge List
 
-Do not merge or deploy:
+Do not merge follow-up changes or run additional production writes:
 
 - from unreviewed candidate branches;
-- calendar lifecycle changes without real Google/Outlook staging read-back proof;
-- database identity migration without true staging or deployment-preflight rollback/snapshot proof;
+- production calendar tests without an approved safe production test calendar;
+- production Training mutations without an approved safe production test tenant/user;
 - rich Training state claims beyond local pre-release proof without signed/post-deploy validation;
 - GPT-5.5 execution claims without runtime model/provider evidence;
 - adaptive feedback claims without end-to-end feedback persistence and future-plan adaptation evidence;
@@ -115,4 +114,4 @@ Training is production-ready only when:
 - API/iOS docs match actual contracts;
 - remaining P1 gates are either passed or explicitly scoped out by owner decision.
 
-Current status: **NO-GO for production, YES for staging validation once credentials/environments are available.**
+Current status: **PRODUCTION RELEASED at `4.14.100`; read-only post-deploy health is green; production-safe mutation/calendar proof remains deferred pending safe test tenant/calendar approval.**

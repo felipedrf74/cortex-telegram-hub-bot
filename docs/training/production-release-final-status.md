@@ -1,50 +1,56 @@
 # Training Production Release Final Status
 
 Date: 2026-04-28  
-Final status: **NOT RELEASED / NO-GO BLOCKED**
+Final status: **RELEASED / PRODUCTION HEALTH GREEN WITH LIMITED POST-DEPLOY MUTATION PROOF**
 
 ## Final Status
 
-The Training engine production deployment was **not executed**.
+The Training engine production release was deployed through the documented Nexus production deploy path and is live at backend version `4.14.100`.
 
-Reason: the repository source of truth, `docs/training/final-production-go-no-go.md`, records the verdict as **NO-GO for production deployment**.
+| Item | Value |
+| --- | --- |
+| Production version | `4.14.100` |
+| Deployment commit | `4b82e79` |
+| Release branch | `release/training-engine-production-candidate` |
+| Previous production version | `4.14.99` |
+| Rollback baseline | `a3f1b78` plus production DB snapshot if needed |
+| Production-predeploy snapshot | `/home/dominguez/backups/nexushub/predeploy-training-20260428T173458Z/bot-pre-training-release.db` |
 
 ## Production Health
 
-No new production health result was collected in this attempt because production was not changed. Existing production remains on the previously deployed state.
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Backend service | Healthy | `nexus-hub` online in PM2 at `4.14.100`. |
+| Content engine | Healthy | `content-engine` online in PM2 at `4.14.100`; `/health` returned ok. |
+| Status portal | Healthy | `/api/snapshot` returned `4.14.100`, `server.status=online`, `database=connected`. |
+| Database | Healthy | `pragma integrity_check=ok`. |
+| Migration 082 | Applied | `_migrations` row `082_training_session_identity_shape_hash.sql`, applied `2026-04-28 17:43:46`. |
+| Training agenda ownership | Clean after deploy | `training_agenda_event_ownership` count was `0`. |
+| Provider staging proof | Passed pre-deploy | Google and Outlook staging calendar smokes passed with provider read-back and precise cleanup. |
+| Cross-skill staging proof | Passed pre-deploy | Seeded cross-skill staging smoke passed and cleanup verified. |
 
 ## Rollback Status
 
-Rollback was **not needed**, because:
+Rollback was **not needed**.
 
-- no deployment command was run;
-- no migration was applied;
-- no production process was restarted;
-- no production data was modified;
-- no calendar events were created or deleted.
-
-Rollback plan remains documented in:
+Rollback readiness is documented in:
 
 - `docs/training/release-candidate-rollback-plan.md`
 
-Rollback readiness remains partial because migration 082 snapshot/restore rehearsal is still missing.
+Available rollback assets:
 
-## Blocking Items Still Open
+- deployment-script backup created during `./scripts/deploy.sh`;
+- production-predeploy DB snapshot at `/home/dominguez/backups/nexushub/predeploy-training-20260428T173458Z/bot-pre-training-release.db`;
+- migration 082 is additive, and true staging clone snapshot restore was rehearsed before deploy.
 
-| Priority | Blocker | Required evidence |
+## Remaining Limitations
+
+| Severity | Item | Status |
 | --- | --- | --- |
-| P0 | Google Calendar staging lifecycle not run | Real staging read-back and cleanup |
-| P0 | Outlook Calendar staging lifecycle not run | Real staging read-back and cleanup |
-| P0 | Calendar safety not proven against providers | Provider event IDs, identity markers, stale cleanup, retry idempotency |
-| P1 | Migration 082 rollback not rehearsed | Staging clone migration + rollback/snapshot proof |
-| P1 | Cross-skill staging runtime not run | Seeded staging tenant smoke |
-| P1 | GPT-5.5 runtime not proven | Model/provider routing evidence or release-copy restraint |
-
-Resolved local gates:
-
-- Clean backend release candidate exists locally at `b8f9be7`.
-- Clean iOS companion candidate exists locally at `537abf6`.
-- Training operational kill switches are implemented and tested for generation, calendar writes/sync, and cross-skill signal publishing.
+| P1 validation gap | Production-safe Training mutation smoke | Deferred until an approved production test tenant/user/calendar is available. |
+| P2 operational cleanup | Historical migration-prefix collision warning for `023_*` migrations | Existing warning; not caused by this release. |
+| P2 operational cleanup | Content reference duplicate seed warning | Existing content-system warning; not a Training blocker. |
+| P2 monitoring | Outlook configured-check fallback warning when userId is omitted | Monitor; provider health falls back to owner-global scope for status checks. |
 
 ## Local iOS Smoke Status
 
@@ -52,15 +58,14 @@ Local iOS smoke remains valid as pre-release compatibility evidence:
 
 - local backend listener used: `http://127.0.0.1:8200`;
 - iOS branch: `release/ios-training-engine-local-smoke-candidate`;
-- backend branch used: `release/training-engine-production-hardening`;
-- backend/iOS candidate commits: `b8f9be7` / `537abf6`;
 - rich Training payload fixture: `rich-v1`;
-- shutdown confirmed after smoke.
+- DEBUG-only auth importer enabled authenticated simulator calls against the local backend;
+- shutdown was confirmed after local smoke.
 
-It is not production proof and must be followed by post-deploy production-safe checks after a future release.
+This is not production iOS proof. After production API compatibility is checked with a safe token, the signed iOS app should still receive a production-safe smoke pass.
 
 ## Final Release Decision
 
-Current decision: **NO-GO / do not deploy**.
+Current decision: **PRODUCTION RELEASE ACCEPTED WITH MONITORING**.
 
-Release can be reconsidered only after the blockers above are closed or explicitly waived in a new go/no-go document.
+Do not roll back based on current evidence. Continue monitoring Training plan creation, calendar sync, duplicate agenda events, stale canceled/superseded plans, iOS decode/rendering errors, feedback submission errors, cross-skill warning duplication, and model/provider cost/latency.

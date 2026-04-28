@@ -4,7 +4,9 @@ Generated: 2026-04-28
 
 Latest calendar staging gates: Google `training-calendar-smoke-20260428165035-7ljwng` and Outlook `training-calendar-smoke-20260428165107-7fsbbr` on 2026-04-28. Result: **pass** with real provider read-back and cleanup proof.
 
-Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Migration 082 local and true staging clone apply/restore rehearsals passed. Runtime cross-skill staging smoke passed after staging-only seed/cleanup. Release status is now **GO WITH CONDITIONS**: production-predeploy DB snapshot, no GPT-5.5 runtime claim in release copy, standard staging/promote process, and post-deploy production-safe validation.
+Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Migration 082 local and true staging clone apply/restore rehearsals passed. Runtime cross-skill staging smoke passed after staging-only seed/cleanup.
+
+Release status is now **RELEASED at `4.14.100`**. Production-predeploy DB snapshot was captured, release copy avoids GPT-5.5 runtime execution claims, the documented `./scripts/deploy.sh` path completed, and read-only post-deploy health is green. Production-safe Training mutation/calendar proof remains deferred until an approved safe production test tenant/user/calendar is available.
 
 This is the release gate checklist for the Training / Coach engine. A criterion is complete only when there is concrete evidence, not an intention, harness, or mock-only result.
 
@@ -210,7 +212,7 @@ Current decision: **do not claim GPT-5.5 execution** for this release. Training 
 
 Go only if all P0 gates are complete and all P1 gates are either complete or explicitly scoped out with owner approval.
 
-Current status as of this report: **GO WITH CONDITIONS**.
+Current status as of this report: **RELEASED / MONITORING**.
 
 ## 15. Release-Candidate Evidence Added On 2026-04-28
 
