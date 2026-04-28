@@ -4,19 +4,19 @@ Date: 2026-04-28
 
 ## Overall Risk Posture
 
-Current production recommendation: NO-GO until provider staging proof, cross-skill staging proof, migration rollback rehearsal, and runtime-model proof/release-copy restraint are complete.
+Current production recommendation: NO-GO until provider staging proof, cross-skill staging proof, true staging/predeploy migration rollback proof, and runtime-model proof/release-copy restraint are complete.
 
-The backend code/tests/evaluation are much stronger than the previous Training engine, and the release candidate is now a clean local artifact at `b8f9be7` with an iOS companion candidate at `537abf6`. The largest remaining risks are not coach-domain logic anymore; they are real provider calendar proof, database rollback, staging validation, and release-copy/model-runtime truth.
+The backend code/tests/evaluation are much stronger than the previous Training engine, and the release candidate is now a clean local artifact at `b8f9be7` with an iOS companion candidate at `537abf6`. The largest remaining risks are not coach-domain logic anymore; they are real provider calendar proof, true staging/predeploy database rollback proof, staging validation, and release-copy/model-runtime truth.
 
 ## Risk Register
 
 | ID | Severity | Area | Risk | Current evidence | Mitigation | Release status |
 | --- | --- | --- | --- | --- | --- | --- |
-| RC-R001 | P0 | Merge hygiene | The prior dirty worktree risk could have caused missed or over-included work. | Closed and pushed for review: backend branch head `2f14acb` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are clean candidate commits. | Human review still required; rerun tests after any future merge conflict resolution. | Resolved for review packaging |
+| RC-R001 | P0 | Merge hygiene | The prior dirty worktree risk could have caused missed or over-included work. | Closed and pushed for review: backend branch head `b99098e` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are clean candidate commits. | Human review still required; rerun tests after any future merge conflict resolution. | Resolved for review packaging |
 | RC-R002 | P0 | Calendar staging | Google Calendar lifecycle is not proven by real staging read-back. | Staging smoke harness exists/was planned, but credentials/prereqs remain missing. | Run create/update/regenerate/cancel/retry smoke against staging Google test calendar and document event IDs/cleanup. | Blocking unless explicitly waived |
 | RC-R003 | P0 | Calendar staging | Outlook lifecycle is not proven by real staging read-back. | Same as Google; provider behavior differs around body/metadata. | Run the same staging lifecycle against Outlook test calendar. | Blocking unless explicitly waived |
 | RC-R004 | P0 | Calendar safety | Bad identity or cleanup logic could leave duplicate/stale events or delete wrong events. | Automated tests cover identity/reconciliation in packaged candidate; real provider proof still missing. | Require ownership metadata, shape hash, provider event ID cleanup, and read-back proof. | Blocking until staging proof |
-| RC-R005 | P1 | Database rollback | Migration 082 has no down migration. | Additive SQL exists for identity/hash columns and indexes. | Take DB snapshot, rehearse staging clone migration, verify old code ignores columns. | Must complete before release |
+| RC-R005 | P1 | Database rollback | Migration 082 has no down migration. | Local clone rehearsal passed: 082 applied in 2 ms, identity columns/indexes verified, old-style inserts still worked, and snapshot restore removed 082. | Repeat on true staging clone or record deployment preflight snapshot/restore; verify rollback commit if code rollback is expected. | Improved; still blocking until true staging/predeploy proof |
 | RC-R006 | P1 | Cross-skill staging | Secretary/Cooking/Finance/Content orchestration is not proven against staging data. | Local fixture-style cross-skill checks were documented; staging prerequisites remain blocked. | Seed test tenant and run cross-skill staging smoke. | Blocking unless explicitly waived |
 | RC-R007 | P1 | Security/tenancy | Calendar mappings, feedback, and shared context could leak or mutate cross-user if tests miss an edge. | Security review docs/tests exist in worktree; must be included and run from clean RC. | Include security tests; run full verify; review auth guards for mutations. | Must pass |
 | RC-R008 | P1 | iOS compatibility | Backend richer payloads could exceed current production iOS assumptions. | Local iOS rich-fixture smoke, authenticated local E2E, DebugAuthTokenImporter tests, and full iOS scheme passed on companion candidate `537abf6`. | Keep backend fields additive; coordinate iOS companion; do not remove legacy fields; still run signed/post-deploy validation. | Improved; production proof still required |
@@ -45,16 +45,16 @@ P2/P3 risks can be deferred only if they are documented in the final release not
 ## Highest-Risk Unknowns
 
 1. Real Google/Outlook provider behavior under regenerate/cancel/retry.
-2. Migration rollback and old-code compatibility after identity/hash columns are added.
+2. True staging/predeploy rollback and old-code compatibility after identity/hash columns are added.
 3. Whether staging test tenants have enough realistic cross-skill context to catch stale/noisy signal bugs.
 4. Whether current production iOS ignores all richer backend fields safely.
 5. Whether release docs accidentally imply GPT-5.5 runtime behavior that the deployed config does not prove.
 
 ## Recommended Risk Burn-Down Order
 
-1. Rehearse migration 082 on staging clone with snapshot restore.
+1. Rehearse migration 082 on true staging clone with snapshot restore; local clone rehearsal is complete.
 2. Run Google and Outlook staging calendar lifecycle smokes.
 3. Run cross-skill staging smoke against test tenant.
 4. Verify or constrain GPT-5.5 runtime/provider claims.
-5. Review backend candidate `2f14acb` and iOS companion `b1aad7f`; production merge/deploy remains blocked until the above gates are accepted.
+5. Review backend candidate `b99098e` and iOS companion `b1aad7f`; production merge/deploy remains blocked until the above gates are accepted.
 6. Update final release notes/product truth only after all gates are true.

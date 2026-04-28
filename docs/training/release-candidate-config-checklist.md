@@ -12,12 +12,12 @@ Current status: not production-ready. This checklist must be completed before de
 
 | Item | Required state | Status |
 | --- | --- | --- |
-| Migration 082 reviewed | `migrations/082_training_session_identity_shape_hash.sql` reviewed for additive-only behavior | Pending |
+| Migration 082 reviewed | `migrations/082_training_session_identity_shape_hash.sql` reviewed for additive-only behavior | Complete for local review: nullable columns + indexes only |
 | Staging DB snapshot | Snapshot exists before applying migration 082 | Pending |
-| Staging clone rehearsal | Migration applied to staging clone and route/tests run against it | Pending |
-| Rollback rehearsal | DB snapshot restore or additive-column rollback behavior verified | Pending |
-| Old-code compatibility | Commit `a3f1b78` verified to ignore added columns/indexes | Pending |
-| Index impact | Index creation timing and DB size impact understood | Pending |
+| Staging clone rehearsal | Migration applied to staging clone and route/tests run against it | Pending true staging clone; local clone rehearsal passed in `docs/training/migration-082-rollback-rehearsal.md` |
+| Rollback rehearsal | DB snapshot restore or additive-column rollback behavior verified | Local snapshot restore passed; true staging snapshot restore pending |
+| Old-code compatibility | Commit `a3f1b78` verified to ignore added columns/indexes | Partial: local SQL compatibility passed; rollback commit boot/test still pending |
+| Index impact | Index creation timing and DB size impact understood | Local clone: 2 ms / +8,192 bytes; staging/prod timing pending |
 
 ## Required Runtime Environment
 
@@ -165,7 +165,7 @@ Exclude from production commits unless explicitly reviewed:
 This RC can move to staging only after:
 
 1. Candidate branch has clean reviewable commits.
-2. Migration 082 has a staging clone rehearsal.
+2. Migration 082 has a true staging clone rehearsal or an explicit deployment-preflight snapshot/restore gate. Local clone rehearsal is already complete.
 3. Calendar staging credentials and test users are configured.
 4. Cross-skill staging test data is configured.
 5. Security/tenant tests pass.

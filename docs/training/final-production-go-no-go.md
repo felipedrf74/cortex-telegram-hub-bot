@@ -1,8 +1,8 @@
 # Training Engine Final Production Go / No-Go
 
 Date: 2026-04-28
-Backend RC branch reviewed: `release/training-engine-production-candidate` at `2f14acb` (code payload `b8f9be7`)
-Backend hardening branch evidence: `release/training-engine-production-hardening` at `2f14acb` (code payload `b8f9be7`)
+Backend RC branch reviewed: `release/training-engine-production-candidate` at `b99098e` (code payload `b8f9be7`)
+Backend hardening branch evidence: `release/training-engine-production-hardening` at `b99098e` (code payload `b8f9be7`)
 iOS local-smoke branch evidence: `release/ios-training-engine-local-smoke-candidate` at `b1aad7f` (code payload `537abf6`)
 Deployment: not run
 
@@ -15,10 +15,10 @@ The Training engine is substantially improved and locally validated, but product
 1. Google Calendar staging lifecycle read-back has not run.
 2. Outlook Calendar staging lifecycle read-back has not run.
 3. Cross-skill staging runtime smoke has not run against seeded staging data.
-4. Migration 082 rollback has not been rehearsed on a staging clone.
+4. Migration 082 rollback has passed a local clone rehearsal, but has not been rehearsed on a true staging clone or deployment-preflight snapshot.
 5. GPT-5.5 runtime/provider proof and release-copy restraint still need final staging evidence.
 
-Post-review update: the release work has been packaged into clean backend/iOS candidate commits and pushed to review branches, the local-auth iOS harness gap has been closed, and dedicated Training operational kill switches have been added/tested for generation, calendar writes/sync, and cross-skill signal publishing. These reduce operational risk but do not override the remaining provider staging, migration rollback, cross-skill staging, and runtime-model proof gates.
+Post-review update: the release work has been packaged into clean backend/iOS candidate commits and pushed to review branches, the local-auth iOS harness gap has been closed, dedicated Training operational kill switches have been added/tested for generation, calendar writes/sync, and cross-skill signal publishing, and migration 082 local clone apply/restore rehearsal has passed. These reduce operational risk but do not override the remaining provider staging, true staging/predeploy migration rollback, cross-skill staging, and runtime-model proof gates.
 
 Local iOS simulator proof is valid as pre-release compatibility evidence because it ran against a local backend listener and upgraded-engine-shaped fixtures, and resource shutdown was confirmed. It is not production iOS proof and must be followed by production-safe post-deploy validation if/when the backend ships.
 
@@ -36,8 +36,8 @@ Local iOS simulator proof is valid as pre-release compatibility evidence because
 | Security / tenancy | `docs/training/final-security-tenancy-review.md` reports no open P0/P1 auth or tenancy blockers after log redaction fixes | Pass at code/test level | Does not replace provider/cross-skill staging proof |
 | iOS local simulator | `docs/ios/release-candidate-local-ios-smoke-results.md`, `docs/ios/final-training-ios-smoke-results.md`, and `docs/local/full-nexus-local-smoke-results.md` show rich fixture smoke plus authenticated local API journey passed | Pass as local pre-release compatibility proof | Requires post-deploy production-safe validation |
 | Local resource shutdown | `docs/ios/release-candidate-local-engine-shutdown-confirmation.md` confirms backend/app stopped and port 8200 clear | Pass | Local smoke complete, no resource burn |
-| Rollback | `docs/training/release-candidate-rollback-plan.md` documents rollback path | Partial | Migration rollback rehearsal still missing |
-| RC merge hygiene | Backend candidate branch `2f14acb` and iOS candidate branch `b1aad7f` were pushed with clean worktrees after validation | Pass for review packaging | Human review still pending; no longer the release-blocking defect |
+| Rollback | `docs/training/release-candidate-rollback-plan.md` and `docs/training/migration-082-rollback-rehearsal.md` document rollback path | Partial | Local migration rehearsal passed; true staging/predeploy snapshot proof still missing |
+| RC merge hygiene | Backend candidate branch `b99098e` and iOS candidate branch `b1aad7f` were pushed with clean worktrees after validation | Pass for review packaging | Human review still pending; no longer the release-blocking defect |
 
 ## 3. Functional Readiness
 
@@ -83,7 +83,7 @@ Local iOS proof is valid for pre-release compatibility, with clear boundaries.
 | iOS branch | `release/ios-training-engine-local-smoke-candidate` |
 | iOS commit | `b1aad7f` branch head; code payload `537abf6` |
 | Backend branch used | `release/training-engine-production-hardening` |
-| Backend commit used | `2f14acb` branch head; code payload `b8f9be7` |
+| Backend commit used | `b99098e` branch head; code payload `b8f9be7` |
 | Local API | `http://127.0.0.1:8200` |
 | Simulator | `iPhone 17 Pro`, iOS Simulator 26.4.1 |
 | Rich fixture launch args | `-NEXUSQATrainingFixture rich-v1 -nexus_allow_local_backend YES -nexus_base_url http://127.0.0.1:8200` |
@@ -183,13 +183,13 @@ Operational verdict: **improved, but not production-ready yet**.
 | P0-2 | Outlook Calendar staging lifecycle not run | Same as Google, or explicit owner waiver |
 | P0-3 | Calendar safety not proven against real providers | Provider event IDs, identity markers, stale cleanup, and retry idempotency verified by read-back |
 
-Resolved local P0: clean backend/iOS candidate packaging is closed and pushed for review (`2f14acb` / `b1aad7f`) with clean worktrees and post-packaging validation evidence. It still requires human review before any release process.
+Resolved local P0: clean backend/iOS candidate packaging is closed and pushed for review (`b99098e` / `b1aad7f`) with clean worktrees and post-packaging validation evidence. It still requires human review before any release process.
 
 ### P1 Blockers / Must-Fix Or Explicitly Accept
 
 | ID | Blocker | Required closure |
 | --- | --- | --- |
-| P1-1 | Migration 082 rollback not rehearsed | Staging clone migration + snapshot restore/old-code compatibility proof |
+| P1-1 | Migration 082 rollback not rehearsed on true staging data | True staging clone migration + snapshot restore/old-code compatibility proof, or explicit deployment-preflight snapshot gate |
 | P1-2 | Cross-skill staging runtime not run | Seeded staging tenant smoke or explicit scoped release decision |
 | P1-3 | GPT-5.5 runtime not proven | Verify model/provider routing or avoid runtime claims |
 | P1-4 | Feature flag / operational kill switch unclear | **Fixed in code**: use `TRAINING_ENGINE_DISABLED=1`, `TRAINING_PLAN_GENERATION_DISABLED=1`, `TRAINING_CALENDAR_WRITES_DISABLED=1`/`TRAINING_CALENDAR_SYNC_DISABLED=1`, or `TRAINING_CROSS_SKILL_SIGNALS_DISABLED=1` as scoped disable paths. Keep as operational checklist item, not a code blocker. |
@@ -212,7 +212,7 @@ These can defer if recorded in release notes:
 | --- | --- | --- |
 | Provider calendar lifecycle unproven | Critical | A Training calendar bug directly breaks user trust and can create stale/duplicate events. |
 | Dirty RC packaging | Critical | Uncommitted work can be lost, over-included, or shipped with test artifacts. |
-| Migration rollback unproven | High | Identity/hash schema changes are additive but no down migration exists. |
+| Migration rollback only locally proven | High | Identity/hash schema changes are additive but no down migration exists; local clone restore passed, true staging/predeploy proof remains. |
 | Cross-skill staging unproven | High | Real Secretary/Cooking/Finance/Content interactions may differ from fixture contracts. |
 | GPT-5.5 runtime claim unproven | High | Release messaging could overstate deployed intelligence. |
 | Missing operational kill switch | Lowered | Env switches now exist; production ops still need to include the exact switches in the deployment checklist. |
@@ -287,9 +287,9 @@ Do not deploy this Training RC to production today.
 Recommended next action:
 
 1. Review and push the packaged local backend/iOS candidate commits only after human approval:
-   - backend branch head `2f14acb` (code payload `b8f9be7`)
+   - backend branch head `b99098e` (code payload `b8f9be7`)
    - iOS branch head `b1aad7f` (code payload `537abf6`)
-2. Rehearse migration 082 on a staging DB clone.
+2. Rehearse migration 082 on a true staging DB clone or complete an explicit deployment-preflight snapshot/restore gate. Local clone rehearsal is complete.
 3. Run real Google/Outlook staging calendar lifecycle smokes:
 
 ```bash
@@ -329,7 +329,8 @@ Production can move from NO-GO to GO only when all of the following are true:
 - [x] Generated artifacts/secrets/local DBs are excluded from local candidate commits.
 - [x] `npm run verify` passes on the clean candidate commit.
 - [x] Training eval harness passes on the clean candidate commit.
-- [ ] Migration 082 has been rehearsed on a staging clone with rollback proof.
+- [x] Migration 082 has been rehearsed on a copied local clone with rollback proof.
+- [ ] Migration 082 has been rehearsed on a true staging clone, or a deployment-preflight DB snapshot/restore gate is explicitly accepted.
 - [ ] Google staging lifecycle passes with event read-back and cleanup.
 - [ ] Outlook staging lifecycle passes with event read-back and cleanup.
 - [ ] Internal agenda lifecycle passes on staging data.

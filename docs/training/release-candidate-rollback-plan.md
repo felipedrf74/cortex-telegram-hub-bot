@@ -97,6 +97,13 @@ Required before production:
 3. Run lifecycle tests/smokes against the migrated clone.
 4. Verify older code at `a3f1b78` ignores the additive columns.
 
+Local rehearsal update, 2026-04-28:
+
+- `docs/training/migration-082-rollback-rehearsal.md` records a successful local clone rehearsal.
+- Source was a copy of `data/bot.db`, not a true staging database.
+- Pending migrations through 081 were applied to the copy, migration 082 was applied in 2 ms, identity columns/indexes were verified, old-style SQL inserts still worked with nullable identity fields, and snapshot restore removed the 082 columns/indexes.
+- This improves confidence in the rollback strategy but does not replace the required staging clone rehearsal.
+
 Rollback options:
 
 | Scenario | Preferred rollback |

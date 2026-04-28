@@ -26,7 +26,7 @@ The remaining no-go items are trust gates that require environment access or fro
 - Google and Outlook staging calendar lifecycle smokes are blocked by missing staging env/secrets;
 - cross-skill staging smoke is blocked by missing staging env/test tenant;
 - iOS rich Training simulator smoke and authenticated local API journey have passed locally, but signed/post-deploy proof remains external;
-- migration rollback must still be rehearsed on a staging clone;
+- migration 082 local clone apply/restore rehearsal has passed, but true staging DB clone proof remains pending;
 - the backend/iOS candidate branches have been pushed for review; human review remains required before deployment.
 
 Production is realistic after those external gates pass. It is not honest to call it production-ready before real calendar read-back and iOS runtime proof.
@@ -35,7 +35,7 @@ Production is realistic after those external gates pass. It is not honest to cal
 
 | ID | Title | Area | Severity | Status | User impact | Root cause / evidence | Required validation |
 |---|---|---|---|---|---|---|---|
-| P0-01 | Clean integration candidate | Release hygiene | Critical | Fixed and pushed for review | Unsafe deploy/review if unreviewed | Backend branch head `2f14acb` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are clean review candidates | Human review; rerun affected gates after any merge conflict resolution |
+| P0-01 | Clean integration candidate | Release hygiene | Critical | Fixed and pushed for review | Unsafe deploy/review if unreviewed | Backend branch head `b99098e` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are clean review candidates | Human review; rerun affected gates after any merge conflict resolution |
 | P0-02 | Full backend verify | Backend QA | Critical | Fixed locally | Prevents regression release | `npm run verify` passed on packaged candidate | Rerun after future code changes |
 | P0-03 | Google staging lifecycle smoke | Calendar trust | Critical | Blocked externally | Could ship missing/duplicate/stale calendar events | Missing staging env/OAuth/database/user | Real create/update/regenerate/cancel/read-back/cleanup |
 | P0-04 | Outlook staging lifecycle smoke | Calendar trust | Critical | Blocked externally | Same as Google | Missing staging env/OAuth/database/user | Real provider read-back and cleanup |
@@ -49,7 +49,7 @@ Production is realistic after those external gates pass. It is not honest to cal
 | P1-05 | Profile quality/follow-up route | Personalization | High | Backend fixed | Weak-profile prompts can reach clients | Route now serializes `profileQuality` | iOS render/answer proof |
 | P1-06 | Decision reasons route | Explainability | High | Backend fixed | Compression/reflow reasons can reach clients | Route now serializes `decisionReasons` | iOS grouped render proof |
 | P1-07 | iOS QA Training gates | iOS release | High | Fixed locally; external device gate remains | Runtime UX may regress | Local rich fixture smoke + authenticated local API journey + full iOS scheme passed | Signed TestFlight/provider validation |
-| P1-08 | Migration rollback drill | Data safety | High | Open release gate | DB migration rollback unproven | Needs staging clone | Apply/rollback/snapshot restore drill |
+| P1-08 | Migration rollback drill | Data safety | High | Partially closed | Real deployment DB rollback still needs staging/predeploy proof | Local clone rehearsal passed; true staging DB unavailable | Repeat apply/rollback/snapshot restore on true staging clone or deployment preflight snapshot |
 
 ## 3. GPT-5.5 Intelligence-Readiness Review
 
@@ -79,14 +79,14 @@ Production is realistic after those external gates pass. It is not honest to cal
 | iOS simulator rich Training smoke | Passed locally | Rich fixture smoke, authenticated local journey, and full iOS scheme passed on `537abf6` |
 | Security/tenant checks | Passed via full verify | Existing tenant/security suites passed in `npm run verify` |
 | Backward compatibility | Locally preserved | Additive route fields; inactive states preserve rows and skip calendar creation |
-| Production rollback readiness | Partial | Backup branch/tag exists; DB migration rollback still needs staging clone |
+| Production rollback readiness | Partial | Backup branch/tag exists; DB migration rollback passed locally but still needs true staging/predeploy snapshot proof |
 
 ## 5. Final Execution Order
 
-1. Review the pushed backend candidate `2f14acb` (code payload `b8f9be7`) and iOS companion `b1aad7f` (code payload `537abf6`).
+1. Review the pushed backend candidate `b99098e` (code payload `b8f9be7`) and iOS companion `b1aad7f` (code payload `537abf6`).
 2. Run Google staging calendar smoke with read-back and cleanup.
 3. Run Outlook staging calendar smoke with read-back and cleanup.
-4. Rehearse migration apply/rollback on a staging clone.
+4. Rehearse migration apply/rollback on a true staging clone, or record an explicit deployment preflight snapshot/restore gate; local clone rehearsal is already complete.
 5. Run cross-skill staging smoke on an isolated staging test tenant.
 6. Confirm runtime model/provider configuration or keep GPT-5.5 runtime claims out of release copy.
 7. Confirm rich feedback submit persists and changes future coaching before making adaptive-learning claims.
@@ -98,7 +98,7 @@ Do not merge or deploy:
 
 - from unreviewed candidate branches;
 - calendar lifecycle changes without real Google/Outlook staging read-back proof;
-- database identity migration without staging rollback/snapshot proof;
+- database identity migration without true staging or deployment-preflight rollback/snapshot proof;
 - rich Training state claims beyond local pre-release proof without signed/post-deploy validation;
 - GPT-5.5 execution claims without runtime model/provider evidence;
 - adaptive feedback claims without end-to-end feedback persistence and future-plan adaptation evidence;
@@ -112,7 +112,7 @@ Training is production-ready only when:
 - backend full verify and Training eval pass on that clean commit;
 - Google and Outlook staging lifecycle smokes pass with read-back/cleanup;
 - iOS rich-payload simulator smoke passes;
-- migration rollback is rehearsed;
+- migration rollback is rehearsed locally and then proven on true staging/predeploy data;
 - API/iOS docs match actual contracts;
 - remaining P1 gates are either passed or explicitly scoped out by owner decision.
 

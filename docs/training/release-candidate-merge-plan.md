@@ -4,9 +4,9 @@ Date: 2026-04-28
 
 ## Executive Summary
 
-Release candidate branch `release/training-engine-production-candidate` has been pushed to `origin` at commit `2f14acb` (`docs(training): record packaged release candidate evidence`). The production code payload remains `b8f9be7` (`feat(training): harden coach engine release gates`); `2f14acb` records the final packaged evidence docs after validation.
+Release candidate branch `release/training-engine-production-candidate` has been pushed to `origin` at commit `b99098e` (`docs(training): record latest staging gate attempts`). The production code payload remains `b8f9be7` (`feat(training): harden coach engine release gates`); `b99098e` records the latest staging-gate and local migration rehearsal evidence after validation.
 
-The prior packaging blocker is closed: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are now committed into a clean candidate branch and pushed for review. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. This remains a review candidate only: it still needs human review plus provider staging, cross-skill staging, migration rollback, and runtime-model proof before production.
+The prior packaging blocker is closed: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are now committed into a clean candidate branch and pushed for review. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. This remains a review candidate only: it still needs human review plus provider staging, cross-skill staging, true staging/predeploy migration rollback proof, and runtime-model proof before production.
 
 Current production/reference baseline: `origin/main` at `a3f1b78` (`docs: record 4.14.99 Training engine overhaul release`).
 
@@ -17,7 +17,7 @@ git switch release/training-engine-production-candidate
 git rev-parse --short HEAD
 # b8f9be7
 # code payload
-# 2f14acb
+# b99098e
 # current pushed branch head
 ```
 
@@ -29,10 +29,10 @@ No production deploy, push, or merge has been performed.
 | --- | --- | ---: | --- | --- |
 | Current production baseline | `origin/main`, `main` | `a3f1b78` | Stable reference | Use as rollback baseline |
 | Training overhaul already landed | `feature/training-engine-intelligence-and-agenda-overhaul` | local `5c276e0`, origin `08273a4` | Already merged into `main` via 4.14.99 release docs | Do not re-merge |
-| Second-opinion hardening base | `release/training-engine-production-hardening` | `2f14acb` | Pushed review branch; code payload at `b8f9be7` | Source for RC review |
-| Release candidate | `release/training-engine-production-candidate` | `2f14acb` | Pushed review branch; code payload at `b8f9be7` | Review only; production still blocked by external gates |
+| Second-opinion hardening base | `release/training-engine-production-hardening` | `b99098e` | Pushed review branch; code payload at `b8f9be7` | Source for RC review |
+| Release candidate | `release/training-engine-production-candidate` | `b99098e` | Pushed review branch; code payload at `b8f9be7` | Review only; production still blocked by external gates |
 | Constrained-week work | packaged in RC | `b8f9be7` | Included | Keep |
-| Session identity work | packaged in RC | `b8f9be7` | Included with migration 082 | Keep; migration rollback still required |
+| Session identity work | packaged in RC | `b8f9be7` | Included with migration 082 | Keep; local migration rehearsal passed, true staging/predeploy proof still required |
 | Calendar staging smoke | packaged in RC | `b8f9be7` | Guarded harness/docs included | Keep; real provider smoke still blocked |
 | Cross-skill staging smoke | packaged in RC | `b8f9be7` | Guarded harness/docs included | Keep; real staging tenant smoke still blocked |
 | Eval harness | packaged in RC | `b8f9be7` | Included; generated reports excluded | Keep |
@@ -63,7 +63,7 @@ Packaging status:
 | 3 | Profile model and follow-up prompts | Medium | Included in `b8f9be7` | Profile/route tests passed |
 | 4 | Constrained-week reconciliation | High | Included in `b8f9be7` | Constrained-week/persistence/calendar tests passed |
 | 5 | Decision reasons and compression explanations | Medium | Included in `b8f9be7` | Decision trail/route tests passed |
-| 6 | Session identity and shape hash | High | Included in `b8f9be7` with migration 082 | Identity/lifecycle/calendar tests passed; migration rollback still open |
+| 6 | Session identity and shape hash | High | Included in `b8f9be7` with migration 082 | Identity/lifecycle/calendar tests passed; local migration rollback rehearsal passed; true staging/predeploy proof still open |
 | 7 | Security/tenant/log hardening | High | Included in `b8f9be7` | Full verify passed |
 | 8 | Calendar staging smoke harness | High as release gate | Included in `b8f9be7`; dry-run rows now `blocked`, not `pass` | Harness tests passed; real provider smoke blocked |
 | 9 | Cross-skill staging smoke harness | Medium | Included in `b8f9be7`; dry-run rows now `blocked`, not `pass` | Harness tests passed; real staging smoke blocked |
@@ -73,7 +73,7 @@ Packaging status:
 
 | Path/pattern | Reason |
 | --- | --- |
-| `migrations/082_training_session_identity_shape_hash.sql` | Additive schema change with no down migration. Requires database snapshot rollback plan and staging clone validation. |
+| `migrations/082_training_session_identity_shape_hash.sql` | Additive schema change with no down migration. Local clone rehearsal passed; still requires true staging/predeploy database snapshot rollback proof. |
 | `src/services/google-calendar.ts`, `src/services/outlook-calendar.ts`, `src/services/unified-calendar.ts` | Provider behavior directly affects user calendars; require staging read-back proof. |
 | `src/api/routes/training-plan-calendar-sync.ts`, `src/api/routes/training-plan-cancellation.ts`, `src/services/training-agenda-reconciliation.ts` | Calendar lifecycle and deletion semantics are production-trust critical. |
 | `src/services/intelligence-bus.ts`, `src/services/shared-decision-context.ts`, `src/services/cross-agent-learning.ts` | Cross-skill context must preserve tenant/user scoping and avoid noisy/stale signals. |
@@ -98,14 +98,14 @@ Do not include these unless separately reviewed and justified:
 
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
-| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done and pushed at `2f14acb`; code payload at `b8f9be7` |
+| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done and pushed at `b99098e`; code payload at `b8f9be7` |
 | Backend full verification | `npm run verify` pass on committed candidate | Passed: 382 files / 5,994 tests |
 | Training evaluation harness | Persona/scenario eval pass with result path documented | Passed: 99/100, 156 cases |
 | Google calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
 | Outlook calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
 | Cross-skill staging | Secretary, Cooking, Finance, Content flows against staging/test tenant | Blocked/missing staging prerequisites |
 | iOS companion smoke | iOS simulator against local engine/backend or fixtures; no decode/render blockers | Local rich-fixture smoke and authenticated E2E passed; full iOS scheme passed |
-| Migration rehearsal | Apply migration 082 to staging clone with backup/restore evidence | Required before release |
+| Migration rehearsal | Apply migration 082 to staging clone with backup/restore evidence | Local clone passed; true staging/predeploy proof required before release |
 
 ## Do-Not-Merge List
 
@@ -113,11 +113,11 @@ The candidate must not be merged or pushed for production while any of these are
 
 - The RC branch has uncommitted Training code changes after future edits.
 - Google or Outlook staging read-back is missing and not explicitly waived by the owner.
-- Migration 082 has not been rehearsed against a database clone with rollback proof.
+- Migration 082 has not been rehearsed against a true staging/predeploy database clone with rollback proof.
 - Calendar cleanup uses broad date/title matching instead of ownership metadata.
 - Any P0/P1 security or tenant scoping test fails.
 - Any generated/test-only artifact is staged accidentally.
 
 ## Current Release Recommendation
 
-Treat `2f14acb` as the pushed backend RC review branch head, with production code payload at `b8f9be7`; treat `b1aad7f` as the pushed iOS companion branch head, with iOS code payload at `537abf6`. Keep production status as NO-GO until provider staging gates are resolved or formally waived, cross-skill staging is resolved or scoped, migration rollback is proven, and runtime-model claims match real configuration.
+Treat `b99098e` as the pushed backend RC review branch head, with production code payload at `b8f9be7`; treat `b1aad7f` as the pushed iOS companion branch head, with iOS code payload at `537abf6`. Keep production status as NO-GO until provider staging gates are resolved or formally waived, cross-skill staging is resolved or scoped, true staging/predeploy migration rollback is proven, and runtime-model claims match real configuration.

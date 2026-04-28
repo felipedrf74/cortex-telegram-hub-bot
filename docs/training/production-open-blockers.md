@@ -23,7 +23,7 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 - real Google staging calendar lifecycle smoke is still blocked by missing staging credentials/env;
 - real Outlook staging calendar lifecycle smoke is still blocked by missing staging credentials/env;
 - iOS rich-payload simulator smoke has now run against a local backend listener with deterministic Training fixtures, and the DEBUG-only auth importer enabled a fully authenticated local simulator journey across major iOS-facing endpoints;
-- database migration/rollback rehearsal still needs a staging clone;
+- migration 082 local clone apply/restore rehearsal passed; a true staging DB clone rehearsal is still required before any production DB migration;
 - final merge hygiene is now closed and the backend/iOS candidate branches have been pushed for review; human review and remaining external trust gates are still required before any deployment process.
 
 ## P0 Production Blockers
@@ -32,7 +32,7 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 - Status: **fixed and pushed for review**
 - Source: `docs/training/final-open-items-consolidation-report.md`, backend git status.
-- What changed: intended backend Training code changes were packaged into `b8f9be7`, then release-evidence docs were committed at `2f14acb` on `release/training-engine-production-hardening` and `release/training-engine-production-candidate`; intended iOS companion code changes were packaged into `537abf6`, then smoke-evidence docs were committed at `b1aad7f` on `release/ios-training-engine-local-smoke-candidate`.
+- What changed: intended backend Training code changes were packaged into `b8f9be7`, release-evidence docs were committed at `2f14acb`, and the latest staging/migration evidence docs are tracked at `b99098e` on `release/training-engine-production-hardening` and `release/training-engine-production-candidate`; intended iOS companion code changes were packaged into `537abf6`, then smoke-evidence docs were committed at `b1aad7f` on `release/ios-training-engine-local-smoke-candidate`.
 - Evidence: backend and iOS worktrees were clean after the packaging commits; backend commit hook ran `npm run typecheck` and `npm test`; full backend verify/eval and full iOS scheme evidence are recorded below.
 - Remaining requirement: human review. Do not deploy from an unreviewed candidate branch.
 
@@ -189,9 +189,10 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 
 ### P1-08 Training Identity Migration Rollback
 
-- Status: **open release gate**
-- Code/tests cover identity behavior; migration rollback still needs staging clone rehearsal.
-- Required before production DB migration: apply migration to staging clone and document rollback/snapshot restore.
+- Status: **partially closed; true staging clone still required**
+- Evidence: `docs/training/migration-082-rollback-rehearsal.md`
+- Local result: a copied local DB was migrated through 081, snapshotted, migrated with `082_training_session_identity_shape_hash.sql`, verified for identity columns/indexes, exercised with old-style and new-style Training inserts, and restored from the pre-082 snapshot.
+- Remaining requirement before production DB migration: repeat on a true staging database clone or explicitly capture the production pre-deploy snapshot/restore procedure in the deployment gate. The local rehearsal must not be represented as real staging proof.
 
 ## P2 / P3 Remaining Work
 

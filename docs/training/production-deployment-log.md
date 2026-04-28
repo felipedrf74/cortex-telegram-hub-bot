@@ -27,11 +27,11 @@ No production files were deployed, no production process was restarted, no migra
 | --- | --- | --- | --- |
 | Human approval | Explicit approval in prompt | Present | Pass |
 | Final GO / GO WITH CONDITIONS | Final go/no-go must be GO, or all conditions satisfied | `docs/training/final-production-go-no-go.md` says **NO-GO** | **Block** |
-| Clean release candidate | Clean, reviewable candidate branch | Backend branch head `2f14acb` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are pushed for review | Pass for review packaging |
+| Clean release candidate | Clean, reviewable candidate branch | Backend branch head `b99098e` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are pushed for review | Pass for review packaging |
 | Google calendar staging | Real staging read-back lifecycle proof | Not run; prerequisites missing | **Block** |
 | Outlook calendar staging | Real staging read-back lifecycle proof | Not run; prerequisites missing | **Block** |
 | Cross-skill staging | Seeded staging tenant runtime smoke | Not run; prerequisites missing | **Block** |
-| Migration rollback | Migration 082 rehearsal on staging clone | Not rehearsed | **Block** |
+| Migration rollback | Migration 082 rehearsal on staging clone | Local clone apply/restore passed; true staging/predeploy proof still missing | **Block** |
 | Local iOS compatibility | Local-engine simulator smoke and shutdown | Passed and shutdown confirmed in iOS docs | Pass as pre-release compatibility proof |
 
 ## Commands Not Executed
@@ -65,12 +65,12 @@ Deployment was stopped because the release gate explicitly says:
 - final verdict: **NO-GO for production deployment**;
 - Google/Outlook staging calendar proof is missing;
 - cross-skill staging proof is missing;
-- migration rollback proof is missing.
+- true staging/predeploy migration rollback proof is missing; local clone rehearsal passed.
 
 ## Next Required Actions Before Deployment
 
-1. Review the pushed backend candidate `2f14acb` and iOS companion `b1aad7f`; production approval remains separate.
-2. Rehearse migration 082 on a staging database clone with rollback proof.
+1. Review the pushed backend candidate `b99098e` and iOS companion `b1aad7f`; production approval remains separate.
+2. Rehearse migration 082 on a true staging database clone with rollback proof, or complete an explicit deployment-preflight snapshot/restore gate.
 3. Run Google and Outlook staging calendar lifecycle smokes with read-back and cleanup.
 4. Run cross-skill staging smoke against a seeded staging test tenant.
 5. Verify runtime model/provider configuration or keep GPT-5.5 runtime claims out of release copy.

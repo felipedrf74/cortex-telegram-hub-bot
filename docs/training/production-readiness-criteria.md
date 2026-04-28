@@ -4,7 +4,7 @@ Generated: 2026-04-28
 
 Latest calendar staging gate: `training-calendar-smoke-20260428142908-61fokl` on 2026-04-28. Result: **blocked / no-go** because staging env, staging user, database, OAuth encryption key, and Google/Outlook client credentials were not available in the execution environment.
 
-Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Google/Outlook staging calendar proof and runtime cross-skill staging proof are still missing, so release status remains **NO-GO**.
+Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Migration 082 local clone apply/restore rehearsal passed, but true staging database proof is still pending. Google/Outlook staging calendar proof and runtime cross-skill staging proof are still missing, so release status remains **NO-GO**.
 
 This is the release gate checklist for the Training / Coach engine. A criterion is complete only when there is concrete evidence, not an intention, harness, or mock-only result.
 
@@ -75,8 +75,10 @@ Plan/session identity is production-ready only when:
 - [ ] cancellation removes only owned events;
 - [ ] retries do not duplicate events;
 - [ ] stale older plan versions cannot appear active;
-- [ ] migration applies on staging clone;
-- [ ] rollback/snapshot restore path is documented and rehearsed.
+- [x] migration applies on a copied local clone;
+- [x] rollback/snapshot restore path is documented and rehearsed locally;
+- [ ] migration applies on a true staging clone;
+- [ ] true staging snapshot restore is rehearsed or pre-deploy snapshot/restore is explicitly accepted as the deployment gate.
 
 ## 5. Constrained-Week And Scheduling Gates
 
@@ -196,7 +198,8 @@ If these are not true, release copy must avoid claiming GPT-5.5 execution and sh
 ## 13. Rollback Gates
 
 - [ ] backend backup branch/tag exists;
-- [ ] database migration rollback or snapshot restore is rehearsed;
+- [x] database migration rollback/snapshot restore is rehearsed locally;
+- [ ] database migration rollback/snapshot restore is rehearsed on true staging data or explicitly handled as a deployment preflight;
 - [ ] calendar cleanup strategy for test and production rollback is precise and ownership-based;
 - [x] feature flags or config kill switches are identified for Training plan generation/calendar sync if available;
 - [ ] rollback owner and command sequence are documented.
@@ -218,5 +221,6 @@ Current status as of this report: **NO-GO**.
 - Full iOS scheme passed after dashboard hero presentation tests were aligned with the localized calendar display contract.
 - Local iOS simulator smoke rendered rich Training payloads against a local backend listener with deterministic fixtures.
 - Local backend and simulator app were shut down after smoke; no listener remained on port `8200`.
+- Migration 082 local clone rehearsal passed; report recorded at `docs/training/migration-082-rollback-rehearsal.md`.
 - Google/Outlook staging calendar lifecycle remains blocked by missing staging provider prerequisites.
 - Runtime cross-skill staging remains blocked by missing staging tenant/database prerequisites.
