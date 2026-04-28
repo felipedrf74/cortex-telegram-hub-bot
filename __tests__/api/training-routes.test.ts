@@ -1331,6 +1331,24 @@ describe('Training API routes', () => {
   });
 
   it('ignores generic routine walk events when resolving today training from calendar', async () => {
+    // Bug fix 2026-04-28 (no-plan create-CTA): the calendar fallback in
+    // getTodaySession is now gated on an active plan existing — without
+    // a plan, the fallback no longer fires and we never query the
+    // calendar for routine-walk events. To still exercise the routine-
+    // walk filter (the test's actual intent), give the user an active
+    // plan but no session scheduled for today, so the calendar
+    // fallback DOES fire and we can verify it correctly filters out
+    // the non-training event.
+    mockGetActivePlan.mockReturnValue({
+      id: 90,
+      name: 'Marathon Build',
+      periodization: 'base',
+      start_date: '2026-04-13T00:00:00.000Z',
+      plan_version: 1,
+      status: 'active',
+    });
+    mockGetCurrentWeek.mockReturnValue({ id: 901, week_number: 1, focus: 'base' });
+    mockGetSessionsForWeek.mockReturnValue([]); // no plan-scheduled session for today
     mockGetEvents.mockResolvedValue([
       {
         id: 'evt-routine',

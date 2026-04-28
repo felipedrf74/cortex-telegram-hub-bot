@@ -191,9 +191,30 @@ export async function getTodaySession(userId: number) {
     logger.debug({ err: e }, 'getTodaySession training-plans lookup failed');
   }
 
-  if (!session) session = await findTodayTrainingFromCalendar(userId);
+  // Bug fix 2026-04-28 (no-plan create-CTA): the calendar and Garmin
+  // fallbacks below ran UNCONDITIONALLY, so a user who deleted their
+  // active Training plan but had a Garmin-recorded workout that day
+  // would see "Today's workout completed (status: completed)"
+  // composed from Garmin activity data — even though no Nexus plan
+  // existed. That hid the create-plan CTA on the iOS Training screen
+  // because the iOS hero classifier checks `.completed` before
+  // `.noPlan` and gave the user no way to start fresh. Gating both
+  // fallbacks on `plan != null` keeps the legitimate "active plan +
+  // Garmin records the day's session" UX intact while ensuring that
+  // a deleted/cancelled plan returns a null session — which iOS then
+  // resolves to the .noPlan hero state with the "Create plan" action.
+  //
+  // We use the local `plan` variable (set only inside the active-
+  // plan try block above when getActivePlan returned non-null) as
+  // the gate. If the DB read itself threw, `plan` stays null and we
+  // also skip the fallbacks — that's the safer choice than dressing
+  // up Garmin data as a Nexus session under partial-failure
+  // conditions.
+  if (!session && plan) {
+    session = await findTodayTrainingFromCalendar(userId);
+  }
 
-  if (!session) {
+  if (!session && plan) {
     try {
       const today = new Date().toISOString().slice(0, 10);
       const activities = await getActivitiesByDateForUser(userId, today, today);
