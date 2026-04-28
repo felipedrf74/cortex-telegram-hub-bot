@@ -2,7 +2,7 @@
 
 Updated: 2026-04-28  
 Branch: `release/training-engine-production-hardening`  
-Run ID: `training-calendar-smoke-20260428094430-r9cyiu`  
+Run ID: `training-calendar-smoke-20260428142908-61fokl`  
 Result: **NO-GO / BLOCKED**
 
 ## Executive Summary

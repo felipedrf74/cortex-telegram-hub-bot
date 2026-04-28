@@ -27,7 +27,7 @@ The remaining no-go items are trust gates that require environment access or fro
 - cross-skill staging smoke is blocked by missing staging env/test tenant;
 - iOS rich Training simulator smoke and authenticated local API journey have passed locally, but signed/post-deploy proof remains external;
 - migration rollback must still be rehearsed on a staging clone;
-- the local backend/iOS candidate commits still need review/push before deployment.
+- the backend/iOS candidate branches have been pushed for review; human review remains required before deployment.
 
 Production is realistic after those external gates pass. It is not honest to call it production-ready before real calendar read-back and iOS runtime proof.
 
@@ -35,7 +35,7 @@ Production is realistic after those external gates pass. It is not honest to cal
 
 | ID | Title | Area | Severity | Status | User impact | Root cause / evidence | Required validation |
 |---|---|---|---|---|---|---|---|
-| P0-01 | Clean integration candidate | Release hygiene | Critical | Fixed locally | Unsafe deploy/review if uncommitted | Backend candidate `b8f9be7` and iOS companion `537abf6` are clean local commits | Human review/push; rerun affected gates after any merge conflict resolution |
+| P0-01 | Clean integration candidate | Release hygiene | Critical | Fixed and pushed for review | Unsafe deploy/review if unreviewed | Backend branch head `2f14acb` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are clean review candidates | Human review; rerun affected gates after any merge conflict resolution |
 | P0-02 | Full backend verify | Backend QA | Critical | Fixed locally | Prevents regression release | `npm run verify` passed on packaged candidate | Rerun after future code changes |
 | P0-03 | Google staging lifecycle smoke | Calendar trust | Critical | Blocked externally | Could ship missing/duplicate/stale calendar events | Missing staging env/OAuth/database/user | Real create/update/regenerate/cancel/read-back/cleanup |
 | P0-04 | Outlook staging lifecycle smoke | Calendar trust | Critical | Blocked externally | Same as Google | Missing staging env/OAuth/database/user | Real provider read-back and cleanup |
@@ -73,9 +73,9 @@ Production is realistic after those external gates pass. It is not honest to cal
 | Full backend verification | Passed locally | `npm run verify`: 382 files / 5,994 tests |
 | Training eval | Passed locally | 99/100, 156 cases |
 | Calendar lifecycle unit/contract tests | Passed locally | Calendar sync/persistence/schedule tests included in focused suite and full verify |
-| Google staging smoke | Blocked | Final gate `training-calendar-smoke-20260428094430-r9cyiu`, missing env/secrets |
-| Outlook staging smoke | Blocked | Final gate `training-calendar-smoke-20260428094430-r9cyiu`, missing env/secrets |
-| Cross-skill staging smoke | Blocked | `training-cross-skill-smoke-20260428105013-bj5mtb`, local fixtures passed; runtime checks require seeded staging data |
+| Google staging smoke | Blocked | Final gate `training-calendar-smoke-20260428142908-61fokl`, missing env/secrets |
+| Outlook staging smoke | Blocked | Final gate `training-calendar-smoke-20260428142908-61fokl`, missing env/secrets |
+| Cross-skill staging smoke | Blocked | `training-cross-skill-smoke-20260428142925-1lc554`, local fixtures passed; runtime checks require seeded staging data |
 | iOS simulator rich Training smoke | Passed locally | Rich fixture smoke, authenticated local journey, and full iOS scheme passed on `537abf6` |
 | Security/tenant checks | Passed via full verify | Existing tenant/security suites passed in `npm run verify` |
 | Backward compatibility | Locally preserved | Additive route fields; inactive states preserve rows and skip calendar creation |
@@ -83,7 +83,7 @@ Production is realistic after those external gates pass. It is not honest to cal
 
 ## 5. Final Execution Order
 
-1. Review/push the packaged backend candidate `b8f9be7` and iOS companion `537abf6` when approved.
+1. Review the pushed backend candidate `2f14acb` (code payload `b8f9be7`) and iOS companion `b1aad7f` (code payload `537abf6`).
 2. Run Google staging calendar smoke with read-back and cleanup.
 3. Run Outlook staging calendar smoke with read-back and cleanup.
 4. Rehearse migration apply/rollback on a staging clone.
@@ -96,7 +96,7 @@ Production is realistic after those external gates pass. It is not honest to cal
 
 Do not merge or deploy:
 
-- from unreviewed local-only candidate commits;
+- from unreviewed candidate branches;
 - calendar lifecycle changes without real Google/Outlook staging read-back proof;
 - database identity migration without staging rollback/snapshot proof;
 - rich Training state claims beyond local pre-release proof without signed/post-deploy validation;

@@ -27,7 +27,7 @@ No production files were deployed, no production process was restarted, no migra
 | --- | --- | --- | --- |
 | Human approval | Explicit approval in prompt | Present | Pass |
 | Final GO / GO WITH CONDITIONS | Final go/no-go must be GO, or all conditions satisfied | `docs/training/final-production-go-no-go.md` says **NO-GO** | **Block** |
-| Clean release candidate | Clean, reviewable candidate branch | Clean local candidate now exists at `b8f9be7`; human review/push still pending | Pass locally |
+| Clean release candidate | Clean, reviewable candidate branch | Backend branch head `2f14acb` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are pushed for review | Pass for review packaging |
 | Google calendar staging | Real staging read-back lifecycle proof | Not run; prerequisites missing | **Block** |
 | Outlook calendar staging | Real staging read-back lifecycle proof | Not run; prerequisites missing | **Block** |
 | Cross-skill staging | Seeded staging tenant runtime smoke | Not run; prerequisites missing | **Block** |
@@ -69,7 +69,7 @@ Deployment was stopped because the release gate explicitly says:
 
 ## Next Required Actions Before Deployment
 
-1. Review/push the clean local backend candidate `b8f9be7` and iOS companion `537abf6` only after human approval.
+1. Review the pushed backend candidate `2f14acb` and iOS companion `b1aad7f`; production approval remains separate.
 2. Rehearse migration 082 on a staging database clone with rollback proof.
 3. Run Google and Outlook staging calendar lifecycle smokes with read-back and cleanup.
 4. Run cross-skill staging smoke against a seeded staging test tenant.

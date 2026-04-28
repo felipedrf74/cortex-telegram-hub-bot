@@ -1,8 +1,8 @@
 # Training Cross-Skill Staging Smoke Results
 
-- Run ID: `training-cross-skill-smoke-20260428105013-bj5mtb`
-- Started: `2026-04-28T10:50:13.004Z`
-- Finished: `2026-04-28T10:50:13.005Z`
+- Run ID: `training-cross-skill-smoke-20260428142925-1lc554`
+- Started: `2026-04-28T14:29:25.208Z`
+- Finished: `2026-04-28T14:29:25.209Z`
 - Dry run: `false`
 - Staging user ID: `not configured`
 

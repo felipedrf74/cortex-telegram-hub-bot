@@ -12,7 +12,7 @@ The backend code/tests/evaluation are much stronger than the previous Training e
 
 | ID | Severity | Area | Risk | Current evidence | Mitigation | Release status |
 | --- | --- | --- | --- | --- | --- | --- |
-| RC-R001 | P0 | Merge hygiene | The prior dirty worktree risk could have caused missed or over-included work. | Closed locally: backend candidate `b8f9be7` and iOS companion `537abf6` are clean local commits. | Human review/push still required; rerun tests after any future merge conflict resolution. | Resolved locally |
+| RC-R001 | P0 | Merge hygiene | The prior dirty worktree risk could have caused missed or over-included work. | Closed and pushed for review: backend branch head `2f14acb` (code `b8f9be7`) and iOS branch head `b1aad7f` (code `537abf6`) are clean candidate commits. | Human review still required; rerun tests after any future merge conflict resolution. | Resolved for review packaging |
 | RC-R002 | P0 | Calendar staging | Google Calendar lifecycle is not proven by real staging read-back. | Staging smoke harness exists/was planned, but credentials/prereqs remain missing. | Run create/update/regenerate/cancel/retry smoke against staging Google test calendar and document event IDs/cleanup. | Blocking unless explicitly waived |
 | RC-R003 | P0 | Calendar staging | Outlook lifecycle is not proven by real staging read-back. | Same as Google; provider behavior differs around body/metadata. | Run the same staging lifecycle against Outlook test calendar. | Blocking unless explicitly waived |
 | RC-R004 | P0 | Calendar safety | Bad identity or cleanup logic could leave duplicate/stale events or delete wrong events. | Automated tests cover identity/reconciliation in packaged candidate; real provider proof still missing. | Require ownership metadata, shape hash, provider event ID cleanup, and read-back proof. | Blocking until staging proof |
@@ -56,5 +56,5 @@ P2/P3 risks can be deferred only if they are documented in the final release not
 2. Run Google and Outlook staging calendar lifecycle smokes.
 3. Run cross-skill staging smoke against test tenant.
 4. Verify or constrain GPT-5.5 runtime/provider claims.
-5. Review/push backend candidate `b8f9be7` and iOS companion `537abf6` only after the above gates are accepted.
+5. Review backend candidate `2f14acb` and iOS companion `b1aad7f`; production merge/deploy remains blocked until the above gates are accepted.
 6. Update final release notes/product truth only after all gates are true.

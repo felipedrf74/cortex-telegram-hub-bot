@@ -2,7 +2,7 @@
 
 Generated: 2026-04-28
 
-Latest calendar staging gate: `training-calendar-smoke-20260428094430-r9cyiu` on 2026-04-28. Result: **blocked / no-go** because staging env, staging user, database, OAuth encryption key, and Google/Outlook client credentials were not available in the execution environment.
+Latest calendar staging gate: `training-calendar-smoke-20260428142908-61fokl` on 2026-04-28. Result: **blocked / no-go** because staging env, staging user, database, OAuth encryption key, and Google/Outlook client credentials were not available in the execution environment.
 
 Latest release-candidate regression pass: 2026-04-28. Backend `npm run verify` passed on the packaged local candidate; Training eval passed at 99/100 across 156 cases; iOS local rich-fixture simulator smoke, authenticated local API journey, DebugAuthTokenImporter policy tests, and the full iOS scheme passed. Google/Outlook staging calendar proof and runtime cross-skill staging proof are still missing, so release status remains **NO-GO**.
 

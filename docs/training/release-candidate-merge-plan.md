@@ -4,9 +4,9 @@ Date: 2026-04-28
 
 ## Executive Summary
 
-Release candidate branch `release/training-engine-production-candidate` exists locally at commit `b8f9be7` (`feat(training): harden coach engine release gates`). It was created from `release/training-engine-production-hardening` and has not been pushed.
+Release candidate branch `release/training-engine-production-candidate` has been pushed to `origin` at commit `2f14acb` (`docs(training): record packaged release candidate evidence`). The production code payload remains `b8f9be7` (`feat(training): harden coach engine release gates`); `2f14acb` records the final packaged evidence docs after validation.
 
-The prior packaging blocker is closed locally: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are now committed into a clean local candidate. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. This remains a local release candidate only: it still needs human review/push plus provider staging, cross-skill staging, migration rollback, and runtime-model proof before production.
+The prior packaging blocker is closed: the Training open-item work, staging smoke harnesses, tests, docs, migration, local full-product runner, and guarded operational switches are now committed into a clean candidate branch and pushed for review. Generated `reports/` artifacts, secrets, staging env files, and local databases were excluded. This remains a review candidate only: it still needs human review plus provider staging, cross-skill staging, migration rollback, and runtime-model proof before production.
 
 Current production/reference baseline: `origin/main` at `a3f1b78` (`docs: record 4.14.99 Training engine overhaul release`).
 
@@ -16,6 +16,9 @@ Current RC branch:
 git switch release/training-engine-production-candidate
 git rev-parse --short HEAD
 # b8f9be7
+# code payload
+# 2f14acb
+# current pushed branch head
 ```
 
 No production deploy, push, or merge has been performed.
@@ -26,8 +29,8 @@ No production deploy, push, or merge has been performed.
 | --- | --- | ---: | --- | --- |
 | Current production baseline | `origin/main`, `main` | `a3f1b78` | Stable reference | Use as rollback baseline |
 | Training overhaul already landed | `feature/training-engine-intelligence-and-agenda-overhaul` | local `5c276e0`, origin `08273a4` | Already merged into `main` via 4.14.99 release docs | Do not re-merge |
-| Second-opinion hardening base | `release/training-engine-production-hardening` | `b8f9be7` | Clean local hardening branch | Source for RC review |
-| Release candidate | `release/training-engine-production-candidate` | `b8f9be7` | Clean local candidate; not pushed | Review/push only after remaining gates are accepted |
+| Second-opinion hardening base | `release/training-engine-production-hardening` | `2f14acb` | Pushed review branch; code payload at `b8f9be7` | Source for RC review |
+| Release candidate | `release/training-engine-production-candidate` | `2f14acb` | Pushed review branch; code payload at `b8f9be7` | Review only; production still blocked by external gates |
 | Constrained-week work | packaged in RC | `b8f9be7` | Included | Keep |
 | Session identity work | packaged in RC | `b8f9be7` | Included with migration 082 | Keep; migration rollback still required |
 | Calendar staging smoke | packaged in RC | `b8f9be7` | Guarded harness/docs included | Keep; real provider smoke still blocked |
@@ -37,7 +40,7 @@ No production deploy, push, or merge has been performed.
 | Poor recovery variation | packaged in RC | `b8f9be7` | Included | Keep |
 | Weak-profile follow-up | packaged in RC | `b8f9be7` | Included | Keep |
 | Schedule explanations | packaged in RC | `b8f9be7` | Included | Keep |
-| iOS local smoke/readiness | iOS repo `release/ios-training-engine-local-smoke-candidate` | `537abf6` | Separate repository, clean local companion | Coordinate as companion iOS release |
+| iOS local smoke/readiness | iOS repo `release/ios-training-engine-local-smoke-candidate` | `b1aad7f` | Separate repository, pushed companion branch; code payload at `537abf6` | Coordinate as companion iOS release |
 
 ## Merge Strategy
 
@@ -95,7 +98,7 @@ Do not include these unless separately reviewed and justified:
 
 | Gate | Required evidence | Current status |
 | --- | --- | --- |
-| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done locally at `b8f9be7` |
+| Clean RC commits | Slices committed on `release/training-engine-production-candidate`; `git status --short` clean except intentionally ignored local files | Done and pushed at `2f14acb`; code payload at `b8f9be7` |
 | Backend full verification | `npm run verify` pass on committed candidate | Passed: 382 files / 5,994 tests |
 | Training evaluation harness | Persona/scenario eval pass with result path documented | Passed: 99/100, 156 cases |
 | Google calendar staging | Real staging create/update/regenerate/cancel read-back and cleanup | Blocked/missing staging prerequisites |
@@ -117,4 +120,4 @@ The candidate must not be merged or pushed for production while any of these are
 
 ## Current Release Recommendation
 
-Treat `b8f9be7` as the local backend RC review candidate and `537abf6` as the local iOS companion candidate. Keep production status as NO-GO until provider staging gates are resolved or formally waived, cross-skill staging is resolved or scoped, migration rollback is proven, and runtime-model claims match real configuration.
+Treat `2f14acb` as the pushed backend RC review branch head, with production code payload at `b8f9be7`; treat `b1aad7f` as the pushed iOS companion branch head, with iOS code payload at `537abf6`. Keep production status as NO-GO until provider staging gates are resolved or formally waived, cross-skill staging is resolved or scoped, migration rollback is proven, and runtime-model claims match real configuration.

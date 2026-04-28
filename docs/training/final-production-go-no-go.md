@@ -1,9 +1,9 @@
 # Training Engine Final Production Go / No-Go
 
 Date: 2026-04-28
-Backend RC branch reviewed: `release/training-engine-production-candidate` at `b8f9be7`
-Backend hardening branch evidence: `release/training-engine-production-hardening` at `b8f9be7`
-iOS local-smoke branch evidence: `release/ios-training-engine-local-smoke-candidate` at `537abf6`
+Backend RC branch reviewed: `release/training-engine-production-candidate` at `2f14acb` (code payload `b8f9be7`)
+Backend hardening branch evidence: `release/training-engine-production-hardening` at `2f14acb` (code payload `b8f9be7`)
+iOS local-smoke branch evidence: `release/ios-training-engine-local-smoke-candidate` at `b1aad7f` (code payload `537abf6`)
 Deployment: not run
 
 ## 1. Final Verdict
@@ -18,7 +18,7 @@ The Training engine is substantially improved and locally validated, but product
 4. Migration 082 rollback has not been rehearsed on a staging clone.
 5. GPT-5.5 runtime/provider proof and release-copy restraint still need final staging evidence.
 
-Post-review update: the release work has been packaged into clean local backend/iOS candidate commits, the local-auth iOS harness gap has been closed, and dedicated Training operational kill switches have been added/tested for generation, calendar writes/sync, and cross-skill signal publishing. These reduce operational risk but do not override the remaining provider staging, migration rollback, cross-skill staging, and runtime-model proof gates.
+Post-review update: the release work has been packaged into clean backend/iOS candidate commits and pushed to review branches, the local-auth iOS harness gap has been closed, and dedicated Training operational kill switches have been added/tested for generation, calendar writes/sync, and cross-skill signal publishing. These reduce operational risk but do not override the remaining provider staging, migration rollback, cross-skill staging, and runtime-model proof gates.
 
 Local iOS simulator proof is valid as pre-release compatibility evidence because it ran against a local backend listener and upgraded-engine-shaped fixtures, and resource shutdown was confirmed. It is not production iOS proof and must be followed by production-safe post-deploy validation if/when the backend ships.
 
@@ -37,7 +37,7 @@ Local iOS simulator proof is valid as pre-release compatibility evidence because
 | iOS local simulator | `docs/ios/release-candidate-local-ios-smoke-results.md`, `docs/ios/final-training-ios-smoke-results.md`, and `docs/local/full-nexus-local-smoke-results.md` show rich fixture smoke plus authenticated local API journey passed | Pass as local pre-release compatibility proof | Requires post-deploy production-safe validation |
 | Local resource shutdown | `docs/ios/release-candidate-local-engine-shutdown-confirmation.md` confirms backend/app stopped and port 8200 clear | Pass | Local smoke complete, no resource burn |
 | Rollback | `docs/training/release-candidate-rollback-plan.md` documents rollback path | Partial | Migration rollback rehearsal still missing |
-| RC merge hygiene | Backend candidate `b8f9be7` and iOS candidate `537abf6` were committed locally with clean worktrees after validation | Pass locally | Review/push still pending; no longer the release-blocking defect |
+| RC merge hygiene | Backend candidate branch `2f14acb` and iOS candidate branch `b1aad7f` were pushed with clean worktrees after validation | Pass for review packaging | Human review still pending; no longer the release-blocking defect |
 
 ## 3. Functional Readiness
 
@@ -81,9 +81,9 @@ Local iOS proof is valid for pre-release compatibility, with clear boundaries.
 | Item | Value |
 | --- | --- |
 | iOS branch | `release/ios-training-engine-local-smoke-candidate` |
-| iOS commit | `537abf6` |
+| iOS commit | `b1aad7f` branch head; code payload `537abf6` |
 | Backend branch used | `release/training-engine-production-hardening` |
-| Backend commit used | `b8f9be7` |
+| Backend commit used | `2f14acb` branch head; code payload `b8f9be7` |
 | Local API | `http://127.0.0.1:8200` |
 | Simulator | `iPhone 17 Pro`, iOS Simulator 26.4.1 |
 | Rich fixture launch args | `-NEXUSQATrainingFixture rich-v1 -nexus_allow_local_backend YES -nexus_base_url http://127.0.0.1:8200` |
@@ -169,7 +169,7 @@ Remaining security/privacy risks:
 | Monitoring | Needs final setup | Must monitor calendar sync failures, duplicate events, generation failures, feedback errors, and provider auth expiration. |
 | Resource control | Local smoke clean | Port 8200 shutdown confirmed after iOS smoke. |
 | Staging resource control | Not proven | Provider/cross-skill staging not run. |
-| Release packaging | Improved | Clean local backend and iOS candidate commits exist; review/push has not been performed. |
+| Release packaging | Improved | Clean backend and iOS candidate branches are pushed for review; production merge/deploy has not been performed. |
 
 Operational verdict: **improved, but not production-ready yet**.
 
@@ -183,7 +183,7 @@ Operational verdict: **improved, but not production-ready yet**.
 | P0-2 | Outlook Calendar staging lifecycle not run | Same as Google, or explicit owner waiver |
 | P0-3 | Calendar safety not proven against real providers | Provider event IDs, identity markers, stale cleanup, and retry idempotency verified by read-back |
 
-Resolved local P0: clean backend/iOS candidate packaging is closed locally (`b8f9be7`, `537abf6`) with clean worktrees and post-packaging validation evidence. It still requires human review and push before any release process.
+Resolved local P0: clean backend/iOS candidate packaging is closed and pushed for review (`2f14acb` / `b1aad7f`) with clean worktrees and post-packaging validation evidence. It still requires human review before any release process.
 
 ### P1 Blockers / Must-Fix Or Explicitly Accept
 
@@ -287,8 +287,8 @@ Do not deploy this Training RC to production today.
 Recommended next action:
 
 1. Review and push the packaged local backend/iOS candidate commits only after human approval:
-   - backend `b8f9be7`
-   - iOS `537abf6`
+   - backend branch head `2f14acb` (code payload `b8f9be7`)
+   - iOS branch head `b1aad7f` (code payload `537abf6`)
 2. Rehearse migration 082 on a staging DB clone.
 3. Run real Google/Outlook staging calendar lifecycle smokes:
 

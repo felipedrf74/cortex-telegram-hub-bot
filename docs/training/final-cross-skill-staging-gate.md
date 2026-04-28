@@ -2,9 +2,9 @@
 
 Date: 2026-04-28
 Backend branch: `release/training-engine-production-hardening`
-Backend commit: `b8f9be7`
+Backend commit: `2f14acb` branch head (code payload `b8f9be7`)
 Package version: `4.14.99`
-Run ID: `training-cross-skill-smoke-20260428105013-bj5mtb`
+Run ID: `training-cross-skill-smoke-20260428142925-1lc554`
 
 ## Executive Summary
 

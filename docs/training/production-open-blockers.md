@@ -24,17 +24,17 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 - real Outlook staging calendar lifecycle smoke is still blocked by missing staging credentials/env;
 - iOS rich-payload simulator smoke has now run against a local backend listener with deterministic Training fixtures, and the DEBUG-only auth importer enabled a fully authenticated local simulator journey across major iOS-facing endpoints;
 - database migration/rollback rehearsal still needs a staging clone;
-- final merge hygiene is now closed locally with packaged backend/iOS candidate commits, but the candidates still need human review/push before any deployment process.
+- final merge hygiene is now closed and the backend/iOS candidate branches have been pushed for review; human review and remaining external trust gates are still required before any deployment process.
 
 ## P0 Production Blockers
 
 ### P0-01 Clean Integration Candidate
 
-- Status: **fixed locally; review/push gate remains**
+- Status: **fixed and pushed for review**
 - Source: `docs/training/final-open-items-consolidation-report.md`, backend git status.
-- What changed: intended backend Training changes were packaged into `b8f9be7` on `release/training-engine-production-hardening` and `release/training-engine-production-candidate`; intended iOS companion changes were packaged into `537abf6` on `release/ios-training-engine-local-smoke-candidate`.
+- What changed: intended backend Training code changes were packaged into `b8f9be7`, then release-evidence docs were committed at `2f14acb` on `release/training-engine-production-hardening` and `release/training-engine-production-candidate`; intended iOS companion code changes were packaged into `537abf6`, then smoke-evidence docs were committed at `b1aad7f` on `release/ios-training-engine-local-smoke-candidate`.
 - Evidence: backend and iOS worktrees were clean after the packaging commits; backend commit hook ran `npm run typecheck` and `npm test`; full backend verify/eval and full iOS scheme evidence are recorded below.
-- Remaining requirement: human review and push. Do not deploy from an unreviewed local-only candidate.
+- Remaining requirement: human review. Do not deploy from an unreviewed candidate branch.
 
 ### P0-02 Full Backend Verification
 
@@ -49,7 +49,7 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 ### P0-03 Google Calendar Staging Lifecycle Smoke
 
 - Status: **blocked externally; not fixed by local code**
-- Latest final gate run: `training-calendar-smoke-20260428094430-r9cyiu`
+- Latest final gate run: `training-calendar-smoke-20260428142908-61fokl`
 - Result: blocked before writes; no production/staging calendar data touched.
 - Missing prerequisites:
   - `STAGING=true` or `NODE_ENV=staging`
@@ -64,7 +64,7 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 ### P0-04 Outlook Calendar Staging Lifecycle Smoke
 
 - Status: **blocked externally; not fixed by local code**
-- Latest final gate run: `training-calendar-smoke-20260428094430-r9cyiu`
+- Latest final gate run: `training-calendar-smoke-20260428142908-61fokl`
 - Result: blocked before writes; no calendar data touched.
 - Missing prerequisites: same staging env/user/database/OAuth set as P0-03, plus Outlook client credentials.
 - Required before production calendar claims: create/update/regenerate/cancel/retry with read-back and precise cleanup on a staging Outlook calendar.
@@ -104,7 +104,7 @@ Remaining blockers are now **release trust gates**, not known backend implementa
 ### P1-01 Cross-Skill Staging Smoke
 
 - Status: **blocked externally**
-- Latest run: `training-cross-skill-smoke-20260428105013-bj5mtb`
+- Latest run: `training-cross-skill-smoke-20260428142925-1lc554`
 - Local fixture contracts: passed.
 - Real staging runtime: blocked.
 - Missing prerequisites:

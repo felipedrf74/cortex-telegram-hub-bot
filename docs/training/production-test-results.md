@@ -160,7 +160,7 @@ npm run smoke:training-calendar:staging
 
 Result: **blocked safely / no-go**
 
-- Run ID: `training-calendar-smoke-20260428094430-r9cyiu`
+- Run ID: `training-calendar-smoke-20260428142908-61fokl`
 - Providers run: none
 - Event IDs: none
 - Cleanup failures: none
