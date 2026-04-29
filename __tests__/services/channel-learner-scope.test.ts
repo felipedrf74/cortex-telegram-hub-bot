@@ -162,6 +162,17 @@ describe('channel-learner: scoped synthesis', () => {
 
   it('resynthesizes user knowledge after shared system channels refresh without emitting per-user channel_dna signals', async () => {
     const systemChannel = addChannel('https://www.youtube.com/channel/UCsystem', 'manual', 0);
+    testDb.prepare(`
+      UPDATE content_ref_channels
+         SET tenant_id = 0,
+             owner_user_id = 0,
+             visibility_scope = 'platform_internal',
+             scope_status = 'active',
+             lifecycle_state = 'active',
+             created_by = 0,
+             updated_by = 0
+       WHERE id = ?
+    `).run(systemChannel.id);
 
     const userChannel = addChannel('https://www.youtube.com/@user', 'manual', 42);
     updateChannelStatus(userChannel.id, 'active', {

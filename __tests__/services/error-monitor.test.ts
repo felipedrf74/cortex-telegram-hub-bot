@@ -101,6 +101,38 @@ describe('Error Monitor', () => {
       expect(ctx.userId).toBe(123);
     });
 
+    it('sanitizes sensitive prompt and reference context before persistence', () => {
+      captureError({
+        level: 'warning',
+        source: 'api',
+        message: 'Provider failed token=private-token',
+        stack: 'Error: request Authorization: Bearer secretbearertoken',
+        context: {
+          endpoint: '/api/v1/content/script',
+          prompt: 'private content prompt',
+          references: [{ title: 'Tenant-private source' }],
+          memory: { voice: 'private voice' },
+          nested: { script: 'private script', retryAttempt: 1 },
+        },
+      });
+
+      const row = testDb.prepare('SELECT * FROM error_log').get() as any;
+      expect(row.message).toContain('token=[Redacted]');
+      expect(row.message).not.toContain('private-token');
+      expect(row.stack).toContain('Bearer [Redacted]');
+      expect(row.stack).not.toContain('secretbearertoken');
+
+      const ctx = JSON.parse(row.context);
+      expect(ctx.endpoint).toBe('/api/v1/content/script');
+      expect(ctx.prompt).toBe('[Redacted]');
+      expect(ctx.references).toBe('[Redacted]');
+      expect(ctx.memory).toBe('[Redacted]');
+      expect(ctx.nested.script).toBe('[Redacted]');
+      expect(ctx.nested.retryAttempt).toBe(1);
+      expect(row.context).not.toContain('Tenant-private source');
+      expect(row.context).not.toContain('private content prompt');
+    });
+
     it('pushes event to telemetry ring buffer', () => {
       captureError({
         level: 'error',

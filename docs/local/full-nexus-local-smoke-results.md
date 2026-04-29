@@ -67,13 +67,11 @@ Key startup evidence:
 - Backend served on `127.0.0.1:8212`.
 - Provider keys were blanked by fixture mode.
 
-Startup warning to track:
+Startup warning status:
 
-- With model keys blanked, provider routing logged:
-  `No AI providers available for primary='gemini' fallback='openai'`.
-  Deterministic/heuristic paths still returned successful HTTP responses, but
-  a first-class local fixture provider would reduce noise and make fixture mode
-  more explicit.
+- Superseded by later fix: with model keys blanked and `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0`,
+  provider routing now initializes a deterministic local `fixture` provider instead of
+  logging a provider-init error.
 
 ## Full-Smoke Command
 
@@ -307,7 +305,7 @@ the cancellation.
 | shared context | PASS | cross-skill fixture contracts and Chat context builder |
 | local calendar/agenda mock | PASS WITH NOTE | active ownership row then orphan audit on local provider miss |
 | workers | PASS | scheduler/workers started in backend process |
-| model/provider fixture mode | PASS WITH CONDITION | no real calls; noisy provider-init errors logged |
+| model/provider fixture mode | PASS | no real calls; superseded by later deterministic `routing(fixture)` provider path |
 | iOS local connectivity | PASS | build/install/launch/snapshot against local backend |
 | Chat routes to Secretary | PASS | HTTP `200`; backend routing logs |
 | Chat routes to Training | PASS | HTTP `200`; backend routing logs |
@@ -325,7 +323,6 @@ the cancellation.
 
 | Priority | Item | Why it remains open |
 | --- | --- | --- |
-| P1 | Add first-class fixture provider mode | Blank-key fixture mode passes but logs provider-init errors. |
 | P1 | Add local streaming/reconnect smoke | Chat streaming interruption is fixture-only in this run. |
 | P1 | Keep real Google/Outlook as staging gates | Local smoke cannot prove provider read-back or external mutation. |
 | P2 | Automate iOS launch inside runner | iOS smoke still uses XcodeBuildMCP/manual launch args. |
@@ -338,3 +335,138 @@ Cleanup completed. See:
 ```text
 docs/local/full-nexus-local-cleanup-confirmation.md
 ```
+
+---
+
+## Full Local Product Smoke Addendum — 2026-04-29 22:54
+
+Run ID: `full-nexus-local-smoke-20260429-2254`
+Local base URL: `http://127.0.0.1:8298`
+Backend branch: `feature/content-editorial-mutation-contracts`
+Backend commit: `21a27ff8a7f350244105fe189de677367bbd665d`
+iOS branch: `feature/ios-content-creation-intelligence-upgrade`
+iOS commit: `ca99f11a40855882b3690192bb9e17d90bb38c55`
+
+Rollback protection created before this smoke:
+
+- Backend branch/tag: `backup/full-local-smoke-before-run-20260429-2254`, `backup-full-local-smoke-before-run-20260429-2254`
+- iOS branch/tag: `backup/full-local-smoke-before-run-20260429-2254`, `backup-full-local-smoke-before-run-20260429-2254`
+
+### Runtime Configuration
+
+| Setting | Value |
+| --- | --- |
+| Backend mode | Attached `scripts/full-nexus-local-engine.sh up` |
+| Database | `/tmp/nexus-full-smoke-20260429-2254.db` |
+| Auth token file | `/tmp/nexus-full-smoke-20260429-2254-auth.json` |
+| Model/provider mode | `NEXUS_MODEL_FIXTURE_MODE=1`, `NEXUS_LOCAL_ALLOW_MODEL_CALLS=0` |
+| Calendar/provider mode | Local degraded/mock state, no real Google/Outlook credentials |
+| Workers/cache | Scheduler/workers started inside backend process; SQLite/KV cache initialized |
+| Optional content sidecar | Not started |
+
+The detached runner `start` path was briefly attempted first, but the shell reaped the background backend after startup. The smoke was rerun successfully with the runner's attached `up` mode, which is the documented mode for Codex/CI shells.
+
+### Backend, Skills, Workers, Cache
+
+Command:
+
+```bash
+FULL_NEXUS_STATE_DIR=/tmp/nexus-full-smoke-20260429-2254 \
+PORTAL_PORT=8298 \
+FULL_NEXUS_BASE_URL=http://127.0.0.1:8298 \
+DATABASE_PATH=/tmp/nexus-full-smoke-20260429-2254.db \
+FULL_NEXUS_AUTH_FILE=/tmp/nexus-full-smoke-20260429-2254-auth.json \
+NEXUS_MODEL_FIXTURE_MODE=1 \
+NEXUS_LOCAL_ALLOW_MODEL_CALLS=0 \
+IOS_INVITE_CODE=local-full-nexus-smoke \
+PORTAL_ADMIN_TOKEN=local-chat-tenant-admin \
+scripts/full-nexus-local-engine.sh full-smoke
+```
+
+Result: `PASS WITH CONDITIONS`.
+
+| Area | Result | Evidence |
+| --- | --- | --- |
+| Product health | PASS | `/api/v1/` returned `{ name: "Nexus Hub iOS API", version: "v1", status: "online" }` |
+| Auth/session | PASS | Local sandbox iOS user registered; auth token written to `/tmp/nexus-full-smoke-20260429-2254-auth.json` |
+| Authenticated iOS API smoke | PASS | 13/13 checks passed: Dashboard, plan today/week, task lists, today tasks, Training summary/today, Content pipeline/intelligence, Cooking, Finance, Connections, Inbox |
+| Chat tenant isolation | PASS WITH CONDITIONS | 15 pass / 1 partial / 0 fail; partial is provider fallback because no real fallback provider call was made |
+| Same-user tenant switch | PASS WITH CONDITIONS | Unsupported active-tenant override fails closed with `403`; true same-user workspace switching is still not claimed |
+| Cross-skill fixtures | PASS WITH LOCAL-FIXTURE NOTE | Secretary, Training, Cooking, Finance, Content and prompt plumbing checks passed; staging runtime section intentionally blocked in dry-run mode |
+| Chat evaluation harness | PASS WITH CONDITIONS | 24 scenarios, average 1.99/2.00; streaming/fallback/operator pin remain fixture-only partials |
+| Chat day-to-day simulation | PASS | 12 scenarios, average 1.94/2.00 |
+| Workers/cache | PASS | Backend logs show scheduler/workers started and SQLite/KV migrations initialized |
+| Provider-call controls | PASS | Provider routing initialized as `fixture→none`; no real provider calls enabled |
+
+Backend startup notes:
+
+- The runner applied migrations through `096_content_eval_history.sql`.
+- Skill registry seeded `secretary@2.0.0`, `triathlon@3.0.0`, `content@2.0.0`, `finance@1.0.0`, and `cooking@1.0.0`.
+- Default content book indexing logged expected local `ECONNREFUSED` failures because the optional content-engine sidecar was not started. This did not block app-facing content API smoke or iOS Content rendering.
+
+### iOS Local Smoke
+
+Focused iOS tests:
+
+```text
+NexusConfigTests
+DebugAuthTokenImporterPolicyTests
+ChatRepositoryTests
+ChatRichStateDecodingTests
+ContentHomeContractDecodingTests
+ContentReferenceLocalStoreTests
+SecretaryDayPlanPresentationTests
+TrainingPresentationTests
+```
+
+Result: `PASS` — 77 tests passed, 0 failed.
+
+Simulator:
+
+```text
+iPhone 17 Pro (A0B13967-B5DE-4E6F-897D-F1E409093F94), iOS Simulator 26.4.1
+```
+
+Launch args:
+
+```text
+-nexus_allow_local_backend YES
+-nexus_base_url http://127.0.0.1:8298
+-nexus_debug_local_auth_import YES
+```
+
+Launch env:
+
+```text
+NEXUS_LOCAL_AUTH_IMPORT_PATH=/tmp/nexus-full-smoke-20260429-2254-auth.json
+```
+
+iOS simulator result: `PASS`.
+
+Evidence:
+
+- App built, installed, and launched successfully against the local backend.
+- Home rendered authenticated app state and did **not** show "Couldn't reach Nexus Hub".
+- Home showed honest degraded local provider states: partial briefing for calendar connection and unavailable Body Battery/health data.
+- Chat opened successfully.
+- Chat shortcut "What's on my schedule today?" routed to Secretary and rendered a Secretary response with source evidence.
+- Skills tab opened and listed Training, Content, Cooking, Finance.
+- Content skill opened and rendered rich workflow state: next move, confidence, radar, schedule, content flow, workbench, Voice DNA, and backstage details.
+- Training skill opened and rendered the expected clean-fixture state: profile setup, no active plan, readiness, and honest Apple Health permission degradation.
+- Screenshot captured during the iOS smoke at `/var/folders/ys/pphsc0rn6m7246r817g6r1pr0000gn/T/screenshot_optimized_da107c93-aa20-4567-8278-22eac5e9a829.jpg`.
+
+### Release Gate Verdict
+
+`PASS WITH CONDITIONS`
+
+The full local product smoke validates backend APIs, auth/session, tenant scoping, Chat, Secretary, Training, Cooking, Finance, Content Creation, shared context fixtures, workers/cache startup, fixture-mode model routing, and iOS local connectivity.
+
+Conditions that remain outside this local smoke:
+
+| Priority | Condition | Reason |
+| --- | --- | --- |
+| P1 | WebSocket/stream interruption proof | This run uses fixture evaluation and normal Chat HTTP/shortcut flow, not a full reconnect stream drill |
+| P1 | True same-user workspace switching | Unsupported active-tenant overrides fail closed; membership-backed multi-workspace switching remains unimplemented |
+| P1 | Provider-backed calendar lifecycle | Local run used degraded/mock calendar state; Google/Outlook read-back belongs to staging |
+| P2 | Optional content-engine sidecar smoke | App-facing Content paths passed, but live extraction/indexing sidecar was not started |
+| P2 | Automate iOS leg in the runner | iOS smoke still requires XcodeBuildMCP/manual launch args |

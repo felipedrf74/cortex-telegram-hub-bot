@@ -235,7 +235,7 @@ export async function analyzeInvoiceImage(
     );
     return { analysis: parsed, provider: usedProvider };
   } catch (err) {
-    logger.warn({ text, err }, 'Failed to parse invoice analysis JSON');
+    logger.warn({ err, responseChars: text.length }, 'Failed to parse invoice analysis JSON');
     return {
       analysis: {
         isInvoice: false, confidence: 0,

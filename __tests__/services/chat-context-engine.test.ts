@@ -101,10 +101,16 @@ function insertMemory(input: {
 }
 
 function insertDailyContext(tenantId: number, userId: number, summary: string): void {
+  const localNow = new Date();
+  const localDate = [
+    localNow.getFullYear(),
+    String(localNow.getMonth() + 1).padStart(2, '0'),
+    String(localNow.getDate()).padStart(2, '0'),
+  ].join('-');
   testDb.prepare(`
     INSERT INTO daily_context_cache (tenant_id, user_id, scope_status, date, context_summary)
-    VALUES (?, ?, 'active', strftime('%Y-%m-%d', 'now'), ?)
-  `).run(tenantId, userId, summary);
+    VALUES (?, ?, 'active', ?, ?)
+  `).run(tenantId, userId, localDate, summary);
 }
 
 describe('chat-context-engine', () => {

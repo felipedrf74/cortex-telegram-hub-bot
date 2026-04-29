@@ -15,6 +15,7 @@ import { buildAgentContext, formatContextForPrompt } from '../services/cross-age
 import { getDb } from '../services/database';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { ensureContentTenantScopeColumns } from '../services/content-tenant-scope';
 
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -53,6 +54,7 @@ const FALLBACK_PILLAR_KEYWORDS: Record<string, string[]> = {
 function getPillarKeywords(): Record<string, string[]> {
   try {
     const db = getDb();
+    ensureContentTenantScopeColumns(db);
     const rows = db.prepare(
       `SELECT name, keywords FROM config_pillars WHERE enabled = 1 ORDER BY name ASC`,
     ).all() as Array<{ name: string; keywords: string }>;
@@ -409,9 +411,15 @@ export async function runReactionRadar(): Promise<void> {
     }
 
     // Get reference channel IDs
-    const refChannels = db.prepare(
-      "SELECT channel_id, channel_name FROM content_ref_channels WHERE status = 'active' AND channel_id IS NOT NULL"
-    ).all() as any[];
+    const refChannels = db.prepare(`
+      SELECT channel_id, channel_name
+        FROM content_ref_channels
+       WHERE status = 'active'
+         AND channel_id IS NOT NULL
+         AND COALESCE(scope_status, 'quarantined') = 'active'
+         AND COALESCE(visibility_scope, 'platform_internal') IN ('platform_internal', 'public_published')
+         AND COALESCE(tenant_id, 0) = 0
+    `).all() as any[];
 
     // Fetch data from multiple sources
     const allFindings: VideoFinding[] = [];

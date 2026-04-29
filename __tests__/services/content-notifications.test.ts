@@ -52,10 +52,12 @@ import {
   createNotification,
   getUnreadNotifications,
   getNotifications,
+  getNotificationById,
   getUnreadCount,
   markRead,
   markAllRead,
   resolveNotification,
+  resolveContentNotificationDeepLink,
   getAllNotifications,
 } from '../../src/services/content-notification-store';
 import { clearTenantScopeAnomaliesForTests, getTenantScopeAnomalies } from '../../src/services/tenant-scope-observability';
@@ -251,6 +253,14 @@ describe('content-notifications: user scoping', () => {
     expect(getUnreadCount(2)).toBe(1);
   });
 
+  it('single notification lookup is scoped to the owner user', () => {
+    const user1Id = createNotification({ userId: 1, type: 'script_ready', title: 'User 1', body: 'a', data: { scriptId: 42 } });
+    createNotification({ userId: 2, type: 'script_ready', title: 'User 2', body: 'b', data: { scriptId: 99 } });
+
+    expect(getNotificationById(user1Id, 1)?.data).toEqual({ scriptId: 42 });
+    expect(getNotificationById(user1Id, 2)).toBeNull();
+  });
+
   it('read surfaces fail closed on invalid tenant scope', () => {
     createNotification({ userId: 1, type: 'topic_candidates_ready', title: 'User 1', body: 'a' });
 
@@ -268,7 +278,115 @@ describe('content-notifications: user scoping', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 4. Badge Count
+// 4. Deep Link Resolver
+// ═══════════════════════════════════════════════════════════════════
+
+describe('content-notifications: deep link resolver', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    clearTenantScopeAnomaliesForTests();
+  });
+  afterEach(() => testDb?.close());
+
+  it('resolves a script notification to a concrete script target without mutating status', () => {
+    const id = createNotification({
+      userId: 1,
+      type: 'script_ready',
+      title: 'Script ready',
+      body: 'Review the new draft',
+      data: { scriptId: 'script_42' },
+    });
+
+    const resolution = resolveContentNotificationDeepLink(id, 1);
+
+    expect(resolution).toMatchObject({
+      contractVersion: 1,
+      notification: { id, status: 'unread' },
+      deepLink: {
+        targetKind: 'script',
+        targetId: 'script_42',
+        screen: 'contentScript',
+        route: 'content/scripts/script_42',
+        action: 'open_script',
+        canOpenConcreteTarget: true,
+      },
+    });
+    expect(getNotificationById(id, 1)?.status).toBe('unread');
+  });
+
+  it('resolves approval and source-review actions to workflow-specific targets', () => {
+    const approvalId = createNotification({
+      userId: 1,
+      type: 'content_action_required',
+      title: 'Approval needed',
+      body: 'Approve this draft before scheduling',
+      data: { contentObjectId: 'draft_7', approvalId: 'approval_3' },
+    });
+    const sourceReviewId = createNotification({
+      userId: 1,
+      type: 'content_action_required',
+      title: 'Source review needed',
+      body: 'Review provenance before publishing',
+      data: { workflowObjectId: 'draft_8', action: 'source_review_required' },
+    });
+
+    expect(resolveContentNotificationDeepLink(approvalId, 1)?.deepLink).toMatchObject({
+      targetKind: 'approval',
+      targetId: 'draft_7',
+      screen: 'contentApproval',
+      route: 'content/workflow/draft_7/approval',
+      action: 'review_approval',
+      canOpenConcreteTarget: true,
+    });
+    expect(resolveContentNotificationDeepLink(sourceReviewId, 1)?.deepLink).toMatchObject({
+      targetKind: 'source_review',
+      targetId: 'draft_8',
+      screen: 'contentSourceReview',
+      route: 'content/workflow/draft_8/source-review',
+      action: 'source_review_required',
+      canOpenConcreteTarget: true,
+    });
+  });
+
+  it('falls back to Content Home when the notification has no concrete artifact id', () => {
+    const id = createNotification({
+      userId: 1,
+      type: 'topic_candidates_ready',
+      title: 'Topics ready',
+      body: 'Review new ideas',
+      data: { count: 5 },
+    });
+
+    const resolution = resolveContentNotificationDeepLink(id, 1);
+
+    expect(resolution?.deepLink).toMatchObject({
+      targetKind: 'content_home',
+      targetId: null,
+      screen: 'contentHome',
+      route: 'content/home',
+      action: 'review_topics',
+      canOpenConcreteTarget: false,
+      reasonCodes: expect.arrayContaining(['topic_candidates_without_topic_id', 'no_concrete_content_target']),
+    });
+  });
+
+  it('does not resolve another user notification', () => {
+    const id = createNotification({
+      userId: 1,
+      type: 'script_ready',
+      title: 'Private script',
+      body: 'Do not leak',
+      data: { scriptId: 'private_1' },
+    });
+
+    expect(resolveContentNotificationDeepLink(id, 2)).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 5. Badge Count
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-notifications: unread count', () => {
@@ -294,7 +412,7 @@ describe('content-notifications: unread count', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 5. Portal Admin View
+// 6. Portal Admin View
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-notifications: admin view', () => {
@@ -315,7 +433,7 @@ describe('content-notifications: admin view', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 6. No Grammy in Core Workflow
+// 7. No Grammy in Core Workflow
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-notifications: no grammy in core workflow', () => {
@@ -356,7 +474,7 @@ describe('content-notifications: no grammy in core workflow', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 7. Notification Types
+// 8. Notification Types
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-notifications: type filtering', () => {
@@ -379,7 +497,7 @@ describe('content-notifications: type filtering', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// 8. Structural Checks
+// 9. Structural Checks
 // ═══════════════════════════════════════════════════════════════════
 
 describe('content-notifications: structural', () => {
@@ -402,6 +520,21 @@ describe('content-notifications: structural', () => {
     );
     expect(routerSource).toContain('notificationRoutes');
     expect(routerSource).toContain("'/notifications'");
+  });
+
+  it('content notification deep-link resolver is registered under the Content API', () => {
+    const contentRouterSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/api/routes/content.ts'),
+      'utf8',
+    );
+    const resolverSource = fs.readFileSync(
+      path.resolve(__dirname, '../../src/api/routes/content-notification-routes.ts'),
+      'utf8',
+    );
+
+    expect(contentRouterSource).toContain('registerContentNotificationRoutes');
+    expect(resolverSource).toContain("GET /api/v1/content/notifications/:id");
+    expect(resolverSource).toContain("router.get('/notifications/:id'");
   });
 
   it('portal has admin notification endpoint', () => {

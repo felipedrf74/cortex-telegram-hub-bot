@@ -12,6 +12,8 @@ Verdict: **PASS WITH CONDITIONS**
 
 No cross-tenant leakage was observed. This is not marked plain PASS because true same-user multi-workspace tenant switching is intentionally not supported by the current iOS Chat ingress, and live real-provider fallback was not exercised. The current safe production model remains canonical `tenantId == userId`.
 
+Latest addendum, 2026-04-29 22:50 WEST: same-user active-tenant override attempts are now explicit fail-closed behavior instead of being silently ignored. A focused live local smoke on `http://127.0.0.1:8297` passed 15 checks, left 1 provider-fallback condition partial, and returned `403 FORBIDDEN` when User A attempted to read Chat history with `x-nexus-active-tenant-id` set to Tenant B. Canonical `x-nexus-active-tenant-id == userId` remains allowed. See `docs/local/chat-same-user-tenant-switch-smoke-results.md`.
+
 ## Local Runtime
 
 Backend was run locally on:
@@ -210,6 +212,7 @@ Cleanup status: PASS.
 | Condition | Release impact |
 | --- | --- |
 | True same-user workspace tenant switching is not supported. | Do not claim workspace tenant switching for Chat. |
+| Same-user active-tenant override attempts now fail closed. | This is safe for the current release, but still not true workspace switching support. |
 | Live provider fallback was not called with real providers. | Do not claim live fallback quality from this smoke; run bounded staging/provider smoke if needed. |
 | Durable attachment store is not part of this release claim. | Attachment smoke only proves authenticated Chat attachment path did not leak cross-tenant markers. |
 | WebSocket streaming remains disabled for release. | Do not enable Chat WebSocket until scoped streaming lifecycle/idempotency smoke exists. |

@@ -30,10 +30,11 @@ function isCalendarSource(value: string): value is CalendarSource {
  */
 export async function reconcileOrphanedTrainingAgendaEvents(
   userId: number,
+  tenantId = userId,
 ): Promise<TrainingAgendaReconciliationResult> {
   const ownerships = mergeOwnershipQueues([
-    ...findOwnershipsNeedingReconciliation(userId),
-    ...findOrphanedOwnerships(userId),
+    ...findOwnershipsNeedingReconciliation(userId, tenantId),
+    ...findOrphanedOwnerships(userId, tenantId),
   ]);
   let deleted = 0;
   let failed = 0;
@@ -56,6 +57,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
         reason: 'orphan_reconciled',
         status: 'deleted',
         userId,
+        tenantId,
         planId: ownership.plan_id,
         ownershipId: ownership.id,
       });
@@ -71,6 +73,7 @@ export async function reconcileOrphanedTrainingAgendaEvents(
           reason: 'orphan_reconcile_delete_failed',
           status: 'orphaned',
           userId,
+          tenantId,
           planId: ownership.plan_id,
           ownershipId: ownership.id,
         });

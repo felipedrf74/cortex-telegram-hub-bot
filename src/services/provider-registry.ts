@@ -13,7 +13,7 @@
  * silently skipped — the system degrades to no-fallback for that task type.
  */
 
-import { AIProvider } from './ai-provider';
+import { AIProvider, AICallResult, AIToolResultMessage, CallDomainOptions } from './ai-provider';
 import { AnthropicProvider } from './anthropic-provider';
 import { OpenAIProvider, isOpenAIConfigured } from './openai-provider';
 import { GeminiProvider, isGeminiProviderConfigured } from './gemini-provider';
@@ -21,13 +21,71 @@ import { TaskRoutingProvider, TaskRoutingConfig, TaskProviderPair, FallbackEvent
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { captureError } from './error-monitor';
-import { isAnthropicRuntimeEnabled } from './runtime-flags';
+import { areModelProviderCallsDisabled, isAnthropicRuntimeEnabled } from './runtime-flags';
+import type { ClassificationResult, DomainMessage, DomainName } from '../domains/types';
 
 // ─── Provider Registry ─────────────────────────────────────────────
 
 type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
 const providers = new Map<string, AIProvider>();
+
+class LocalFixtureProvider implements AIProvider {
+  readonly name = 'fixture';
+
+  async classify(message: string): Promise<ClassificationResult> {
+    const normalized = message.toLowerCase();
+    if (/\b(script|content|post|caption|hook|youtube|linkedin|tiktok|reel)\b/.test(normalized)) {
+      return { domain: 'content', confidence: 0.8 };
+    }
+    if (/\b(workout|training|run|bike|swim|recovery|gym)\b/.test(normalized)) {
+      return { domain: 'triathlon', confidence: 0.8 };
+    }
+    if (/\b(invoice|budget|expense|finance|subscription|bill)\b/.test(normalized)) {
+      return { domain: 'finance', confidence: 0.8 };
+    }
+    if (/\b(meal|cook|recipe|grocery|fueling|prep)\b/.test(normalized)) {
+      return { domain: 'cooking', confidence: 0.8 };
+    }
+    return { domain: 'secretary', confidence: 0.6 };
+  }
+
+  async callDomain(
+    domain: DomainName,
+    _history: DomainMessage[],
+    _currentMessage: string,
+    _stateContext: string,
+    _optionsOrMaxTokens?: number | CallDomainOptions,
+  ): Promise<AICallResult> {
+    return {
+      text: `Local model fixture response for ${domain}. Real provider calls are disabled for this local run.`,
+      toolCalls: [],
+      stopReason: 'fixture',
+    };
+  }
+
+  async continueWithToolResults(
+    domain: DomainName,
+    _history: DomainMessage[],
+    _currentMessage: string,
+    _stateContext: string,
+    _toolConversation: AIToolResultMessage[],
+    _options?: CallDomainOptions,
+  ): Promise<AICallResult> {
+    return {
+      text: `Local model fixture continuation for ${domain}. Real provider calls are disabled for this local run.`,
+      toolCalls: [],
+      stopReason: 'fixture',
+    };
+  }
+}
+
+let _fixtureProvider: AIProvider | null = null;
+
+function getFixtureProvider(): AIProvider {
+  if (!_fixtureProvider) _fixtureProvider = new LocalFixtureProvider();
+  return _fixtureProvider;
+}
 
 function getUsableProvider(name: string): AIProvider | null {
   if (name === 'anthropic' && !isAnthropicRuntimeEnabled()) {
@@ -86,6 +144,10 @@ export function getProvider(name: string): AIProvider | null {
  * If the fallback isn't available, runs without fallback.
  */
 function buildPair(primaryName: string, fallbackName: string): TaskProviderPair {
+  if (areModelProviderCallsDisabled()) {
+    return { primary: getFixtureProvider() };
+  }
+
   let primary = resolveAvailableProvider([
     primaryName,
     fallbackName,
@@ -128,6 +190,40 @@ function buildPair(primaryName: string, fallbackName: string): TaskProviderPair 
   return { primary, fallback };
 }
 
+function reportDisabledAnthropicConfiguration(
+  taskType: 'classify' | 'chat' | 'tool-use',
+  position: 'primary' | 'fallback',
+  providerName: string,
+): void {
+  if (providerName !== 'anthropic') return;
+  if (areModelProviderCallsDisabled()) return;
+  if (isAnthropicRuntimeEnabled()) return;
+
+  const context = {
+    taskType,
+    position,
+    configuredProvider: providerName,
+    anthropicEnabled: false,
+  };
+  logger.warn(
+    context,
+    'Anthropic provider configured while ANTHROPIC_ENABLED is false; provider will be skipped',
+  );
+  try {
+    captureError(
+      {
+        level: 'warning',
+        source: 'job',
+        message: `Anthropic provider configured while disabled for ${taskType} ${position}`,
+        context,
+      },
+      false,
+    );
+  } catch {
+    // Observability must never break provider initialization.
+  }
+}
+
 // ─── Active provider singleton ─────────────────────────────────
 
 let _activeProvider: TaskRoutingProvider | null = null;
@@ -160,6 +256,13 @@ export function createRoutingProvider(
 ): TaskRoutingProvider {
   const rc = config.providerRouting;
 
+  reportDisabledAnthropicConfiguration('classify', 'primary', rc.classify.primary);
+  reportDisabledAnthropicConfiguration('classify', 'fallback', rc.classify.fallback);
+  reportDisabledAnthropicConfiguration('chat', 'primary', rc.chat.primary);
+  reportDisabledAnthropicConfiguration('chat', 'fallback', rc.chat.fallback);
+  reportDisabledAnthropicConfiguration('tool-use', 'primary', rc.toolUse.primary);
+  reportDisabledAnthropicConfiguration('tool-use', 'fallback', rc.toolUse.fallback);
+
   const routingConfig: TaskRoutingConfig = {
     classify: buildPair(rc.classify.primary, rc.classify.fallback),
     chat: buildPair(rc.chat.primary, rc.chat.fallback),
@@ -179,6 +282,7 @@ export function createRoutingProvider(
       chat: `${routingConfig.chat.primary.name}→${routingConfig.chat.fallback?.name || 'none'}`,
       'tool-use': `${routingConfig['tool-use'].primary.name}→${routingConfig['tool-use'].fallback?.name || 'none'}`,
       circuitBreaker: routingConfig.circuitBreaker,
+      fixtureMode: areModelProviderCallsDisabled(),
     },
     'Provider routing initialized',
   );

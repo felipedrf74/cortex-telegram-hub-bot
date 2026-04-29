@@ -62,6 +62,7 @@ describe('training-agenda-reconciliation', () => {
       reason: 'orphan_reconciled',
       status: 'deleted',
       userId: 42,
+      tenantId: 42,
       planId: 10,
       ownershipId: 1,
     });
@@ -94,6 +95,7 @@ describe('training-agenda-reconciliation', () => {
       reason: 'orphan_reconciled',
       status: 'deleted',
       userId: 42,
+      tenantId: 42,
       planId: 11,
       ownershipId: 3,
     });
@@ -154,6 +156,7 @@ describe('training-agenda-reconciliation', () => {
       reason: 'orphan_reconcile_delete_failed',
       status: 'orphaned',
       userId: 42,
+      tenantId: 42,
       planId: 12,
       ownershipId: 4,
     });

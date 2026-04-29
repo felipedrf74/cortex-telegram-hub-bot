@@ -3,6 +3,12 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import type { AgentSignal } from './intelligence-bus';
+import {
+  contentScopeForInsert,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 
 export interface ContentRadarPreferences {
   topics: string[];
@@ -22,17 +28,18 @@ function ensureTable(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+  ensureContentTenantScopeColumns(getDb());
 }
 
-export function getContentRadarPreferences(userId: number): ContentRadarPreferences {
+export function getContentRadarPreferences(userId: number, tenantId?: number): ContentRadarPreferences {
   try {
     ensureTable();
     const row = getDb().prepare(`
       SELECT topics_json, updated_at
       FROM content_radar_preferences
-      WHERE user_id = ?
+      WHERE ${contentScopePredicate()}
       LIMIT 1
-    `).get(userId) as { topics_json: string; updated_at: string } | undefined;
+    `).get(...contentScopeParams(userId, tenantId)) as { topics_json: string; updated_at: string } | undefined;
 
     return {
       topics: row ? normalizeTopics(safeJsonArray(row.topics_json)) : [],
@@ -44,18 +51,39 @@ export function getContentRadarPreferences(userId: number): ContentRadarPreferen
   }
 }
 
-export function setContentRadarPreferences(userId: number, topics: string[]): ContentRadarPreferences {
+export function setContentRadarPreferences(userId: number, topics: string[], tenantId?: number): ContentRadarPreferences {
   ensureTable();
   const normalizedTopics = normalizeTopics(topics);
+  const scope = contentScopeForInsert(userId, tenantId);
   getDb().prepare(`
-    INSERT INTO content_radar_preferences (user_id, topics_json, updated_at)
-    VALUES (?, ?, datetime('now'))
+    INSERT INTO content_radar_preferences (
+      user_id, topics_json, updated_at, tenant_id, owner_user_id, visibility_scope,
+      lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json
+    )
+    VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       topics_json = excluded.topics_json,
+      tenant_id = excluded.tenant_id,
+      owner_user_id = excluded.owner_user_id,
+      visibility_scope = excluded.visibility_scope,
+      lifecycle_state = excluded.lifecycle_state,
+      scope_status = excluded.scope_status,
+      updated_by = excluded.updated_by,
       updated_at = datetime('now')
-  `).run(userId, JSON.stringify(normalizedTopics));
+  `).run(
+    userId,
+    JSON.stringify(normalizedTopics),
+    scope.tenantId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+  );
 
-  return getContentRadarPreferences(userId);
+  return getContentRadarPreferences(userId, tenantId);
 }
 
 export function filterSignalsForRadarPreferences(

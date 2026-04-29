@@ -18,6 +18,7 @@ class EngineConfig:
     anthropic_api_key: str = ""
     reddit_client_id: str = ""
     reddit_client_secret: str = ""
+    fixture_mode: bool = False
 
     # ── Timeouts (seconds) ────────────────────────────────────────────
     searcher_timeout: float = 10.0
@@ -48,6 +49,9 @@ class EngineConfig:
 
 def load_config() -> EngineConfig:
     """Build config from environment variables."""
+    if _fixture_mode_enabled():
+        return EngineConfig(fixture_mode=True)
+
     return EngineConfig(
         serpapi_key=os.environ.get("SERPAPI_API_KEY", ""),
         youtube_api_key=os.environ.get("YOUTUBE_API_KEY", ""),
@@ -55,6 +59,13 @@ def load_config() -> EngineConfig:
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         reddit_client_id=os.environ.get("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.environ.get("REDDIT_CLIENT_SECRET", ""),
+    )
+
+
+def _fixture_mode_enabled() -> bool:
+    return (
+        os.environ.get("CONTENT_ENGINE_FIXTURE_MODE") == "1"
+        or os.environ.get("NEXUS_LOCAL_ALLOW_MODEL_CALLS") == "0"
     )
 
 

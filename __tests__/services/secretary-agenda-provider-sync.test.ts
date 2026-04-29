@@ -33,12 +33,14 @@ import {
   type SecretaryTimeWindow,
 } from '../../src/services/secretary-scheduling-arbitrator';
 import {
+  markCompletedSecretaryAgendaItems,
   syncSecretaryAgendaItemsToProvider,
   syncSecretaryAgendaItemToProvider,
   type SecretaryAgendaProviderAdapter,
   type SecretaryProviderEvent,
   type SecretaryProviderEventInput,
 } from '../../src/services/secretary-agenda-provider-sync';
+import { getActiveReminders, setReminder } from '../../src/state/reminders';
 
 const TENANT_ID = 'tenant-calendar-lifecycle';
 const OWNER_USER_ID = 74;
@@ -201,6 +203,7 @@ describe('secretary-agenda-provider-sync', () => {
     expect(stored?.providerEventId).toBe(result.providerEventId);
     expect(stored?.providerSource).toBe('google');
     expect(stored?.providerSyncState).toBe('synced');
+    expect(stored?.lifecycleState).toBe('synced');
     expect(stored?.sourceShapeHash).toHaveLength(32);
   });
 
@@ -349,6 +352,92 @@ describe('secretary-agenda-provider-sync', () => {
     expect(retried.action).toBe('created');
     expect(provider.createInputs).toHaveLength(1);
     expect(stored?.providerSyncState).toBe('synced');
+    expect(stored?.lifecycleState).toBe('synced');
+  });
+
+  it('marks provider sync failures as failed_sync and keeps them retryable', async () => {
+    const provider = new MockSecretaryProvider();
+    provider.createFailuresRemaining = 1;
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'failed-sync-lifecycle',
+      sourceEntityId: 'session-failed-sync',
+    }));
+
+    const failed = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterFailure = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(failed.providerSyncState).toBe('create_failed');
+    expect(afterFailure?.lifecycleState).toBe('failed_sync');
+
+    const retried = await syncOne(decision.agendaItem.agendaItemId, provider);
+    const afterRetry = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+    expect(retried.action).toBe('created');
+    expect(afterRetry?.lifecycleState).toBe('synced');
+  });
+
+  it('marks ended agenda items completed without deleting provider history', async () => {
+    const provider = new MockSecretaryProvider();
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'completed-lifecycle',
+      sourceEntityId: 'session-completed',
+      preferredWindows: [
+        timeWindow('2026-05-02T09:00:00.000Z', '2026-05-02T11:00:00.000Z', 'morning'),
+      ],
+    }));
+    const created = await syncOne(decision.agendaItem.agendaItemId, provider);
+
+    const changed = markCompletedSecretaryAgendaItems(new Date('2026-05-03T00:00:00.000Z'));
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(changed).toBeGreaterThanOrEqual(1);
+    expect(stored?.lifecycleState).toBe('completed');
+    expect(provider.events.has(created.providerEventId!)).toBe(true);
+  });
+
+  it('cancels agenda-linked reminders when an agenda item is canceled', () => {
+    testDb.exec(`
+      CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL DEFAULT 0,
+        message TEXT NOT NULL,
+        remind_at TEXT NOT NULL,
+        recurring TEXT,
+        status TEXT DEFAULT 'active',
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'reminder-cancel',
+      sourceEntityId: 'session-reminder',
+    }));
+    setReminder(OWNER_USER_ID, {
+      message: 'Prep for bike session',
+      remind_at: '2026-05-04T08:30:00.000Z',
+      agenda_item_id: decision.agendaItem.agendaItemId,
+    });
+
+    expect(getActiveReminders(OWNER_USER_ID)).toHaveLength(1);
+    cancelSecretaryAgendaItem({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+      reason: 'user canceled',
+      now: '2026-05-01T10:00:00.000Z',
+    });
+
+    expect(getActiveReminders(OWNER_USER_ID)).toHaveLength(0);
   });
 
   it('recreates an active agenda item when its provider event was externally deleted', async () => {

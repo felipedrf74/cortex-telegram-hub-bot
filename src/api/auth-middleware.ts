@@ -13,11 +13,33 @@ import { sendError } from './response-helpers';
 // `services/database` doesn't import anything in `api/*`, so a top-level
 // import is cycle-safe.
 import { getDb } from '../services/database';
+import { isValidTenantUserId, recordTenantScopeAnomaly } from '../services/tenant-scope-observability';
 
 export interface AuthenticatedRequest extends Request {
   tenantId: number;
   userId: number;
   deviceId: string;
+}
+
+const ACTIVE_TENANT_HEADER_NAMES = [
+  'x-nexus-active-tenant-id',
+  'x-nexus-tenant-id',
+] as const;
+
+function readRequestedActiveTenant(req: Request): { header: string; raw: string; tenantId: number | null } | null {
+  for (const header of ACTIVE_TENANT_HEADER_NAMES) {
+    const rawValue = req.header?.(header) ?? req.headers[header];
+    const raw = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+    if (typeof raw !== 'string' || raw.trim().length === 0) continue;
+    const trimmed = raw.trim();
+    const tenantId = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+    return {
+      header,
+      raw,
+      tenantId: Number.isFinite(tenantId) && tenantId > 0 ? tenantId : null,
+    };
+  }
+  return null;
 }
 
 /**
@@ -123,9 +145,46 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
       return;
     }
 
+    const requestedTenant = readRequestedActiveTenant(req);
+    if (requestedTenant) {
+      if (!isValidTenantUserId(requestedTenant.tenantId)) {
+        recordTenantScopeAnomaly({
+          layer: 'delivery',
+          operation: 'ios_auth_active_tenant',
+          reason: 'invalid_user_scope',
+          userId: payload.userId,
+          details: {
+            header: requestedTenant.header,
+            raw: requestedTenant.raw,
+          },
+        });
+        sendError(res, 'FORBIDDEN', 'Invalid active tenant scope', 403);
+        return;
+      }
+
+      if (requestedTenant.tenantId !== payload.userId) {
+        recordTenantScopeAnomaly({
+          layer: 'delivery',
+          operation: 'ios_auth_active_tenant',
+          reason: 'tenant_mismatch',
+          userId: payload.userId,
+          details: {
+            header: requestedTenant.header,
+            requestedTenantId: requestedTenant.tenantId,
+            canonicalTenantId: payload.userId,
+          },
+        });
+        sendError(res, 'FORBIDDEN', 'Active tenant switching is not enabled for this session', 403);
+        return;
+      }
+    }
+
     // Nexus currently uses users.id as the canonical tenant key for iOS
     // runtime data. Keep tenant scope explicit on the request so downstream
     // Chat/agenda/memory paths never have to infer it from frontend filters.
+    // If a client attempts same-user workspace switching before the backend
+    // has a membership-backed active-tenant model, fail closed above instead
+    // of silently accepting or ignoring the requested tenant.
     (req as AuthenticatedRequest).tenantId = payload.userId;
     (req as AuthenticatedRequest).userId = payload.userId;
     (req as AuthenticatedRequest).deviceId = payload.deviceId;

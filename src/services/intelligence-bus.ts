@@ -118,6 +118,8 @@ export interface AgentSignal {
   expires_at: string;
   /** Telegram user ID, or null for global signals (content mesh). */
   user_id: number | null;
+  /** Tenant/workspace ID. Null means legacy platform-global/system signal. */
+  tenant_id: number | null;
   /** Strength/certainty metric (0.0–1.0). Higher = more reliable. (Migration 060) */
   confidence: number;
   /** Content format tag: 'reel', 'youtube', 'short', etc. (Migration 060) */
@@ -250,6 +252,59 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   expense_anomaly:            7 * 24,
 };
 
+const ALLOWED_SIGNAL_SOURCE_AGENTS = new Set([
+  'book-extractor',
+  'channel-learner',
+  'content-analysis',
+  'content.pipeline',
+  'content.test',
+  'cooking.fueling',
+  'finance.training',
+  'garmin.sync',
+  'learning-digest',
+  'performance-agent',
+  'pipeline',
+  'pipeline-agent',
+  'portal',
+  'reaction-radar',
+  'secretary.calendar',
+  'seo-agent',
+  'session.analytics',
+  'training-cross-skill-smoke.fixture',
+  'training.test',
+  'voice-evolution',
+  // Focused unit-test fixture agents. Production paths should use the
+  // stable domain prefixes below or an explicit entry in this allowlist.
+  'a',
+  'b',
+  'c',
+  'bulk',
+  'agent-a',
+  'agent-b',
+  'mesh-agent',
+  'test',
+  'test-agent',
+]);
+
+const ALLOWED_SIGNAL_SOURCE_PREFIXES = [
+  'mesh.',
+  'triathlon.',
+  'training.',
+  'cooking.',
+  'finance.',
+  'content.',
+  'secretary.',
+  'session.',
+  'test.',
+];
+
+export function isAllowedSignalSourceAgent(sourceAgent: string): boolean {
+  const normalized = sourceAgent.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]{0,79}$/.test(normalized)) return false;
+  if (ALLOWED_SIGNAL_SOURCE_AGENTS.has(normalized)) return true;
+  return ALLOWED_SIGNAL_SOURCE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
 // ─── Database Provider (lazy, avoids circular imports) ───────────────
 
 interface DbLike {
@@ -316,6 +371,24 @@ function hasValidScopedUserId(userId: number | undefined): userId is number {
   return typeof userId === 'number' && Number.isFinite(userId) && userId > 0;
 }
 
+function hasValidTenantId(tenantId: number | undefined | null): tenantId is number {
+  return typeof tenantId === 'number' && Number.isFinite(tenantId) && tenantId > 0;
+}
+
+function resolveSignalTenantId(userId?: number, tenantId?: number | null): number | undefined {
+  if (hasValidTenantId(tenantId)) return tenantId;
+  if (hasValidScopedUserId(userId)) return userId;
+  return undefined;
+}
+
+function tableHasColumn(d: DbLike, table: string, column: string): boolean {
+  try {
+    return d.prepare(`PRAGMA table_info(${table})`).all().some((row: any) => row?.name === column);
+  } catch {
+    return false;
+  }
+}
+
 function signalRequiresUserScope(signalType: SignalType): boolean {
   return !GLOBAL_SIGNAL_TYPES.has(signalType);
 }
@@ -346,6 +419,8 @@ export function writeSignal(signal: {
   expires_at?: string;
   /** Telegram user ID for per-user signals. Omit for global content signals. */
   user_id?: number;
+  /** Tenant/workspace ID. Defaults to user_id for legacy single-user workspaces. */
+  tenant_id?: number;
   /** Strength/certainty metric (0.0–1.0). Default 0.5. */
   confidence?: number;
   /** Content format: 'reel', 'youtube', 'short', etc. */
@@ -359,14 +434,31 @@ export function writeSignal(signal: {
   const d = db();
   if (!d) return -1;
   try {
-    const requiresUserScope = signalRequiresUserScope(signal.signal_type);
-    const scopedUserId = hasValidScopedUserId(signal.user_id) ? signal.user_id : undefined;
-
-    if (requiresUserScope && scopedUserId == null) {
+    if (!isAllowedSignalSourceAgent(signal.source_agent)) {
       reportScopeAnomaly({
         layer: 'intelligence_bus',
         operation: 'write_signal',
-        reason: signal.user_id == null ? 'missing_user_scope' : 'invalid_user_scope',
+        reason: 'invalid_user_scope',
+        userId: signal.user_id ?? null,
+        signalType: signal.signal_type,
+        details: {
+          sourceAgent: signal.source_agent,
+          invalidSourceAgent: true,
+        },
+      });
+      return -1;
+    }
+
+    const requiresUserScope = signalRequiresUserScope(signal.signal_type);
+    const scopedUserId = hasValidScopedUserId(signal.user_id) ? signal.user_id : undefined;
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const scopedTenantId = resolveSignalTenantId(scopedUserId, signal.tenant_id);
+
+    if (requiresUserScope && (scopedUserId == null || scopedTenantId == null)) {
+      reportScopeAnomaly({
+        layer: 'intelligence_bus',
+        operation: 'write_signal',
+        reason: signal.user_id == null || signal.tenant_id == null ? 'missing_user_scope' : 'invalid_user_scope',
         userId: signal.user_id ?? null,
         signalType: signal.signal_type,
         details: {
@@ -394,8 +486,27 @@ export function writeSignal(signal: {
     const expires_at = signal.expires_at ||
       new Date(Date.now() + expiryHours * 3600_000).toISOString();
     const normalizedUserId = requiresUserScope ? scopedUserId! : null;
+    const normalizedTenantId = hasTenantColumn ? (scopedTenantId ?? null) : undefined;
 
-    const result = d.prepare(`
+    const result = hasTenantColumn ? d.prepare(`
+      INSERT INTO agent_signals
+        (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id,
+         confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      signal.source_agent,
+      signal.signal_type,
+      JSON.stringify(signal.payload),
+      priority,
+      expires_at,
+      normalizedTenantId,
+      normalizedUserId,
+      signal.confidence ?? 0.5,
+      signal.format_tag ?? null,
+      signal.pillar_tag ?? null,
+      signal.evidence_count ?? 1,
+      signal.meshPriority ?? null,
+    ) : d.prepare(`
       INSERT INTO agent_signals
         (source_agent, signal_type, payload, priority, expires_at, user_id,
          confidence, format_tag, pillar_tag, evidence_count, mesh_priority)
@@ -446,12 +557,15 @@ export function readSignals(
   limit = 50,
   userId?: number,
   maxAgeDays?: number,
+  tenantId?: number,
 ): AgentSignal[] {
   const d = db();
   if (!d) return [];
   try {
     const placeholders = signalTypes.map(() => '?').join(',');
     const scopedUserId = hasValidScopedUserId(userId) ? userId : undefined;
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const scopedTenantId = resolveSignalTenantId(scopedUserId, tenantId);
     if (userId !== undefined && scopedUserId == null) {
       reportScopeAnomaly({
         layer: 'intelligence_bus',
@@ -464,23 +578,34 @@ export function readSignals(
         },
       });
     }
-    const userScopeClause =
-      scopedUserId !== undefined
-        ? 'AND (user_id IS NULL OR user_id = ?)'
-        : 'AND user_id IS NULL';
+    const scopeClauses: string[] = [];
+    const scopeParams: any[] = [];
+    if (hasTenantColumn) {
+      if (scopedTenantId !== undefined) {
+        scopeClauses.push('AND tenant_id = ?');
+        scopeParams.push(scopedTenantId);
+        scopeClauses.push(scopedUserId !== undefined ? 'AND (user_id IS NULL OR user_id = ?)' : 'AND user_id IS NULL');
+        if (scopedUserId !== undefined) scopeParams.push(scopedUserId);
+      } else {
+        scopeClauses.push('AND tenant_id IS NULL AND user_id IS NULL');
+      }
+    } else {
+      scopeClauses.push(scopedUserId !== undefined ? 'AND (user_id IS NULL OR user_id = ?)' : 'AND user_id IS NULL');
+      if (scopedUserId !== undefined) scopeParams.push(scopedUserId);
+    }
     // Time-window filter: only return signals created within maxAgeDays
     const ageClause = maxAgeDays != null && maxAgeDays > 0
       ? `AND created_at > datetime('now', '-${Math.floor(maxAgeDays)} days')`
       : '';
     const params: any[] = [...signalTypes];
-    if (scopedUserId !== undefined) params.push(scopedUserId);
+    params.push(...scopeParams);
     params.push(limit);
 
     const rows = d.prepare(`
       SELECT * FROM agent_signals
       WHERE status = 'active'
         AND signal_type IN (${placeholders})
-        ${userScopeClause}
+        ${scopeClauses.join('\n        ')}
         ${ageClause}
       ORDER BY
         CASE priority WHEN 'urgent' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
@@ -640,6 +765,7 @@ function parseSignalRow(row: any): AgentSignal {
     created_at: row.created_at,
     expires_at: row.expires_at,
     user_id: row.user_id ?? null,
+    tenant_id: row.tenant_id ?? null,
     confidence: row.confidence ?? 0.5,
     format_tag: row.format_tag ?? null,
     pillar_tag: row.pillar_tag ?? null,
@@ -699,6 +825,7 @@ export function readRankedSignals(
   opts: {
     limit?: number;
     userId?: number;
+    tenantId?: number;
     pillar?: string;
     format?: string;
     minConfidence?: number;
@@ -719,8 +846,20 @@ export function readRankedSignals(
     ];
     const params: any[] = [...signalTypes, minConfidence];
 
-    // User scoping
-    if (opts.userId !== undefined) {
+    // Tenant/user scoping
+    const hasTenantColumn = tableHasColumn(d, 'agent_signals', 'tenant_id');
+    const scopedTenantId = resolveSignalTenantId(opts.userId, opts.tenantId);
+    if (hasTenantColumn) {
+      if (scopedTenantId !== undefined) {
+        clauses.push('tenant_id = ?');
+        params.push(scopedTenantId);
+        clauses.push(opts.userId !== undefined ? '(user_id IS NULL OR user_id = ?)' : 'user_id IS NULL');
+        if (opts.userId !== undefined) params.push(opts.userId);
+      } else {
+        clauses.push('tenant_id IS NULL');
+        clauses.push('user_id IS NULL');
+      }
+    } else if (opts.userId !== undefined) {
       clauses.push('(user_id IS NULL OR user_id = ?)');
       params.push(opts.userId);
     } else {

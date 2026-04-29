@@ -19,6 +19,11 @@ import {
   isEnabled as isSentryEnabled,
 } from './error-tracker';
 import { recordOperatorAlert } from './operator-alerts';
+import {
+  sanitizeLogText,
+  sanitizeLogValue,
+  stringifySanitizedLogContext,
+} from '../utils/log-sanitizer';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -93,7 +98,9 @@ export function setDbProvider(fn: DbProvider): void {
 /** Internal: write a record to error_log. Caller guarantees _getDb is set. */
 function persistToDb(record: ErrorRecord): void {
   if (!_getDb) return;
-  const contextJson = record.context ? JSON.stringify(record.context) : null;
+  const contextJson = record.context ? stringifySanitizedLogContext(record.context) : null;
+  const message = sanitizeLogText(record.message);
+  const stack = record.stack ? sanitizeLogText(record.stack) : null;
   const shouldAlertFlag = record.level !== 'warning';
   _getDb().prepare(`
     INSERT INTO error_log (level, source, message, stack, context, alerted)
@@ -101,8 +108,8 @@ function persistToDb(record: ErrorRecord): void {
   `).run(
     record.level,
     record.source,
-    record.message.slice(0, 2000),
-    record.stack?.slice(0, 4000) ?? null,
+    message.slice(0, 2000),
+    stack?.slice(0, 4000) ?? null,
     contextJson,
     shouldAlertFlag && _alertFn ? 1 : 0,
   );
@@ -150,6 +157,11 @@ function shouldAlert(key: string): boolean {
  */
 export function captureError(record: ErrorRecord, alert?: boolean): void {
   const shouldSendAlert = alert ?? (record.level !== 'warning');
+  const safeMessage = sanitizeLogText(record.message);
+  const safeStack = record.stack ? sanitizeLogText(record.stack) : undefined;
+  const safeContext = record.context
+    ? sanitizeLogValue(record.context) as Record<string, unknown>
+    : undefined;
 
   // Persist to SQLite — or buffer if DB isn't ready yet (boot-time errors)
   let alerted = 0;
@@ -170,20 +182,20 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
   pushEvent({
     ts: new Date().toISOString(),
     type: 'error',
-    summary: `[${record.source}] ${record.message.slice(0, 80)}`,
-    detail: record.stack?.slice(0, 300),
+    summary: `[${record.source}] ${safeMessage.slice(0, 80)}`,
+    detail: safeStack?.slice(0, 300),
   });
 
   // Log
-  logger.error({ source: record.source, level: record.level }, record.message);
+  logger.error({ source: record.source, level: record.level }, safeMessage);
 
   if (shouldSendAlert) {
     recordOperatorAlert({
       severity: record.level === 'fatal' ? 'critical' : 'warning',
       source: `error_monitor:${record.source}`,
-      dedupeKey: `error:${record.source}:${record.message.slice(0, 160)}`,
+      dedupeKey: `error:${record.source}:${safeMessage.slice(0, 160)}`,
       title: `${record.level.toUpperCase()} in ${record.source}`,
-      detail: record.message.slice(0, 500),
+      detail: safeMessage.slice(0, 500),
       owner: 'ops',
       suspectedArea: record.source,
       userImpact: record.source === 'api'
@@ -193,20 +205,20 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
       metadata: {
         source: record.source,
         level: record.level,
-        context: record.context,
+        context: safeContext,
       },
     });
   }
 
   // Send Telegram alert (rate-limited)
   if (shouldSendAlert && alerted && _alertFn) {
-    const alertKey = `${record.source}:${record.message.slice(0, 100)}`;
-    if (shouldAlert(alertKey)) {
-      const icon = record.level === 'fatal' ? '🔴' : '🟠';
-      const msg = `${icon} <b>${escapeHtml(record.level.toUpperCase())}</b> [${escapeHtml(record.source)}]\n\n<code>${escapeHtml(record.message.slice(0, 300))}</code>`;
-      _alertFn(msg).catch(() => {});
+      const alertKey = `${record.source}:${safeMessage.slice(0, 100)}`;
+      if (shouldAlert(alertKey)) {
+        const icon = record.level === 'fatal' ? '🔴' : '🟠';
+        const msg = `${icon} <b>${escapeHtml(record.level.toUpperCase())}</b> [${escapeHtml(record.source)}]\n\n<code>${escapeHtml(safeMessage.slice(0, 300))}</code>`;
+        _alertFn(msg).catch(() => {});
+      }
     }
-  }
 
   // Forward to Sentry (if SENTRY_DSN is configured). No-ops silently
   // when Sentry isn't initialized, so local/staging without a DSN just
@@ -221,13 +233,13 @@ export function captureError(record: ErrorRecord, alert?: boolean): void {
       const sentryLevel: 'fatal' | 'warning' | 'error' =
         record.level === 'fatal' ? 'fatal' :
         record.level === 'warning' ? 'warning' : 'error';
-      const errLike = record.stack
-        ? Object.assign(new Error(record.message), { stack: record.stack })
-        : new Error(record.message);
+      const errLike = safeStack
+        ? Object.assign(new Error(safeMessage), { stack: safeStack })
+        : new Error(safeMessage);
       sentryCaptureException(errLike, {
         level: sentryLevel,
         source: record.source,
-        extra: record.context,
+        extra: safeContext,
         tags: { source: record.source, level: record.level },
       });
     } catch {

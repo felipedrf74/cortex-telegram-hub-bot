@@ -138,7 +138,7 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
     // deletes failed (status='orphaned' rows). Those are reconcilable;
     // the saga can safely proceed.
     const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
-    const orphans = findOrphanedOwnerships(userId);
+    const orphans = findOrphanedOwnerships(userId, userId);
     const orphanedEventCount = orphans.length + reconciliation.failed;
     if (orphanedEventCount > 0) {
       return { kind: 'external_partial', orphanedEventCount };

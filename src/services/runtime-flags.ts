@@ -61,3 +61,7 @@ export function getGeminiDomainAllowlist(env: RuntimeEnv = process.env): string[
 export function isSecretaryHaikuRoutingEnabled(env: RuntimeEnv = process.env): boolean {
   return env.SECRETARY_HAIKU_ROUTING_ENABLED === 'true';
 }
+
+export function areModelProviderCallsDisabled(env: RuntimeEnv = process.env): boolean {
+  return env.NEXUS_LOCAL_ALLOW_MODEL_CALLS === '0' || env.NEXUS_MODEL_FIXTURE_MODE === '1';
+}

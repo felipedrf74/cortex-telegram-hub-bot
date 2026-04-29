@@ -8,7 +8,7 @@ Subreddits are pre-configured per niche for targeted discovery.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -32,6 +32,10 @@ class RedditSearcher:
     name = "reddit"
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        if cfg.fixture_mode:
+            logger.debug("Content-engine fixture mode — returning mock Reddit results")
+            return self._mock(query, max_results)
+
         params = {
             "q": query,
             "sort": "relevance",
@@ -76,3 +80,37 @@ class RedditSearcher:
 
         logger.info("Reddit returned %d results for '%s'", len(results), query[:60])
         return results
+
+    @staticmethod
+    def _mock(query: str, max_results: int) -> list[SearchResult]:
+        now = datetime.now(timezone.utc)
+        return [
+            SearchResult(
+                title=f"[Mock] Reddit discussion: {query}",
+                url=f"https://reddit.com/r/mock/comments/{query.replace(' ', '_')[:24]}",
+                snippet=f"Mock Reddit discussion for '{query}'. Fixture mode avoids live Reddit calls.",
+                source="reddit",
+                published_at=now - timedelta(hours=5),
+                metadata={
+                    "subreddit": "mock",
+                    "score": 180,
+                    "num_comments": 42,
+                    "upvote_ratio": 0.91,
+                    "is_hot": False,
+                },
+            ),
+            SearchResult(
+                title=f"[Mock] Creator angle from Reddit: {query}",
+                url=f"https://reddit.com/r/mock/comments/angle_{query.replace(' ', '_')[:18]}",
+                snippet=f"Mock audience language for '{query}' to support fixture-only research.",
+                source="reddit",
+                published_at=now - timedelta(hours=9),
+                metadata={
+                    "subreddit": "mockcreators",
+                    "score": 96,
+                    "num_comments": 18,
+                    "upvote_ratio": 0.88,
+                    "is_hot": False,
+                },
+            ),
+        ][:max_results]

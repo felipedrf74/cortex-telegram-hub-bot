@@ -1274,14 +1274,20 @@ export function registerContentCommands(bot: Bot): void {
       return;
     }
 
-    const topic = getTopicById(feedbackId);
+    const actorUserId = ctx.from?.id;
+    if (!actorUserId) {
+      await ctx.answerCallbackQuery({ text: '\u26A0\uFE0F User context missing.' });
+      return;
+    }
+
+    const topic = getTopicById(feedbackId, actorUserId, actorUserId);
     if (!topic) {
       await ctx.answerCallbackQuery({ text: '\u26A0\uFE0F Topic not found.' });
       return;
     }
 
     if (action === 'approve') {
-      updateFeedback(feedbackId, 'approved');
+      updateFeedback(feedbackId, 'approved', actorUserId, actorUserId);
       await ctx.answerCallbackQuery({ text: `\u2705 ${topic.title.slice(0, 40)}` });
 
       enqueue(ctx.from!.id, async () => {
@@ -1296,7 +1302,7 @@ export function registerContentCommands(bot: Bot): void {
             : await generateYouTubeScript(topic);
 
           const filePath = await saveScriptAsDocx(topic.title, scriptText);
-          markScriptGenerated(feedbackId);
+          markScriptGenerated(feedbackId, actorUserId, actorUserId);
 
           const emoji = topic.format === 'reel' ? '\u{1F3AC}' : '\u{1F3A5}';
           await ctx.replyWithDocument(new InputFile(filePath), {
@@ -1313,11 +1319,11 @@ export function registerContentCommands(bot: Bot): void {
       });
 
     } else if (action === 'skip') {
-      updateFeedback(feedbackId, 'skipped');
+      updateFeedback(feedbackId, 'skipped', actorUserId, actorUserId);
       await ctx.answerCallbackQuery({ text: `\u23ED Skipped: ${topic.title.slice(0, 40)}` });
 
     } else if (action === 'reject') {
-      updateFeedback(feedbackId, 'rejected');
+      updateFeedback(feedbackId, 'rejected', actorUserId, actorUserId);
       await ctx.answerCallbackQuery({ text: `\u{1F44E} Noted \u2014 won't suggest similar` });
     }
   });

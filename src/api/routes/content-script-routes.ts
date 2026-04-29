@@ -24,6 +24,12 @@ import {
 import { resolveScriptTopicContext } from './content-topic-context';
 import { getAllKnowledge } from '../../state/content-references';
 import { getScript } from '../../services/content-engine';
+import { buildAuthorizedContentReferenceContext } from '../../services/content-reference-context';
+import {
+  buildContentGenerationPackage,
+  evaluateContentGenerationQuality,
+  normalizeContentGenerationFormat,
+} from '../../services/content-generation-quality';
 
 type ResolveContentLanguage = (req: Pick<AuthenticatedRequest, 'header'>, userId: number) => Lang;
 type EnsureValidContentRouteScope = (
@@ -42,7 +48,8 @@ export function registerContentScriptRoutes(
    * POST /api/v1/content/script — generate a structured script
    *
    * Uses the canonical script pipeline: content-engine Python backend
-   * with deep research → Claude Sonnet → structured ScriptResponse.
+   * with deep research → TypeScript AI proxy live routing →
+   * structured ScriptResponse.
    *
    * Body: {
    *   topic: string (required),
@@ -57,7 +64,7 @@ export function registerContentScriptRoutes(
    * operation, not a data lookup, so token cost is justified.
    */
   router.post('/script', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_script_generate')) return;
 
     const requestLanguage = resolveContentLanguage(req as AuthenticatedRequest, userId);
@@ -124,7 +131,7 @@ export function registerContentScriptRoutes(
       // phrases, and creator preferences instead of only topic research.
       let voiceMemory: string | null = null;
       try {
-        voiceMemory = buildUserVoiceMemory(userId, getAllKnowledge);
+        voiceMemory = buildUserVoiceMemory(userId, (scopedUserId) => getAllKnowledge(scopedUserId, tenantId));
       } catch { /* non-critical — generate without voice if DB fails */ }
 
       const scriptTopicContext = resolveScriptTopicContext(userId, req.body || {});
@@ -135,11 +142,26 @@ export function registerContentScriptRoutes(
           ? regenerationSeed.trim().slice(0, 120)
           : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
         : null;
-      const creatorProfile = buildScriptCreatorProfile({
-        language: targetLanguage,
-        niche: scriptTopicContext?.niche || niche || 'general',
-        voiceMemory,
+      const authorizedReferences = buildAuthorizedContentReferenceContext(userId, tenantId);
+      const generationPackage = buildContentGenerationPackage({
+        tenantId,
+        userId,
+        topic: topic.trim(),
+        contentGoal: scriptTopicContext?.whyNow || `Generate a ${normalizedFormat} script`,
+        formatId: normalizeContentGenerationFormat(normalizedFormat),
+        platformId: normalizedFormat === 'Reel' ? 'instagram' : 'youtube',
+        contentPillar: scriptTopicContext?.angleTag ?? null,
+        workflowState: scriptTopicContext ? 'selected' : 'drafted',
+        references: authorizedReferences.references,
       });
+      const creatorProfile = [
+        buildScriptCreatorProfile({
+          language: targetLanguage,
+          niche: scriptTopicContext?.niche || niche || 'general',
+          voiceMemory,
+        }),
+        generationPackage.promptBlock,
+      ].filter(Boolean).join('\n\n');
 
       const result = await getScript(
         topic.trim(),
@@ -157,9 +179,15 @@ export function registerContentScriptRoutes(
         shouldForceRefresh,
         resolvedRegenerationSeed,
         creatorProfile,
+        tenantId,
       );
       const elapsedMs = Date.now() - startMs;
       const cacheHit = !shouldForceRefresh && elapsedMs < 500;
+      const generationQuality = evaluateContentGenerationQuality({
+        package: generationPackage,
+        outputText: result.script,
+        voiceApplied: generationPackage.voiceContext.appliedMemoryKeys.length > 0 || Boolean(voiceMemory),
+      });
 
       sendSuccess(res, buildScriptSuccessResponse({
         result,
@@ -169,6 +197,15 @@ export function registerContentScriptRoutes(
         generationMode: genMode,
         startMs,
         cacheHit,
+        generationQuality: {
+          formatFit: generationQuality.formatFit,
+          voiceFit: generationQuality.voiceFit,
+          sourceGrounding: generationQuality.sourceGrounding,
+          reviewRequired: generationQuality.reviewRequired,
+          reviewWarnings: generationQuality.reviewWarnings,
+          nextWorkflowStep: generationQuality.nextWorkflowStep,
+          modelRouting: generationPackage.modelRoutingMetadata,
+        },
       }));
     } catch (err: any) {
       logger.error({ err, topic }, 'iOS content/script failed');

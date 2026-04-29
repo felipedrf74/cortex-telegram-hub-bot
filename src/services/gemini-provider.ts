@@ -42,6 +42,8 @@ import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs, isAnthropicRuntimeEnabled } from './runtime-flags';
+import { buildScopedStateContextPrefix } from './provider-state-context';
+import { getDomainModelOverride, type DomainModelRole } from './model-config';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -150,6 +152,25 @@ type OneShotOptions = {
   jsonMode?: boolean;
 };
 
+const SEARCH_PROMPT_PRIVACY_PATTERNS: Array<[RegExp, string]> = [
+  [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]'],
+  [/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, '[redacted-phone]'],
+  [/\b\d{3}-\d{2}-\d{4}\b/g, '[redacted-ssn]'],
+  [/\b(?:\d[ -]*?){13,19}\b/g, '[redacted-card]'],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]'],
+  [/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}/gi, '[redacted-api-key]'],
+  [/\b((?:access_token|refresh_token|id_token|client_secret|api_key|token|secret|password|authorization|cookie))=([^&\s]+)/gi, '$1=[redacted]'],
+  [/(https?:\/\/[^\s?]+)\?[^ \n]+/gi, '$1?[redacted-query]'],
+];
+
+export function scrubSearchGroundingPromptForPrivacy(value: string): string {
+  let scrubbed = value;
+  for (const [pattern, replacement] of SEARCH_PROMPT_PRIVACY_PATTERNS) {
+    scrubbed = scrubbed.replace(pattern, replacement);
+  }
+  return scrubbed;
+}
+
 export async function completeOneShot(
   systemPrompt: string,
   userPrompt: string,
@@ -231,6 +252,8 @@ export async function completeOneShotWithSearch(
   const maxTokens = options?.maxTokens ?? 4096;
   const temperature = options?.temperature ?? 0.7;
   const client = getClient();
+  const safeSystemPrompt = scrubSearchGroundingPromptForPrivacy(systemPrompt);
+  const safeUserPrompt = scrubSearchGroundingPromptForPrivacy(userPrompt);
 
   // The Google Search tool is declared via the `tools` array with a single
   // item shaped `{ googleSearchRetrieval: {} }`. The SDK's type defs don't
@@ -239,7 +262,7 @@ export async function completeOneShotWithSearch(
   // recommendation for most use cases.
   const genModel = client.getGenerativeModel({
     model,
-    systemInstruction: systemPrompt,
+    systemInstruction: safeSystemPrompt,
     generationConfig: {
       maxOutputTokens: maxTokens,
       temperature,
@@ -249,7 +272,7 @@ export async function completeOneShotWithSearch(
 
   const start = Date.now();
   const result = await withTimeout(
-    genModel.generateContent([{ text: userPrompt }]),
+    genModel.generateContent([{ text: safeUserPrompt }]),
     config.aiSafety.callTimeoutMs,
   );
   const durationMs = Date.now() - start;
@@ -518,6 +541,15 @@ function toSchemaType(type: string): SchemaType {
   return map[type] || SchemaType.STRING;
 }
 
+function resolveFilteredTools(value: unknown, context: string, allowLegacyFullTools: boolean): Anthropic.Tool[] {
+  if (Array.isArray(value)) return value as Anthropic.Tool[];
+  if (allowLegacyFullTools) return TOOLS;
+  if (!Array.isArray(value)) {
+    throw new Error(`${context} requires explicit filteredTools; pass [] for no tools or TOOLS for the full set`);
+  }
+  return value as Anthropic.Tool[];
+}
+
 function convertProperties(properties: Record<string, any>): Record<string, any> {
   const result: Record<string, any> = {};
   for (const [key, prop] of Object.entries(properties)) {
@@ -536,9 +568,8 @@ function convertProperties(properties: Record<string, any>): Record<string, any>
  * Convert Anthropic-format tools to Gemini FunctionDeclarations.
  * Accepts an explicit tool array so the caller can pass a pre-filtered
  * subset (TASK-17 Layer 3) instead of always sending all 25+ tools.
- * Defaults to the full TOOLS array for backwards compatibility.
  */
-function toGeminiFunctionDeclarations(tools: Anthropic.Tool[] = TOOLS): FunctionDeclaration[] {
+function toGeminiFunctionDeclarations(tools: Anthropic.Tool[]): FunctionDeclaration[] {
   return tools.map((t) => {
     const schema = t.input_schema as any;
     return {
@@ -571,6 +602,14 @@ function resolveGeminiModel(
   domain: DomainName,
   tier?: 'heavy' | 'light',
 ): { model: string; maxTokens: number } {
+  const domainOverride = getDomainModelOverride('gemini', domain as DomainModelRole);
+  if (domainOverride) {
+    return {
+      model: domainOverride,
+      maxTokens: domain === 'secretary' ? config.gemini.secretaryMaxTokens : config.gemini.maxTokens,
+    };
+  }
+
   if (tier === 'light') {
     return {
       model: config.gemini.classifierModel,
@@ -795,11 +834,10 @@ ${message}`;
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
-    // Layer 3: use the pre-filtered tool list when provided, otherwise
-    // fall back to the full TOOLS array (legacy callers)
-    const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
+    const allowLegacyFullTools = optionsOrMaxTokens == null || typeof optionsOrMaxTokens === 'number';
+    const filteredTools = resolveFilteredTools(opts.filteredTools, 'Gemini callDomain', allowLegacyFullTools);
 
     // Layer 5: history is sliced upstream by planSecretaryOptimization
     // when modelTier === 'light'. We just consume whatever the caller
@@ -857,9 +895,9 @@ ${message}`;
     // same coach file. Mid-turn persona swaps would break tool chains.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
-    const filteredTools = (opts.filteredTools as Anthropic.Tool[] | undefined) ?? TOOLS;
+    const filteredTools = resolveFilteredTools(opts.filteredTools, 'Gemini continueWithToolResults', options == null);
 
     const contents: Content[] = [
       ...history.map((m) => ({

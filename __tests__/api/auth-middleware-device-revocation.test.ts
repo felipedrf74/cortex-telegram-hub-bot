@@ -125,8 +125,8 @@ describe('authMiddleware: device revocation', () => {
   async function runMiddleware(
     userId: number,
     deviceId: string,
-    options: { seedDevice?: boolean; userStatus?: string } = {},
-  ): Promise<MockRes & { admitted: boolean }> {
+    options: { seedDevice?: boolean; userStatus?: string; headers?: Record<string, string> } = {},
+  ): Promise<MockRes & { admitted: boolean; requestTenantId?: number; requestUserId?: number }> {
     const seedDevice = options.seedDevice !== false;
     const userStatus = options.userStatus ?? 'active';
 
@@ -146,7 +146,10 @@ describe('authMiddleware: device revocation', () => {
     );
 
     const { authMiddleware } = await import('../../src/api/auth-middleware');
-    const req = mockReq({ authorization: `Bearer ${token}` });
+    const req = mockReq({
+      authorization: `Bearer ${token}`,
+      ...(options.headers ?? {}),
+    });
     const res = mockRes();
 
     let admitted = false;
@@ -156,12 +159,48 @@ describe('authMiddleware: device revocation', () => {
       setImmediate(resolve);
     });
 
-    return Object.assign(res, { admitted });
+    return Object.assign(res, {
+      admitted,
+      requestTenantId: (req as any).tenantId,
+      requestUserId: (req as any).userId,
+    });
   }
 
   it('admits a request when the device row still exists', async () => {
     const res = await runMiddleware(501, 'dev-live');
     expect(res.admitted).toBe(true);
+  });
+
+  it('admits an explicit active-tenant header only when it matches the canonical tenant', async () => {
+    const res = await runMiddleware(504, 'dev-active-tenant', {
+      headers: { 'x-nexus-active-tenant-id': '504' },
+    });
+
+    expect(res.admitted).toBe(true);
+    expect(res.requestUserId).toBe(504);
+    expect(res.requestTenantId).toBe(504);
+  });
+
+  it('fails closed when the same user tries to switch to a non-membership-backed tenant', async () => {
+    const res = await runMiddleware(505, 'dev-tenant-switch', {
+      headers: { 'x-nexus-active-tenant-id': '1505' },
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toBe('Active tenant switching is not enabled for this session');
+  });
+
+  it('fails closed when the active-tenant header is malformed', async () => {
+    const res = await runMiddleware(506, 'dev-bad-active-tenant', {
+      headers: { 'x-nexus-active-tenant-id': '506abc' },
+    });
+
+    expect(res.admitted).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(res.body.error.message).toBe('Invalid active tenant scope');
   });
 
   it('rejects a request whose device has been revoked, with 401 Session has been revoked', async () => {

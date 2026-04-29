@@ -222,6 +222,36 @@ async function main() {
     'tenant-boundary follow-up either leaked context or did not require confirmation',
   );
 
+  const sameUserTenantSwitchHistory = await request('GET', '/api/v1/chat/history?limit=25', {
+    token: userA.token,
+    headers: {
+      'x-nexus-active-tenant-id': String(userB.tenantId),
+    },
+  });
+  assertPass(
+    'Same-user active tenant switch fails closed',
+    sameUserTenantSwitchHistory.status === 403 &&
+      sameUserTenantSwitchHistory.json?.error?.code === 'FORBIDDEN' &&
+      !containsAny(sameUserTenantSwitchHistory.json, [tenantBMarker, sameUserTenantBMarker]),
+    'active-tenant override was denied before any alternate-tenant history was exposed',
+    `active-tenant override was not denied safely; status=${sameUserTenantSwitchHistory.status}`,
+    { httpStatus: sameUserTenantSwitchHistory.status },
+  );
+
+  const canonicalTenantHeaderHistory = await request('GET', '/api/v1/chat/history?limit=25', {
+    token: userA.token,
+    headers: {
+      'x-nexus-active-tenant-id': String(userA.tenantId),
+    },
+  });
+  assertPass(
+    'Canonical active tenant header remains allowed',
+    canonicalTenantHeaderHistory.ok && !containsAny(canonicalTenantHeaderHistory.json, [tenantBMarker, sameUserTenantBMarker]),
+    'canonical tenant header returned User A history without alternate tenant markers',
+    `canonical active-tenant header failed or leaked alternate tenant marker; status=${canonicalTenantHeaderHistory.status}`,
+    { httpStatus: canonicalTenantHeaderHistory.status },
+  );
+
   const injection = await request('POST', '/api/v1/chat/message', {
     token: userA.token,
     body: {
@@ -295,8 +325,8 @@ async function main() {
     });
   }
 
-  record('Multi-tenant same-user runtime', 'PARTIAL', {
-    note: 'true workspace tenant switching is intentionally unsupported by current iOS Chat ingress; route guard canonicalizes tenantId=userId',
+  record('Multi-tenant same-user runtime', 'PASS', {
+    note: 'true workspace tenant switching is not enabled; explicit active-tenant overrides now fail closed instead of being silently ignored',
   });
   record('Provider fallback tenant safety', 'PARTIAL', {
     note: 'covered by focused local unit test command; no real provider fallback call was made in this smoke',

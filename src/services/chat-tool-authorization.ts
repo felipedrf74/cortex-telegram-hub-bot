@@ -90,7 +90,12 @@ export function authorizeChatToolCall(
   const current = getCurrentChatToolAuthorizationContext();
 
   if (!current) {
-    return { allowed: true, toolRisk: risk };
+    return {
+      allowed: false,
+      code: 'AUTH_REQUIRED',
+      message: `${toolName} requires authenticated chat authorization context`,
+      toolRisk: risk,
+    };
   }
 
   const requestedTenantId = typeof input?.tenantId === 'number'

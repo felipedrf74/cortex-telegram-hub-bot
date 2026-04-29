@@ -16,6 +16,7 @@ const mockLoggerInfo = vi.fn();
 const mockGetPlanVersion = vi.fn();
 const mockFindExistingOwnership = vi.fn();
 const mockRecordCalendarOwnership = vi.fn();
+const mockSubmitSecretarySchedulingIntent = vi.fn();
 
 vi.mock('../../src/services/training-plans', () => ({
   createPlan: (...args: unknown[]) => mockCreatePlan(...args),
@@ -32,6 +33,10 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
   getPlanVersion: (...args: unknown[]) => mockGetPlanVersion(...args),
   findExistingOwnership: (...args: unknown[]) => mockFindExistingOwnership(...args),
   recordCalendarOwnership: (...args: unknown[]) => mockRecordCalendarOwnership(...args),
+}));
+
+vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -62,6 +67,7 @@ describe('training-plan-persistence', () => {
     mockGetPlanVersion.mockReset();
     mockFindExistingOwnership.mockReset();
     mockRecordCalendarOwnership.mockReset();
+    mockSubmitSecretarySchedulingIntent.mockReset();
 
     mockCreatePlan.mockReturnValue({ id: 901 });
     mockCreateWeek.mockImplementation(({ week_number }: any) => ({ id: 1000 + Number(week_number || 1) }));
@@ -73,6 +79,32 @@ describe('training-plan-persistence', () => {
     mockGetPlanVersion.mockReturnValue(1);
     mockFindExistingOwnership.mockReturnValue(null);
     mockRecordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 1 });
+    mockSubmitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: intent.preferredWindows[0],
+      agendaItem: {
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        sourceIntentId: intent.intentId,
+        lifecycleState: 'scheduled',
+      },
+      explanation: 'scheduled',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+      feedback: {
+        sourceSkill: 'training',
+        sourceIntentId: intent.intentId,
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        status: 'scheduled',
+        reasonCodes: ['scheduled_in_available_window'],
+        scheduledStart: intent.preferredWindows[0].start,
+        scheduledEnd: intent.preferredWindows[0].end,
+        shouldRefreshSource: false,
+        downstreamImplications: [],
+      },
+    }));
   });
 
   it('persists generated weeks and sessions, schedules events, and links created calendar events', async () => {
@@ -154,6 +186,20 @@ describe('training-plan-persistence', () => {
       session_shape_hash: expect.any(String),
     }));
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
+    expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledTimes(2);
+    expect(mockSubmitSecretarySchedulingIntent.mock.invocationCallOrder[0])
+      .toBeLessThan(mockCreateEvent.mock.invocationCallOrder[0]);
+    expect(mockSubmitSecretarySchedulingIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceSkill: 'training',
+        sourceAction: 'schedule_training_session',
+        sourceEntityType: 'training_session',
+        ownerUserId: 12,
+        tenantId: 12,
+        preferredWindows: [expect.objectContaining({ hard: true })],
+      }),
+      expect.any(Object),
+    );
     expect(mockCreateEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         title: expect.stringContaining('Base Run (50min)'),

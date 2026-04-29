@@ -15,6 +15,7 @@ let testDb: Database.Database;
 const mockCalendarCreateEvent = vi.fn();
 const mockIsAnyCalendarConfigured = vi.fn();
 const mockInvalidateCookingDerivedCaches = vi.fn();
+const mockSubmitCookingMealPrepSchedulingIntent = vi.fn();
 
 vi.mock('../../src/services/database', () => ({
   getDb: () => testDb,
@@ -39,6 +40,10 @@ vi.mock('../../src/services/unified-calendar', () => ({
 
 vi.mock('../../src/services/cooking-cache-invalidator', () => ({
   invalidateCookingDerivedCaches: (...args: unknown[]) => mockInvalidateCookingDerivedCaches(...args),
+}));
+
+vi.mock('../../src/services/cooking-secretary-integration', () => ({
+  submitCookingMealPrepSchedulingIntent: (...args: unknown[]) => mockSubmitCookingMealPrepSchedulingIntent(...args),
 }));
 
 import { cookingRoutes } from '../../src/api/routes/cooking';
@@ -143,6 +148,7 @@ describe('Cooking API — shopping list item updates', () => {
     mockCalendarCreateEvent.mockReset();
     mockIsAnyCalendarConfigured.mockReset();
     mockInvalidateCookingDerivedCaches.mockReset();
+    mockSubmitCookingMealPrepSchedulingIntent.mockReset();
     mockIsAnyCalendarConfigured.mockReturnValue(true);
     mockCalendarCreateEvent.mockResolvedValue({
       id: 'evt-meal-prep',
@@ -152,6 +158,28 @@ describe('Cooking API — shopping list item updates', () => {
       source: 'outlook',
       htmlLink: 'https://calendar.example/prep',
     });
+    mockSubmitCookingMealPrepSchedulingIntent.mockImplementation((input: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: { start: input.startIso, end: input.endIso, label: 'meal prep window' },
+      agendaItem: { agendaItemId: 'sec-cooking-prep-1' },
+      explanation: 'scheduled',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+      feedback: {
+        sourceSkill: 'cooking',
+        sourceIntentId: 'cooking-intent',
+        agendaItemId: 'sec-cooking-prep-1',
+        status: 'scheduled',
+        reasonCodes: ['scheduled_in_available_window'],
+        scheduledStart: input.startIso,
+        scheduledEnd: input.endIso,
+        shouldRefreshSource: false,
+        downstreamImplications: [],
+      },
+    }));
   });
 
   afterEach(() => testDb?.close());
@@ -445,6 +473,16 @@ describe('Cooking API — shopping list item updates', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.data.agendaItemId).toBe('sec-cooking-prep-1');
+    expect(mockSubmitCookingMealPrepSchedulingIntent).toHaveBeenCalledWith(expect.objectContaining({
+      userId: user.id,
+      tenantId: user.id,
+      week: '2026-04-13',
+      durationMinutes: 120,
+      mealCount: 1,
+    }));
+    expect(mockSubmitCookingMealPrepSchedulingIntent.mock.invocationCallOrder[0])
+      .toBeLessThan(mockCalendarCreateEvent.mock.invocationCallOrder[0]);
     expect(mockCalendarCreateEvent).toHaveBeenCalledTimes(1);
     expect(mockInvalidateCookingDerivedCaches).toHaveBeenCalledWith(user.id, { includeCalendarSurfaces: true });
   });

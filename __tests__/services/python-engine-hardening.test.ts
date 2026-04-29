@@ -75,11 +75,69 @@ describe('Python claude_client.py — routes through TS AI proxy', () => {
     expect(src).toContain('category=category, json_mode=True');
   });
 
+  it('can forward scoped user and tenant metadata to the backend proxy', () => {
+    expect(src).toContain('user_id: int | None = None');
+    expect(src).toContain('tenant_id: int | None = None');
+    expect(src).toContain('body["userId"] = user_id');
+    expect(src).toContain('body["tenantId"] = tenant_id');
+  });
+
+  it('blocks AI proxy calls in local fixture mode', () => {
+    expect(src).toContain('_FIXTURE_MODE');
+    expect(src).toContain('CONTENT_ENGINE_FIXTURE_MODE');
+    expect(src).toContain('NEXUS_LOCAL_ALLOW_MODEL_CALLS');
+    expect(src).toContain('AI proxy disabled by Content Engine fixture mode.');
+  });
+
+  it('does not log raw model text when JSON repair fails', () => {
+    expect(src).toContain('AI proxy returned non-JSON after repair attempt for category=%s (%d chars)');
+    expect(src).not.toContain('raw[:200]');
+  });
+
+  it('does not log or rethrow raw AI proxy HTTP response bodies', () => {
+    expect(src).toContain('AI proxy HTTP error %d for category=%s (%d chars)');
+    expect(src).toContain('AI proxy error {e.response.status_code} for category={category}');
+    expect(src).not.toContain('e.response.text[:300]');
+    expect(src).not.toContain('e.response.text[:200]');
+  });
+
   it('repairs fenced or malformed JSON instead of immediately degrading research synthesis', () => {
     expect(src).toContain('def _extract_json_candidate');
     expect(src).toContain('def _repair_json_response');
     expect(src).toContain("_json_repair");
     expect(src).toContain('AI JSON response repaired');
+  });
+});
+
+describe('Python content-engine sensitive log sinks', () => {
+  it('does not log raw gap finder model output after malformed JSON', () => {
+    const src = readPy('intelligence/gap_finder.py');
+    expect(src).toContain('Claude returned non-JSON in gap_finder (%d chars)');
+    expect(src).not.toContain('raw: %s');
+    expect(src).not.toContain('gaps.get("raw", ""))[:200]');
+  });
+});
+
+describe('Python config.py — local fixture resource controls', () => {
+  const src = readEngineFile('config.py');
+
+  it('blanks external search/provider keys in explicit fixture mode', () => {
+    expect(src).toContain('def _fixture_mode_enabled()');
+    expect(src).toContain('CONTENT_ENGINE_FIXTURE_MODE');
+    expect(src).toContain('NEXUS_LOCAL_ALLOW_MODEL_CALLS');
+    expect(src).toContain('fixture_mode: bool = False');
+    expect(src).toContain('return EngineConfig(fixture_mode=True)');
+  });
+});
+
+describe('Python reddit.py — fixture mode avoids live unauthenticated calls', () => {
+  const src = readEngineFile(path.join('searchers', 'reddit.py'));
+
+  it('returns deterministic mock results when fixture mode is enabled', () => {
+    expect(src).toContain('if cfg.fixture_mode:');
+    expect(src).toContain('Content-engine fixture mode');
+    expect(src).toContain('def _mock');
+    expect(src).toContain('Fixture mode avoids live Reddit calls.');
   });
 });
 

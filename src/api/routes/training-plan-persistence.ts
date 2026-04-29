@@ -12,6 +12,11 @@ import {
   recordCalendarOwnership,
 } from '../../services/training-plan-lifecycle';
 import {
+  submitSecretarySchedulingIntent,
+  type SecretarySchedulingDecision,
+  type SecretarySchedulingIntent,
+} from '../../services/secretary-scheduling-arbitrator';
+import {
   appendTrainingIdentityMarker,
   buildTrainingSessionIdentityKey,
   computeTrainingSessionShapeHash,
@@ -307,6 +312,8 @@ export async function persistGeneratedTrainingPlan(
       planId: plan.id,
       planVersion: planVersionForOwnership,
       sessionId: eventPayload.sessionId,
+      tenantId: input.userId,
+      userId: input.userId,
     });
     if (existing) {
       // A previous run of this loop already created + recorded the
@@ -316,11 +323,35 @@ export async function persistGeneratedTrainingPlan(
       continue;
     }
     try {
+      const secretaryDecision = submitSecretarySchedulingIntent(
+        buildTrainingSecretaryIntent({
+          userId: input.userId,
+          planId: plan.id,
+          planVersion: planVersionForOwnership,
+          eventPayload,
+        }),
+        { now: input.now.toISOString() },
+      );
+      const selectedWindow = selectedTrainingSecretaryWindow(secretaryDecision);
+      if (!selectedWindow) {
+        logger.warn(
+          {
+            userId: input.userId,
+            planId: plan.id,
+            planVersion: planVersionForOwnership,
+            sessionId: eventPayload.sessionId,
+            secretaryStatus: secretaryDecision.status,
+            reasonCodes: secretaryDecision.reasonCodes,
+          },
+          'Secretary did not return a schedulable Training slot; skipping calendar event create',
+        );
+        continue;
+      }
       const event = await createTrainingCalendarEvent(
         {
           title: eventPayload.title,
-          start: eventPayload.start,
-          end: eventPayload.end,
+          start: selectedWindow.start,
+          end: selectedWindow.end,
           description: eventPayload.description,
         },
         undefined,
@@ -340,6 +371,7 @@ export async function persistGeneratedTrainingPlan(
         planId: plan.id,
         planVersion: planVersionForOwnership,
         sessionId: eventPayload.sessionId,
+        tenantId: input.userId,
         userId: input.userId,
         eventId: event.id,
         source: event.source,
@@ -382,6 +414,52 @@ export async function persistGeneratedTrainingPlan(
       sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
     })),
   };
+}
+
+function buildTrainingSecretaryIntent(input: {
+  userId: number;
+  planId: number;
+  planVersion: number;
+  eventPayload: {
+    sessionId: number;
+    title: string;
+    start: string;
+    end: string;
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
+  };
+}): SecretarySchedulingIntent {
+  const durationMinutes = Math.max(1, Math.round((Date.parse(input.eventPayload.end) - Date.parse(input.eventPayload.start)) / 60_000));
+  return {
+    intentId: `training:${input.planId}:${input.planVersion}:${input.eventPayload.sessionId}`,
+    sourceSkill: 'training',
+    sourceAction: 'schedule_training_session',
+    sourceEntityId: input.eventPayload.sessionId,
+    sourceEntityType: 'training_session',
+    ownerUserId: input.userId,
+    tenantId: input.userId,
+    title: input.eventPayload.title,
+    requestedDurationMinutes: durationMinutes,
+    minimumDurationMinutes: Math.min(durationMinutes, Math.max(20, Math.round(durationMinutes * 0.75))),
+    preferredWindows: [{
+      start: input.eventPayload.start,
+      end: input.eventPayload.end,
+      label: 'training plan slot',
+      hard: true,
+    }],
+    priority: 'high',
+    flexibility: 'fixed',
+    reason: 'Training generated a scheduleable workout session.',
+    context: `plan_id=${input.planId}; plan_version=${input.planVersion}; session_identity_key=${input.eventPayload.sessionIdentityKey}; session_shape_hash=${input.eventPayload.sessionShapeHash}`,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function selectedTrainingSecretaryWindow(decision: SecretarySchedulingDecision): { start: string; end: string } | null {
+  if (!['scheduled', 'reflowed', 'compressed'].includes(decision.status)) return null;
+  if (!decision.selectedSlot?.start || !decision.selectedSlot?.end) return null;
+  return { start: decision.selectedSlot.start, end: decision.selectedSlot.end };
 }
 
 function inactiveScheduleState(session: GeneratedTrainingSession): PersistableSessionScheduleState | null {

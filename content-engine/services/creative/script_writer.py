@@ -846,6 +846,8 @@ The JSON must be valid and on a single block after `---METADATA---`. No other te
             max_tokens=8192,
             temperature=SCRIPT_TEMPERATURE,
             category="content_engine_script",
+            user_id=req.user_id,
+            tenant_id=req.tenant_id,
         )
     except Exception as exc:
         logger.warning("AI generation unavailable for script_writer.generate: %s", exc)

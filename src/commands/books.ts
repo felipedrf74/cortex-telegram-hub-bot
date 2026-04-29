@@ -11,6 +11,12 @@ import { escapeHtml } from '../utils/telegram-formatter';
 import { logger } from '../utils/logger';
 import { getCurrentRequestId, generateRequestId } from '../utils/request-context';
 import { config } from '../config';
+import {
+  contentScopeForInsert,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from '../services/content-tenant-scope';
 
 const CONTENT_ENGINE_URL = `http://localhost:${config.contentEngine.port}/api/v1`;
 
@@ -77,12 +83,32 @@ export function seedBooksIfEmpty(sendAlert: (msg: string) => Promise<void>): voi
 
 // ── Core extraction function ────────────────────────────────────────
 
-async function extractAndStore(title: string, author: string): Promise<void> {
+type PortalBookScope = {
+  userId: number;
+  tenantId?: number;
+};
+
+function bookWhere(title: string, author: string, scope?: PortalBookScope): { clause: string; params: unknown[] } {
+  if (!scope) {
+    return {
+      clause: 'title = ? AND author = ?',
+      params: [title, author],
+    };
+  }
+  return {
+    clause: `title = ? AND author = ? AND ${contentScopePredicate()}`,
+    params: [title, author, ...contentScopeParams(scope.userId, scope.tenantId)],
+  };
+}
+
+async function extractAndStore(title: string, author: string, scope?: PortalBookScope): Promise<void> {
   const db = getDb();
+  if (scope) ensureContentTenantScopeColumns(db);
+  const where = bookWhere(title, author, scope);
 
   // Mark as extracting
-  db.prepare("UPDATE book_library SET extraction_status = 'extracting' WHERE title = ? AND author = ?")
-    .run(title, author);
+  db.prepare(`UPDATE book_library SET extraction_status = 'extracting' WHERE ${where.clause}`)
+    .run(...where.params);
 
   try {
     const controller = new AbortController();
@@ -120,37 +146,40 @@ async function extractAndStore(title: string, author: string): Promise<void> {
         personal_notes = ?,
         extraction_status = 'extracted',
         extraction_date = datetime('now')
-      WHERE title = ? AND author = ?
+      WHERE ${where.clause}
     `).run(
       book.core_thesis,
       JSON.stringify(book.key_frameworks),
       JSON.stringify(book.quotable_ideas),
       JSON.stringify(book.pillar_mapping),
       JSON.stringify(book.personal_notes || []),
-      title,
-      author,
+      ...where.params,
     );
 
-    // Write book_knowledge signal to the intelligence bus
-    writeSignal({
-      source_agent: 'book-extractor',
-      signal_type: 'book_knowledge',
-      payload: {
-        title: book.title,
-        author: book.author,
-        core_thesis: book.core_thesis,
-        key_frameworks: book.key_frameworks,
-        pillar_mapping: book.pillar_mapping,
-        quotable_ideas: book.quotable_ideas,
-        counter_arguments: book.counter_arguments,
-        related_thinkers: book.related_thinkers,
-      },
-    });
+    // The legacy content mesh treats book_knowledge as global. Avoid writing
+    // tenant/user-scoped portal books into that bus until shared context has
+    // tenant namespaces for content reference signals.
+    if (!scope) {
+      writeSignal({
+        source_agent: 'book-extractor',
+        signal_type: 'book_knowledge',
+        payload: {
+          title: book.title,
+          author: book.author,
+          core_thesis: book.core_thesis,
+          key_frameworks: book.key_frameworks,
+          pillar_mapping: book.pillar_mapping,
+          quotable_ideas: book.quotable_ideas,
+          counter_arguments: book.counter_arguments,
+          related_thinkers: book.related_thinkers,
+        },
+      });
+    }
 
     logger.info({ title, author }, 'Book extracted and stored');
   } catch (err: any) {
-    db.prepare("UPDATE book_library SET extraction_status = 'failed' WHERE title = ? AND author = ?")
-      .run(title, author);
+    db.prepare(`UPDATE book_library SET extraction_status = 'failed' WHERE ${where.clause}`)
+      .run(...where.params);
     throw err;
   }
 }
@@ -158,24 +187,61 @@ async function extractAndStore(title: string, author: string): Promise<void> {
 // ── Portal Handler (no Telegram context) ────────────────────────────
 
 export async function handleAddBookFromPortal(
-  title: string, author: string,
+  title: string,
+  author: string,
+  scope?: PortalBookScope,
 ): Promise<{ ok: boolean; message: string }> {
   const db = getDb();
-  const existing = db.prepare('SELECT extraction_status FROM book_library WHERE title = ? AND author = ?')
-    .get(title, author) as any;
+  if (scope) ensureContentTenantScopeColumns(db);
+  const where = bookWhere(title, author, scope);
+  const existing = db.prepare(`SELECT extraction_status FROM book_library WHERE ${where.clause}`)
+    .get(...where.params) as any;
 
   if (existing?.extraction_status === 'extracted') {
     return { ok: true, message: `${title} already in library` };
   }
 
-  db.prepare(`
-    INSERT INTO book_library (title, author, extraction_status)
-    VALUES (?, ?, 'pending')
-    ON CONFLICT(title, author) DO UPDATE SET extraction_status = 'pending'
-  `).run(title, author);
+  if (scope) {
+    const insertScope = contentScopeForInsert(scope.userId, scope.tenantId, 'user_private', 'pending');
+    db.prepare(`
+      INSERT INTO book_library (
+        title, author, extraction_status, user_id, owner_scope, tenant_id,
+        owner_user_id, visibility_scope, lifecycle_state, scope_status,
+        created_by, updated_by, audit_metadata_json
+      )
+      VALUES (?, ?, 'pending', ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, title, author) DO UPDATE SET
+        extraction_status = 'pending',
+        tenant_id = excluded.tenant_id,
+        owner_user_id = excluded.owner_user_id,
+        visibility_scope = excluded.visibility_scope,
+        lifecycle_state = excluded.lifecycle_state,
+        scope_status = excluded.scope_status,
+        updated_by = excluded.updated_by,
+        updated_at = datetime('now')
+    `).run(
+      title,
+      author,
+      scope.userId,
+      insertScope.tenantId,
+      insertScope.ownerUserId,
+      insertScope.visibilityScope,
+      insertScope.lifecycleState,
+      insertScope.scopeStatus,
+      insertScope.createdBy,
+      insertScope.updatedBy,
+      insertScope.auditMetadataJson,
+    );
+  } else {
+    db.prepare(`
+      INSERT INTO book_library (title, author, extraction_status)
+      VALUES (?, ?, 'pending')
+      ON CONFLICT(title, author) DO UPDATE SET extraction_status = 'pending'
+    `).run(title, author);
+  }
 
   try {
-    await extractAndStore(title, author);
+    await extractAndStore(title, author, scope);
     return { ok: true, message: `${title} extracted successfully` };
   } catch (err: any) {
     return { ok: false, message: `Extraction failed: ${err.message?.slice(0, 100)}` };

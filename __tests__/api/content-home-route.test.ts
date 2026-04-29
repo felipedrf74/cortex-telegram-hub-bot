@@ -21,6 +21,17 @@ vi.mock('../../src/services/tenant-scope-observability', () => ({
   recordTenantScopeAnomaly: vi.fn(),
 }));
 
+vi.mock('../../src/services/content-discovery', () => ({
+  runContentDiscovery: vi.fn(async (userId: number) => ({
+    count: 1,
+    ideas: ['Creator operating system'],
+    provider: 'gemini',
+    fullContent: '# Content Ideas',
+    filePath: `/tmp/content-${userId}.md`,
+    searchCount: 1,
+  })),
+}));
+
 vi.mock('../../src/portal/telemetry', () => ({
   getJobStatuses: vi.fn(() => []),
 }));
@@ -134,9 +145,9 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(path = '/home'): Request {
+function mockReq(path = '/home', method = 'GET', userId = 12): Request {
   return {
-    method: 'GET',
+    method,
     url: path,
     originalUrl: path,
     baseUrl: '',
@@ -148,14 +159,14 @@ function mockReq(path = '/home'): Request {
       return (this.headers as any)[name.toLowerCase()] ?? (this.headers as any)[name];
     },
     body: {},
-    userId: 12,
+    userId,
   } as any;
 }
 
-async function dispatch(path = '/home'): Promise<MockRes> {
+async function dispatch(path = '/home', method = 'GET', userId = 12): Promise<MockRes> {
   const { contentRoutes } = await import('../../src/api/routes/content');
   const router = contentRoutes();
-  const req = mockReq(path);
+  const req = mockReq(path, method, userId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -183,5 +194,17 @@ describe('Content API — home route', () => {
     expect(response.body.data.hero.primaryAction.target).toBe('schedule');
     expect(response.body.data.flow.steps).toHaveLength(4);
     expect(response.body.data.pipelineHealth.metrics.length).toBeGreaterThan(0);
+  });
+
+  it('rejects manual content discovery when the authenticated user scope is invalid', async () => {
+    const { isValidTenantUserId } = await import('../../src/services/tenant-scope-observability');
+    const { runContentDiscovery } = await import('../../src/services/content-discovery');
+    vi.mocked(isValidTenantUserId).mockReturnValueOnce(false);
+
+    const response = await dispatch('/discover', 'POST', 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(runContentDiscovery).not.toHaveBeenCalled();
   });
 });

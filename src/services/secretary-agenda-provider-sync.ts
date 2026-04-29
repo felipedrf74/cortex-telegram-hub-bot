@@ -5,6 +5,7 @@ import {
   getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
   type SecretaryAgendaItem,
+  type SecretaryAgendaLifecycleState,
   type SecretaryProviderSyncState,
 } from './secretary-scheduling-arbitrator';
 import { logger } from '../utils/logger';
@@ -79,15 +80,35 @@ const ACTIVE_PROVIDER_STATES = new Set([
   'synced',
   'reflowed',
   'compressed',
+  'failed_sync',
 ]);
 
 const CLEANUP_PROVIDER_STATES = new Set([
   'canceled',
   'superseded',
-  'completed',
   'unscheduled',
   'deferred',
 ]);
+
+const FAILED_PROVIDER_SYNC_STATES = new Set<SecretaryProviderSyncState>([
+  'create_failed',
+  'update_failed',
+  'delete_failed',
+  'readback_failed',
+]);
+
+export function markCompletedSecretaryAgendaItems(now: Date = new Date()): number {
+  const result = getDb().prepare(`
+    UPDATE secretary_agenda_items
+       SET lifecycle_state = 'completed',
+           completed_at = COALESCE(completed_at, ?),
+           updated_at = ?
+     WHERE end_at IS NOT NULL
+       AND datetime(end_at) < datetime(?)
+       AND lifecycle_state IN ('scheduled', 'synced', 'reflowed', 'compressed')
+  `).run(now.toISOString(), now.toISOString(), now.toISOString());
+  return Number(result.changes ?? 0);
+}
 
 export async function syncSecretaryAgendaItemToProvider(
   scope: {
@@ -351,19 +372,28 @@ function updateProviderMapping(
     providerEventId?: string | null;
     providerSource?: SecretaryCalendarProviderSource | null;
     providerSyncState: SecretaryProviderSyncState;
+    lifecycleState?: SecretaryAgendaLifecycleState;
   },
 ): void {
+  const lifecycleState = patch.lifecycleState
+    ?? (patch.providerSyncState === 'synced'
+      ? 'synced'
+      : FAILED_PROVIDER_SYNC_STATES.has(patch.providerSyncState)
+        ? 'failed_sync'
+        : null);
   getDb().prepare(`
     UPDATE secretary_agenda_items
     SET provider_event_id = COALESCE(?, provider_event_id),
         provider_source = COALESCE(?, provider_source),
         provider_sync_state = ?,
+        lifecycle_state = COALESCE(?, lifecycle_state),
         updated_at = ?
     WHERE agenda_item_id = ?
   `).run(
     patch.providerEventId ?? null,
     patch.providerSource ?? null,
     patch.providerSyncState,
+    lifecycleState,
     new Date().toISOString(),
     agendaItemId,
   );

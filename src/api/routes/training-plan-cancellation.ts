@@ -102,7 +102,39 @@ interface MatchableTrainingSessionIdentity {
   sessionShapeHash: string;
 }
 
+const cancellationLocks = new Map<string, Promise<void>>();
+
+async function withTrainingCancellationLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = cancellationLocks.get(key) ?? Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = previous
+    .catch(() => undefined)
+    .then(() => new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    }));
+
+  cancellationLocks.set(key, current);
+
+  await previous.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    releaseCurrent();
+    if (cancellationLocks.get(key) === current) {
+      cancellationLocks.delete(key);
+    }
+  }
+}
+
 export async function cancelTrainingPlanForUser(
+  userId: number,
+  requestedPlanId?: unknown,
+): Promise<TrainingPlanCancellationResult> {
+  return withTrainingCancellationLock(`training-plan-cancel:${userId}`, () =>
+    cancelTrainingPlanForUserLocked(userId, requestedPlanId));
+}
+
+async function cancelTrainingPlanForUserLocked(
   userId: number,
   requestedPlanId?: unknown,
 ): Promise<TrainingPlanCancellationResult> {
@@ -336,7 +368,7 @@ async function buildCalendarDeletionTargetsForPlan(
     }
   }
 
-  for (const ownership of findOwnershipsForPlan(plan.id)) {
+  for (const ownership of findOwnershipsForPlan(plan.id, userId)) {
     if (ownership.status === 'deleted') continue;
     if (!isCalendarSource(ownership.calendar_source)) continue;
     const key = `${ownership.calendar_source}:${ownership.calendar_event_id}`;

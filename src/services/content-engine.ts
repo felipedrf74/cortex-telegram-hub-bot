@@ -465,6 +465,7 @@ export function buildScriptCacheKey(
   scriptContext?: ScriptTopicContext | null,
   scriptStyle: ScriptStyle = 'detailed',
   regenerationSeed?: string | null,
+  tenantId?: number,
 ): string {
   const parts = [
     'script-v7',
@@ -480,6 +481,7 @@ export function buildScriptCacheKey(
     `style:${normalizeScriptStyle(scriptStyle)}`,
     `ctx:${hashScriptContext(scriptContext)}`,
     `scope:${userId ?? 'global'}`,
+    `tenant:${tenantId ?? userId ?? 'global'}`,
   ];
   const seedHash = hashRegenerationSeed(regenerationSeed);
   if (seedHash) parts.push(`regen:${seedHash}`);
@@ -499,6 +501,7 @@ export async function getScript(
   forceRefresh = false,
   regenerationSeed?: string | null,
   creatorProfile?: string | null,
+  tenantId?: number,
 ): Promise<ScriptResponse> {
   const cfg = MODE_CONFIG[mode];
   const normalizedLanguage = normalizeScriptLanguage(language);
@@ -518,6 +521,7 @@ export async function getScript(
     scriptContext,
     normalizedScriptStyle,
     regenerationSeed,
+    tenantId,
   );
 
   // ── Cache check (skip for deep mode — always generate fresh) ──
@@ -574,6 +578,8 @@ export async function getScript(
       // generated script reflects the user's tone, vocabulary, and style.
       brand_voice: brandVoice || undefined,
       creator_profile: creatorProfile || undefined,
+      user_id: userId ?? undefined,
+      tenant_id: tenantId ?? undefined,
       force_refresh: forceRefresh || undefined,
       regeneration_seed: regenerationSeed || undefined,
     }),

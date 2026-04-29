@@ -360,8 +360,8 @@ describe('buildActiveSignalsResponse — unknown type fallback', () => {
     // `hook_effectiveness` is a content-mesh type — valid SignalType
     // enum value but no training-coach meta entry.
     testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, user_id, status)
-      VALUES ('test', 'planned_hard_run', '{}', 'normal', datetime('now', '+1 day'), 8001, 'active')
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, expires_at, tenant_id, user_id, status)
+      VALUES ('test', 'planned_hard_run', '{}', 'normal', datetime('now', '+1 day'), 8001, 8001, 'active')
     `).run();
 
     const res = buildActiveSignalsResponse(8001);

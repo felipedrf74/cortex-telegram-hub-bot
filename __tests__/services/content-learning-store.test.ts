@@ -347,15 +347,21 @@ describe('content-learning-store: artifact chain', () => {
   it('traces full chain from pipeline to script and performance', () => {
     // Create topic feedback
     testDb.prepare(`
-      INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id)
-      VALUES ('AI Fitness', 'tech', 'youtube', 'approved', 'manual', 'Best hook', 'Trending now', 0)
+      INSERT INTO content_topic_feedback (
+        topic, niche, format, sentiment, source_job, hook_idea, why_now, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES ('AI Fitness', 'tech', 'youtube', 'approved', 'manual', 'Best hook', 'Trending now', 1, 1, 1, 'user_private', 'active')
     `).run();
     const feedbackId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
 
     // Create pipeline entry
     testDb.prepare(`
-      INSERT INTO content_pipeline (topic_feedback_id, topic_title, niche, stage, script_path)
-      VALUES (?, 'AI Fitness', 'tech', 'scripted', '/path/to/script.docx')
+      INSERT INTO content_pipeline (
+        topic_feedback_id, topic_title, niche, stage, script_path, user_id,
+        tenant_id, owner_user_id, visibility_scope, scope_status
+      )
+      VALUES (?, 'AI Fitness', 'tech', 'scripted', '/path/to/script.docx', 1, 1, 1, 'user_private', 'active')
     `).run(feedbackId);
     const pipelineId = (testDb.prepare('SELECT last_insert_rowid() as id').get() as any).id;
 
@@ -371,7 +377,8 @@ describe('content-learning-store: artifact chain', () => {
       hashtags: ['#ai', '#fitness'],
       caption: 'Pipeline caption',
       cta: 'Pipeline CTA',
-      userId: 0,
+      userId: 1,
+      tenantId: 1,
     });
 
     // Log performance
@@ -380,11 +387,12 @@ describe('content-learning-store: artifact chain', () => {
       views: 10000,
       retentionPct: 55,
       likes: 800,
-      userId: 0,
+      userId: 1,
+      tenantId: 1,
     });
 
     // Trace the chain
-    const chain = getArtifactChain(pipelineId);
+    const chain = getArtifactChain(pipelineId, 1, 1);
 
     expect(chain.topicFeedback).not.toBeNull();
     expect(chain.topicFeedback!.topic).toBe('AI Fitness');
@@ -406,7 +414,7 @@ describe('content-learning-store: artifact chain', () => {
   });
 
   it('returns empty chain for non-existent pipeline', () => {
-    const chain = getArtifactChain(99999);
+    const chain = getArtifactChain(99999, 1, 1);
     expect(chain.pipeline).toBeNull();
     expect(chain.script).toBeNull();
     expect(chain.performance).toHaveLength(0);

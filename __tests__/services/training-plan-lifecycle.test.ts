@@ -116,6 +116,7 @@ describe('training-plan-lifecycle — migration 081', () => {
     expect(names.has('plan_id')).toBe(true);
     expect(names.has('plan_version')).toBe(true);
     expect(names.has('session_id')).toBe(true);
+    expect(names.has('tenant_id')).toBe(true);
     expect(names.has('user_id')).toBe(true);
     expect(names.has('calendar_event_id')).toBe(true);
     expect(names.has('calendar_source')).toBe(true);
@@ -542,5 +543,28 @@ describe('training-plan-lifecycle — scoped ownership transitions', () => {
       { plan_id: 1, user_id: 100, status: 'deleted' },
       { plan_id: 2, user_id: 200, status: 'active' },
     ]);
+  });
+
+  it('does not return ownership rows outside the requested tenant', () => {
+    seedPlan({ id: 1, userId: 100 });
+    seedSession({ id: 10, planId: 1, weekId: 20, userId: 100 });
+    seedPlan({ id: 2, userId: 200 });
+    seedSession({ id: 11, planId: 2, weekId: 21, userId: 200 });
+    recordCalendarOwnership({
+      planId: 1, planVersion: 1, sessionId: 10, tenantId: 100, userId: 100, eventId: 'evt-a', source: 'google',
+    });
+    recordCalendarOwnership({
+      planId: 2, planVersion: 1, sessionId: 11, tenantId: 200, userId: 200, eventId: 'evt-b', source: 'google',
+    });
+
+    expect(findOwnershipsForPlan(1, 200)).toEqual([]);
+    expect(findOrphanedOwnerships(100, 200)).toEqual([]);
+    expect(findExistingOwnership({
+      planId: 1,
+      planVersion: 1,
+      sessionId: 10,
+      tenantId: 200,
+      userId: 100,
+    })).toBeNull();
   });
 });

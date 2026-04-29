@@ -11,6 +11,7 @@ Branch: `feature/chat-tenant-safe-context-orchestration`
 
 2. No true multi-tenant Chat claim without active tenant membership.
    - Current auth explicitly maps `tenantId = userId`.
+   - Non-canonical active-tenant override headers now fail closed with `403` instead of being silently ignored.
    - Required before workspace switching: active tenant selection, membership check, tenant-aware caches/tools/context.
 
 ## Closed In This Implementation Pass
@@ -43,6 +44,7 @@ Branch: `feature/chat-tenant-safe-context-orchestration`
 25. Reject prompt-injected explicit tool `user_id` mismatches instead of silently rewriting them.
 26. Add deterministic day-to-day Chat simulation harness with persona bank, A-J multi-turn scenario bank, response sufficiency rubric, failure taxonomy, iOS-envelope checks, tool-call evidence, and fixture provider traces.
 27. Prove `084_chat_tenant_scope.sql` and `085_chat_message_lifecycle.sql` on a disposable staging clone with online backup, apply, backfill/schema/index checks, scoped fixture, migrated proof DB, and restore proof.
+28. Fail closed on unsupported same-user active-tenant override headers and smoke the live local route behavior.
 
 ## P1 Must Fix Before Multi-Tenant Chat Expansion
 
@@ -94,6 +96,8 @@ Branch: `feature/chat-tenant-safe-context-orchestration`
 - Build after day-to-day harness pass: passed.
 - Day-to-day simulation CLI: passed, 10 scenarios / 28 turns, average score 1.93 / 2.00.
 - Diff whitespace check: passed.
+- Same-user tenant-switch focused suite: 4 files, 74 tests passed.
+- Same-user tenant-switch live local smoke: 15 pass / 1 partial / 0 fail, no cross-tenant leakage, cleanup passed.
 
 Commands:
 

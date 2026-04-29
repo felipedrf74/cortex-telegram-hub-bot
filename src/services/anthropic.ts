@@ -10,6 +10,7 @@ import { buildKnowledgePromptBlock } from '../state/content-references';
 import { loadPrompt, loadPromptWithConfig } from '../utils/prompt-loader';
 import { readTrainingContextAll, formatTrainingContextForPrompt } from './training-signals';
 import { getTriathlonPromptNameForMessage } from '../router/sport-classifier';
+import { buildScopedStateContextPrefix } from './provider-state-context';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
@@ -1064,9 +1065,7 @@ export async function callDomain(
   }
 
   // State context prepended to user message (keeps system prompt cacheable)
-  const contextPrefix = stateContext || trainingContextBlock
-    ? `[Current State]\n${stateContext}${trainingContextBlock}\n\n`
-    : '';
+  const contextPrefix = buildScopedStateContextPrefix(`${stateContext || ''}${trainingContextBlock}`);
   const messages: Anthropic.MessageParam[] = [
     ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user' as const, content: `${contextPrefix}${currentMessage}` },
@@ -1160,9 +1159,7 @@ export async function continueWithToolResults(
     }
   }
 
-  const contextPrefix = stateContext || trainingContextBlock
-    ? `[Current State]\n${stateContext}${trainingContextBlock}\n\n`
-    : '';
+  const contextPrefix = buildScopedStateContextPrefix(`${stateContext || ''}${trainingContextBlock}`);
   const messages: Anthropic.MessageParam[] = [
     ...historyToSend.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     { role: 'user', content: `${contextPrefix}${currentMessage}` },

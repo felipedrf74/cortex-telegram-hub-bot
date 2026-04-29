@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'express';
 import Database from 'better-sqlite3';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 
 let testDb: Database.Database;
 const mockInvalidateContentDerivedCaches = vi.hoisted(() => vi.fn());
@@ -63,7 +63,12 @@ function mockRes(): MockRes {
   return response;
 }
 
-function mockReq(method: string, path: string, userId = 41, body: Record<string, unknown> = {}): Request {
+function mockReq(
+  method: string,
+  path: string,
+  userId: number | undefined = 41,
+  body: Record<string, unknown> = {},
+): Request {
   return {
     userId,
     method,
@@ -79,9 +84,26 @@ function mockReq(method: string, path: string, userId = 41, body: Record<string,
   } as any;
 }
 
-async function dispatch(method: string, path: string, body: Record<string, unknown> = {}, userId = 41): Promise<MockRes> {
+function makeEnsureValidScope() {
+  return vi.fn((
+    res: Response,
+    userId: number | undefined,
+  ): userId is number => {
+    if (typeof userId === 'number' && userId > 0) return true;
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid authenticated user scope' } });
+    return false;
+  });
+}
+
+async function dispatch(
+  method: string,
+  path: string,
+  body: Record<string, unknown> = {},
+  userId: number | undefined = 41,
+  ensureValidScope = makeEnsureValidScope(),
+): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
-  registerContentReferenceRoutes(router);
+  registerContentReferenceRoutes(router, ensureValidScope);
   const req = mockReq(method, path, userId, body);
   const res = mockRes();
 
@@ -93,7 +115,7 @@ async function dispatch(method: string, path: string, body: Record<string, unkno
     setImmediate(resolve);
   });
 
-  return res;
+  return { response: res, ensureValidScope };
 }
 
 describe('content reference routes', () => {
@@ -154,7 +176,7 @@ describe('content reference routes', () => {
       VALUES (?, ?, ?, ?, ?, ?)
     `).run('Storyworthy', 'Matthew Dicks', 'pending', 'Use for hooks', 41, 'user');
 
-    const response = await dispatch('GET', '/books');
+    const { response } = await dispatch('GET', '/books');
 
     expect(response.statusCode).toBe(200);
     expect(response.body.ok).toBe(true);
@@ -172,9 +194,9 @@ describe('content reference routes', () => {
   });
 
   it('adds channels through the content-reference state owner with user scope', async () => {
-    const response = await dispatch('POST', '/channels', { url: '  https://youtube.com/@nexus  ' }, 77);
+    const { response } = await dispatch('POST', '/channels', { url: '  https://youtube.com/@nexus  ' }, 77);
 
-    expect(addChannel).toHaveBeenCalledWith('https://youtube.com/@nexus', 'ios', 77);
+    expect(addChannel).toHaveBeenCalledWith('https://youtube.com/@nexus', 'ios', 77, 77);
     expect(response.statusCode).toBe(201);
     expect(response.body.data.channel).toEqual({
       id: 9,
@@ -185,16 +207,16 @@ describe('content reference routes', () => {
   });
 
   it('lists channels through the content-reference state owner with user scope', async () => {
-    const response = await dispatch('GET', '/channels', {}, 77);
+    const { response } = await dispatch('GET', '/channels', {}, 77);
 
-    expect(getAllChannels).toHaveBeenCalledWith(77);
+    expect(getAllChannels).toHaveBeenCalledWith(77, 77);
     expect(response.body.data.channels).toEqual([
       { id: 4, channel_url: 'https://youtube.com/@nexus', channel_name: 'Nexus' },
     ]);
   });
 
   it('upserts voice DNA entries for the authenticated user', async () => {
-    const response = await dispatch('POST', '/voice-dna', {
+    const { response } = await dispatch('POST', '/voice-dna', {
       category: 'brand_voice',
       payload: '  Use calm authority.  ',
     }, 55);
@@ -207,5 +229,13 @@ describe('content reference routes', () => {
     expect(row.synthesized_text).toBe('Use calm authority.');
     expect(row.owner_scope).toBe('user');
     expect(mockInvalidateContentDerivedCaches).toHaveBeenCalledWith(55);
+  });
+
+  it('refuses reference routes without a valid authenticated user scope', async () => {
+    const { response, ensureValidScope } = await dispatch('GET', '/books', {}, 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(ensureValidScope).toHaveBeenCalledWith(expect.anything(), 0, 'content_route_books_list');
   });
 });

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'express';
 import Database from 'better-sqlite3';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 
 let testDb: Database.Database;
 
@@ -61,7 +61,7 @@ function mockRes(): MockRes {
 function mockReq(
   method: string,
   path: string,
-  userId = 41,
+  userId: number | undefined = 41,
   body: Record<string, unknown> = {},
   query: Record<string, unknown> = {},
   headers: Record<string, string> = {},
@@ -83,15 +83,27 @@ function mockReq(
   } as any;
 }
 
+function makeEnsureValidScope() {
+  return vi.fn((
+    res: Response,
+    userId: number | undefined,
+  ): userId is number => {
+    if (typeof userId === 'number' && userId > 0) return true;
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid authenticated user scope' } });
+    return false;
+  });
+}
+
 async function dispatch(
   method: string,
   path: string,
   body: Record<string, unknown> = {},
-  userId = 41,
+  userId: number | undefined = 41,
   query: Record<string, unknown> = {},
-): Promise<MockRes> {
+  ensureValidScope = makeEnsureValidScope(),
+): Promise<{ response: MockRes; ensureValidScope: ReturnType<typeof makeEnsureValidScope> }> {
   const router = Router();
-  registerContentLearningRoutes(router, () => 'pt-BR');
+  registerContentLearningRoutes(router, () => 'pt-BR', ensureValidScope);
   const req = mockReq(method, path, userId, body, query);
   const res = mockRes();
 
@@ -103,7 +115,7 @@ async function dispatch(
     setImmediate(resolve);
   });
 
-  return res;
+  return { response: res, ensureValidScope };
 }
 
 function seedTopicFeedback(userId: number, topic: string, sentiment = 'pending'): number {
@@ -166,7 +178,7 @@ describe('content learning routes', () => {
   });
 
   it('localizes topic generation validation without loading the workflow engine', async () => {
-    const response = await dispatch('POST', '/topics/generate', { format: 'podcast' });
+    const { response } = await dispatch('POST', '/topics/generate', { format: 'podcast' });
 
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('VALIDATION');
@@ -191,13 +203,13 @@ describe('content learning routes', () => {
       ],
     });
 
-    const response = await dispatch('POST', '/topics/generate', {
+    const { response } = await dispatch('POST', '/topics/generate', {
       format: 'youtube',
       sourceJob: 'manual',
     }, 77);
 
     expect(response.statusCode).toBe(200);
-    expect(mocks.generateAndStoreTopicCandidates).toHaveBeenCalledWith(77, 'youtube', 'manual');
+    expect(mocks.generateAndStoreTopicCandidates).toHaveBeenCalledWith(77, 'youtube', 'manual', 77);
     expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(77);
     expect(response.body.data).toEqual(expect.objectContaining({
       format: 'youtube',
@@ -215,7 +227,7 @@ describe('content learning routes', () => {
   it('forbids feedback updates for another user topic', async () => {
     const id = seedTopicFeedback(99, 'Other user topic');
 
-    const response = await dispatch('POST', `/topics/${id}/feedback`, { sentiment: 'approved' }, 41);
+    const { response } = await dispatch('POST', `/topics/${id}/feedback`, { sentiment: 'approved' }, 41);
 
     expect(response.statusCode).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
@@ -225,10 +237,10 @@ describe('content learning routes', () => {
   it('updates owned topic feedback', async () => {
     const id = seedTopicFeedback(41, 'Owned topic');
 
-    const response = await dispatch('POST', `/topics/${id}/feedback`, { sentiment: 'approved' }, 41);
+    const { response } = await dispatch('POST', `/topics/${id}/feedback`, { sentiment: 'approved' }, 41);
 
     expect(response.statusCode).toBe(200);
-    expect(mocks.updateFeedback).toHaveBeenCalledWith(id, 'approved');
+    expect(mocks.updateFeedback).toHaveBeenCalledWith(id, 'approved', 41, 41);
     expect(mocks.invalidateContentDerivedCaches).toHaveBeenCalledWith(41);
     expect(response.body.data).toEqual({
       feedbackId: id,
@@ -241,7 +253,7 @@ describe('content learning routes', () => {
     seedTopicFeedback(41, 'My pending topic');
     seedTopicFeedback(99, 'Other pending topic');
 
-    const response = await dispatch('GET', '/topics/pending', {}, 41);
+    const { response } = await dispatch('GET', '/topics/pending', {}, 41);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.data.count).toBe(1);
@@ -254,7 +266,7 @@ describe('content learning routes', () => {
   });
 
   it('requires views and retention when logging performance feedback', async () => {
-    const response = await dispatch('POST', '/performance', { views: 1200 });
+    const { response } = await dispatch('POST', '/performance', { views: 1200 });
 
     expect(response.statusCode).toBe(400);
     expect(response.body.error.code).toBe('VALIDATION');
@@ -264,7 +276,7 @@ describe('content learning routes', () => {
   it('logs performance feedback with authenticated user ownership', async () => {
     mocks.logPerformanceFeedback.mockReturnValueOnce(55);
 
-    const response = await dispatch('POST', '/performance', {
+    const { response } = await dispatch('POST', '/performance', {
       pipelineId: 8,
       views: 1200,
       retentionPct: 43.5,
@@ -286,7 +298,7 @@ describe('content learning routes', () => {
   it('forbids artifact-chain access for another user pipeline', async () => {
     const pipelineId = seedPipeline(99);
 
-    const response = await dispatch('GET', `/artifact-chain/${pipelineId}`, {}, 41);
+    const { response } = await dispatch('GET', `/artifact-chain/${pipelineId}`, {}, 41);
 
     expect(response.statusCode).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
@@ -304,10 +316,10 @@ describe('content learning routes', () => {
       patterns: [],
     });
 
-    const response = await dispatch('GET', `/artifact-chain/${pipelineId}`, {}, 41);
+    const { response } = await dispatch('GET', `/artifact-chain/${pipelineId}`, {}, 41);
 
     expect(response.statusCode).toBe(200);
-    expect(mocks.getArtifactChain).toHaveBeenCalledWith(pipelineId);
+    expect(mocks.getArtifactChain).toHaveBeenCalledWith(pipelineId, 41, 41);
     expect(response.body.data.pipeline).toEqual({ id: pipelineId });
   });
 
@@ -326,10 +338,10 @@ describe('content learning routes', () => {
       },
     ]);
 
-    const response = await dispatch('GET', '/scripts/recent', {}, 77);
+    const { response } = await dispatch('GET', '/scripts/recent', {}, 77);
 
     expect(response.statusCode).toBe(200);
-    expect(mocks.getRecentScripts).toHaveBeenCalledWith(77, 30, 10);
+    expect(mocks.getRecentScripts).toHaveBeenCalledWith(77, 30, 10, 77);
     expect(response.body.data).toEqual({
       count: 1,
       scripts: [
@@ -340,5 +352,14 @@ describe('content learning routes', () => {
         }),
       ],
     });
+  });
+
+  it('refuses learning routes without a valid authenticated user scope', async () => {
+    const { response, ensureValidScope } = await dispatch('GET', '/scripts/recent', {}, 0);
+
+    expect(response.statusCode).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+    expect(mocks.getRecentScripts).not.toHaveBeenCalled();
+    expect(ensureValidScope).toHaveBeenCalledWith(expect.anything(), 0, 'content_route_learning');
   });
 });

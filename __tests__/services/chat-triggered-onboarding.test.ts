@@ -97,10 +97,21 @@ import {
   getProfile,
   getQuestionnaire,
 } from '../../src/services/onboarding';
-import { executeToolCall } from '../../src/services/tool-executor';
+import { executeToolCall as executeToolCallRaw } from '../../src/services/tool-executor';
+import { runWithChatToolAuthorization } from '../../src/services/chat-tool-authorization';
 import { buildSimpleStateContext } from '../../src/domains/domain-handler';
 
 // ─── Helper functions ──────────────────────────────────────────────
+
+function executeToolCall(toolName: string, input: Record<string, any>, userId?: number): Promise<any> {
+  if (!userId) return executeToolCallRaw(toolName, input, userId);
+  return runWithChatToolAuthorization({
+    userId,
+    tenantId: userId,
+    confirmedDestructiveAction: true,
+    confirmationSource: 'explicit_current_turn',
+  }, () => executeToolCallRaw(toolName, input, userId, userId)) as Promise<any>;
+}
 
 describe('Phase 3 Slice A — profile field helpers', () => {
   beforeEach(() => {
@@ -228,7 +239,11 @@ describe('Phase 3 Slice A — save_athlete_profile_field tool', () => {
       field_key: 'training_age',
       value: '1-3 years',
     });
-    expect(result.error).toContain('user_id');
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'save_athlete_profile_field requires authenticated chat authorization context',
+    });
   });
 
   it('rejects unknown profile types (whitelist enforced)', async () => {

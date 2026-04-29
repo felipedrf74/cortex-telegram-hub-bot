@@ -28,6 +28,13 @@
 
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import {
+  contentScopeForInsert,
+  contentScopeOrderExpr,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 
 const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
 
@@ -160,14 +167,18 @@ export function storeScript(opts: {
   niche?: string;
   generationDurationMs?: number;
   userId: number;
+  tenantId?: number;
 }): number {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  const scope = contentScopeForInsert(opts.userId, opts.tenantId);
   const result = db.prepare(`
     INSERT INTO content_scripts
       (pipeline_id, topic_feedback_id, topic, format, script_text, hook,
        title_options, sources_used, hashtags, caption, cta, estimated_duration, niche,
-       generation_duration_ms, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       generation_duration_ms, user_id, tenant_id, owner_user_id, visibility_scope,
+       lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     opts.pipelineId ?? null,
     opts.topicFeedbackId ?? null,
@@ -184,6 +195,14 @@ export function storeScript(opts: {
     opts.niche ?? null,
     opts.generationDurationMs ?? null,
     opts.userId,
+    scope.tenantId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
   );
   logger.info({ scriptId: result.lastInsertRowid, topic: opts.topic }, 'Script text stored durably');
   return Number(result.lastInsertRowid);
@@ -193,17 +212,18 @@ export function storeScript(opts: {
  * Retrieve recent scripts for voice learning. Returns raw script text
  * that the voice-evolution-agent can compare against published transcripts.
  */
-export function getRecentScripts(userId: number, days = 30, limit = 20): StoredScript[] {
+export function getRecentScripts(userId: number, days = 30, limit = 20, tenantId?: number): StoredScript[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const rows = db.prepare(`
     SELECT id, pipeline_id, topic_feedback_id, topic, format, script_text,
            hook, title_options, sources_used, hashtags, caption, cta, estimated_duration, niche,
            generation_duration_ms, user_id, created_at
     FROM content_scripts
-    WHERE user_id = ? AND created_at > datetime('now', '-' || ? || ' days')
+    WHERE ${contentScopePredicate()} AND created_at > datetime('now', '-' || ? || ' days')
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(userId, days, limit) as any[];
+  `).all(...contentScopeParams(userId, tenantId), days, limit) as any[];
 
   return rows.map(mapScript);
 }
@@ -211,14 +231,17 @@ export function getRecentScripts(userId: number, days = 30, limit = 20): StoredS
 /**
  * Get a single script by pipeline ID.
  */
-export function getScriptByPipelineId(pipelineId: number): StoredScript | null {
+export function getScriptByPipelineId(pipelineId: number, userId: number, tenantId: number): StoredScript | null {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const row = db.prepare(`
     SELECT id, pipeline_id, topic_feedback_id, topic, format, script_text,
            hook, title_options, sources_used, hashtags, caption, cta, estimated_duration, niche,
            generation_duration_ms, user_id, created_at
-    FROM content_scripts WHERE pipeline_id = ?
-  `).get(pipelineId) as any;
+    FROM content_scripts
+    WHERE pipeline_id = ?
+      AND ${contentScopePredicate()}
+  `).get(pipelineId, ...contentScopeParams(userId, tenantId)) as any;
   return row ? mapScript(row) : null;
 }
 
@@ -269,14 +292,19 @@ export function logPerformanceFeedback(opts: {
   notes?: string;
   analysis?: any;
   userId: number;
+  tenantId?: number;
 }): number {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  const scope = contentScopeForInsert(opts.userId, opts.tenantId);
   const result = db.prepare(`
     INSERT INTO content_performance
       (pipeline_id, video_url, views, retention_pct, likes, comments,
        subs_gained, hook_used, selected_title, final_caption, final_cta,
-       final_script_variant, published_hashtags, notes, analysis, user_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       final_script_variant, published_hashtags, notes, analysis, user_id,
+       tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+       created_by, updated_by, audit_metadata_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     opts.pipelineId ?? null,
     opts.videoUrl ?? null,
@@ -294,6 +322,14 @@ export function logPerformanceFeedback(opts: {
     opts.notes ?? null,
     opts.analysis ? JSON.stringify(opts.analysis) : null,
     opts.userId,
+    scope.tenantId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
   );
   logger.info({ feedbackId: result.lastInsertRowid }, 'Performance feedback stored');
   return Number(result.lastInsertRowid);
@@ -302,7 +338,7 @@ export function logPerformanceFeedback(opts: {
 /**
  * Get performance summary for reporting.
  */
-export function getPerformanceSummary(userId: number, days = 30): {
+export function getPerformanceSummary(userId: number, days = 30, tenantId?: number): {
   count: number;
   avgViews: number;
   avgRetention: number;
@@ -312,14 +348,15 @@ export function getPerformanceSummary(userId: number, days = 30): {
   entries: PerformanceFeedback[];
 } {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const rows = db.prepare(`
     SELECT id, pipeline_id, video_url, views, retention_pct, likes,
            comments, subs_gained, hook_used, selected_title, final_caption,
            final_cta, final_script_variant, published_hashtags, notes, analysis, user_id, logged_at
     FROM content_performance
-    WHERE user_id = ? AND logged_at > datetime('now', '-' || ? || ' days')
+    WHERE ${contentScopePredicate()} AND logged_at > datetime('now', '-' || ? || ' days')
     ORDER BY logged_at DESC
-  `).all(userId, days) as any[];
+  `).all(...contentScopeParams(userId, tenantId), days) as any[];
 
   const entries = rows.map(mapPerformance);
   const count = entries.length;
@@ -374,9 +411,12 @@ export function upsertLearnedPattern(opts: {
   confidence?: number;
   sourceAgent?: string;
   userId: number;
+  tenantId?: number;
 }): void {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const ownerScope = opts.userId === 0 ? 'system' : 'user';
+  const scope = contentScopeForInsert(opts.userId, opts.tenantId);
 
   // Try to update existing pattern first
   const existing = db.prepare(`
@@ -396,19 +436,33 @@ export function upsertLearnedPattern(opts: {
           examples = ?,
           confidence = MAX(confidence, ?),
           last_seen_at = datetime('now'),
-          source_agent = COALESCE(?, source_agent)
+          source_agent = COALESCE(?, source_agent),
+          tenant_id = ?,
+          owner_user_id = ?,
+          visibility_scope = ?,
+          lifecycle_state = ?,
+          scope_status = ?,
+          updated_by = ?
       WHERE id = ?
     `).run(
       JSON.stringify(merged),
       opts.confidence ?? 0.5,
       opts.sourceAgent ?? null,
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.updatedBy,
       existing.id,
     );
   } else {
     db.prepare(`
       INSERT INTO content_learned_patterns
-        (category, pattern_text, examples, confidence, source_agent, user_id, owner_scope)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (category, pattern_text, examples, confidence, source_agent, user_id, owner_scope,
+         tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+         created_by, updated_by, audit_metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       opts.category,
       opts.patternText,
@@ -417,6 +471,14 @@ export function upsertLearnedPattern(opts: {
       opts.sourceAgent ?? null,
       opts.userId,
       ownerScope,
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.createdBy,
+      scope.updatedBy,
+      scope.auditMetadataJson,
     );
   }
 }
@@ -427,8 +489,10 @@ export function upsertLearnedPattern(opts: {
 export function getLearnedPatterns(
   userId: number,
   category?: string,
+  tenantId?: number,
 ): LearnedPattern[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   if (userId === 0) {
     const systemQuery = category
       ? `SELECT * FROM content_learned_patterns
@@ -446,21 +510,19 @@ export function getLearnedPatterns(
   const query = category
     ? `SELECT * FROM content_learned_patterns
         WHERE category = ?
-          AND (${CONTENT_OWNER_SCOPE_SQL} = 'system'
-               OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?))
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+          AND ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  confidence DESC,
                  frequency DESC`
     : `SELECT * FROM content_learned_patterns
-        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+        WHERE ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  confidence DESC,
                  frequency DESC`;
 
   const rows = category
-    ? db.prepare(query).all(category, userId, userId) as any[]
-    : db.prepare(query).all(userId, userId) as any[];
+    ? db.prepare(query).all(category, ...contentScopeParams(userId, tenantId)) as any[]
+    : db.prepare(query).all(...contentScopeParams(userId, tenantId)) as any[];
 
   return dedupeLearnedPatterns(rows, userId).map(mapPattern);
 }
@@ -489,15 +551,18 @@ function mapPattern(row: any): LearnedPattern {
  * This is the canonical tracing function: given a pipeline ID, it
  * returns every linked object from idea to learned patterns.
  */
-export function getArtifactChain(pipelineId: number): ArtifactChain {
+export function getArtifactChain(pipelineId: number, userId: number, tenantId: number): ArtifactChain {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
 
   // Pipeline entry
   const pipeline = db.prepare(`
     SELECT id, topic_feedback_id, topic_title, niche, stage, script_path,
-           youtube_video_id, published_at
-    FROM content_pipeline WHERE id = ?
-  `).get(pipelineId) as any;
+           youtube_video_id, published_at, user_id, tenant_id
+    FROM content_pipeline
+    WHERE id = ?
+      AND ${contentScopePredicate()}
+  `).get(pipelineId, ...contentScopeParams(userId, tenantId)) as any;
 
   if (!pipeline) {
     return { idea: null, topicFeedback: null, pipeline: null, script: null, performance: [], patterns: [] };
@@ -508,8 +573,10 @@ export function getArtifactChain(pipelineId: number): ArtifactChain {
   if (pipeline.topic_feedback_id) {
     const tf = db.prepare(`
       SELECT id, topic, niche, format, sentiment, hook_idea, why_now
-      FROM content_topic_feedback WHERE id = ?
-    `).get(pipeline.topic_feedback_id) as any;
+      FROM content_topic_feedback
+      WHERE id = ?
+        AND ${contentScopePredicate()}
+    `).get(pipeline.topic_feedback_id, ...contentScopeParams(userId, tenantId)) as any;
     if (tf) {
       topicFeedback = {
         id: tf.id, topic: tf.topic, niche: tf.niche, format: tf.format,
@@ -523,8 +590,10 @@ export function getArtifactChain(pipelineId: number): ArtifactChain {
   try {
     const ideaRow = db.prepare(`
       SELECT id, title, status, source FROM saved_ideas
-      WHERE title = ? LIMIT 1
-    `).get(pipeline.topic_title) as any;
+      WHERE title = ?
+        AND ${contentScopePredicate()}
+      LIMIT 1
+    `).get(pipeline.topic_title, ...contentScopeParams(userId, tenantId)) as any;
     if (ideaRow) {
       idea = { id: ideaRow.id, title: ideaRow.title, status: ideaRow.status, source: ideaRow.source };
     }
@@ -534,8 +603,10 @@ export function getArtifactChain(pipelineId: number): ArtifactChain {
   const scriptRow = db.prepare(`
     SELECT id, script_text, hook, title_options, estimated_duration
            , hashtags, caption, cta
-    FROM content_scripts WHERE pipeline_id = ?
-  `).get(pipelineId) as any;
+    FROM content_scripts
+    WHERE pipeline_id = ?
+      AND ${contentScopePredicate()}
+  `).get(pipelineId, ...contentScopeParams(userId, tenantId)) as any;
   const script = scriptRow ? {
     id: scriptRow.id,
     scriptText: scriptRow.script_text,
@@ -552,21 +623,20 @@ export function getArtifactChain(pipelineId: number): ArtifactChain {
     SELECT id, pipeline_id, video_url, views, retention_pct, likes,
            comments, subs_gained, hook_used, selected_title, final_caption,
            final_cta, final_script_variant, published_hashtags, notes, analysis, user_id, logged_at
-    FROM content_performance WHERE pipeline_id = ?
+    FROM content_performance
+    WHERE pipeline_id = ?
+      AND ${contentScopePredicate()}
     ORDER BY logged_at DESC
-  `).all(pipelineId) as any[];
+  `).all(pipelineId, ...contentScopeParams(userId, tenantId)) as any[];
   const performance = perfRows.map(mapPerformance);
 
   // Learned patterns (from the same niche)
   const patterns = pipeline.niche
     ? db.prepare(`
         SELECT * FROM content_learned_patterns
-        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = (
-             SELECT user_id FROM content_pipeline WHERE id = ?
-           ))
+        WHERE ${contentScopePredicate()}
         ORDER BY confidence DESC LIMIT 10
-      `).all(pipelineId).map(mapPattern) as LearnedPattern[]
+      `).all(...contentScopeParams(userId, tenantId)).map(mapPattern) as LearnedPattern[]
     : [];
 
   return {

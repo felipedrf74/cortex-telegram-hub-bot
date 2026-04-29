@@ -52,6 +52,7 @@ const mockLoggerError = vi.fn();
 const mockBuildActiveSignalsResponse = vi.fn();
 const mockInvalidateCalendarCaches = vi.fn();
 const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
+const mockSubmitSecretarySchedulingIntent = vi.fn();
 const mockIsUserOverDailyCap = vi.fn(() => ({
   over: false,
   spentUsd: 0,
@@ -193,6 +194,10 @@ vi.mock('../../src/services/training-agenda-reconciliation', () => ({
   reconcileOrphanedTrainingAgendaEvents: (...args: unknown[]) => (
     mockReconcileOrphanedTrainingAgendaEvents(...args)
   ),
+}));
+
+vi.mock('../../src/services/secretary-scheduling-arbitrator', () => ({
+  submitSecretarySchedulingIntent: (...args: unknown[]) => mockSubmitSecretarySchedulingIntent(...args),
 }));
 
 import { looksLikeTrainingCalendarEvent, trainingRoutes } from '../../src/api/routes/training';
@@ -371,6 +376,7 @@ describe('Training API routes', () => {
     mockBuildActiveSignalsResponse.mockReset();
     mockInvalidateCalendarCaches.mockReset();
     mockReconcileOrphanedTrainingAgendaEvents.mockReset();
+    mockSubmitSecretarySchedulingIntent.mockReset();
     mockIsUserOverDailyCap.mockReset();
 
     mockGetCached.mockReturnValue(null);
@@ -380,6 +386,32 @@ describe('Training API routes', () => {
     mockGetStoredPlanCoveringDate.mockReturnValue(null);
     mockGetEvents.mockResolvedValue([]);
     mockCreateEvent.mockResolvedValue({ id: 'evt-1', source: 'outlook' });
+    mockSubmitSecretarySchedulingIntent.mockImplementation((intent: any) => ({
+      status: 'scheduled',
+      reasonCodes: ['scheduled_in_available_window'],
+      selectedSlot: intent.preferredWindows[0],
+      agendaItem: {
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        sourceIntentId: intent.intentId,
+        lifecycleState: 'scheduled',
+      },
+      explanation: 'scheduled',
+      alternativeSlots: [],
+      conflicts: [],
+      downstreamImplications: [],
+      confidence: 'high',
+      feedback: {
+        sourceSkill: 'training',
+        sourceIntentId: intent.intentId,
+        agendaItemId: `sec-${intent.sourceEntityId}`,
+        status: 'scheduled',
+        reasonCodes: ['scheduled_in_available_window'],
+        scheduledStart: intent.preferredWindows[0].start,
+        scheduledEnd: intent.preferredWindows[0].end,
+        shouldRefreshSource: false,
+        downstreamImplications: [],
+      },
+    }));
     mockDeleteEvent.mockResolvedValue(undefined);
     mockReconcileOrphanedTrainingAgendaEvents.mockResolvedValue({
       attempted: 0,

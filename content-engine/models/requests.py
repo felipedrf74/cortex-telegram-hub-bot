@@ -81,6 +81,8 @@ class ScriptRequest(BaseModel):
     context_signals: list[dict] | None = Field(default=None)  # Intelligence bus signals
     brand_voice: str | None = Field(default=None)
     creator_profile: str | None = Field(default=None)
+    user_id: int | None = Field(default=None)
+    tenant_id: int | None = Field(default=None)
     force_refresh: bool = Field(default=False)
     regeneration_seed: str | None = Field(default=None)
 

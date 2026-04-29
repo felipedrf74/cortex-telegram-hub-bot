@@ -35,23 +35,26 @@ import {
 } from '../state/content-references';
 import { writeSignal } from './intelligence-bus';
 import { getDb } from './database';
+import {
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 
 const client = new Anthropic({
   apiKey: config.anthropic.apiKey,
   maxRetries: 3,
 });
 
-const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
-
 function getScopeClause(userId?: number): { clause: string; params: unknown[] } {
   if (userId != null && userId > 0) {
     return {
-      clause: `${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?`,
-      params: [userId],
+      clause: contentScopePredicate(),
+      params: contentScopeParams(userId),
     };
   }
   return {
-    clause: `${CONTENT_OWNER_SCOPE_SQL} = 'system'`,
+    clause: "COALESCE(scope_status, 'quarantined') = 'active' AND COALESCE(visibility_scope, 'platform_internal') IN ('platform_internal', 'public_published') AND COALESCE(tenant_id, 0) = 0",
     params: [],
   };
 }
@@ -61,6 +64,7 @@ function getScopedChannelsForProcessing(
   userId?: number,
 ): ContentRefChannel[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const { clause, params } = getScopeClause(userId);
   return db.prepare(
     `SELECT * FROM content_ref_channels
@@ -72,10 +76,14 @@ function getScopedChannelsForProcessing(
 
 function listContentChannelUserIds(): number[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const rows = db.prepare(
     `SELECT DISTINCT user_id
        FROM content_ref_channels
-      WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'user'
+      WHERE COALESCE(scope_status, CASE WHEN user_id > 0 THEN 'active' ELSE 'quarantined' END) = 'active'
+        AND COALESCE(visibility_scope, CASE WHEN user_id > 0 THEN 'user_private' ELSE 'platform_internal' END) = 'user_private'
+        AND COALESCE(tenant_id, user_id) = user_id
+        AND COALESCE(owner_user_id, user_id) = user_id
         AND user_id > 0
       ORDER BY user_id ASC`,
   ).all() as Array<{ user_id: number }>;
@@ -351,7 +359,13 @@ Return ONLY valid JSON:
 
 async function synthesizeKnowledge(userId?: number): Promise<void> {
   const scopedUserId = userId != null && userId > 0 ? userId : 0;
-  const channels = getActiveChannels(scopedUserId);
+  const platformChannels = getScopedChannelsForProcessing('active', undefined);
+  const userChannels = scopedUserId > 0 ? getActiveChannels(scopedUserId) : [];
+  const channelsById = new Map<number, ContentRefChannel>();
+  for (const channel of scopedUserId > 0 ? [...platformChannels, ...userChannels] : platformChannels) {
+    channelsById.set(channel.id, channel);
+  }
+  const channels = Array.from(channelsById.values());
   if (channels.length === 0) {
     logger.info({ userId: userId ?? null }, 'No active channels to synthesize knowledge from');
     return;
@@ -813,16 +827,24 @@ export async function addAndAnalyzeChannel(
   channelUrl: string,
   addedVia: 'manual' | 'portal' | 'bot' = 'bot',
   userId = 0,
+  tenantId?: number,
 ): Promise<{
   channel: ContentRefChannel;
   analysis: Awaited<ReturnType<typeof analyzeChannel>>;
 }> {
-  const channel = addChannel(channelUrl, addedVia, userId);
+  const channel = addChannel(channelUrl, addedVia, userId, tenantId);
   const analysis = await analyzeChannel(channel.id);
 
   // Re-synthesize if analysis was successful
   if (analysis.success) {
-    await synthesizeKnowledge(userId);
+    if (tenantId == null || tenantId === userId || userId === 0) {
+      await synthesizeKnowledge(userId);
+    } else {
+      logger.warn(
+        { userId, tenantId, channelId: channel.id },
+        'Skipping channel knowledge synthesis for non-default tenant until synthesis accepts explicit tenant scope',
+      );
+    }
   }
 
   // Return fresh channel data

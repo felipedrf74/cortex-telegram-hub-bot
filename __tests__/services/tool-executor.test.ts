@@ -115,7 +115,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 // ─── Imports (after mocks are declared) ─────────────────────────────
 
-import { executeToolCall } from '../../src/services/tool-executor';
+import { executeToolCall as executeToolCallWithoutContext } from '../../src/services/tool-executor';
 import * as msTodo from '../../src/services/microsoft-todo';
 import * as unifiedCal from '../../src/services/unified-calendar';
 import * as outlookMail from '../../src/services/outlook-mail';
@@ -124,7 +124,10 @@ import { setReminder } from '../../src/state/reminders';
 import { saveNote, searchNotes } from '../../src/state/notes';
 import { setSharedMemory, removeSharedMemory } from '../../src/state/shared-memory';
 import * as financeTracker from '../../src/services/finance-tracker';
-import { runWithChatToolAuthorization } from '../../src/services/chat-tool-authorization';
+import {
+  getCurrentChatToolAuthorizationContext,
+  runWithChatToolAuthorization,
+} from '../../src/services/chat-tool-authorization';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -133,6 +136,22 @@ const mockCal = vi.mocked(unifiedCal);
 const mockMail = vi.mocked(outlookMail);
 const mockFinance = vi.mocked(financeTracker);
 const AUTH_USER_ID = 42;
+const executeToolCall = (
+  tool: string,
+  input: Record<string, any> = {},
+  userId = AUTH_USER_ID,
+  tenantId = userId,
+) => {
+  if (getCurrentChatToolAuthorizationContext()) {
+    return executeToolCallWithoutContext(tool, input, userId, tenantId);
+  }
+  return runWithChatToolAuthorization({
+    userId,
+    tenantId,
+    confirmedDestructiveAction: true,
+    confirmationSource: 'explicit_current_turn',
+  }, () => executeToolCallWithoutContext(tool, input, userId, tenantId));
+};
 const execAsUser = (tool: string, input: Record<string, any> = {}) => executeToolCall(tool, input, AUTH_USER_ID);
 const execAsTenantUser = (tool: string, input: Record<string, any> = {}, tenantId = 1001) =>
   executeToolCall(tool, input, AUTH_USER_ID, tenantId);
@@ -155,8 +174,12 @@ beforeEach(() => {
 
 describe('executeToolCall — Microsoft To Do', () => {
   it('returns a tenant-scope error when task tools run without a user context', async () => {
-    const result = await executeToolCall('ms_todo_get_lists', {});
-    expect(result).toEqual({ error: 'ms_todo_get_lists requires an authenticated user context' });
+    const result = await executeToolCallWithoutContext('ms_todo_get_lists', {});
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'ms_todo_get_lists requires authenticated chat authorization context',
+    });
   });
 
   describe('when configured', () => {
@@ -574,7 +597,7 @@ describe('executeToolCall — Calendar', () => {
         end_date: '2026-04-06',
       });
       expect(result).toEqual(events);
-      expect(mockCal.getEvents).toHaveBeenCalledWith('2026-03-30', '2026-04-06', undefined);
+      expect(mockCal.getEvents).toHaveBeenCalledWith('2026-03-30', '2026-04-06', AUTH_USER_ID);
     });
 
     it('get_calendar_events — preserves tenant scope when user context exists', async () => {
@@ -623,9 +646,9 @@ describe('executeToolCall — Calendar', () => {
           },
         },
         'google',
-        undefined,
+        AUTH_USER_ID,
       );
-      expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
+      expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(AUTH_USER_ID);
     });
 
     describe('update_calendar_event', () => {
@@ -641,9 +664,9 @@ describe('executeToolCall — Calendar', () => {
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'evt1', new_title: 'Renamed' }),
           'outlook',
-          undefined,
+          AUTH_USER_ID,
         );
-        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(AUTH_USER_ID);
       });
 
       it('auto-detects outlook source from AAMk event_id prefix', async () => {
@@ -656,9 +679,9 @@ describe('executeToolCall — Calendar', () => {
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'AAMkABC123' }),
           'outlook',
-          undefined,
+          AUTH_USER_ID,
         );
-        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(AUTH_USER_ID);
       });
 
       it('auto-detects google source for non-AAMk event_id', async () => {
@@ -671,9 +694,9 @@ describe('executeToolCall — Calendar', () => {
         expect(mockCal.updateEvent).toHaveBeenCalledWith(
           expect.objectContaining({ event_id: 'google_event_xyz' }),
           'google',
-          undefined,
+          AUTH_USER_ID,
         );
-        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(AUTH_USER_ID);
       });
     });
 
@@ -686,16 +709,16 @@ describe('executeToolCall — Calendar', () => {
           calendar_source: 'google',
         });
         expect(result).toEqual({ success: true, message: 'Event deleted' });
-        expect(mockCal.deleteEvent).toHaveBeenCalledWith('evt1', 'google', undefined);
-        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
+        expect(mockCal.deleteEvent).toHaveBeenCalledWith('evt1', 'google', AUTH_USER_ID);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(AUTH_USER_ID);
       });
 
       it('auto-detects outlook source from AAMk prefix', async () => {
         mockCal.deleteEvent.mockResolvedValue(undefined);
 
         await executeToolCall('delete_calendar_event', { event_id: 'AAMkXYZ' });
-        expect(mockCal.deleteEvent).toHaveBeenCalledWith('AAMkXYZ', 'outlook', undefined);
-        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(undefined);
+        expect(mockCal.deleteEvent).toHaveBeenCalledWith('AAMkXYZ', 'outlook', AUTH_USER_ID);
+        expect(mockInvalidateCalendarCaches).toHaveBeenCalledWith(AUTH_USER_ID);
       });
     });
   });
@@ -707,11 +730,15 @@ describe('executeToolCall — Calendar', () => {
 
 describe('executeToolCall — Reminders', () => {
   it('set_reminder — requires tenant-scoped user context', async () => {
-    const result = await executeToolCall('set_reminder', {
+    const result = await executeToolCallWithoutContext('set_reminder', {
       message: 'Call coach',
       remind_at: '2026-04-01T08:00:00',
     });
-    expect(result).toEqual({ error: 'set_reminder requires an authenticated user context' });
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'set_reminder requires authenticated chat authorization context',
+    });
   });
 
   it('set_reminder — delegates to setReminder with all fields', async () => {
@@ -738,8 +765,12 @@ describe('executeToolCall — Reminders', () => {
 
 describe('executeToolCall — Notes', () => {
   it('save_note — requires tenant-scoped user context', async () => {
-    const result = await executeToolCall('save_note', { content: 'Swim PR: 1:02:30' });
-    expect(result).toEqual({ error: 'save_note requires an authenticated user context' });
+    const result = await executeToolCallWithoutContext('save_note', { content: 'Swim PR: 1:02:30' });
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'save_note requires authenticated chat authorization context',
+    });
   });
 
   it('save_note — delegates with content, domain, and tags', async () => {
@@ -805,11 +836,11 @@ describe('executeToolCall — Outlook Email', () => {
 
     it('search_outlook_emails — delegates with query and max_results', async () => {
       const emails = [{ id: 'msg1', subject: 'Invoice' }];
-      mockMail.searchEmails.mockResolvedValue(emails as any);
+      mockMail.searchEmailsForUser.mockResolvedValue(emails as any);
 
       const result = await executeToolCall('search_outlook_emails', { query: 'Invoice', max_results: 5 });
       expect(result).toEqual(emails);
-      expect(mockMail.searchEmails).toHaveBeenCalledWith('Invoice', 5);
+      expect(mockMail.searchEmailsForUser).toHaveBeenCalledWith(AUTH_USER_ID, 'Invoice', 5);
     });
 
     it('search_outlook_emails — preserves tenant scope when user context exists', async () => {
@@ -824,19 +855,19 @@ describe('executeToolCall — Outlook Email', () => {
     });
 
     it('search_outlook_emails — defaults max_results to 10 when not provided', async () => {
-      mockMail.searchEmails.mockResolvedValue([]);
+      mockMail.searchEmailsForUser.mockResolvedValue([]);
 
       await executeToolCall('search_outlook_emails', { query: 'test' });
-      expect(mockMail.searchEmails).toHaveBeenCalledWith('test', 10);
+      expect(mockMail.searchEmailsForUser).toHaveBeenCalledWith(AUTH_USER_ID, 'test', 10);
     });
 
     it('read_outlook_email — delegates with message_id', async () => {
       const email = { id: 'msg1', subject: 'Invoice', body: '<html>' };
-      mockMail.readEmail.mockResolvedValue(email as any);
+      mockMail.readEmailForUser.mockResolvedValue(email as any);
 
       const result = await executeToolCall('read_outlook_email', { message_id: 'msg1' });
       expect(result).toEqual(email);
-      expect(mockMail.readEmail).toHaveBeenCalledWith('msg1');
+      expect(mockMail.readEmailForUser).toHaveBeenCalledWith(AUTH_USER_ID, 'msg1');
     });
 
     it('read_outlook_email — uses user-scoped mailbox when context exists', async () => {
@@ -850,7 +881,7 @@ describe('executeToolCall — Outlook Email', () => {
     });
 
     it('send_outlook_email — returns success message with recipient', async () => {
-      mockMail.sendEmail.mockResolvedValue(undefined);
+      mockMail.sendEmailForUser.mockResolvedValue(undefined);
 
       const result = await executeToolCall('send_outlook_email', {
         to: 'coach@team.com',
@@ -859,7 +890,7 @@ describe('executeToolCall — Outlook Email', () => {
         cc: 'manager@team.com',
       });
       expect(result).toEqual({ success: true, message: 'Email sent to coach@team.com' });
-      expect(mockMail.sendEmail).toHaveBeenCalledWith({
+      expect(mockMail.sendEmailForUser).toHaveBeenCalledWith(AUTH_USER_ID, {
         to: 'coach@team.com',
         subject: 'Training update',
         body: 'Week 12 done',
@@ -886,14 +917,14 @@ describe('executeToolCall — Outlook Email', () => {
     });
 
     it('reply_outlook_email — returns { success: true, message: "Reply sent" }', async () => {
-      mockMail.replyToEmail.mockResolvedValue(undefined);
+      mockMail.replyToEmailForUser.mockResolvedValue(undefined);
 
       const result = await executeToolCall('reply_outlook_email', {
         message_id: 'msg1',
         body: 'Thanks!',
       });
       expect(result).toEqual({ success: true, message: 'Reply sent' });
-      expect(mockMail.replyToEmail).toHaveBeenCalledWith({ messageId: 'msg1', body: 'Thanks!' });
+      expect(mockMail.replyToEmailForUser).toHaveBeenCalledWith(AUTH_USER_ID, { messageId: 'msg1', body: 'Thanks!' });
     });
 
     it('reply_outlook_email — uses user-scoped mailbox when context exists', async () => {
@@ -913,11 +944,11 @@ describe('executeToolCall — Outlook Email', () => {
 
     it('get_outlook_unread — returns unread_count and recent_unread', async () => {
       const emails = [{ id: 'msg1', subject: 'New lead' }];
-      mockMail.getUnreadEmails.mockResolvedValue({ count: 3, emails } as any);
+      mockMail.getUnreadEmailsForUser.mockResolvedValue({ count: 3, emails } as any);
 
       const result = await executeToolCall('get_outlook_unread', { max_results: 5 });
       expect(result).toEqual({ unread_count: 3, recent_unread: emails });
-      expect(mockMail.getUnreadEmails).toHaveBeenCalledWith(5);
+      expect(mockMail.getUnreadEmailsForUser).toHaveBeenCalledWith(AUTH_USER_ID, 5);
     });
 
     it('get_outlook_unread — uses user-scoped mailbox when context exists', async () => {
@@ -931,10 +962,10 @@ describe('executeToolCall — Outlook Email', () => {
     });
 
     it('get_outlook_unread — defaults max_results to 10', async () => {
-      mockMail.getUnreadEmails.mockResolvedValue({ count: 0, emails: [] });
+      mockMail.getUnreadEmailsForUser.mockResolvedValue({ count: 0, emails: [] });
 
       await executeToolCall('get_outlook_unread', {});
-      expect(mockMail.getUnreadEmails).toHaveBeenCalledWith(10);
+      expect(mockMail.getUnreadEmailsForUser).toHaveBeenCalledWith(AUTH_USER_ID, 10);
     });
   });
 });
@@ -945,11 +976,15 @@ describe('executeToolCall — Outlook Email', () => {
 
 describe('executeToolCall — Shared Memory', () => {
   it('shared_memory_set — requires tenant-scoped user context', async () => {
-    const result = await executeToolCall('shared_memory_set', {
+    const result = await executeToolCallWithoutContext('shared_memory_set', {
       key: 'active_race',
       value: 'Ironman 2026',
     });
-    expect(result).toEqual({ error: 'shared_memory_set requires an authenticated user context' });
+    expect(result).toMatchObject({
+      success: false,
+      code: 'AUTH_REQUIRED',
+      error: 'shared_memory_set requires authenticated chat authorization context',
+    });
   });
 
   it('shared_memory_set — delegates to setSharedMemory, returns entry fields', async () => {
@@ -1151,8 +1186,12 @@ describe('executeToolCall — Cooking', () => {
 
 describe('executeToolCall — error handling', () => {
   it('returns { error: "Unknown tool: ..." } for unrecognised tool names', async () => {
-    const result = await executeToolCall('make_coffee', {});
-    expect(result).toEqual({ error: 'Unknown tool: make_coffee' });
+    const result = await executeToolCallWithoutContext('make_coffee', {});
+    expect(result).toEqual({
+      success: false,
+      error: 'Tool "make_coffee" is not registered for execution',
+      code: 'TOOL_NOT_ALLOWED',
+    });
   });
 
   it('catches thrown errors without returning raw provider text', async () => {

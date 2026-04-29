@@ -19,6 +19,12 @@ import { getWorkflowEligibleIdeas, markIdeaPromoted } from '../state/saved-ideas
 import { readSignals } from './intelligence-bus';
 import { loadPromptWithConfig } from '../utils/prompt-loader';
 import { getUserLanguage } from './user-service';
+import {
+  contentScopeForInsert,
+  contentScopeParams,
+  contentScopePredicate,
+  ensureContentTenantScopeColumns,
+} from './content-tenant-scope';
 
 const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -64,30 +70,78 @@ export function storeTopicCandidates(
   format: 'reel' | 'youtube',
   sourceJob: string,
   userId: number = 0,
+  tenantId: number = userId,
 ): number[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const stmt = db.prepare(
-    `INSERT INTO content_topic_feedback (topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id)
-     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+    `INSERT INTO content_topic_feedback (
+       topic, niche, format, sentiment, source_job, hook_idea, why_now, angle_tag, user_id,
+       tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json
+     )
+     VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   return candidates.map((c) => {
-    const info = stmt.run(c.title, c.niche, format, sourceJob, c.hookIdea, c.whyNow, c.angleTag || null, userId);
+    const scope = contentScopeForInsert(userId, tenantId);
+    const info = stmt.run(
+      c.title,
+      c.niche,
+      format,
+      sourceJob,
+      c.hookIdea,
+      c.whyNow,
+      c.angleTag || null,
+      userId,
+      scope.tenantId,
+      scope.ownerUserId,
+      scope.visibilityScope,
+      scope.lifecycleState,
+      scope.scopeStatus,
+      scope.createdBy,
+      scope.updatedBy,
+      scope.auditMetadataJson,
+    );
     return Number(info.lastInsertRowid);
   });
 }
 
-export function updateFeedback(id: number, sentiment: 'approved' | 'skipped' | 'rejected'): void {
-  getDb().prepare(`UPDATE content_topic_feedback SET sentiment = ? WHERE id = ?`).run(sentiment, id);
+export function updateFeedback(
+  id: number,
+  sentiment: 'approved' | 'skipped' | 'rejected',
+  userId: number,
+  tenantId: number,
+): void {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  db.prepare(`
+    UPDATE content_topic_feedback
+       SET sentiment = ?,
+           updated_by = ?
+     WHERE id = ?
+       AND ${contentScopePredicate()}
+  `).run(sentiment, userId, id, ...contentScopeParams(userId, tenantId));
 }
 
-export function markScriptGenerated(id: number): void {
-  getDb().prepare(`UPDATE content_topic_feedback SET script_generated = 1 WHERE id = ?`).run(id);
+export function markScriptGenerated(id: number, userId: number, tenantId: number): void {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  db.prepare(`
+    UPDATE content_topic_feedback
+       SET script_generated = 1,
+           updated_by = ?
+     WHERE id = ?
+       AND ${contentScopePredicate()}
+  `).run(userId, id, ...contentScopeParams(userId, tenantId));
 }
 
-export function getTopicById(id: number): TopicCandidate & { format: string; sourceJob: string } | null {
-  const row = getDb().prepare(
-    `SELECT topic, niche, format, source_job, hook_idea, why_now FROM content_topic_feedback WHERE id = ?`,
-  ).get(id) as any;
+export function getTopicById(id: number, userId: number, tenantId: number): TopicCandidate & { format: string; sourceJob: string } | null {
+  const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  const row = db.prepare(
+    `SELECT topic, niche, format, source_job, hook_idea, why_now FROM content_topic_feedback
+      WHERE id = ?
+        AND ${contentScopePredicate()}`,
+  ).get(id, ...contentScopeParams(userId, tenantId)) as any;
   if (!row) return null;
   return {
     title: row.topic,
@@ -101,16 +155,17 @@ export function getTopicById(id: number): TopicCandidate & { format: string; sou
 
 // ─── Taste Profile ──────────────────────────────────────────────────
 
-export function buildTasteProfileBlock(userId?: number): string {
+export function buildTasteProfileBlock(userId: number, tenantId: number): string {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const rows = db.prepare(
     `SELECT topic, niche, sentiment FROM content_topic_feedback
      WHERE sentiment IN ('approved', 'rejected')
        AND created_at > datetime('now', '-60 days')
-       ${userId != null ? 'AND user_id = ?' : ''}
+       AND ${contentScopePredicate()}
      ORDER BY created_at DESC
      LIMIT 100`,
-  ).all(...(userId != null ? [userId] : [])) as { topic: string; niche: string; sentiment: string }[];
+  ).all(...contentScopeParams(userId, tenantId)) as { topic: string; niche: string; sentiment: string }[];
 
   if (rows.length < 5) return '';
 
@@ -145,7 +200,7 @@ export function buildTasteProfileBlock(userId?: number): string {
 
 // ─── Topic Generation ───────────────────────────────────────────────
 
-function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean, userId?: number): string {
+function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean, userId: number, tenantId: number): string {
   const formatDesc = format === 'reel'
     ? 'Instagram Reels / YouTube Shorts (30-60 seconds each)'
     : 'YouTube videos (8-15 minutes each)';
@@ -157,7 +212,7 @@ function buildTopicSystemPrompt(format: 'reel' | 'youtube', isTrending: boolean,
   // userId passed explicitly — no more AsyncLocalStorage dependency.
   // This makes personalization stable across transports (iOS, Telegram, scheduler).
   const knowledgeBlock = buildKnowledgePromptBlock(userId);
-  const tasteBlock = buildTasteProfileBlock(userId);
+  const tasteBlock = buildTasteProfileBlock(userId, tenantId);
 
   return loadPromptWithConfig('topic-generation', {
     FORMAT_DESC: formatDesc,
@@ -171,13 +226,14 @@ export async function generateTopicCandidates(
   format: 'reel' | 'youtube',
   count: number,
   isTrending = true,
-  userId?: number,
+  userId: number = 0,
+  tenantId: number = userId,
 ): Promise<TopicCandidate[]> {
-  const systemPrompt = buildTopicSystemPrompt(format, isTrending, userId);
+  const systemPrompt = buildTopicSystemPrompt(format, isTrending, userId, tenantId);
   const today = now();
 
   // Build enrichment blocks
-  const angleDiversity = buildAngleDiversityBlock();
+  const angleDiversity = buildAngleDiversityBlock(userId, tenantId);
 
   // Book knowledge injection (Sprint 3.2)
   let bookBlock = '';
@@ -279,7 +335,10 @@ export async function generateTopicCandidates(
   // Extract JSON array from response
   const jsonMatch = textContent.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {
-    logger.warn({ format, textContent: textContent.slice(0, 500) }, 'Could not find JSON array in topic response');
+    logger.warn({
+      format,
+      responseChars: textContent.length,
+    }, 'Could not find JSON array in topic response');
     return [];
   }
 
@@ -298,7 +357,7 @@ export async function generateTopicCandidates(
     const deduped: TopicCandidate[] = [];
     for (const c of candidates) {
       try {
-        const dup = await isDuplicateIdea(c.title, c.angleTag);
+        const dup = await isDuplicateIdea(c.title, c.angleTag, userId, tenantId);
         if (dup.isDuplicate && dup.confidence > 0.8) {
           logger.info({ title: c.title, similarTo: dup.similarTo }, 'Workflow topic skipped (duplicate)');
           continue;
@@ -485,6 +544,7 @@ export async function generateAndStoreTopicCandidates(
   userId: number,
   format: 'reel' | 'youtube',
   sourceJob: string,
+  tenantId: number = userId,
 ): Promise<TopicCandidateResult> {
   const count = 5;
   const isTrending = sourceJob !== 'friday_weekly';
@@ -492,9 +552,9 @@ export async function generateAndStoreTopicCandidates(
     : sourceJob === 'thursday_youtube' ? 'Quinta-feira'
     : 'Sexta-feira';
 
-  const candidates = await generateTopicCandidates(format, count, isTrending, userId);
+  const candidates = await generateTopicCandidates(format, count, isTrending, userId, tenantId);
   const feedbackIds = candidates.length > 0
-    ? storeTopicCandidates(candidates, format, sourceJob, userId)
+    ? storeTopicCandidates(candidates, format, sourceJob, userId, tenantId)
     : [];
 
   return {
@@ -520,14 +580,15 @@ export interface WeeklyPackageResult {
  */
 export async function generateWeeklyPackage(
   userId: number,
+  tenantId: number = userId,
 ): Promise<WeeklyPackageResult> {
   const [ytTopics, reelTopics] = await Promise.all([
-    generateTopicCandidates('youtube', 2, false, userId),
-    generateTopicCandidates('reel', 4, false, userId),
+    generateTopicCandidates('youtube', 2, false, userId, tenantId),
+    generateTopicCandidates('reel', 4, false, userId, tenantId),
   ]);
 
-  const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly', userId) : [];
-  const reelIds = reelTopics.length > 0 ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly', userId) : [];
+  const ytIds = ytTopics.length > 0 ? storeTopicCandidates(ytTopics, 'youtube', 'friday_weekly', userId, tenantId) : [];
+  const reelIds = reelTopics.length > 0 ? storeTopicCandidates(reelTopics, 'reel', 'friday_weekly', userId, tenantId) : [];
 
   return {
     youtube: ytTopics.map((c, i) => ({ ...c, feedbackId: ytIds[i] ?? 0 })),

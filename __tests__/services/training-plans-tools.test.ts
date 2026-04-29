@@ -62,7 +62,20 @@ vi.mock('../../src/services/microsoft-todo', () => ({
   isOutlookTodoConfigured: vi.fn().mockReturnValue(false),
 }));
 
-import { executeToolCall } from '../../src/services/tool-executor';
+import { executeToolCall as executeToolCallRaw } from '../../src/services/tool-executor';
+import { runWithChatToolAuthorization } from '../../src/services/chat-tool-authorization';
+
+function executeToolCall(toolName: string, input: Record<string, any>, userId?: number, tenantId = userId): Promise<any> {
+  if (!userId || !tenantId) {
+    return executeToolCallRaw(toolName, input, userId, tenantId);
+  }
+  return runWithChatToolAuthorization({
+    userId,
+    tenantId,
+    confirmedDestructiveAction: true,
+    confirmationSource: 'explicit_current_turn',
+  }, () => executeToolCallRaw(toolName, input, userId, tenantId)) as Promise<any>;
+}
 
 beforeEach(() => {
   testDb = createTestDb();

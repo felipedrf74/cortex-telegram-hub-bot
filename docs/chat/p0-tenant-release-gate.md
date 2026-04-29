@@ -11,7 +11,7 @@ Final verdict: **PASS WITH CONDITIONS**
 No cross-tenant leakage remains in the tested current Chat release scope.
 
 This is not a plain PASS because:
-- current iOS Chat does not support true same-user workspace tenant switching;
+- current iOS Chat does not support true same-user workspace tenant switching, though active-tenant override attempts now fail closed;
 - real provider fallback was not invoked with live provider keys;
 - WebSocket streaming remains disabled and not part of this release claim.
 
@@ -27,6 +27,7 @@ This is not a plain PASS because:
 | User A cannot trigger tools on Tenant B resources | Tenant B scoped callback replay by User A returned `410`. | PASS |
 | Tenant switch invalidates local/iOS cache | `ChatRepositoryTests` passed, including scoped history replacement and scoped clear-history cutoff. | PASS |
 | Vague follow-up after tenant switch | Context builder emitted tenant-boundary clarification signal and did not include previous tenant memory. | PASS |
+| Same-user active-tenant override | `x-nexus-active-tenant-id` for a non-canonical tenant returns `403` before Chat history/context/tool access. | PASS |
 | Prompt injection cannot reveal another tenant | Live local prompt-injection request disclosed no Tenant B markers; context-engine red-team tests passed. | PASS |
 | Provider fallback path remains tenant-safe | `domain-handler.test.ts` verifies fallback receives scoped `{ userId, tenantId }`. | PASS by focused test |
 | Admin/support access | Portal user diagnostics reject mismatched tenant scope and audit tests passed. | PASS |
@@ -45,7 +46,8 @@ Result:
 
 ```text
 PASS WITH CONDITIONS
-12 pass / 2 partial / 0 fail
+Latest same-user tenant-switch smoke: 15 pass / 1 partial / 0 fail
+Earlier full tenant-security smoke: 12 pass / 2 partial / 0 fail
 ```
 
 ```bash
@@ -103,6 +105,7 @@ Required before production promotion:
 
 This release gate supports:
 - current iOS REST Chat tenant isolation with canonical `tenantId == userId`;
+- explicit fail-closed rejection for non-canonical active-tenant override headers;
 - scoped callbacks and callback replay denial;
 - tenant-safe prompt construction before provider calls;
 - tenant-safe memory/context retrieval for active scope;

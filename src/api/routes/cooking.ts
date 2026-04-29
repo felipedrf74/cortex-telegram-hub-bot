@@ -49,6 +49,7 @@ import {
 import { createEvent as createCalendarEvent, isAnyCalendarConfigured } from '../../services/unified-calendar';
 import { getActivePlans, getCurrentWeek, getSessionsForWeek, getWeeksForPlan, type TrainingSession } from '../../services/training-plans';
 import { invalidateCookingDerivedCaches } from '../../services/cooking-cache-invalidator';
+import { submitCookingMealPrepSchedulingIntent } from '../../services/cooking-secretary-integration';
 import { readTrainingContextAll } from '../../services/training-signals';
 import { getReadiness as getWearableReadiness } from '../../services/wearable/wearable-service';
 import { DateTime } from 'luxon';
@@ -826,10 +827,33 @@ export function cookingRoutes(): Router {
       // API interprets with the event's timeZone field. Our helper
       // passes config.app.timezone for the timeZone, so ISO without
       // offset works correctly.
+      const startIso = startDt.toISO() || startDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
+      const endIso = endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss");
+      const secretaryDecision = submitCookingMealPrepSchedulingIntent({
+        userId,
+        tenantId: userId,
+        week,
+        title,
+        startIso,
+        endIso,
+        durationMinutes: duration,
+        mealCount: meals.length,
+      });
+      if (!['scheduled', 'reflowed', 'compressed'].includes(secretaryDecision.status) || !secretaryDecision.selectedSlot) {
+        sendError(
+          res,
+          'COOKING_PREP_NO_VALID_SLOT',
+          secretaryDecision.explanation || 'Secretary could not find a valid meal prep slot.',
+          409,
+          { reasonCodes: secretaryDecision.reasonCodes, agendaItemId: secretaryDecision.agendaItem.agendaItemId },
+        );
+        return;
+      }
+
       const event = await createCalendarEvent({
         title,
-        start: startDt.toISO() || startDt.toFormat("yyyy-LL-dd'T'HH:mm:ss"),
-        end: endDt.toISO() || endDt.toFormat("yyyy-LL-dd'T'HH:mm:ss"),
+        start: secretaryDecision.selectedSlot.start,
+        end: secretaryDecision.selectedSlot.end,
         description,
       }, undefined, userId);
 
@@ -848,6 +872,7 @@ export function cookingRoutes(): Router {
           source: event.source,
           htmlLink: event.htmlLink,
         },
+        agendaItemId: secretaryDecision.agendaItem.agendaItemId,
         mealCount: meals.length,
       });
     } catch (err: unknown) {

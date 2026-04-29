@@ -92,7 +92,7 @@ function mockRes(): MockRes {
 }
 
 function mockReq(userId: number, body?: any): Request {
-  return { userId, body } as any;
+  return { userId, tenantId: userId, body } as any;
 }
 
 /**
@@ -241,6 +241,123 @@ describe('Skills API — GET /catalog', () => {
     getOrCreateUser(1005, { username: 'cnt' });
     const res = await dispatch('GET', '/catalog', 1005);
     expect(res.body.data.catalogRowCount).toBeGreaterThan(20);
+  });
+});
+
+describe('Skills API — version registry', () => {
+  beforeEach(() => {
+    testDb = new Database(':memory:');
+    testDb.pragma('journal_mode = WAL');
+    applyMigrations(testDb);
+    cacheMocks.invalidateDashboardCoordinationCaches.mockClear();
+  });
+  afterEach(() => testDb?.close());
+
+  it('returns current skill version metadata for an authenticated user', async () => {
+    getOrCreateUser(1501, { username: 'version-reader' });
+
+    const res = await dispatch('GET', '/versions', 1501);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.skills.map((skill: any) => skill.skillId)).toEqual([
+      'chat',
+      'secretary',
+      'training',
+      'finance',
+      'cooking',
+      'content',
+    ]);
+    expect(res.body.data.skills.find((skill: any) => skill.skillId === 'content').currentVersion).toBe('2.0.0');
+  });
+
+  it('returns one skill metadata and supports the triathlon training alias', async () => {
+    getOrCreateUser(1502, { username: 'version-reader-2' });
+
+    const res = await dispatch('GET', '/versions/triathlon', 1502);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.data.skillId).toBe('training');
+    expect(res.body.data.currentVersion).toBe('3.0.0');
+  });
+
+  it('denies version mutation to non-owner users', async () => {
+    getOrCreateUser(1503, { username: 'pro' });
+
+    const res = await dispatch('POST', '/versions', 1503, {
+      skillId: 'content',
+      skillName: 'Content Creation',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Unauthorized write',
+      releaseSummary: 'Should not be accepted.',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+  });
+
+  it('owner can create version metadata without exposing internal notes in release history', async () => {
+    getOrCreateUser(1504, { username: 'owner' });
+    setUserTier(1504, 'owner');
+
+    const createRes = await dispatch('POST', '/versions', 1504, {
+      skillId: 'content',
+      skillName: 'Content Creation',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Source provenance foundation',
+      releaseSummary: 'Adds source-ledger metadata for content artifacts.',
+      capabilitiesAdded: ['source registry'],
+      testsAdded: ['skill-version-registry.test.ts'],
+      rollbackNotes: 'Roll back to content@2.0.0.',
+      internalNotes: 'private security investigation details',
+      status: 'candidate',
+    });
+
+    expect(createRes.statusCode).toBe(201);
+    expect(createRes.body.data.skillId).toBe('content');
+    expect(JSON.stringify(createRes.body)).not.toContain('private security investigation details');
+
+    const historyRes = await dispatch('GET', '/versions/content/history', 1504);
+    expect(historyRes.statusCode).toBe(200);
+    expect(historyRes.body.data.versions.map((version: any) => version.version)).toContain('2.1.0');
+    expect(JSON.stringify(historyRes.body)).not.toContain('private security investigation details');
+  });
+
+  it('owner can activate tenant-specific rollout metadata without changing global users', async () => {
+    getOrCreateUser(1505, { username: 'owner' });
+    setUserTier(1505, 'owner');
+
+    await dispatch('POST', '/versions', 1505, {
+      skillId: 'secretary',
+      skillName: 'Secretary',
+      version: '2.1.0',
+      releaseType: 'minor',
+      releaseTitle: 'Tenant schedule canary',
+      releaseSummary: 'Canary scheduling metadata.',
+      capabilitiesAdded: ['tenant schedule canary'],
+      rollbackNotes: 'Remove tenant rollout.',
+      status: 'candidate',
+      rolloutScope: 'tenant',
+    });
+
+    const activateRes = await dispatch('POST', '/versions/secretary/2.1.0/activate', 1505, {
+      scopeType: 'tenant',
+      tenantId: 1506,
+    });
+    expect(activateRes.statusCode).toBe(200);
+    expect(activateRes.body.data.version).toBe('2.1.0');
+
+    getOrCreateUser(1506, { username: 'tenant-canary' });
+    getOrCreateUser(1507, { username: 'ordinary' });
+
+    const canaryRes = await dispatch('GET', '/versions/secretary', 1506);
+    const ordinaryRes = await dispatch('GET', '/versions/secretary', 1507);
+    expect(canaryRes.body.data.currentVersion).toBe('2.1.0');
+    expect(ordinaryRes.body.data.currentVersion).toBe('2.0.0');
   });
 });
 

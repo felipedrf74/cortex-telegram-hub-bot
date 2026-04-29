@@ -21,6 +21,7 @@
 import crypto from 'crypto';
 import { getDb } from './database';
 import { logger } from '../utils/logger';
+import { cancelRemindersForAgendaItem } from '../state/reminders';
 
 export type SecretarySourceSkill = 'secretary' | 'training' | 'cooking' | 'finance' | 'content';
 
@@ -127,6 +128,7 @@ export interface SecretaryAgendaItem {
   durationMinutes: number | null;
   decisionAction: SecretarySchedulingDecisionStatus;
   decisionReasonCodes: string[];
+  decisionExplanation: string | null;
   sourceShapeHash: string;
   scheduledSegments: SecretaryTimeWindow[];
   cancellationReason: string | null;
@@ -215,10 +217,18 @@ const SKILL_PRIORITY_WEIGHT: Record<SecretarySourceSkill, number> = {
   content: 6,
 };
 
+function ensureSecretaryAgendaDecisionExplanationColumn(db = getDb()): void {
+  const columns = db.prepare('PRAGMA table_info(secretary_agenda_items)').all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'decision_explanation')) {
+    db.exec('ALTER TABLE secretary_agenda_items ADD COLUMN decision_explanation TEXT');
+  }
+}
+
 export function submitSecretarySchedulingIntent(
   intent: SecretarySchedulingIntent,
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingDecision {
+  ensureSecretaryAgendaDecisionExplanationColumn();
   return scheduleOne(intent, options, []);
 }
 
@@ -226,6 +236,7 @@ export function arbitrateSecretarySchedulingIntents(
   intents: SecretarySchedulingIntent[],
   options: SecretarySchedulingOptions = {},
 ): SecretarySchedulingBatchResult {
+  ensureSecretaryAgendaDecisionExplanationColumn();
   const ordered = [...intents].sort(compareIntentPriority);
   const acceptedBusyWindows: SecretaryTimeWindow[] = [];
   const decisions: SecretarySchedulingDecision[] = [];
@@ -253,6 +264,7 @@ export function listSecretaryAgendaItems(scope: {
   includeInactive?: boolean;
 }): SecretaryAgendaItem[] {
   const db = getDb();
+  ensureSecretaryAgendaDecisionExplanationColumn(db);
   const tenantId = normalizeTenantId(scope.tenantId);
   const rows = scope.includeInactive
     ? db.prepare(`
@@ -274,6 +286,7 @@ export function getSecretaryAgendaItemById(scope: {
   ownerUserId: number;
   tenantId: string | number;
 }): SecretaryAgendaItem | null {
+  ensureSecretaryAgendaDecisionExplanationColumn();
   const row = getDb().prepare(`
     SELECT *
     FROM secretary_agenda_items
@@ -292,6 +305,7 @@ export function cancelSecretaryAgendaItem(scope: {
   now?: string;
 }): SecretaryAgendaItem | null {
   const nowIso = normalizeNow(scope.now);
+  ensureSecretaryAgendaDecisionExplanationColumn();
   getDb().prepare(`
     UPDATE secretary_agenda_items
     SET lifecycle_state = 'canceled',
@@ -308,6 +322,7 @@ export function cancelSecretaryAgendaItem(scope: {
     scope.ownerUserId,
     normalizeTenantId(scope.tenantId),
   );
+  cancelRemindersForAgendaItem(scope.ownerUserId, scope.agendaItemId);
   return getSecretaryAgendaItemById(scope);
 }
 
@@ -473,6 +488,7 @@ function persistDecision(input: {
             updated_at = ?
         WHERE agenda_item_id = ?
       `).run(agendaItemId, input.nowIso, latest.agendaItemId);
+      cancelRemindersForAgendaItem(input.intent.ownerUserId, latest.agendaItemId);
     }
 
     db.prepare(`
@@ -481,10 +497,10 @@ function persistDecision(input: {
         source_entity_id, source_entity_type, owner_user_id, tenant_id,
         lifecycle_state, provider_sync_state, provider_event_id, provider_source,
         version, title, start_at, end_at, duration_minutes, decision_action,
-        decision_reason_codes_json, source_shape_hash, scheduled_segments_json,
+        decision_reason_codes_json, decision_explanation, source_shape_hash, scheduled_segments_json,
         cancellation_reason, superseded_by_agenda_item_id, created_at, updated_at,
         completed_at, source_created_at, source_updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_synced', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_synced', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
     `).run(
       agendaItemId,
       input.intent.intentId,
@@ -503,6 +519,7 @@ function persistDecision(input: {
       durationMinutes,
       input.status,
       JSON.stringify(input.reasonCodes),
+      input.explanation,
       sourceShapeHash,
       JSON.stringify(input.selectedSlot ? [input.selectedSlot] : []),
       input.nowIso,
@@ -603,7 +620,9 @@ function findLatestAgendaItemForIntent(intent: SecretarySchedulingIntent): Secre
 }
 
 function findAgendaItemById(agendaItemId: string): SecretaryAgendaItem | null {
-  const row = getDb().prepare('SELECT * FROM secretary_agenda_items WHERE agenda_item_id = ?').get(agendaItemId);
+  const db = getDb();
+  ensureSecretaryAgendaDecisionExplanationColumn(db);
+  const row = db.prepare('SELECT * FROM secretary_agenda_items WHERE agenda_item_id = ?').get(agendaItemId);
   return row ? rowToAgendaItem(row) : null;
 }
 
@@ -975,6 +994,7 @@ function rowToAgendaItem(row: any): SecretaryAgendaItem {
     durationMinutes: row.duration_minutes == null ? null : Number(row.duration_minutes),
     decisionAction: row.decision_action,
     decisionReasonCodes: safeParseArray(row.decision_reason_codes_json),
+    decisionExplanation: row.decision_explanation ?? null,
     sourceShapeHash: row.source_shape_hash,
     scheduledSegments: safeParseArray(row.scheduled_segments_json),
     cancellationReason: row.cancellation_reason ?? null,

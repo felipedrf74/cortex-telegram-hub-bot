@@ -10,6 +10,7 @@
 import { getDb } from './database';
 import { logger } from '../utils/logger';
 import { pushEvent } from '../portal/telemetry';
+import { sanitizeLogText } from '../utils/log-sanitizer';
 
 // ─── Error Taxonomy ──────────────────────────────────────────────
 
@@ -89,11 +90,12 @@ export function categorizeError(errorMessage: string, stack?: string): Categoriz
 }
 
 function buildHint(category: ErrorCategory, message: string): string {
+  const safeMessage = sanitizeLogText(message);
   switch (category) {
     case 'syntax':
-      return `Fix the syntax/type error. Error: ${message.slice(0, 200)}`;
+      return `Fix the syntax/type error. Error: ${safeMessage.slice(0, 200)}`;
     case 'test_failure':
-      return `Tests are failing. Read the test output and fix the implementation. Error: ${message.slice(0, 200)}`;
+      return `Tests are failing. Read the test output and fix the implementation. Error: ${safeMessage.slice(0, 200)}`;
     case 'context_overflow':
       return 'Reduce the context size: summarize long files, remove unnecessary context, focus on the specific task.';
     case 'rate_limit':
@@ -114,12 +116,13 @@ export function logCategorizedError(
   retryAttempt: number
 ): void {
   const db = getDb();
+  const safeErrorMessage = sanitizeLogText(errorMessage);
 
   db.prepare(`
     INSERT INTO error_log (level, source, message, context)
     VALUES ('error', 'agent', ?, ?)
   `).run(
-    errorMessage.slice(0, 500),
+    safeErrorMessage.slice(0, 500),
     JSON.stringify({
       taskId,
       agent,
@@ -133,7 +136,7 @@ export function logCategorizedError(
   pushEvent({
     ts: new Date().toISOString(),
     type: 'error',
-    summary: `[${categorized.category}] ${agent}: ${errorMessage.slice(0, 60)}`,
+    summary: `[${categorized.category}] ${agent}: ${safeErrorMessage.slice(0, 60)}`,
     detail: `Strategy: ${categorized.strategy}, retry ${retryAttempt}/${categorized.maxRetries}`,
   });
 

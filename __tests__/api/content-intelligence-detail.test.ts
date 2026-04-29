@@ -211,8 +211,8 @@ describe('Content API — intelligence detail', () => {
     `).run(user.id, 'Tópicos prontos para esta semana', 'Há novas ideias a aguardar decisão.', '2026-04-14T09:10:00.000Z');
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
     `);
 
     insertSignal.run(
@@ -220,21 +220,24 @@ describe('Content API — intelligence detail', () => {
       'reaction_opportunity',
       JSON.stringify({ title: 'Tariff shift explainer', summary: 'Macro topic is climbing fast.' }),
       'urgent',
-      recentDiscoveryAt
+      recentDiscoveryAt,
+      user.id
     );
     insertSignal.run(
       'performance-agent',
       'pillar_performance',
       JSON.stringify({ pillar: 'training', summary: 'Training is outperforming other pillars this week.' }),
       'normal',
-      recentOptimizationAt
+      recentOptimizationAt,
+      user.id
     );
     insertSignal.run(
       'performance-agent',
       'learning_digest',
       JSON.stringify({ summary: 'Hooks with stronger contrast won this week.' }),
       'normal',
-      recentOptimizationAt
+      recentOptimizationAt,
+      user.id
     );
 
     const response = await dispatch('/intelligence/detail', user.id);
@@ -300,8 +303,8 @@ describe('Content API — intelligence detail', () => {
     `).run(user.id, JSON.stringify(['fitness', 'training consistency']), recentPreferenceAt);
 
     const insertSignal = testDb.prepare(`
-      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, user_id)
-      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', NULL)
+      INSERT INTO agent_signals (source_agent, signal_type, payload, priority, status, expires_at, created_at, consumed_by, tenant_id, user_id)
+      VALUES (?, ?, ?, ?, 'active', datetime('now', '+7 days'), ?, '[]', ?, NULL)
     `);
 
     insertSignal.run(
@@ -309,14 +312,16 @@ describe('Content API — intelligence detail', () => {
       'reaction_opportunity',
       JSON.stringify({ title: 'fitness', summary: 'Janela de reação ativa: treino com forte gancho' }),
       'urgent',
-      recentFitnessSignalAt
+      recentFitnessSignalAt,
+      user.id
     );
     insertSignal.run(
       'reaction-radar',
       'reaction_opportunity',
       JSON.stringify({ title: 'politics', summary: 'Janela de reação ativa: debate fiscal' }),
       'urgent',
-      recentPoliticsSignalAt
+      recentPoliticsSignalAt,
+      user.id
     );
 
     const response = await dispatch('/intelligence/detail', user.id, { 'x-language': 'en-US' });

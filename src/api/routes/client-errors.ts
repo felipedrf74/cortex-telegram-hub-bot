@@ -22,6 +22,7 @@ import { logger } from '../../utils/logger';
 import { getDb } from '../../services/database';
 import { sendSuccess, sendError, sendInternalError, asyncHandler } from '../response-helpers';
 import { ensureValidTenantRouteScope } from '../tenant-route-scope';
+import { sanitizeLogText, stringifySanitizedLogContext } from '../../utils/log-sanitizer';
 
 // Hard size caps — keep in sync with the iOS reporter so it can pre-truncate.
 const MAX_MESSAGE = 2_000;
@@ -81,7 +82,8 @@ export function clientErrorsRoutes(): Router {
     const { userId } = req as AuthenticatedRequest;
     const body = (req.body || {}) as ClientErrorBody;
 
-    const message = asString(body.message, MAX_MESSAGE);
+    const rawMessage = asString(body.message, MAX_MESSAGE);
+    const message = rawMessage ? sanitizeLogText(rawMessage).slice(0, MAX_MESSAGE) : null;
     if (!message) {
       sendError(res, 'BAD_REQUEST', 'message is required and must be a non-empty string');
       return;
@@ -94,7 +96,8 @@ export function clientErrorsRoutes(): Router {
       ? body.source
       : 'ios';
 
-    const stack = asString(body.stack, MAX_STACK);
+    const rawStack = asString(body.stack, MAX_STACK);
+    const stack = rawStack ? sanitizeLogText(rawStack).slice(0, MAX_STACK) : null;
     const deviceId = asString(body.deviceId, 256);
     const appVersion = asString(body.appVersion, 64);
     const osVersion = asString(body.osVersion, 64);
@@ -102,11 +105,7 @@ export function clientErrorsRoutes(): Router {
 
     let contextJson: string | null = null;
     if (body.context && typeof body.context === 'object') {
-      try {
-        contextJson = JSON.stringify(body.context).slice(0, MAX_CONTEXT);
-      } catch {
-        contextJson = null;
-      }
+      contextJson = stringifySanitizedLogContext(body.context, MAX_CONTEXT);
     }
 
     try {

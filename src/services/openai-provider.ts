@@ -31,6 +31,8 @@ import { getDb } from './database';
 import { pushEvent } from '../portal/telemetry';
 import { withTimeout } from '../utils/timeout';
 import { getAICallTimeoutMs } from './runtime-flags';
+import { buildScopedStateContextPrefix } from './provider-state-context';
+import { getDomainModelOverride, type DomainModelRole } from './model-config';
 
 // ─── Client (lazy init — only created if API key is set) ────────────
 
@@ -325,7 +327,14 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
 /**
  * Convert Anthropic-format tool definitions to OpenAI function-calling format.
  */
-function toOpenAITools(filteredTools?: unknown[]): OpenAI.ChatCompletionTool[] {
+function toOpenAITools(
+  filteredTools: unknown[] | undefined,
+  context = 'OpenAI domain call',
+  allowLegacyFullTools = false,
+): OpenAI.ChatCompletionTool[] {
+  if (!Array.isArray(filteredTools) && !allowLegacyFullTools) {
+    throw new Error(`${context} requires explicit filteredTools; pass [] for no tools or TOOLS for the full set`);
+  }
   const sourceTools = (Array.isArray(filteredTools) ? filteredTools : TOOLS) as Array<{
     name?: unknown;
     description?: unknown;
@@ -343,6 +352,36 @@ function toOpenAITools(filteredTools?: unknown[]): OpenAI.ChatCompletionTool[] {
       parameters: t.input_schema as Record<string, unknown>,
     },
   }));
+}
+
+function resolveOpenAIModel(
+  domain: DomainName,
+  tier?: 'heavy' | 'light',
+): { model: string; maxTokens: number } {
+  const domainOverride = getDomainModelOverride('openai', domain as DomainModelRole);
+  if (domainOverride) {
+    return {
+      model: domainOverride,
+      maxTokens: domain === 'secretary' ? config.openai.secretaryMaxTokens
+        : domain === 'triathlon' ? 2048
+        : config.openai.maxTokens,
+    };
+  }
+
+  if (tier === 'light') {
+    return {
+      model: config.openai.classifierModel,
+      maxTokens: domain === 'secretary' || domain === 'triathlon' ? 2048 : config.openai.maxTokens,
+    };
+  }
+  if (tier === 'heavy') {
+    return {
+      model: config.openai.model,
+      maxTokens: domain === 'secretary' ? config.openai.secretaryMaxTokens : config.openai.maxTokens,
+    };
+  }
+
+  return getModelRouting(config.openai, domain, 'openai');
 }
 
 // ─── Response parsing helpers ───────────────────────────────────────
@@ -423,13 +462,14 @@ ${message}`;
     optionsOrMaxTokens?: number | CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    const routing = resolveOpenAIModel(domain, opts.modelTier);
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const tools = useTools ? toOpenAITools(opts.filteredTools) : [];
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const allowLegacyFullTools = optionsOrMaxTokens == null || typeof optionsOrMaxTokens === 'number';
+    const tools = useTools ? toOpenAITools(opts.filteredTools, 'OpenAI callDomain', allowLegacyFullTools) : [];
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -465,13 +505,13 @@ ${message}`;
     options?: CallDomainOptions,
   ): Promise<AICallResult> {
     const opts = normalizeCallDomainOptions(options);
-    const routing = getModelRouting(config.openai, domain, 'openai');
+    const routing = resolveOpenAIModel(domain, opts.modelTier);
     // Phase 2 Slice A: pass currentMessage so triathlon sub-skill
     // routing picks the sport-specific coach persona prompt.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
     const useTools = domain === 'secretary' || domain === 'triathlon';
-    const tools = useTools ? toOpenAITools(opts.filteredTools) : [];
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const tools = useTools ? toOpenAITools(opts.filteredTools, 'OpenAI continueWithToolResults', options == null) : [];
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -543,7 +583,7 @@ ${message}`;
     const routing = getModelRouting(config.openai, domain, 'openai');
     // Phase 2 Slice A: same persona routing for the streaming path.
     const systemPrompt = getDomainSystemPrompt(domain, currentMessage);
-    const contextPrefix = stateContext ? `[Current State]\n${stateContext}\n\n` : '';
+    const contextPrefix = buildScopedStateContextPrefix(stateContext);
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },

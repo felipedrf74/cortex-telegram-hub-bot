@@ -44,6 +44,10 @@ _TS_BASE = (
 ).rstrip("/")
 _INTERNAL_SECRET = os.environ.get("INTERNAL_API_SECRET", "")
 _AI_COMPLETE_URL = f"{_TS_BASE}/api/v1/internal/ai-complete"
+_FIXTURE_MODE = (
+    os.environ.get("CONTENT_ENGINE_FIXTURE_MODE") == "1"
+    or os.environ.get("NEXUS_LOCAL_ALLOW_MODEL_CALLS") == "0"
+)
 
 
 def _strip_markdown_json_fence(raw: str) -> str:
@@ -97,6 +101,8 @@ async def _repair_json_response(
     system: str,
     category: str,
     max_tokens: int,
+    user_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> dict | list | None:
     repair_prompt = f"""Repair the following model output into valid JSON only.
 Preserve the original structure and data. Do not summarize. Do not add markdown.
@@ -112,6 +118,8 @@ BROKEN OUTPUT:
             temperature=0.0,
             category=f"{category}_json_repair",
             json_mode=True,
+            user_id=user_id,
+            tenant_id=tenant_id,
         )
         return json.loads(_extract_json_candidate(repaired))
     except Exception as exc:
@@ -127,6 +135,8 @@ async def ask_claude(
     temperature: float = 0.7,
     category: str = "content_engine",
     json_mode: bool = False,
+    user_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> str:
     """Send a prompt through the TS AI proxy and return the text response.
 
@@ -134,6 +144,9 @@ async def ask_claude(
     The `model` parameter is kept for backward compat but is ignored —
     the TS backend picks the best available provider.
     """
+    if _FIXTURE_MODE:
+        raise RuntimeError("AI proxy disabled by Content Engine fixture mode.")
+
     if not _INTERNAL_SECRET:
         raise RuntimeError(
             "INTERNAL_API_SECRET not set — content-engine requires it to "
@@ -148,6 +161,10 @@ async def ask_claude(
         "temperature": temperature,
         "jsonMode": json_mode,
     }
+    if user_id is not None:
+        body["userId"] = user_id
+    if tenant_id is not None:
+        body["tenantId"] = tenant_id
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         try:
@@ -158,11 +175,12 @@ async def ask_claude(
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             logger.error(
-                "AI proxy HTTP error %d: %s",
+                "AI proxy HTTP error %d for category=%s (%d chars)",
                 e.response.status_code,
-                e.response.text[:300],
+                category,
+                len(e.response.text or ""),
             )
-            raise RuntimeError(f"AI proxy error {e.response.status_code}: {e.response.text[:200]}")
+            raise RuntimeError(f"AI proxy error {e.response.status_code} for category={category}")
         except httpx.TimeoutException:
             logger.error("AI proxy timeout after 300s for category=%s", category)
             raise
@@ -186,6 +204,8 @@ async def ask_claude_json(
     max_tokens: int = 4096,
     temperature: float = 0.5,
     category: str = "content_engine",
+    user_id: int | None = None,
+    tenant_id: int | None = None,
 ) -> dict | list:
     """Send a prompt through the AI proxy and parse the response as JSON.
 
@@ -197,6 +217,7 @@ async def ask_claude_json(
         prompt, system=system, model=model,
         max_tokens=max_tokens, temperature=temperature,
         category=category, json_mode=True,
+        user_id=user_id, tenant_id=tenant_id,
     )
 
     cleaned = _extract_json_candidate(raw)
@@ -204,10 +225,10 @@ async def ask_claude_json(
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        repaired = await _repair_json_response(raw, system, category, max_tokens)
+        repaired = await _repair_json_response(raw, system, category, max_tokens, user_id, tenant_id)
         if repaired is not None:
             logger.info("AI JSON response repaired for category=%s", category)
             return repaired
 
-        logger.warning("AI proxy returned non-JSON after repair attempt: %s", raw[:200])
+        logger.warning("AI proxy returned non-JSON after repair attempt for category=%s (%d chars)", category, len(raw))
         return {"raw": raw}

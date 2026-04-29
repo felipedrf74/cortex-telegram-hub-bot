@@ -269,6 +269,36 @@ describe('Authenticated support routes scope guards', () => {
     expect(JSON.stringify(res.body)).not.toContain('client_errors insert failed');
   });
 
+  it('redacts sensitive client error payloads before persistence', async () => {
+    mockDbRun.mockReturnValueOnce({ lastInsertRowid: 42 });
+
+    const res = await dispatch(clientErrorsRoutes, 'POST', '/', 12, {
+      message: 'render failed prompt=private user prompt token=client-secret',
+      stack: 'Authorization: Bearer simulatorsecret',
+      source: 'ios',
+      level: 'error',
+      context: {
+        screen: 'Content',
+        prompt: 'private prompt context',
+        references: [{ title: 'Tenant-private reference' }],
+        voiceProfile: { tone: 'private voice' },
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const persistedArgs = mockDbRun.mock.calls[0];
+    expect(persistedArgs[4]).toContain('prompt=[Redacted]');
+    expect(persistedArgs[4]).toContain('token=[Redacted]');
+    expect(persistedArgs[4]).not.toContain('private user prompt');
+    expect(persistedArgs[4]).not.toContain('client-secret');
+    expect(persistedArgs[5]).toContain('Bearer [Redacted]');
+    expect(persistedArgs[5]).not.toContain('simulatorsecret');
+    expect(persistedArgs[6]).toContain('"screen":"Content"');
+    expect(persistedArgs[6]).toContain('[Redacted]');
+    expect(persistedArgs[6]).not.toContain('Tenant-private reference');
+    expect(persistedArgs[6]).not.toContain('private prompt context');
+  });
+
   it('sanitizes note creation failures instead of leaking persistence internals', async () => {
     mockSaveNote.mockImplementationOnce(() => {
       throw new Error('notes sqlite write failed for user 12');

@@ -27,6 +27,7 @@ vi.mock('../../src/utils/logger', () => ({
 
 import {
   arbitrateSecretarySchedulingIntents,
+  getSecretaryAgendaItemById,
   listSecretaryAgendaItems,
   submitSecretarySchedulingIntent,
   type SecretarySchedulingIntent,
@@ -98,6 +99,24 @@ describe('secretary-scheduling-arbitrator', () => {
       scheduledStart: '2026-05-04T09:00:00.000Z',
       scheduledEnd: '2026-05-04T10:00:00.000Z',
     });
+  });
+
+  it('persists the human-readable decision explanation for iOS/support read-back', () => {
+    const decision = submitSecretarySchedulingIntent(intent({
+      intentId: 'explanation-roundtrip',
+      title: 'Explainable planning block',
+    }), {
+      now: '2026-05-01T08:00:00.000Z',
+    });
+
+    const stored = getSecretaryAgendaItemById({
+      agendaItemId: decision.agendaItem.agendaItemId,
+      ownerUserId: OWNER_USER_ID,
+      tenantId: TENANT_ID,
+    });
+
+    expect(decision.explanation).toContain('scheduled');
+    expect(stored?.decisionExplanation).toBe(decision.explanation);
   });
 
   it('places Cooking prep after an existing Training block instead of overlapping it', () => {

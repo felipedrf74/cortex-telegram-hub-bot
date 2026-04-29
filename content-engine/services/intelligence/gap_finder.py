@@ -97,7 +97,8 @@ Return JSON array of gap objects with: topic, gap_type, search_demand, existing_
 
     # Handle non-JSON / malformed response
     if isinstance(gaps, dict) and "raw" in gaps and len(gaps) == 1:
-        logger.warning("Claude returned non-JSON in gap_finder, raw: %s", str(gaps.get("raw", ""))[:200])
+        raw_len = len(str(gaps.get("raw", "")))
+        logger.warning("Claude returned non-JSON in gap_finder (%d chars)", raw_len)
         gaps_list = []
     else:
         gaps_list = gaps if isinstance(gaps, list) else [gaps]

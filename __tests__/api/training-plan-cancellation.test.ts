@@ -596,4 +596,48 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.clearStoredPlansForAthlete).not.toHaveBeenCalled();
     expect(mocks.clearLastCoachState).not.toHaveBeenCalled();
   });
+
+  it('serializes concurrent cancellation so provider events are not deleted twice', async () => {
+    let planDeleted = false;
+    let resolveDeleteEvent!: (value: { ok: true }) => void;
+    const firstDeleteEvent = new Promise<{ ok: true }>((resolve) => {
+      resolveDeleteEvent = resolve;
+    });
+
+    mocks.getActivePlan.mockImplementation(() => (planDeleted ? null : { id: 51, user_id: 12 }));
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 5101 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 511, status: 'pending', calendar_event_id: 'evt-race', calendar_source: 'google' },
+    ]);
+    mocks.deleteEvent.mockReturnValueOnce(firstDeleteEvent);
+    mocks.deletePlanHard.mockImplementation(() => {
+      planDeleted = true;
+      return {
+        ok: true,
+        removedPlans: 1,
+        removedWeeks: 1,
+        removedSessions: 1,
+        removedCompletions: 0,
+      };
+    });
+
+    const first = cancelTrainingPlanForUser(12);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
+
+    const second = cancelTrainingPlanForUser(12);
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(mocks.getActivePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
+
+    resolveDeleteEvent({ ok: true });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.status).toBe('cancelled');
+    expect(secondResult.status).toBe('not_found');
+    expect(mocks.getActivePlan).toHaveBeenCalledTimes(2);
+    expect(mocks.deleteEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-race', 'google', 12);
+    expect(mocks.deletePlanHard).toHaveBeenCalledTimes(1);
+  });
 });

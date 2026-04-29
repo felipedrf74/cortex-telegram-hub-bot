@@ -13,7 +13,9 @@ import {
   readContentHomePipeline,
 } from './content-home-route-utils';
 import { registerContentIntelligenceRoutes } from './content-intelligence-routes';
+import { registerContentEditorialRoutes } from './content-editorial-routes';
 import { registerContentLearningRoutes } from './content-learning-routes';
+import { registerContentNotificationRoutes } from './content-notification-routes';
 import { registerContentPipelineRoutes } from './content-pipeline-routes';
 import { registerContentReferenceRoutes } from './content-reference-routes';
 import { registerContentScriptRoutes } from './content-script-routes';
@@ -63,11 +65,13 @@ export function contentRoutes(): Router {
   }
 
   registerContentPipelineRoutes(router);
+  registerContentEditorialRoutes(router, ensureValidContentRouteScope);
+  registerContentNotificationRoutes(router, ensureValidContentRouteScope);
   registerContentTopicRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
 
   /** GET /api/v1/content/home — render-ready landing view state for iOS */
   router.get('/home', asyncHandler(async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
     if (!ensureValidContentRouteScope(res, userId, 'content_route_home')) return;
 
     const db = getDb();
@@ -124,7 +128,7 @@ export function contentRoutes(): Router {
       userId,
       7,
     );
-    const radarPreferences = getContentRadarPreferences(userId);
+    const radarPreferences = getContentRadarPreferences(userId, tenantId);
     const discoverySignals = filterSignalsForRadarPreferences(allDiscoverySignals, radarPreferences.topics);
     const optimizationSignals = readSignals(
       'ios-content-home',
@@ -137,8 +141,8 @@ export function contentRoutes(): Router {
       ? buildRadarTopicSummaries(radarPreferences.topics, discoverySignals)
       : getActiveContentPillars(userId);
     const deskItems = getContentDeskItems(userId, 3);
-    const voiceEntries = getVoiceDna(undefined, userId);
-    const knowledgeStats = getKnowledgeStats(undefined, userId);
+    const voiceEntries = getVoiceDna(undefined, userId, tenantId);
+    const knowledgeStats = getKnowledgeStats(undefined, userId, tenantId);
     const filmingRecommendation = localizeFilmingRecommendation(await getFilmingRecommendation(userId), language);
 
     sendSuccess(res, buildContentHomeViewState({
@@ -201,11 +205,13 @@ export function contentRoutes(): Router {
 
   /** POST /api/v1/content/discover — trigger content discovery */
   router.post('/discover', async (req, res: Response) => {
-    const { userId } = req as unknown as AuthenticatedRequest;
+    const { userId, tenantId } = req as unknown as AuthenticatedRequest;
+    if (!ensureValidContentRouteScope(res, userId, 'content_route_discover')) return;
+
     const startMs = Date.now();
     try {
       const { runContentDiscovery } = require('../../services/content-discovery');
-      const result = await runContentDiscovery(userId);
+      const result = await runContentDiscovery(userId, tenantId);
       sendSuccess(res, {
         discovered: result?.count || 0,
         ideas: result?.ideas || [],
@@ -213,7 +219,7 @@ export function contentRoutes(): Router {
         generation: buildGenerationMeta({
           mode: 'standard',
           startMs,
-          provider: 'gemini-flash',
+          provider: result?.provider || 'provider-routed',
           researchUsed: true,
         }),
       });
@@ -230,8 +236,8 @@ export function contentRoutes(): Router {
 
   registerContentScriptRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
 
-  registerContentReferenceRoutes(router);
-  registerContentLearningRoutes(router, resolveContentLanguage);
+  registerContentReferenceRoutes(router, ensureValidContentRouteScope);
+  registerContentLearningRoutes(router, resolveContentLanguage, ensureValidContentRouteScope);
 
   return router;
 }

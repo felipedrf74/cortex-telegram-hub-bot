@@ -4,9 +4,16 @@
  * Internal routes — service-to-service endpoints used by the Python
  * content-engine to report data back to the TS backend.
  *
- * These routes are NOT behind JWT auth. Instead they validate a shared
- * secret (`INTERNAL_API_SECRET`) that both processes read from the same
- * .env file. If the secret is unset, the routes reject all requests.
+ * These routes are NOT behind JWT auth. Instead they require loopback
+ * network origin by default (`INTERNAL_REQUIRE_LOOPBACK !== 'false'`) and
+ * validate a shared secret (`INTERNAL_API_SECRET`) that both processes read
+ * from the same .env file. If the secret is unset, the routes reject all
+ * requests.
+ *
+ * `ai-complete` deliberately strips body-supplied userId/tenantId and bills
+ * as system usage (`user_id=0`, `tenant_id=0`) until a server-side service
+ * identity/tenant allowlist exists for the Python engine. Internal callers
+ * must not be able to spoof end-user or tenant attribution through this proxy.
  *
  * Mount BEFORE authMiddleware in router.ts.
  */
@@ -15,7 +22,7 @@ import { Router, Request, Response } from 'express';
 import { logger } from '../../utils/logger';
 import { config } from '../../config';
 import { sendError } from '../response-helpers';
-import { secureSecretMatches } from '../secret-guards';
+import { isLoopbackRequest, secureSecretMatches } from '../secret-guards';
 import {
   internalAiCompleteRateLimitMiddleware,
   internalRateLimitMiddleware,
@@ -23,6 +30,8 @@ import {
 import { getOwnerBootstrapTarget } from '../../services/user-service';
 import { getPerformanceSummary } from '../../services/content-learning-store';
 import { isAnthropicRuntimeEnabled } from '../../services/runtime-flags';
+import { getEffectiveDomainModel } from '../../services/model-config';
+import { completeOneShotWithFallback } from '../../services/gemini-provider';
 
 function resolveInternalAiTimeoutMs(category: string, maxTokens: number): number | undefined {
   const normalized = String(category || '').toLowerCase();
@@ -44,6 +53,10 @@ export function internalRoutes(): Router {
   const secret = process.env.INTERNAL_API_SECRET || '';
 
   router.use((req: Request, res: Response, next) => {
+    if (process.env.INTERNAL_REQUIRE_LOOPBACK !== 'false' && !isLoopbackRequest(req)) {
+      sendError(res, 'FORBIDDEN', 'Internal API requires loopback origin', 403);
+      return;
+    }
     const provided = req.headers['x-internal-secret'] as string | undefined;
     if (!secret || !secureSecretMatches(secret, provided)) {
       // Canonical error envelope. Python content-engine only checks
@@ -153,6 +166,8 @@ export function internalRoutes(): Router {
   //   maxTokens?: number,    // default 4096
   //   temperature?: number,  // default 0.7
   //   jsonMode?: boolean,    // if true, instructs model to return JSON
+  //   userId?: number,       // optional scoped usage attribution
+  //   tenantId?: number,     // optional scoped usage attribution
   // }
   //
   // Response: { text: string, provider: string }
@@ -162,6 +177,8 @@ export function internalRoutes(): Router {
         prompt, system = '', category,
         maxTokens = 4096, temperature = 0.7,
         jsonMode = false,
+        userId,
+        tenantId,
       } = req.body;
 
       if (!prompt || !category) {
@@ -172,12 +189,17 @@ export function internalRoutes(): Router {
       const userPrompt = jsonMode
         ? `${prompt}\n\nReturn ONLY valid JSON. No markdown fences, no extra text.`
         : prompt;
-
-      const { completeOneShotWithFallback } = require('../../services/gemini-provider');
-      const { trackedCreate } = require('../../portal/anthropic-hook');
-      const Anthropic = require('@anthropic-ai/sdk');
-
-      const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
+      const suppliedUserId = normalizeOptionalScopeId(userId);
+      const suppliedTenantId = normalizeOptionalScopeId(tenantId);
+      const scopedUserId = 0;
+      const scopedTenantId = 0;
+      if (suppliedUserId || suppliedTenantId) {
+        logger.warn({
+          category,
+          suppliedUserId: suppliedUserId ?? null,
+          suppliedTenantId: suppliedTenantId ?? null,
+        }, 'Ignoring body-supplied internal AI attribution; billing as system usage');
+      }
 
       const { text, provider } = await completeOneShotWithFallback(
         system,
@@ -185,8 +207,12 @@ export function internalRoutes(): Router {
         category,
         // Anthropic fallback thunk — only fires if ANTHROPIC_ENABLED=true
         async () => {
+          const { trackedCreate } = require('../../portal/anthropic-hook');
+          const Anthropic = require('@anthropic-ai/sdk');
+          const client = new Anthropic.default({ apiKey: config.anthropic?.apiKey || '', maxRetries: 2 });
+          const anthropicModel = getEffectiveDomainModel('anthropic', 'content');
           const response = await trackedCreate(client, {
-            model: 'claude-haiku-4-5-20251001',
+            model: anthropicModel,
             max_tokens: maxTokens,
             system: system || undefined,
             messages: [{ role: 'user', content: userPrompt }],
@@ -201,10 +227,18 @@ export function internalRoutes(): Router {
           temperature,
           timeoutMs: resolveInternalAiTimeoutMs(category, maxTokens),
           jsonMode,
+          userId: scopedUserId,
+          tenantId: scopedTenantId,
         },
       );
 
-      logger.info({ category, provider, chars: text.length }, 'AI completion for Python engine');
+      logger.info({
+        category,
+        provider,
+        chars: text.length,
+        userId: scopedUserId ?? null,
+        tenantId: scopedTenantId ?? null,
+      }, 'AI completion for Python engine');
       res.json({ text, provider });
     } catch (err: any) {
       logger.error({ err }, 'Internal ai-complete failed');
@@ -256,4 +290,10 @@ export function internalRoutes(): Router {
   });
 
   return router;
+}
+
+function normalizeOptionalScopeId(value: unknown): number | undefined {
+  if (value == null || value === '') return undefined;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }

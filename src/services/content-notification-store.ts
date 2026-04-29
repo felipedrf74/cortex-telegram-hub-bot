@@ -57,6 +57,43 @@ export interface ContentNotification {
   createdAt: string;
 }
 
+export type ContentNotificationDeepLinkTargetKind =
+  | 'approval'
+  | 'source_review'
+  | 'workflow_object'
+  | 'script'
+  | 'topic'
+  | 'radar_signal'
+  | 'reference'
+  | 'pipeline_item'
+  | 'weekly_package'
+  | 'performance'
+  | 'agent_insight'
+  | 'content_home';
+
+export interface ContentNotificationDeepLink {
+  targetKind: ContentNotificationDeepLinkTargetKind;
+  targetId: string | null;
+  screen: string;
+  route: string;
+  action: string;
+  canOpenConcreteTarget: boolean;
+  reasonCodes: string[];
+  fallback: {
+    screen: 'contentHome';
+    route: 'content/home';
+  };
+  markReadEndpoint: string;
+  resolveEndpoint: string;
+  sourceDataKeys: string[];
+}
+
+export interface ContentNotificationResolution {
+  notification: ContentNotification;
+  deepLink: ContentNotificationDeepLink;
+  contractVersion: 1;
+}
+
 function reportInvalidNotificationScope(
   operation: string,
   userId: number | undefined,
@@ -230,6 +267,54 @@ export function getUnreadCount(userId: number): number {
   return row?.cnt ?? 0;
 }
 
+/**
+ * Read one notification for an authenticated user.
+ *
+ * This is intentionally scoped by user before any resolver data is returned.
+ * Content notifications do not yet carry tenant_id, so user ownership remains
+ * the hard security boundary for this legacy table.
+ */
+export function getNotificationById(notificationId: number, userId: number): ContentNotification | null {
+  if (!isValidTenantUserId(userId)) {
+    reportInvalidNotificationScope('get_content_notification_by_id', userId, {
+      notificationId,
+    });
+    return null;
+  }
+  if (!Number.isFinite(notificationId) || notificationId <= 0) {
+    return null;
+  }
+
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT * FROM content_notifications
+    WHERE id = ? AND user_id = ?
+    LIMIT 1
+  `).get(notificationId, userId) as any;
+
+  return row ? mapNotification(row) : null;
+}
+
+/**
+ * Resolve a content notification to an iOS/portal navigation target.
+ *
+ * The resolver is read-only: it does not mark notifications as read or
+ * resolved. Clients can use the returned mutation endpoints after navigation.
+ */
+export function resolveContentNotificationDeepLink(
+  notificationId: number,
+  userId: number,
+): ContentNotificationResolution | null {
+  const notification = getNotificationById(notificationId, userId);
+  if (!notification) return null;
+
+  return {
+    notification,
+    deepLink: buildContentNotificationDeepLink(notification),
+    contractVersion: 1,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Update
 // ═══════════════════════════════════════════════════════════════════
@@ -331,6 +416,208 @@ function mapNotification(row: any): ContentNotification {
     resolvedAt: row.resolved_at,
     createdAt: row.created_at,
   };
+}
+
+function buildContentNotificationDeepLink(notification: ContentNotification): ContentNotificationDeepLink {
+  const data = isRecord(notification.data) ? notification.data : {};
+  const target = resolveDeepLinkTarget(notification, data);
+  const action = resolveDeepLinkAction(notification, data, target.targetKind);
+  const concreteTarget = target.targetKind !== 'content_home' && target.targetId !== null;
+  const reasonCodes = [...target.reasonCodes];
+
+  if (!concreteTarget && !reasonCodes.includes('no_concrete_content_target')) {
+    reasonCodes.push('no_concrete_content_target');
+  }
+
+  return {
+    targetKind: target.targetKind,
+    targetId: target.targetId,
+    screen: target.screen,
+    route: target.route,
+    action,
+    canOpenConcreteTarget: concreteTarget,
+    reasonCodes,
+    fallback: {
+      screen: 'contentHome',
+      route: 'content/home',
+    },
+    markReadEndpoint: `/api/v1/notifications/${notification.id}/read`,
+    resolveEndpoint: `/api/v1/notifications/${notification.id}/resolve`,
+    sourceDataKeys: Object.keys(data).sort(),
+  };
+}
+
+function resolveDeepLinkTarget(
+  notification: ContentNotification,
+  data: Record<string, unknown>,
+): {
+  targetKind: ContentNotificationDeepLinkTargetKind;
+  targetId: string | null;
+  screen: string;
+  route: string;
+  reasonCodes: string[];
+} {
+  const contentObjectId = firstScalar(data, ['contentObjectId', 'workflowObjectId', 'objectId', 'draftId', 'ideaId']);
+  const sourceReviewId = firstScalar(data, ['sourceReviewId', 'source_review_id']);
+  const approvalId = firstScalar(data, ['approvalId', 'approval_id']);
+  const scriptId = firstScalar(data, ['scriptId', 'script_id']);
+  const topicId = firstScalar(data, ['topicId', 'topic_id']);
+  const radarSignalId = firstScalar(data, ['radarSignalId', 'signalId', 'radar_signal_id', 'signal_id']);
+  const referenceId = firstScalar(data, ['referenceId', 'reference_id']);
+  const pipelineId = firstScalar(data, ['pipelineId', 'pipeline_id']);
+  const weeklyPackageId = firstScalar(data, ['weeklyPackageId', 'weekly_package_id', 'packageId']);
+  const performanceId = firstScalar(data, ['performanceId', 'performance_id']);
+  const insightId = firstScalar(data, ['insightId', 'insight_id']);
+  const requestedAction = firstScalar(data, ['action', 'requiredAction']);
+
+  if (isSourceReviewAction(requestedAction) && contentObjectId) {
+    return target('source_review', contentObjectId, 'contentSourceReview', `content/workflow/${contentObjectId}/source-review`, [
+      'source_review_action_target',
+    ]);
+  }
+  if (sourceReviewId) {
+    return target('source_review', sourceReviewId, 'contentSourceReview', `content/source-reviews/${sourceReviewId}`, [
+      'source_review_id_target',
+    ]);
+  }
+  if (approvalId && contentObjectId) {
+    return target('approval', contentObjectId, 'contentApproval', `content/workflow/${contentObjectId}/approval`, [
+      'approval_target_from_workflow_object',
+    ]);
+  }
+  if (approvalId) {
+    return target('approval', approvalId, 'contentApproval', `content/approvals/${approvalId}`, [
+      'approval_id_target',
+    ]);
+  }
+  if (contentObjectId) {
+    return target('workflow_object', contentObjectId, 'contentWorkflow', `content/workflow/${contentObjectId}`, [
+      'workflow_object_target',
+    ]);
+  }
+  if (scriptId) {
+    return target('script', scriptId, 'contentScript', `content/scripts/${scriptId}`, [
+      'script_target',
+    ]);
+  }
+  if (topicId) {
+    return target('topic', topicId, 'contentTopic', `content/topics/${topicId}`, [
+      'topic_target',
+    ]);
+  }
+  if (radarSignalId) {
+    return target('radar_signal', radarSignalId, 'contentRadarSignal', `content/radar/${radarSignalId}`, [
+      'radar_signal_target',
+    ]);
+  }
+  if (referenceId) {
+    return target('reference', referenceId, 'contentReference', `content/references/${referenceId}`, [
+      'reference_target',
+    ]);
+  }
+  if (pipelineId) {
+    return target('pipeline_item', pipelineId, 'contentPipelineItem', `content/pipeline/${pipelineId}`, [
+      'pipeline_item_target',
+    ]);
+  }
+  if (weeklyPackageId) {
+    return target('weekly_package', weeklyPackageId, 'contentWeeklyPackage', `content/weekly-packages/${weeklyPackageId}`, [
+      'weekly_package_target',
+    ]);
+  }
+  if (performanceId || notification.type === 'performance_logged') {
+    return target('performance', performanceId, 'contentPerformance', performanceId ? `content/performance/${performanceId}` : 'content/performance', [
+      performanceId ? 'performance_target' : 'performance_summary_target',
+    ]);
+  }
+  if (insightId || notification.type === 'agent_insight') {
+    return target('agent_insight', insightId, 'contentInsight', insightId ? `content/insights/${insightId}` : 'content/insights', [
+      insightId ? 'agent_insight_target' : 'agent_insight_summary_target',
+    ]);
+  }
+
+  if (notification.type === 'topic_candidates_ready') {
+    return target('content_home', null, 'contentHome', 'content/home', [
+      'topic_candidates_without_topic_id',
+    ]);
+  }
+  if (notification.type === 'weekly_package_ready') {
+    return target('content_home', null, 'contentHome', 'content/home', [
+      'weekly_package_without_package_id',
+    ]);
+  }
+
+  return target('content_home', null, 'contentHome', 'content/home', [
+    'no_supported_artifact_id',
+  ]);
+}
+
+function target(
+  targetKind: ContentNotificationDeepLinkTargetKind,
+  targetId: string | null,
+  screen: string,
+  route: string,
+  reasonCodes: string[],
+): {
+  targetKind: ContentNotificationDeepLinkTargetKind;
+  targetId: string | null;
+  screen: string;
+  route: string;
+  reasonCodes: string[];
+} {
+  return { targetKind, targetId, screen, route, reasonCodes };
+}
+
+function resolveDeepLinkAction(
+  notification: ContentNotification,
+  data: Record<string, unknown>,
+  targetKind: ContentNotificationDeepLinkTargetKind,
+): string {
+  const explicitAction = firstScalar(data, ['action', 'requiredAction']);
+  if (explicitAction) return normalizeAction(explicitAction);
+
+  if (targetKind === 'source_review') return 'review_sources';
+  if (targetKind === 'approval') return 'review_approval';
+
+  switch (notification.type) {
+    case 'topic_candidates_ready':
+      return 'review_topics';
+    case 'weekly_package_ready':
+      return 'open_weekly_package';
+    case 'script_ready':
+      return 'open_script';
+    case 'content_action_required':
+      return 'review_required_action';
+    case 'performance_logged':
+      return 'open_performance';
+    case 'agent_insight':
+      return 'open_insight';
+    default:
+      return 'open_content';
+  }
+}
+
+function normalizeAction(action: string): string {
+  return action.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'open_content';
+}
+
+function isSourceReviewAction(action: string | null): boolean {
+  if (!action) return false;
+  const normalized = normalizeAction(action);
+  return normalized === 'source_review' || normalized === 'review_sources' || normalized === 'source_review_required';
+}
+
+function firstScalar(data: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = data[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function safeParseJSON(val: any, fallback: any): any {

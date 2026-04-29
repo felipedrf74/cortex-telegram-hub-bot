@@ -1,12 +1,20 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from '../services/database';
+import {
+  contentScopeForInsert,
+  contentScopeOrderExpr,
+  contentScopeParams,
+  contentScopePredicate,
+  platformContentScopePredicate,
+  ensureContentTenantScopeColumns,
+  isAuthorizedContentRow,
+  type ContentVisibilityScope,
+} from '../services/content-tenant-scope';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
 export type ContentOwnerScope = 'system' | 'user';
-
-const CONTENT_OWNER_SCOPE_SQL = "COALESCE(owner_scope, CASE WHEN user_id = 0 THEN 'system' ELSE 'user' END)";
 
 function resolveContentOwnerScope(userId: number): ContentOwnerScope {
   return userId === 0 ? 'system' : 'user';
@@ -56,6 +64,10 @@ export interface ContentRefChannel {
   updated_at: string;
   user_id?: number;
   owner_scope?: ContentOwnerScope | null;
+  tenant_id?: number | null;
+  owner_user_id?: number | null;
+  visibility_scope?: string | null;
+  scope_status?: string | null;
 }
 
 export interface ContentPattern {
@@ -68,6 +80,11 @@ export interface ContentPattern {
   source_videos: string; // JSON array
   created_at: string;
   updated_at: string;
+  user_id?: number;
+  tenant_id?: number | null;
+  owner_user_id?: number | null;
+  visibility_scope?: string | null;
+  scope_status?: string | null;
 }
 
 export interface ContentKnowledge {
@@ -80,6 +97,10 @@ export interface ContentKnowledge {
   updated_at: string;
   user_id?: number;
   owner_scope?: ContentOwnerScope | null;
+  tenant_id?: number | null;
+  owner_user_id?: number | null;
+  visibility_scope?: string | null;
+  scope_status?: string | null;
 }
 
 // ─── Pattern categories ──────────────────────────────────────────────
@@ -98,24 +119,41 @@ export const PATTERN_CATEGORIES = [
 
 export type PatternCategory = typeof PATTERN_CATEGORIES[number];
 
+function visibilityScopeForSystemOrUser(
+  userId: number,
+  visibilityScope?: string | null,
+): ContentVisibilityScope {
+  if (visibilityScope === 'tenant_shared' || visibilityScope === 'tenant_admin_visible'
+    || visibilityScope === 'platform_internal' || visibilityScope === 'public_published') {
+    return visibilityScope;
+  }
+  return userId > 0 ? 'user_private' : 'platform_internal';
+}
+
 // ─── Channel CRUD ───────────────────────────────────────────────────
 
 export function addChannel(
   channelUrl: string,
   addedVia: 'manual' | 'portal' | 'bot' | 'ios' = 'manual',
   userId: number = 0,
+  tenantId?: number,
 ): ContentRefChannel {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const ownerScope = resolveContentOwnerScope(userId);
+  const scope = contentScopeForInsert(
+    userId,
+    userId > 0 ? tenantId : 0,
+    visibilityScopeForSystemOrUser(userId),
+  );
   // Normalize URL: strip trailing slashes, ensure consistent format
   const normalized = channelUrl.trim().replace(/\/+$/, '');
 
   const existing = db.prepare(
     `SELECT * FROM content_ref_channels
       WHERE channel_url = ?
-        AND user_id = ?
-        AND ${CONTENT_OWNER_SCOPE_SQL} = ?`,
-  ).get(normalized, userId, ownerScope) as ContentRefChannel | undefined;
+        AND ${contentScopePredicate()}`,
+  ).get(normalized, ...contentScopeParams(userId, tenantId)) as ContentRefChannel | undefined;
 
   if (existing) {
     // Re-enable if it was previously removed/failed
@@ -131,9 +169,25 @@ export function addChannel(
   }
 
   const result = db.prepare(`
-    INSERT INTO content_ref_channels (channel_url, added_via, user_id, owner_scope)
-    VALUES (?, ?, ?, ?)
-  `).run(normalized, addedVia, userId, ownerScope);
+    INSERT INTO content_ref_channels (
+      channel_url, added_via, user_id, owner_scope, tenant_id, owner_user_id,
+      visibility_scope, lifecycle_state, scope_status, created_by, updated_by, audit_metadata_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    normalized,
+    addedVia,
+    userId,
+    ownerScope,
+    scope.tenantId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    'pending',
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+  );
 
   return db.prepare('SELECT * FROM content_ref_channels WHERE id = ?')
     .get(result.lastInsertRowid) as ContentRefChannel;
@@ -141,21 +195,29 @@ export function addChannel(
 
 export function getChannel(id: number): ContentRefChannel | undefined {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   return db.prepare('SELECT * FROM content_ref_channels WHERE id = ?')
     .get(id) as ContentRefChannel | undefined;
 }
 
-export function getAllChannels(userId?: number): ContentRefChannel[] {
+export function getAllChannels(userId?: number, tenantId?: number): ContentRefChannel[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   if (userId != null) {
+    if (userId === 0) {
+      return db.prepare(
+        `SELECT * FROM content_ref_channels
+          WHERE ${platformContentScopePredicate()}
+          ORDER BY status ASC, channel_name ASC`,
+      ).all() as ContentRefChannel[];
+    }
     const rows = db.prepare(
       `SELECT * FROM content_ref_channels
-        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+        WHERE ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  status ASC,
                  channel_name ASC`,
-    ).all(userId, userId) as ContentRefChannel[];
+    ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
     return dedupeScopedRows(rows, (row) => row.channel_url, userId);
   }
   return db.prepare(
@@ -163,17 +225,25 @@ export function getAllChannels(userId?: number): ContentRefChannel[] {
   ).all() as ContentRefChannel[];
 }
 
-export function getActiveChannels(userId?: number): ContentRefChannel[] {
+export function getActiveChannels(userId?: number, tenantId?: number): ContentRefChannel[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   if (userId != null) {
+    if (userId === 0) {
+      return db.prepare(
+        `SELECT * FROM content_ref_channels
+          WHERE status = 'active'
+            AND ${platformContentScopePredicate()}
+          ORDER BY channel_name ASC`,
+      ).all() as ContentRefChannel[];
+    }
     const rows = db.prepare(
       `SELECT * FROM content_ref_channels
         WHERE status = 'active'
-          AND (${CONTENT_OWNER_SCOPE_SQL} = 'system'
-               OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?))
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+          AND ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  channel_name ASC`,
-    ).all(userId, userId) as ContentRefChannel[];
+    ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
     return dedupeScopedRows(rows, (row) => row.channel_url, userId);
   }
   return db.prepare(
@@ -181,17 +251,25 @@ export function getActiveChannels(userId?: number): ContentRefChannel[] {
   ).all() as ContentRefChannel[];
 }
 
-export function getPendingChannels(userId?: number): ContentRefChannel[] {
+export function getPendingChannels(userId?: number, tenantId?: number): ContentRefChannel[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   if (userId != null) {
+    if (userId === 0) {
+      return db.prepare(
+        `SELECT * FROM content_ref_channels
+          WHERE status = 'pending'
+            AND ${platformContentScopePredicate()}
+          ORDER BY created_at ASC`,
+      ).all() as ContentRefChannel[];
+    }
     const rows = db.prepare(
       `SELECT * FROM content_ref_channels
         WHERE status = 'pending'
-          AND (${CONTENT_OWNER_SCOPE_SQL} = 'system'
-               OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?))
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+          AND ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  created_at ASC`,
-    ).all(userId, userId) as ContentRefChannel[];
+    ).all(...contentScopeParams(userId, tenantId)) as ContentRefChannel[];
     return dedupeScopedRows(rows, (row) => row.channel_url, userId);
   }
   return db.prepare(
@@ -239,6 +317,7 @@ export function updateChannelStatus(
 
 export function removeChannel(id: number): boolean {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   // Delete patterns first (cascade), then channel
   db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(id);
   const result = db.prepare('DELETE FROM content_ref_channels WHERE id = ?').run(id);
@@ -258,12 +337,24 @@ export function upsertPatterns(
   }[],
 ): void {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  const channel = getChannel(channelId);
+  const patternUserId = channel?.user_id ?? 0;
+  const scope = contentScopeForInsert(
+    patternUserId,
+    patternUserId > 0 ? channel?.tenant_id ?? undefined : 0,
+    visibilityScopeForSystemOrUser(patternUserId, channel?.visibility_scope),
+  );
   // Clear old patterns for this channel before inserting new ones
   db.prepare('DELETE FROM content_patterns WHERE channel_id = ?').run(channelId);
 
   const stmt = db.prepare(`
-    INSERT INTO content_patterns (channel_id, category, pattern_text, examples, confidence, source_videos)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO content_patterns (
+      channel_id, category, pattern_text, examples, confidence, source_videos,
+      user_id, tenant_id, owner_user_id, visibility_scope, lifecycle_state,
+      scope_status, created_by, updated_by, audit_metadata_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertMany = db.transaction((items: typeof patterns) => {
@@ -275,6 +366,15 @@ export function upsertPatterns(
         JSON.stringify(p.examples),
         p.confidence,
         JSON.stringify(p.source_videos),
+        channel?.user_id ?? 0,
+        scope.tenantId,
+        scope.ownerUserId,
+        scope.visibilityScope,
+        scope.lifecycleState,
+        scope.scopeStatus,
+        scope.createdBy,
+        scope.updatedBy,
+        scope.auditMetadataJson,
       );
     }
   });
@@ -284,13 +384,44 @@ export function upsertPatterns(
 
 export function getPatternsForChannel(channelId: number): ContentPattern[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   return db.prepare(
     'SELECT * FROM content_patterns WHERE channel_id = ? ORDER BY category, confidence DESC',
   ).all(channelId) as ContentPattern[];
 }
 
-export function getAllPatternsByCategory(category: PatternCategory): ContentPattern[] {
+export function getAllPatternsByCategory(category: PatternCategory, userId?: number, tenantId?: number): ContentPattern[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
+  if (userId != null) {
+    if (userId === 0) {
+      return db.prepare(
+        `SELECT p.*, c.channel_name
+           FROM content_patterns p
+           JOIN content_ref_channels c ON p.channel_id = c.id
+          WHERE p.category = ?
+            AND c.status = ?
+            AND ${platformContentScopePredicate('c')}
+            AND ${platformContentScopePredicate('p')}
+          ORDER BY p.confidence DESC`,
+      ).all(category, 'active') as (ContentPattern & { channel_name: string })[];
+    }
+    return db.prepare(
+      `SELECT p.*, c.channel_name
+         FROM content_patterns p
+         JOIN content_ref_channels c ON p.channel_id = c.id
+        WHERE p.category = ?
+          AND c.status = ?
+          AND ${contentScopePredicate('c')}
+          AND ${contentScopePredicate('p')}
+        ORDER BY p.confidence DESC`,
+    ).all(
+      category,
+      'active',
+      ...contentScopeParams(userId, tenantId),
+      ...contentScopeParams(userId, tenantId),
+    ) as (ContentPattern & { channel_name: string })[];
+  }
   return db.prepare(
     'SELECT p.*, c.channel_name FROM content_patterns p JOIN content_ref_channels c ON p.channel_id = c.id WHERE p.category = ? AND c.status = ? ORDER BY p.confidence DESC',
   ).all(category, 'active') as (ContentPattern & { channel_name: string })[];
@@ -303,32 +434,70 @@ export function upsertKnowledge(
   synthesizedText: string,
   sourceChannels: string[],
   userId: number = 0,
+  tenantId?: number,
 ): void {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   const ownerScope = resolveContentOwnerScope(userId);
+  const scope = contentScopeForInsert(
+    userId,
+    userId > 0 ? tenantId : 0,
+    visibilityScopeForSystemOrUser(userId),
+  );
   db.prepare(`
-    INSERT INTO content_knowledge (category, synthesized_text, source_channels, user_id, owner_scope)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO content_knowledge (
+      category, synthesized_text, source_channels, user_id, owner_scope,
+      tenant_id, owner_user_id, visibility_scope, lifecycle_state, scope_status,
+      created_by, updated_by, audit_metadata_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, category) DO UPDATE SET
       synthesized_text = excluded.synthesized_text,
       source_channels = excluded.source_channels,
       owner_scope = excluded.owner_scope,
+      tenant_id = excluded.tenant_id,
+      owner_user_id = excluded.owner_user_id,
+      visibility_scope = excluded.visibility_scope,
+      lifecycle_state = excluded.lifecycle_state,
+      scope_status = excluded.scope_status,
+      updated_by = excluded.updated_by,
       version = content_knowledge.version + 1,
       updated_at = datetime('now')
-  `).run(category, synthesizedText, JSON.stringify(sourceChannels), userId, ownerScope);
+  `).run(
+    category,
+    synthesizedText,
+    JSON.stringify(sourceChannels),
+    userId,
+    ownerScope,
+    scope.tenantId,
+    scope.ownerUserId,
+    scope.visibilityScope,
+    scope.lifecycleState,
+    scope.scopeStatus,
+    scope.createdBy,
+    scope.updatedBy,
+    scope.auditMetadataJson,
+  );
 }
 
-export function getAllKnowledge(userId?: number): ContentKnowledge[] {
+export function getAllKnowledge(userId?: number, tenantId?: number): ContentKnowledge[] {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   if (userId != null) {
+    if (userId === 0) {
+      return db.prepare(
+        `SELECT * FROM content_knowledge
+          WHERE ${platformContentScopePredicate()}
+          ORDER BY category ASC, updated_at DESC`,
+      ).all() as ContentKnowledge[];
+    }
     const rows = db.prepare(
       `SELECT * FROM content_knowledge
-        WHERE ${CONTENT_OWNER_SCOPE_SQL} = 'system'
-           OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?)
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+        WHERE ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  category ASC,
                  updated_at DESC`,
-    ).all(userId, userId) as ContentKnowledge[];
+    ).all(...contentScopeParams(userId, tenantId)) as ContentKnowledge[];
     return dedupeScopedRows(rows, (row) => row.category, userId);
   }
   return db.prepare(
@@ -339,18 +508,28 @@ export function getAllKnowledge(userId?: number): ContentKnowledge[] {
 export function getKnowledgeByCategory(
   category: PatternCategory,
   userId?: number,
+  tenantId?: number,
 ): ContentKnowledge | undefined {
   const db = getDb();
+  ensureContentTenantScopeColumns(db);
   if (userId != null) {
+    if (userId === 0) {
+      return db.prepare(
+        `SELECT * FROM content_knowledge
+          WHERE category = ?
+            AND ${platformContentScopePredicate()}
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+      ).get(category) as ContentKnowledge | undefined;
+    }
     return db.prepare(
       `SELECT * FROM content_knowledge
         WHERE category = ?
-          AND (${CONTENT_OWNER_SCOPE_SQL} = 'system'
-               OR (${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ?))
-        ORDER BY CASE WHEN ${CONTENT_OWNER_SCOPE_SQL} = 'user' AND user_id = ? THEN 0 ELSE 1 END,
+          AND ${contentScopePredicate()}
+        ORDER BY ${contentScopeOrderExpr(undefined, userId)},
                  updated_at DESC
         LIMIT 1`,
-    ).get(category, userId, userId) as ContentKnowledge | undefined;
+    ).get(category, ...contentScopeParams(userId, tenantId)) as ContentKnowledge | undefined;
   }
   return db.prepare(
     'SELECT * FROM content_knowledge WHERE category = ?',
@@ -361,8 +540,9 @@ export function getKnowledgeByCategory(
  * Build a compact knowledge summary for injection into the content domain system prompt.
  * Returns empty string if no knowledge has been synthesized yet.
  */
-export function buildKnowledgePromptBlock(userId?: number): string {
-  const knowledge = getAllKnowledge(userId);
+export function buildKnowledgePromptBlock(userId?: number, tenantId?: number): string {
+  const knowledge = getAllKnowledge(userId, tenantId)
+    .filter((row) => userId == null || isAuthorizedContentRow(row, { userId, tenantId }));
   if (knowledge.length === 0) return '';
 
   const CATEGORY_LABELS: Record<string, string> = {

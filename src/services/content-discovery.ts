@@ -73,9 +73,10 @@ export interface ContentDiscoveryResult {
   fullContent: string;   // the complete detailed output
   filePath: string;      // where it was saved
   searchCount: number;   // how many web searches were used
+  provider: 'gemini' | 'anthropic';
 }
 
-export async function runContentDiscovery(userId?: number): Promise<ContentDiscoveryResult> {
+export async function runContentDiscovery(userId?: number, tenantId?: number): Promise<ContentDiscoveryResult> {
   const today = now();
   const dateStr = today.toFormat('yyyy-MM-dd');
   const dayName = today.toFormat('cccc');
@@ -203,7 +204,7 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
   let savedCount = 0;
   for (const title of allIdeas) {
     try {
-      const dedup = await isDuplicateIdea(title);
+      const dedup = await isDuplicateIdea(title, undefined, userId, tenantId);
       if (dedup.isDuplicate && dedup.confidence > 0.8) {
         logger.info({ title, similarTo: dedup.similarTo }, 'Discovery idea skipped (duplicate)');
         continue;
@@ -233,5 +234,6 @@ Remember: follow the creator configuration for audience fit, but keep the ideas 
     fullContent,
     filePath,
     searchCount,
+    provider: usedProvider,
   };
 }

@@ -37,6 +37,16 @@ describe('Internal Routes — structural', () => {
     expect(routesSrc).toContain('jsonMode,');
   });
 
+  it('ai-complete strips body-supplied user and tenant metadata before provider usage attribution', () => {
+    expect(routesSrc).toContain('userId?: number');
+    expect(routesSrc).toContain('tenantId?: number');
+    expect(routesSrc).toContain('const scopedUserId = 0;');
+    expect(routesSrc).toContain('const scopedTenantId = 0;');
+    expect(routesSrc).toContain('Ignoring body-supplied internal AI attribution; billing as system usage');
+    expect(routesSrc).toContain('userId: scopedUserId');
+    expect(routesSrc).toContain('tenantId: scopedTenantId');
+  });
+
   it('defines anthropic-enabled endpoint', () => {
     expect(routesSrc).toContain("router.get('/anthropic-enabled'");
   });
@@ -48,6 +58,12 @@ describe('Internal Routes — structural', () => {
   it('validates x-internal-secret header', () => {
     expect(routesSrc).toContain('x-internal-secret');
     expect(routesSrc).toContain('403');
+  });
+
+  it('requires loopback origin by default before internal secret auth', () => {
+    expect(routesSrc).toContain("INTERNAL_REQUIRE_LOOPBACK !== 'false'");
+    expect(routesSrc).toContain('isLoopbackRequest(req)');
+    expect(routesSrc).toContain('Internal API requires loopback origin');
   });
 
   it('records usage via recordUsage from usage-metering', () => {

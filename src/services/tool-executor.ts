@@ -38,6 +38,73 @@ const ALLOWED_PROFILE_TYPES = new Set([
   'triathlon-swim',
 ]);
 
+export const DISPATCHABLE_TOOL_NAMES = [
+  'ms_todo_get_lists',
+  'ms_todo_create_list',
+  'ms_todo_delete_list',
+  'ms_todo_get_tasks',
+  'ms_todo_create_task',
+  'ms_todo_update_task',
+  'ms_todo_complete_task',
+  'ms_todo_uncomplete_task',
+  'ms_todo_delete_task',
+  'ms_todo_search_tasks',
+  'ms_todo_get_due_tasks',
+  'ms_todo_move_task',
+  'ms_todo_get_checklist',
+  'ms_todo_add_checklist_item',
+  'get_calendar_events',
+  'create_calendar_event',
+  'update_calendar_event',
+  'delete_calendar_event',
+  'set_reminder',
+  'save_note',
+  'search_notes',
+  'search_outlook_emails',
+  'read_outlook_email',
+  'send_outlook_email',
+  'reply_outlook_email',
+  'get_outlook_unread',
+  'shared_memory_set',
+  'shared_memory_remove',
+  'save_athlete_profile_field',
+  'create_training_plan',
+  'add_training_week',
+  'add_training_session',
+  'get_training_plan',
+  'log_training_completion',
+  'update_training_session',
+  'link_session_calendar',
+  'finance_add_transaction',
+  'finance_get_transactions',
+  'finance_delete_transaction',
+  'finance_monthly_summary',
+  'finance_calculate_tax',
+  'finance_get_tax_events',
+  'finance_mark_tax_paid',
+  'finance_annual_summary',
+  'cooking_add_recipe',
+  'cooking_get_recipes',
+  'cooking_delete_recipe',
+  'cooking_set_meal',
+  'cooking_get_meal_plan',
+  'cooking_delete_meal',
+  'cooking_generate_shopping_list',
+  'cooking_get_shopping_list',
+] as const;
+
+export const ALLOWED_TOOLS: ReadonlySet<string> = new Set(DISPATCHABLE_TOOL_NAMES);
+
+function assertToolAllowlistIsConsistent(): void {
+  for (const toolName of DISPATCHABLE_TOOL_NAMES) {
+    if (!ALLOWED_TOOLS.has(toolName)) {
+      throw new Error(`Tool allowlist missing dispatch case: ${toolName}`);
+    }
+  }
+}
+
+assertToolAllowlistIsConsistent();
+
 // ─── Phase 1 Slice B helpers ─────────────────────────────────────────
 
 /**
@@ -193,6 +260,15 @@ export async function executeToolCall(
   logger.info({ tool: toolName, inputKeys: Object.keys(input ?? {}) }, 'Executing tool call');
 
   try {
+    if (!ALLOWED_TOOLS.has(toolName)) {
+      logger.warn({ tool: toolName, userId, tenantId }, 'Tool call blocked by dispatch allowlist');
+      return {
+        success: false,
+        error: `Tool "${toolName}" is not registered for execution`,
+        code: 'TOOL_NOT_ALLOWED',
+      };
+    }
+
     const authorization = authorizeChatToolCall(toolName, input, userId, tenantId);
     if (!authorization.allowed) {
       logger.warn(

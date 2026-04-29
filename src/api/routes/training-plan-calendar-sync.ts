@@ -288,11 +288,14 @@ export async function syncTrainingPlanCalendar(
       planId: plan.id,
       planVersion,
       sessionId: item.sessionId,
+      tenantId: userId,
+      userId,
     });
     const reusableOwnership = existingOwnership
       ? null
       : findReusableOwnershipBySessionIdentity({
         planId: plan.id,
+        tenantId: userId,
         userId,
         sessionIdentityKey: item.sessionIdentityKey,
         sessionShapeHash: item.sessionShapeHash,
@@ -328,6 +331,7 @@ export async function syncTrainingPlanCalendar(
           planId: plan.id,
           planVersion,
           sessionId: item.sessionId,
+          tenantId: userId,
           userId,
           eventId: ownedEvent.id,
           source: ownedEvent.source,
@@ -373,6 +377,7 @@ export async function syncTrainingPlanCalendar(
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
+        tenantId: userId,
         userId,
         eventId: linkedEvent.id,
         source: linkedEvent.source,
@@ -438,6 +443,7 @@ export async function syncTrainingPlanCalendar(
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
+        tenantId: userId,
         userId,
         eventId: existingEvent.id,
         source: existingEvent.source,
@@ -530,6 +536,7 @@ export async function syncTrainingPlanCalendar(
         planId: plan.id,
         planVersion,
         sessionId: item.sessionId,
+        tenantId: userId,
         userId,
         eventId: event.id,
         source: event.source,
@@ -668,6 +675,7 @@ function recordTrainingCalendarOwnership(input: {
   planId: number;
   planVersion: number;
   sessionId: number;
+  tenantId?: number;
   userId: number;
   eventId: string;
   source: string;

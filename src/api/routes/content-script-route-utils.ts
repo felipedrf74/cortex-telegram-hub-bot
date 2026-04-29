@@ -151,6 +151,7 @@ export function buildScriptSuccessResponse(params: {
   generationMode: GenerationMode;
   startMs: number;
   cacheHit: boolean;
+  generationQuality?: Record<string, unknown>;
 }) {
   const {
     result,
@@ -160,6 +161,7 @@ export function buildScriptSuccessResponse(params: {
     generationMode,
     startMs,
     cacheHit,
+    generationQuality,
   } = params;
 
   const sources = Array.isArray(result.sources_used) ? result.sources_used : [];
@@ -185,6 +187,7 @@ export function buildScriptSuccessResponse(params: {
     cta: result.cta ?? '',
     degraded: result.degraded ?? false,
     warnings: result.warnings ?? [],
+    generationQuality,
     generation: buildGenerationMeta({
       mode: generationMode,
       startMs,
