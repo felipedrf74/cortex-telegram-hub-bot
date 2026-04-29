@@ -38,6 +38,7 @@ export interface TrainingPlan {
   start_date: string;
   end_date: string;
   preferences_json: string | null;
+  plan_version?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +55,17 @@ export interface TrainingWeek {
   adjustment_reason: string | null;
   created_at: string;
 }
+
+export type TrainingSessionStatus =
+  | 'pending'
+  | 'completed'
+  | 'skipped'
+  | 'moved'
+  | 'unscheduled'
+  | 'deferred'
+  | 'dropped'
+  | 'cancelled'
+  | 'superseded';
 
 export interface TrainingSession {
   id: number;
@@ -77,6 +89,17 @@ export interface TrainingSession {
   calendar_event_id: string | null;
   calendar_source: string | null;
   /**
+   * Stable logical identity for this session slot within a plan. It does
+   * not include plan_version, so regeneration can compare the same
+   * logical slot across versions. Added by migration 082.
+   */
+  session_identity_key: string | null;
+  /**
+   * Material coaching-shape hash for this session. Cosmetic copy changes
+   * should not alter it; exercise/block/duration/role changes should.
+   */
+  session_shape_hash: string | null;
+  /**
    * Slice 1.B (coach-engine refactor, 2026-04-27) — set to 1 by the
    * planner when it could not land the session at the user's preferred
    * time. iOS uses this to render a ⚠️ chip so the user knows the time
@@ -84,7 +107,7 @@ export interface TrainingSession {
    * than a deliberate planner choice. Migration 080 backfills 0.
    */
   preferred_time_unavailable: number;
-  status: 'pending' | 'completed' | 'skipped' | 'moved';
+  status: TrainingSessionStatus;
   created_at: string;
   updated_at: string;
 }
@@ -138,6 +161,9 @@ export interface CreateSessionInput {
   intensity_text?: string;
   calendar_event_id?: string;
   calendar_source?: string;
+  session_identity_key?: string;
+  session_shape_hash?: string;
+  status?: TrainingSessionStatus;
   /**
    * Slice 1.B — set to true when the planner had to fall back from the
    * user's preferred time because the day was already booked. Persisted
@@ -375,15 +401,18 @@ export function createSession(input: CreateSessionInput): TrainingSession {
     INSERT INTO training_sessions
       (week_id, plan_id, day_of_week, session_type, title, description,
        description_json, exercises_json, duration_minutes, intensity_text,
-       calendar_event_id, calendar_source, preferred_time_unavailable)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       calendar_event_id, calendar_source, session_identity_key, session_shape_hash,
+       preferred_time_unavailable, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.week_id, input.plan_id, normalizedDay, input.session_type,
     input.title, input.description ?? null, input.description_json ?? null,
     input.exercises_json ?? null,
     input.duration_minutes ?? null, input.intensity_text ?? null,
     input.calendar_event_id ?? null, input.calendar_source ?? null,
+    input.session_identity_key ?? null, input.session_shape_hash ?? null,
     input.preferred_time_unavailable ? 1 : 0,
+    input.status ?? 'pending',
   );
   return db.prepare('SELECT * FROM training_sessions WHERE id = ?')
     .get(result.lastInsertRowid) as TrainingSession;
@@ -409,7 +438,7 @@ export function getSessionById(sessionId: number): TrainingSession | null {
 
 export function updateSession(
   sessionId: number,
-  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source'>>,
+  updates: Partial<Pick<TrainingSession, 'day_of_week' | 'title' | 'exercises_json' | 'duration_minutes' | 'intensity_text' | 'description' | 'status' | 'calendar_event_id' | 'calendar_source' | 'session_identity_key' | 'session_shape_hash'>>,
 ): boolean {
   const db = getDb();
   const setClauses: string[] = [];
@@ -818,7 +847,7 @@ export async function createCalendarBlockers(
         }
       }
     } catch (err) {
-      logger.warn({ err, session: session.title, userId }, 'Failed to create calendar blocker');
+      logger.warn({ err, sessionId: session.id, planId: session.plan_id, userId }, 'Failed to create calendar blocker');
       failed++;
     }
   }

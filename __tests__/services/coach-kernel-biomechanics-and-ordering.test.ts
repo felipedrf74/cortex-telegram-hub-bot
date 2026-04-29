@@ -72,6 +72,16 @@ function buildAthlete(painAreas: string[]): AthleteState {
   } as AthleteState;
 }
 
+function withEquipment(athlete: AthleteState, equipment: Partial<AthleteState['equipment']>): AthleteState {
+  return {
+    ...athlete,
+    equipment: {
+      ...athlete.equipment,
+      ...equipment,
+    },
+  };
+}
+
 function prescription(id: string, name: string): ExercisePrescription {
   return { exerciseId: id, name, sets: 3, reps: '8-10', rir: 2, restSec: 90 };
 }
@@ -139,6 +149,63 @@ describe('biomechanics — applyBiomechanicsSafetySubstitutions', () => {
     const result = applyBiomechanicsSafetySubstitutions([input], athlete, knowledge.exercises);
     expect(result.prescriptions[0].notes).toContain('Focus on knee tracking');
     expect(result.prescriptions[0].notes).toContain('Substituted');
+  });
+
+  it('uses equipment-aware substitutions instead of picking an unavailable safer-looking lift', () => {
+    const athlete = withEquipment(buildAthlete(['knee_pain']), {
+      hasGym: false,
+      hasBarbell: false,
+      hasDumbbells: false,
+    });
+    const input = prescription('dumbbell_reverse_lunge', 'Dumbbell Reverse Lunge');
+    const result = applyBiomechanicsSafetySubstitutions([input], athlete, knowledge.exercises);
+
+    expect(result.swappedFromIds).toContain('dumbbell_reverse_lunge');
+    expect(result.prescriptions[0].exerciseId).toBe('lunging_iso_hold');
+    expect(result.prescriptions[0].notes).toContain('equipment');
+    expect(result.prescriptions[0].notes).toContain('discomfort flag');
+  });
+
+  it('downshifts high-spinal-loading work for fatigued users even without an explicit pain flag', () => {
+    const athlete: AthleteState = {
+      ...buildAthlete([]),
+      readiness: {
+        ...buildAthlete([]).readiness,
+        level: 'orange',
+        score: 48,
+        soreness: 'high',
+      },
+    };
+    const result = applyBiomechanicsSafetySubstitutions(
+      [prescription('front_squat', 'Front Squat')],
+      athlete,
+      knowledge.exercises,
+      { sessionRole: 'strength lower body', durationMinutes: 45 },
+    );
+
+    expect(result.swappedFromIds).toContain('front_squat');
+    expect(result.prescriptions[0].exerciseId).not.toBe('front_squat');
+    expect(result.prescriptions[0].notes).toContain('fatigue safety');
+  });
+
+  it('routes novice athletes away from advanced technique lifts when a safer same-pattern option exists', () => {
+    const athlete: AthleteState = {
+      ...buildAthlete([]),
+      profile: {
+        ...buildAthlete([]).profile,
+        experienceLevel: 'novice',
+      },
+    };
+    const result = applyBiomechanicsSafetySubstitutions(
+      [prescription('front_squat', 'Front Squat')],
+      athlete,
+      knowledge.exercises,
+      { sessionRole: 'strength lower body', durationMinutes: 40 },
+    );
+
+    expect(result.swappedFromIds).toContain('front_squat');
+    expect(result.prescriptions[0].exerciseId).toBe('goblet_squat');
+    expect(result.prescriptions[0].notes).toContain('skill match');
   });
 
   it('does not mutate the input prescriptions array', () => {

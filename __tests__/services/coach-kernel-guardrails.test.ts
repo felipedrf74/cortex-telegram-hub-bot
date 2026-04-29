@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyGuardrails, buildWeekPlan, sampleMarathonAthlete, sampleTriathlete, type AthleteState, type WeeklyPlan } from '../../src/services/coach-kernel';
+import { applyGuardrails, buildWeekPlan, loadCoachKnowledge, sampleHybridAthlete, sampleMarathonAthlete, sampleTriathlete, type AthleteState, type WeeklyPlan } from '../../src/services/coach-kernel';
+import { estimateStrengthSessionMinutes } from '../../src/services/coach-kernel/session-coherence';
 
 function planMinutesBySport(plan: WeeklyPlan, sport: 'running' | 'cycling' | 'swimming' | 'strength'): number {
   return plan.sessions
@@ -99,6 +100,80 @@ describe('coach-kernel guardrails', () => {
     expect(plan.sessions.some((session) => session.sport === 'swimming' && session.sessionType === 'recovery_swim')).toBe(true);
     expect(plan.sessions.some((session) => session.sport === 'cycling' && session.sessionType === 'recovery_run')).toBe(false);
     expect(plan.sessions.some((session) => session.sport === 'swimming' && session.sessionType === 'recovery_run')).toBe(false);
+  });
+
+  it('keeps red-readiness strength replacements truthful to the short technique slot', () => {
+    const athlete: AthleteState = {
+      ...sampleHybridAthlete,
+      readiness: {
+        ...sampleHybridAthlete.readiness,
+        level: 'red',
+        score: 24,
+      },
+    };
+    const knowledge = loadCoachKnowledge();
+
+    const plan = buildWeekPlan(athlete, '2026-05-04');
+    const redStrength = plan.sessions.filter((session) => session.sport === 'strength' && session.title === 'Technique Strength + Mobility');
+
+    expect(redStrength.length).toBeGreaterThan(0);
+    for (const session of redStrength) {
+      expect(session.exercises?.length ?? 0).toBeLessThanOrEqual(2);
+      expect(session.exercises?.every((exercise) => exercise.sets <= 2)).toBe(true);
+      expect(session.exercises?.every((exercise) => (exercise.rir ?? 0) >= 4)).toBe(true);
+      const estimated = estimateStrengthSessionMinutes(session, knowledge);
+      expect(estimated).toBeLessThanOrEqual(Math.ceil(session.durationMinutes * 1.25));
+    }
+  });
+
+  it('varies red-readiness recovery titles by the original endurance role', () => {
+    const athlete: AthleteState = {
+      ...sampleTriathlete,
+      readiness: {
+        ...sampleTriathlete.readiness,
+        level: 'red',
+        score: 24,
+      },
+    };
+    const base = buildWeekPlan(sampleTriathlete, '2026-06-15');
+    const manual: WeeklyPlan = {
+      ...base,
+      sessions: [
+        {
+          ...base.sessions[0],
+          id: 'manual-interval-run',
+          sport: 'running',
+          sessionType: 'interval_run',
+          title: 'Track Intervals',
+          keySession: true,
+        },
+        {
+          ...base.sessions[1],
+          id: 'manual-long-run',
+          sport: 'running',
+          sessionType: 'long_run',
+          title: 'Long Run',
+          keySession: true,
+        },
+        {
+          ...base.sessions[2],
+          id: 'manual-threshold-ride',
+          sport: 'cycling',
+          sessionType: 'threshold_ride',
+          title: 'Threshold Ride',
+          keySession: true,
+        },
+      ],
+      guardrailResults: [],
+    };
+
+    const guarded = applyGuardrails(manual, athlete);
+    const titles = guarded.sessions.map((session) => session.title);
+
+    expect(new Set(titles).size).toBe(titles.length);
+    expect(titles).toContain('Recovery Run - Intensity Removed');
+    expect(titles).toContain('Run-Walk Aerobic Reset');
+    expect(titles.some((title) => title.includes('Spin') || title.includes('Ride'))).toBe(true);
   });
 
   it('keeps session times aligned with adjusted durations after guardrails mutate a plan', () => {

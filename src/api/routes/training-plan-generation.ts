@@ -36,6 +36,7 @@ import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { enforceRequestedTrainingPlanVolume } from '../../services/training-plan-volume-enforcement';
 import * as trainingPlans from '../../services/training-plans';
 import { findOrphanedOwnerships } from '../../services/training-plan-lifecycle';
+import { reconcileOrphanedTrainingAgendaEvents } from '../../services/training-agenda-reconciliation';
 import { logger } from '../../utils/logger';
 
 export interface GenerateTrainingPlanForUserInput {
@@ -126,15 +127,21 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
       return { kind: 'forbidden' };
     }
     if (cancellation.status === 'not_found') {
+      const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+      if (reconciliation.failed > 0) {
+        return { kind: 'external_partial', orphanedEventCount: reconciliation.failed };
+      }
       return { kind: 'no_active_plan' };
     }
     // Status is 'cancelled' — local hard-delete succeeded. The slice
     // 4.D ownership audit table tells us whether any external calendar
     // deletes failed (status='orphaned' rows). Those are reconcilable;
     // the saga can safely proceed.
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
     const orphans = findOrphanedOwnerships(userId);
-    if (orphans.length > 0) {
-      return { kind: 'external_partial', orphanedEventCount: orphans.length };
+    const orphanedEventCount = orphans.length + reconciliation.failed;
+    if (orphanedEventCount > 0) {
+      return { kind: 'external_partial', orphanedEventCount };
     }
     return { kind: 'success', removedEvents: cancellation.data.removedEvents };
   } catch (err) {
@@ -158,7 +165,8 @@ async function runPrePersistCancellationSaga(userId: number): Promise<Cancellati
       { err, userId },
       'Cancellation threw post-delete; saga continuing with reconciliation queued',
     );
-    return { kind: 'external_partial', orphanedEventCount: -1 };
+    const reconciliation = await reconcileOrphanedTrainingAgendaEvents(userId);
+    return { kind: 'external_partial', orphanedEventCount: reconciliation.failed || -1 };
   }
 }
 
@@ -432,6 +440,8 @@ export async function generateTrainingPlanForUser(
       preferredCardioTime: normalizedPreferredCardioTime,
       preferredStrengthTime: normalizedPreferredStrengthTime,
       weeks: persistedPlan.weekSummaries,
+      profileQuality: planData.profileQuality ?? null,
+      decisionReasons: Array.isArray(planData.decisionReasons) ? planData.decisionReasons : [],
       fallbackTemplateUsed: usedFallbackTemplate,
       message: usedFallbackTemplate
         ? `Plan created with a reliable fallback template. ${persistedPlan.totalSessions} sessions scheduled across ${durationWeeks} weeks. ${persistedPlan.eventsCreated} calendar events created.`

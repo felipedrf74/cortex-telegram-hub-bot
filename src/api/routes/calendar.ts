@@ -201,13 +201,25 @@ export function calendarRoutes(): Router {
       invalidateCalendarCaches(userId);
 
       logger.info(
-        { userId: (req as AuthenticatedRequest).userId, eventId: event.id, source: event.source, title: event.summary },
+        { userId: (req as AuthenticatedRequest).userId, eventId: event.id, source: event.source },
         'iOS calendar event created',
       );
 
       sendSuccess(res, { event: formatEvent(event) });
     } catch (err: any) {
-      logger.error({ err, body }, 'iOS calendar event create failed');
+      logger.error(
+        {
+          err,
+          userId,
+          source,
+          titleLength: typeof body.title === 'string' ? body.title.trim().length : 0,
+          hasDescription: typeof body.description === 'string' && body.description.trim().length > 0,
+          attendeeCount: Array.isArray(body.attendees) ? body.attendees.length : 0,
+          hasLocation: typeof body.location === 'string' && body.location.trim().length > 0,
+          hasRecurrence: body.recurrence != null,
+        },
+        'iOS calendar event create failed',
+      );
       sendInternalError(res, 'Failed to create event', { code: 'CALENDAR_CREATE_FAILED' });
     }
   }));

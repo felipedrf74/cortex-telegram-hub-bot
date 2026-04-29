@@ -9,7 +9,9 @@ import {
   sampleTriathlete,
   type AthleteState,
 } from '../../src/services/coach-kernel';
+import { trainingEvalPersonaBank, trainingEvalScenarioBank } from '../../src/services/coach-kernel/evaluation';
 import { adjustForFatigue } from '../../src/services/coach-kernel/planner-engine';
+import { timeToMinutes } from '../../src/services/coach-kernel/utils';
 
 describe('coach-kernel planner', () => {
   it('handles marathon peak-week long run safely', () => {
@@ -51,6 +53,30 @@ describe('coach-kernel planner', () => {
     expect(runSessions.length).toBeLessThanOrEqual(3);
   });
 
+  it('caps scheduled sessions to declared short availability windows', () => {
+    const persona = trainingEvalPersonaBank.find((item) => item.id === 'runner-half-marathon')!;
+    const scenario = trainingEvalScenarioBank.find((item) => item.id === 'reduced-available-time')!;
+    const athlete = scenario.apply({ persona, weekStart: '2026-04-27' });
+
+    const plan = buildWeekPlan(athlete, '2026-04-27');
+    const cappedSessions = plan.sessions.filter((session) => session.tags.includes('availability_capped'));
+
+    expect(cappedSessions.length).toBeGreaterThan(0);
+    for (const session of plan.sessions) {
+      const window = athlete.availability.weeklyWindows.find((item) =>
+        item.dayOfWeek === session.dayOfWeek
+        && (!item.sports || item.sports.includes(session.sport))
+      );
+      if (!window) continue;
+
+      const capacityMinutes = timeToMinutes(window.end) - timeToMinutes(window.start);
+      expect(session.durationMinutes).toBeLessThanOrEqual(capacityMinutes);
+      if (session.startTime && session.endTime) {
+        expect(timeToMinutes(session.endTime) - timeToMinutes(session.startTime)).toBe(session.durationMinutes);
+      }
+    }
+  });
+
   it('does not leak running sessions into strength-primary weeks', () => {
     const strengthAthlete: AthleteState = {
       ...sampleHybridAthlete,
@@ -87,6 +113,17 @@ describe('coach-kernel planner', () => {
 
     expect(day.session).toBeTruthy();
     expect(day.rationale[0]).toContain('primary prescription');
+  });
+
+  it('attaches explicit weekly decision notes instead of generic phase/readiness labels', () => {
+    const plan = buildWeekPlan(sampleHybridAthlete, '2026-05-04');
+
+    expect(plan.notes.some((note) => note.startsWith('Weekly structure:'))).toBe(true);
+    expect(plan.notes.some((note) => note.startsWith('Readiness decision:'))).toBe(true);
+    expect(plan.notes.some((note) => note.startsWith('Adherence decision:'))).toBe(true);
+    expect(plan.notes.some((note) => note.startsWith('Phase:'))).toBe(false);
+    expect(plan.notes.some((note) => note.startsWith('Readiness:'))).toBe(false);
+    expect(new Set(plan.notes.map((note) => note.toLowerCase().trim())).size).toBe(plan.notes.length);
   });
 
   it('re-running adjustForFatigue with a red readiness collapses the phase to deload', () => {
@@ -245,5 +282,31 @@ describe('coach-kernel planner', () => {
 
     // Pass-status guardrails should NOT appear in rationale.
     expect(day.rationale.some((line) => line.includes('Readiness within band'))).toBe(false);
+  });
+
+  it('deduplicates repeated guardrail and weekly-note rationale after plan updates', () => {
+    const plan = buildWeekPlan(sampleMarathonAthlete, '2026-05-11');
+    const duplicatedMessage = 'Capped volume growth at +8% because adherence dipped below 75%.';
+    const syntheticPlan = {
+      ...plan,
+      notes: [
+        ...plan.notes,
+        plan.notes[0],
+        'Fueling warning: Add carbohydrates before key endurance work.',
+        'Fueling warning: Add carbohydrates before key endurance work.',
+      ],
+      guardrailResults: [
+        ...plan.guardrailResults,
+        { ruleId: 'volume_growth', status: 'warn' as const, adjusted: true, message: duplicatedMessage },
+        { ruleId: 'volume_growth_duplicate', status: 'warn' as const, adjusted: true, message: duplicatedMessage },
+      ],
+    };
+
+    const day = buildDayPlan(sampleMarathonAthlete, syntheticPlan, 'tuesday');
+
+    expect(day.rationale.filter((line) => line.includes(duplicatedMessage))).toHaveLength(1);
+    expect(day.rationale.filter((line) => line.startsWith('Weekly structure:'))).toHaveLength(1);
+    expect(day.rationale.filter((line) => line.includes('Fueling warning'))).toHaveLength(1);
+    expect(day.guardrailResults.length).toBe(syntheticPlan.guardrailResults.length);
   });
 });

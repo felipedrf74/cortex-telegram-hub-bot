@@ -138,17 +138,26 @@ echo ""
 echo "📤 Syncing files to staging..."
   rsync -avz --delete \
     --exclude='.env' \
+    --exclude='.env.*' \
+    --exclude='.local/' \
+    --exclude='.local/**' \
+    --exclude='.DS_Store' \
     --exclude='.db.sqlite' \
+    --exclude='*.db' \
     --exclude='data/' \
     --exclude='logs/' \
     --exclude='node_modules/' \
-  --exclude='content-engine/.venv/' \
-  --exclude='content-engine/data/' \
-  --exclude='content-engine/__pycache__/' \
-  --exclude='**/__pycache__/' \
-  --exclude='.git' \
-  --exclude='.git/' \
-  --exclude='ecosystem.config.js' \
+    --exclude='content-engine/.venv/' \
+    --exclude='content-engine/data/' \
+    --exclude='content-engine/__pycache__/' \
+    --exclude='**/__pycache__/' \
+    --exclude='.claude/worktrees/' \
+    --exclude='.claude/worktrees/**' \
+    --exclude='.codex/' \
+    --exclude='.codex/**' \
+    --exclude='.git' \
+    --exclude='.git/' \
+    --exclude='ecosystem.config.js' \
   "$LOCAL_DIR/" "$SERVER:$STAGING_DIR/" 2>&1 | tail -5
 echo "   ✅ rsync complete"
 
@@ -218,18 +227,37 @@ ssh "$SERVER" "
   fi
 "
 
-# Portal — read PORTAL_TOKEN from the STAGING .env. Note: we hit /api/snapshot
-# (not /health) because /health returns 503 when status is "degraded", which
-# is the EXPECTED state for staging-without-bot (bot.polling = false). The
-# /api/snapshot endpoint returns 200 regardless of bot polling state.
-STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
-ssh "$SERVER" "
-  if curl -sf -o /dev/null -H 'Authorization: Bearer ${STAGING_TOKEN:-x}' http://localhost:8201/api/snapshot 2>/dev/null; then
-    echo ' ✅ Staging portal OK'
-  else
-    echo ' ⚠️  Staging portal not responding (port 8201)'
-  fi
-"
+# Portal — staging may require signed portal sessions instead of the legacy
+# PORTAL_TOKEN. Hit /api/snapshot (not /health) because /health returns 503
+# when status is "degraded", which is expected for staging-without-bot.
+PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $STAGING_DIR/.env 2>/dev/null" || true)
+if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
+  STAGING_SESSION=$(ssh "$SERVER" "
+    set -e
+    cd $STAGING_DIR
+    set -a
+    . ./.env
+    set +a
+    node dist/tools/portal-session-token.js --actor deploy-staging@nexushub.me --scope admin --ttl-ms 600000 --json \
+      | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
+  " 2>/dev/null || true)
+  ssh "$SERVER" "
+    if curl -sf -o /dev/null -H 'x-portal-session: ${STAGING_SESSION:-x}' http://localhost:8201/api/snapshot 2>/dev/null; then
+      echo ' ✅ Staging portal OK'
+    else
+      echo ' ⚠️  Staging portal not responding (port 8201)'
+    fi
+  "
+else
+  STAGING_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $STAGING_DIR/.env 2>/dev/null" || true)
+  ssh "$SERVER" "
+    if curl -sf -o /dev/null -H 'Authorization: Bearer ${STAGING_TOKEN:-x}' http://localhost:8201/api/snapshot 2>/dev/null; then
+      echo ' ✅ Staging portal OK'
+    else
+      echo ' ⚠️  Staging portal not responding (port 8201)'
+    fi
+  "
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════"

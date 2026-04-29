@@ -351,7 +351,7 @@ function summarizeCookingForTraining(cooking: CookingMeshContext | null): string
   if (fuelingSupport) {
     facts.push(
       fuelingSupport.hardDatesMissingMeals.length > 0
-        ? `fueling support is ${fuelingSupport.status} because ${fuelingSupport.hardDatesMissingMeals.length} hard training day(s) still lack meals`
+        ? `fueling support is ${fuelingSupport.status} because hard training lacks meals on ${fuelingSupport.hardDatesMissingMeals.join(', ')}`
         : `fueling support is ${fuelingSupport.status}`,
     );
   }
@@ -413,11 +413,15 @@ function summarizeContentForTraining(content: ContentMeshContext | null): string
   if (!content) return '';
   const commitment = extractPublishingCommitment(content);
   const filming = extractFilmingRecommendation(content);
-  if (!commitment && !filming) return '';
+  const nextExecution = extractNextContentExecution(content);
+  if (!commitment && !filming && !nextExecution) return '';
 
   const facts: string[] = [];
   if (commitment) facts.push(`${commitment.upcomingTopicCount} topic(s) are queued`);
   if (filming) facts.push(`filming is currently best on ${filming.date}${filming.window ? ` ${filming.window}` : ''}`);
+  if (nextExecution && isActionableContentExecution(nextExecution)) {
+    facts.push(formatNextContentExecutionFact(nextExecution));
+  }
   return formatSection('Content', facts, 'Account for creator workload before locking a hard week.');
 }
 
@@ -813,20 +817,32 @@ function buildSecretaryContractForTraining(secretary: SecretaryMeshContext | nul
   const travel = extractSecretaryTravel(secretary);
   const inbox = extractSecretaryInboxPressure(secretary);
   const focus = extractSecretaryFocus(secretary);
+  const fragmentation = extractSecretaryFragmentation(secretary);
+  const criticality = extractSecretaryMeetingCriticality(secretary);
   return createContract({
     nonNegotiables: compact([
       travel?.dates.length ? `Travel is fixed on ${travel.dates.join(', ')}.` : null,
       busy?.dates.length ? `Busy calendar blocks already land on ${busy.dates.join(', ')}.` : null,
+      criticality?.criticalEventCount ? `${criticality.criticalEventCount} critical meeting(s) are protected and should not be displaced by training.` : null,
     ]),
     preferredWindows: compact([
       focus ? `Use ${focus.date} as the best protected focus day.` : null,
+      fragmentation?.dates.length
+        ? `Prefer lower-friction sessions on fragmented calendar days (${fragmentation.dates.join(', ')}).`
+        : null,
     ]),
     fallbackIfDeferred: compact([
       inbox && (inbox.overdueCount > 0 || inbox.dueTodayCount > 0)
         ? 'If training has to move, clear overdue or due-today admin before expanding optional work.'
         : null,
+      busy?.dates.length || travel?.dates.length || fragmentation?.dates.length
+        ? 'If availability changes, reflow the training plan and resync agenda ownership before showing the old schedule as final.'
+        : null,
     ]),
-    notes: compact([inbox ? `Admin pressure: ${inbox.overdueCount} overdue, ${inbox.dueTodayCount} due today.` : null]),
+    notes: compact([
+      inbox ? `Admin pressure: ${inbox.overdueCount} overdue, ${inbox.dueTodayCount} due today.` : null,
+      fragmentation ? `Calendar fragmentation: ${fragmentation.fragmentedDayCount} day(s), max ${fragmentation.maxEventsInDay} events in one day.` : null,
+    ]),
   });
 }
 
@@ -846,10 +862,15 @@ function buildCookingContractForTraining(cooking: CookingMeshContext | null): Pe
     ]),
     fallbackIfDeferred: compact([
       support?.status === 'at_risk'
-        ? 'Downgrade fueling ambition before forcing a hard session through unsupported meals.'
+        ? 'Reflow, lower, or shorten hard training before forcing unsupported fueling through another warning.'
         : null,
     ]),
-    notes: compact([spend ? `Shopping forecast: ${formatCurrencyAmount(spend.currency, spend.amount)}.` : null]),
+    notes: compact([
+      support?.hardDatesMissingMeals.length
+        ? `Fueling gap dates are already named above; do not repeat generic fueling warnings in the coach rationale.`
+        : null,
+      spend ? `Shopping forecast: ${formatCurrencyAmount(spend.currency, spend.amount)}.` : null,
+    ]),
   });
 }
 
@@ -900,18 +921,27 @@ function buildContentContractForTraining(content: ContentMeshContext | null): Pe
   if (!content) return null;
   const commitment = extractPublishingCommitment(content);
   const filming = extractFilmingRecommendation(content);
+  const nextExecution = extractNextContentExecution(content);
   return createContract({
     nonNegotiables: compact([
       commitment?.nextDate ? `Publishing commitment is due on ${commitment.nextDate}.` : null,
     ]),
     preferredWindows: compact([
       filming ? `Filming window currently points to ${filming.date}${filming.window ? ` ${filming.window}` : ''}.` : null,
+      nextExecution && isActionableContentExecution(nextExecution) ? formatNextContentExecutionFact(nextExecution) + '.' : null,
     ]),
     fallbackIfDeferred: compact([
       filming ? 'Place production after protected training and fueling commitments instead of before them.' : null,
+      nextExecution && isActionableContentExecution(nextExecution)
+        ? 'Avoid stacking hard doubles on the same day as the next content execution unless Secretary confirms spare capacity.'
+        : null,
     ]),
     publishDeadline: commitment?.nextDate ?? null,
-    notes: [],
+    notes: compact([
+      nextExecution && isActionableContentExecution(nextExecution)
+        ? `Next execution: ${formatNextContentExecutionFact(nextExecution)}.`
+        : null,
+    ]),
   });
 }
 

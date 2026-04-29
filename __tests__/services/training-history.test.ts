@@ -237,6 +237,33 @@ describe('training-history — duration fallback', () => {
     expect(result.lastWeekMinutesBySport.running).toBe(45);
   });
 
+  it('returns recent feedback samples for the coach feedback loop', () => {
+    seed({ userId: 100, sessionType: 'running', daysAgo: 2, durationMin: 45, baseId: 1 });
+    testDb.prepare(`
+      UPDATE training_completions
+      SET duration_minutes = 62,
+          rpe_overall = 9,
+          soreness_level = 8,
+          energy_level = 3,
+          actual_exercises_json = ?
+      WHERE session_id = 1
+    `).run(JSON.stringify({ distance_km: 10, notes: 'substituted because hotel travel' }));
+
+    const result = READ(100);
+    expect(result.recentSessions).toHaveLength(1);
+    expect(result.recentSessions[0]).toMatchObject({
+      sport: 'running',
+      sessionType: 'easy_run',
+      plannedDurationMinutes: 45,
+      actualDurationMinutes: 62,
+      rpe: 9,
+      sorenessLevel: 8,
+      energyLevel: 3,
+      distanceKm: 10,
+      feedbackTags: expect.arrayContaining(['too_hard', 'too_long', 'pain', 'substitution', 'travel']),
+    });
+  });
+
   it('falls back to training_sessions.duration_minutes when completion has no duration', () => {
     // Insert plan + week + session with duration 60.
     testDb.prepare(`

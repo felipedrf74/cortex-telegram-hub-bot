@@ -40,6 +40,7 @@ import {
   type AgentSignal,
   type SignalPriority,
 } from './intelligence-bus';
+import { isTrainingCrossSkillSignalsEnabled } from './training-operational-switches';
 import { logger } from '../utils/logger';
 
 // ─── Source identifiers ─────────────────────────────────────────────
@@ -52,9 +53,26 @@ export const TRAINING_SOURCE = {
   SWIM_COACH: 'triathlon.swim',
   WELLNESS_SYNC: 'garmin.sync',
   SECRETARY_CALENDAR: 'secretary.calendar',
+  COOKING_FUELING: 'cooking.fueling',
+  FINANCE_PLANNING: 'finance.training',
 } as const;
 
 export type TrainingSource = (typeof TRAINING_SOURCE)[keyof typeof TRAINING_SOURCE];
+
+function writeTrainingSignal(signal: Parameters<typeof writeSignal>[0]): number {
+  if (!isTrainingCrossSkillSignalsEnabled()) {
+    logger.warn(
+      {
+        userId: signal.user_id,
+        sourceAgent: signal.source_agent,
+        signalType: signal.signal_type,
+      },
+      'Training cross-skill signal skipped by operational switch',
+    );
+    return -1;
+  }
+  return writeSignal(signal);
+}
 
 // ─── Publisher helpers (write path) ─────────────────────────────────
 
@@ -83,7 +101,7 @@ export function publishSessionLoad(opts: {
     : opts.sport === 'cycling' ? TRAINING_SOURCE.CYCLE_COACH
     : TRAINING_SOURCE.SWIM_COACH;
 
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: source,
     signal_type: signalType,
     payload: {
@@ -112,7 +130,7 @@ export function publishHighLegLoad(opts: {
     logger.debug({ userId: opts.userId, rpe: opts.rpe }, 'RPE below threshold, not publishing high_leg_load');
     return -1;
   }
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: opts.source === 'gym' ? TRAINING_SOURCE.GYM_COACH : TRAINING_SOURCE.RUNNING_COACH,
     signal_type: 'high_leg_load',
     payload: { source: opts.source, rpe: opts.rpe, ...opts.details },
@@ -131,7 +149,7 @@ export function publishHighShoulderLoad(opts: {
   details?: { lifts?: string[]; notes?: string };
 }): number {
   if (opts.rpe < 8) return -1;
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: TRAINING_SOURCE.GYM_COACH,
     signal_type: 'high_shoulder_load',
     payload: { rpe: opts.rpe, ...opts.details },
@@ -150,7 +168,7 @@ export function publishLowSleep(opts: {
   totalHours?: number;
   source?: string;        // defaults to WELLNESS_SYNC
 }): number {
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: opts.source ?? TRAINING_SOURCE.WELLNESS_SYNC,
     signal_type: 'low_sleep',
     payload: { score: opts.score, total_hours: opts.totalHours },
@@ -168,7 +186,7 @@ export function publishLowHrv(opts: {
   baseline_ms: number;
   source?: string;
 }): number {
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: opts.source ?? TRAINING_SOURCE.WELLNESS_SYNC,
     signal_type: 'low_hrv',
     payload: { hrv_ms: opts.hrv_ms, baseline_ms: opts.baseline_ms, delta_pct: ((opts.hrv_ms - opts.baseline_ms) / opts.baseline_ms) * 100 },
@@ -186,7 +204,7 @@ export function publishLowReadiness(opts: {
   reason?: string;
   source?: string;
 }): number {
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: opts.source ?? TRAINING_SOURCE.WELLNESS_SYNC,
     signal_type: 'low_readiness',
     payload: { score: opts.score, reason: opts.reason },
@@ -214,7 +232,7 @@ export function publishTrainingSessionScheduled(opts: {
     : opts.sport === 'cycling' ? TRAINING_SOURCE.CYCLE_COACH
     : TRAINING_SOURCE.SWIM_COACH;
 
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: source,
     signal_type: 'training_session_scheduled',
     payload: {
@@ -251,7 +269,7 @@ export function publishLowAdherence(opts: {
   weekEnd: string;
   reason?: string;
 }): number {
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: 'session.analytics',
     signal_type: 'low_adherence',
     payload: {
@@ -282,7 +300,7 @@ export function publishHighAdherence(opts: {
   weekStart: string;
   weekEnd: string;
 }): number {
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: 'session.analytics',
     signal_type: 'high_adherence',
     payload: {
@@ -336,7 +354,7 @@ export function publishPlanDrift(opts: {
   ttlHours?: number;
 }): number {
   const ttl = opts.ttlHours ?? 48;
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: 'session.analytics',
     signal_type: 'plan_drift',
     payload: {
@@ -365,7 +383,7 @@ export function publishCalendarConflict(opts: {
   overlapStartIso: string;
   overlapEndIso: string;
 }): number {
-  return writeSignal({
+  return writeTrainingSignal({
     source_agent: TRAINING_SOURCE.SECRETARY_CALENDAR,
     signal_type: 'calendar_conflict',
     payload: {
@@ -380,6 +398,96 @@ export function publishCalendarConflict(opts: {
   });
 }
 
+/**
+ * Secretary/agenda lifecycle signal: the current training schedule no
+ * longer matches calendar truth. Coaches should reflow/resync instead
+ * of presenting the old plan as authoritative.
+ */
+export function publishTrainingScheduleStale(opts: {
+  userId: number;
+  reason: string;
+  affectedSessionIds?: Array<number | string>;
+  dates?: string[];
+  source?: string;
+  ttlHours?: number;
+}): number {
+  const ttl = opts.ttlHours ?? 24;
+  return writeTrainingSignal({
+    source_agent: opts.source ?? TRAINING_SOURCE.SECRETARY_CALENDAR,
+    signal_type: 'training_schedule_stale',
+    payload: {
+      reason: opts.reason,
+      affected_session_ids: opts.affectedSessionIds ?? [],
+      dates: opts.dates ?? [],
+      requires_reflow: true,
+      requires_agenda_resync: true,
+    },
+    user_id: opts.userId,
+    priority: 'urgent',
+    expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
+  });
+}
+
+/**
+ * Cooking signal: planned training demand is not matched by meal/fueling
+ * coverage. Training consumes this as one deduped input and can lower,
+ * move, or request food prep instead of repeating generic fuel warnings.
+ */
+export function publishFuelingGapRisk(opts: {
+  userId: number;
+  hardDatesMissingMeals?: string[];
+  trainingDatesMissingMeals?: string[];
+  status?: 'partial' | 'at_risk' | 'unsupported';
+  ttlHours?: number;
+}): number {
+  const ttl = opts.ttlHours ?? 48;
+  const hardDates = opts.hardDatesMissingMeals ?? [];
+  const trainingDates = opts.trainingDatesMissingMeals ?? [];
+  return writeTrainingSignal({
+    source_agent: TRAINING_SOURCE.COOKING_FUELING,
+    signal_type: 'fueling_gap_risk',
+    payload: {
+      status: opts.status ?? (hardDates.length > 0 ? 'at_risk' : 'partial'),
+      hard_dates_missing_meals: hardDates,
+      training_dates_missing_meals: trainingDates,
+    },
+    user_id: opts.userId,
+    priority: hardDates.length > 0 ? 'urgent' : 'normal',
+    expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
+  });
+}
+
+/**
+ * Finance signal: training spend should respect current budget posture.
+ * Coaches use this to avoid gear/subscription/supplement asks when the
+ * Finance skill has already marked the month as constrained.
+ */
+export function publishTrainingBudgetConstraint(opts: {
+  userId: number;
+  month: string;
+  budgetMode: 'tight' | 'controlled' | 'comfortable' | 'unknown';
+  trainingSpendMode?: string;
+  supplementMode?: string;
+  remainingRatio?: number | null;
+  ttlHours?: number;
+}): number {
+  const ttl = opts.ttlHours ?? 7 * 24;
+  return writeTrainingSignal({
+    source_agent: TRAINING_SOURCE.FINANCE_PLANNING,
+    signal_type: 'budget_remaining',
+    payload: {
+      month: opts.month,
+      budgetMode: opts.budgetMode,
+      trainingSpendMode: opts.trainingSpendMode ?? null,
+      supplementMode: opts.supplementMode ?? null,
+      remainingRatio: opts.remainingRatio ?? null,
+    },
+    user_id: opts.userId,
+    priority: opts.budgetMode === 'tight' ? 'urgent' : 'normal',
+    expires_at: new Date(Date.now() + ttl * 3600 * 1000).toISOString(),
+  });
+}
+
 // ─── Reader helpers (read path + consume) ───────────────────────────
 
 /** Signals any sport coach should read before generating a prescription. */
@@ -388,6 +496,12 @@ const UNIVERSAL_COACH_INPUTS: SignalType[] = [
   'low_hrv',
   'low_readiness',
   'planned_race_this_week',
+  'calendar_conflict',
+  'training_schedule_stale',
+  'fueling_gap_risk',
+  'budget_remaining',
+  'subscription_renewal_due',
+  'publishing_commitment',
   // Phase 4 Slice C — adherence flags inform intensity AND tone.
   // Every sport coach benefits from knowing the user is on-track or
   // off-track — they shape prescriptions AND check-in language.
@@ -442,6 +556,15 @@ export interface TrainingContext {
     /** Phase 4 Slice G — plan drift flag. Set when the user's
      *  actual sport distribution diverges from the plan's sport. */
     planDrift: boolean;
+    /** Secretary/agenda says the active schedule is stale or conflicted. */
+    calendarConflict: boolean;
+    scheduleStale: boolean;
+    /** Cooking says planned training lacks meal/fueling support. */
+    fuelingGap: boolean;
+    /** Finance says training cost or supplement/equipment asks need constraint. */
+    budgetConstraint: boolean;
+    /** Content has a publishing or execution commitment Training should respect. */
+    contentCommitment: boolean;
     /** Sum of RPE from load signals of OTHER sports today. */
     otherSportRpeToday: number;
   };
@@ -478,6 +601,11 @@ export function readTrainingContext(opts: {
     lowAdherence: signals.some((s) => s.signal_type === 'low_adherence'),
     highAdherence: signals.some((s) => s.signal_type === 'high_adherence'),
     planDrift: signals.some((s) => s.signal_type === 'plan_drift'),
+    calendarConflict: signals.some((s) => s.signal_type === 'calendar_conflict'),
+    scheduleStale: signals.some((s) => s.signal_type === 'training_schedule_stale'),
+    fuelingGap: signals.some((s) => s.signal_type === 'fueling_gap_risk'),
+    budgetConstraint: signals.some((s) => s.signal_type === 'budget_remaining'),
+    contentCommitment: signals.some((s) => s.signal_type === 'publishing_commitment'),
     otherSportRpeToday: signals
       .filter((s) => s.signal_type.endsWith('_load_today'))
       .reduce((sum, s) => sum + (Number(s.payload?.rpe) || 0), 0),
@@ -506,6 +634,11 @@ export function readTrainingContextAll(opts: { userId: number }): TrainingContex
     'low_adherence', 'high_adherence',
     // Phase 4 Slice G — plan drift universal input.
     'plan_drift',
+    // Training-centered cross-skill orchestration inputs.
+    'calendar_conflict', 'training_schedule_stale',
+    'fueling_gap_risk',
+    'budget_remaining', 'subscription_renewal_due',
+    'publishing_commitment',
   ];
   const signals = readSignals(consumer, allTrainingSignalTypes, 40, opts.userId);
 
@@ -519,6 +652,11 @@ export function readTrainingContextAll(opts: { userId: number }): TrainingContex
     lowAdherence: signals.some((s) => s.signal_type === 'low_adherence'),
     highAdherence: signals.some((s) => s.signal_type === 'high_adherence'),
     planDrift: signals.some((s) => s.signal_type === 'plan_drift'),
+    calendarConflict: signals.some((s) => s.signal_type === 'calendar_conflict'),
+    scheduleStale: signals.some((s) => s.signal_type === 'training_schedule_stale'),
+    fuelingGap: signals.some((s) => s.signal_type === 'fueling_gap_risk'),
+    budgetConstraint: signals.some((s) => s.signal_type === 'budget_remaining'),
+    contentCommitment: signals.some((s) => s.signal_type === 'publishing_commitment'),
     otherSportRpeToday: signals
       .filter((s) => s.signal_type.endsWith('_load_today'))
       .reduce((sum, s) => sum + (Number(s.payload?.rpe) || 0), 0),
@@ -573,6 +711,38 @@ export function formatTrainingContextForPrompt(ctx: TrainingContext, sport: stri
   if (ctx.flags.highLegLoad) lines.push('- HIGH LEG LOAD recently — avoid heavy lower-body today.');
   if (ctx.flags.highShoulderLoad) lines.push('- HIGH SHOULDER LOAD recently — reduce overhead/paddle work.');
   if (ctx.flags.raceThisWeek) lines.push('- RACE THIS WEEK — taper, no new stimulus.');
+  if (ctx.flags.calendarConflict) {
+    const conflict = ctx.signals.find((s) => s.signal_type === 'calendar_conflict');
+    const title = String(conflict?.payload?.conflict_event_title ?? 'calendar event');
+    lines.push(`- CALENDAR CONFLICT — ${title} overlaps training. Reflow the session and resync agenda before claiming the schedule is final.`);
+  }
+  if (ctx.flags.scheduleStale) {
+    const stale = ctx.signals.find((s) => s.signal_type === 'training_schedule_stale');
+    const reason = String(stale?.payload?.reason ?? 'availability changed');
+    lines.push(`- TRAINING SCHEDULE STALE — ${reason}. Do not show stale sessions as active; rebuild or resync the plan lifecycle first.`);
+  }
+  if (ctx.flags.fuelingGap) {
+    const gap = ctx.signals.find((s) => s.signal_type === 'fueling_gap_risk');
+    const hardDates = Array.isArray(gap?.payload?.hard_dates_missing_meals)
+      ? gap.payload.hard_dates_missing_meals.filter((value): value is string => typeof value === 'string')
+      : [];
+    lines.push(
+      hardDates.length > 0
+        ? `- FUELING GAP — hard training lacks meal coverage on ${hardDates.join(', ')}. Move/lower the hard work or ask Cooking to cover prep; do not repeat generic fueling warnings.`
+        : '- FUELING GAP — training-day meals are incomplete. Keep guidance concrete and deduped.',
+    );
+  }
+  if (ctx.flags.budgetConstraint) {
+    const budget = ctx.signals.find((s) => s.signal_type === 'budget_remaining');
+    const mode = String(budget?.payload?.budgetMode ?? 'constrained');
+    const trainingSpendMode = budget?.payload?.trainingSpendMode ? ` / training spend: ${budget.payload.trainingSpendMode}` : '';
+    lines.push(`- FINANCE CONSTRAINT — budget mode is ${mode}${trainingSpendMode}. Avoid paid gear, subscriptions, and supplement asks unless explicitly needed.`);
+  }
+  if (ctx.flags.contentCommitment) {
+    const commitment = ctx.signals.find((s) => s.signal_type === 'publishing_commitment');
+    const date = commitment?.payload?.nextDate ? ` due ${commitment.payload.nextDate}` : '';
+    lines.push(`- CONTENT COMMITMENT${date} — account for creator workload before adding hard doubles or high-friction training.`);
+  }
   // Phase 4 Slice C — adherence adaptation cues
   if (ctx.flags.lowAdherence) {
     lines.push('- LOW ADHERENCE this week — do not add volume. Lead with empathy, offer a deload or shorter rescue session.');

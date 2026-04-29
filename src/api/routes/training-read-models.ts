@@ -141,7 +141,10 @@ export async function getTodaySession(userId: number) {
     if (activePlan) {
       const currentWeek = trainingPlans.getCurrentWeek(activePlan.id);
       plan = {
+        id: activePlan.id,
         name: activePlan.name,
+        planVersion: activePlan.plan_version ?? null,
+        lifecycleState: activePlan.status ?? 'active',
         weekNumber: currentWeek?.week_number || 1,
         phase: currentWeek?.focus || activePlan.periodization || null,
       };
@@ -167,6 +170,11 @@ export async function getTodaySession(userId: number) {
           }
           session = {
             id: rawSession.id != null ? String(rawSession.id) : null,
+            planId: rawSession.plan_id != null ? String(rawSession.plan_id) : null,
+            planVersion: activePlan.plan_version ?? null,
+            sessionIdentityKey: rawSession.session_identity_key || null,
+            sessionShapeHash: rawSession.session_shape_hash || null,
+            lifecycleState: rawSession.status || 'pending',
             type: rawSession.title || humanizeSessionType(rawSession.session_type),
             sessionType: rawSession.session_type || null,
             time: rawSession.calendar_event_id ? calendarLookup.get(rawSession.calendar_event_id)?.time ?? null : null,
@@ -183,9 +191,30 @@ export async function getTodaySession(userId: number) {
     logger.debug({ err: e }, 'getTodaySession training-plans lookup failed');
   }
 
-  if (!session) session = await findTodayTrainingFromCalendar(userId);
+  // Bug fix 2026-04-28 (no-plan create-CTA): the calendar and Garmin
+  // fallbacks below ran UNCONDITIONALLY, so a user who deleted their
+  // active Training plan but had a Garmin-recorded workout that day
+  // would see "Today's workout completed (status: completed)"
+  // composed from Garmin activity data — even though no Nexus plan
+  // existed. That hid the create-plan CTA on the iOS Training screen
+  // because the iOS hero classifier checks `.completed` before
+  // `.noPlan` and gave the user no way to start fresh. Gating both
+  // fallbacks on `plan != null` keeps the legitimate "active plan +
+  // Garmin records the day's session" UX intact while ensuring that
+  // a deleted/cancelled plan returns a null session — which iOS then
+  // resolves to the .noPlan hero state with the "Create plan" action.
+  //
+  // We use the local `plan` variable (set only inside the active-
+  // plan try block above when getActivePlan returned non-null) as
+  // the gate. If the DB read itself threw, `plan` stays null and we
+  // also skip the fallbacks — that's the safer choice than dressing
+  // up Garmin data as a Nexus session under partial-failure
+  // conditions.
+  if (!session && plan) {
+    session = await findTodayTrainingFromCalendar(userId);
+  }
 
-  if (!session) {
+  if (!session && plan) {
     try {
       const today = new Date().toISOString().slice(0, 10);
       const activities = await getActivitiesByDateForUser(userId, today, today);
@@ -247,6 +276,11 @@ export async function getTodaySession(userId: number) {
   return {
     session: session ? {
       id: session.id ? String(session.id) : null,
+      planId: session.planId ? String(session.planId) : null,
+      planVersion: session.planVersion ?? null,
+      sessionIdentityKey: session.sessionIdentityKey ?? null,
+      sessionShapeHash: session.sessionShapeHash ?? null,
+      lifecycleState: session.lifecycleState ?? session.status ?? 'planned',
       type: session.type || session.name || 'Workout',
       sessionType: session.sessionType || null,
       time: session.time || null,
@@ -271,7 +305,14 @@ export async function getWeekPlan(userId: number) {
   let weekNumber = 0;
   let sessions: any[] = [];
   let adherence = 0;
-  let planSummary: { name: string; weekNumber: number; phase: string | null } | null = null;
+  let planSummary: {
+    id?: number;
+    name: string;
+    planVersion?: number | null;
+    lifecycleState?: string | null;
+    weekNumber: number;
+    phase: string | null;
+  } | null = null;
 
   try {
     const plan = trainingPlans.getActivePlan(userId);
@@ -279,7 +320,10 @@ export async function getWeekPlan(userId: number) {
       const currentWeek = trainingPlans.getCurrentWeek(plan.id);
       weekNumber = currentWeek?.week_number || 1;
       planSummary = {
+        id: plan.id,
         name: plan.name,
+        planVersion: plan.plan_version ?? null,
+        lifecycleState: plan.status ?? 'active',
         weekNumber,
         phase: currentWeek?.focus || plan.periodization || null,
       };
@@ -309,6 +353,10 @@ export async function getWeekPlan(userId: number) {
             : null;
           return {
             id: s.id != null ? String(s.id) : undefined,
+            planId: s.plan_id != null ? String(s.plan_id) : undefined,
+            planVersion: plan.plan_version ?? null,
+            sessionIdentityKey: s.session_identity_key || null,
+            sessionShapeHash: s.session_shape_hash || null,
             day: s.day_of_week || 'Monday',
             type: s.title || humanizeSessionType(s.session_type),
             title: s.title || humanizeSessionType(s.session_type),
@@ -316,6 +364,12 @@ export async function getWeekPlan(userId: number) {
             time: verifiedCalendarEventId ? linkedCalendarEvent?.time ?? null : null,
             calendarEventId: verifiedCalendarEventId,
             calendarSource: verifiedCalendarEventId ? s.calendar_source || null : null,
+            calendarSyncState: verifiedCalendarEventId
+              ? 'synced'
+              : s.calendar_event_id
+                ? 'stale'
+                : 'missing',
+            lifecycleState: s.status || 'pending',
             status: normalizeTrainingStatus(s.status),
             description: s.description || null,
             // Structured-sections companion to `description` so iOS can
@@ -354,8 +408,18 @@ export async function getWeekPlan(userId: number) {
     sessions,
     adherence: typeof adherence === 'number' ? adherence : 0,
     completedCount: sessions.filter((s: any) => s.status === 'completed').length,
-    totalCount: sessions.filter((s: any) => s.status !== 'rest').length,
+    totalCount: sessions.filter((s: any) => !isInactiveTrainingReadModelStatus(s.status)).length,
   };
+}
+
+function isInactiveTrainingReadModelStatus(status: unknown): boolean {
+  const normalized = String(status || '').toLowerCase();
+  return normalized === 'rest'
+    || normalized === 'unscheduled'
+    || normalized === 'deferred'
+    || normalized === 'dropped'
+    || normalized === 'cancelled'
+    || normalized === 'superseded';
 }
 
 export async function getReadiness(userId: number) {

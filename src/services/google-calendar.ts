@@ -150,12 +150,14 @@ export async function updateEvent(data: {
   new_start?: string;
   new_end?: string;
   new_title?: string;
+  new_description?: string;
 }, userId?: number): Promise<CalendarEvent> {
   try {
     const calendar = getCalendar(userId);
     const requestBody: calendar_v3.Schema$Event = {};
 
     if (data.new_title) requestBody.summary = data.new_title;
+    if (data.new_description !== undefined) requestBody.description = data.new_description;
     if (data.new_start) requestBody.start = { dateTime: data.new_start, timeZone: config.app.timezone };
     if (data.new_end) requestBody.end = { dateTime: data.new_end, timeZone: config.app.timezone };
 
@@ -173,6 +175,7 @@ export async function updateEvent(data: {
       summary: response.data.summary || '',
       start: response.data.start?.dateTime || '',
       end: response.data.end?.dateTime || '',
+      description: response.data.description || undefined,
       htmlLink: response.data.htmlLink || undefined,
       isAllDay: !response.data.start?.dateTime && !!response.data.start?.date,
     };

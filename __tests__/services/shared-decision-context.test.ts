@@ -146,7 +146,7 @@ describe('shared-decision-context', () => {
     expect(context).toContain('<shared_decision_context domain="triathlon">');
     expect(context).toContain('Cooking:');
     expect(context).toContain('Secretary: calendar is busy on 2 day(s) with 9 events; travel is scheduled on 2026-04-19; focus protection is currently best on 2026-04-17; admin pressure shows 2 overdue and 1 due today');
-    expect(context).toContain('fueling support is at_risk because 1 hard training day(s) still lack meals');
+    expect(context).toContain('fueling support is at_risk because hard training lacks meals on 2026-04-18');
     expect(context).toContain('Finance: projected budget remaining is 18% for 2026-04; training spend mode is selective; supplement mode is pause_new');
     expect(context).toContain('Content: 3 topic(s) are queued');
     expect(context).not.toContain('Training: recovery is strained');
@@ -369,6 +369,44 @@ describe('shared-decision-context', () => {
     expect(contracts.finance?.notes).toContain('Projected budget remaining: 5% for 2026-04.');
   });
 
+  it('Training contracts turn Secretary schedule pressure into reflow guidance', async () => {
+    mockReadSecretaryMeshContext.mockResolvedValue({
+      focusBlock: { date: '2026-04-20' },
+      derivedSignals: [
+        { signalType: 'calendar_busy_blocks', payload: { dates: ['2026-04-20'], totalEvents: 7 } },
+        {
+          signalType: 'calendar_fragmentation',
+          payload: { dates: ['2026-04-20', '2026-04-21'], fragmentedDayCount: 2, maxEventsInDay: 6 },
+        },
+        { signalType: 'meeting_criticality', payload: { criticalEventCount: 2 } },
+      ],
+    });
+
+    const contracts = await buildSharedDecisionContracts('triathlon', 42);
+    expect(contracts.secretary?.nonNegotiables).toContain(
+      '2 critical meeting(s) are protected and should not be displaced by training.',
+    );
+    expect(contracts.secretary?.preferredWindows).toContain(
+      'Prefer lower-friction sessions on fragmented calendar days (2026-04-20, 2026-04-21).',
+    );
+    expect(contracts.secretary?.fallbackIfDeferred).toContain(
+      'If availability changes, reflow the training plan and resync agenda ownership before showing the old schedule as final.',
+    );
+  });
+
+  it('Training contracts keep fueling gaps specific and non-noisy', async () => {
+    const contracts = await buildSharedDecisionContracts('triathlon', 42);
+    expect(contracts.cooking?.nonNegotiables).toContain(
+      'Hard-session fueling is still missing on 2026-04-18.',
+    );
+    expect(contracts.cooking?.fallbackIfDeferred).toContain(
+      'Reflow, lower, or shorten hard training before forcing unsupported fueling through another warning.',
+    );
+    expect(contracts.cooking?.notes).toContain(
+      'Fueling gap dates are already named above; do not repeat generic fueling warnings in the coach rationale.',
+    );
+  });
+
   it('very-tight budget anchors Cooking on cheap staples', async () => {
     mockReadFinanceMeshContext.mockResolvedValueOnce({
       monthlySummary: { transactionCount: 2, totalIncome: 1000, totalExpenses: 950, totalDeductions: 0 },
@@ -466,6 +504,34 @@ describe('shared-decision-context', () => {
     );
     expect(financeContracts.content?.notes).toContain(
       'Next execution: next content move is to execute the ready script "Marathon recap hook" by 2026-04-19.',
+    );
+  });
+
+  it('Training sees actionable content execution as creator workload, not optional noise', async () => {
+    mockReadContentMeshContext.mockResolvedValue({
+      derivedSignals: [],
+      filmingRecommendation: null,
+      nextExecution: {
+        mode: 'film_window',
+        title: 'Strength block story',
+        summary: 'Film the weekly training insight while the block is still current.',
+        scheduledDate: '2026-04-21',
+        confidence: 'high',
+        sourceType: 'desk_item',
+      },
+    });
+
+    const [context, contracts] = await Promise.all([
+      buildSharedDecisionContext('triathlon', 42),
+      buildSharedDecisionContracts('triathlon', 42),
+    ]);
+
+    expect(context).toContain('next content move is to capture "Strength block story" on 2026-04-21');
+    expect(contracts.content?.preferredWindows).toContain(
+      'next content move is to capture "Strength block story" on 2026-04-21.',
+    );
+    expect(contracts.content?.fallbackIfDeferred).toContain(
+      'Avoid stacking hard doubles on the same day as the next content execution unless Secretary confirms spare capacity.',
     );
   });
 

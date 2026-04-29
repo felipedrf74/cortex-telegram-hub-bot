@@ -249,7 +249,7 @@ export async function createEvent(
 }
 
 export async function updateEvent(
-  data: { event_id: string; new_start?: string; new_end?: string; new_title?: string },
+  data: { event_id: string; new_start?: string; new_end?: string; new_title?: string; new_description?: string },
   source: CalendarSource,
   userId?: number,
 ): Promise<UnifiedCalendarEvent> {

@@ -15,7 +15,9 @@ const mocks = vi.hoisted(() => ({
   // Slice 4.D — the lifecycle module hits the real DB; mocked for
   // this route-level unit test. The lifecycle module's own logic is
   // exercised by training-plan-lifecycle.test.ts.
+  findOwnershipsForPlan: vi.fn(),
   markCalendarOwnershipDeleted: vi.fn(),
+  getTrainingCalendarEventOwners: vi.fn(),
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
@@ -45,10 +47,47 @@ vi.mock('../../src/domains/domain-handler', () => ({
 }));
 
 vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  findOwnershipsForPlan: mocks.findOwnershipsForPlan,
   markCalendarOwnershipDeleted: mocks.markCalendarOwnershipDeleted,
 }));
 
+vi.mock('../../src/services/training-calendar-scope', () => ({
+  getTrainingCalendarEventOwners: mocks.getTrainingCalendarEventOwners,
+}));
+
 import { cancelTrainingPlanForUser } from '../../src/api/routes/training-plan-cancellation';
+import {
+  appendTrainingIdentityMarker,
+  buildTrainingSessionIdentityKey,
+  computeTrainingSessionShapeHash,
+} from '../../src/services/training-session-identity';
+
+function markerDescription(planId: number, planVersion: number, sessionId: number, session: {
+  day_of_week: string;
+  session_type: string;
+  title: string;
+  duration_minutes: number;
+}, ordinal = 1): string {
+  const sessionIdentityKey = buildTrainingSessionIdentityKey({
+    planId,
+    weekNumber: 1,
+    dayOfWeek: session.day_of_week,
+    sessionType: session.session_type,
+    ordinal,
+  });
+  const sessionShapeHash = computeTrainingSessionShapeHash({
+    sessionType: session.session_type,
+    title: session.title,
+    durationMinutes: session.duration_minutes,
+  });
+  return appendTrainingIdentityMarker('Training session', {
+    planId,
+    planVersion,
+    sessionId,
+    sessionIdentityKey,
+    sessionShapeHash,
+  });
+}
 
 describe('training-plan-cancellation (hard delete)', () => {
   beforeEach(() => {
@@ -60,6 +99,8 @@ describe('training-plan-cancellation (hard delete)', () => {
     mocks.getPlanById.mockReturnValue(null);
     mocks.getWeeksForPlan.mockReturnValue([]);
     mocks.getSessionsForWeek.mockReturnValue([]);
+    mocks.findOwnershipsForPlan.mockReturnValue([]);
+    mocks.getTrainingCalendarEventOwners.mockReturnValue([]);
     mocks.deletePlanHard.mockReturnValue({
       ok: true,
       removedPlans: 1,
@@ -110,6 +151,22 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-completed', 'outlook', 12);
     expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-planned', 'google', 12);
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(44, 12);
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-completed',
+      source: 'outlook',
+      reason: 'plan_cancelled',
+      status: 'deleted',
+      userId: 12,
+      planId: 44,
+    });
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-planned',
+      source: 'google',
+      reason: 'plan_cancelled',
+      status: 'deleted',
+      userId: 12,
+      planId: 44,
+    });
     // After hard-delete, every per-user coach narrative store must
     // be wiped so iOS Training Home doesn't keep rendering the
     // cancelled plan's day strip / coach card / week-protection
@@ -120,6 +177,16 @@ describe('training-plan-cancellation (hard delete)', () => {
   });
 
   it('deletes matching orphan generated calendar events before hard-delete', async () => {
+    const session = {
+      id: 621,
+      day_of_week: 'Monday',
+      session_type: 'run',
+      title: 'Recovery Run',
+      duration_minutes: 30,
+      status: 'pending',
+      calendar_event_id: null,
+      calendar_source: null,
+    };
     mocks.getActivePlan.mockReturnValue({
       id: 47,
       user_id: 12,
@@ -127,16 +194,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     });
     mocks.getWeeksForPlan.mockReturnValue([{ id: 8201, week_number: 1 }]);
     mocks.getSessionsForWeek.mockReturnValue([
-      {
-        id: 621,
-        day_of_week: 'Monday',
-        session_type: 'run',
-        title: 'Recovery Run',
-        duration_minutes: 30,
-        status: 'pending',
-        calendar_event_id: null,
-        calendar_source: null,
-      },
+      session,
     ]);
     mocks.getEvents.mockResolvedValue([
       {
@@ -145,6 +203,7 @@ describe('training-plan-cancellation (hard delete)', () => {
         summary: '🏃 Recovery Run (30min)',
         start: '2026-04-20T07:00:00.000Z',
         end: '2026-04-20T07:30:00.000Z',
+        description: markerDescription(47, 1, 621, session),
       },
       {
         id: 'orphan-b',
@@ -152,6 +211,7 @@ describe('training-plan-cancellation (hard delete)', () => {
         summary: '🏃 Recovery Run (30min)',
         start: '2026-04-20T08:00:00.000Z',
         end: '2026-04-20T08:30:00.000Z',
+        description: markerDescription(47, 1, 621, session),
       },
     ]);
     mocks.deletePlanHard.mockReturnValue({
@@ -174,7 +234,178 @@ describe('training-plan-cancellation (hard delete)', () => {
     expect(mocks.deletePlanHard).toHaveBeenCalledWith(47, 12);
   });
 
-  it('deletes orphan generated events when old titles drift but rich descriptions still identify the plan', async () => {
+  it('deletes ownership-table events even when session calendar links are missing and calendar lookup fails', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 72,
+      user_id: 12,
+      start_date: '2026-04-20T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 7201, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 720,
+        day_of_week: 'Monday',
+        session_type: 'gym',
+        title: 'Lift',
+        duration_minutes: 45,
+        status: 'pending',
+        calendar_event_id: null,
+        calendar_source: null,
+      },
+    ]);
+    mocks.findOwnershipsForPlan.mockReturnValue([
+      {
+        id: 9001,
+        plan_id: 72,
+        plan_version: 1,
+        session_id: 720,
+        user_id: 12,
+        calendar_event_id: 'owned-but-unlinked',
+        calendar_source: 'google',
+        status: 'active',
+        created_at: '2026-04-20T00:00:00Z',
+        deleted_at: null,
+        delete_reason: null,
+      },
+    ]);
+    mocks.getEvents.mockRejectedValueOnce(new Error('calendar read unavailable'));
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(1);
+    }
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('owned-but-unlinked', 'google', 12);
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'owned-but-unlinked',
+      source: 'google',
+      reason: 'plan_cancelled',
+      status: 'deleted',
+      userId: 12,
+      planId: 72,
+    });
+  });
+
+  it('does not delete a title-matched calendar event owned by another active training plan', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 73,
+      user_id: 12,
+      start_date: '2026-04-20T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 7301, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 731,
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Recovery Run',
+        duration_minutes: 30,
+        status: 'pending',
+        calendar_event_id: null,
+        calendar_source: null,
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'other-plan-run',
+        source: 'google',
+        summary: '🏃 Recovery Run (30min)',
+        start: '2026-04-20T07:00:00.000Z',
+        end: '2026-04-20T07:30:00.000Z',
+      },
+    ]);
+    mocks.getTrainingCalendarEventOwners.mockReturnValue([
+      {
+        eventId: 'other-plan-run',
+        source: 'google',
+        sessionId: 999,
+        planId: 999,
+        userId: 12,
+        planStatus: 'active',
+      },
+    ]);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(0);
+    }
+    expect(mocks.deleteEvent).not.toHaveBeenCalled();
+    expect(mocks.deletePlanHard).toHaveBeenCalledWith(73, 12);
+  });
+
+  it('does not delete unowned title/date matches without a Nexus identity marker', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 74,
+      user_id: 12,
+      start_date: '2026-04-20T00:00:00.000Z',
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 7401, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 741,
+        day_of_week: 'Monday',
+        session_type: 'run',
+        title: 'Recovery Run',
+        duration_minutes: 30,
+        status: 'pending',
+        calendar_event_id: null,
+        calendar_source: null,
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'legacy-title-only-run',
+        source: 'google',
+        summary: '🏃 Recovery Run (30min)',
+        start: '2026-04-20T07:00:00.000Z',
+        end: '2026-04-20T07:30:00.000Z',
+      },
+    ]);
+    mocks.deletePlanHard.mockReturnValue({
+      ok: true,
+      removedPlans: 1,
+      removedWeeks: 1,
+      removedSessions: 1,
+      removedCompletions: 0,
+    });
+
+    const result = await cancelTrainingPlanForUser(12);
+
+    expect(result.status).toBe('cancelled');
+    if (result.status === 'cancelled') {
+      expect(result.data.removedEvents).toBe(0);
+    }
+    expect(mocks.deleteEvent).not.toHaveBeenCalled();
+  });
+
+  it('deletes orphan generated events when titles drift but Nexus identity marker still identifies the plan', async () => {
+    const session = {
+      id: 631,
+      day_of_week: 'Wednesday',
+      session_type: 'gym',
+      title: 'Upper Body Strength A',
+      duration_minutes: 48,
+      status: 'pending',
+      calendar_event_id: null,
+      calendar_source: null,
+    };
     mocks.getActivePlan.mockReturnValue({
       id: 48,
       user_id: 12,
@@ -182,16 +413,7 @@ describe('training-plan-cancellation (hard delete)', () => {
     });
     mocks.getWeeksForPlan.mockReturnValue([{ id: 8301, week_number: 1 }]);
     mocks.getSessionsForWeek.mockReturnValue([
-      {
-        id: 631,
-        day_of_week: 'Wednesday',
-        session_type: 'gym',
-        title: 'Upper Body Strength A',
-        duration_minutes: 48,
-        status: 'pending',
-        calendar_event_id: null,
-        calendar_source: null,
-      },
+      session,
     ]);
     mocks.getEvents.mockResolvedValue([
       {
@@ -200,7 +422,7 @@ describe('training-plan-cancellation (hard delete)', () => {
         summary: 'Strength Session',
         start: '2026-04-22T12:00:00.000Z',
         end: '2026-04-22T12:48:00.000Z',
-        description: 'Muscle Building — Coach Plan\n\nUpper Body Strength A\nEXERCISES:',
+        description: markerDescription(48, 1, 631, session),
       },
     ]);
     mocks.deletePlanHard.mockReturnValue({

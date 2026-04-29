@@ -144,7 +144,7 @@ describe('training schedule route utilities', () => {
     expect(slotStart >= blockEnd.getTime() || slotEnd <= blockStart.getTime()).toBe(true);
   });
 
-  it('falls back to the safe 06:30 marker when the entire 05:00-21:00 window is booked', () => {
+  it('returns an explicit noAvailableSlot marker when the entire 05:00-21:00 window is booked', () => {
     const day = new Date(2026, 3, 20);
     // Block the whole working day. The planner should NOT silently land
     // a session on top of any of these — it should mark the slot
@@ -163,6 +163,8 @@ describe('training schedule route utilities', () => {
     const scheduled = scheduleSessionWindow(day, 60, '12:00', busyWindows, []);
 
     expect(scheduled.preferredTimeUnavailable).toBe(true);
+    expect(scheduled.noAvailableSlot).toBe(true);
+    expect(scheduled.unavailableReason).toMatch(/No valid free calendar window/);
     expect(scheduled.start.getHours()).toBe(6);
     expect(scheduled.start.getMinutes()).toBe(30);
   });

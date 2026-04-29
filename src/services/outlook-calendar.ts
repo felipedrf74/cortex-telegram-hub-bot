@@ -273,7 +273,11 @@ export async function createEvent(data: {
       }));
     }
     logger.info(
-      { subject: postBody.subject, categories: postBody.categories, attendeeCount: attendees.length },
+      {
+        titleLength: String(postBody.subject || '').length,
+        categoryCount: Array.isArray(postBody.categories) ? postBody.categories.length : 0,
+        attendeeCount: attendees.length,
+      },
       'Creating Outlook calendar event',
     );
     const response = await client.api('/me/events').post(postBody);
@@ -298,6 +302,7 @@ export async function updateEvent(data: {
   new_start?: string;
   new_end?: string;
   new_title?: string;
+  new_description?: string;
 }, userId?: number): Promise<CalendarEvent> {
   try {
     const client = userId
@@ -306,6 +311,12 @@ export async function updateEvent(data: {
     const patch: any = {};
 
     if (data.new_title) patch.subject = data.new_title;
+    if (data.new_description !== undefined) {
+      patch.body = {
+        contentType: 'text',
+        content: data.new_description,
+      };
+    }
     if (data.new_start) patch.start = { dateTime: data.new_start, timeZone: config.app.timezone };
     if (data.new_end) patch.end = { dateTime: data.new_end, timeZone: config.app.timezone };
 
@@ -316,6 +327,7 @@ export async function updateEvent(data: {
       summary: response.subject || '',
       start: response.start?.dateTime || '',
       end: response.end?.dateTime || '',
+      description: response.bodyPreview || undefined,
       htmlLink: response.webLink || undefined,
       isAllDay: !!response.isAllDay,
     };

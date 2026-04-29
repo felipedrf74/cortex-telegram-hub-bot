@@ -56,6 +56,8 @@ export interface AgendaEventOwnership {
   user_id: number;
   calendar_event_id: string;
   calendar_source: string;
+  session_identity_key: string | null;
+  session_shape_hash: string | null;
   status: AgendaOwnershipStatus;
   created_at: string;
   deleted_at: string | null;
@@ -69,6 +71,8 @@ export interface RecordCalendarOwnershipInput {
   userId: number;
   eventId: string;
   source: string;
+  sessionIdentityKey?: string | null;
+  sessionShapeHash?: string | null;
 }
 
 /**
@@ -121,8 +125,8 @@ export function recordCalendarOwnership(
     const result = db.prepare(`
       INSERT INTO training_agenda_event_ownership (
         plan_id, plan_version, session_id, user_id,
-        calendar_event_id, calendar_source, status
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active')
+        calendar_event_id, calendar_source, session_identity_key, session_shape_hash, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
     `).run(
       input.planId,
       input.planVersion,
@@ -130,6 +134,8 @@ export function recordCalendarOwnership(
       input.userId,
       input.eventId,
       input.source,
+      input.sessionIdentityKey ?? null,
+      input.sessionShapeHash ?? null,
     );
     return {
       ok: true,
@@ -170,6 +176,9 @@ export interface MarkOwnershipDeletedInput {
   source: string;
   reason?: string;
   status?: 'deleted' | 'orphaned';
+  userId?: number;
+  planId?: number;
+  ownershipId?: number;
 }
 
 /**
@@ -188,11 +197,37 @@ export function markCalendarOwnershipDeleted(
 ): { ok: boolean; rowsAffected: number } {
   const db = getDb();
   const status = input.status ?? 'deleted';
+  const statusPredicate = status === 'deleted'
+    ? "status IN ('active', 'orphaned')"
+    : "status = 'active'";
+  const whereClauses = [
+    'calendar_event_id = ?',
+    'calendar_source = ?',
+    statusPredicate,
+  ];
+  const values: Array<string | number | null> = [
+    status,
+    input.reason ?? null,
+    input.eventId,
+    input.source,
+  ];
+  if (Number.isFinite(input.userId) && Number(input.userId) > 0) {
+    whereClauses.push('user_id = ?');
+    values.push(Number(input.userId));
+  }
+  if (Number.isFinite(input.planId) && Number(input.planId) > 0) {
+    whereClauses.push('plan_id = ?');
+    values.push(Number(input.planId));
+  }
+  if (Number.isFinite(input.ownershipId) && Number(input.ownershipId) > 0) {
+    whereClauses.push('id = ?');
+    values.push(Number(input.ownershipId));
+  }
   const result = db.prepare(`
     UPDATE training_agenda_event_ownership
     SET status = ?, deleted_at = datetime('now'), delete_reason = ?
-    WHERE calendar_event_id = ? AND calendar_source = ? AND status = 'active'
-  `).run(status, input.reason ?? null, input.eventId, input.source);
+    WHERE ${whereClauses.join(' AND ')}
+  `).run(...values);
   return { ok: true, rowsAffected: result.changes };
 }
 
@@ -224,12 +259,29 @@ export function findOrphanedOwnerships(userId: number): AgendaEventOwnership[] {
     SELECT o.*
     FROM training_agenda_event_ownership o
     LEFT JOIN training_sessions ts
-      ON ts.calendar_event_id = o.calendar_event_id
-     AND ts.calendar_source = o.calendar_source
+      ON ts.id = o.session_id
+     AND ts.plan_id = o.plan_id
     WHERE o.user_id = ?
       AND o.status = 'active'
       AND ts.id IS NULL
     ORDER BY o.created_at ASC
+  `).all(userId) as AgendaEventOwnership[];
+}
+
+/**
+ * Find ownership rows whose prior external delete failed and still
+ * need a precise retry. These rows are the real reconciliation queue;
+ * `findOrphanedOwnerships` above catches the FK-cascade aftermath
+ * before a row has been marked terminal.
+ */
+export function findOwnershipsNeedingReconciliation(userId: number): AgendaEventOwnership[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT *
+    FROM training_agenda_event_ownership
+    WHERE user_id = ?
+      AND status = 'orphaned'
+    ORDER BY COALESCE(deleted_at, created_at) ASC, id ASC
   `).all(userId) as AgendaEventOwnership[];
 }
 
@@ -285,6 +337,39 @@ export function findExistingOwnership(input: {
     ORDER BY id DESC
     LIMIT 1
   `).get(input.planId, input.planVersion, input.sessionId) as
+    | AgendaEventOwnership
+    | undefined;
+  return row ?? null;
+}
+
+/**
+ * Find an active ownership row for the same logical session slot and
+ * material shape, even if it belongs to an older plan_version. This is
+ * the safe reuse path for regeneration: same plan + same session identity
+ * + same shape means the existing calendar event can be updated/relinked
+ * instead of duplicated. Changed shape deliberately returns null so the
+ * caller replaces the event.
+ */
+export function findReusableOwnershipBySessionIdentity(input: {
+  planId: number;
+  userId: number;
+  sessionIdentityKey: string | null | undefined;
+  sessionShapeHash: string | null | undefined;
+}): AgendaEventOwnership | null {
+  const identity = String(input.sessionIdentityKey || '').trim();
+  const shape = String(input.sessionShapeHash || '').trim();
+  if (!identity || !shape) return null;
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT * FROM training_agenda_event_ownership
+    WHERE plan_id = ?
+      AND user_id = ?
+      AND session_identity_key = ?
+      AND session_shape_hash = ?
+      AND status = 'active'
+    ORDER BY plan_version DESC, id DESC
+    LIMIT 1
+  `).get(input.planId, input.userId, identity, shape) as
     | AgendaEventOwnership
     | undefined;
   return row ?? null;

@@ -22,6 +22,7 @@ const mockCancelTrainingPlanForUser = vi.fn();
 // Slice 4.D.2 — saga inspects post-cancellation state via these.
 const mockGetActivePlans = vi.fn();
 const mockFindOrphanedOwnerships = vi.fn();
+const mockReconcileOrphanedTrainingAgendaEvents = vi.fn();
 const mockLoggerWarn = vi.fn();
 const mockLoggerError = vi.fn();
 
@@ -85,6 +86,12 @@ vi.mock('../../src/services/training-plan-lifecycle', () => ({
   findOrphanedOwnerships: (...args: unknown[]) => mockFindOrphanedOwnerships(...args),
 }));
 
+vi.mock('../../src/services/training-agenda-reconciliation', () => ({
+  reconcileOrphanedTrainingAgendaEvents: (...args: unknown[]) => (
+    mockReconcileOrphanedTrainingAgendaEvents(...args)
+  ),
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     warn: (...args: unknown[]) => mockLoggerWarn(...args),
@@ -145,11 +152,17 @@ describe('generateTrainingPlanForUser', () => {
     mockCancelTrainingPlanForUser.mockReset();
     mockGetActivePlans.mockReset();
     mockFindOrphanedOwnerships.mockReset();
+    mockReconcileOrphanedTrainingAgendaEvents.mockReset();
     mockLoggerWarn.mockReset();
     mockLoggerError.mockReset();
     // Slice 4.D.2 defaults — clean state, no orphans, no remaining plans.
     mockGetActivePlans.mockReturnValue([]);
     mockFindOrphanedOwnerships.mockReturnValue([]);
+    mockReconcileOrphanedTrainingAgendaEvents.mockResolvedValue({
+      attempted: 0,
+      deleted: 0,
+      failed: 0,
+    });
 
     mockGetProfile.mockImplementation((_userId: number, questionnaireId: string) => {
       if (questionnaireId === 'fitness') return { experienceLevel: 'Intermediate' };

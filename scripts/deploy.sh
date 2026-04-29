@@ -181,7 +181,10 @@ echo "📤 Syncing files to server..."
 if command -v rsync &>/dev/null; then
   rsync -avz --delete \
     --exclude='.env' \
+    --exclude='.env.*' \
     --exclude='.env.agents' \
+    --exclude='.local/' \
+    --exclude='.local/**' \
     --exclude='.DS_Store' \
     --exclude='.db.sqlite' \
     --exclude='*.db' \
@@ -271,12 +274,27 @@ HEALTH_OK=true
 # Content engine
 ssh "$SERVER" "curl -sf http://localhost:8100/health 2>/dev/null && echo ' ✅ Content engine OK' || echo ' ⚠️  Content engine not responding'"
 
-# Portal
-PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
-if [ -n "$PORTAL_TOKEN" ]; then
-  ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+# Portal — production may require signed portal sessions instead of legacy
+# PORTAL_TOKEN. Use the same auth strategy as staging smoke/deploy.
+PORTAL_REQUIRE_SESSION_AUTH=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_REQUIRE_SESSION_AUTH=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
+if [ "$PORTAL_REQUIRE_SESSION_AUTH" = "true" ]; then
+  PROD_SESSION=$(ssh "$SERVER" "
+    set -e
+    cd $REMOTE_DIR
+    set -a
+    . ./.env
+    set +a
+    node dist/tools/portal-session-token.js --actor deploy-production@nexushub.me --scope admin --ttl-ms 600000 --json \
+      | node -e \"let b=''; process.stdin.on('data', c => b += c); process.stdin.on('end', () => { const j = JSON.parse(b); process.stdout.write(j.token || ''); });\"
+  " 2>/dev/null || true)
+  ssh "$SERVER" "curl -sf -H 'x-portal-session: ${PROD_SESSION:-x}' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
 else
-  ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+  PORTAL_TOKEN=$(ssh "$SERVER" "grep -oP '(?<=^PORTAL_TOKEN=).+' $REMOTE_DIR/.env 2>/dev/null" || true)
+  if [ -n "$PORTAL_TOKEN" ]; then
+    ssh "$SERVER" "curl -sf -H 'Authorization: Bearer $PORTAL_TOKEN' http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+  else
+    ssh "$SERVER" "curl -sf http://localhost:8200/api/snapshot 2>/dev/null | head -c 100 && echo ' ✅ Status portal OK' || echo ' ⚠️  Status portal not responding'"
+  fi
 fi
 
 # Bot status with retry

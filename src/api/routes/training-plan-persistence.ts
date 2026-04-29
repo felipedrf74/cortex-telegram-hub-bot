@@ -11,6 +11,11 @@ import {
   getPlanVersion,
   recordCalendarOwnership,
 } from '../../services/training-plan-lifecycle';
+import {
+  appendTrainingIdentityMarker,
+  buildTrainingSessionIdentityKey,
+  computeTrainingSessionShapeHash,
+} from '../../services/training-session-identity';
 import { logger } from '../../utils/logger';
 import {
   preferredTimeForSessionType,
@@ -42,7 +47,16 @@ type GeneratedTrainingSession = {
   exercises?: Array<Record<string, any>>;
   durationMinutes?: number;
   preferredStartTime?: string;
+  scheduleState?: string;
+  scheduleAdjustments?: string[];
+  scheduleReason?: string;
 };
+
+type PersistableSessionScheduleState =
+  | 'pending'
+  | 'unscheduled'
+  | 'deferred'
+  | 'dropped';
 
 export interface PersistGeneratedTrainingPlanInput {
   userId: number;
@@ -95,6 +109,8 @@ export async function persistGeneratedTrainingPlan(
   let totalSessions = 0;
   const calendarEvents: Array<{
     sessionId: number;
+    sessionIdentityKey: string;
+    sessionShapeHash: string;
     title: string;
     start: string;
     end: string;
@@ -103,21 +119,75 @@ export async function persistGeneratedTrainingPlan(
   const scheduledWindows: BusyWindow[] = [];
 
   for (const weekData of input.planData.weeks || []) {
+    const sessionOrdinals = new Map<string, number>();
     const week = trainingPlans.createWeek({
       plan_id: plan.id,
       week_number: weekData.weekNumber || 1,
       focus: weekData.focus || 'base',
       intensity_pct: weekData.intensityPct || 70,
-      volume_sessions: weekData.sessions?.filter((session) => !isNonScheduledTrainingSession(session)).length || 0,
+      volume_sessions: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
     });
 
     for (const sessionData of weekData.sessions || []) {
-      if (isNonScheduledTrainingSession(sessionData)) continue;
+      const explicitInactiveState = inactiveScheduleState(sessionData);
+      if (!explicitInactiveState && isStandaloneRestOrMobilitySession(sessionData)) continue;
 
       const dayIndex = DAY_NAMES.indexOf(sessionData.dayOfWeek?.toLowerCase() || '');
       if (dayIndex < 0) continue;
 
-      const durationMinutes = sessionData.durationMinutes || 60;
+      const durationMinutes = sessionData.durationMinutes ?? (explicitInactiveState ? 0 : 60);
+
+      const richDescription = buildRichSessionDescription(
+        buildSessionDescriptionInput({
+          input,
+          weekData,
+          sessionData,
+          durationMinutes,
+        }),
+      );
+      const intensityText = `RPE ${weekData.intensityPct || 70}%`;
+      const ordinalKey = [
+        String(sessionData.dayOfWeek || '').trim().toLowerCase(),
+        String(sessionData.sessionType || 'training').trim().toLowerCase(),
+      ].join('|');
+      const ordinal = (sessionOrdinals.get(ordinalKey) ?? 0) + 1;
+      sessionOrdinals.set(ordinalKey, ordinal);
+      const sessionIdentityKey = buildTrainingSessionIdentityKey({
+        planId: plan.id,
+        weekNumber: weekData.weekNumber || 1,
+        dayOfWeek: sessionData.dayOfWeek || '',
+        sessionType: sessionData.sessionType || 'training',
+        ordinal,
+      });
+      const sessionShapeHash = computeTrainingSessionShapeHash({
+        sessionType: sessionData.sessionType || 'training',
+        title: sessionData.title || 'Training session',
+        durationMinutes,
+        intensityText,
+        exercises: sessionData.exercises || [],
+        descriptionSections: richDescription.sections,
+      });
+
+      if (explicitInactiveState) {
+        trainingPlans.createSession({
+          week_id: week.id,
+          plan_id: plan.id,
+          day_of_week: sessionData.dayOfWeek || '',
+          session_type: sessionData.sessionType || 'training',
+          title: sessionData.title || 'Training session',
+          description: appendScheduleReason(richDescription.text, sessionData.scheduleReason),
+          description_json: JSON.stringify(richDescription.sections),
+          exercises_json: JSON.stringify(sessionData.exercises || []),
+          duration_minutes: durationMinutes,
+          intensity_text: intensityText,
+          session_identity_key: sessionIdentityKey,
+          session_shape_hash: sessionShapeHash,
+          preferred_time_unavailable: true,
+          status: explicitInactiveState,
+        });
+        continue;
+      }
+
       const scheduledWindow = scheduleSessionForPlan({
         weekNumber: weekData.weekNumber || 1,
         dayIndex,
@@ -132,15 +202,38 @@ export async function persistGeneratedTrainingPlan(
         scheduledWindows,
         title: sessionData.title || 'Training session',
       });
-
-      const richDescription = buildRichSessionDescription(
-        buildSessionDescriptionInput({
-          input,
-          weekData,
-          sessionData,
-          durationMinutes,
-        }),
-      );
+      if (scheduledWindow.noAvailableSlot) {
+        const reason = scheduledWindow.unavailableReason
+          ?? 'No valid calendar slot remained for this session.';
+        trainingPlans.createSession({
+          week_id: week.id,
+          plan_id: plan.id,
+          day_of_week: sessionData.dayOfWeek || '',
+          session_type: sessionData.sessionType || 'training',
+          title: sessionData.title || 'Training session',
+          description: appendScheduleReason(richDescription.text, reason),
+          description_json: JSON.stringify(richDescription.sections),
+          exercises_json: JSON.stringify(sessionData.exercises || []),
+          duration_minutes: durationMinutes,
+          intensity_text: intensityText,
+          session_identity_key: sessionIdentityKey,
+          session_shape_hash: sessionShapeHash,
+          preferred_time_unavailable: true,
+          status: 'unscheduled',
+        });
+        logger.warn(
+          {
+            userId: input.userId,
+            planId: plan.id,
+            weekNumber: weekData.weekNumber || 1,
+            dayOfWeek: sessionData.dayOfWeek || '',
+            sessionType: sessionData.sessionType || 'training',
+            reasonCode: 'no_available_slot',
+          },
+          'persistGeneratedTrainingPlan: session persisted as unscheduled because no calendar slot was available',
+        );
+        continue;
+      }
 
       const session = trainingPlans.createSession({
         week_id: week.id,
@@ -152,16 +245,27 @@ export async function persistGeneratedTrainingPlan(
         description_json: JSON.stringify(richDescription.sections),
         exercises_json: JSON.stringify(sessionData.exercises || []),
         duration_minutes: durationMinutes,
-        intensity_text: `RPE ${weekData.intensityPct || 70}%`,
+        intensity_text: intensityText,
+        session_identity_key: sessionIdentityKey,
+        session_shape_hash: sessionShapeHash,
         preferred_time_unavailable: scheduledWindow.preferredTimeUnavailable,
+        status: 'pending',
       });
 
       calendarEvents.push({
         sessionId: session.id,
+        sessionIdentityKey,
+        sessionShapeHash,
         title: `${emojiForTrainingSession(sessionData.sessionType)} ${sessionData.title || 'Training session'} (${durationMinutes}min)`,
         start: scheduledWindow.start.toISOString(),
         end: scheduledWindow.end.toISOString(),
-        description: richDescription.text,
+        description: appendTrainingIdentityMarker(richDescription.text, {
+          planId: plan.id,
+          planVersion: getPlanVersion(plan.id) ?? 1,
+          sessionId: session.id,
+          sessionIdentityKey,
+          sessionShapeHash,
+        }),
       });
 
       totalSessions++;
@@ -219,10 +323,21 @@ export async function persistGeneratedTrainingPlan(
         userId: input.userId,
         eventId: event.id,
         source: event.source,
+        sessionIdentityKey: eventPayload.sessionIdentityKey,
+        sessionShapeHash: eventPayload.sessionShapeHash,
       });
       eventsCreated++;
     } catch (err) {
-      logger.warn({ err, title: eventPayload.title }, 'Failed to create calendar event for session');
+      logger.warn(
+        {
+          err,
+          userId: input.userId,
+          planId: plan.id,
+          planVersion: planVersionForOwnership,
+          sessionId: eventPayload.sessionId,
+        },
+        'Failed to create calendar event for session',
+      );
     }
   }
   if (eventsAlreadyOwned > 0) {
@@ -241,20 +356,39 @@ export async function persistGeneratedTrainingPlan(
     planId: plan.id,
     totalSessions,
     eventsCreated,
-    weekSummaries: (input.planData.weeks || []).map((weekData) => ({
+      weekSummaries: (input.planData.weeks || []).map((weekData) => ({
       weekNumber: weekData.weekNumber,
       focus: weekData.focus,
-      sessionCount: weekData.sessions?.filter((session) => !isNonScheduledTrainingSession(session)).length || 0,
+      sessionCount: weekData.sessions?.filter(isCalendarSchedulableTrainingSession).length || 0,
     })),
   };
 }
 
-function isNonScheduledTrainingSession(session: GeneratedTrainingSession): boolean {
+function inactiveScheduleState(session: GeneratedTrainingSession): PersistableSessionScheduleState | null {
+  const scheduleState = String(session.scheduleState || '').trim().toLowerCase();
+  if (scheduleState === 'deferred' || scheduleState === 'unscheduled' || scheduleState === 'dropped') {
+    return scheduleState;
+  }
+  return null;
+}
+
+function isCalendarSchedulableTrainingSession(session: GeneratedTrainingSession): boolean {
+  if (inactiveScheduleState(session)) return false;
+  return !isStandaloneRestOrMobilitySession(session);
+}
+
+function isStandaloneRestOrMobilitySession(session: GeneratedTrainingSession): boolean {
   const type = String(session.sessionType || '').trim().toLowerCase();
   if (type === 'rest' || type === 'mobility') return true;
   const combined = `${type} ${session.title || ''}`.toLowerCase();
   const exerciseCount = Array.isArray(session.exercises) ? session.exercises.length : 0;
   return combined.includes('mobility') && exerciseCount === 0;
+}
+
+function appendScheduleReason(description: string, reason: string | null | undefined): string {
+  const trimmedReason = String(reason || '').trim();
+  if (!trimmedReason) return description;
+  return `${description}\n\nSCHEDULE:\n${trimmedReason}`.trim();
 }
 
 function scheduleSessionForPlan(input: {

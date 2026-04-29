@@ -15,6 +15,7 @@ import type {
 import { loadCoachKnowledge } from './knowledge-loader';
 import { buildDayPlan, buildWeekPlan, adjustForFatigue, progressStrengthBlock, replaceSession, resolveScheduleConflicts } from './planner-engine';
 import { durationToLoad } from './utils';
+import { isActiveTrainingSession } from './capacity-reconciliation';
 import { runningEngine } from './engines/running-engine';
 import { cyclingEngine } from './engines/cycling-engine';
 import { swimmingEngine } from './engines/swimming-engine';
@@ -198,7 +199,7 @@ export function generateDailyBrief(state: AthleteState, weeklyPlan: WeeklyPlan, 
 
 export function syncCalendar(plan: WeeklyPlan): Array<{ title: string; start: string; end: string; sport: string }> {
   return plan.sessions
-    .filter((session) => session.sessionType !== 'rest' && session.startTime && session.endTime)
+    .filter((session) => isActiveTrainingSession(session) && session.startTime && session.endTime)
     .map((session) => ({
       title: session.title,
       start: `${plan.weekStart}:${session.dayOfWeek}:${session.startTime}`,
@@ -210,4 +211,3 @@ export function syncCalendar(plan: WeeklyPlan): Array<{ title: string; start: st
 export function listRaceEvents(state: AthleteState): RaceEvent[] {
   return state.goals.raceCalendar;
 }
-

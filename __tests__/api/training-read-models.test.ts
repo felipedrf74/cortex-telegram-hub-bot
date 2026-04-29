@@ -364,4 +364,84 @@ describe('training-read-models', () => {
     const missing = await fetchCurrentReadinessForPlan(42);
     expect(missing).toBeNull();
   });
+
+  // ─── Bug fix 2026-04-28 (no-plan create-CTA) ────────────────────────
+  //
+  // Regression pin for the user-reported bug where deleting a Training
+  // plan still rendered "Today's workout completed" on iOS without any
+  // way to create a new plan. The root cause was the calendar + Garmin
+  // fallbacks in getTodaySession running unconditionally, so a Garmin-
+  // recorded workout for the day got dressed up as a Nexus session
+  // with `status: 'completed'`. With no active plan, that fallback
+  // result is misleading — these tests pin that the fallback paths
+  // now stay silent when no active plan exists.
+  describe('getTodaySession — no-active-plan fallback gating', () => {
+    it('returns null session when no active plan exists, even if Garmin recorded an activity today', async () => {
+      mockActivePlan = null;
+      mockGarminActivities = [{
+        activityId: 12345,
+        activityName: 'Cycling',
+        activityType: { typeKey: 'cycling' },
+        duration: 54 * 60, // 54 minutes — matches the user-reported screenshot duration
+      }];
+      hoisted.getActivitiesByDateForUser.mockResolvedValueOnce(mockGarminActivities);
+
+      const result = await getTodaySession(42);
+
+      // Plan summary must be null since there's no active plan.
+      expect(result.plan).toBeNull();
+      // Session must be null even though Garmin had an activity — the
+      // pre-fix behavior would have returned `{type: 'Cycling',
+      // status: 'completed', duration: 54}` here.
+      expect(result.session).toBeNull();
+      // The Garmin call must not even have happened — the plan gate
+      // short-circuits before we reach the Garmin fetch.
+      expect(hoisted.getActivitiesByDateForUser).not.toHaveBeenCalled();
+    });
+
+    it('still returns Garmin fallback when an active plan exists but has no session today', async () => {
+      // The fallback's legitimate use case: user has a plan but didn't
+      // schedule a session for today, AND Garmin shows they trained
+      // anyway. The hero card surfaces the activity so the user sees
+      // their effort acknowledged in the planned context.
+      mockActivePlan = {
+        id: 7,
+        name: 'Marathon Build',
+        periodization: 'base',
+        start_date: '2026-04-20T00:00:00.000Z',
+      };
+      mockCurrentWeek = { id: 70, week_number: 1, focus: 'base' };
+      mockWeekSessions = []; // No plan-scheduled session for today
+      mockGarminActivities = [{
+        activityId: 99,
+        activityName: 'Easy Run',
+        activityType: { typeKey: 'running' },
+        duration: 35 * 60,
+      }];
+      hoisted.getActivitiesByDateForUser.mockResolvedValueOnce(mockGarminActivities);
+
+      const result = await getTodaySession(42);
+
+      expect(result.plan).toMatchObject({ id: 7, name: 'Marathon Build' });
+      expect(result.session).not.toBeNull();
+      expect(result.session).toMatchObject({
+        type: 'Easy Run',
+        sessionType: 'run',
+        duration: 35,
+        status: 'completed',
+      });
+    });
+
+    it('returns null session when no active plan AND no Garmin data', async () => {
+      mockActivePlan = null;
+      hoisted.getActivitiesByDateForUser.mockResolvedValueOnce([]);
+
+      const result = await getTodaySession(42);
+
+      expect(result.plan).toBeNull();
+      expect(result.session).toBeNull();
+      // Same short-circuit applies: don't call Garmin at all when no plan.
+      expect(hoisted.getActivitiesByDateForUser).not.toHaveBeenCalled();
+    });
+  });
 });

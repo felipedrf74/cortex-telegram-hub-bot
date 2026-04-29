@@ -58,6 +58,7 @@ export type SignalType =
   // Calendar integration — secretary reads these to detect conflicts
   | 'training_session_scheduled'  // any sport coach wrote a calendar event for a session
   | 'calendar_conflict'           // secretary wrote back: a user event collides with training
+  | 'training_schedule_stale'     // secretary/agenda lifecycle says active plan needs reflow/resync
   // ─── Phase 4 Slice C — Adherence signals ─────────────────────────
   // Computed from weekly session completion data vs the active plan's
   // planned session count. Published daily (or on any training tab
@@ -206,6 +207,7 @@ const EXPIRY_HOURS: Record<SignalType, number> = {
   // Calendar coordination
   training_session_scheduled: 72,   // 3 days — covers lookahead planning
   calendar_conflict:          24,   // 1 day — conflicts are urgent
+  training_schedule_stale:    24,   // 1 day — stale training agenda should be repaired quickly
   // Adherence — reset daily. Re-computed on every training tab open
   // (via the /activity/weekly endpoint), so if the user finishes a
   // session and their adherence flips, the next fetch supersedes

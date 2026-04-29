@@ -45,6 +45,13 @@ import { persistGeneratedTrainingPlan } from '../../src/api/routes/training-plan
 
 describe('training-plan-persistence', () => {
   beforeEach(() => {
+    delete process.env.TRAINING_ENGINE_ENABLED;
+    delete process.env.TRAINING_ENGINE_DISABLED;
+    delete process.env.TRAINING_CALENDAR_WRITES_ENABLED;
+    delete process.env.TRAINING_CALENDAR_WRITES_DISABLED;
+    delete process.env.TRAINING_CALENDAR_SYNC_ENABLED;
+    delete process.env.TRAINING_CALENDAR_SYNC_DISABLED;
+
     mockCreatePlan.mockReset();
     mockCreateWeek.mockReset();
     mockCreateSession.mockReset();
@@ -142,6 +149,8 @@ describe('training-plan-persistence', () => {
       session_type: 'run',
       duration_minutes: 50,
       intensity_text: 'RPE 72%',
+      session_identity_key: expect.stringContaining('plan:901|week:1|day:monday|type:run|slot:1'),
+      session_shape_hash: expect.any(String),
     }));
     expect(mockCreateEvent).toHaveBeenCalledTimes(2);
     expect(mockCreateEvent).toHaveBeenCalledWith(
@@ -152,6 +161,7 @@ describe('training-plan-persistence', () => {
       undefined,
       12,
     );
+    expect(mockCreateEvent.mock.calls[0][0].description).toContain('[NEXUS_TRAINING_IDENTITY');
     expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(2);
   });
 
@@ -190,9 +200,15 @@ describe('training-plan-persistence', () => {
     expect(mockLinkSessionToCalendar).toHaveBeenCalledTimes(1);
     expect(mockLinkSessionToCalendar).toHaveBeenCalledWith(2002, 'evt-2', 'google');
     expect(mockLoggerWarn).toHaveBeenCalledWith(
-      expect.objectContaining({ title: expect.stringContaining('Run') }),
+      expect.objectContaining({
+        userId: 12,
+        planId: 901,
+        planVersion: 1,
+        sessionId: 2001,
+      }),
       'Failed to create calendar event for session',
     );
+    expect(mockLoggerWarn.mock.calls[0]?.[0]).not.toHaveProperty('title');
   });
 
   it('does not persist standalone mobility sessions as calendar workouts', async () => {
@@ -227,6 +243,90 @@ describe('training-plan-persistence', () => {
     expect(result.weekSummaries).toEqual([{ weekNumber: 1, focus: undefined, sessionCount: 1 }]);
     expect(mockCreateSession).toHaveBeenCalledTimes(1);
     expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists deferred and unscheduled capacity-reconciliation sessions as inactive rows without calendar events', async () => {
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Constrained week',
+      durationWeeks: 1,
+      startDate: '2026-04-19',
+      endDate: '2026-04-26',
+      now: new Date('2026-04-19T00:00:00.000Z'),
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [],
+      planData: {
+        weeks: [
+          {
+            weekNumber: 1,
+            sessions: [
+              { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Scheduled Lift', durationMinutes: 35, scheduleState: 'compressed', exercises: [{ name: 'Goblet Squat' }] },
+              { dayOfWeek: 'Tuesday', sessionType: 'rest', title: 'Unscheduled Lift', durationMinutes: 45, scheduleState: 'unscheduled', scheduleReason: 'No feasible slot remained.' },
+              { dayOfWeek: 'Wednesday', sessionType: 'run', title: 'Deferred Run', durationMinutes: 0, scheduleState: 'deferred', scheduleReason: 'Deferred by capacity reconciliation.' },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.eventsCreated).toBe(1);
+    expect(result.weekSummaries).toEqual([{ weekNumber: 1, focus: undefined, sessionCount: 1 }]);
+    expect(mockCreateSession).toHaveBeenCalledTimes(3);
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ title: 'Scheduled Lift' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Unscheduled Lift',
+      status: 'unscheduled',
+      duration_minutes: 45,
+    }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Deferred Run',
+      status: 'deferred',
+    }));
+    expect(mockCreateEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists a session as unscheduled when real calendar busy windows leave no valid slot', async () => {
+    const day = new Date('2026-04-20T00:00:00.000Z');
+    const blockStart = new Date(day); blockStart.setHours(5, 0, 0, 0);
+    const blockEnd = new Date(day); blockEnd.setHours(21, 0, 0, 0);
+
+    const result = await persistGeneratedTrainingPlan({
+      userId: 12,
+      objective: 'Calendar constrained week',
+      durationWeeks: 1,
+      startDate: '2026-04-20',
+      endDate: '2026-04-27',
+      now: day,
+      preferencesJson: '{}',
+      normalizedPreferredTime: '12:00',
+      normalizedPreferredCardioTime: '07:00',
+      normalizedPreferredStrengthTime: '12:30',
+      busyWindows: [{ startMs: blockStart.getTime(), endMs: blockEnd.getTime(), title: 'Fully booked day' }],
+      planData: {
+        weeks: [{
+          weekNumber: 1,
+          sessions: [
+            { dayOfWeek: 'Monday', sessionType: 'gym', title: 'Lift', durationMinutes: 45, exercises: [{ name: 'Squat' }] },
+          ],
+        }],
+      },
+    });
+
+    expect(result.totalSessions).toBe(0);
+    expect(result.eventsCreated).toBe(0);
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Lift',
+      status: 'unscheduled',
+      duration_minutes: 45,
+      preferred_time_unavailable: true,
+      description: expect.stringContaining('No valid free calendar window remained'),
+    }));
+    expect(mockCreateEvent).not.toHaveBeenCalled();
+    expect(mockLinkSessionToCalendar).not.toHaveBeenCalled();
   });
 
   it('creates calendar events sequentially to avoid provider write bursts', async () => {

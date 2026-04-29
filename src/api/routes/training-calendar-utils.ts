@@ -8,6 +8,16 @@ export function normalizeTrainingStatus(status?: string | null): string {
       return 'skipped';
     case 'rest':
       return 'rest';
+    case 'unscheduled':
+      return 'unscheduled';
+    case 'deferred':
+      return 'deferred';
+    case 'dropped':
+      return 'dropped';
+    case 'cancelled':
+      return 'cancelled';
+    case 'superseded':
+      return 'superseded';
     default:
       return 'planned';
   }

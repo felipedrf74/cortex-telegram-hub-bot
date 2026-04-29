@@ -11,7 +11,16 @@ import * as trainingPlans from '../../services/training-plans';
 import { clearStoredPlansForAthlete } from '../../services/coach-plan-registry';
 import { deleteReportsByType } from '../../services/report-document-store';
 import { clearLastCoachState } from '../../domains/domain-handler';
-import { markCalendarOwnershipDeleted } from '../../services/training-plan-lifecycle';
+import {
+  findOwnershipsForPlan,
+  markCalendarOwnershipDeleted,
+} from '../../services/training-plan-lifecycle';
+import { getTrainingCalendarEventOwners } from '../../services/training-calendar-scope';
+import {
+  buildTrainingSessionIdentityKey,
+  computeTrainingSessionShapeHash,
+  parseTrainingIdentityMarker,
+} from '../../services/training-session-identity';
 
 /**
  * Successful plan-cancellation payload.
@@ -66,8 +75,13 @@ interface TrainingSessionForCancellation {
   session_type?: string | null;
   title?: string | null;
   duration_minutes?: number | null;
+  intensity_text?: string | null;
+  exercises_json?: string | null;
+  description_json?: string | null;
   calendar_event_id?: string | null;
   calendar_source?: CalendarSource | string | null;
+  session_identity_key?: string | null;
+  session_shape_hash?: string | null;
 }
 
 interface TrainingWeekForCancellation {
@@ -78,6 +92,14 @@ interface TrainingWeekForCancellation {
 interface CalendarDeletionTarget {
   eventId: string;
   source: CalendarSource;
+  planId: number;
+}
+
+interface MatchableTrainingSessionIdentity {
+  session: TrainingSessionForCancellation;
+  sessionDate: Date;
+  sessionIdentityKey: string;
+  sessionShapeHash: string;
 }
 
 export async function cancelTrainingPlanForUser(
@@ -160,6 +182,8 @@ export async function cancelTrainingPlanForUser(
           source: target.source,
           reason: 'plan_cancelled',
           status: 'deleted',
+          userId,
+          planId: target.planId,
         });
       } else {
         markCalendarOwnershipDeleted({
@@ -167,6 +191,8 @@ export async function cancelTrainingPlanForUser(
           source: target.source,
           reason: 'plan_cancelled_external_delete_failed',
           status: 'orphaned',
+          userId,
+          planId: target.planId,
         });
       }
     });
@@ -305,19 +331,23 @@ async function buildCalendarDeletionTargetsForPlan(
       targets.set(key, {
         eventId: session.calendar_event_id,
         source: session.calendar_source,
+        planId: plan.id,
       });
     }
   }
 
-  const matchableSessions = sessionsByWeek.flatMap(({ week, sessions }) =>
-    sessions
-      .filter((session) => String(session.session_type || '').toLowerCase() !== 'rest')
-      .map((session) => ({
-        session,
-        sessionDate: sessionDateFor(plan.start_date, week.week_number || 1, session.day_of_week || ''),
-      }))
-      .filter((entry): entry is { session: TrainingSessionForCancellation; sessionDate: Date } => Boolean(entry.sessionDate)),
-  );
+  for (const ownership of findOwnershipsForPlan(plan.id)) {
+    if (ownership.status === 'deleted') continue;
+    if (!isCalendarSource(ownership.calendar_source)) continue;
+    const key = `${ownership.calendar_source}:${ownership.calendar_event_id}`;
+    targets.set(key, {
+      eventId: ownership.calendar_event_id,
+      source: ownership.calendar_source,
+      planId: plan.id,
+    });
+  }
+
+  const matchableSessions = buildIdentityMatchableSessions(plan, sessionsByWeek);
 
   if (matchableSessions.length === 0) {
     return [...targets.values()];
@@ -335,15 +365,16 @@ async function buildCalendarDeletionTargetsForPlan(
     const events = await getEvents(startStr, endStr, userId);
     for (const event of events || []) {
       const matchingSession = matchableSessions.find((entry) =>
-        isMatchingGeneratedTrainingEvent(entry.session, entry.sessionDate, event),
+        isMatchingGeneratedTrainingEvent(entry, plan.id, event),
       );
       if (!matchingSession) continue;
 
       const sources = event.syncedSources?.length ? event.syncedSources : [event.source];
       for (const source of sources) {
         if (!isCalendarSource(source)) continue;
+        if (isOwnedByAnotherTrainingPlan(event.id, source, userId, plan.id)) continue;
         const key = `${source}:${event.id}`;
-        targets.set(key, { eventId: event.id, source });
+        targets.set(key, { eventId: event.id, source, planId: plan.id });
       }
     }
   } catch (err) {
@@ -353,60 +384,79 @@ async function buildCalendarDeletionTargetsForPlan(
   return [...targets.values()];
 }
 
+function isOwnedByAnotherTrainingPlan(
+  eventId: string,
+  source: CalendarSource,
+  userId: number,
+  planId: number,
+): boolean {
+  const owners = getTrainingCalendarEventOwners(eventId, source);
+  return owners.some((owner) => owner.userId !== userId || owner.planId !== planId);
+}
+
 function isMatchingGeneratedTrainingEvent(
-  session: TrainingSessionForCancellation,
-  sessionDate: Date,
+  entry: MatchableTrainingSessionIdentity,
+  planId: number,
   event: UnifiedCalendarEvent,
 ): boolean {
   if (!event.id || !isCalendarSource(event.source)) return false;
-  const title = session.title || 'Training session';
-  const sessionType = session.session_type || 'training';
-  const durationMinutes = session.duration_minutes || 60;
-  const expectedTitle = normalizeTrainingEventTitle(
-    `${emojiForTrainingSession(sessionType)} ${title} (${durationMinutes}min)`,
-  );
-  const eventTitle = normalizeTrainingEventTitle(event.summary);
-  const bareSessionTitle = normalizeTrainingEventTitle(title);
-  const durationToken = `${durationMinutes}min`;
-  const description = normalizeTrainingEventTitle(event.description);
-  const titleMatches = eventTitle === expectedTitle
-    || (bareSessionTitle.length > 0 && eventTitle.includes(bareSessionTitle) && eventTitle.includes(durationToken))
-    || (description.includes('coach plan') && description.includes(bareSessionTitle));
-  if (!titleMatches) return false;
+  const marker = parseTrainingIdentityMarker(event.description);
+  if (!marker?.sessionIdentityKey || !marker?.sessionShapeHash) return false;
+  if (marker.planId !== planId) return false;
+  if (marker.sessionIdentityKey !== entry.sessionIdentityKey) return false;
+  if (marker.sessionShapeHash !== entry.sessionShapeHash) return false;
 
   const eventStart = new Date(event.start);
   const eventEnd = new Date(event.end);
   if (!Number.isFinite(eventStart.getTime()) || !Number.isFinite(eventEnd.getTime())) return false;
-  if (eventStart.toISOString().slice(0, 10) !== sessionDate.toISOString().slice(0, 10)) return false;
+  if (eventStart.toISOString().slice(0, 10) !== entry.sessionDate.toISOString().slice(0, 10)) return false;
 
   const eventDurationMinutes = Math.round((eventEnd.getTime() - eventStart.getTime()) / 60000);
+  const durationMinutes = entry.session.duration_minutes || 60;
   return Math.abs(eventDurationMinutes - durationMinutes) <= 2;
 }
 
-function emojiForTrainingSession(sessionType: string | null | undefined): string {
-  switch ((sessionType || '').toLowerCase()) {
-    case 'gym':
-      return '💪';
-    case 'run':
-      return '🏃';
-    case 'ride':
-    case 'bike':
-    case 'cycling':
-      return '🚴';
-    case 'swim':
-      return '🏊';
-    default:
-      return '🏋️';
+function buildIdentityMatchableSessions(
+  plan: trainingPlans.TrainingPlan,
+  sessionsByWeek: Array<{ week: TrainingWeekForCancellation; sessions: TrainingSessionForCancellation[] }>,
+): MatchableTrainingSessionIdentity[] {
+  const result: MatchableTrainingSessionIdentity[] = [];
+  for (const { week, sessions } of sessionsByWeek) {
+    const ordinals = new Map<string, number>();
+    for (const session of sessions) {
+      if (String(session.session_type || '').toLowerCase() === 'rest') continue;
+      const sessionDate = sessionDateFor(plan.start_date, week.week_number || 1, session.day_of_week || '');
+      if (!sessionDate) continue;
+      const ordinalKey = [
+        String(session.day_of_week || '').trim().toLowerCase(),
+        String(session.session_type || 'training').trim().toLowerCase(),
+      ].join('|');
+      const ordinal = (ordinals.get(ordinalKey) ?? 0) + 1;
+      ordinals.set(ordinalKey, ordinal);
+      const sessionIdentityKey = session.session_identity_key || buildTrainingSessionIdentityKey({
+        planId: plan.id,
+        weekNumber: week.week_number || 1,
+        dayOfWeek: session.day_of_week || '',
+        sessionType: session.session_type || 'training',
+        ordinal,
+      });
+      const sessionShapeHash = session.session_shape_hash || computeTrainingSessionShapeHash({
+        sessionType: session.session_type || 'training',
+        title: session.title || 'Training session',
+        durationMinutes: session.duration_minutes || 60,
+        intensityText: session.intensity_text || null,
+        exercises: session.exercises_json || [],
+        descriptionSections: session.description_json || null,
+      });
+      result.push({
+        session,
+        sessionDate,
+        sessionIdentityKey,
+        sessionShapeHash,
+      });
+    }
   }
-}
-
-function normalizeTrainingEventTitle(value: string | null | undefined): string {
-  return String(value || '')
-    .replace(/[()]/g, ' ')
-    .replace(/[^\w\s:+/-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+  return result;
 }
 
 const DAY_INDEX_FROM_NAME: Record<string, number> = {

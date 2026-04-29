@@ -13,6 +13,11 @@ import {
 import { cancelTrainingPlanForUser } from './training-plan-cancellation';
 import { generateTrainingPlanForUser } from './training-plan-generation';
 import { syncTrainingPlanCalendar } from './training-plan-calendar-sync';
+import {
+  isTrainingCalendarWritesEnabled,
+  isTrainingPlanGenerationEnabled,
+  trainingOperationDisabledMessage,
+} from '../../services/training-operational-switches';
 
 type TrainingScreenCacheInvalidator = (userId: number) => void;
 
@@ -44,6 +49,17 @@ export function registerTrainingPlanRoutes(
    */
   router.post('/plan/generate', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!isTrainingPlanGenerationEnabled()) {
+      sendError(
+        res,
+        'TRAINING_GENERATION_DISABLED',
+        trainingOperationDisabledMessage('plan_generation'),
+        503,
+        { operation: 'plan_generation' },
+      );
+      return;
+    }
+
     const {
       objective,
       durationWeeks = 4,
@@ -128,7 +144,7 @@ export function registerTrainingPlanRoutes(
         planId: result.planId,
         totalSessions: result.totalSessions,
         eventsCreated: result.eventsCreated,
-        objective,
+        objectiveLength: objective.trim().length,
         durationWeeks: result.durationWeeks,
       }, 'Training plan generated and scheduled');
       // Generation now replaces any existing active plan before
@@ -162,6 +178,16 @@ export function registerTrainingPlanRoutes(
    */
   router.post('/plan/sync-calendar', async (req, res: Response) => {
     const { userId } = req as AuthenticatedRequest;
+    if (!isTrainingCalendarWritesEnabled()) {
+      sendError(
+        res,
+        'TRAINING_CALENDAR_SYNC_DISABLED',
+        trainingOperationDisabledMessage('calendar_writes'),
+        503,
+        { operation: 'calendar_writes' },
+      );
+      return;
+    }
 
     try {
       const result = await syncTrainingPlanCalendar(userId);

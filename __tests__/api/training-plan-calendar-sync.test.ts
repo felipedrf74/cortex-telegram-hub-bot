@@ -5,11 +5,20 @@ const mocks = vi.hoisted(() => ({
   getWeeksForPlan: vi.fn(),
   getSessionsForWeek: vi.fn(),
   linkSessionToCalendar: vi.fn(),
+  updateSession: vi.fn(),
   createEvent: vi.fn(),
+  updateEvent: vi.fn(),
+  deleteEvent: vi.fn(),
   getEvents: vi.fn(),
   isConnected: vi.fn(),
   isTrainingCalendarEventUnclaimed: vi.fn(),
+  getPlanVersion: vi.fn(),
+  findExistingOwnership: vi.fn(),
+  findReusableOwnershipBySessionIdentity: vi.fn(),
+  recordCalendarOwnership: vi.fn(),
+  markCalendarOwnershipDeleted: vi.fn(),
   loggerDebug: vi.fn(),
+  loggerInfo: vi.fn(),
   loggerWarn: vi.fn(),
 }));
 
@@ -18,10 +27,13 @@ vi.mock('../../src/services/training-plans', () => ({
   getWeeksForPlan: mocks.getWeeksForPlan,
   getSessionsForWeek: mocks.getSessionsForWeek,
   linkSessionToCalendar: mocks.linkSessionToCalendar,
+  updateSession: mocks.updateSession,
 }));
 
 vi.mock('../../src/services/unified-calendar', () => ({
   createEvent: mocks.createEvent,
+  updateEvent: mocks.updateEvent,
+  deleteEvent: mocks.deleteEvent,
   getEvents: mocks.getEvents,
 }));
 
@@ -33,14 +45,72 @@ vi.mock('../../src/services/training-calendar-scope', () => ({
   isTrainingCalendarEventUnclaimed: mocks.isTrainingCalendarEventUnclaimed,
 }));
 
+vi.mock('../../src/services/training-plan-lifecycle', () => ({
+  getPlanVersion: mocks.getPlanVersion,
+  findExistingOwnership: mocks.findExistingOwnership,
+  findReusableOwnershipBySessionIdentity: mocks.findReusableOwnershipBySessionIdentity,
+  recordCalendarOwnership: mocks.recordCalendarOwnership,
+  markCalendarOwnershipDeleted: mocks.markCalendarOwnershipDeleted,
+}));
+
 vi.mock('../../src/utils/logger', () => ({
   logger: {
     debug: mocks.loggerDebug,
+    info: mocks.loggerInfo,
     warn: mocks.loggerWarn,
   },
 }));
 
 import { syncTrainingPlanCalendar } from '../../src/api/routes/training-plan-calendar-sync';
+import {
+  appendTrainingIdentityMarker,
+  buildTrainingSessionIdentityKey,
+  computeTrainingSessionShapeHash,
+} from '../../src/services/training-session-identity';
+
+function identityFor(planId: number, session: {
+  day_of_week: string;
+  session_type: string;
+  title: string;
+  duration_minutes: number;
+  intensity_text?: string | null;
+  exercises_json?: string | null;
+  description_json?: string | null;
+}, ordinal = 1): { key: string; shape: string } {
+  return {
+    key: buildTrainingSessionIdentityKey({
+      planId,
+      weekNumber: 1,
+      dayOfWeek: session.day_of_week,
+      sessionType: session.session_type,
+      ordinal,
+    }),
+    shape: computeTrainingSessionShapeHash({
+      sessionType: session.session_type,
+      title: session.title,
+      durationMinutes: session.duration_minutes,
+      intensityText: session.intensity_text || null,
+      exercises: session.exercises_json || [],
+      descriptionSections: session.description_json || null,
+    }),
+  };
+}
+
+function markerDescription(planId: number, planVersion: number, sessionId: number, session: {
+  day_of_week: string;
+  session_type: string;
+  title: string;
+  duration_minutes: number;
+}, ordinal = 1): string {
+  const identity = identityFor(planId, session, ordinal);
+  return appendTrainingIdentityMarker('Training session', {
+    planId,
+    planVersion,
+    sessionId,
+    sessionIdentityKey: identity.key,
+    sessionShapeHash: identity.shape,
+  });
+}
 
 describe('training-plan-calendar-sync', () => {
   // Pin "now" inside the plan window so future-day filtering is
@@ -50,9 +120,17 @@ describe('training-plan-calendar-sync', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getEvents.mockResolvedValue([]);
+    mocks.updateEvent.mockResolvedValue({ id: 'evt-updated', source: 'google' });
     mocks.linkSessionToCalendar.mockReturnValue(true);
+    mocks.updateSession.mockReturnValue(true);
+    mocks.deleteEvent.mockResolvedValue(undefined);
     mocks.isConnected.mockImplementation((_userId: number, provider: string) => provider === 'google');
     mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(true);
+    mocks.getPlanVersion.mockReturnValue(3);
+    mocks.findExistingOwnership.mockReturnValue(null);
+    mocks.findReusableOwnershipBySessionIdentity.mockReturnValue(null);
+    mocks.recordCalendarOwnership.mockReturnValue({ ok: true, created: true, ownershipId: 99 });
+    mocks.markCalendarOwnershipDeleted.mockReturnValue({ ok: true, rowsAffected: 1 });
   });
 
   it('returns no_active_plan when the user has no plan', async () => {
@@ -102,6 +180,22 @@ describe('training-plan-calendar-sync', () => {
     expect(mocks.createEvent).toHaveBeenCalledWith(expect.any(Object), 'google', 42);
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(100, 'evt-mon', 'google');
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(101, 'evt-wed', 'google');
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
+      planId: 7,
+      planVersion: 3,
+      sessionId: 100,
+      userId: 42,
+      eventId: 'evt-mon',
+      source: 'google',
+    }));
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
+      planId: 7,
+      planVersion: 3,
+      sessionId: 101,
+      userId: 42,
+      eventId: 'evt-wed',
+      source: 'google',
+    }));
     // Strength title prefix uses the dumbbell emoji + duration suffix.
     const monPayload = mocks.createEvent.mock.calls[0][0];
     expect(monPayload.title).toBe('💪 Strength + Core (40min)');
@@ -212,7 +306,49 @@ describe('training-plan-calendar-sync', () => {
     );
   });
 
+  it('precisely deletes a mismatched stale linked event after creating the replacement', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 29,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 290, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 219, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 45, description: '', status: 'pending', calendar_event_id: 'evt-old-time', calendar_source: 'google' },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'evt-old-time',
+        source: 'google',
+        summary: '💪 Lift (45min)',
+        start: '2026-04-20T08:00:00.000Z',
+        end: '2026-04-20T08:20:00.000Z',
+      },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'evt-repaired-time', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.sessionsFailed).toBe(0);
+    }
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(219, 'evt-repaired-time', 'google');
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('evt-old-time', 'google', 42);
+    expect(mocks.markCalendarOwnershipDeleted).toHaveBeenCalledWith({
+      eventId: 'evt-old-time',
+      source: 'google',
+      reason: 'training_sync_replaced_stale_event',
+      status: 'deleted',
+      userId: 42,
+      planId: 29,
+    });
+  });
+
   it('links matching orphan calendar events instead of creating duplicates', async () => {
+    const session = { id: 208, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null };
     mocks.getActivePlan.mockReturnValue({
       id: 18,
       user_id: 42,
@@ -225,7 +361,7 @@ describe('training-plan-calendar-sync', () => {
     });
     mocks.getWeeksForPlan.mockReturnValue([{ id: 180, week_number: 1 }]);
     mocks.getSessionsForWeek.mockReturnValue([
-      { id: 208, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+      session,
     ]);
     mocks.getEvents.mockResolvedValue([
       {
@@ -234,6 +370,7 @@ describe('training-plan-calendar-sync', () => {
         summary: '🏃 Recovery Run (30min)',
         start: '2026-04-20T07:00:00.000Z',
         end: '2026-04-20T07:30:00.000Z',
+        description: markerDescription(18, 3, 208, session),
       },
     ]);
 
@@ -248,9 +385,280 @@ describe('training-plan-calendar-sync', () => {
     }
     expect(mocks.createEvent).not.toHaveBeenCalled();
     expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(208, 'orphan-recovery-run', 'google');
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
+      planId: 18,
+      planVersion: 3,
+      sessionId: 208,
+      userId: 42,
+      eventId: 'orphan-recovery-run',
+      source: 'google',
+    }));
+  });
+
+  it('does not claim same-title/date events without a Nexus identity marker', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 118,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 1180, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 1208, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'legacy-title-only-run',
+        source: 'google',
+        summary: '🏃 Recovery Run (30min)',
+        start: '2026-04-20T07:00:00.000Z',
+        end: '2026-04-20T07:30:00.000Z',
+      },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'new-identity-run', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+      expect(result.data.sessionsLinked).toBe(0);
+    }
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(1208, 'new-identity-run', 'google');
+    expect(mocks.linkSessionToCalendar).not.toHaveBeenCalledWith(1208, 'legacy-title-only-run', 'google');
+  });
+
+  it('re-links a session from active ownership without creating a duplicate event', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 21,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 2100, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 211, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 40, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    mocks.findExistingOwnership.mockReturnValue({
+      id: 990,
+      plan_id: 21,
+      plan_version: 3,
+      session_id: 211,
+      user_id: 42,
+      calendar_event_id: 'owned-lift',
+      calendar_source: 'google',
+      status: 'active',
+      created_at: '2026-04-20T00:00:00Z',
+      deleted_at: null,
+      delete_reason: null,
+    });
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'owned-lift',
+        source: 'google',
+        summary: '💪 Lift (40min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:40:00.000Z',
+      },
+    ]);
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsLinked).toBe(1);
+      expect(result.data.message).toBe('1 existing session was linked to your calendar.');
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(211, 'owned-lift', 'google');
+  });
+
+  it('reuses a prior-version same-shape event and updates its time instead of duplicating it', async () => {
+    const session = {
+      id: 221,
+      day_of_week: 'Wednesday',
+      session_type: 'gym',
+      title: 'Lift',
+      duration_minutes: 40,
+      description: '',
+      status: 'pending',
+      calendar_event_id: null,
+      calendar_source: null,
+    };
+    const identity = identityFor(22, session);
+    mocks.getActivePlan.mockReturnValue({
+      id: 22,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredStrengthTime: '18:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 2200, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([session]);
+    mocks.findReusableOwnershipBySessionIdentity.mockReturnValue({
+      id: 991,
+      plan_id: 22,
+      plan_version: 2,
+      session_id: 121,
+      user_id: 42,
+      calendar_event_id: 'prior-version-lift',
+      calendar_source: 'google',
+      session_identity_key: identity.key,
+      session_shape_hash: identity.shape,
+      status: 'active',
+      created_at: '2026-04-20T00:00:00Z',
+      deleted_at: null,
+      delete_reason: null,
+    });
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'prior-version-lift',
+        source: 'google',
+        summary: '💪 Lift (40min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:40:00.000Z',
+        description: markerDescription(22, 2, 121, session),
+      },
+    ]);
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsLinked).toBe(1);
+    }
+    expect(mocks.updateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_id: 'prior-version-lift',
+        new_start: expect.stringContaining('2026-04-22T'),
+        new_end: expect.stringContaining('2026-04-22T'),
+        new_description: expect.stringContaining('version=3'),
+      }),
+      'google',
+      42,
+    );
+    expect(mocks.updateEvent.mock.calls[0][0].new_description).toContain('session=221');
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(221, 'prior-version-lift', 'google');
+    expect(mocks.recordCalendarOwnership).toHaveBeenCalledWith(expect.objectContaining({
+      planId: 22,
+      planVersion: 3,
+      sessionId: 221,
+      eventId: 'prior-version-lift',
+      sessionIdentityKey: identity.key,
+      sessionShapeHash: identity.shape,
+    }));
+  });
+
+  it('does not create events for inactive schedule-state sessions', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 33,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 330, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 3301, day_of_week: 'Monday', session_type: 'gym', title: 'Unscheduled Lift', duration_minutes: 40, description: '', status: 'unscheduled', calendar_event_id: null },
+      { id: 3302, day_of_week: 'Wednesday', session_type: 'run', title: 'Deferred Run', duration_minutes: 35, description: '', status: 'deferred', calendar_event_id: null },
+    ]);
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.sessionsAttempted).toBe(0);
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.message).toBe('No future sessions left to sync.');
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+  });
+
+  it('marks a future session unscheduled instead of creating a fallback event when the day is fully booked', async () => {
+    mocks.getActivePlan.mockReturnValue({
+      id: 34,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: JSON.stringify({ preferredStrengthTime: '12:00' }),
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 340, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      { id: 3401, day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 40, description: '', status: 'pending', calendar_event_id: null },
+    ]);
+    const blockStart = new Date('2026-04-20T00:00:00.000Z');
+    const blockEnd = new Date('2026-04-21T00:00:00.000Z');
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'busy-all-day',
+        source: 'google',
+        summary: 'Busy day',
+        start: blockStart.toISOString(),
+        end: blockEnd.toISOString(),
+      },
+    ]);
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(0);
+      expect(result.data.sessionsFailed).toBe(1);
+    }
+    expect(mocks.createEvent).not.toHaveBeenCalled();
+    expect(mocks.updateSession).toHaveBeenCalledWith(3401, expect.objectContaining({
+      status: 'unscheduled',
+      calendar_event_id: null,
+      calendar_source: null,
+    }));
+  });
+
+  it('replaces a linked event when the session identity matches but shape changed', async () => {
+    const oldSession = { day_of_week: 'Monday', session_type: 'gym', title: 'Lift', duration_minutes: 40 };
+    mocks.getActivePlan.mockReturnValue({
+      id: 23,
+      user_id: 42,
+      start_date: '2026-04-20T00:00:00.000Z',
+      preferences_json: null,
+    });
+    mocks.getWeeksForPlan.mockReturnValue([{ id: 2300, week_number: 1 }]);
+    mocks.getSessionsForWeek.mockReturnValue([
+      {
+        id: 231,
+        day_of_week: 'Monday',
+        session_type: 'gym',
+        title: 'Lift',
+        duration_minutes: 55,
+        description: '',
+        status: 'pending',
+        calendar_event_id: 'old-shape-lift',
+        calendar_source: 'google',
+      },
+    ]);
+    mocks.getEvents.mockResolvedValue([
+      {
+        id: 'old-shape-lift',
+        source: 'google',
+        summary: '💪 Lift (40min)',
+        start: '2026-04-20T12:00:00.000Z',
+        end: '2026-04-20T12:40:00.000Z',
+        description: markerDescription(23, 2, 131, oldSession),
+      },
+    ]);
+    mocks.createEvent.mockResolvedValueOnce({ id: 'new-shape-lift', source: 'google' });
+
+    const result = await syncTrainingPlanCalendar(42, now);
+
+    expect(result.status).toBe('synced');
+    if (result.status === 'synced') {
+      expect(result.data.eventsCreated).toBe(1);
+    }
+    expect(mocks.linkSessionToCalendar).toHaveBeenCalledWith(231, 'new-shape-lift', 'google');
+    expect(mocks.deleteEvent).toHaveBeenCalledWith('old-shape-lift', 'google', 42);
   });
 
   it('does not claim a matching training event already linked to another plan', async () => {
+    const session = { id: 210, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null };
     mocks.getActivePlan.mockReturnValue({
       id: 20,
       user_id: 42,
@@ -259,7 +667,7 @@ describe('training-plan-calendar-sync', () => {
     });
     mocks.getWeeksForPlan.mockReturnValue([{ id: 2000, week_number: 1 }]);
     mocks.getSessionsForWeek.mockReturnValue([
-      { id: 210, day_of_week: 'Monday', session_type: 'run', title: 'Recovery Run', duration_minutes: 30, description: '', status: 'pending', calendar_event_id: null },
+      session,
     ]);
     mocks.getEvents.mockResolvedValue([
       {
@@ -268,6 +676,7 @@ describe('training-plan-calendar-sync', () => {
         summary: '🏃 Recovery Run (30min)',
         start: '2026-04-20T12:00:00.000Z',
         end: '2026-04-20T12:30:00.000Z',
+        description: markerDescription(20, 3, 210, session),
       },
     ]);
     mocks.isTrainingCalendarEventUnclaimed.mockReturnValue(false);

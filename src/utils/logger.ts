@@ -3,6 +3,54 @@
 import pino from 'pino';
 import { getCurrentContext } from './request-context';
 
+export const LOGGER_REDACTION_PATHS = [
+  'authorization',
+  'Authorization',
+  'access_token',
+  'refresh_token',
+  'id_token',
+  'token',
+  'accessToken',
+  'refreshToken',
+  'idToken',
+  'password',
+  'secret',
+  'client_secret',
+  'clientSecret',
+  'body.access_token',
+  'body.refresh_token',
+  'body.id_token',
+  'body.token',
+  'body.password',
+  'body.client_secret',
+  'body.clientSecret',
+  'headers.authorization',
+  'headers.Authorization',
+  'req.headers.authorization',
+  'req.headers.Authorization',
+  'err.config.headers.authorization',
+  'err.config.headers.Authorization',
+  'err.config.headers.cookie',
+  'err.config.headers.Cookie',
+  'err.config.auth',
+  'err.response.config.headers.authorization',
+  'err.response.config.headers.Authorization',
+  'err.response.config.headers.cookie',
+  'err.response.config.headers.Cookie',
+  'err.request._headers.authorization',
+  'err.request._headers.Authorization',
+  'err.request._header',
+  'err.options.headers.authorization',
+  'err.options.headers.Authorization',
+  'err.options.authProvider',
+  'err.options.auth',
+  'config.headers.authorization',
+  'config.headers.Authorization',
+  'config.auth',
+  'response.config.headers.authorization',
+  'response.config.headers.Authorization',
+] as const;
+
 /**
  * Pino logger with a context-aware mixin (Quarter: distributed tracing).
  *
@@ -21,6 +69,10 @@ import { getCurrentContext } from './request-context';
  */
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
+  redact: {
+    paths: [...LOGGER_REDACTION_PATHS],
+    censor: '[Redacted]',
+  },
   transport:
     process.env.NODE_ENV !== 'production'
       ? { target: 'pino/file', options: { destination: 1 } }

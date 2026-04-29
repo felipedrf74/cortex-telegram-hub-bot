@@ -12,7 +12,14 @@
     "keySession": false,
     "instructions": ["Prioritize heavy compound lifts with technical quality.", "Do not place this too close to key endurance work."],
     "constraints": ["avoid_same_day_key_run", "avoid_post_long_run"],
-    "defaultExercises": ["front_squat", "romanian_deadlift", "pull_up", "bench_press", "dead_bug"]
+    "defaultExercises": ["front_squat", "romanian_deadlift", "pull_up", "bench_press", "dead_bug"],
+    "sessionRole": "max_strength",
+    "experienceFit": ["intermediate", "advanced"],
+    "equipmentProfile": ["full_gym", "barbell", "rack"],
+    "variantTags": ["compound", "high_tension", "low_rep"],
+    "timeRangeMinutes": { "min": 45, "max": 60 },
+    "progressionTarget": "load_progression",
+    "substitutionFamily": "strength_compound"
   },
   {
     "id": "strength_hypertrophy",
@@ -27,7 +34,14 @@
     "keySession": false,
     "instructions": ["Use full-body hypertrophy work that keeps execution crisp instead of grinding to failure.", "Bias toward stable substitutions that fit the athlete's real equipment access."],
     "constraints": ["avoid_same_day_key_run", "avoid_post_long_run"],
-    "defaultExercises": ["front_squat", "romanian_deadlift", "pull_up", "bench_press", "split_squat", "dead_bug"]
+    "defaultExercises": ["leg_press", "romanian_deadlift", "seated_cable_row", "machine_chest_press", "split_squat", "pallof_press"],
+    "sessionRole": "hypertrophy",
+    "experienceFit": ["novice", "intermediate", "advanced"],
+    "equipmentProfile": ["full_gym", "dumbbells", "machine", "home_gym"],
+    "variantTags": ["hypertrophy", "stable_loading", "movement_balance"],
+    "timeRangeMinutes": { "min": 40, "max": 60 },
+    "progressionTarget": "volume_then_load",
+    "substitutionFamily": "hypertrophy_strength"
   },
   {
     "id": "strength_maintenance",
@@ -42,6 +56,14 @@
     "keySession": false,
     "instructions": ["Use minimum effective dose strength to preserve tissue resilience.", "Leave at least 2-3 reps in reserve."],
     "constraints": ["race_block_friendly"],
-    "defaultExercises": ["split_squat", "bench_press", "pull_up", "dead_bug", "hip_airplane"]
+    "defaultExercises": ["bodyweight_squat", "dumbbell_floor_press", "band_row", "pallof_press", "hip_airplane"],
+    "sessionRole": "minimum_effective_dose",
+    "experienceFit": ["novice", "intermediate", "advanced"],
+    "equipmentProfile": ["bodyweight", "dumbbells", "hotel_gym"],
+    "variantTags": ["maintenance", "low_setup", "recovery_compatible"],
+    "recoveryScenarioTags": ["low_readiness", "travel_fatigue", "low_time"],
+    "timeRangeMinutes": { "min": 30, "max": 45 },
+    "progressionTarget": "consistency_preservation",
+    "substitutionFamily": "strength_maintenance"
   }
 ]
