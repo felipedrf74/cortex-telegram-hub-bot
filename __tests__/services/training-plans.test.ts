@@ -78,6 +78,7 @@ import {
   linkSessionToCalendar,
   logCompletion,
   getWeeklyAdherence,
+  getCrossplanWeeklyLoad,
   computeAdjustmentRecommendation,
   getActivePlanSummary,
   getPlanStats,
@@ -378,6 +379,48 @@ describe('Weekly Adherence', () => {
     expect(stats.totalSessions).toBe(0);
     expect(stats.adherenceRate).toBe(0);
     expect(stats.avgRpe).toBeNull();
+  });
+
+  it('excludes unscheduled/deferred/superseded sessions from adherence totals', () => {
+    const plan = createPlan({
+      user_id: 42, name: 'Plan', sport: 'hybrid',
+      duration_weeks: 4, start_date: '2026-04-01', end_date: '2026-04-29',
+    });
+    const week = createWeek({ plan_id: plan.id, week_number: 1, volume_sessions: 5 });
+
+    const completed = createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Monday', session_type: 'running', title: 'Run', status: 'scheduled' });
+    const skipped = createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Tuesday', session_type: 'strength', title: 'Lift', status: 'reflowed' });
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Wednesday', session_type: 'running', title: 'Compressed Run', status: 'compressed' });
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Thursday', session_type: 'running', title: 'No Slot Run', status: 'unscheduled' });
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Friday', session_type: 'strength', title: 'Old Lift', status: 'superseded' });
+
+    logCompletion({ session_id: completed.id, plan_id: plan.id, rpe_overall: 6 });
+    markSessionSkipped(skipped.id);
+
+    const stats = getWeeklyAdherence(plan.id, week.id);
+    expect(stats.totalSessions).toBe(3);
+    expect(stats.completedSessions).toBe(1);
+    expect(stats.skippedSessions).toBe(1);
+    expect(stats.pendingSessions).toBe(1);
+    expect(stats.adherenceRate).toBe(33);
+  });
+
+  it('excludes inactive rich lifecycle states from cross-plan load', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const plan = createPlan({
+      user_id: 42, name: 'Plan', sport: 'hybrid',
+      duration_weeks: 4, start_date: today, end_date: '2026-05-29',
+    });
+    const week = createWeek({ plan_id: plan.id, week_number: 1, volume_sessions: 4 });
+
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Monday', session_type: 'running', title: 'Scheduled Run', duration_minutes: 40, status: 'scheduled' });
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Tuesday', session_type: 'strength', title: 'Reflowed Lift', duration_minutes: 35, status: 'reflowed' });
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Wednesday', session_type: 'running', title: 'No Slot Run', duration_minutes: 45, status: 'unscheduled' });
+    createSession({ week_id: week.id, plan_id: plan.id, day_of_week: 'Thursday', session_type: 'running', title: 'Skipped Run', duration_minutes: 30, status: 'skipped' });
+
+    const load = getCrossplanWeeklyLoad(42);
+    expect(load.totalSessions).toBe(2);
+    expect(load.totalMinutes).toBe(75);
   });
 });
 

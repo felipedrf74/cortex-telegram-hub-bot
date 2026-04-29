@@ -10,6 +10,7 @@ import { sendInternalError } from '../response-helpers';
 type ChatRouteScopeGuard = (
   res: Response,
   userId: number | undefined,
+  tenantId: number | undefined,
   operation: string,
   details?: Record<string, unknown>,
 ) => userId is number;
@@ -32,7 +33,7 @@ export function registerChatHistoryRoutes(
     const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
     const before = req.query.before as string | undefined;
 
-    if (!ensureValidChatRouteScope(res, userId, 'chat_route_history', {
+    if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_history', {
       limit,
       hasBefore: Boolean(before),
     })) {
@@ -54,7 +55,7 @@ export function registerChatHistoryRoutes(
   router.delete('/history', async (req, res: Response) => {
     const { userId, tenantId = userId } = req as AuthenticatedRequest;
 
-    if (!ensureValidChatRouteScope(res, userId, 'chat_route_clear_history')) {
+    if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_clear_history')) {
       return;
     }
 

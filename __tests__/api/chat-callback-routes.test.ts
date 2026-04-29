@@ -4,11 +4,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockGetUserLanguage = vi.fn(() => 'en');
 const mockTryDeterministicChatCommand = vi.fn();
-const mockGetCallback = vi.fn(() => null);
+const mockGetCallbackForScope = vi.fn(() => null);
+const mockConsumeCallbackForScope = vi.fn(() => true);
+const mockStoreCallback = vi.fn(() => 'ref-scoped');
+const mockStoreCallbackForScope = vi.fn(() => 'ref-scoped');
 const mockApplyCoachRecommendations = vi.fn();
 const mockPersistAssistantEdit = vi.fn();
 const mockPersistCallbackAssistantResponse = vi.fn();
 const mockCompleteTask = vi.fn();
+const mockGetTasks = vi.fn(async () => ({ success: true, data: [] }));
+const mockDeleteTask = vi.fn(async () => undefined);
+const mockDeleteList = vi.fn(async () => undefined);
+const mockGetTaskProviderForUser = vi.fn();
 
 vi.mock('../../src/services/user-service', () => ({
   getUserLanguage: (...args: unknown[]) => mockGetUserLanguage(...args),
@@ -19,7 +26,10 @@ vi.mock('../../src/api/routes/chat-fastpath', () => ({
 }));
 
 vi.mock('../../src/utils/callback-store', () => ({
-  getCallback: (...args: unknown[]) => mockGetCallback(...args),
+  getCallbackForScope: (...args: unknown[]) => mockGetCallbackForScope(...args),
+  consumeCallbackForScope: (...args: unknown[]) => mockConsumeCallbackForScope(...args),
+  storeCallback: (...args: unknown[]) => mockStoreCallback(...args),
+  storeCallbackForScope: (...args: unknown[]) => mockStoreCallbackForScope(...args),
 }));
 
 vi.mock('../../src/services/garmin-coach', () => ({
@@ -31,11 +41,8 @@ vi.mock('../../src/api/routes/chat-persistence', () => ({
   persistCallbackAssistantResponse: (...args: unknown[]) => mockPersistCallbackAssistantResponse(...args),
 }));
 
-vi.mock('../../src/services/microsoft-todo', () => ({
-  completeTask: (...args: unknown[]) => mockCompleteTask(...args),
-  getTasks: vi.fn(async () => ({ success: true, data: [] })),
-  deleteTask: vi.fn(async () => undefined),
-  deleteList: vi.fn(async () => undefined),
+vi.mock('../../src/services/task-store/task-router', () => ({
+  getTaskProviderForUser: (...args: unknown[]) => mockGetTaskProviderForUser(...args),
 }));
 
 vi.mock('../../src/utils/logger', () => ({
@@ -66,9 +73,10 @@ function mockRes(): MockRes {
   return r;
 }
 
-function mockReq(userId: number, body?: any): Request {
+function mockReq(userId: number, body?: any, tenantId = userId): Request {
   return {
     userId,
+    tenantId,
     body,
     method: 'POST',
     url: '/callback',
@@ -84,10 +92,11 @@ async function dispatch(
   userId: number,
   body: any,
   guard: ChatRouteScopeGuard = (() => true) as ChatRouteScopeGuard,
+  tenantId = userId,
 ): Promise<MockRes> {
   const router = Router();
   registerChatCallbackRoutes(router, guard);
-  const req = mockReq(userId, body);
+  const req = mockReq(userId, body, tenantId);
   const res = mockRes();
 
   await new Promise<void>((resolve) => {
@@ -105,14 +114,33 @@ describe('chat callback route registrar', () => {
   beforeEach(() => {
     mockGetUserLanguage.mockReset();
     mockTryDeterministicChatCommand.mockReset();
-    mockGetCallback.mockReset();
+    mockGetCallbackForScope.mockReset();
+    mockConsumeCallbackForScope.mockReset();
+    mockStoreCallback.mockReset();
+    mockStoreCallbackForScope.mockReset();
     mockApplyCoachRecommendations.mockReset();
     mockPersistAssistantEdit.mockReset();
     mockPersistCallbackAssistantResponse.mockReset();
     mockCompleteTask.mockReset();
+    mockGetTasks.mockReset();
+    mockDeleteTask.mockReset();
+    mockDeleteList.mockReset();
+    mockGetTaskProviderForUser.mockReset();
 
     mockGetUserLanguage.mockReturnValue('en');
-    mockGetCallback.mockReturnValue(null);
+    mockGetCallbackForScope.mockReturnValue(null);
+    mockConsumeCallbackForScope.mockReturnValue(true);
+    mockStoreCallback.mockReturnValue('ref-scoped');
+    mockStoreCallbackForScope.mockReturnValue('ref-scoped');
+    mockGetTasks.mockResolvedValue({ success: true, data: [] });
+    mockDeleteTask.mockResolvedValue(undefined);
+    mockDeleteList.mockResolvedValue(undefined);
+    mockGetTaskProviderForUser.mockReturnValue({
+      completeTask: mockCompleteTask,
+      getTasks: mockGetTasks,
+      deleteTask: mockDeleteTask,
+      deleteList: mockDeleteList,
+    });
   });
 
   it('handles deterministic command callbacks and persists the edited assistant message', async () => {
@@ -133,6 +161,7 @@ describe('chat callback route registrar', () => {
       editOriginal: true,
       newButtons: [[{ text: 'Tasks', callbackData: 'cmd:/todo_summary' }]],
     });
+    expect(mockTryDeterministicChatCommand).toHaveBeenCalledWith('/day', 7001, 7001);
     expect(mockPersistAssistantEdit).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7001,
       messageId: 'msg-1',
@@ -169,8 +198,8 @@ describe('chat callback route registrar', () => {
     expect(JSON.stringify(res.body)).not.toContain('database password mismatch');
   });
 
-  it('uses stored todo callback data to complete tasks and persist the callback response', async () => {
-    mockGetCallback.mockReturnValue({
+  it('uses tenant-scoped stored todo callback data to complete tasks and persist the callback response', async () => {
+    mockGetCallbackForScope.mockReturnValue({
       listId: 'list-1',
       taskId: 'task-1',
       title: 'Pagar imposto',
@@ -187,12 +216,65 @@ describe('chat callback route registrar', () => {
       editOriginal: true,
       newButtons: null,
     });
+    expect(mockGetCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
     expect(mockCompleteTask).toHaveBeenCalledWith('list-1', 'task-1');
+    expect(mockConsumeCallbackForScope).toHaveBeenCalledWith('ref-1', { tenantId: 7001, userId: 7001 });
     expect(mockPersistCallbackAssistantResponse).toHaveBeenCalledWith(expect.objectContaining({
       userId: 7001,
       messageId: 'msg-2',
       text: '✅ Completed: Pagar imposto',
       domain: 'secretary',
     }));
+  });
+
+  it('rejects task callbacks when scoped callback lookup fails', async () => {
+    mockGetCallbackForScope.mockReturnValue(null);
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:tc:ref-foreign',
+      messageId: 'msg-2',
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.body.error.code).toBe('CALLBACK_EXPIRED');
+    expect(mockCompleteTask).not.toHaveBeenCalled();
+    expect(mockConsumeCallbackForScope).not.toHaveBeenCalled();
+  });
+
+  it('passes tenant scope into the callback guard before any action executes', async () => {
+    const guard = ((res: Response, userId: number | undefined, tenantId: number | undefined) => {
+      if (userId !== tenantId) {
+        res.status(403).json({ error: { code: 'FORBIDDEN' } });
+        return false;
+      }
+      return true;
+    }) as ChatRouteScopeGuard;
+
+    const res = await dispatch(7001, { callbackData: 'cmd:/day' }, guard, 9001);
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(mockTryDeterministicChatCommand).not.toHaveBeenCalled();
+  });
+
+  it('uses the authenticated user task provider instead of global task services', async () => {
+    mockGetCallbackForScope.mockReturnValue({
+      listId: 'list-1',
+      listName: 'Scoped',
+    });
+    mockGetTasks.mockResolvedValue({
+      success: true,
+      data: [{ id: 'task-1', title: 'Scoped task', listId: 'list-1', listName: 'Scoped' }],
+    });
+
+    const res = await dispatch(7001, {
+      callbackData: 'td:ls:ref-2',
+      messageId: 'msg-3',
+    });
+
+    expect(res.statusCode, JSON.stringify(res.body)).toBe(200);
+    expect(mockGetTaskProviderForUser).toHaveBeenCalledWith(7001);
+    expect(mockGetTasks).toHaveBeenCalledWith('list-1', 'Scoped', { status: 'notStarted' });
+    expect(JSON.stringify(res.body.newButtons)).toContain('td:tc:');
   });
 });

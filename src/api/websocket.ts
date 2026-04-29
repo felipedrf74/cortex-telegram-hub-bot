@@ -19,8 +19,9 @@ import { routeMessage } from '../router';
 import type { DomainName } from '../domains/types';
 import { generateRequestId, runWithContext } from '../utils/request-context';
 import { pushEvent } from '../portal/telemetry';
+import { getDb } from '../services/database';
 
-function getDomainHandlers(): Record<string, (message: string, userId?: number) => Promise<{ text: string; domain: DomainName }>> {
+function getDomainHandlers(): Record<string, (message: string, userId?: number, tenantId?: number) => Promise<{ text: string; domain: DomainName }>> {
   const { handleSecretary } = require('../domains/secretary');
   const { handleTriathlon } = require('../domains/triathlon');
   const { handleContent } = require('../domains/content-creator');
@@ -82,11 +83,23 @@ export function attachWebSocket(server: http.Server): void {
           }
           try {
             const payload = jwt.verify(msg.token, config.ios.jwtSecret) as { userId: number; deviceId: string };
+            const db = getDb();
+            const user = db.prepare('SELECT status FROM users WHERE id = ?').get(payload.userId) as { status?: string } | undefined;
+            if (!user || (user.status && user.status !== 'active')) {
+              throw new Error('inactive websocket user');
+            }
+            if (typeof payload.deviceId === 'string' && payload.deviceId.length > 0) {
+              const device = db
+                .prepare('SELECT 1 FROM ios_devices WHERE user_id = ? AND device_id = ?')
+                .get(payload.userId, payload.deviceId) as { 1?: number } | undefined;
+              if (!device) throw new Error('revoked websocket device');
+            }
             (ws as any).userId = payload.userId;
+            (ws as any).tenantId = payload.userId;
             (ws as any).deviceId = payload.deviceId;
             (ws as any).authenticated = true;
-            ws.send(JSON.stringify({ type: 'auth_ok' }));
-            logger.info({ userId: payload.userId, platform: 'ios' }, 'WebSocket authenticated');
+            ws.send(JSON.stringify({ type: 'auth_ok', userId: payload.userId, tenantId: payload.userId }));
+            logger.info({ userId: payload.userId, tenantId: payload.userId, platform: 'ios' }, 'WebSocket authenticated');
             return;
           } catch {
             pushEvent({
@@ -103,6 +116,7 @@ export function attachWebSocket(server: http.Server): void {
         }
 
         const userId = (ws as any).userId as number;
+        const tenantId = (ws as any).tenantId as number;
         if (msg.type !== 'message' || !msg.text) return;
 
         await runWithContext(
@@ -110,7 +124,7 @@ export function attachWebSocket(server: http.Server): void {
           async () => {
             const messageId = `msg-${Date.now()}`;
 
-            const route = await routeMessage(msg.text, undefined, userId);
+            const route = await routeMessage(msg.text, undefined, userId, tenantId);
 
         // ─── Phase 1 Slice C — Tier gate for iOS WebSocket stream ───
         // Same gate as the REST chat endpoint. We emit an 'error' frame
@@ -125,7 +139,7 @@ export function attachWebSocket(server: http.Server): void {
                 const tierResult = checkTierAccess({ id: user.id, tier: user.tier }, route.domain);
                 if (!tierResult.allowed) {
                   logger.info(
-                    { userId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
+                    { userId, tenantId, domain: route.domain, userTier: tierResult.userTier, requiredTier: tierResult.requiredTier, reason: tierResult.reason },
                     'iOS WebSocket tier gate blocked',
                   );
                   if (ws.readyState === WebSocket.OPEN) {
@@ -157,7 +171,7 @@ export function attachWebSocket(server: http.Server): void {
 
             // Execute handler — for streaming, we simulate chunked delivery
             // since the domain handlers return full text at once
-            const result = await handler(route.strippedMessage, userId);
+            const result = await handler(route.strippedMessage, userId, tenantId);
 
             // Stream the response in chunks
             const fullText = result.text;
@@ -169,6 +183,8 @@ export function attachWebSocket(server: http.Server): void {
                   type: 'chunk',
                   text: chunk,
                   messageId,
+                  userId,
+                  tenantId,
                 }));
               }
               // Small delay between chunks for visual streaming effect
@@ -181,6 +197,8 @@ export function attachWebSocket(server: http.Server): void {
                 type: 'done',
                 messageId,
                 domain: result.domain || route.domain,
+                userId,
+                tenantId,
                 metadata: null,
               }));
             }
@@ -202,7 +220,7 @@ export function attachWebSocket(server: http.Server): void {
     });
 
     ws.on('close', () => {
-      logger.debug({ userId: (ws as any).userId, platform: 'ios' }, 'WebSocket disconnected');
+      logger.debug({ userId: (ws as any).userId, tenantId: (ws as any).tenantId, platform: 'ios' }, 'WebSocket disconnected');
     });
 
     // Ping/pong for keepalive

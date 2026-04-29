@@ -29,6 +29,12 @@ import {
   buildChatSkillRoutingLogContext,
 } from '../../services/chat-skill-orchestrator';
 import { runWithChatToolAuthorization } from '../../services/chat-tool-authorization';
+import {
+  clearPendingChatConfirmation,
+  getPendingChatConfirmation,
+  trackPendingChatConfirmation,
+} from '../../services/chat-pending-confirmations';
+import { buildChatResponseSufficiencyMetadata } from '../../services/chat-response-sufficiency';
 import { sendInternalError } from '../response-helpers';
 import {
   persistExchange,
@@ -53,6 +59,7 @@ import { sendRetryableChatFailureResponseIfNeeded } from './chat-message-degrade
 type ChatRouteScopeGuard = (
   res: Response,
   userId: number | undefined,
+  tenantId: number | undefined,
   operation: string,
   details?: Record<string, unknown>,
 ) => userId is number;
@@ -93,7 +100,7 @@ export function registerChatMessageRoutes(
       idempotencyKey,
     } = normalizeChatMessageRequest(req.body);
 
-    if (!ensureValidChatRouteScope(res, userId, 'chat_route_message', {
+    if (!ensureValidChatRouteScope(res, userId, tenantId, 'chat_route_message', {
       hasAttachments: normalizedAttachments.length > 0,
       textLength: normalizedText.length,
     })) {
@@ -247,6 +254,7 @@ export function registerChatMessageRoutes(
           attachment,
           normalizedText,
           userId,
+          tenantId,
           language: lang,
         });
         rememberChatActiveDomain(userId, result.conversationDomain, Date.now(), tenantId);
@@ -270,7 +278,7 @@ export function registerChatMessageRoutes(
       // Handle them directly without ever touching the AI pipeline.
       // This is the difference between an instant ~200ms response and a
       // 30-50 second Claude tool-use loop. See specs/08-TOKEN-ZERO-ARCHITECTURE.md.
-      const fastPath = await tryBuildFastPathChatResponse(normalizedText, normalizedTextLower, userId);
+      const fastPath = await tryBuildFastPathChatResponse(normalizedText, normalizedTextLower, userId, tenantId);
       if (fastPath) {
         const { response: fastResponse, conversationDomain } = fastPath;
         // Track domain for conversation continuity even on fast-path.
@@ -320,6 +328,19 @@ export function registerChatMessageRoutes(
       if (preRoutingDecision.safety.requiresConfirmation && !preRoutingDecision.safety.explicitConfirmation) {
         const lang = getUserLanguage(userId);
         const isPT = lang.startsWith('pt');
+        const pendingConfirmation = trackPendingChatConfirmation({
+          userId,
+          tenantId,
+          actionSummary: normalizedText,
+          involvedSkills: preRoutingDecision.involvedSkills,
+          reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
+          sourceMessageId: userMessageId,
+        });
+        const sufficiency = buildChatResponseSufficiencyMetadata({
+          actionStatus: 'needs_confirmation',
+          requiresConfirmation: true,
+          unresolvedBlockers: ['target_identity_required'],
+        });
         const confirmationResponse = {
           id: `msg-${Date.now()}`,
           text: isPT
@@ -331,8 +352,17 @@ export function registerChatMessageRoutes(
           buttons: null,
           metadata: {
             type: 'chat_action_confirmation_required',
+            actionStatus: sufficiency.actionStatus,
             involvedSkills: preRoutingDecision.involvedSkills,
             reasonCodes: preRoutingDecision.safety.confirmationReasonCodes,
+            unresolvedBlockers: sufficiency.unresolvedBlockers,
+            responseSufficiency: sufficiency,
+            pendingConfirmation: {
+              id: pendingConfirmation.id,
+              actionSummary: pendingConfirmation.actionSummary,
+              expiresAt: pendingConfirmation.expiresAt,
+              sourceMessageId: pendingConfirmation.sourceMessageId,
+            },
           },
           timestamp: new Date().toISOString(),
         };
@@ -364,6 +394,9 @@ export function registerChatMessageRoutes(
         userId,
         tenantId,
       });
+      const pendingConfirmation = routingDecision.safety.explicitConfirmation
+        ? getPendingChatConfirmation(userId, tenantId)
+        : null;
       const route = applyChatSkillRoutingDecision(rawRoute, routingDecision);
       logger.info(
         {
@@ -418,15 +451,20 @@ export function registerChatMessageRoutes(
         userId,
         tenantId,
         confirmedDestructiveAction: routingDecision.safety.explicitConfirmation,
-        confirmationSource: routingDecision.safety.explicitConfirmation ? 'explicit_current_turn' : 'none',
+        confirmationSource: routingDecision.safety.explicitConfirmation
+          ? pendingConfirmation ? 'pending_confirmation' : 'explicit_current_turn'
+          : 'none',
       }, () => executeChatDomainHandler(handler, route.strippedMessage, userId, tenantId));
+      if (routingDecision.safety.explicitConfirmation) {
+        clearPendingChatConfirmation(userId, tenantId);
+      }
 
       // Extract buttons from the response text if present.
       // Secretary fast-path messages expose deterministic command buttons.
       // Triathlon coach replies can expose real "apply recommendation"
       // actions when the current request produced fresh coach state.
       const lang = getUserLanguage(userId);
-      const buttons = buildDefaultButtonsForChatDomain(result.domain || route.domain, lang, userId, requestStartedAt);
+      const buttons = buildDefaultButtonsForChatDomain(result.domain || route.domain, lang, userId, requestStartedAt, tenantId);
 
       const response = buildChatHandlerResponseEnvelope({ route, result, buttons });
 
@@ -437,8 +475,8 @@ export function registerChatMessageRoutes(
             userId,
             domain: response.domain,
             routeMethod: response.routeMethod,
-            hasButtons: Array.isArray(response.buttons) && response.buttons.length > 0,
-            metadataType: (response.metadata as { type?: string } | null)?.type || null,
+          hasButtons: Array.isArray(response.buttons) && response.buttons.length > 0,
+          metadataType: (response.metadata as { type?: string } | null)?.type || null,
           textLength: response.text.length,
           },
           'iOS new-user chat response envelope',

@@ -29,11 +29,12 @@ describe('chat day-to-day simulation harness', () => {
     expect(DAY_TO_DAY_PERSONAS.every((persona) => persona.userId >= 7000)).toBe(true);
   });
 
-  it('defines multi-turn day-in-the-life scenarios A through J', () => {
+  it('defines multi-turn day-in-the-life scenarios A through L', () => {
     const scenarioIds = new Set(DAY_TO_DAY_SCENARIOS.map((scenario) => scenario.id));
     const expected: DayToDayScenarioId[] = [
       'morning_planning',
-      'training_cooking',
+      'training_adjustment',
+      'cooking_fueling',
       'content_creator_day',
       'finance_schedule',
       'tenant_switch',
@@ -42,8 +43,10 @@ describe('chat day-to-day simulation harness', () => {
       'tool_failure',
       'prompt_injection',
       'longitudinal_memory',
+      'frustrated_contradictory',
     ];
 
+    expect(DAY_TO_DAY_SCENARIOS).toHaveLength(12);
     for (const scenarioId of expected) {
       expect(scenarioIds.has(scenarioId)).toBe(true);
     }
@@ -110,12 +113,34 @@ describe('chat day-to-day simulation harness', () => {
     expect(retry?.response.text.toLowerCase()).toContain('duplicate');
   });
 
+  it('handles frustrated contradictory instructions without unsafe action', () => {
+    const result = runDayToDaySimulationSuite({
+      scenarios: DAY_TO_DAY_SCENARIOS.filter((scenario) => scenario.id === 'frustrated_contradictory'),
+      generatedAt: '2026-04-29T00:00:00.000Z',
+    });
+    const contradictory = result.scenarios[0]?.turns.find((turn) => turn.turnId === 'l1-contradict');
+    const confirmation = result.scenarios[0]?.turns.find((turn) => turn.turnId === 'l2-frustrated');
+    const safeAction = result.scenarios[0]?.turns.find((turn) => turn.turnId === 'l3-confirm-safe');
+
+    expect(result.passed).toBe(true);
+    expect(contradictory?.response.actionStatus).toBe('clarification');
+    expect(confirmation?.response.actionStatus).toBe('needs_confirmation');
+    expect(safeAction?.response.toolCalls).toEqual([
+      expect.objectContaining({
+        name: 'secretary.cancel_agenda_item',
+        status: 'succeeded',
+      }),
+    ]);
+    expect(safeAction?.response.text).toContain('Training plan unchanged');
+  });
+
   it('formats run evidence without snapshotting exact assistant copy', () => {
     const result = runDayToDaySimulationSuite({ generatedAt: '2026-04-29T00:00:00.000Z' });
     const markdown = formatDayToDaySimulationResultsMarkdown(result);
 
     expect(markdown).toContain('Overall: PASS');
     expect(markdown).toContain('Scenario A - Morning planning');
+    expect(markdown).toContain('Scenario L - Frustrated user with contradictory instructions');
     expect(markdown).toContain('fixture/deterministic-chat-day-to-day-sim-v1');
   });
 });

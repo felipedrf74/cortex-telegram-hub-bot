@@ -55,6 +55,7 @@ vi.mock('../../src/state/todos', () => ({
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
   getSharedMemory: vi.fn().mockReturnValue([]),
+  getSharedMemoryByScope: vi.fn().mockReturnValue({ userPrivate: [], tenantShared: [] }),
 }));
 
 vi.mock('../../src/services/tool-executor', () => ({

@@ -636,6 +636,7 @@ export async function classifyAndExtractImage(
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif',
   caption?: string,
   userId?: number,
+  tenantId?: number,
 ): Promise<ImageClassificationResult> {
   const today = new Date().toISOString().split('T')[0];
   const currentYear = new Date().getFullYear();
@@ -666,7 +667,7 @@ export async function classifyAndExtractImage(
           { type: 'text', text: userPrompt },
         ],
       }],
-    }, 'classify_image', { userId });
+    }, 'classify_image', { userId, tenantId });
     stopReason = response.stop_reason;
     return response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -682,7 +683,7 @@ export async function classifyAndExtractImage(
       { base64: imageBase64, mimeType: mediaType },
       'classify_image',
       anthropicFallback,
-      { maxTokens: 4096, temperature: 0, userId },
+      { maxTokens: 4096, temperature: 0, userId, tenantId },
     );
     rawText = result.text;
   } else {

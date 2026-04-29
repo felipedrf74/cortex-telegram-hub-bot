@@ -7,7 +7,7 @@ import {
   resolveChatTenantScope,
 } from './chat-tenant-scope';
 import { getConversationHistory } from '../state/conversation';
-import { getSharedMemory, type SharedMemoryEntry } from '../state/shared-memory';
+import { getSharedMemoryByScope, type SharedMemoryEntry } from '../state/shared-memory';
 import { getDailyContext } from './context-engine';
 import { buildSharedDecisionContext } from './shared-decision-context';
 import {
@@ -65,7 +65,8 @@ export interface ChatWeakContextSignal {
     | 'memory_recall_without_memory'
     | 'tenant_boundary_requires_confirmation'
     | 'prompt_injection_attempt'
-    | 'low_confidence_context';
+    | 'low_confidence_context'
+    | 'unsafe_ambiguous_action';
   explanation: string;
   suggestedQuestion: string;
 }
@@ -207,8 +208,8 @@ export async function selectChatContextItems(input: {
     items.push(...buildConversationItems(history, input, intent));
   }
 
-  const memories = getSharedMemory(input.userId, undefined, input.tenantId) ?? [];
-  for (const memory of memories) {
+  const memoryBuckets = getSharedMemoryByScope(input.userId, input.tenantId);
+  for (const memory of [...memoryBuckets.userPrivate, ...memoryBuckets.tenantShared]) {
     const item = buildMemoryItem(memory, input, intent, now);
     if (item.relevanceScore >= 0.28 || item.critical) {
       items.push(item);
@@ -380,6 +381,9 @@ function buildWeakContextSignals(intent: ChatContextIntent, items: ChatContextIt
   if (intent.ambiguousFollowUp && !hasHistory) {
     signals.push(buildWeakSignal('ambiguous_follow_up_without_history'));
   }
+  if (intent.actionReference && hasHistory && hasUnsafeAmbiguousTarget(items)) {
+    signals.push(buildWeakSignal('unsafe_ambiguous_action'));
+  }
   if (intent.memoryRecall && !hasMemory && !hasHistory) {
     signals.push(buildWeakSignal('memory_recall_without_memory'));
   }
@@ -433,7 +437,31 @@ function buildWeakSignal(code: ChatWeakContextSignal['code']): ChatWeakContextSi
         explanation: 'Some available context is stale or low confidence.',
         suggestedQuestion: 'Should I verify the current state before acting?',
       };
+    case 'unsafe_ambiguous_action':
+      return {
+        code,
+        explanation: 'The user asked for an action, but recent context contains more than one plausible target.',
+        suggestedQuestion: 'Which exact item should I update?',
+      };
   }
+}
+
+function hasUnsafeAmbiguousTarget(items: ChatContextItem[]): boolean {
+  const historyText = items
+    .filter((item) => item.source === 'conversation_history')
+    .map((item) => item.content.toLowerCase())
+    .join('\n');
+  if (!historyText) return false;
+  const targetHints = [
+    /\b(plan [a-z0-9]+)\b/g,
+    /\b(workout|training session|meal prep|budget review|writing block|content block|calendar event|agenda item|reminder|follow-up)\b/g,
+  ];
+  let count = 0;
+  for (const pattern of targetHints) {
+    const matches = historyText.match(pattern);
+    if (matches) count += new Set(matches).size;
+  }
+  return count > 1 || /\b(or|and)\b/.test(historyText) && /\b(which|one|item|block|plan|session|event)\b/.test(historyText);
 }
 
 function applyContextBudget(items: ChatContextItem[], budgetChars: number): ChatContextItem[] {

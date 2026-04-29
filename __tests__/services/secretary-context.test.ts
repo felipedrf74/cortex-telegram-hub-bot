@@ -66,6 +66,7 @@ vi.mock('../../src/state/conversation', () => ({
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn(() => ''),
   getSharedMemory: vi.fn(() => []),
+  getSharedMemoryByScope: vi.fn(() => ({ userPrivate: [], tenantShared: [] })),
 }));
 vi.mock('../../src/services/anthropic', () => ({
   callDomain: vi.fn(),

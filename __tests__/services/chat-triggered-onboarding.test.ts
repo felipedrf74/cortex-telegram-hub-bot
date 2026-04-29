@@ -67,6 +67,7 @@ vi.mock('../../src/state/shared-memory', () => ({
   removeSharedMemory: vi.fn(),
   getSharedMemorySummary: vi.fn(() => ''),
   getSharedMemory: vi.fn(() => []),
+  getSharedMemoryByScope: vi.fn(() => ({ userPrivate: [], tenantShared: [] })),
 }));
 
 // listTodos pulls from a table we haven't necessarily migrated in this

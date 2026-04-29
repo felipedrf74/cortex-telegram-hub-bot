@@ -33,6 +33,12 @@ Commands:
   health       Probe public local health/API endpoints.
   auth-token   Register a local sandbox iOS user and write an auth token file.
   smoke        Run local health and authenticated iOS API smoke when possible.
+  chat-tenant-smoke
+               Seed local Chat tenants/context and run tenant-isolation smoke.
+  cross-skill-fixtures
+               Run deterministic Training/Secretary/Cooking/Finance/Content fixture checks.
+  chat-eval    Run deterministic Chat evaluation and day-to-day simulation fixtures.
+  full-smoke   Run health/auth smoke plus local fixture/security smoke commands.
   status       Show PID, port, and auth-token state.
   stop         Stop local backend/content-engine processes started by this runner.
   cleanup      Remove local smoke artifacts after services are stopped.
@@ -129,6 +135,23 @@ wait_for_url() {
   return 1
 }
 
+tail_backend_log() {
+  if [[ -f "$LOG_DIR/backend.log" ]]; then
+    echo "Last backend log lines:" >&2
+    tail -n 80 "$LOG_DIR/backend.log" >&2 || true
+  fi
+}
+
+verify_backend_pid() {
+  local pid
+  pid="$(pid_from_file "$BACKEND_PID_FILE")"
+  if ! is_pid_running "$pid"; then
+    echo "ERROR: local backend process exited during startup." >&2
+    tail_backend_log
+    return 1
+  fi
+}
+
 port_busy() {
   local port="$1"
   lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
@@ -152,10 +175,14 @@ start_backend() {
   echo "Starting local backend on ${PORTAL_BIND}:${PORTAL_PORT} with DB ${DATABASE_PATH}"
   (
     cd "$ROOT"
-    nohup npm start >"$LOG_DIR/backend.log" 2>&1 < /dev/null &
+    nohup node dist/index.js >"$LOG_DIR/backend.log" 2>&1 < /dev/null &
     echo $! > "$BACKEND_PID_FILE"
   )
-  wait_for_url "$BASE_URL/api/v1/" "iOS API"
+  if ! wait_for_url "$BASE_URL/api/v1/" "iOS API"; then
+    tail_backend_log
+    return 1
+  fi
+  verify_backend_pid
 }
 
 start_content_engine() {
@@ -282,6 +309,67 @@ command_smoke() {
   BASE_URL="$BASE_URL" "$ROOT/scripts/authenticated-api-smoke.sh" --base-url "$BASE_URL" --token-file "$AUTH_FILE"
 }
 
+command_chat_tenant_smoke() {
+  ensure_dirs
+  load_env
+  if ! curl -fsS "$BASE_URL/api/v1/" >/dev/null 2>&1; then
+    echo "ERROR: local backend is not reachable at $BASE_URL. Start it with 'start' or 'up' first." >&2
+    return 1
+  fi
+  echo "Running Chat tenant-isolation smoke against $BASE_URL"
+  CHAT_TENANT_SMOKE_BASE_URL="$BASE_URL" \
+    IOS_INVITE_CODE="$LOCAL_INVITE_CODE" \
+    PORTAL_ADMIN_TOKEN="${PORTAL_ADMIN_TOKEN:-local-chat-tenant-admin}" \
+    DATABASE_PATH="$DATABASE_PATH" \
+    node "$ROOT/scripts/chat-tenant-security-smoke.js" \
+      --base-url "$BASE_URL" \
+      --invite-code "$LOCAL_INVITE_CODE" \
+      --portal-admin-token "${PORTAL_ADMIN_TOKEN:-local-chat-tenant-admin}"
+}
+
+command_cross_skill_fixtures() {
+  ensure_dirs
+  load_env
+  local results_path="$STATE_DIR/cross-skill-fixture-results.md"
+  echo "Running deterministic cross-skill fixture checks"
+  set +e
+  TRAINING_CROSS_SKILL_STAGING_RESULTS_PATH="$results_path" \
+    "$ROOT/scripts/training-cross-skill-staging-smoke.sh" --dry-run
+  local rc=$?
+  set -e
+  if [[ "$rc" -eq 1 ]]; then
+    return 1
+  fi
+  if [[ "$rc" -eq 2 ]]; then
+    echo "Cross-skill fixture checks completed; staging runtime section is blocked by design in local dry-run mode."
+  elif [[ "$rc" -ne 0 ]]; then
+    return "$rc"
+  fi
+  echo "Cross-skill fixture report: $results_path"
+}
+
+command_chat_eval() {
+  ensure_dirs
+  load_env
+  if [[ ! -f "$ROOT/dist/tools/chat-evaluation-harness.js" || ! -f "$ROOT/dist/tools/chat-day-to-day-simulation.js" ]]; then
+    echo "Building backend tools for Chat fixture evaluation..."
+    (cd "$ROOT" && npm run build)
+  fi
+  echo "Running deterministic Chat evaluation fixtures"
+  (cd "$ROOT" && CHAT_EVAL_MODE=fixture node dist/tools/chat-evaluation-harness.js)
+  echo "Running deterministic Chat day-to-day simulation fixtures"
+  (cd "$ROOT" && node dist/tools/chat-day-to-day-simulation.js)
+}
+
+command_full_smoke() {
+  ensure_dirs
+  load_env
+  command_smoke
+  command_chat_tenant_smoke
+  command_cross_skill_fixtures
+  command_chat_eval
+}
+
 stop_pid_file() {
   local label="$1"
   local file="$2"
@@ -381,6 +469,10 @@ main() {
     health) command_health ;;
     auth-token) command_auth_token ;;
     smoke) command_smoke ;;
+    chat-tenant-smoke) command_chat_tenant_smoke ;;
+    cross-skill-fixtures) command_cross_skill_fixtures ;;
+    chat-eval) command_chat_eval ;;
+    full-smoke) command_full_smoke ;;
     status) command_status ;;
     stop) command_stop ;;
     cleanup) command_cleanup ;;

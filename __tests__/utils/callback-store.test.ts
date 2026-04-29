@@ -22,7 +22,14 @@ vi.mock('../../src/utils/logger', () => ({
   },
 }));
 
-import { __resetCallbackCacheForTests, getCallback, storeCallback } from '../../src/utils/callback-store';
+import {
+  __resetCallbackCacheForTests,
+  consumeCallbackForScope,
+  getCallback,
+  getCallbackForScope,
+  storeCallback,
+  storeCallbackForScope,
+} from '../../src/utils/callback-store';
 
 function applyMigrations(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS _migrations (id INTEGER PRIMARY KEY, filename TEXT UNIQUE, applied_at TEXT DEFAULT (datetime('now')))`);
@@ -73,5 +80,50 @@ describe('callback-store persistence', () => {
     expect(remaining.count).toBe(0);
 
     nowSpy.mockRestore();
+  });
+
+  it('returns scoped callbacks only for the matching tenant and user', () => {
+    const ref = storeCallbackForScope(
+      { taskId: 'task-1' },
+      { tenantId: 42, userId: 42, actionType: 'todo_task_complete' },
+      300_000,
+    );
+
+    __resetCallbackCacheForTests();
+
+    expect(getCallbackForScope(ref, { tenantId: 42, userId: 42 })).toEqual({ taskId: 'task-1' });
+    expect(getCallbackForScope(ref, { tenantId: 43, userId: 42 })).toBeNull();
+    expect(getCallbackForScope(ref, { tenantId: 42, userId: 43 })).toBeNull();
+  });
+
+  it('does not expose scoped callbacks through the legacy global lookup', () => {
+    const ref = storeCallbackForScope(
+      { recommendationIds: ['evt-1'] },
+      { tenantId: 42, userId: 42, actionType: 'coach_recommendation_apply' },
+      300_000,
+    );
+
+    expect(getCallback(ref)).toBeNull();
+    expect(getCallbackForScope(ref, { tenantId: 42, userId: 42 })).toEqual({ recommendationIds: ['evt-1'] });
+  });
+
+  it('quarantines ambiguous legacy rows from scoped lookup while preserving legacy callers', () => {
+    const ref = storeCallback({ taskId: 'legacy-task' }, 300_000);
+
+    __resetCallbackCacheForTests();
+
+    expect(getCallback(ref)).toEqual({ taskId: 'legacy-task' });
+    expect(getCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBeNull();
+  });
+
+  it('consumes scoped callbacks after one destructive use', () => {
+    const ref = storeCallbackForScope(
+      { taskId: 'task-1' },
+      { tenantId: 42, userId: 42, actionType: 'todo_task_delete' },
+      300_000,
+    );
+
+    expect(consumeCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBe(true);
+    expect(getCallbackForScope(ref, { tenantId: 42, userId: 42 })).toBeNull();
   });
 });

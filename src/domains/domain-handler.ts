@@ -12,6 +12,10 @@ import { getDailyContext } from '../services/context-engine';
 import { buildSharedDecisionContext } from '../services/shared-decision-context';
 import { buildChatPromptContextBlock } from '../services/chat-context-engine';
 import { buildAIUnavailableResponse, canUseDirectAnthropicFallback } from './ai-unavailable';
+import {
+  callDomain as callDirectAnthropicDomain,
+  continueWithToolResults as continueDirectAnthropicWithToolResults,
+} from '../services/anthropic';
 import { normalizeReplyForUserLanguage } from '../services/reply-language-normalizer';
 import {
   formatAthleteProfileBlock,
@@ -28,6 +32,7 @@ import {
 } from '../services/progression-analytics';
 import type { AIToolResultMessage } from '../services/ai-provider';
 import { logger } from '../utils/logger';
+import { AITimeoutError } from '../utils/timeout';
 import type { CoachRecommendation } from '../services/garmin-coach';
 import { LRUMap } from '../utils/lru-map';
 import { deleteCoachState, loadCoachState, saveCoachState } from '../state/coach-state';
@@ -426,8 +431,18 @@ export async function handleSimpleDomain(
         return buildAIUnavailableResponse(domain, userId);
       }
       // Fallback to direct Anthropic if routing provider not initialized
-      const { callDomain, continueWithToolResults } = require('../services/anthropic');
-      return await handleWithDirectCalls(domain, history, message, stateContext, maxIterations, userId, maxTokensOverride, callDomain, continueWithToolResults, tenantId);
+      return await handleWithDirectCalls(
+        domain,
+        history,
+        message,
+        stateContext,
+        maxIterations,
+        userId,
+        maxTokensOverride,
+        callDirectAnthropicDomain,
+        continueDirectAnthropicWithToolResults,
+        tenantId,
+      );
     }
 
     // Route through the provider-agnostic interface
@@ -492,7 +507,6 @@ export async function handleSimpleDomain(
 
     return { text: finalText, domain };
   } catch (err: unknown) {
-    const { AITimeoutError } = require('../utils/timeout');
     if (err instanceof AITimeoutError) {
       return { text: '⏱ Sorry, I took too long to respond. Please try again with a simpler question.', domain };
     }
@@ -510,7 +524,12 @@ async function handleWithDirectCalls(
   callDomainFn: (...args: any[]) => Promise<any>, continueWithToolResultsFn: (...args: any[]) => Promise<any>,
   tenantId?: number,
 ): Promise<DomainResponse> {
-  let result = await callDomainFn(domain, history, message, stateContext, maxTokensOverride, userId);
+  const directOptions = {
+    maxTokensOverride,
+    userId,
+    tenantId,
+  };
+  let result = await callDomainFn(domain, history, message, stateContext, directOptions);
   let finalText = result.text;
 
   const toolConversation: any[] = [];
@@ -538,7 +557,7 @@ async function handleWithDirectCalls(
       { role: 'assistant' as const, content: assistantContent },
       { role: 'user' as const, content: toolResults },
     );
-    result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId);
+    result = await continueWithToolResultsFn(domain, history, message, stateContext, toolConversation, userId, directOptions);
     finalText = result.text;
   }
 

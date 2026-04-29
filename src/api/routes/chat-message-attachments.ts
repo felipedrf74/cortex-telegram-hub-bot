@@ -12,6 +12,7 @@ type AttachmentClassifier = (
   mediaType: ChatImageAttachment['mimeType'],
   caption?: string,
   userId?: number,
+  tenantId?: number,
 ) => Promise<ImageClassificationResult>;
 
 export type ChatAttachmentResponseEnvelope = {
@@ -50,9 +51,10 @@ async function classifyAttachmentWithTimeout(
   attachment: ChatImageAttachment,
   userText: string,
   userId: number,
+  tenantId: number | undefined,
   timeoutMs: number,
 ): Promise<ImageClassificationResult> {
-  const classifierPromise = classifier(attachment.base64, attachment.mimeType, userText, userId);
+  const classifierPromise = classifier(attachment.base64, attachment.mimeType, userText, userId, tenantId);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => reject(new ChatAttachmentTimeoutError()), timeoutMs);
@@ -93,6 +95,7 @@ export async function buildChatAttachmentResponse({
   attachment,
   normalizedText,
   userId,
+  tenantId,
   language,
   classifier = classifyAndExtractImage,
   timeoutMs = CHAT_ATTACHMENT_CLASSIFICATION_TIMEOUT_MS,
@@ -102,6 +105,7 @@ export async function buildChatAttachmentResponse({
   attachment: ChatImageAttachment;
   normalizedText: string;
   userId: number;
+  tenantId?: number;
   language: string;
   classifier?: AttachmentClassifier;
   timeoutMs?: number;
@@ -112,7 +116,7 @@ export async function buildChatAttachmentResponse({
   const userText = resolveAttachmentUserText(normalizedText, isPT);
 
   try {
-    const classified = await classifyAttachmentWithTimeout(classifier, attachment, userText, userId, timeoutMs);
+    const classified = await classifyAttachmentWithTimeout(classifier, attachment, userText, userId, tenantId, timeoutMs);
     const attachmentReply = buildAttachmentText(classified, isPT);
     const response: ChatAttachmentResponseEnvelope = {
       id,

@@ -82,6 +82,10 @@ function getFastPathTaskProvider(userId?: number): FastPathTaskProvider | null {
   return msTodo;
 }
 
+function getCallbackScope(userId?: number, tenantId?: number): { userId: number; tenantId?: number } | undefined {
+  return typeof userId === 'number' ? { userId, tenantId } : undefined;
+}
+
 async function getPendingTasksCached(
   taskProvider: FastPathTaskProvider,
   userId?: number,
@@ -144,6 +148,7 @@ function fastPathCopy(userId: number | undefined, pt: string, en: string): strin
 export async function tryDeterministicChatCommand(
   text: string,
   userId?: number,
+  tenantId?: number,
 ): Promise<FastPathResult | null> {
   const trimmed = text.trim();
   if (!trimmed.startsWith('/')) return null;
@@ -162,25 +167,25 @@ export async function tryDeterministicChatCommand(
       case '/tasks':
         // If user passes args, the AI handler should parse it (create task etc.)
         if (args) return null;
-        return await handleTodos(labels, userId);
+        return await handleTodos(labels, userId, tenantId);
 
       case '/lists':
-        return await handleLists(labels, userId);
+        return await handleLists(labels, userId, tenantId);
 
       case '/duetoday':
       case '/due_today':
-        return await handleDueToday(labels, userId);
+        return await handleDueToday(labels, userId, tenantId);
 
       case '/overdue':
-        return await handleOverdue(labels, userId);
+        return await handleOverdue(labels, userId, tenantId);
 
       case '/dueweek':
       case '/due_week':
-        return await handleDueWeek(labels, userId);
+        return await handleDueWeek(labels, userId, tenantId);
 
       case '/alltasks':
       case '/all_tasks':
-        return await handleAllTasks(labels, userId);
+        return await handleAllTasks(labels, userId, tenantId);
 
       case '/todosummary':
       case '/todo_summary':
@@ -207,7 +212,7 @@ export async function tryDeterministicChatCommand(
 
 // ── Handlers (mirror the Telegram bot's deterministic command handlers) ──
 
-async function handleTodos(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleTodos(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
@@ -225,11 +230,11 @@ async function handleTodos(labels: ReturnType<typeof labelsForLanguage>, userId?
   return {
     text: formatMsTodoTasks(result.data, defaultList.displayName, getFastPathLanguage(userId)),
     domain: 'secretary',
-    buttons: buildTaskActionButtons(result.data, labels),
+    buttons: buildTaskActionButtons(result.data, labels, 5, getCallbackScope(userId, tenantId)),
   };
 }
 
-async function handleLists(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleLists(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
@@ -242,11 +247,11 @@ async function handleLists(labels: ReturnType<typeof labelsForLanguage>, userId?
   return {
     text: formatMsTodoLists(result.data, getFastPathLanguage(userId)),
     domain: 'secretary',
-    buttons: buildListSelectionButtons(result.data, labels),
+    buttons: buildListSelectionButtons(result.data, labels, 10, getCallbackScope(userId, tenantId)),
   };
 }
 
-async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
@@ -277,11 +282,11 @@ async function handleDueToday(labels: ReturnType<typeof labelsForLanguage>, user
   return {
     text: msg.trim(),
     domain: 'secretary',
-    buttons: buildTaskActionButtons(dueToday, labels),
+    buttons: buildTaskActionButtons(dueToday, labels, 5, getCallbackScope(userId, tenantId)),
   };
 }
 
-async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
@@ -309,11 +314,11 @@ async function handleOverdue(labels: ReturnType<typeof labelsForLanguage>, userI
   return {
     text: msg.trim(),
     domain: 'secretary',
-    buttons: buildTaskActionButtons(overdue, labels),
+    buttons: buildTaskActionButtons(overdue, labels, 5, getCallbackScope(userId, tenantId)),
   };
 }
 
-async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
@@ -336,11 +341,11 @@ async function handleDueWeek(labels: ReturnType<typeof labelsForLanguage>, userI
   return {
     text: msg.trim(),
     domain: 'secretary',
-    buttons: buildTaskActionButtons(result.data, labels),
+    buttons: buildTaskActionButtons(result.data, labels, 5, getCallbackScope(userId, tenantId)),
   };
 }
 
-async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, userId?: number): Promise<FastPathResult | null> {
+async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, userId?: number, tenantId?: number): Promise<FastPathResult | null> {
   const taskProvider = getFastPathTaskProvider(userId);
   if (!taskProvider) return null;
   const copy = (pt: string, en: string) => fastPathCopy(userId, pt, en);
@@ -353,7 +358,7 @@ async function handleAllTasks(labels: ReturnType<typeof labelsForLanguage>, user
   return {
     text: formatAllTasks(result.data, getFastPathLanguage(userId)),
     domain: 'secretary',
-    buttons: buildTaskActionButtons(result.data, labels),
+    buttons: buildTaskActionButtons(result.data, labels, 5, getCallbackScope(userId, tenantId)),
   };
 }
 

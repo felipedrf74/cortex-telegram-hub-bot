@@ -180,6 +180,33 @@ describe('OpenAIProvider', () => {
       expect(mockCreate.mock.calls[0][0].tools[0].function.name).toBe('set_reminder');
     });
 
+    it('honors routing-layer filteredTools instead of sending the full tool catalog', async () => {
+      mockChatResponse('OK');
+
+      await provider.callDomain('secretary', [], 'Create one task', '', {
+        filteredTools: [
+          {
+            name: 'ms_todo_create_task',
+            description: 'Create a task',
+            input_schema: { type: 'object', properties: { title: { type: 'string' } } },
+          },
+        ],
+      });
+
+      const tools = mockCreate.mock.calls[0][0].tools;
+      expect(tools).toHaveLength(1);
+      expect(tools[0].function.name).toBe('ms_todo_create_task');
+      expect(tools[0].function.name).not.toBe('set_reminder');
+    });
+
+    it('omits tool declarations when the routing layer intentionally filters to none', async () => {
+      mockChatResponse('OK');
+
+      await provider.callDomain('secretary', [], 'No tools please', '', { filteredTools: [] });
+
+      expect(mockCreate.mock.calls[0][0].tools).toBeUndefined();
+    });
+
     it('does NOT pass tools for content domain', async () => {
       mockChatResponse('Here is a script.');
 
@@ -316,6 +343,31 @@ describe('OpenAIProvider', () => {
       const toolMsg = messages.find((m: any) => m.role === 'tool');
       expect(toolMsg).toBeDefined();
       expect(toolMsg.tool_call_id).toBe('tc_1');
+    });
+
+    it('preserves routing-layer filteredTools during tool continuation', async () => {
+      mockChatResponse('Task created.');
+
+      await provider.continueWithToolResults(
+        'secretary',
+        [],
+        'Create it',
+        '',
+        [],
+        {
+          filteredTools: [
+            {
+              name: 'ms_todo_create_task',
+              description: 'Create a task',
+              input_schema: { type: 'object' },
+            },
+          ],
+        },
+      );
+
+      const tools = mockCreate.mock.calls[0][0].tools;
+      expect(tools).toHaveLength(1);
+      expect(tools[0].function.name).toBe('ms_todo_create_task');
     });
   });
 

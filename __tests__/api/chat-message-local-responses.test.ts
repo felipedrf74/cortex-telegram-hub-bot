@@ -113,9 +113,9 @@ describe('chat message local response helpers', () => {
       buttons: [[{ text: 'Today', callbackData: 'cmd:/day' }]],
     });
 
-    const result = await tryBuildFastPathChatResponse('/todo', '/todo', 42);
+    const result = await tryBuildFastPathChatResponse('/todo', '/todo', 42, 42);
 
-    expect(mockTryDeterministicChatCommand).toHaveBeenCalledWith('/todo', 42);
+    expect(mockTryDeterministicChatCommand).toHaveBeenCalledWith('/todo', 42, 42);
     expect(result).toEqual({
       conversationDomain: 'secretary',
       cacheable: true,

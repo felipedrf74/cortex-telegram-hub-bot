@@ -5,6 +5,12 @@ const hoisted = vi.hoisted(() => {
   return {
     getDb: vi.fn(),
     requirePortalAdminToken: vi.fn(),
+    getPortalAuthContext: vi.fn(() => ({
+      actorHint: 'ops@example.com',
+      matchedCredential: 'admin',
+      usingLegacyFallback: false,
+    })),
+    logAudit: vi.fn(),
     buildPortalChatDiagnostics: vi.fn(),
     buildPortalUserChatDiagnostics: vi.fn(),
     sendPortalInternalError: vi.fn(),
@@ -19,6 +25,11 @@ vi.mock('../../src/services/database', () => ({
 
 vi.mock('../../src/api/secret-guards', () => ({
   requirePortalAdminToken: hoisted.requirePortalAdminToken,
+  getPortalAuthContext: (...args: unknown[]) => hoisted.getPortalAuthContext(...args),
+}));
+
+vi.mock('../../src/services/audit-trail', () => ({
+  logAudit: (...args: unknown[]) => hoisted.logAudit(...args),
 }));
 
 vi.mock('../../src/portal/admin-target-user', () => ({
@@ -103,6 +114,16 @@ describe('portal chat routes', () => {
       windowDays: 14,
       limit: 25,
     });
+    expect(hoisted.logAudit).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 0,
+      tenantId: 0,
+      action: 'access',
+      resource: 'portal.chat.diagnostics',
+      details: expect.objectContaining({
+        actorHint: 'ops@example.com',
+        privacyMode: 'metadata_only',
+      }),
+    }));
     expect(payload.body).toEqual({ ok: true, privacyMode: 'metadata_only' });
   });
 
@@ -119,8 +140,31 @@ describe('portal chat routes', () => {
     expect(hoisted.buildPortalUserChatDiagnostics).toHaveBeenCalledWith(db, 42, {
       windowDays: 7,
       limit: 10,
+      tenantId: 42,
     });
+    expect(hoisted.logAudit).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 42,
+      tenantId: 42,
+      action: 'access',
+      resource: 'portal.chat.user_diagnostics',
+    }));
     expect(payload.body).toEqual({ ok: true, privacyMode: 'metadata_only', userId: 42 });
+  });
+
+  it('rejects user diagnostics for a non-canonical tenant scope', () => {
+    const { app, routes } = makeApp();
+    registerPortalChatRoutes(app as any);
+    const handler = routes.get('GET /api/users/:userId/chat-diagnostics')?.[2]!;
+    const { payload, res } = makeResponse();
+
+    handler({ params: { userId: '42' }, query: { tenantId: '99' } }, res);
+
+    expect(payload.statusCode).toBe(403);
+    expect(payload.body).toEqual({
+      ok: false,
+      error: { code: 'FORBIDDEN', message: 'invalid tenant scope' },
+    });
+    expect(hoisted.buildPortalUserChatDiagnostics).not.toHaveBeenCalled();
   });
 
   it('rejects invalid user ids before diagnostics lookup', () => {

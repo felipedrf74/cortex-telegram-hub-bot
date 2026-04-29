@@ -10,9 +10,11 @@ import {
   type ContentMeshContext,
   type CookingMeshContext,
   type FinanceMeshContext,
+  type MeshSignalDraft,
   type SecretaryMeshContext,
   type TrainingMeshContext,
 } from './cross-agent-learning';
+import { invalidateContextCache } from './context-engine';
 import { formatCurrencyAmount } from './finance-tracker';
 import { isValidTenantUserId, recordTenantScopeAnomaly } from './tenant-scope-observability';
 import { resolveChatTenantId } from './chat-tenant-scope';
@@ -33,6 +35,7 @@ type MeshBundle = {
 };
 
 type PeerSkill = 'training' | 'cooking' | 'finance' | 'content' | 'secretary';
+type SharedContextFreshness = 'active' | 'expiring' | 'stale' | 'unknown';
 
 export interface PeerDecisionContract {
   nonNegotiables: string[];
@@ -62,6 +65,16 @@ export function invalidateSharedDecisionContextCache(userId?: number, tenantId?:
   }
 
   _sharedDecisionContextCache.clear();
+}
+
+export function invalidateSharedContextForSkillChange(input: {
+  userId?: number;
+  tenantId?: number;
+  sourceSkill?: PeerSkill | 'chat' | 'calendar' | 'integration' | 'system';
+  reason?: string;
+} = {}): void {
+  invalidateSharedDecisionContextCache(input.userId, input.tenantId);
+  invalidateContextCache(input.userId, input.tenantId);
 }
 
 export async function buildSharedDecisionContext(domain: DomainName, userId: number, tenantId?: number): Promise<string> {
@@ -117,11 +130,31 @@ async function buildSharedDecisionArtifacts(
     };
   }
 
-  const bundle = await readRelevantPeerContexts(domain, userId);
+  const rawBundle = await readRelevantPeerContexts(domain, userId);
+  const { bundle, staleSignals } = filterStaleBundle(rawBundle);
   const sections = buildSectionsForDomain(domain, bundle);
-  const text = sections.length > 0
+  const sourceLines = buildSourceAttributionLines(bundle);
+  const staleLines = buildStaleContextLines(staleSignals);
+  const text = sections.length > 0 || staleLines.length > 0
     ? [
       `<shared_decision_context domain="${domain}">`,
+      `<context_scope tenant_id="${resolvedTenantId}" user_id="${userId}" visibility="user_private" cache_ttl_ms="${CONTEXT_TTL_MS}" />`,
+      '<source_attribution>',
+      ...(sourceLines.length > 0 ? sourceLines : ['- none: no fresh peer-skill signals available']),
+      '</source_attribution>',
+      '<skill_ownership_boundaries>',
+      ...buildSkillOwnershipLines(domain),
+      '</skill_ownership_boundaries>',
+      ...(staleLines.length > 0
+        ? [
+            '<stale_context>',
+            ...staleLines,
+            '</stale_context>',
+          ]
+        : []),
+      '<downstream_update_signals>',
+      ...buildDownstreamUpdateLines(domain, bundle),
+      '</downstream_update_signals>',
       'Use this peer-skill context when making tradeoffs:',
       ...sections.map((section) => `- ${section}`),
       '</shared_decision_context>',
@@ -159,6 +192,146 @@ async function readRelevantPeerContexts(domain: DomainName, userId: number): Pro
     content: content.status === 'fulfilled' ? content.value : null,
     secretary: secretary.status === 'fulfilled' ? secretary.value : null,
   };
+}
+
+function filterStaleBundle(bundle: MeshBundle): { bundle: MeshBundle; staleSignals: Array<{ skill: PeerSkill; signal: MeshSignalDraft }> } {
+  const staleSignals: Array<{ skill: PeerSkill; signal: MeshSignalDraft }> = [];
+  return {
+    staleSignals,
+    bundle: {
+      training: filterStaleContextSignals('training', bundle.training, staleSignals),
+      cooking: filterStaleContextSignals('cooking', bundle.cooking, staleSignals),
+      finance: filterStaleContextSignals('finance', bundle.finance, staleSignals),
+      content: filterStaleContextSignals('content', bundle.content, staleSignals),
+      secretary: filterStaleContextSignals('secretary', bundle.secretary, staleSignals),
+    },
+  };
+}
+
+function filterStaleContextSignals<T extends { derivedSignals: MeshSignalDraft[] }>(
+  skill: PeerSkill,
+  context: T | null,
+  staleSignals: Array<{ skill: PeerSkill; signal: MeshSignalDraft }>,
+): T | null {
+  if (!context) return null;
+  const freshSignals = context.derivedSignals.filter((signal) => {
+    if (signalFreshness(signal) !== 'stale') return true;
+    staleSignals.push({ skill, signal });
+    return false;
+  });
+  if (freshSignals.length === context.derivedSignals.length) return context;
+  return { ...context, derivedSignals: freshSignals };
+}
+
+function buildSourceAttributionLines(bundle: MeshBundle): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const [skill, context] of Object.entries(bundle) as Array<[PeerSkill, { derivedSignals?: MeshSignalDraft[] } | null]>) {
+    for (const signal of context?.derivedSignals ?? []) {
+      const line = formatSourceAttributionLine(skill, signal);
+      const sourceAgent = signal.sourceAgent ?? 'unknown';
+      const dedupeKey = `${skill}:${sourceAgent}:${signal.signalType}:${stableSignalPayload(signal.payload)}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      lines.push(line);
+    }
+  }
+  return lines.sort();
+}
+
+function formatSourceAttributionLine(skill: PeerSkill, signal: MeshSignalDraft): string {
+  const freshness = signalFreshness(signal);
+  const confidence = estimateSignalConfidence(signal);
+  const expiresAt = signal.expiresAt ?? 'unknown';
+  const sourceAgent = signal.sourceAgent ?? 'unknown';
+  const priority = signal.priority ?? 'normal';
+  const meshPriority = signal.meshPriority ?? 'unknown';
+  return `- ${skill}.${signal.signalType}: source=${sourceAgent}; freshness=${freshness}; confidence=${confidence.toFixed(2)}; priority=${priority}; meshPriority=${meshPriority}; expiresAt=${expiresAt}`;
+}
+
+function buildStaleContextLines(staleSignals: Array<{ skill: PeerSkill; signal: MeshSignalDraft }>): string[] {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const { skill, signal } of staleSignals) {
+    const sourceAgent = signal.sourceAgent ?? 'unknown';
+    const key = `${skill}:${sourceAgent}:${signal.signalType}:${signal.expiresAt ?? 'unknown'}:${stableSignalPayload(signal.payload)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(`- ${skill}.${signal.signalType}: ignored stale signal from ${sourceAgent}; expiredAt=${signal.expiresAt ?? 'unknown'}`);
+  }
+  return lines.sort();
+}
+
+function buildSkillOwnershipLines(domain: DomainName): string[] {
+  const target = domain === 'triathlon' ? 'training' : domain;
+  return [
+    '- Secretary owns schedule placement, agenda feasibility, reminders, reflow, and calendar arbitration.',
+    '- Training owns workout content, recovery logic, and training-plan shape.',
+    '- Cooking owns meals, groceries, meal prep, and fueling content.',
+    '- Finance owns budget, bill, subscription, tax, and purchase constraints.',
+    '- Content owns content workload, references, publishing cadence, and execution state.',
+    `- This context is advisory for ${target}; downstream writes still belong to the owning skill.`,
+  ];
+}
+
+function buildDownstreamUpdateLines(domain: DomainName, bundle: MeshBundle): string[] {
+  const presentSkills = (Object.entries(bundle) as Array<[PeerSkill, { derivedSignals?: MeshSignalDraft[] } | null]>)
+    .filter(([, context]) => (context?.derivedSignals?.length ?? 0) > 0)
+    .map(([skill]) => skill);
+  if (presentSkills.length === 0) {
+    return ['- No fresh peer-skill signals; ask or refresh before making cross-skill tradeoffs.'];
+  }
+  return dedupeStrings(presentSkills.map((skill) =>
+    `- If ${skill} changes its source state, invalidate shared context and refresh ${domain} before acting from cached tradeoffs.`,
+  ));
+}
+
+function signalFreshness(signal: MeshSignalDraft): SharedContextFreshness {
+  if (!signal.expiresAt) return 'unknown';
+  const expiresAt = Date.parse(signal.expiresAt);
+  if (!Number.isFinite(expiresAt)) return 'unknown';
+  const now = Date.now();
+  if (expiresAt <= now) return 'stale';
+  if (expiresAt - now <= 60 * 60 * 1000) return 'expiring';
+  return 'active';
+}
+
+function estimateSignalConfidence(signal: MeshSignalDraft): number {
+  const payloadConfidence = (signal.payload as Record<string, unknown> | undefined)?.confidence;
+  if (typeof payloadConfidence === 'number' && Number.isFinite(payloadConfidence)) {
+    return Math.max(0, Math.min(1, payloadConfidence));
+  }
+  if (typeof payloadConfidence === 'string') {
+    switch (payloadConfidence.toLowerCase()) {
+      case 'high':
+        return 0.9;
+      case 'medium':
+      case 'moderate':
+        return 0.7;
+      case 'low':
+        return 0.45;
+    }
+  }
+  switch (signal.meshPriority) {
+    case 1:
+      return 0.92;
+    case 2:
+      return 0.84;
+    case 3:
+      return 0.72;
+    case 4:
+      return 0.58;
+    default:
+      return 0.5;
+  }
+}
+
+function stableSignalPayload(payload: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(payload, Object.keys(payload).sort());
+  } catch {
+    return String(payload);
+  }
 }
 
 function buildSectionsForDomain(domain: DomainName, bundle: MeshBundle): string[] {
@@ -1576,6 +1749,18 @@ function compact(values: Array<string | null | undefined>): string[] {
   return values.filter((value): value is string => Boolean(value && value.trim().length > 0));
 }
 
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim().replace(/\s+/g, ' ');
+    if (!normalized || seen.has(normalized.toLowerCase())) continue;
+    seen.add(normalized.toLowerCase());
+    result.push(normalized);
+  }
+  return result;
+}
+
 function formatBudgetRemainingFact(budget: ReturnType<typeof extractBudget>): string | null {
   if (!budget) return null;
   if (budget.remainingRatio == null) {
@@ -1633,7 +1818,14 @@ function compactContracts(
 }
 
 function createContract(contract: PeerDecisionContract): PeerDecisionContract | null {
-  return hasContractContent(contract) ? contract : null;
+  const normalized: PeerDecisionContract = {
+    ...contract,
+    nonNegotiables: dedupeStrings(contract.nonNegotiables),
+    preferredWindows: dedupeStrings(contract.preferredWindows),
+    fallbackIfDeferred: dedupeStrings(contract.fallbackIfDeferred),
+    notes: dedupeStrings(contract.notes),
+  };
+  return hasContractContent(normalized) ? normalized : null;
 }
 
 function hasContractContent(contract: PeerDecisionContract | null | undefined): contract is PeerDecisionContract {
@@ -1647,5 +1839,5 @@ function hasContractContent(contract: PeerDecisionContract | null | undefined): 
 }
 
 function formatSection(label: string, facts: string[], tail: string): string {
-  return `${label}: ${facts.join('; ')}. ${tail}`;
+  return `${label}: ${dedupeStrings(facts).join('; ')}. ${tail}`;
 }

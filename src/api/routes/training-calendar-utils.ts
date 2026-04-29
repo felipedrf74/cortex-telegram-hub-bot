@@ -6,6 +6,13 @@ export function normalizeTrainingStatus(status?: string | null): string {
       return 'completed';
     case 'skipped':
       return 'skipped';
+    case 'scheduled':
+    case 'reflowed':
+    case 'compressed':
+    case 'capped':
+    case 'pending':
+    case 'moved':
+      return 'planned';
     case 'rest':
       return 'rest';
     case 'unscheduled':

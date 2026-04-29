@@ -1,7 +1,11 @@
 // Copyright (c) 2025 Felipe Dominguez. MIT License. See LICENSE.
 
 import { getDb } from '../services/database';
-import { resolveChatTenantScope } from '../services/chat-tenant-scope';
+import {
+  DEFAULT_CHAT_VISIBILITY_SCOPE,
+  resolveChatTenantScope,
+  type ChatVisibilityScope,
+} from '../services/chat-tenant-scope';
 
 export interface SharedMemoryEntry {
   id: number;
@@ -18,6 +22,58 @@ export interface SharedMemoryEntry {
   user_id: number;
 }
 
+export interface SharedMemoryCorrectionInput {
+  userId: number;
+  tenantId?: number;
+  key: string;
+  correctedValue: string;
+  sourceDomain: string;
+  expiresAt?: string;
+  visibilityScope?: ChatVisibilityScope;
+}
+
+export interface SharedMemoryScopeBuckets {
+  userPrivate: SharedMemoryEntry[];
+  tenantShared: SharedMemoryEntry[];
+}
+
+const SAFE_MEMORY_KEY_RE = /^[a-zA-Z0-9_.:-]{1,96}$/;
+const MAX_MEMORY_VALUE_CHARS = 1200;
+const UNSAFE_MEMORY_PATTERNS = [
+  /\b(api[_-]?key|secret[_-]?key|client[_-]?secret|password|passcode|bearer\s+[a-z0-9._-]+)\b/i,
+  /\b(access[_-]?token|refresh[_-]?token|oauth[_-]?token|id[_-]?token|session[_-]?token)\b/i,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
+  /\b(?:\d[ -]*?){13,19}\b/,
+];
+
+function normalizeVisibilityScope(scope?: ChatVisibilityScope | string | null): ChatVisibilityScope {
+  switch (scope) {
+    case 'tenant_shared':
+    case 'tenant_admin_visible':
+    case 'platform_admin_visible':
+    case 'system_internal':
+    case 'user_private':
+      return scope;
+    default:
+      return DEFAULT_CHAT_VISIBILITY_SCOPE;
+  }
+}
+
+function assertSafeSharedMemory(key: string, value: string): void {
+  if (!SAFE_MEMORY_KEY_RE.test(key)) {
+    throw new Error('CHAT_MEMORY_UNSAFE: memory key must be short, stable, and identifier-like');
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('CHAT_MEMORY_UNSAFE: memory value is required');
+  }
+  if (value.length > MAX_MEMORY_VALUE_CHARS) {
+    throw new Error('CHAT_MEMORY_UNSAFE: memory value is too large for durable Chat memory');
+  }
+  if (UNSAFE_MEMORY_PATTERNS.some((pattern) => pattern.test(value))) {
+    throw new Error('CHAT_MEMORY_UNSAFE: refusing to store secrets, tokens, cards, or credential-like values');
+  }
+}
+
 /** Upsert a cross-domain fact. Optional expires_at (ISO 8601) for auto-cleanup. */
 export function setSharedMemory(
   userId: number,
@@ -26,11 +82,14 @@ export function setSharedMemory(
   sourceDomain: string,
   expiresAt?: string,
   tenantId?: number,
+  visibilityScope: ChatVisibilityScope = DEFAULT_CHAT_VISIBILITY_SCOPE,
 ): SharedMemoryEntry {
   const db = getDb();
+  assertSafeSharedMemory(key, value);
   const scope = resolveChatTenantScope({
     userId,
     tenantId,
+    visibilityScope,
     operation: 'shared_memory_set',
     layer: 'delivery',
     details: { key, sourceDomain },
@@ -52,6 +111,22 @@ export function setSharedMemory(
   `).run(scope.tenantId, userId, scope.visibilityScope, scope.scopeStatus, scope.createdBy, key, value, sourceDomain, expiresAt || null);
   return db.prepare('SELECT * FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND key = ?')
     .get(scope.tenantId, userId, key) as SharedMemoryEntry;
+}
+
+export function applySharedMemoryCorrection(input: SharedMemoryCorrectionInput): SharedMemoryEntry {
+  const existing = getSharedMemory(input.userId, input.key, input.tenantId)[0];
+  const visibilityScope = input.visibilityScope
+    ?? normalizeVisibilityScope(existing?.visibility_scope)
+    ?? DEFAULT_CHAT_VISIBILITY_SCOPE;
+  return setSharedMemory(
+    input.userId,
+    input.key,
+    input.correctedValue,
+    input.sourceDomain,
+    input.expiresAt,
+    input.tenantId,
+    visibilityScope,
+  );
 }
 
 // Rate-limit expired entry cleanup — at most once per 5 minutes
@@ -76,12 +151,33 @@ export function getSharedMemory(userId: number, key?: string, tenantId?: number)
   }
 
   if (key) {
-    const row = db.prepare('SELECT * FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND key = ? AND scope_status = ?')
-      .get(scope.tenantId, userId, key, 'active');
+    const row = db.prepare(`
+      SELECT * FROM shared_memory
+      WHERE tenant_id = ?
+        AND user_id = ?
+        AND key = ?
+        AND scope_status = ?
+        AND visibility_scope IN ('user_private', 'tenant_shared')
+    `).get(scope.tenantId, userId, key, 'active');
     return row ? [row as SharedMemoryEntry] : [];
   }
-  return db.prepare('SELECT * FROM shared_memory WHERE tenant_id = ? AND user_id = ? AND scope_status = ? ORDER BY updated_at DESC')
+  return db.prepare(`
+    SELECT * FROM shared_memory
+    WHERE tenant_id = ?
+      AND user_id = ?
+      AND scope_status = ?
+      AND visibility_scope IN ('user_private', 'tenant_shared')
+    ORDER BY updated_at DESC
+  `)
     .all(scope.tenantId, userId, 'active') as SharedMemoryEntry[];
+}
+
+export function getSharedMemoryByScope(userId: number, tenantId?: number): SharedMemoryScopeBuckets {
+  const entries = getSharedMemory(userId, undefined, tenantId);
+  return {
+    userPrivate: entries.filter((entry) => normalizeVisibilityScope(entry.visibility_scope) === 'user_private'),
+    tenantShared: entries.filter((entry) => normalizeVisibilityScope(entry.visibility_scope) === 'tenant_shared'),
+  };
 }
 
 /** Remove a shared memory entry by key. Returns true if deleted. */
