@@ -86,6 +86,7 @@ function logGeminiUsage(
   usage: { promptTokenCount: number; candidatesTokenCount: number },
   durationMs: number,
   userId: number = 0,
+  tenantId: number = userId,
 ): void {
   try {
     const cost = computeGeminiCost(model, usage);
@@ -98,9 +99,9 @@ function logGeminiUsage(
     // was effectively disabled until both INSERT statements were
     // updated.
     db.prepare(`
-      INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'gemini')
-    `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+      INSERT INTO api_usage (category, model, tenant_id, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'gemini')
+    `).run(category, model, tenantId, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
 
     pushEvent({
       ts: new Date().toISOString(),
@@ -109,7 +110,16 @@ function logGeminiUsage(
       durationMs,
     });
   } catch (err) {
-    logger.warn({ err }, 'Failed to log Gemini usage');
+    try {
+      const cost = computeGeminiCost(model, usage);
+      const db = getDb();
+      db.prepare(`
+        INSERT INTO api_usage (category, model, user_id, input_tokens, output_tokens, cost_usd, duration_ms, provider)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'gemini')
+      `).run(category, model, userId, usage.promptTokenCount, usage.candidatesTokenCount, cost, durationMs);
+    } catch (fallbackErr) {
+      logger.warn({ err: fallbackErr }, 'Failed to log Gemini usage');
+    }
   }
 }
 
@@ -135,6 +145,7 @@ type OneShotOptions = {
   maxTokens?: number;
   temperature?: number;
   userId?: number;
+  tenantId?: number;
   timeoutMs?: number;
   jsonMode?: boolean;
 };
@@ -180,6 +191,7 @@ export async function completeOneShot(
       },
       durationMs,
       options?.userId ?? 0,
+      options?.tenantId ?? options?.userId ?? 0,
     );
   }
 
@@ -210,7 +222,7 @@ export async function completeOneShotWithSearch(
   systemPrompt: string,
   userPrompt: string,
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
 ): Promise<{ text: string; sources: string[] }> {
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
@@ -253,6 +265,7 @@ export async function completeOneShotWithSearch(
       },
       durationMs,
       options?.userId ?? 0,
+      options?.tenantId ?? options?.userId ?? 0,
     );
   }
 
@@ -297,7 +310,7 @@ export async function completeVisionOneShot(
   userPrompt: string,
   image: { base64: string; mimeType: string },
   category: string,
-  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number },
+  options?: { model?: string; maxTokens?: number; temperature?: number; userId?: number; tenantId?: number },
 ): Promise<string> {
   if (!isGeminiProviderConfigured()) {
     throw new Error('Gemini provider not configured (GEMINI_API_KEY missing)');
@@ -342,6 +355,7 @@ export async function completeVisionOneShot(
       },
       durationMs,
       options?.userId ?? 0,
+      options?.tenantId ?? options?.userId ?? 0,
     );
   }
 
@@ -679,6 +693,7 @@ export class GeminiProvider implements AIProvider {
     routing: { model: string; maxTokens: number },
     usageCategory: string,
     maxTokensOverride?: number,
+    usageContext?: { userId?: number; tenantId?: number },
     maxRetries = 3,
   ): Promise<GenerateContentResult> {
     const model = this.buildModel(
@@ -698,7 +713,7 @@ export class GeminiProvider implements AIProvider {
       logGeminiUsage(routing.model, usageCategory, {
         promptTokenCount: usage.promptTokenCount ?? 0,
         candidatesTokenCount: usage.candidatesTokenCount ?? 0,
-      }, durationMs);
+      }, durationMs, usageContext?.userId ?? 0, usageContext?.tenantId ?? usageContext?.userId ?? 0);
     }
 
     return result;
@@ -808,6 +823,7 @@ ${message}`;
       routing,
       `gemini_domain_${domain}`,
       opts.maxTokensOverride,
+      { userId: opts.userId, tenantId: opts.tenantId },
     );
 
     return {
@@ -918,6 +934,7 @@ ${message}`;
       routing,
       'gemini_tool_continuation',
       opts.maxTokensOverride,
+      { userId: opts.userId, tenantId: opts.tenantId },
     );
 
     return {

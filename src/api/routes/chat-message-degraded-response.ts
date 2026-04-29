@@ -15,13 +15,14 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
   err: unknown;
   res: Response;
   userId: number;
+  tenantId?: number;
   normalizedText: string;
   chatRequestId: string;
 }): Promise<boolean> {
-  const { err, res, userId, normalizedText, chatRequestId } = opts;
+  const { err, res, userId, tenantId, normalizedText, chatRequestId } = opts;
   if (!isRetryableAIProviderError(err)) return false;
 
-  const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId) || 'secretary';
+  const degradedDomain = keywordMatch(normalizedText) || getLastChatActiveDomain(userId, Date.now(), tenantId) || 'secretary';
   const degraded = await buildAITemporarilyBusyResponse(degradedDomain, userId);
   const timestamp = new Date().toISOString();
   const assistantMessageId = `msg-${Date.now()}`;
@@ -41,8 +42,13 @@ export async function sendRetryableChatFailureResponseIfNeeded(opts: {
     metadata: { degraded: true, retryable: true },
     timestamp,
   };
-  persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response);
-  syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text);
+  if (tenantId) {
+    persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response, tenantId);
+    syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text, tenantId);
+  } else {
+    persistExchange(userId, `msg-user-${Date.now()}`, normalizedText, assistantMessageId, response);
+    syncConversationStateForShortcut(userId, degraded.domain, normalizedText, degraded.text);
+  }
   res.json(response);
   return true;
 }

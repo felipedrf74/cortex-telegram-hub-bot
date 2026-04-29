@@ -138,6 +138,8 @@ export interface CallDomainOptions {
   filteredTools?: unknown[]; // Anthropic.Tool[] — kept generic to avoid SDK import in this file
   modelTier?: 'heavy' | 'light';
   maxTokensOverride?: number;
+  userId?: number;
+  tenantId?: number;
 }
 
 export interface AIProvider {

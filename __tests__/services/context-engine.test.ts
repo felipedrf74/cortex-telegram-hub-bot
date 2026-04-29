@@ -257,6 +257,20 @@ describe('getDailyContext cache', () => {
     expect(getDailyContext(USER_ID + 1)).toBe('');
     expect(getDailyContext(USER_ID)).not.toBe('');
   });
+
+  it('cache is isolated by tenant for the same user', async () => {
+    upsertTask(USER_ID, makeTask({ title: 'Tenant scoped' }));
+    await buildDailyContext(USER_ID, 901);
+
+    expect(getDailyContext(USER_ID, 902)).toBe('');
+    expect(getDailyContext(USER_ID, 901)).toMatch(/TASKS/);
+
+    invalidateContextCache(USER_ID, 902);
+    expect(getDailyContext(USER_ID, 901)).toMatch(/TASKS/);
+
+    invalidateContextCache(USER_ID, 901);
+    expect(getDailyContext(USER_ID, 901)).toBe('');
+  });
 });
 
 // ── buildContextForAllUsers ────────────────────────────────────────

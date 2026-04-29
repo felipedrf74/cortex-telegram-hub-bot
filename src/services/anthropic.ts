@@ -877,6 +877,7 @@ export async function classifyMessage(
   message: string,
   activeConversationContext?: { domain: DomainName; lastAssistantMessage: string } | null,
   userId?: number,
+  tenantId?: number,
 ): Promise<{ domain: DomainName; confidence: number }> {
   function inferFallbackDomain(): DomainName {
     if (activeConversationContext?.domain) {
@@ -938,13 +939,13 @@ ${message}`;
           max_tokens: 100,
           system: systemPrompt,
           messages: [{ role: 'user', content: classifierInput }],
-        }, 'classify_message', { userId });
+        }, 'classify_message', { userId, tenantId });
         return response.content
           .filter((b): b is Anthropic.TextBlock => b.type === 'text')
           .map((b) => b.text)
           .join('');
       },
-      { model: config.gemini.classifierModel, maxTokens: 100, temperature: 0, userId },
+      { model: config.gemini.classifierModel, maxTokens: 100, temperature: 0, userId, tenantId },
     );
 
     // Strip markdown code fences (either provider may wrap JSON)
@@ -1005,13 +1006,14 @@ export async function callDomain(
   // unchanged while letting new callers (TaskRoutingProvider) pass the
   // full options bag with pre-computed tools / tier / max-tokens.
   const opts = normalizeCallDomainOptions(optionsOrMaxTokens);
+  const meteredUserId = userId ?? opts.userId;
 
   // Phase 2 Slice A: pass `currentMessage` so the loader can run the
   // sport classifier for triathlon messages and pick the right coach
   // persona prompt file. Non-triathlon domains ignore the message arg.
   let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
-    const knowledgeBlock = buildKnowledgePromptBlock(userId);
+    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId);
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
   // Layer 3: tool filtering. If the routing layer pre-computed the
@@ -1049,14 +1051,14 @@ export async function callDomain(
   // etc. We inject into the per-request state context (NOT the system
   // prompt) so prompt caching stays intact.
   let trainingContextBlock = '';
-  if (domain === 'triathlon' && userId != null && userId > 0) {
+  if (domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
     try {
-      const ctx = readTrainingContextAll({ userId });
+      const ctx = readTrainingContextAll({ userId: meteredUserId });
       if (ctx.signals.length > 0) {
         trainingContextBlock = `\n\n${formatTrainingContextForPrompt(ctx, 'multisport')}`;
       }
     } catch (err) {
-      logger.warn({ err, userId }, 'readTrainingContextAll failed — continuing without signal injection');
+      logger.warn({ err, userId: meteredUserId }, 'readTrainingContextAll failed — continuing without signal injection');
     }
   }
 
@@ -1077,7 +1079,7 @@ export async function callDomain(
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
-    }, `domain_${domain}`, { userId, isUserMessage: true });
+    }, `domain_${domain}`, { userId: meteredUserId, tenantId: opts.tenantId, isUserMessage: true });
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in callDomain');
     throw err;
@@ -1110,6 +1112,7 @@ export async function continueWithToolResults(
   // call MUST receive the same options as the initial call so the
   // tool set + model tier + history shape stay stable across the loop.
   const opts = normalizeCallDomainOptions(options);
+  const meteredUserId = userId ?? opts.userId;
 
   // Phase 2 Slice A: use `currentMessage` for triathlon sub-skill
   // routing. The continuation call MUST resolve to the same persona
@@ -1118,7 +1121,7 @@ export async function continueWithToolResults(
   // currentMessage guarantees the classifier produces the same answer.
   let systemPrompt = getDomainSystemPrompt(domain, currentMessage);
   if (domain === 'content') {
-    const knowledgeBlock = buildKnowledgePromptBlock(userId);
+    const knowledgeBlock = buildKnowledgePromptBlock(meteredUserId);
     if (knowledgeBlock) systemPrompt += knowledgeBlock;
   }
 
@@ -1145,14 +1148,14 @@ export async function continueWithToolResults(
   // consistent across iterations — the injected block doesn't move
   // between turns of a single user request.
   let trainingContextBlock = '';
-  if (domain === 'triathlon' && userId != null && userId > 0) {
+  if (domain === 'triathlon' && meteredUserId != null && meteredUserId > 0) {
     try {
-      const ctx = readTrainingContextAll({ userId });
+      const ctx = readTrainingContextAll({ userId: meteredUserId });
       if (ctx.signals.length > 0) {
         trainingContextBlock = `\n\n${formatTrainingContextForPrompt(ctx, 'multisport')}`;
       }
     } catch (err) {
-      logger.warn({ err, userId }, 'readTrainingContextAll failed in continueWithToolResults');
+      logger.warn({ err, userId: meteredUserId }, 'readTrainingContextAll failed in continueWithToolResults');
     }
   }
 
@@ -1181,7 +1184,7 @@ export async function continueWithToolResults(
       system,
       messages,
       ...(useTools ? { tools: domainTools } : {}),
-    }, 'tool_continuation', { userId });
+    }, 'tool_continuation', { userId: meteredUserId, tenantId: opts.tenantId });
   } catch (err) {
     logger.error({ err, domain }, 'Anthropic API call failed in continueWithToolResults');
     throw err;

@@ -253,6 +253,45 @@ describe('shared-decision-context', () => {
     expect(refreshed).toContain('projected budget remaining is 8% for 2026-04');
   });
 
+  it('refuses peer mesh prompt context for a non-canonical tenant until tenant-aware mesh reads exist', async () => {
+    const tenantA = await buildSharedDecisionContext('secretary', 42, 1001);
+    expect(tenantA).toBe('');
+
+    mockReadFinanceMeshContext.mockResolvedValueOnce({
+      monthlySummary: {
+        transactionCount: 4,
+        totalIncome: 1000,
+        totalExpenses: 920,
+        totalDeductions: 0,
+      },
+      budgetView: makeBudgetView({
+        expensesInBasisCurrency: 920,
+        currentRemainingInBasisCurrency: 80,
+        currentRemainingRatio: 0.08,
+        projectedExpensesInBasisCurrency: 920,
+        projectedRemainingInBasisCurrency: 80,
+        projectedRemainingRatio: 0.08,
+        affordability: 'tight',
+      }),
+      derivedSignals: [
+        {
+          signalType: 'budget_remaining',
+          payload: {
+            month: '2026-04',
+            remainingRatio: 0.08,
+            budgetMode: 'tight',
+            groceryMode: 'lean',
+            trainingSpendMode: 'minimum_effective_dose',
+          },
+        },
+      ],
+    });
+
+    const tenantB = await buildSharedDecisionContext('secretary', 42, 1002);
+    expect(tenantB).toBe('');
+    expect(mockReadFinanceMeshContext).not.toHaveBeenCalled();
+  });
+
   it('builds typed peer contracts for Secretary with non-negotiables and publish deadlines', async () => {
     const contracts = await buildSharedDecisionContracts('secretary', 42);
 

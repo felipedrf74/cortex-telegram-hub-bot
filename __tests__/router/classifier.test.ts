@@ -471,19 +471,19 @@ describe('classifyWithClaude — Tier 3 AI Classification', () => {
     const context = { domain: 'triathlon' as const, lastAssistantMessage: 'Great run!' };
     await classifyWithClaude('move it to wednesday', context);
 
-    // April 9 2026: classifyMessage gained a 3rd optional `userId`
-    // parameter. Callers that don't provide one (like this test)
-    // pass undefined through, so the assertion must include it.
-    expect(mockClassifyMessage).toHaveBeenCalledWith('move it to wednesday', context, undefined);
+    // April 29 2026: classifyMessage carries optional userId + tenantId
+    // for usage attribution. Callers that don't provide them pass
+    // undefined through, so the assertion must include both.
+    expect(mockClassifyMessage).toHaveBeenCalledWith('move it to wednesday', context, undefined, undefined);
   });
 
   it('passes undefined context when null is provided', async () => {
     mockClassifyMessage.mockResolvedValue({ domain: 'secretary', confidence: 0.7 });
 
     await classifyWithClaude('hello there', null);
-    // Third arg is the new optional `userId` — still undefined here
-    // because this test doesn't exercise the user-attribution path.
-    expect(mockClassifyMessage).toHaveBeenCalledWith('hello there', undefined, undefined);
+    // Third/fourth args are optional userId + tenantId — still undefined
+    // here because this test doesn't exercise attribution.
+    expect(mockClassifyMessage).toHaveBeenCalledWith('hello there', undefined, undefined, undefined);
   });
 
   it('keeps the classifier-selected domain on low confidence when no active context exists', async () => {

@@ -45,6 +45,7 @@ vi.mock('../../src/state/todos', () => ({
 
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
+  getSharedMemory: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../src/services/tool-executor', () => ({
@@ -452,14 +453,14 @@ describe('handleSimpleDomain', () => {
 
     await handleSimpleDomain('content', 'Write a full script', 5, undefined, 4096);
 
-    // Provider interface: callDomain(domain, history, message, stateContext, maxTokensOverride)
-    // No userId param — userId is handled by the domain handler, not the provider
+    // Provider interface: callDomain(domain, history, message, stateContext, options)
+    // The options bag preserves model/fallback metadata while keeping routing provider-agnostic.
     expect(mockCallDomain).toHaveBeenCalledWith(
       'content',
       expect.any(Array),
       'Write a full script',
       expect.any(String),
-      4096,
+      expect.objectContaining({ maxTokensOverride: 4096 }),
     );
   });
 

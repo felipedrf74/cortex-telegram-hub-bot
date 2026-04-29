@@ -96,7 +96,11 @@ function createDomainRouter(overrides: Record<string, unknown> = {}) {
 
 function createModelConfig(overrides: Record<string, unknown> = {}) {
   return {
-    MODEL_OPTIONS: { anthropic: ['claude'], openai: ['gpt'], gemini: ['gemini'] },
+    MODEL_OPTIONS: {
+      anthropic: { chat: ['claude-sonnet'], classifier: ['claude-haiku'] },
+      openai: { chat: ['gpt-5.4'], classifier: ['gpt-5-mini'] },
+      gemini: { chat: ['gemini-2.5-flash'], classifier: ['gemini-2.5-flash-lite'] },
+    },
     getAllModelStates: vi.fn(() => ({ chat: { provider: 'openai', model: 'gpt-5.4' } })),
     getEffectiveDomainModel: vi.fn((_provider: string, domain: string) => `${domain}-model`),
     setActiveModel: vi.fn(),
@@ -201,7 +205,11 @@ describe('portal provider and model routes', () => {
 
     expect(invoke(findRoute(routes, 'GET', '/api/model-config')).body).toEqual({
       states: { chat: { provider: 'openai', model: 'gpt-5.4' } },
-      options: { anthropic: ['claude'], openai: ['gpt'], gemini: ['gemini'] },
+      options: {
+        anthropic: { chat: ['claude-sonnet'], classifier: ['claude-haiku'] },
+        openai: { chat: ['gpt-5.4'], classifier: ['gpt-5-mini'] },
+        gemini: { chat: ['gemini-2.5-flash'], classifier: ['gemini-2.5-flash-lite'] },
+      },
     });
 
     const badPut = invoke(findRoute(routes, 'PUT', '/api/model-config'), {
@@ -220,6 +228,31 @@ describe('portal provider and model routes', () => {
       message: 'Model updated. Active immediately — no restart needed.',
     });
     expect(modelConfig.setActiveModel).toHaveBeenCalledWith('openai', 'chat', 'gpt-5.4');
+
+    const badModel = invoke(findRoute(routes, 'PUT', '/api/model-config'), {
+      body: { provider: 'openai', role: 'chat', model: 'not-a-real-openai-model' },
+    });
+    expect(badModel.statusCode).toBe(400);
+    expect(badModel.body).toEqual({ error: 'Invalid provider, role, or model' });
+    expect(modelConfig.setActiveModel).not.toHaveBeenCalledWith('openai', 'chat', 'not-a-real-openai-model');
+
+    expect(invoke(findRoute(routes, 'PUT', '/api/model-config'), {
+      body: { provider: 'gemini', role: 'content', model: 'gemini-2.5-flash-lite' },
+    }).body).toEqual({
+      ok: true,
+      provider: 'gemini',
+      role: 'content',
+      model: 'gemini-2.5-flash-lite',
+      message: 'Model updated. Active immediately — no restart needed.',
+    });
+    expect(modelConfig.setActiveModel).toHaveBeenCalledWith('gemini', 'content', 'gemini-2.5-flash-lite');
+
+    const wrongTierModel = invoke(findRoute(routes, 'PUT', '/api/model-config'), {
+      body: { provider: 'gemini', role: 'content', model: 'gemini-2.5-flash' },
+    });
+    expect(wrongTierModel.statusCode).toBe(400);
+    expect(wrongTierModel.body).toEqual({ error: 'Invalid provider, role, or model' });
+    expect(modelConfig.setActiveModel).not.toHaveBeenCalledWith('gemini', 'content', 'gemini-2.5-flash');
 
     const badDelete = invoke(findRoute(routes, 'DELETE', '/api/model-config'), {
       body: { provider: 'openai' },

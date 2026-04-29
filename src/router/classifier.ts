@@ -198,8 +198,9 @@ export async function classifyWithClaude(
   message: string,
   activeContext?: ConversationContext | null,
   userId?: number,
+  tenantId?: number,
 ): Promise<ClassificationResult> {
-  const result = await classifyMessage(message, activeContext ?? undefined, userId);
+  const result = await classifyMessage(message, activeContext ?? undefined, userId, tenantId);
   if (activeContext && result.confidence < 0.6) {
     logger.warn(
       { requested: result.domain, confidence: result.confidence, fallbackDomain: activeContext.domain },

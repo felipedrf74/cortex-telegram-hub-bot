@@ -96,6 +96,7 @@ vi.mock('../../src/services/shared-decision-context', () => ({
 
 vi.mock('../../src/state/shared-memory', () => ({
   getSharedMemorySummary: vi.fn().mockReturnValue(''),
+  getSharedMemory: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../src/services/tool-executor', () => ({

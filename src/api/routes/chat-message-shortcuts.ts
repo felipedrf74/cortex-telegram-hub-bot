@@ -127,7 +127,16 @@ async function tryBuildContentShortcutResponse(input: {
         metadata: buildScriptShortcutMetadata(scriptResult, scriptShortcut.format),
       });
     } catch (err) {
-      logger.warn({ err, userId, text: normalizedText }, 'content-script shortcut failed — falling back to generic content handler');
+      logger.warn(
+        {
+          err,
+          userId,
+          textLength: normalizedText.length,
+          shortcutFormat: scriptShortcut.format,
+          shortcutMode: scriptShortcut.mode,
+        },
+        'content-script shortcut failed — falling back to generic content handler',
+      );
       return buildShortcutResponse({
         text: buildScriptUnavailableResponse(requestedLanguage),
         domain: 'content',
@@ -173,7 +182,15 @@ async function tryBuildContentShortcutResponse(input: {
         },
       });
     } catch (err) {
-      logger.warn({ err, userId, text: normalizedText }, 'content refine shortcut failed — returning degraded message');
+      logger.warn(
+        {
+          err,
+          userId,
+          textLength: normalizedText.length,
+          sourceLength: sourceText.length,
+        },
+        'content refine shortcut failed — returning degraded message',
+      );
       const heuristicFallback = buildHeuristicContentRefinementFallback(sourceText, normalizedText, requestedLanguage);
       if (heuristicFallback) {
         return buildShortcutResponse({

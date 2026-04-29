@@ -84,6 +84,8 @@ describe('chat message request-boundary helpers', () => {
       normalizedAttachments: [
         { base64: 'abc', mimeType: 'image/jpeg' },
       ],
+      clientMessageId: null,
+      idempotencyKey: null,
     });
   });
 

@@ -104,7 +104,7 @@ describe('chat history route registrar', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.messages).toHaveLength(1);
-    expect(mockListChatMessages).toHaveBeenCalledWith(7001, 100, 'cursor-0');
+    expect(mockListChatMessages).toHaveBeenCalledWith(7001, 100, 'cursor-0', 7001);
   });
 
   it('clears persisted history, conversation state, and active-domain state together', async () => {
@@ -112,9 +112,9 @@ describe('chat history route registrar', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ ok: true, data: { cleared: true } });
-    expect(mockClearChatHistory).toHaveBeenCalledWith(7001);
-    expect(mockClearAllConversations).toHaveBeenCalledWith(7001);
-    expect(clearActiveDomain).toHaveBeenCalledWith(7001);
+    expect(mockClearChatHistory).toHaveBeenCalledWith(7001, 7001);
+    expect(mockClearAllConversations).toHaveBeenCalledWith(7001, 7001);
+    expect(clearActiveDomain).toHaveBeenCalledWith(7001, 7001);
   });
 
   it('fails closed before loading history when the scope guard rejects the request', async () => {

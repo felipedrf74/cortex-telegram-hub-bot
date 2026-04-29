@@ -19,6 +19,8 @@ import { getTaskProviderForUser } from './task-store/task-router';
 import { resolvePreferredCaptureList, resolveTaskCreationList } from './task-store/task-list-resolution';
 import { resolveCanonicalUserId } from './user-service';
 import { logger } from '../utils/logger';
+import { resolveChatTenantId } from './chat-tenant-scope';
+import { authorizeChatToolCall, formatToolAuthorizationFailure } from './chat-tool-authorization';
 
 // ─── Phase 3 Slice A — profile field whitelist ───────────────────
 //
@@ -105,37 +107,103 @@ function resolveTenantToolUserId(
   contextUserId?: number,
   explicitInputUserId?: unknown,
 ): number | null {
-  const candidates = [coerceUserRef(contextUserId), coerceUserRef(explicitInputUserId)];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const canonicalUserId = resolveCanonicalUserId(candidate);
-    if (canonicalUserId) return canonicalUserId;
+  const contextCandidate = coerceUserRef(contextUserId);
+  const explicitCandidate = coerceUserRef(explicitInputUserId);
+  const contextCanonical = contextCandidate ? resolveCanonicalUserId(contextCandidate) : null;
+  const explicitCanonical = explicitCandidate ? resolveCanonicalUserId(explicitCandidate) : null;
+  if (contextCanonical && explicitCanonical && contextCanonical !== explicitCanonical) {
+    return null;
   }
-  return null;
+  return contextCanonical ?? explicitCanonical ?? null;
+}
+
+function hasExplicitToolUserMismatch(contextUserId?: number, explicitInputUserId?: unknown): boolean {
+  const contextCandidate = coerceUserRef(contextUserId);
+  const explicitCandidate = coerceUserRef(explicitInputUserId);
+  if (!contextCandidate || !explicitCandidate) return false;
+  const contextCanonical = resolveCanonicalUserId(contextCandidate);
+  const explicitCanonical = resolveCanonicalUserId(explicitCandidate);
+  return Boolean(contextCanonical && explicitCanonical && contextCanonical !== explicitCanonical);
 }
 
 function requireTenantToolUserId(
   toolName: string,
   contextUserId?: number,
   explicitInputUserId?: unknown,
-): { ok: true; userId: number } | { ok: false; error: string } {
+  contextTenantId?: number,
+): { ok: true; userId: number; tenantId: number } | { ok: false; error: string } {
+  if (hasExplicitToolUserMismatch(contextUserId, explicitInputUserId)) {
+    return { ok: false, error: `${toolName} cannot run for a different user than the authenticated chat user` };
+  }
   const resolved = resolveTenantToolUserId(contextUserId, explicitInputUserId);
   if (!resolved) {
     return { ok: false, error: `${toolName} requires an authenticated user context` };
   }
-  return { ok: true, userId: resolved };
+  return { ok: true, userId: resolved, tenantId: resolveChatTenantId(resolved, contextTenantId) };
+}
+
+function requireOwnedTrainingPlanForTool(
+  toolName: string,
+  planId: unknown,
+  contextUserId?: number,
+  contextTenantId?: number,
+): { ok: true; userId: number; tenantId: number; plan: trainingPlans.TrainingPlan } | { ok: false; error: string } {
+  const scope = requireTenantToolUserId(toolName, contextUserId, undefined, contextTenantId);
+  if (!scope.ok) return scope;
+  const numericPlanId = typeof planId === 'number' ? planId : Number(planId);
+  if (!Number.isFinite(numericPlanId) || numericPlanId <= 0) {
+    return { ok: false, error: `${toolName} requires a valid plan_id` };
+  }
+  const plan = trainingPlans.getPlanById(numericPlanId);
+  if (!plan || plan.user_id !== scope.userId) {
+    return { ok: false, error: `${toolName} cannot access that training plan for the authenticated user` };
+  }
+  return { ...scope, plan };
+}
+
+function requireOwnedTrainingSessionForTool(
+  toolName: string,
+  sessionId: unknown,
+  contextUserId?: number,
+  contextTenantId?: number,
+): { ok: true; userId: number; tenantId: number; session: trainingPlans.TrainingSession; plan: trainingPlans.TrainingPlan } | { ok: false; error: string } {
+  const scope = requireTenantToolUserId(toolName, contextUserId, undefined, contextTenantId);
+  if (!scope.ok) return scope;
+  const numericSessionId = typeof sessionId === 'number' ? sessionId : Number(sessionId);
+  if (!Number.isFinite(numericSessionId) || numericSessionId <= 0) {
+    return { ok: false, error: `${toolName} requires a valid session_id` };
+  }
+  const session = trainingPlans.getSessionById(numericSessionId);
+  if (!session) {
+    return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
+  }
+  const plan = trainingPlans.getPlanById(session.plan_id);
+  if (!plan || plan.user_id !== scope.userId) {
+    return { ok: false, error: `${toolName} cannot access that training session for the authenticated user` };
+  }
+  return { ...scope, session, plan };
 }
 
 export async function executeToolCall(
   toolName: string,
   input: Record<string, any>,
   userId?: number,
+  tenantId?: number,
 ): Promise<any> {
-  logger.info({ tool: toolName, input }, 'Executing tool call');
+  logger.info({ tool: toolName, inputKeys: Object.keys(input ?? {}) }, 'Executing tool call');
 
   try {
+    const authorization = authorizeChatToolCall(toolName, input, userId, tenantId);
+    if (!authorization.allowed) {
+      logger.warn(
+        { tool: toolName, userId, tenantId, code: authorization.code, toolRisk: authorization.toolRisk },
+        'Tool call blocked by chat authorization guard',
+      );
+      return formatToolAuthorizationFailure(authorization);
+    }
+
     const getTaskProviderContext = () => {
-      const scope = requireTenantToolUserId(toolName, userId);
+      const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
       if (!scope.ok) return scope;
       return {
         ok: true as const,
@@ -370,7 +438,7 @@ export async function executeToolCall(
 
       // ── Reminder tools ──
       case 'set_reminder': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         return setReminder(scope.userId, {
           message: input.message,
@@ -381,7 +449,7 @@ export async function executeToolCall(
 
       // ── Note tools ──
       case 'save_note': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         return saveNote(scope.userId, {
           content: input.content,
@@ -391,7 +459,7 @@ export async function executeToolCall(
       }
 
       case 'search_notes': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         return searchNotes(scope.userId, {
           query: input.query,
@@ -479,16 +547,16 @@ export async function executeToolCall(
 
       // ── Shared memory tools (cross-domain context) ──
       case 'shared_memory_set': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
-        const entry = setSharedMemory(scope.userId, input.key, input.value, 'secretary', input.expires_at);
+        const entry = setSharedMemory(scope.userId, input.key, input.value, 'secretary', input.expires_at, scope.tenantId);
         return { success: true, key: entry.key, value: entry.value };
       }
 
       case 'shared_memory_remove': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
-        const removed = removeSharedMemory(scope.userId, input.key);
+        const removed = removeSharedMemory(scope.userId, input.key, scope.tenantId);
         return { success: removed, key: input.key };
       }
 
@@ -553,7 +621,7 @@ export async function executeToolCall(
 
       // ── Training Plan tools ──
       case 'create_training_plan': {
-        const scope = requireTenantToolUserId(toolName, userId, input.user_id);
+        const scope = requireTenantToolUserId(toolName, userId, input.user_id, tenantId);
         if (!scope.ok) return { error: scope.error };
         const plan = trainingPlans.createPlan({
           user_id: scope.userId,
@@ -570,6 +638,8 @@ export async function executeToolCall(
       }
 
       case 'add_training_week': {
+        const scope = requireOwnedTrainingPlanForTool(toolName, input.plan_id, userId, tenantId);
+        if (!scope.ok) return { error: scope.error };
         const week = trainingPlans.createWeek({
           plan_id: input.plan_id,
           week_number: input.week_number,
@@ -582,6 +652,13 @@ export async function executeToolCall(
       }
 
       case 'add_training_session': {
+        const scope = requireOwnedTrainingPlanForTool(toolName, input.plan_id, userId, tenantId);
+        if (!scope.ok) return { error: scope.error };
+        const weekId = typeof input.week_id === 'number' ? input.week_id : Number(input.week_id);
+        const weekBelongsToPlan = trainingPlans.getWeeksForPlan(scope.plan.id).some((week) => week.id === weekId);
+        if (!weekBelongsToPlan) {
+          return { error: 'add_training_session cannot write to a week outside the authenticated user plan' };
+        }
         const session = trainingPlans.createSession({
           week_id: input.week_id,
           plan_id: input.plan_id,
@@ -597,7 +674,7 @@ export async function executeToolCall(
       }
 
       case 'get_training_plan': {
-        const scope = requireTenantToolUserId(toolName, userId, input.user_id);
+        const scope = requireTenantToolUserId(toolName, userId, input.user_id, tenantId);
         if (!scope.ok) return { error: scope.error };
         const plan = input.plan_id
           ? trainingPlans.getPlanById(input.plan_id)
@@ -622,6 +699,8 @@ export async function executeToolCall(
       }
 
       case 'log_training_completion': {
+        const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
+        if (!scope.ok) return { error: scope.error };
         const session = trainingPlans.getSessionById(input.session_id);
         if (!session) return { error: `Session ${input.session_id} not found` };
 
@@ -698,6 +777,8 @@ export async function executeToolCall(
       }
 
       case 'update_training_session': {
+        const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
+        if (!scope.ok) return { error: scope.error };
         const updated = trainingPlans.updateSession(input.session_id, {
           title: input.title,
           exercises_json: input.exercises_json,
@@ -710,6 +791,8 @@ export async function executeToolCall(
       }
 
       case 'link_session_calendar': {
+        const scope = requireOwnedTrainingSessionForTool(toolName, input.session_id, userId, tenantId);
+        if (!scope.ok) return { error: scope.error };
         const linked = trainingPlans.linkSessionToCalendar(
           input.session_id, input.calendar_event_id, input.calendar_source,
         );
@@ -718,7 +801,7 @@ export async function executeToolCall(
 
       // ── Finance tools ──
       case 'finance_add_transaction': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const tx = financeTracker.addTransaction(uid, input.date, input.category, input.amount, {
@@ -737,7 +820,7 @@ export async function executeToolCall(
         };
       }
       case 'finance_get_transactions': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return financeTracker.getTransactions(uid, {
@@ -746,7 +829,7 @@ export async function executeToolCall(
         });
       }
       case 'finance_delete_transaction': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const deleted = financeTracker.deleteTransaction(uid, input.transaction_id);
@@ -754,13 +837,13 @@ export async function executeToolCall(
         return deleted ? { success: true } : { error: 'Transaction not found or unauthorized' };
       }
       case 'finance_monthly_summary': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return financeTracker.getMonthlySummary(uid, input.month);
       }
       case 'finance_calculate_tax': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const taxEvent = financeTracker.calculateAndStoreTax(uid, input.month);
@@ -769,13 +852,13 @@ export async function executeToolCall(
         return { ...taxEvent, effectiveRate: breakdown.effectiveRate, bracket: breakdown.bracket };
       }
       case 'finance_get_tax_events': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return financeTracker.getTaxEvents(uid, { year: input.year, limit: input.limit });
       }
       case 'finance_mark_tax_paid': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const marked = financeTracker.markTaxPaid(uid, input.month);
@@ -783,7 +866,7 @@ export async function executeToolCall(
         return marked ? { success: true, month: input.month, status: 'paid' } : { error: 'Tax event not found' };
       }
       case 'finance_annual_summary': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const summary = financeTracker.getAnnualTaxSummary(uid, input.year);
@@ -803,7 +886,7 @@ export async function executeToolCall(
 
       // ── Cooking tools ──
       case 'cooking_add_recipe': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const recipe = cookingChef.addRecipe(uid, input.title, input.ingredients, {
@@ -813,19 +896,19 @@ export async function executeToolCall(
         return { success: true, id: recipe.id, title: recipe.title };
       }
       case 'cooking_get_recipes': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return cookingChef.getRecipes(uid, { tags: input.tags, search: input.search, limit: input.limit });
       }
       case 'cooking_delete_recipe': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return cookingChef.deleteRecipe(uid, input.recipe_id) ? { success: true } : { error: 'Recipe not found' };
       }
       case 'cooking_set_meal': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const meal = cookingChef.setMealPlan(uid, input.date, input.meal_type, input.title, {
@@ -835,13 +918,13 @@ export async function executeToolCall(
         return { success: true, date: meal.date, meal_type: meal.meal_type, title: meal.title };
       }
       case 'cooking_get_meal_plan': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         return cookingChef.getMealPlan(uid, input.start_date, input.end_date);
       }
       case 'cooking_delete_meal': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const deleted = cookingChef.deleteMealPlan(uid, input.date, input.meal_type);
@@ -849,7 +932,7 @@ export async function executeToolCall(
         return deleted ? { success: true } : { error: 'Meal not found' };
       }
       case 'cooking_generate_shopping_list': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const list = cookingChef.generateShoppingList(uid, input.week_start);
@@ -857,7 +940,7 @@ export async function executeToolCall(
         return list;
       }
       case 'cooking_get_shopping_list': {
-        const scope = requireTenantToolUserId(toolName, userId);
+        const scope = requireTenantToolUserId(toolName, userId, undefined, tenantId);
         if (!scope.ok) return { error: scope.error };
         const uid = scope.userId;
         const list = cookingChef.getShoppingList(uid, input.week_start);

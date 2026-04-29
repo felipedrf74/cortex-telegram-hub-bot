@@ -22,7 +22,13 @@ type AssistantExchange = {
   timestamp: string;
 };
 
+type PersistExchangeOptions = {
+  clientMessageId?: string | null;
+  requestId?: string | null;
+};
+
 type AssistantEditInput = {
+  tenantId?: number;
   userId: number;
   messageId: string;
   text: string;
@@ -40,21 +46,37 @@ type CallbackPersistenceInput = Omit<AssistantEditInput, 'messageId'> & {
   fallbackMessageId?: string;
 };
 
+function updateScopedAssistantMessage(
+  input: Pick<AssistantEditInput, 'userId' | 'messageId' | 'tenantId'>,
+  patch: Parameters<typeof updateAssistantMessage>[2],
+): boolean {
+  return input.tenantId
+    ? updateAssistantMessage(input.userId, input.messageId, patch, input.tenantId)
+    : updateAssistantMessage(input.userId, input.messageId, patch);
+}
+
 export function persistExchange(
   userId: number,
   userMessageId: string,
   userText: string,
   assistantMessageId: string,
   assistant: AssistantExchange,
+  tenantId?: number,
+  options: PersistExchangeOptions = {},
 ): void {
   storeChatMessage({
+    ...(tenantId ? { tenantId } : {}),
     userId,
     messageId: userMessageId,
     role: 'user',
     text: userText,
     timestamp: assistant.timestamp,
+    lifecycleState: 'sent',
+    clientMessageId: options.clientMessageId ?? null,
+    requestId: options.requestId ?? null,
   });
   storeChatMessage({
+    ...(tenantId ? { tenantId } : {}),
     userId,
     messageId: assistantMessageId,
     role: 'assistant',
@@ -65,6 +87,10 @@ export function persistExchange(
     buttons: assistant.buttons,
     metadata: assistant.metadata,
     timestamp: assistant.timestamp,
+    lifecycleState: 'completed',
+    completedAt: assistant.timestamp,
+    retryOfMessageId: userMessageId,
+    requestId: options.requestId ?? null,
   });
 }
 
@@ -73,7 +99,13 @@ export function syncConversationStateForShortcut(
   domain: DomainName,
   userText: string,
   assistantText: string,
+  tenantId?: number,
 ): void {
+  if (tenantId) {
+    addToConversation(userId, domain, 'user', userText, tenantId);
+    addToConversation(userId, domain, 'assistant', assistantText, tenantId);
+    return;
+  }
   addToConversation(userId, domain, 'user', userText);
   addToConversation(userId, domain, 'assistant', assistantText);
 }
@@ -82,12 +114,17 @@ export function syncConversationAssistantEdit(
   userId: number,
   domain: DomainName,
   assistantText: string,
+  tenantId?: number,
 ): void {
+  if (tenantId) {
+    syncLastAssistantConversationMessage(userId, domain, assistantText, tenantId);
+    return;
+  }
   syncLastAssistantConversationMessage(userId, domain, assistantText);
 }
 
 export function persistAssistantEdit(input: AssistantEditInput): boolean {
-  const updated = updateAssistantMessage(input.userId, input.messageId, {
+  const updated = updateScopedAssistantMessage(input, {
     text: input.text,
     domain: input.domain,
     buttons: input.buttons ?? null,
@@ -96,7 +133,7 @@ export function persistAssistantEdit(input: AssistantEditInput): boolean {
     confidence: input.confidence ?? null,
     timestamp: input.timestamp,
   });
-  syncConversationAssistantEdit(input.userId, input.domain, input.text);
+  syncConversationAssistantEdit(input.userId, input.domain, input.text, input.tenantId);
   return updated;
 }
 
@@ -105,7 +142,7 @@ export function persistCallbackAssistantResponse(input: CallbackPersistenceInput
   storedFallback: boolean;
 } {
   if (input.editOriginal && input.messageId) {
-    const updatedOriginal = updateAssistantMessage(input.userId, input.messageId, {
+    const updatedOriginal = updateScopedAssistantMessage({ ...input, messageId: input.messageId }, {
       text: input.text,
       domain: input.domain,
       buttons: input.buttons ?? null,
@@ -117,17 +154,18 @@ export function persistCallbackAssistantResponse(input: CallbackPersistenceInput
     if (!updatedOriginal) {
       storeCallbackAssistantMessage(input);
     }
-    syncConversationAssistantEdit(input.userId, input.domain, input.text);
+    syncConversationAssistantEdit(input.userId, input.domain, input.text, input.tenantId);
     return { updatedOriginal, storedFallback: !updatedOriginal };
   }
 
   storeCallbackAssistantMessage(input);
-  syncConversationAssistantEdit(input.userId, input.domain, input.text);
+  syncConversationAssistantEdit(input.userId, input.domain, input.text, input.tenantId);
   return { updatedOriginal: false, storedFallback: true };
 }
 
 function storeCallbackAssistantMessage(input: CallbackPersistenceInput): void {
   const entry: ChatHistoryWrite = {
+    ...(input.tenantId ? { tenantId: input.tenantId } : {}),
     userId: input.userId,
     messageId: input.fallbackMessageId ?? `cb-${Date.now()}`,
     role: 'assistant',

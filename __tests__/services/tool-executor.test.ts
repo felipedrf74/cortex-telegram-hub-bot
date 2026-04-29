@@ -124,6 +124,7 @@ import { setReminder } from '../../src/state/reminders';
 import { saveNote, searchNotes } from '../../src/state/notes';
 import { setSharedMemory, removeSharedMemory } from '../../src/state/shared-memory';
 import * as financeTracker from '../../src/services/finance-tracker';
+import { runWithChatToolAuthorization } from '../../src/services/chat-tool-authorization';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -133,6 +134,8 @@ const mockMail = vi.mocked(outlookMail);
 const mockFinance = vi.mocked(financeTracker);
 const AUTH_USER_ID = 42;
 const execAsUser = (tool: string, input: Record<string, any> = {}) => executeToolCall(tool, input, AUTH_USER_ID);
+const execAsTenantUser = (tool: string, input: Record<string, any> = {}, tenantId = 1001) =>
+  executeToolCall(tool, input, AUTH_USER_ID, tenantId);
 
 beforeEach(() => {
   mockResolveCanonicalUserId.mockReset();
@@ -959,7 +962,20 @@ describe('executeToolCall — Shared Memory', () => {
       expires_at: undefined,
     });
     expect(result).toEqual({ success: true, key: 'active_race', value: 'Ironman 2026' });
-    expect(setSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'active_race', 'Ironman 2026', 'secretary', undefined);
+    expect(setSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'active_race', 'Ironman 2026', 'secretary', undefined, AUTH_USER_ID);
+  });
+
+  it('shared_memory_set — inherits explicit Chat tenant scope for multi-turn memory', async () => {
+    const entry = { key: 'planning_style', value: 'Protect mornings', domain: 'secretary', expires_at: undefined };
+    vi.mocked(setSharedMemory).mockReturnValue(entry as any);
+
+    const result = await execAsTenantUser('shared_memory_set', {
+      key: 'planning_style',
+      value: 'Protect mornings',
+    }, 1001);
+
+    expect(result).toEqual({ success: true, key: 'planning_style', value: 'Protect mornings' });
+    expect(setSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'planning_style', 'Protect mornings', 'secretary', undefined, 1001);
   });
 
   it('shared_memory_remove — returns { success: true, key } when entry exists', async () => {
@@ -967,7 +983,7 @@ describe('executeToolCall — Shared Memory', () => {
 
     const result = await execAsUser('shared_memory_remove', { key: 'active_race' });
     expect(result).toEqual({ success: true, key: 'active_race' });
-    expect(removeSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'active_race');
+    expect(removeSharedMemory).toHaveBeenCalledWith(AUTH_USER_ID, 'active_race', AUTH_USER_ID);
   });
 
   it('shared_memory_remove — returns { success: false, key } when entry does not exist', async () => {
@@ -1156,5 +1172,93 @@ describe('executeToolCall — error handling', () => {
       end_date: '2026-04-06',
     });
     expect(result).toEqual({ error: 'Tool execution failed' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Chat tool authorization
+// ═══════════════════════════════════════════════════════════════════
+
+describe('executeToolCall — chat authorization guard', () => {
+  beforeEach(() => {
+    mockCal.deleteEvent.mockReset();
+    vi.mocked(setReminder).mockReset();
+  });
+
+  it('blocks destructive chat tool calls without explicit confirmation', async () => {
+    mockCal.hasConnectedCalendarForUser.mockReturnValue(true);
+
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: 1001,
+      confirmedDestructiveAction: false,
+      confirmationSource: 'none',
+    }, () => execAsTenantUser('delete_calendar_event', {
+      event_id: 'evt-1',
+      calendar_source: 'google',
+    }, 1001));
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'CONFIRMATION_REQUIRED',
+      confirmation_required: true,
+      tool_risk: 'destructive',
+    });
+    expect(mockCal.deleteEvent).not.toHaveBeenCalled();
+  });
+
+  it('allows confirmed destructive chat tool calls inside the same tenant scope', async () => {
+    mockCal.hasConnectedCalendarForUser.mockReturnValue(true);
+    mockCal.deleteEvent.mockResolvedValue(undefined as any);
+
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: 1001,
+      confirmedDestructiveAction: true,
+      confirmationSource: 'explicit_current_turn',
+    }, () => execAsTenantUser('delete_calendar_event', {
+      event_id: 'evt-1',
+      calendar_source: 'google',
+    }, 1001));
+
+    expect(result).toEqual({ success: true, message: 'Event deleted' });
+    expect(mockCal.deleteEvent).toHaveBeenCalledWith('evt-1', 'google', AUTH_USER_ID);
+  });
+
+  it('blocks chat tool calls when the tenant context changes under the request', async () => {
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: 1001,
+      confirmedDestructiveAction: true,
+      confirmationSource: 'explicit_current_turn',
+    }, () => execAsTenantUser('set_reminder', {
+      message: 'Pay invoice',
+      remind_at: '2026-05-01T09:00:00Z',
+    }, 2002));
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'TENANT_SCOPE_MISMATCH',
+      confirmation_required: false,
+    });
+    expect(setReminder).not.toHaveBeenCalled();
+  });
+
+  it('rejects prompt-injected explicit user ids instead of silently rewriting them to the chat user', async () => {
+    const result = await runWithChatToolAuthorization({
+      userId: AUTH_USER_ID,
+      tenantId: AUTH_USER_ID,
+      confirmedDestructiveAction: false,
+      confirmationSource: 'none',
+    }, () => execAsUser('create_training_plan', {
+      user_id: AUTH_USER_ID + 1,
+      name: 'Injected plan',
+      sport: 'running',
+      goal: 'access another user',
+      duration_weeks: 4,
+      start_date: '2026-05-01',
+    }));
+
+    expect(result).toEqual({ error: 'create_training_plan cannot run for a different user than the authenticated chat user' });
   });
 });

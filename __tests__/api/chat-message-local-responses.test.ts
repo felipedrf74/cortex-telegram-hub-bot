@@ -58,12 +58,12 @@ describe('chat message local response helpers', () => {
     mockGetCached.mockReturnValue(cached);
 
     expect(isCacheableChatCommand('/day')).toBe(true);
-    expect(getCachedChatCommandResponse(42, '/day')).toBe(cached);
-    expect(mockGetCached).toHaveBeenCalledWith('chat-cmd:42:/day');
+    expect(getCachedChatCommandResponse(42, '/day', 1001)).toBe(cached);
+    expect(mockGetCached).toHaveBeenCalledWith('chat-cmd:1001:42:/day');
 
     mockGetCached.mockClear();
     expect(isCacheableChatCommand('tell me about my day')).toBe(false);
-    expect(getCachedChatCommandResponse(42, 'tell me about my day')).toBeNull();
+    expect(getCachedChatCommandResponse(42, 'tell me about my day', 1001)).toBeNull();
     expect(mockGetCached).not.toHaveBeenCalled();
   });
 
@@ -79,12 +79,31 @@ describe('chat message local response helpers', () => {
       timestamp: '2026-04-24T10:15:00.000Z',
     };
 
-    maybeCacheChatCommandResponse(42, '/todo', response);
-    expect(mockSetCache).toHaveBeenCalledWith('chat-cmd:42:/todo', response, 60);
+    maybeCacheChatCommandResponse(42, '/todo', response, 1001);
+    expect(mockSetCache).toHaveBeenCalledWith('chat-cmd:1001:42:/todo', response, 60);
 
     mockSetCache.mockClear();
-    maybeCacheChatCommandResponse(42, 'create a task', response);
+    maybeCacheChatCommandResponse(42, 'create a task', response, 1001);
     expect(mockSetCache).not.toHaveBeenCalled();
+  });
+
+  it('keeps deterministic command cache entries isolated by tenant for the same user', () => {
+    const response = {
+      id: 'msg-fast',
+      text: 'Tasks',
+      domain: 'secretary' as const,
+      routeMethod: 'fast-path',
+      confidence: 1,
+      buttons: null,
+      metadata: null,
+      timestamp: '2026-04-24T10:15:00.000Z',
+    };
+
+    maybeCacheChatCommandResponse(42, '/day', response, 1001);
+    maybeCacheChatCommandResponse(42, '/day', response, 1002);
+
+    expect(mockSetCache).toHaveBeenNthCalledWith(1, 'chat-cmd:1001:42:/day', response, 60);
+    expect(mockSetCache).toHaveBeenNthCalledWith(2, 'chat-cmd:1002:42:/day', response, 60);
   });
 
   it('maps deterministic fast-path results into the iOS chat response envelope', async () => {

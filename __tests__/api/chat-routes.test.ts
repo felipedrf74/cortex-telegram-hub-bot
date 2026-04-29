@@ -687,15 +687,109 @@ describe('Chat API routes', () => {
     });
   });
 
+  it('returns the existing assistant response on idempotent retry without invoking the skill twice', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'plan my day',
+    });
+    mockHandleSecretary.mockResolvedValue({ text: 'Here is your plan.', domain: 'secretary' });
+
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'plan my day',
+      clientMessageId: 'ios-client-1',
+    });
+    const second = await dispatch('POST', '/message', 7001, {
+      text: 'plan my day',
+      clientMessageId: 'ios-client-1',
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.body).toMatchObject({
+      text: 'Here is your plan.',
+      metadata: {
+        idempotentReplay: true,
+        replayOfUserMessageId: 'msg-user-ios-client-1',
+      },
+    });
+    expect(mockHandleSecretary).toHaveBeenCalledTimes(1);
+    expect(mockRouteMessage).toHaveBeenCalledTimes(1);
+
+    const historyRes = await dispatch('GET', '/history?limit=10', 7001);
+    expect(historyRes.body.messages.filter((message: any) => message.id === 'msg-user-ios-client-1')).toHaveLength(1);
+  });
+
+  it('does not execute a second skill call when an idempotent retry arrives before completion', async () => {
+    testDb.prepare(`
+      INSERT INTO messages (
+        tenant_id, user_id, visibility_scope, scope_status, created_by,
+        message_uuid, role, text, lifecycle_state, client_message_id, request_id, created_at
+      ) VALUES (?, ?, 'user_private', 'active', ?, ?, 'user', ?, 'sent', ?, ?, ?)
+    `).run(
+      7001,
+      7001,
+      7001,
+      'msg-user-ios-client-in-flight',
+      'plan my day',
+      'ios-client-in-flight',
+      'req-original',
+      '2026-04-29T08:00:00.000Z',
+    );
+
+    const res = await dispatch('POST', '/message', 7001, {
+      text: 'plan my day',
+      clientMessageId: 'ios-client-in-flight',
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.body).toMatchObject({
+      routeMethod: 'idempotency-in-progress',
+      metadata: {
+        idempotencyInProgress: true,
+        replayOfUserMessageId: 'msg-user-ios-client-in-flight',
+      },
+    });
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects reused client message ids with different text', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'plan my day',
+    });
+
+    const first = await dispatch('POST', '/message', 7001, {
+      text: 'plan my day',
+      clientMessageId: 'ios-client-conflict',
+    });
+    const second = await dispatch('POST', '/message', 7001, {
+      text: 'cancel my day instead',
+      clientMessageId: 'ios-client-conflict',
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(409);
+    expect(second.body).toMatchObject({
+      error: {
+        code: 'CHAT_IDEMPOTENCY_CONFLICT',
+      },
+    });
+  });
+
   it('clears persisted chat history for the authenticated user only', async () => {
     testDb.prepare(`
-      INSERT INTO messages (user_id, message_uuid, role, text, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(7001, 'msg-1', 'assistant', 'Hello again', '2026-04-19T20:00:00.000Z');
+      INSERT INTO messages (tenant_id, user_id, message_uuid, role, text, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(7001, 7001, 'msg-1', 'assistant', 'Hello again', '2026-04-19T20:00:00.000Z');
     testDb.prepare(`
-      INSERT INTO messages (user_id, message_uuid, role, text, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(7002, 'msg-2', 'assistant', 'Other user', '2026-04-19T20:00:00.000Z');
+      INSERT INTO messages (tenant_id, user_id, message_uuid, role, text, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(7002, 7002, 'msg-2', 'assistant', 'Other user', '2026-04-19T20:00:00.000Z');
 
     const clearRes = await dispatch('DELETE', '/history', 7001);
 
@@ -706,7 +800,7 @@ describe('Chat API routes', () => {
     expect(clearRes.statusCode, JSON.stringify(clearRes.body)).toBe(200);
     expect(clearRes.body.ok).toBe(true);
     expect(clearRes.body.data.cleared).toBe(true);
-    expect(mockClearAllConversations).toHaveBeenCalledWith(7001);
+    expect(mockClearAllConversations).toHaveBeenCalledWith(7001, 7001);
     expect(remainingRows).toEqual([
       { user_id: 7002, message_uuid: 'msg-2' },
     ]);
@@ -812,7 +906,7 @@ describe('Chat API routes', () => {
       role: 'assistant',
       text: 'Cancelled.',
     });
-    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7003, 'secretary', 'Cancelled.');
+    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7003, 'secretary', 'Cancelled.', 7003);
   });
 
   it('localizes callback confirmations for Portuguese users', async () => {
@@ -846,7 +940,7 @@ describe('Chat API routes', () => {
       role: 'assistant',
       text: 'Cancelado.',
     });
-    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7003, 'secretary', 'Cancelado.');
+    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7003, 'secretary', 'Cancelado.', 7003);
   });
 
   it('localizes callback validation errors for Portuguese users', async () => {
@@ -935,7 +1029,7 @@ describe('Chat API routes', () => {
       buttons: [[{ text: '📋 Tasks', callbackData: 'cmd:/todo_summary' }]],
       routeMethod: 'fast-path',
     });
-    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7001, 'secretary', '<b>Day overview</b>');
+    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7001, 'secretary', '<b>Day overview</b>', 7001);
   });
 
   it('attaches actionable coach buttons to fresh triathlon briefings', async () => {
@@ -1011,6 +1105,7 @@ describe('Chat API routes', () => {
     expect(vi.mocked(handleCooking)).toHaveBeenCalledWith(
       'Olá eu gostaria de ralar uma cenoura como que conservo ela na geladeira por vários dias',
       7001,
+      7001,
     );
   });
 
@@ -1033,9 +1128,10 @@ describe('Chat API routes', () => {
     });
 
     testDb.prepare(`
-      INSERT INTO messages (user_id, message_uuid, role, text, domain, buttons_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (tenant_id, user_id, message_uuid, role, text, domain, buttons_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
+      7001,
       7001,
       'coach-msg-1',
       'assistant',
@@ -1063,7 +1159,7 @@ describe('Chat API routes', () => {
       text: callbackRes.body.text,
       buttons: null,
     });
-    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7001, 'triathlon', callbackRes.body.text);
+    expect(mockSyncLastAssistantConversationMessage).toHaveBeenCalledWith(7001, 'triathlon', callbackRes.body.text, 7001);
   });
 
   it('routes explicit script generation asks through the canonical content script pipeline', async () => {
@@ -1125,8 +1221,8 @@ describe('Chat API routes', () => {
       'chat',
       7001,
     );
-    expect(mockAddToConversation).toHaveBeenCalledWith(7001, 'content', 'user', 'Write a short script about recovery after hard intervals in English');
-    expect(mockAddToConversation).toHaveBeenCalledWith(7001, 'content', 'assistant', expect.stringContaining('Short script'));
+    expect(mockAddToConversation).toHaveBeenCalledWith(7001, 'content', 'user', 'Write a short script about recovery after hard intervals in English', 7001);
+    expect(mockAddToConversation).toHaveBeenCalledWith(7001, 'content', 'assistant', expect.stringContaining('Short script'), 7001);
     expect(vi.mocked(handleContent)).not.toHaveBeenCalled();
   });
 
@@ -2160,7 +2256,7 @@ describe('Chat API routes', () => {
       domain: 'secretary',
       method: 'keyword',
       confidence: 0.9,
-      strippedMessage: 'delete the task to review the training deck',
+      strippedMessage: 'help me prioritize my day',
     });
     mockKeywordMatch.mockReturnValue('secretary');
     mockHandleSecretary.mockRejectedValue(Object.assign(
@@ -2169,7 +2265,7 @@ describe('Chat API routes', () => {
     ));
 
     const res = await dispatch('POST', '/message', 7001, {
-      text: 'delete the task to review the training deck',
+      text: 'help me prioritize my day',
     });
 
     expect(res.statusCode).toBe(200);
@@ -2181,13 +2277,15 @@ describe('Chat API routes', () => {
       7001,
       'secretary',
       'user',
-      'delete the task to review the training deck',
+      'help me prioritize my day',
+      7001,
     );
     expect(mockAddToConversation).toHaveBeenCalledWith(
       7001,
       'secretary',
       'assistant',
       expect.stringContaining('temporarily'),
+      7001,
     );
 
     const historyRes = await dispatch('GET', '/history?limit=10', 7001);
@@ -2196,5 +2294,30 @@ describe('Chat API routes', () => {
       domain: 'secretary',
       routeMethod: 'degraded',
     });
+  });
+
+  it('pauses destructive chat actions for explicit confirmation before invoking a skill handler', async () => {
+    mockRouteMessage.mockResolvedValue({
+      domain: 'secretary',
+      method: 'keyword',
+      confidence: 0.9,
+      strippedMessage: 'cancel my training plan and clear the calendar',
+    });
+    mockGetUserLanguage.mockReturnValue('en-US');
+
+    const res = await dispatch('POST', '/message', 7001, {
+      text: 'cancel my training plan and clear the calendar',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.domain).toBe('secretary');
+    expect(res.body.routeMethod).toBe('confirmation-required');
+    expect(res.body.metadata).toMatchObject({
+      type: 'chat_action_confirmation_required',
+      involvedSkills: expect.arrayContaining(['secretary', 'training']),
+    });
+    expect(String(res.body.text)).toContain('explicit confirmation');
+    expect(mockRouteMessage).not.toHaveBeenCalled();
+    expect(mockHandleSecretary).not.toHaveBeenCalled();
   });
 });

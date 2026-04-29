@@ -15,7 +15,7 @@ type ChatRouteScopeGuard = (
 ) => userId is number;
 
 interface ChatHistoryRouteOptions {
-  clearActiveDomain(userId: number): void;
+  clearActiveDomain(userId: number, tenantId?: number): void;
 }
 
 export function registerChatHistoryRoutes(
@@ -28,7 +28,7 @@ export function registerChatHistoryRoutes(
    * Fetch conversation history.
    */
   router.get('/history', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
     const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
     const before = req.query.before as string | undefined;
 
@@ -40,7 +40,7 @@ export function registerChatHistoryRoutes(
     }
 
     try {
-      res.json(listChatMessages(userId, limit, before));
+      res.json(listChatMessages(userId, limit, before, tenantId));
     } catch (err: any) {
       logger.debug({ err }, 'iOS chat history query failed');
       res.json({ messages: [], cursor: null, hasMore: false });
@@ -52,16 +52,16 @@ export function registerChatHistoryRoutes(
    * Clears persisted chat history and per-domain conversation context.
    */
   router.delete('/history', async (req, res: Response) => {
-    const { userId } = req as AuthenticatedRequest;
+    const { userId, tenantId = userId } = req as AuthenticatedRequest;
 
     if (!ensureValidChatRouteScope(res, userId, 'chat_route_clear_history')) {
       return;
     }
 
     try {
-      clearChatHistory(userId);
-      clearAllConversations(userId);
-      options.clearActiveDomain(userId);
+      clearChatHistory(userId, tenantId);
+      clearAllConversations(userId, tenantId);
+      options.clearActiveDomain(userId, tenantId);
       res.json({ ok: true, data: { cleared: true } });
     } catch (err: any) {
       logger.error({ err, userId, platform: 'ios' }, 'iOS chat history clear failed');
