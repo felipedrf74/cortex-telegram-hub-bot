@@ -1,10 +1,10 @@
 # Nexus Hub — Focused QA Test Results
 
-**Generated:** 2026-04-29 18:48 WEST
+**Generated:** 2026-04-29 18:48 WEST (Wave 1) + 19:30 WEST (Wave 2 Opus rerun, full suite verification)
 **Audit branch:** `qa/nexus-hub-focused-review-selected-areas`
-**HEAD:** `888b69e` + 59 uncommitted Codex files
+**HEAD:** `e1591f6` (Opus rerun on top of `a0341d5` Sonnet baseline on top of `888b69e`)
 
-## Summary
+## Summary — Wave 1 (focused targets)
 
 | Metric | Value |
 |---|---|
@@ -14,6 +14,19 @@
 | Failed | 0 |
 | Skipped | 0 |
 | Typecheck | clean (`npx tsc --noEmit` exit 0) |
+
+## Summary — Wave 2 (full pre-commit suite, ran twice)
+
+| Run | Trigger | Test files | Tests | Pass | Fail | Skip | Duration |
+|---|---|---|---|---|---|---|---|
+| 1 | `git commit` for `a0341d5` (Sonnet baseline) | 410 | 6233 | 6233 | 0 | 0 | 485.24s |
+| 2 | `git commit` for `e1591f6` (Opus rerun) | 410 | 6247 | 6247 | 0 | 0 | 493.63s |
+
+Test count difference (6233 → 6247) reflects additional uncommitted Codex tests added between the two commits. Both runs green.
+
+`npx tsc --noEmit` exits 0 against the full uncommitted change set. **The test layer is healthy.**
+
+> Wave 1 test execution ran on the general-purpose subagent (test runner is a deterministic operation, no model-tier impact). Wave 2 verification was the pre-commit hook running the full suite twice in sequence on each commit.
 
 **The test layer is healthy against the working tree.** Every focused target — including 6 brand-new uncommitted Codex test files (`skill-memory`, `skill-version-registry`, `content-tenant-scope`, `content-domain-ontology`, `content-reference-provenance`, `content-dedup-routing`) — passes cleanly. The full uncommitted change set (50+ modified/new files including migrations 087–092 and the new content-domain-ontology / content-editorial-workflow / content-reference-context / skill-memory / skill-version-registry services) typechecks without error.
 
